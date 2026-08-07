@@ -308,7 +308,7 @@ type Leg = {
  */
 function loweringOf(engine: Engine, src: string): string {
   if (engine !== 'macro') return engine
-  return existsSync(path.join(src, 'compiler', 'codegen.ts')) ? 'macro→source' : 'macro→emitted'
+  return existsSync(path.join(src, 'compiler', 'codegen.ts')) ? 'macro→source' : 'macro→closure-table'
 }
 
 /** What the entry actually IS, in a form two legs can be compared on. */

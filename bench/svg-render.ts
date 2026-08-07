@@ -54,7 +54,7 @@ export function buildSvg(chart: Chart): string {
     ...chart.groups.flatMap(g => g.bars.map(b => b.label)),
   ])
   const allLegend = [
-    { color: C.macroBuild, label: 'Parséman (macro build)' },
+    { color: C.macroBuild, label: 'Parséman (runtime compile)' },
     { color: C.compile,    label: 'Parséman (compile())' },
     { color: C.noCompile,  label: 'Parséman (interpreter)' },
     { color: C.peggy,      label: 'Peggy' },
@@ -65,7 +65,7 @@ export function buildSvg(chart: Chart): string {
     { color: C.native,     label: 'JSON.parse (native)' },
     { color: C.lezer,      label: 'Lezer (parse only)' },
     { color: C.lezerWalk,  label: 'Lezer (parse + walk)' },
-    { color: C.macroBuild, label: 'Parséman CST (macro build)' },
+    { color: C.macroBuild, label: 'Parséman CST (runtime compile)' },
     { color: C.noCompile,  label: 'Parséman CST (interpreter)' },
     { color: C.chevrotain, label: 'Chevrotain CST' },
   ].filter(e => allLabels.has(e.label))

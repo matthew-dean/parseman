@@ -2629,9 +2629,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
      * and anyone debugging can read it. Slower, correct, and observable — the
      * three properties a silent eval had none of.
      *
-     * A program with NO `asm` at all is the runtime path (`compile()`,
-     * `compose()`, a hand-built `tableRules(prog)`), where `new Function` is
-     * what the docs have always said it is.
+     * A program with NO `asm` at all is an explicit low-level hand-built
+     * `tableRules(prog)` input. Compiler-created and macro-created artifacts
+     * always carry the field, including the canonical empty inventory.
      */
     try {
       // Served above by a pre-compiled factory. Nothing to compile, nothing to

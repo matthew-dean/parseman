@@ -831,11 +831,11 @@ run(g.Value, '12 x', { trivia: g.rw })  // unconsumedFrom → offset of 'x'
 
 ### `compile(combinator, mapFnSources?)`
 
-JIT-compile a combinator tree to an optimized JS function at runtime. Returns a
+Lower a combinator tree to the shared compact table runtime at runtime. Returns a
 [`CompiledParser`](./types#compiledparser) exposing `.parse()`, `.parseWithContext()`,
 `.parseWithErrors()`, plus the generated `.source` and `.inlineExpression` strings.
-Requires `new Function` (won't run under a strict CSP). See
-[The three modes](../guide/modes#compile-runtime-jit).
+It uses the same explicit `a:[]` closure table artifact as macro output and does
+not require `new Function`; see [The three modes](../guide/modes#compile-runtime-lowering).
 
 ## Spec generation
 
@@ -931,17 +931,11 @@ re-binds every rule reference in one shared scope, an override reroutes the base
 calls too (open recursion). Each item is a grammar (a `rules()` result) or an
 already-compiled artifact.
 
-- **With the macro (build time):** `compose([...])` is fused into **static source** — a
-  plain closure of direct calls. **No `new Function`, no eval** in the emitted code, and
-  none at parse time either: a macro-built table artifact never reaches the `Function`
-  constructor on any option set, which
-  `test/unit/no-function-constructor.test.ts` decides by counting constructor calls
-  across a real parse rather than by scanning the emitted text. (Scanning the text
-  cannot see it — the source string was assembled at runtime and never appeared in the
-  artifact, which is how this claim was false for as long as it was written down.)
-- **Without the macro (runtime):** `compose([...])` fuses when it runs, via `new Function`
-  — the same JIT `compile()` uses (so, like `compile()`, it needs `'unsafe-eval'` under a
-  strict CSP). Parsing is never eval; only the one-time fuse is.
+- **With the macro (build time):** `compose([...])` becomes a compact table program that
+  imports the shared table runtime. **No `new Function`, no eval** in the emitted code or
+  at parse time.
+- **Without the macro (runtime):** `compose([...])` lowers to the same compact closure
+  table program. It has the same CSP behavior and does not take a separate JIT path.
 
 ## Error recovery
 

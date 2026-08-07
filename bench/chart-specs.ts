@@ -75,7 +75,7 @@ export const CHART_GROUPS: Record<ChartKey, GroupSpec[]> = {
 
 export const CHART_BARS: Record<ChartKey, BarSpec[]> = {
   json: [
-    { key: 'parseman-macro', label: 'Parséman (macro build)', color: CHART_COLORS.macroBuild },
+    { key: 'parseman-runtime', label: 'Parséman (runtime compile)', color: CHART_COLORS.macroBuild },
     { key: 'parseman-interp', label: 'Parséman (interpreter)', color: CHART_COLORS.noCompile },
     { key: 'peggy', label: 'Peggy', color: CHART_COLORS.peggy },
     { key: 'jison', label: 'Jison', color: CHART_COLORS.jison },
@@ -85,7 +85,7 @@ export const CHART_BARS: Record<ChartKey, BarSpec[]> = {
     { key: 'native', label: 'JSON.parse (native)', color: CHART_COLORS.native },
   ],
   csv: [
-    { key: 'parseman-macro', label: 'Parséman (macro build)', color: CHART_COLORS.macroBuild },
+    { key: 'parseman-runtime', label: 'Parséman (runtime compile)', color: CHART_COLORS.macroBuild },
     { key: 'peggy', label: 'Peggy', color: CHART_COLORS.peggy },
     { key: 'parseman-interp', label: 'Parséman (interpreter)', color: CHART_COLORS.noCompile },
     { key: 'parsimmon', label: 'Parsimmon', color: CHART_COLORS.parsimmon },
@@ -93,7 +93,7 @@ export const CHART_BARS: Record<ChartKey, BarSpec[]> = {
     { key: 'nearley', label: 'Nearley', color: CHART_COLORS.nearley },
   ],
   graphql: [
-    { key: 'parseman-macro', label: 'Parséman (macro build)', color: CHART_COLORS.macroBuild },
+    { key: 'parseman-runtime', label: 'Parséman (runtime compile)', color: CHART_COLORS.macroBuild },
     { key: 'peggy', label: 'Peggy', color: CHART_COLORS.peggy },
     { key: 'parseman-interp', label: 'Parséman (interpreter)', color: CHART_COLORS.noCompile },
     { key: 'chevrotain', label: 'Chevrotain', color: CHART_COLORS.chevrotain },
@@ -102,7 +102,7 @@ export const CHART_BARS: Record<ChartKey, BarSpec[]> = {
     { key: 'parsimmon', label: 'Parsimmon', color: CHART_COLORS.parsimmon },
   ],
   cst: [
-    { key: 'parseman-macro', label: 'Parséman CST (macro build)', color: CHART_COLORS.macroBuild },
+    { key: 'parseman-runtime', label: 'Parséman CST (runtime compile)', color: CHART_COLORS.macroBuild },
     { key: 'lezer-parse', label: 'Lezer (parse only)', color: CHART_COLORS.lezer },
     { key: 'lezer-walk', label: 'Lezer (parse + walk)', color: CHART_COLORS.lezerWalk },
     { key: 'parseman-interp', label: 'Parséman CST (interpreter)', color: CHART_COLORS.noCompile },
@@ -118,7 +118,7 @@ export async function makeParse(
   const k = `${chart}/${key}`
   switch (k) {
     // ── Parséman ────────────────────────────────────────────────────────────
-    case 'json/parseman-macro': {
+    case 'json/parseman-runtime': {
       const { compile } = await import('../src/index.ts')
       const { jsonDoc } = await import('../examples/json/parser.ts')
       const c = compile(jsonDoc)
@@ -128,7 +128,7 @@ export async function makeParse(
       const { parseJSON } = await import('../examples/json/parser.ts')
       return input => parseJSON(input)
     }
-    case 'csv/parseman-macro': {
+    case 'csv/parseman-runtime': {
       const { compiledCSV } = await import('../examples/csv/parser.ts')
       return input => compiledCSV.parse(input)
     }
@@ -136,7 +136,7 @@ export async function makeParse(
       const { parseCSV } = await import('../examples/csv/parser.ts')
       return input => parseCSV(input)
     }
-    case 'graphql/parseman-macro': {
+    case 'graphql/parseman-runtime': {
       const { compile } = await import('../src/index.ts')
       const { graphqlDoc } = await import('../examples/graphql/parser.ts')
       const c = compile(graphqlDoc)
@@ -146,7 +146,7 @@ export async function makeParse(
       const { parseGraphQL } = await import('../examples/graphql/parser.ts')
       return input => parseGraphQL(input)
     }
-    case 'cst/parseman-macro': {
+    case 'cst/parseman-runtime': {
       const { buildParsermanCSTJSONCompiled } = await import('./parseman-cst-json.ts')
       return buildParsermanCSTJSONCompiled()
     }

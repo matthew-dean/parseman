@@ -56,7 +56,7 @@ rebaseline. Do not move it to make a lane green.
 | `parseman-interp` | Parséman's own interpreter build — not a competitor |
 
 The interpreter used to count as a competitor, which meant a build where the
-interpreter happened to beat the macro build would report the bar BROKEN. That is
+interpreter happened to beat the runtime-compiled table artifact would report the bar BROKEN. That is
 a false failure, not a rank loss.
 
 ### Artifact evidence
@@ -95,7 +95,7 @@ box's noise. `bench:margin` keeps every round and reports three things.
   within a round the two bars are measured seconds apart under the same machine
   conditions. That makes this a sign test over paired samples, and it survives
   drift that would swamp a ratio of independent means.
-- **CONTROL** — an A/A pair. `parseman-macro` is measured a **second** time each
+- **CONTROL** — an A/A pair. `parseman-runtime` is measured a **second** time each
   round, in its own process, under a separate slot. It should read ~1.00× with a
   win-rate near 50%. It is measured in the **same run** as everything else, so it
   prices *that run's* noise floor rather than a remembered one.

@@ -2,7 +2,7 @@
  * Child entry: measure ONE chart bar in a pristine process, across that chart's
  * size groups, and print the µs on a `__BAR__` line.
  *
- *   node --import tsx/esm bench/measure-bar.ts graphql parseman-macro
+ *   node --import tsx/esm bench/measure-bar.ts graphql parseman-runtime
  *
  * One process per bar is the whole point — see chart-specs.ts. Loading every
  * competitor into one process (what bench/parsers.ts does) inflated Parséman's

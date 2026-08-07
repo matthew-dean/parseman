@@ -73,7 +73,7 @@ console.log('\n=== JSON parsing (warm) ===')
 
 function jsonGroup(label: string, input: string, iters: number): void {
   console.log(`\n  [${label}] ${input.length} bytes`)
-  bench('Parséman (macro build)',  () => P.compiledJSON.parse(input, 0), iters)
+  bench('Parséman (runtime compile)',  () => P.compiledJSON.parse(input, 0), iters)
   bench('Parséman (no compile)',   () => P.parseJSON(input), iters)
   bench('Chevrotain',              () => P.chevrotainJSON(input), iters)
   bench('Parsimmon',               () => P.parsimmonJSON(input), iters)
@@ -92,7 +92,7 @@ console.log('\n=== CSV parsing (warm) ===')
 function csvGroup(label: string, input: string, iters: number): void {
   const rows = input.split('\n').length - 1
   console.log(`\n  [${label}] ${input.length} bytes, ${rows} rows`)
-  bench('Parséman (macro build)',  () => P.compiledCSV.parse(input), iters)
+  bench('Parséman (runtime compile)',  () => P.compiledCSV.parse(input), iters)
   bench('Parséman (no compile)',   () => P.parseCSV(input), iters)
   bench('Chevrotain',              () => P.chevrotainCSV(input), iters)
   bench('Parsimmon',               () => P.parsimmonCSV(input), iters)
@@ -107,7 +107,7 @@ console.log('\n=== GraphQL parsing (warm) ===')
 
 function gqlGroup(label: string, input: string, iters: number): void {
   console.log(`\n  [${label}] ${input.length} bytes`)
-  bench('Parséman (macro build)',  () => P.compiledGraphQL.parse(input), iters)
+  bench('Parséman (runtime compile)',  () => P.compiledGraphQL.parse(input), iters)
   bench('Parséman (no compile)',   () => P.parseGraphQL(input), iters)
   bench('Chevrotain',              () => P.chevrotainGQL(input), iters)
   bench('Parsimmon',               () => P.parsimmonGQL(input), iters)

@@ -210,9 +210,12 @@ export type EmitOptions = {
   /** Name of the exported binding. */
   readonly name?: string
   /**
-   * Option sets to PRE-COMPILE into the artifact — see `defaultAssemblyCfgs`.
-   * `[]` emits none, which restores the pre-0.47 artifact byte-for-byte and
-   * hands every parse back to the runtime `Function` constructor.
+   * Optional experimental emitted factories — see `defaultAssemblyCfgs`.
+   *
+   * The normal compiler and macro both emit `a:[]`: that is the canonical
+   * compact closure artifact and it never reaches the `Function` constructor.
+   * Supplying factories here is a low-level serialization experiment, not a
+   * second normal compilation path; it is not used by the macro plugin.
    */
   readonly assemblies?: readonly RunCfg[]
   /**

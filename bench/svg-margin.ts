@@ -25,7 +25,7 @@
  *                measured seconds apart under the same machine conditions — so
  *                this is a sign test over paired samples, and it survives drift
  *                that would swamp a ratio of independent means.
- *   control      an A/A pair: `parseman-macro` measured twice per round, in two
+ *   control      an A/A pair: `parseman-runtime` measured twice per round, in two
  *                separate processes, under two slots. Its ratio should read ~1.0
  *                and its win-rate ~50%. It is measured in the SAME run as
  *                everything else, so it prices that run's noise floor directly.
@@ -53,7 +53,7 @@ const BAR_TIMEOUT_MS = 10 * 60_000
 const GIT_TIMEOUT_MS = 30_000
 
 /** The bar every other bar is compared against — Parséman's compiled output. */
-const SUBJECT = 'parseman-macro'
+const SUBJECT = 'parseman-runtime'
 /** Slot name for the A/A control. Not a real bar; measures SUBJECT a second time. */
 const CONTROL = '__control__'
 
@@ -110,7 +110,7 @@ type ArtifactRef =
   | { kind: 'runtime' }
 
 const BAR_ARTIFACTS: Record<string, ArtifactRef[]> = {
-  'json/parseman-macro': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/json/parser.ts' }],
+  'json/parseman-runtime': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/json/parser.ts' }],
   'json/parseman-interp': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/json/parser.ts' }],
   'json/peggy': [{ kind: 'pkg', name: 'peggy' }, { kind: 'file', rel: 'bench/json-parser.js' }],
   'json/jison': [{ kind: 'pkg', name: 'jison' }, { kind: 'file', rel: 'bench/json-jison.cjs' }],
@@ -119,14 +119,14 @@ const BAR_ARTIFACTS: Record<string, ArtifactRef[]> = {
   'json/chevrotain': [{ kind: 'pkg', name: 'chevrotain' }, { kind: 'file', rel: 'bench/chevrotain-json.ts' }],
   'json/native': [{ kind: 'runtime' }],
 
-  'csv/parseman-macro': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/csv/parser.ts' }],
+  'csv/parseman-runtime': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/csv/parser.ts' }],
   'csv/parseman-interp': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/csv/parser.ts' }],
   'csv/peggy': [{ kind: 'pkg', name: 'peggy' }, { kind: 'file', rel: 'bench/csv-parser.js' }],
   'csv/nearley': [{ kind: 'pkg', name: 'nearley' }, { kind: 'file', rel: 'bench/csv-nearley.cjs' }],
   'csv/parsimmon': [{ kind: 'pkg', name: 'parsimmon' }, { kind: 'file', rel: 'bench/parsimmon-csv.ts' }],
   'csv/chevrotain': [{ kind: 'pkg', name: 'chevrotain' }, { kind: 'file', rel: 'bench/chevrotain-csv.ts' }],
 
-  'graphql/parseman-macro': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/graphql/parser.ts' }],
+  'graphql/parseman-runtime': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/graphql/parser.ts' }],
   'graphql/parseman-interp': [{ kind: 'repo' }, { kind: 'file', rel: 'examples/graphql/parser.ts' }],
   'graphql/peggy': [{ kind: 'pkg', name: 'peggy' }, { kind: 'file', rel: 'bench/graphql-parser.js' }],
   'graphql/jison': [{ kind: 'pkg', name: 'jison' }, { kind: 'file', rel: 'bench/graphql-jison.cjs' }],
@@ -134,7 +134,7 @@ const BAR_ARTIFACTS: Record<string, ArtifactRef[]> = {
   'graphql/parsimmon': [{ kind: 'pkg', name: 'parsimmon' }, { kind: 'file', rel: 'bench/parsimmon-graphql.ts' }],
   'graphql/chevrotain': [{ kind: 'pkg', name: 'chevrotain' }, { kind: 'file', rel: 'bench/chevrotain-graphql.ts' }],
 
-  'cst/parseman-macro': [{ kind: 'repo' }, { kind: 'file', rel: 'bench/parseman-cst-json.ts' }],
+  'cst/parseman-runtime': [{ kind: 'repo' }, { kind: 'file', rel: 'bench/parseman-cst-json.ts' }],
   'cst/parseman-interp': [{ kind: 'repo' }, { kind: 'file', rel: 'bench/parseman-cst-json.ts' }],
   'cst/chevrotain': [{ kind: 'pkg', name: 'chevrotain' }, { kind: 'file', rel: 'bench/chevrotain-cst-json.ts' }],
   'cst/lezer-parse': [{ kind: 'pkg', name: '@lezer/json' }, { kind: 'pkg', name: '@lezer/common' }],
@@ -425,7 +425,7 @@ function reportChart(chart: ChartKey, groups: GroupResult[]): void {
   console.log(`\n═══ ${chart.toUpperCase()} ═══`)
   for (const g of groups) {
     console.log(`\n  ${g.group}`)
-    console.log(`  Parséman (macro build)         ${g.subjectMin.toFixed(3)} µs  (min of ${ROUNDS})`)
+    console.log(`  Parséman (runtime compile)     ${g.subjectMin.toFixed(3)} µs  (min of ${ROUNDS})`)
     console.log(`  ${'competitor'.padEnd(30)} ${'min µs'.padStart(9)} ${'×'.padStart(8)}  win-rate`)
     for (const row of g.rows) {
       let flag: string
@@ -600,7 +600,7 @@ if (!tightest) {
 } else {
   console.log('VERDICT: BAR HELD — PASS')
   console.log()
-  console.log('  Parséman (macro build) is the fastest competitor-ranked JS parser in every')
+  console.log('  Parséman (runtime compile) is the fastest competitor-ranked JS parser in every')
   console.log('  group of every chart measured by this run.')
   console.log(`  Tightest row ${tightest.ratio.toFixed(2)}× over ${tightest.rival} (${tightest.chart} / ${tightest.group}),`)
   console.log(`  against a ${FLOOR.toFixed(2)}× floor and a live control spread of ${((worstControl - 1) * 100).toFixed(1)}%.`)

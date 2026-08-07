@@ -166,25 +166,13 @@ export type TableProgram = {
    */
   readonly cov?: readonly (readonly [id: string, kind: 0 | 1 | 2 | 3])[]
   /**
-   * PRE-COMPILED ASSEMBLIES — the whole reason the macro path can promise no
-   * `Function` constructor.
+   * Optional emitted-factory inventory, keyed by `cfgKey(RunCfg)`.
    *
-   * The table engine's fast path is EMITTED SOURCE (`emit-assembly.ts`): V8's
-   * inline-cache feedback is per function literal, so one literal minting every
-   * piece makes every call site inside it megamorphic. That is a real constraint
-   * and it is not going away. What was wrong is WHO compiles the text. At runtime
-   * `assemble.ts` did it with `new Function`, which a Content-Security-Policy
-   * without `unsafe-eval` forbids — so the two shipped statements that a macro
-   * build is the CSP answer (`docs/guide/modes.md`, `docs/reference/api.md`) were
-   * false, and a CSP consumer silently got the closure engine instead.
-   *
-   * A build-time emitter knows the program, so it can run the SAME emitter and
-   * print the factory as an ordinary function literal in the module it is already
-   * writing. One entry per option set (`RunCfg`, keyed by `cfgKey`); an option set
-   * with no entry falls back to the runtime constructor exactly as before.
-   *
-   * This is DATA in the same sense `fns` is: the program already carries author
-   * callbacks as printed function literals.
+   * Normal `compile()` and macro output both carry an explicit empty inventory
+   * (`a:[]`) and select the compact closure assembler. Presence of this field
+   * permanently disables runtime `Function` construction: an unserved option
+   * set uses closures. A missing field is reserved for an explicit low-level
+   * hand-built `tableRules(program)` caller, never a compiler-created artifact.
    */
   readonly asm?: readonly PrecompiledAssembly[]
 }
