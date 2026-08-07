@@ -93,8 +93,20 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * up because a real finding existed and nobody was licensed to guess at the fix;
  * it came down in the same lane because the fix arrived. DEBT that is paid is
  * the only kind that should ever have been entered.
+ *
+ * 28 -> 27, AT THE MERGE. The two lanes above met, and one of them paid the
+ * other's debt. `lane/shared-definitions` entered the `tableRules` collision as
+ * DEBT with `ref: lane/name-collision`; `lane/name-collision` renamed
+ * `src/table/exec.ts`'s export to `execRules` and deleted `assembledRules`. Each
+ * lane was internally consistent and both merged with the gate green ON THEIR
+ * OWN BRANCH — the entry only went stale when the fix and the exemption arrived
+ * in the same tree, and nothing but the stale-entry check would have said so.
+ *
+ * That is the case the check exists for. A DEBT entry naming the lane that owes
+ * it is a promise, and this is what it looks like when the promise is kept: the
+ * entry does not get to survive the fix.
  */
-export const ALLOW_COUNT = 28
+export const ALLOW_COUNT = 27
 
 /**
  * finding key -> { category, why, ref? }
@@ -214,13 +226,13 @@ export const ALLOW = new Map([
   ['INV-8:run:src/functional/run-tabled.ts#run|src/functional/run.ts#run',
     { category: 'BY-DESIGN', why: 'two published entry points, deliberately different drivers; argued at both sites' }],
 
-  // `tableRules` — the finding this rule was built to prove it could see. The name
-  // resolves to the reference INTERPRETER via `src/table/exec.ts` and to the shipped
-  // ASSEMBLER via `src/table/index.ts`'s `assembledRules` alias, and it type-checks
-  // either way because both are `Record<string, TableRule>`. Owned by a live lane;
-  // this entry exists so the gate is green on the rule, not on the defect.
-  ['INV-8:tableRules:src/table/assemble.ts#assembledRules|src/table/exec.ts#tableRules',
-    { category: 'DEBT', why: 'one name, two engines — the motivating defect; rename or collapse', ref: 'lane/name-collision' }],
+  // `tableRules` — the finding this rule was built to prove it could see — WAS
+  // entered here as DEBT owned by `lane/name-collision`, and that lane paid it.
+  // `src/table/exec.ts` now exports `execRules`, `src/table/assemble.ts` exports
+  // `tableRules`, and `assembledRules` exists nowhere. The finding stopped being
+  // produced, the entry went stale, and the stale-entry check failed the gate on
+  // the integration merge — which is the ratchet working exactly as specified:
+  // an exemption may not outlive the violation it names.
 
   /* ---- INV-9 x1 --------------------------------------------------------
    * The other finding was COLLAPSED: `parseman.composedPieces` is now exported as
