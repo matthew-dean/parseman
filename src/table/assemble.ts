@@ -2673,10 +2673,44 @@ export class AssemblyCache {
   /**
    * The assembly for the option set this `ctx` implies.
    *
-   * THE ONLY CONFIG READ ON THE RUN PATH, and it happens once per parse at the
-   * boundary rather than once per row. It allocates nothing: the key is computed
-   * inline and the `RunCfg` object is built only on the miss that builds an
-   * assembly, which is at most eight times per table per process.
+   * ─── WHY THIS IS NOT A VIOLATION OF "NO OPTION READS AT PARSE TIME" ─────────
+   *
+   * The rule that shaped 0.47 is that consulting an option PER RULE or PER
+   * COMBINATOR is a fail, and the reason it is a fail is that such a consult
+   * scales with the input. This one does not, and the previous defence of it —
+   * "cheap, allocation-free, only once" — was the wrong argument, because
+   * cheapness is not the criterion. The right argument is that the consult is
+   * IRREDUCIBLE, and it is worth stating precisely so nobody re-opens it:
+   *
+   *   A table entry has the artifact signature `(input, pos, ctx)`, shared with
+   *   codegen. All five option bits live on that `ctx`, and every one of them is
+   *   supplied PER CALL by the caller — `run()` takes `tolerant`, `build` and
+   *   `instrumentation` as options on an artifact it was handed;
+   *   `combinators/grammar.ts` sets `trackLines` on scope entry;
+   *   `completionsAt` installs `_probe`. So the option set is not knowable
+   *   before the call, and a selection that cannot happen before the call must
+   *   happen at it.
+   *
+   * That is not a hole in G5, it is G5's own first clause: "quickly building the
+   * grammar reference ON RUN START, making some swaps on rules or sub-rules, and
+   * then the run actually runs with no logic branching for that option input"
+   * (`notes/TABLE-DRIVER.md`). This IS the run-start step. What the criterion
+   * forbids is the second sentence, and past this call there is no option read
+   * anywhere — `scripts/check-invariants.mjs` INV-6 decides that mechanically.
+   *
+   * MEASURED, not asserted: exactly ONE call per entry invocation, including
+   * `benchmark.less` at 106,802 bytes. Eliminating it would require binding the
+   * option set to the ARTIFACT rather than to the CALL, which is a change to the
+   * public run API (the map would have to hand back a cfg-keyed family and
+   * `run()` index it), not a change to this file.
+   *
+   * It allocates nothing: the key is computed inline and the `RunCfg` object is
+   * built only on the miss that builds an assembly, at most thirty-two times per
+   * table per process.
+   *
+   * DO NOT CACHE THE RESULT ACROSS CALLS. Keying it on anything but the `ctx`'s
+   * own option bits is how `assembledRules` handed a strict parse the PREVIOUS
+   * parse's tolerant assembly (`test/unit/table-assemble.test.ts`).
    */
   forCtx(ctx: ParseContext): Assembly {
     const host = ctx.build
@@ -2699,10 +2733,11 @@ export class AssemblyCache {
  * The ASSEMBLED rule map — the same artifact contract as `tableRules`, run
  * through linked closures instead of the bytecode interpreter.
  *
- * The two config reads that remain are HERE, at the boundary, once per parse:
- * `AssemblyCache.forCtx` turns the `ctx` into a three-bit option set and takes the
+ * THE ONE config read is HERE, at the boundary, once per entry invocation:
+ * `AssemblyCache.forCtx` turns the `ctx` into a five-bit option set and takes the
  * assembly built for it. Everything past that point is pieces, and no piece body
- * reads an option — `scripts/check-invariants.mjs` asserts it.
+ * reads an option — `scripts/check-invariants.mjs` INV-6 asserts it. `forCtx`
+ * carries the argument for why that read is irreducible rather than merely cheap.
  */
 export function assembledRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
   const prog = expandCompact(source)
@@ -2710,12 +2745,28 @@ export function assembledRules(source: TableProgram | CompactProgram): Record<st
   const names = Object.keys(prog.rules)
   const skipOf = prog.scanSkipOf
   let last: unknown
-  /** The assembly the CURRENT parse selected; `scanSkipFor` runs before it. */
-  let live: Assembly | undefined
+  /**
+   * THE ASSEMBLY THIS ENTRY INVOCATION SELECTED — handed from `scanSkipFor` to
+   * the `runRule` that `stamp.ts`'s entry runs immediately afterwards, on the
+   * SAME `ctx`, so the pair costs one `forCtx` between them rather than two.
+   *
+   * It used to live ACROSS parses ("the lookup is memoised, so this is an array
+   * index after the first parse"), and that was wrong: `scanSkipFor` runs before
+   * `runRule` has re-selected, so a strict parse following a tolerant one was
+   * installed with the TOLERANT assembly's `scanSkip` — verified by object
+   * identity, since the two assemblies wrap their own pieces. Amortising a
+   * per-parse selection over parses is not amortisation, it is a stale answer.
+   *
+   * `runRule` CONSUMES it, so it can never outlive the invocation that set it:
+   * an entry reached without the preceding `scanSkipFor` re-selects, and a
+   * nested entry invocation sets and consumes its own inside the outer
+   * `runRule`, after the outer read.
+   */
+  let selected: Assembly | undefined
   return stampRuleMap(prog, {
     runRule: (ri, input, pos, ctx) => {
-      const a = cache.forCtx(ctx)
-      live = a
+      const a = selected ?? cache.forCtx(ctx)
+      selected = undefined
       a.begin(ctx)
       const v = a.pieces[names[ri]!]!(input, pos, ctx)
       if (v === FAIL) return -1
@@ -2723,9 +2774,10 @@ export function assembledRules(source: TableProgram | CompactProgram): Record<st
       return a.end()
     },
     lastValue: () => last,
-    // `scanSkipFor` runs BEFORE `runRule` on the first parse, so it selects the
-    // assembly itself rather than reading a `live` that is not set yet. The
-    // lookup is memoised, so this is a array index after the first parse.
-    scanSkipFor: (ri, ctx) => (live ?? cache.forCtx(ctx)).scanSkip[skipOf?.[ri] ?? -1],
+    scanSkipFor: (ri, ctx) => {
+      const a = cache.forCtx(ctx)
+      selected = a
+      return a.scanSkip[skipOf?.[ri] ?? -1]
+    },
   })
 }

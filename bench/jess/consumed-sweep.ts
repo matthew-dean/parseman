@@ -47,7 +47,23 @@ import { corpus, corpusTotal, loadGrammar, JESS_ROOT, ENTRY, type Dialect } from
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PM_ROOT = resolve(HERE, '../..')
 
-type Engine = 'interpreted' | 'compiled' | 'table'
+/**
+ * `table` IS THE BYTECODE INTERPRETER (`src/table/exec.ts`), NOT WHAT SHIPS.
+ *
+ * `src/table/index.ts` re-exports `assembledRules` under the name `tableRules`,
+ * so "the table engine" as a consumer sees it is the ASSEMBLED closure graph;
+ * this file has always imported the interpreter by path instead. That is a
+ * legitimate leg — it is the identity reference the assembler is gated against —
+ * but it meant no record in `parse-consumed.jsonl` had ever exercised
+ * `src/table/assemble.ts`, and a differential taken on `table` for a change to
+ * the assembler is vacuous by construction.
+ *
+ * `assembled` is that missing leg, added rather than swapped so the 65k existing
+ * `table` records stay comparable with future ones. It honours `PM_TABLE_EMIT`,
+ * which only `assemble.ts` reads (0 forces the closure walk, 1 the emitted
+ * source), and records it in `flags` so the two are never mistaken for each other.
+ */
+type Engine = 'interpreted' | 'compiled' | 'table' | 'assembled'
 
 const dialect = process.argv[2] as Dialect
 const engine = process.argv[3] as Engine
@@ -86,6 +102,12 @@ if (engine === 'table') {
   const { encodeTable } = await import('../../src/table/encode.ts')
   const { tableRules } = await import('../../src/table/exec.ts')
   entry = tableRules(encodeTable(rules, {}))[ENTRY]
+}
+if (engine === 'assembled') {
+  const { encodeTable } = await import('../../src/table/encode.ts')
+  const { assembledRules } = await import('../../src/table/assemble.ts')
+  entry = assembledRules(encodeTable(rules, {}))[ENTRY]
+  flags.push(`PM_TABLE_EMIT=${process.env.PM_TABLE_EMIT ?? '(unset ⇒ 1)'}`)
 }
 // PROVE THE LEG IS THE LEG IT CLAIMS: the macro lowers a rule to a FUNCTION, the
 // interpreted fuse leaves an object. A `compiled` run that silently got the
