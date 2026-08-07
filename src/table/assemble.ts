@@ -98,7 +98,10 @@ import { failAt } from '../combinators/probe.ts'
  * is exactly how a CST leaf's span drifts between two engines that exist to be
  * gated against each other.
  */
-import { EMITTED_PARAMS, Unemittable, emitAssemblySource, type EmittedAssembly, type EmittedFactory } from './emit-assembly.ts'
+import {
+  EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
+  type EmittedAssembly, type EmittedFactory,
+} from './emit-assembly.ts'
 import { lead, rawEntry, spanLines } from './run-support.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
@@ -279,7 +282,7 @@ export type RunCfg = {
 }
 
 /** The cfg key an assembly is cached under. Five bits, so at most thirty-two assemblies. */
-function cfgKey(c: RunCfg): number {
+export function cfgKey(c: RunCfg): number {
   return (c.hostCst ? 1 : 0) | (c.trackLines ? 2 : 0) | (c.tolerant ? 4 : 0)
     | (c.coverage ? 8 : 0) | (c.probe ? 16 : 0)
 }
@@ -2497,6 +2500,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    */
   const scansArr: Combinator<unknown>[] = []
   let emitted: EmittedAssembly | undefined
+  /** "The build already did this" — not a refusal, and never a `emitRefusal`. */
+  class ServedByBuild extends Error {}
   let emitRefusal: string | undefined
   let emitReached: ReadonlySet<number> | undefined
   {
@@ -2509,7 +2514,67 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
     }
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
+    /**
+     * THE BUILD'S OWN ANSWER, TRIED BEFORE THE CONSTRUCTOR.
+     *
+     * `prog.asm` carries assemblies a build-time emitter already compiled, one
+     * per option set. When this parse's option set is among them there is
+     * nothing to compile: the factory is an ordinary function literal in the
+     * emitted module, and the only work left is rebuilding the three data pools
+     * from `plan` (see `PoolPlan` — allocation, no source, no eval).
+     *
+     * This is what makes `docs/guide/modes.md` and `docs/reference/api.md` TRUE.
+     * Both said a macro build is the answer for a CSP environment without
+     * `unsafe-eval`; until this existed, the first `parse()` of a macro-built
+     * table called `new Function` like every other path and the promise was
+     * decided by nothing. `test/unit/no-function-constructor.test.ts` decides it
+     * now, by counting constructor calls across a real parse.
+     */
+    const pre = prog.asm?.find(a => a.key === cfgKey(cfg))
+    if (pre !== undefined) {
+      const pools = rebuildPools(t.cc, t.fx, pre.plan)
+      emitted = pre.factory(
+        FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia,
+        trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
+        scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
+        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
+        classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
+        demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
+        scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+        asciiFoldKey, ROUTED_FX,
+        REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
+        matchesAt, recoverScan, orSentinel, captureError,
+      )
+      emitReached = new Set(pre.reached)
+    }
+    /**
+     * ONCE A PROGRAM CARRIES ASSEMBLIES, THE CONSTRUCTOR IS OFF FOR IT — for
+     * EVERY option set, not just the ones that were pre-compiled.
+     *
+     * "Prefer the pre-compiled factory, fall back to `new Function`" is how this
+     * defect survives forever: the fallback becomes load-bearing, production
+     * takes it, and nobody can tell which path ran. So a macro-built artifact
+     * whose option set was not pre-compiled runs the CLOSURE engine, and the
+     * reason is on `Assembly.emitRefusal` where `test/unit/table-assemble.test.ts`
+     * and anyone debugging can read it. Slower, correct, and observable — the
+     * three properties a silent eval had none of.
+     *
+     * A program with NO `asm` at all is the runtime path (`compile()`,
+     * `compose()`, a hand-built `assembledRules(prog)`), where `new Function` is
+     * what the docs have always said it is.
+     */
     try {
+      // Served above by a pre-compiled factory. Nothing to compile, nothing to
+      // refuse — and in particular no constructor call.
+      if (emitted !== undefined) throw new ServedByBuild()
+      if (prog.asm !== undefined) {
+        throw new Unemittable(
+          `option set ${cfgKey(cfg)} (hostCst=${cfg.hostCst} trackLines=${cfg.trackLines} `
+          + `tolerant=${cfg.tolerant} coverage=${cfg.coverage} probe=${cfg.probe}), which this build `
+          + 'did not pre-compile. The Function constructor is NOT used for an artifact that carries '
+          + 'assemblies — see `EmitOptions.assemblies` to add this option set to the build',
+        )
+      }
       // THE A/B TOGGLE, read ONCE at module load and never on a parse path.
       // Two engines that can only be compared across two checkouts cannot be
       // compared at all: the bench harness's own guidance is that a
@@ -2562,8 +2627,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       )
       emitReached = em.reached
     } catch (e) {
-      if (!(e instanceof Unemittable)) throw e
-      emitRefusal = e.construct
+      if (e instanceof ServedByBuild) { /* already emitted; no refusal to record */ }
+      else if (e instanceof Unemittable) emitRefusal = e.construct
+      else throw e
     }
   }
 

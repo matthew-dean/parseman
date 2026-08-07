@@ -70,6 +70,35 @@ compiled.inlineExpression                        // self-contained expr (what th
 `compile()` uses `new Function` under the hood, so it cannot run where a strict
 [Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP) blocks
 `'unsafe-eval'`. Use the interpreter or the macro build plugin in those environments.
+
+A **macro-built table artifact never calls the `Function` constructor**, at build
+or at parse — including the first `parse()`, which is where the table engine used
+to build its emitted assembly. `test/unit/no-function-constructor.test.ts` decides
+this by proxying `globalThis.Function` and counting calls across a full parse of
+every example grammar, for every option set.
+
+By default such an artifact runs the table engine's **closure** path. To keep the
+faster **emitted** path under a CSP, ask the build to pre-compile the assemblies
+into the artifact:
+
+```ts
+import { emitTableModule, defaultAssemblyCfgs } from 'parseman/table'
+
+emitTableModule(prog, { assemblies: defaultAssemblyCfgs(prog) })
+```
+
+That is a size trade, and a large one — it moves the emitted engine's source from
+the runtime into the artifact. Measured: `example/json` 1,382 B → 58,823 B, the
+CSS example 8,987 B → 341,517 B. Pre-compile the grammars whose parse speed you
+need; leave the rest.
+
+**The default is a current judgement, not a settled one.** It is off because
+38–42× on the artifact would hand back the size win the table lowering exists
+for, and because nothing yet shows the pre-compiled path buying enough to pay
+for that. Both halves of that are measurements, and either can move — a macro
+artifact's parse speed against `assembledRules` is under investigation as of
+0.47. If pre-compiling turns out to close a gap the default path has, this
+default is an owner decision to revisit, not a design commitment.
 :::
 
 Compiling has a per-grammar cost (~75–650 µs depending on grammar size), so it pays off
