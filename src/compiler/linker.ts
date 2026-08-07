@@ -21,7 +21,7 @@ import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-m
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
 import { compileRuleMapRunnable } from '../table/compile-rule-map.ts'
-import { tableRules } from '../table/exec.ts'
+import { assembledRules } from '../table/assemble.ts'
 import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, ParseContext, ParseResult } from '../types.ts'
@@ -331,7 +331,12 @@ function fuseCarried(
   if (compiled === null) {
     throw new Error(`compose: the merged grammar could not be encoded to a table${refusals.length ? ` — ${refusals.join('; ')}` : ''}`)
   }
-  const map = tableRules(compiled.prog) as unknown as Record<string, FusedRule>
+  // `assembledRules`, NOT `exec.ts`'s same-named `tableRules`. Both return
+  // `Record<string, TableRule>`, so binding the interpreter here type-checked and ran
+  // correctly — it was just the SLOW engine, on the one path (compose/fuse) that never
+  // goes through `table/index.ts` and so never saw the `assembledRules as tableRules`
+  // re-export. Import the assembler by its own name so the binding cannot go stale again.
+  const map = assembledRules(compiled.prog) as unknown as Record<string, FusedRule>
   // The host-mode stamp went on the fused closure before; a table carries nothing until
   // it is stamped, and an UNSTAMPED map reads as `{ ast, false }` so every driver
   // compatibility check passes vacuously. Stamped on the rule functions too, because

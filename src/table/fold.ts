@@ -1,4 +1,4 @@
-import { tableRules } from './exec.ts'
+import { assembledRules } from './assemble.ts'
 import { expandCompactFolded, unfoldVariant, type CompactFolded, type FoldedProgram, type TableRule } from './program.ts'
 
 /**
@@ -7,19 +7,25 @@ import { expandCompactFolded, unfoldVariant, type CompactFolded, type FoldedProg
  * This is the load-time half of G4. A folded artifact ships one table plus, per
  * variant, the words that differ from it; this materialises the named variant
  * and hands the driver an ordinary `TableProgram`. The driver is not told which
- * variant it got and has no way to ask — the fold is finished before `exec.ts`
+ * variant it got and has no way to ask — the fold is finished before the driver
  * sees anything, exactly as `trackLines` is resolved before it today.
  *
- * Its own module rather than a second export from `exec.ts` so that a bundle
+ * Its own module rather than a second export from the driver so that a bundle
  * shipping a single-variant table does not pull the fold in, and so the driver
  * keeps having no import of its own.
+ *
+ * IT DRIVES `assembledRules`, the shipped engine. This module predates
+ * `63666b6`, which made the assembler `tableRules` by editing `table/index.ts`
+ * ALONE; `fold.ts` imports `exec.ts` directly and so kept the interpreter. Every
+ * folded artifact ships `import { tableVariants }` (`emit.ts`), so that was a
+ * product path on the reference engine. Bound by its own name now.
  */
 export function tableVariants(
   source: FoldedProgram | CompactFolded,
   name: string,
 ): Record<string, TableRule> {
   const folded = 'base' in source ? source : expandCompactFolded(source)
-  return tableRules(unfoldVariant(folded, name))
+  return assembledRules(unfoldVariant(folded, name))
 }
 
 /** The variant names a folded table carries, for a caller that wants to check. */

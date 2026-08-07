@@ -59,8 +59,13 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * Was 18. Two `INV-4` entries left when the analysis helpers they named were
  * deduplicated — `childrenOf` and `intersects` now live once, in
  * `src/analysis/gating.ts`, imported by the modules that had copies.
+ *
+ * 13 -> 14 when `src/table/exec.ts` finally became unreachable. It was supposed
+ * to be unreachable from `63666b6`; it was not, and INV-3 stayed quiet because
+ * two modules were still importing the interpreter by mistake. Removing that
+ * import is what surfaced the entry.
  */
-export const ALLOW_COUNT = 13
+export const ALLOW_COUNT = 14
 
 /**
  * finding key -> { category, why, ref? }
@@ -88,6 +93,23 @@ export const ALLOW = new Map([
   // frozen control is now the only one. Same entry, same reason, new path.
   ['INV-4:src/table/exec-baseline.ts:lineCol|src/table/run-support.ts:lineCol',
     { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
+
+  /* `src/table/exec.ts` is the REFERENCE DRIVER, same category as the two frozen
+   * controls above: the bytecode interpreter the closure assembler replaced at
+   * `63666b6`, kept in-process because the identity sweep gates the assembler
+   * against it and a divergence gets bisected against it. Bench- and test-only,
+   * by design.
+   *
+   * IT SHOULD HAVE BEEN ALLOWLISTED AT `63666b6` AND WAS NOT — because it was
+   * still genuinely reachable. That commit edited `src/table/index.ts` alone, and
+   * `table/fold.ts` plus (later) `compiler/linker.ts` imported `exec.ts`'s
+   * same-named `tableRules` directly, so INV-3 saw a live product path and said
+   * nothing. The gate was not wrong; the reachability it measured was real. This
+   * entry appearing is the SIGNAL that the last product import is gone, and it
+   * must not be deleted to "fix" a future finding — a finding here means
+   * something started importing the reference engine again. */
+  ['INV-3:src/table/exec.ts',
+    { category: 'BY-DESIGN', why: 'reference driver — the identity sweep gates the assembler against it; bench/test only' }],
 
   // INV-1. RULE BUG, not a violation — INV-1 fires on the CORRECT pattern here.
   // This `defineProperty` runs ONCE at module load, on a PROTOTYPE, which is
