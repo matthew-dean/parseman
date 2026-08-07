@@ -52,5 +52,11 @@ are reported as evidence but do not decide the gate.
 successful final coverage run: lines `90.18%` vs `95.91%` (-5.73), statements
 `87.95%` vs `92.12%` (-4.17), functions `91.25%` vs `96.55%` (-5.30); branches
 improved to `86.61%` from `85.80%`. The baseline has not been rewritten and no
-exclusions were added. This needs an explicit release-owner exception or more
-targeted tests; it is the only remaining release decision.
+exclusions were added. `ed81612` predates the table cutover entirely (zero
+`src/table` files); the candidate adds 21 table files / 13,631 lines, while the
+coverage denominator includes 18 shipped table files at 87.64% lines. Even
+theoretical 100% coverage of `assemble.ts` alone could only raise aggregate
+lines to 92.96%, statements to 90.82%, and functions to 92.59%. The full suite
+already added net 19,285 test lines over the baseline. This needs an explicit
+release-owner exception or a substantial new test campaign; it is the only
+remaining release decision.
