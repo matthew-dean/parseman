@@ -42,10 +42,7 @@ const shape = (r: P.RunResult): unknown => ({
 })
 
 describe('fuseInterpreted ≡ compose over the shared composition battery', () => {
-  // `pick()` returns a COMPILED artifact and has no combinator graph, so those cases
-  // are compiled-only by construction — `fuseInterpreted` rejects them explicitly
-  // (asserted below rather than skipped silently).
-  for (const c of cases.filter(x => !x.pick)) {
+  for (const c of cases) {
     it(c.name, () => {
       const compiled = evalModule(c.src, { ...P }, 'g').g
       const interpreted = evalModule(c.src, { ...P, compose: fuseInterpreted }, 'g').g

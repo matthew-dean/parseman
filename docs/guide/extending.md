@@ -99,35 +99,18 @@ follows the same logic: whether a shape's `choice` first-char-dispatches depends
 gets bound, so the shape itself is not warned — the answer is computed, and reported, at
 each `compose()` / `composeLeaf()` that binds the hole.
 
-### Running a composed grammar without a build step
+### There is one engine you ship
 
-`compose()` fuses by **codegen**, so a composed grammar is a map of compiled functions.
-When you need the composition as a live **combinator graph** instead — profiling,
-gating analysis, anything that must stay in interpreted mode and never reach codegen —
-use `fuseInterpreted()` with the same items:
+`compose()` / `composeLeaf()` fuse by **codegen**, so a composed grammar is a map of
+compiled functions. That is the artifact you ship, and the macro is how you get it.
 
-```ts
-import { fuseInterpreted, run } from 'parseman'
-
-const g = fuseInterpreted([recognition, dialect, leafRules])
-run(g.Stylesheet, input)
-```
-
-The fuse semantics are the compiled ones: later piece wins, an override reroutes the
-base piece's own calls, the composing grammar's trivia governs every rule, and a
-referenced-but-undefined rule fails at fuse time. `run()` / `parseDoc()` take either
-shape; `isInterpretedFuse(map)` tells them apart. Without the macro, `composeLeaf()`
-returns this form too (fused on first rule access).
-
-Binding a cross-piece hole rewrites the shared placeholder object — that is how the
-override reaches the base's own call sites — so **one interpreted fusion per piece**:
-a second, conflicting fusion over the same piece objects throws rather than silently
-rewriting the first one's parser. Build a fresh instance of the piece for the second.
-
-> **There is no public `pick()`.** Selecting a subset of a grammar's rules plus their
-> transitive closure is internal-only: such a selection over an *imported* grammar cannot
-> carry that grammar's ambient trivia across the module boundary, which would make the
-> macro build diverge from the interpreter. Compose small pieces instead (above).
+Parseman also has an *interpreted* fuse, which runs the composition as a live combinator
+graph instead of reaching codegen. It exists for the diagnostics that must not reach
+codegen — profiling, gating analysis, and the differential harnesses that compare one
+engine against another — and it is **not part of the public API**: it is a second engine
+over the same grammar, with different runtime characteristics, and choosing it is not a
+decision a consumer should be making. `run()` / `parseDoc()` accept the shape it produces
+so those harnesses work, but nothing you ship should depend on that.
 
 ## Building trees: swap the output shape
 

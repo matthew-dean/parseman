@@ -14,7 +14,7 @@ normal interpreter or macro-compiled parser.
 ## Coverage identity
 
 Coverage IDs are derived from the **normalized composed IR**, after all
-`compose`, `composeLeaf`, `pick`, and override winner selection has completed.
+`compose`, `composeLeaf`, and override winner selection has completed.
 They are not derived from:
 
 - source offsets;
@@ -49,7 +49,7 @@ that a changed grammar can be distinguished from an untested grammar.
 ### One required plan, built once
 
 Before either engine executes, `buildGrammarPlan({ startRule, composed })`
-must materialize the final winner graph, apply `pick` closure, and return one
+must materialize the final winner graph and return one
 immutable plan: definitions, rule/choice/label ID lookup tables, and the
 explicit start-rule closure. The interpreter wrapper and coverage-specific macro
 emitter consume that same plan; neither may walk parser objects independently
@@ -150,7 +150,7 @@ origin?: { moduleId: string; start: number; end: number }
 
 Do not add a source-map sidecar merely as a plan. It is permitted only after an
 implementation proves that the origin is correct through local rules,
-`compose`, `composeLeaf`, `pick`, and macro fallback. Runtime/interpreter-only
+`compose`, `composeLeaf`, and macro fallback. Runtime/interpreter-only
 grammars omit `origin`.
 
 ## Deterministic artifact and CI
@@ -246,7 +246,7 @@ separate ownership channels.
 
 Interpreter and macro trace fixtures compare the ordered semantic event stream
 from the same plan. The matrix includes recursion, shared collectors/sinks,
-compose override, nested compose, pick, composeLeaf, gates, auto-not rollback,
+compose override, nested compose, composeLeaf, gates, auto-not rollback,
 disjoint dispatch, greedy classification, longest-literal, and truncation.
 
 ## Required test matrix before implementation is accepted
@@ -264,7 +264,6 @@ disjoint dispatch, greedy classification, longest-literal, and truncation.
 - duplicate `label()` names remain separate structural IDs;
 - `compose` override picks the final winner only;
 - nested compose (`base → mid → leaf`) keeps stable IDs after flattening;
-- `pick` removes non-picked definitions and retains the picked winner's IDs;
 - `composeLeaf` uses the final fused grammar, not imported recognition-piece
   identities;
 - a macro compilation fallback reports interpreter-fallback provenance;
