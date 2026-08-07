@@ -365,13 +365,19 @@ function makeDriver(
   }
 
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
-    if (COUNT) { tableCounters.rows++; tableCounters.byOp[code[ip]!]!++ }
     // THE SEAM. See `OVR`. The specialised piece writes the SAME `EC` cell and
     // returns the SAME `FAIL` (`cell.ts`), so there is nothing to translate
     // here — which is exactly why the private sentinel and private end slot had
     // to go before a mixture could run at all.
     const ovr = OVR[ip]
     if (ovr !== undefined) return ovr(input, pos, ctx)
+    // COUNTED AFTER THE SEAM, so a row counts only where the DRIVER ran it.
+    // Counting before charged the driver for every entry it immediately handed
+    // back: `*,-NODE` (NODE specialised, everything else shared) reported
+    // NODE:104891 driver rows for a construct the driver never executed, and
+    // the control that is supposed to prove the mix routed would have been
+    // reporting that it hadn't.
+    if (COUNT) { tableCounters.rows++; tableCounters.byOp[code[ip]!]!++ }
     switch (code[ip]) {
       case OP_LIT: {
         const s = k[code[ip + 1]!] as string

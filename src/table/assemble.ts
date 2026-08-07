@@ -152,24 +152,39 @@ const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | 
  * name would produce a configuration that looks flipped, measures identical to
  * the endpoint, and reads as "this construct doesn't matter".
  */
-const MIX_OPS: ReadonlySet<number> | undefined = (() => {
+export const MIX_OPS: ReadonlySet<number> | undefined = (() => {
   const raw = (globalThis as { process?: { env?: Record<string, string | undefined> } })
     .process?.env?.PM_MIX_DRIVER
   if (raw === undefined || raw === '') return undefined
   const byName = new Map<string, number>()
   for (const [op, name] of Object.entries(OP_NAMES)) byName.set(name, Number(op))
-  if (raw === '*') return new Set(byName.values())
+  /**
+   * `*` is every construct; a leading `-` REMOVES one. So `*,-NODE` is the
+   * all-shared endpoint with NODE alone specialised — the reverse sweep, which
+   * is not the mirror of the forward one: the two rankings disagree exactly
+   * where the interaction effects are, and that is the part a single-point
+   * design cannot see.
+   */
   const out = new Set<number>()
   for (const n of raw.split(',')) {
     const name = n.trim()
     if (name === '') continue
-    const op = byName.get(name)
+    if (name === '*') { for (const op of byName.values()) out.add(op); continue }
+    const drop = name.startsWith('-')
+    const bare = drop ? name.slice(1) : name
+    const op = byName.get(bare)
     if (op === undefined) {
-      throw new Error(`PM_MIX_DRIVER: unknown construct '${name}'. Known: ${[...byName.keys()].sort().join(', ')}`)
+      throw new Error(`PM_MIX_DRIVER: unknown construct '${bare}'. Known: ${[...byName.keys()].sort().join(', ')}`)
     }
-    out.add(op)
+    if (drop) out.delete(op)
+    else out.add(op)
   }
-  return out.size === 0 ? undefined : out
+  // An EMPTY result is still a mixed assembly, not the endpoint: `*,-LIT,…`
+  // reduced to nothing must keep paying the mechanism, or the reverse sweep's
+  // last step would silently become the unmixed configuration and read as a
+  // free win. `undefined` means "the knob was not set"; an empty SET means
+  // "set, and it selected nothing".
+  return out
 })()
 
 /** Failure sentinel — SHARED with the other two engines, see `cell.ts`. */

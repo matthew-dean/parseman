@@ -27,7 +27,7 @@ import path from 'node:path'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { resolveTable } from '../../src/table/program.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { MIX_OPS, assembledRules } from '../../src/table/assemble.ts'
 import { emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { OP_NAMES } from '../../src/table/ops.ts'
 import { tableCounters, resetTableCounters } from '../../src/table/exec.ts'
@@ -54,24 +54,12 @@ const { rules } = await loadGrammar(dialect, variant)
 const settings = VARIANT_SETTINGS[variant]
 const prog = encodeTable(rules, settings)
 
-// BYTES — emitted with the SAME mix the assembly will use, read from the env
-// exactly as `assemble.ts` reads it, so the two cannot disagree.
+// BYTES — emitted with the mix `assemble.ts` ITSELF resolved, imported rather
+// than re-parsed here. A second copy of the parser drifted the moment the
+// exclusion syntax landed: this file rejected `*,-NODE` while the assembly
+// accepted it, so the probe reported nothing for a configuration that ran.
 const rawMix = process.env.PM_MIX_DRIVER
-const mix = (() => {
-  if (rawMix === undefined || rawMix === '') return undefined
-  const byName = new Map<string, number>()
-  for (const [op, name] of Object.entries(OP_NAMES)) byName.set(name, Number(op))
-  if (rawMix === '*') return new Set(byName.values())
-  const out = new Set<number>()
-  for (const n of rawMix.split(',')) {
-    const nm = n.trim()
-    if (nm === '') continue
-    const op = byName.get(nm)
-    if (op === undefined) throw new Error(`unknown construct '${nm}'`)
-    out.add(op)
-  }
-  return out
-})()
+const mix = MIX_OPS
 
 const t = resolveTable(prog)
 const extraIps: number[] = []
