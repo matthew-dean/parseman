@@ -13,4 +13,12 @@ describe('public API surface', () => {
   it('does not expose pick()', () => {
     expect('pick' in P).toBe(false)
   })
+
+  // The interpreted fuse is a DIAGNOSTIC engine, not a way to ship a parser. Publishing
+  // it offered consumers a second engine over the same grammar; `isInterpretedFuse` was
+  // an escape hatch with zero callers in `src/`. Both stay internal — a diagnostic that
+  // wants them imports from `src/compiler/linker.ts`.
+  it.each(['fuseInterpreted', 'isInterpretedFuse'])('does not expose %s()', name => {
+    expect(name in P).toBe(false)
+  })
 })

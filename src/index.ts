@@ -124,7 +124,15 @@ export type {
 } from './analysis/duplication.ts'
 // `composeLeaf()` is terminal by design; ordinary reusable grammar composition is
 // `compose()`. There is no à-la-carte rule selection: compose small pieces instead.
-export { compose, composeLeaf, cstBuildHost, fuseInterpreted, isInterpretedFuse } from './compiler/linker.ts'
+//
+// `fuseInterpreted()` / `isInterpretedFuse()` are deliberately NOT re-exported. The
+// interpreted fuse is a DIAGNOSTIC engine — it is how the differential harnesses and
+// bench legs run a grammar without reaching codegen — not a supported way to ship a
+// parser. Publishing it advertised a second engine with the same grammar and different
+// runtime characteristics, and `isInterpretedFuse` existed as an escape hatch that not
+// even Parseman called. Both stay internal (./compiler/linker.ts); a diagnostic that
+// needs them imports from there.
+export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans } from './line-index.ts'

@@ -644,12 +644,25 @@ export function compose(
  * lowering there is no safe way to keep lexical builders out of carried IR, so it
  * never falls back to runtime CODEGEN composition.
  *
- * Called at runtime (no macro) it returns the INTERPRETED fuse of the same items
- * — a combinator map, not a map of compiled functions (`fuseInterpreted`). That is
- * the supported way to run/inspect a leaf grammar without a build step: drive it
- * with `run()` / `parseDoc()`, which accept either shape. The declared return type
- * is the MACRO-path type (a leaf grammar is shipped compiled); use
- * `isInterpretedFuse(map)` when a caller must tell the two apart.
+ * Called at runtime (no macro) it returns the INTERPRETED fuse of the same items —
+ * a combinator map, not a map of compiled functions (`fuseInterpreted`), fused lazily
+ * per rule name. `run()` / `parseDoc()` accept either shape.
+ *
+ * THE DECLARED RETURN TYPE IS THE MACRO-PATH TYPE, AND ON THE RUNTIME PATH IT IS A
+ * LIE — the values are combinators, not `FusedRule` functions, and the `as unknown as`
+ * below is where that is laundered. It is stated rather than fixed because the two
+ * honest fixes are both out of reach from here:
+ *   - widening the return to a union breaks every consumer that annotates the result
+ *     (jess's `scssGrammar: Record<keyof ScssRules, FusedRule> = composeLeaf([…])`);
+ *   - making the runtime path produce real `FusedRule` functions, or throw like the
+ *     macro's `must macro-fuse` guard, is a BEHAVIOUR change — the whole `bench/jess`
+ *     harness family and two differential-gate legs (`emit-identity-one`,
+ *     `scan-shape-oracle-one`) import un-macro'd grammar modules and depend on this
+ *     lazy interpreted fuse existing, one dialect per process.
+ * The mitigation is that the interpreted fuse is no longer public API: it is reachable
+ * only from inside the library, so the population that can hold the wrong type is
+ * Parseman's own diagnostics rather than every consumer. Fixing it properly means
+ * deciding whether an un-macro'd `composeLeaf()` should exist at all — owner call.
  */
 export function composeLeaf(
   items: Array<LinkableTable | Record<string, unknown>>,
@@ -732,7 +745,9 @@ const FUSE_TARGET = Symbol.for('parseman.interpretedFuseTarget')
 const INTERPRETED_PIECES = Symbol.for('parseman.interpretedPieces')
 
 /** Whether `map` is an interpreted fuse (a combinator map) rather than a compiled
- * `compose()` result (a map of fused functions). */
+ * `compose()` result (a map of fused functions). INTERNAL — not re-exported from
+ * `src/index.ts`. A consumer never has to ask this question: what it holds is
+ * whatever the macro built. Diagnostics that fuse interpreted on purpose do. */
 export function isInterpretedFuse(map: object): boolean {
   return Array.isArray((map as Record<symbol, unknown>)[INTERPRETED_PIECES])
 }

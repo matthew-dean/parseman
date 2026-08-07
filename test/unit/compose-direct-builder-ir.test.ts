@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import * as parseman from '../../src/index.ts'
+import { isInterpretedFuse } from '../../src/compiler/linker.ts'
 import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 import { directBuilderUnsupportedBindings } from '../../src/plugin/direct-builder-static.ts'
@@ -117,7 +118,7 @@ describe('composeLeaf over imported recognition IR', () => {
     ]) as unknown as Record<string, parseman.Combinator<unknown>>
     expect(typeof leaf.Doc).toBe('object')
     expect(parseman.run(leaf.Doc!, 'xy').ok).toBe(true)
-    expect(parseman.isInterpretedFuse(leaf)).toBe(true)
+    expect(isInterpretedFuse(leaf)).toBe(true)
     expect(() => transformMacro(
       `import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
 export const parser = composeLeaf([unresolvedSyntax, rules(g => ({ Document: literal('x') }))])`,
