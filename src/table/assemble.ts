@@ -281,10 +281,23 @@ export type RunCfg = {
   readonly probe: boolean
 }
 
-/** The cfg key an assembly is cached under. Five bits, so at most thirty-two assemblies. */
+/** THE bit packing for an assembly cache key. Five bits, so at most thirty-two
+ * assemblies per table.
+ *
+ * Taken as five booleans rather than as a `RunCfg` because `AssemblyCache.forCtx`
+ * runs once per entry invocation and must allocate nothing — it derives these bits
+ * from the `ctx` and builds a `RunCfg` only on the miss. That constraint is why the
+ * packing was written twice, 2500 lines apart in this file, and a bit added to one
+ * copy but not the other is a cache COLLISION: a parse served the wrong assembly.
+ * Splitting the packing from the object read satisfies both callers from one place. */
+function cfgKeyOf(hostCst: boolean, trackLines: boolean, tolerant: boolean, coverage: boolean, probe: boolean): number {
+  return (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0)
+    | (coverage ? 8 : 0) | (probe ? 16 : 0)
+}
+
+/** The cfg key an assembly is cached under. */
 export function cfgKey(c: RunCfg): number {
-  return (c.hostCst ? 1 : 0) | (c.trackLines ? 2 : 0) | (c.tolerant ? 4 : 0)
-    | (c.coverage ? 8 : 0) | (c.probe ? 16 : 0)
+  return cfgKeyOf(c.hostCst, c.trackLines, c.tolerant, c.coverage, c.probe)
 }
 
 export type Assembly = {
@@ -2780,9 +2793,10 @@ export class AssemblyCache {
    * public run API (the map would have to hand back a cfg-keyed family and
    * `run()` index it), not a change to this file.
    *
-   * It allocates nothing: the key is computed inline and the `RunCfg` object is
-   * built only on the miss that builds an assembly, at most thirty-two times per
-   * table per process.
+   * It allocates nothing: the key is packed from the ctx's own bits by `cfgKeyOf`,
+   * which takes them as arguments precisely so no `RunCfg` need exist here — that
+   * object is built only on the miss that builds an assembly, at most thirty-two
+   * times per table per process.
    *
    * DO NOT CACHE THE RESULT ACROSS CALLS. Keying it on anything but the `ctx`'s
    * own option bits is how `assembledRules` handed a strict parse the PREVIOUS
@@ -2795,8 +2809,7 @@ export class AssemblyCache {
     const tolerant = ctx._tolerant === true
     const coverage = ctx._grammarCoverage !== undefined
     const probe = ctx._probe !== undefined
-    const key = (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0)
-      | (coverage ? 8 : 0) | (probe ? 16 : 0)
+    const key = cfgKeyOf(hostCst, trackLines, tolerant, coverage, probe)
     const hit = this.byCfg[key]
     if (hit !== undefined) return hit
     const made = assemble(this.t, this.prog, { hostCst, trackLines, tolerant, coverage, probe })
