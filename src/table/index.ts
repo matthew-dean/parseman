@@ -22,22 +22,8 @@
  * swap was `exec === assembled` on the identity sweep, which it clears.
  *
  * `exec.ts` stays REFERENCE — the sweep still gates the assembler against it,
- * and it is what a divergence gets bisected against.
- *
- * IT IS ALSO ON THE PRODUCT PATH, and the claim that used to sit here — "it is
- * not on the product path and nothing emitted imports it" — was false when it
- * was written. `fold.ts:1` imports `tableRules` from `./exec.ts`, `tableVariants`
- * and `variantNames` are exported from this file (below), `emit.ts` PRINTS an
- * `import { tableVariants }` into every folded module, and `compiler/linker.ts:24`
- * imports it too. So a folded artifact ships code that runs the bytecode
- * interpreter, not the assembler — a whole shipped configuration that a gate
- * aimed at `assembledRules` never touches. That is not fixed here; it is stated,
- * so the next reader does not inherit the same wrong premise.
- *
- * TODO(0.48): route the variant fold through `assembledRules` so one engine runs
- * a whole parse. Two drivers meeting inside one parse is not merely slow: each
- * mints a private `Symbol('pm.fail')` and holds a private `let END`, so a failed
- * match crossing the boundary presents as a SUCCESS carrying a symbol.
+ * and it is what a divergence gets bisected against. It is not on the product
+ * path and nothing emitted imports it.
  */
 export { assembledRules as tableRules, assembledRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
