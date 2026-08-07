@@ -1,3 +1,16 @@
 bench/*.cjs
 bench/*-parser.js
 bench/chevrotain-graphql.js
+
+# V8 natives syntax (`%GetOptimizationStatus`, `%DebugPrint`, `%HaveSameMap`) is
+# not JavaScript — it is a V8 extension enabled by `--allow-natives-syntax`, and
+# no JS parser accepts it. These five probes call it at the top level, so oxlint
+# cannot even parse them. Their siblings in the same directory (`pieces.mjs`,
+# `run.mjs`, `analyze.mjs`, `throughput.mjs`) are ordinary JS and stay linted;
+# `bench/ctx-shape-probe.ts` reaches the same intrinsics through a string and
+# also stays linted.
+bench/experiments/cliff/anomaly-probe.mjs
+bench/experiments/cliff/cumulative-probe.mjs
+bench/experiments/cliff/ic-probe.mjs
+bench/experiments/cliff/piece-size-probe.mjs
+bench/experiments/cliff/size-probe.mjs
