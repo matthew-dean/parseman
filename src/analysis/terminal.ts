@@ -37,6 +37,7 @@
  * off-TTY, so a piped run cannot vary with the terminal it was piped from.
  */
 import { CodeDebug, Region, Styled, type TextStyle } from 'linecraft'
+import { groupDigits } from './format-number.ts'
 
 export type Tone = TextStyle
 
@@ -312,16 +313,10 @@ export function codeFrame(frame: CodeFrame, target: RenderTarget = {}, indent = 
   return out
 }
 
-/** Deterministic thousands grouping — `toLocaleString()` differs between machines. */
-export function groupDigits(n: number): string {
-  const s = String(Math.trunc(Math.abs(n)))
-  let out = ''
-  for (let i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 === 0) out += ','
-    out += s[i]
-  }
-  return (n < 0 ? '-' : '') + out
-}
+/** Deterministic thousands grouping — `toLocaleString()` differs between machines.
+ *  Defined in `./format-number.ts`, which depends on nothing, and re-exported here
+ *  because this module's callers import the formatting primitives from here. */
+export { groupDigits }
 
 export const pad = padTo
 

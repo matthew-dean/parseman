@@ -21,6 +21,17 @@
  *   INV-5  no `delete` on an object the enclosing function did not construct
  *   INV-6  no assembled piece body reads a per-parse config field
  *   INV-7  no combinator parse path reads a construction-time option
+ *   INV-8  no exported NAME resolves to two different declarations
+ *   INV-9  no cross-module KEY string minted in more than one module
+ *   INV-10 no comment naming a repo path that does not exist
+ *
+ * INV-8/9/10 are the NAMING rules. They exist because every duplicate-definition
+ * defect this project has paid for was found by accident, and three of the five
+ * are decidable from names alone: one name meaning two things (INV-8), one key
+ * spelled independently in two places (INV-9), and prose naming code that is
+ * gone (INV-10). See docs/design/invariant-gate.md for which of the five each
+ * rule would have caught — and for the two that NONE of them catch, which is the
+ * honest limit of a naming gate.
  *
  * Usage:
  *   node scripts/check-invariants.mjs            # gate — exits 1 on any new finding
@@ -714,6 +725,314 @@ const MIN_DUP_CHARS = 160
       for (const k in n) { if (k === 'type') continue; visit(n[k], n) }
     }
     visit(ast, null)
+  }
+}
+
+/* ================================================================== *
+ * INV-8 — no exported NAME may resolve to two different declarations.
+ *
+ * DECIDES: for every VALUE exported from any module under src/, follow the
+ * export graph — re-export specifiers, `export … as …`, and `export *` — to the
+ * declaration it originates at. A name whose origins across src/ number more
+ * than one is the finding. A barrel that re-exports one declaration under one
+ * name resolves to a single origin and is silent, which is what makes this rule
+ * usable at all: this codebase is mostly barrels.
+ *
+ * WHY THIS EXACT SHAPE: `tableRules` named two different ENGINES depending on
+ * which module you imported it from — `src/table/exec.ts`'s own declaration (the
+ * reference interpreter) and `src/table/index.ts`'s alias for `assembledRules`
+ * (the shipped assembler). Three call sites picked one or the other by accident.
+ * It type-checked either way, because both are `Record<string, TableRule>`, so
+ * neither the compiler nor the linter nor a reviewer's eye could tell them
+ * apart. The type system cannot see this. The export graph can.
+ *
+ * The failure is not "two functions are similar". It is that a reader who finds
+ * one has no way to learn the other exists, and a reviewer reading a call site
+ * cannot tell which one it got. That makes drift between them undetectable by
+ * construction, which is how all five of this project's duplicate-definition
+ * defects survived for months.
+ *
+ * TYPES ARE EXCLUDED, deliberately. A type alias re-declared under one name in
+ * two modules is a real smell, but structural typing makes the two
+ * interchangeable wherever they agree, so the finding is not decidable as
+ * "these mean different things" — it needs a judgement call, and a rule that
+ * needs one fires on innocent code and gets switched off.
+ *
+ * FALSE-POSITIVE FLOOR: zero heuristics and no similarity threshold. A finding
+ * means two declarations exist, both exported, under one name. If that is
+ * deliberate — `run` is, and says so at both sites — it goes in ALLOW with the
+ * argument written down, which is strictly better than the argument existing
+ * only in someone's head.
+ * ================================================================== */
+{
+  /** A relative specifier resolved to a parsed src/ module, or null. */
+  const resolveSpec = (from, spec) => {
+    if (typeof spec !== 'string' || !spec.startsWith('.')) return null
+    const t = relative(ROOT, resolve(ROOT, dirname(from), spec))
+    if (parsed.has(t)) return t
+    const asTs = t.replace(/\.js$/, '.ts')
+    if (parsed.has(asTs)) return asTs
+    if (parsed.has(join(t, 'index.ts'))) return join(t, 'index.ts')
+    return null
+  }
+
+  /** file -> Map<exportedName, entry>; and file -> `export *` targets. */
+  const exportsOf = new Map()
+  const starsOf = new Map()
+  for (const [file, { ast, lineAt }] of parsed) {
+    const m = new Map()
+    const stars = []
+    exportsOf.set(file, m)
+    starsOf.set(file, stars)
+    for (const stmt of ast.body ?? []) {
+      if (stmt.type === 'ExportAllDeclaration') {
+        // `export * from` re-exports VALUES unless the statement is type-only.
+        if (stmt.exportKind !== 'type') { const t = resolveSpec(file, stmt.source?.value); if (t) stars.push(t) }
+        continue
+      }
+      if (stmt.type !== 'ExportNamedDeclaration') continue
+      const d = stmt.declaration
+      if (d) {
+        if (d.type === 'TSTypeAliasDeclaration' || d.type === 'TSInterfaceDeclaration') continue
+        if ((d.type === 'FunctionDeclaration' || d.type === 'ClassDeclaration') && d.id) {
+          m.set(d.id.name, { kind: 'decl', line: lineAt(d.start) })
+        } else if (d.type === 'VariableDeclaration') {
+          for (const v of d.declarations) if (v.id?.type === 'Identifier') m.set(v.id.name, { kind: 'decl', line: lineAt(v.start) })
+        }
+        continue
+      }
+      if (stmt.exportKind === 'type' || !stmt.specifiers) continue
+      for (const s of stmt.specifiers) {
+        if (s.exportKind === 'type') continue
+        const exported = s.exported?.name ?? s.exported?.value
+        const local = s.local?.name ?? s.local?.value
+        if (!exported) continue
+        // No `from` clause: the local binding was imported into THIS module, so
+        // the origin is wherever that import came from. Recorded as a hop through
+        // this file's own import table, resolved below.
+        const target = stmt.source ? resolveSpec(file, stmt.source.value) : file
+        m.set(exported, target
+          ? { kind: 'from', target, local, line: lineAt(s.start) }
+          // An unresolvable specifier (a bare package, `node:` builtin) is not a
+          // src/ declaration and cannot collide with one — treat it as its own
+          // origin so it never groups with anything.
+          : { kind: 'decl', line: lineAt(s.start) })
+      }
+    }
+  }
+
+  /** file -> Map<localName, {target, imported}> for `export { x }` with no `from`. */
+  const importsOf = new Map()
+  for (const [file, { ast }] of parsed) {
+    const m = new Map()
+    importsOf.set(file, m)
+    for (const stmt of ast.body ?? []) {
+      if (stmt.type !== 'ImportDeclaration' || stmt.importKind === 'type') continue
+      const target = resolveSpec(file, stmt.source?.value)
+      if (!target) continue
+      for (const s of stmt.specifiers ?? []) {
+        if (s.importKind === 'type') continue
+        if (s.type !== 'ImportSpecifier') continue
+        const local = s.local?.name
+        const imported = s.imported?.name ?? s.imported?.value
+        if (local && imported) m.set(local, { target, imported })
+      }
+    }
+  }
+
+  /** The `file#name` this export originates at, following every hop. */
+  const originOf = (file, name, seen = new Set()) => {
+    const key = `${file}#${name}`
+    if (seen.has(key)) return null
+    seen.add(key)
+    const e = exportsOf.get(file)?.get(name)
+    if (e) {
+      if (e.kind === 'decl') return key
+      if (e.target !== file) return originOf(e.target, e.local, seen) ?? `${e.target}#${e.local}`
+      // Re-export of a local binding: hop through this module's imports.
+      const imp = importsOf.get(file)?.get(e.local)
+      if (imp) return originOf(imp.target, imp.imported, seen) ?? `${imp.target}#${imp.imported}`
+      return `${file}#${e.local}`
+    }
+    for (const t of starsOf.get(file) ?? []) { const r = originOf(t, name, seen); if (r) return r }
+    return null
+  }
+
+  /** name -> origin -> the export sites that reach it */
+  const byName = new Map()
+  for (const [file, m] of exportsOf) {
+    for (const [name, e] of m) {
+      const o = originOf(file, name)
+      if (!o) continue
+      if (!byName.has(name)) byName.set(name, new Map())
+      const groups = byName.get(name)
+      if (!groups.has(o)) groups.set(o, [])
+      groups.get(o).push(`${file}:${e.line}`)
+    }
+  }
+  for (const [name, groups] of byName) {
+    if (groups.size < 2) continue
+    const origins = [...groups.keys()].sort()
+    const detail = origins.map((o) => `${o} (exported at ${groups.get(o).join(', ')})`).join('  vs  ')
+    const first = origins[0].split('#')[0]
+    report('INV-8', first, exportsOf.get(first)?.get(name)?.line ?? 1,
+      `\`${name}\` is exported from src/ but resolves to ${groups.size} DIFFERENT declarations — ${detail}. `
+      + 'One name, one definition: a reader who finds one has no way to learn the other exists, and a call site gives no clue which it got. '
+      + 'Collapse them, or rename one so the difference is visible at every use',
+      `INV-8:${name}:${origins.join('|')}`)
+  }
+}
+
+/* ================================================================== *
+ * INV-9 — no cross-module KEY string may be minted in more than one module.
+ *
+ * DECIDES: a `Symbol(<string literal>)` or `Symbol.for(<string literal>)` whose
+ * literal appears in a second module under src/.
+ *
+ * WHY THIS EXACT SHAPE, and why the two spellings are different defects:
+ *
+ *   Symbol(d)      mints a FRESH symbol per call. Two modules that each write
+ *                  `Symbol('pm.fail')` hold two symbols that are not equal, so
+ *                  a property one stores is invisible to the other. `pm.fail`
+ *                  was minted in `src/table/exec.ts` and `src/table/assemble.ts`
+ *                  and was safe only because the `TableRule` ABI converted both
+ *                  before they crossed — an accident of the boundary, not a
+ *                  design. Nothing said so, and nothing checked.
+ *   Symbol.for(d)  resolves through the global registry, so the two ARE equal
+ *                  and the code works. The defect is the DUPLICATED KEY: the
+ *                  string is the contract, and renaming it at one site silently
+ *                  disconnects the other. There is no type error and no test
+ *                  failure — the property simply stops being found. That is the
+ *                  shape carried on the shipped macro path today between
+ *                  `src/compiler/linker.ts` and `src/plugin/index.ts`.
+ *
+ * Both are the same rule: a key that two modules must agree on has one owner,
+ * exports it, and the second module imports it. The fix is always an import.
+ *
+ * FALSE-POSITIVE FLOOR: string literals only — a computed description is not
+ * decidable and is not reported. Repeats WITHIN one module are not reported
+ * either; a module is free to spell its own key twice, since a rename there
+ * cannot desynchronise anything.
+ * ================================================================== */
+{
+  /** literal -> { file, line, viaFor }[] */
+  const minted = new Map()
+  for (const [file, { ast, lineAt }] of parsed) {
+    walk(ast, (n) => {
+      if (n.type !== 'CallExpression') return
+      const c = n.callee
+      const plain = c?.type === 'Identifier' && c.name === 'Symbol'
+      const viaFor = (c?.type === 'MemberExpression' || c?.type === 'StaticMemberExpression')
+        && !c.computed && isId(c.object, 'Symbol') && c.property?.name === 'for'
+      if (!plain && !viaFor) return
+      const a = n.arguments?.[0]
+      if (!a || a.type !== 'Literal' || typeof a.value !== 'string') return
+      if (!minted.has(a.value)) minted.set(a.value, [])
+      minted.get(a.value).push({ file, line: lineAt(n.start), viaFor })
+    })
+  }
+  for (const [desc, sites] of minted) {
+    const distinct = [...new Set(sites.map((s) => s.file))].sort()
+    if (distinct.length < 2) continue
+    const where = sites.map((s) => `${s.file}:${s.line}`).join(' , ')
+    const anyPlain = sites.some((s) => !s.viaFor)
+    report('INV-9', sites[0].file, sites[0].line,
+      `the key \`${desc}\` is minted in ${distinct.length} modules — ${where}. `
+      + (anyPlain
+        ? '`Symbol()` mints a FRESH symbol per call, so these are NOT equal and a property one stores is invisible to the other. '
+        : '`Symbol.for()` makes these equal today, but the STRING is the contract: renaming it at one site silently disconnects the other, with no type error and no failing test. ')
+      + 'Give the key one owner, export it, and import it at the other site',
+      `INV-9:${desc}`)
+  }
+}
+
+/* ================================================================== *
+ * INV-10 — no comment may name a repo path that does not exist.
+ *
+ * DECIDES: a `src/…`, `bench/…`, `test/…`, `scripts/…`, `docs/…` or `examples/…`
+ * path with a source or doc extension, appearing anywhere in a comment, that is
+ * not a file on disk.
+ *
+ * WHY: `bench/jess/fixture.ts` printed a column called `codegen` for a compiler
+ * module of that name, which was deleted in `37c57b5`. The header comment
+ * describing what that column measured is WHY the mislabel survived: the label
+ * documented an intent, the intent outlived the code, and two separate lanes
+ * read the stale name and drew conclusions from it. A comment that can go stale
+ * silently is worse than no comment, because it actively misleads the next
+ * reader — and unlike code, nothing ever executes it.
+ *
+ * This rule does not check that prose is TRUE. Nothing can. It checks the one
+ * part of prose that is mechanically decidable — whether the code it points at
+ * still exists — which is exactly the part that rots on someone else's commit
+ * rather than on the author's.
+ *
+ * SCOPE is wider than the other rules deliberately: comments in `bench/`,
+ * `test/` and `scripts/` rot the same way and the fixture defect was in
+ * `bench/`. Only comments are read from those trees; nothing else about them is
+ * analysed, so this does not change what INV-2/3/4 mean.
+ *
+ * FALSE-POSITIVE FLOOR: the path must carry a real extension and sit under a
+ * known top-level directory, so ordinary prose cannot trip it. A deleted file
+ * that prose should still mention — a historical reference — takes an ALLOW
+ * entry stating that, which is the correct outcome: the reference stops being a
+ * silent lie and becomes a stated one.
+ * ================================================================== */
+{
+  const PROSE_ROOTS = ['src', 'bench', 'test', 'scripts', 'docs', 'examples']
+  // Extensions are matched LONGEST-FIRST and must not be followed by another
+  // identifier character: `js` before `json` would match `coverage-baseline.json`
+  // as `coverage-baseline.js` and report a file that exists as missing.
+  const PATH_RE = /(?:^|[\s`'"(\[<])((?:src|bench|test|scripts|docs|examples)\/[A-Za-z0-9_@./-]*\.(?:tsx|ts|mjs|cjs|pegjs|jsonc|json|js|mts|cts|md|ne))(?![A-Za-z0-9])/g
+  /** Comment text from every tree that carries prose about this codebase. */
+  const commentFiles = []
+  for (const f of files) commentFiles.push([f, parsed.get(f).comments, parsed.get(f).lineAt])
+  for (const top of PROSE_ROOTS) {
+    if (top === 'src') continue
+    const dir = join(ROOT, top)
+    if (!existsSync(dir)) continue
+    const walkDir = (d) => {
+      for (const name of readdirSync(d).sort()) {
+        if (name === 'node_modules' || name === 'vendor' || name.startsWith('.')) continue
+        // `test/fixtures/` holds DELIBERATELY broken trees — including this rule's
+        // own planted violation, which names a module that must not exist. Scanning
+        // them would make every fixture a finding in the repo that owns it.
+        if (name === 'fixtures') continue
+        // The allowlist is the LEDGER OF EXEMPTIONS. Its entries name findings,
+        // and ten of them exist precisely because a path is gone — so the prose
+        // explaining them names deleted files by necessity. Scanning it would
+        // make every INV-10 exemption generate the finding it exempts.
+        if (name === 'invariant-allowlist.mjs') continue
+        const p = join(d, name)
+        if (statSync(p).isDirectory()) { walkDir(p); continue }
+        if (!/\.(ts|mjs)$/.test(name) || name.endsWith('.d.ts')) continue
+        const rel = relative(ROOT, p)
+        const code = readFileSync(p, 'utf8')
+        let r
+        try { r = parseSync(rel, code, { lang: 'ts' }) } catch { continue }
+        const starts = [0]
+        for (let i = 0; i < code.length; i++) if (code.charCodeAt(i) === 10) starts.push(i + 1)
+        const lineAt = (idx) => {
+          let lo = 0, hi = starts.length - 1
+          while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= idx) lo = mid; else hi = mid - 1 }
+          return lo + 1
+        }
+        commentFiles.push([rel, r.comments ?? [], lineAt])
+      }
+    }
+    walkDir(dir)
+  }
+  for (const [file, comments, lineAt] of commentFiles) {
+    for (const c of comments) {
+      const text = c.value ?? ''
+      for (const m of text.matchAll(PATH_RE)) {
+        const p = m[1]
+        if (existsSync(join(ROOT, p))) continue
+        report('INV-10', file, lineAt(c.start),
+          `a comment names \`${p}\`, which does not exist. Prose that points at deleted code does not fail — it misleads, `
+          + 'and it keeps naming an intent the code no longer has. Update the reference, or delete the sentence that needs it',
+          `INV-10:${file}:${p}`)
+      }
+    }
   }
 }
 

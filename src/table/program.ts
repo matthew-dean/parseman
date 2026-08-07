@@ -13,7 +13,7 @@ import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
  * for. `factory` is the emitted scope as a real function literal, taking
  * `EMITTED_PARAMS` in order. `plan` rebuilds the three data pools the factory
  * expects (see `PoolPlan`), and `reached` is the emitter's site set, which
- * `Assembly.reached` publishes and `test/unit/table-assemble-subset.test.ts`
+ * `Assembly.reached` publishes and `test/unit/table-assemble.test.ts`
  * asserts on.
  */
 export type PrecompiledAssembly = {

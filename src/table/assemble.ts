@@ -26,7 +26,7 @@
  * Pieces are GRAMMAR-sized; rows are INPUT-sized. Assembly allocates ~2.2k
  * closures once per process and removes a dispatch plus an operand decode from
  * ~497k executions — a 222x ratio. Assembly cost is paid once and is not the
- * metric; it is measured anyway (`bench/jess/g5-assemble.ts`).
+ * metric; it is measured anyway (`bench/jess/g5-ms.ts`, `bench/jess/g5-profile.ts`).
  *
  * ## Why this is not "just tuning the switch"
  *
@@ -301,7 +301,7 @@ export type Assembly = {
   /**
    * The sites this option set actually REACHED. A strict subset of the table's
    * reachable set whenever an option excludes anything, and the assertion
-   * `test/unit/table-assemble-subset.test.ts` makes on that.
+   * `test/unit/table-assemble.test.ts` makes on that.
    */
   readonly reached: ReadonlySet<number>
   /**

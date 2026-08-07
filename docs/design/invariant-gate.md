@@ -147,6 +147,163 @@ function and **escaping** it is exempt — `src/combinators/ref.ts:47,49` delete
 from a `meta` built in `ref()` that outlives the call. Catching that needs
 escape analysis. The rule under-reports rather than over-reports, on purpose.
 
+## The naming rules — INV-8, INV-9, INV-10
+
+These three were added together, for one reason.
+
+Every duplicate-definition defect this project has paid for was **found by
+accident**. Five of them, each hiding for months, each surfacing because somebody
+happened to be reading the right two files on the right day. Finding a sixth by
+hand is not progress; the discovery rate is set by luck, and luck does not
+improve.
+
+Three of the five are decidable **from names alone**. That is what these rules
+decide.
+
+### INV-8 — no exported name may resolve to two different declarations
+
+Decides: for every value exported from `src/`, follow the export graph —
+re-export specifiers, `export … as …`, `export *` — to the declaration it
+originates at. A name with more than one origin across `src/` is the finding. A
+barrel re-exporting one declaration resolves to one origin and stays silent,
+which is what makes the rule usable in a codebase built almost entirely from
+barrels.
+
+`tableRules` named two different **engines** depending on which module you
+imported it from: `src/table/exec.ts`'s own declaration (the reference
+interpreter) and `src/table/index.ts`'s alias for `assembledRules` (the shipped
+assembler). Three call sites picked one or the other by accident. It type-checked
+either way — both are `Record<string, TableRule>` — so neither the compiler, nor
+the linter, nor a reviewer's eye could tell them apart. **The type system cannot
+see this. The export graph can.**
+
+The failure is not "two functions are similar". It is that a reader who finds one
+has no way to learn the other exists, and a reviewer reading a call site cannot
+tell which one it got. Drift between them is undetectable by construction.
+
+Types are excluded deliberately: structural typing makes two same-named aliases
+interchangeable wherever they agree, so "these mean different things" is not
+decidable without a judgement call, and a rule that needs one fires on innocent
+code and gets switched off.
+
+False-positive risk: **low**. Zero heuristics, no similarity threshold. A finding
+means two exported declarations share a name. If that is deliberate it takes an
+allowlist entry with the argument written down — which is strictly better than
+the argument existing only in someone's head.
+
+### INV-9 — no cross-module key string may be minted in more than one module
+
+Decides: a `Symbol(<literal>)` or `Symbol.for(<literal>)` whose literal appears
+in a second module under `src/`.
+
+The two spellings are different defects:
+
+- `Symbol(d)` mints a **fresh** symbol per call. Two modules that each write
+  `Symbol('pm.fail')` hold symbols that are not equal, so a property one stores
+  is invisible to the other. This shipped, in three modules, and was safe only
+  because the `TableRule` ABI converted before they crossed — a property of the
+  boundary, not of the design.
+- `Symbol.for(d)` resolves through the global registry, so the two **are** equal
+  and the code works. The defect is the duplicated **key**: the string is the
+  contract, and renaming it at one site silently disconnects the other. No type
+  error, no failing test — the property simply stops being found.
+
+Both have the same fix: one owner, exported, imported at the other site.
+
+False-positive risk: **low**. String literals only; a computed description is not
+decidable and is not reported. Repeats *within* one module are not reported — a
+rename there cannot desynchronise anything.
+
+### INV-10 — no comment may name a repo path that does not exist
+
+Decides: a `src/…`, `bench/…`, `test/…`, `scripts/…`, `docs/…` or `examples/…`
+path with a source or doc extension, appearing in any comment, that is not a file
+on disk. `test/fixtures/` is excluded — those trees are deliberately broken.
+
+`bench/jess/fixture.ts` printed a column called `codegen` for a compiler module
+deleted in `37c57b5`. The header comment describing what that column measured is
+**why the mislabel survived**: the label documented an intent, the intent
+outlived the code, and two separate lanes read the stale name and drew
+conclusions from it. A comment that can go stale silently is worse than no
+comment, because it actively misleads the next reader — and unlike code, nothing
+ever executes it.
+
+The rule does not check that prose is *true*. Nothing can. It checks the one part
+of prose that is mechanically decidable — whether the code it points at still
+exists — which is exactly the part that rots on **somebody else's** commit rather
+than on the author's.
+
+Scope is wider than every other rule on purpose: the motivating defect was in
+`bench/`, and narrowing to `src/` would have missed it entirely. Only comments
+are read from the non-`src` trees.
+
+False-positive risk: **medium**, and this is the one rule where that is worth
+stating plainly. Two shapes trip it without being defects:
+
+1. **A hypothetical path in an example command.** `parseman diagnose
+   src/grammar.ts` names a file the *user* would have, not one this repo has.
+   Fixed at source by pointing the examples at `examples/css/parser.ts`, which
+   exists — a doc example naming a real file is better anyway, because it can be
+   run.
+2. **A historical reference** — "`X` is DELETED at HEAD", "salvaged from `X`" —
+   where naming the vanished file is the whole point of the sentence. These are
+   not decidable from syntax, and inferring them from nearby words ("deleted",
+   "was", "salvaged") is exactly the heuristic this gate refuses. They take
+   allowlist entries; ten do today.
+
+Listing them is not a shrug. It converts an ambiguous reference into a stated
+one, and it arms a trap worth arming: if anyone re-creates a file named in an
+entry, the entry goes stale and the gate fails, forcing a re-read of prose that
+would otherwise have silently started describing something else.
+
+### What these rules would NOT have caught — the honest limit
+
+Five duplicate-definition defects motivated this work. Scoring each proposed
+structural change by how many it would have caught is the only test that
+separates a real rule from a decorative one.
+
+| Change | Caught | Where the constraint sits |
+| --- | --- | --- |
+| **INV-8** (one name, one declaration) | **#2** `tableRules` | At the trap, in CI, on the author's commit |
+| **INV-9** (one key, one owner) | **#3** `Symbol('pm.fail')` | At the trap |
+| **INV-10** (prose names live code) | **#4** stale `codegen` column | At the trap |
+| Nominal types for rule maps | **#2** only | **Before the trap — it would not compile** |
+| A declared build-time/runtime twin registry | **none** | Nowhere: a registry nobody populates catches nothing |
+| Strengthening INV-4 to token-normalized bodies | **none** of the five | At the trap |
+
+Two of the five are caught by **none** of these, and that is the important row:
+
+- **#1** `evaluateParserFactory` being a build-time reimplementation of `rules()`
+  that never ran `markUnusedValues`.
+- **#5** choice-arm gating computed without the resolver the emission path uses.
+
+Both are *semantic* twins: two computations that must agree, where nothing about
+their names, keys, or prose is wrong. **No naming rule can catch these.** The only
+things that can are collapsing them into one definition, or a differential test
+that computes both ways and asserts agreement. A gate cannot infer that two
+functions are supposed to be the same thing; it has to be told, and being told is
+what a shared definition already accomplishes.
+
+So the ranking, by the sharper question — *does the change put the constraint
+where the mistake happens, or where a correct reader would already be?*
+
+1. **Collapse to one definition.** The mistake becomes unwritable. This is what
+   was done here for `intersects`, `groupDigits` and `parseman.composedPieces`.
+2. **Nominal types.** The mistake does not compile. Highest value of the
+   remaining options and the only one that reaches *before* the trap — but it
+   covers exactly one of the five, and costs a branded type threaded through
+   every declaration and consumption site.
+3. **These three rules.** The mistake compiles, runs, and then fails CI on the
+   author's own commit, naming both sites. Detection, not prevention — but
+   detection at the trap rather than a caveat in the file a correct reader would
+   already have opened.
+4. **Prose alone.** What we had. `src/table/index.ts` asserted `exec.ts` was
+   unreachable while two `src/` modules imported it. The warning was posted on
+   the safe path; the trap stayed unmarked.
+
+A comment that states an invariant should either become an `INV-*` or stop
+claiming to be a rule.
+
 ## The allowlist
 
 `ALLOW` in `scripts/invariant-allowlist.mjs`. **It may only get shorter.** Adding

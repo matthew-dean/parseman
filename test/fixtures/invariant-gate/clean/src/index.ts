@@ -1,5 +1,10 @@
 /* A tree that violates nothing. Every rule must stay silent here — a gate that
- * fires on clean input is worse than no gate. */
+ * fires on clean input is worse than no gate.
+ *
+ * `src/shared.ts` is named deliberately: INV-10 must not fire on a comment that
+ * points at a file which EXISTS. The re-export below is the barrel case INV-8
+ * must not fire on. */
+export { widen, TAG } from './shared.ts'
 export type CleanOptions = { readonly loud?: boolean }
 export const shout = (o: CleanOptions): string => (o.loud === true ? 'HI' : 'hi')
 export const shape = (n: number): { n: number; label: string } => ({ n, label: String(n) })

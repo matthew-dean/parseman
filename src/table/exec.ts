@@ -159,7 +159,10 @@ function rawEntry(v: unknown, input: string, s: number, e: number): unknown {
   return { _tag: 'leaf', value: typeof v === 'string' ? v : (typeof v === 'object' && v !== null ? input.slice(s, e) : ''), span: { start: s, end: e } }
 }
 
-/** Same semantics as codegen's `LINE_TRACK_DECL` (`src/compiler/codegen.ts:248`). */
+/** Same semantics as `trackLinesInto` in `src/table/assemble.ts` and `_trackLines`
+ *  in `src/table/emit-assembly.ts` — three copies of one scan, and this is the one
+ *  the emitted engine does not use. (Named for the source lowering before it, which
+ *  spelled this `LINE_TRACK_DECL`; that module was deleted in `37c57b5`.) */
 function trackLines(ctx: ParseContext, input: string, end: number): void {
   const from = ctx._lineScannedTo ?? 0
   if (end <= from) return
@@ -741,8 +744,8 @@ function makeDriver(
         // RECOVERY SYNC PUBLISH. A recovery table carries one follow-set class per
         // term after the child slots; before each term the sentinel for it becomes
         // `ctx._sync`, so a list nested in that term resyncs to this sequence's
-        // enclosing delimiter with nothing annotated (combinators/sequence.ts:75,
-        // compiler/codegen.ts:1758). Restored on every exit, as `sequence()`'s
+        // enclosing delimiter with nothing annotated (combinators/sequence.ts:75).
+        // Restored on every exit, as `sequence()`'s
         // `finally` does. Strict tables never enter any of this.
         const inheritedSync = REC ? ctx._sync : undefined
         for (let i = 0; i < n; i++) {

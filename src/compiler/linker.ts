@@ -458,7 +458,7 @@ export function fusedHostElidedOf(registry: object): boolean {
 /** A composed parser carries its flattened source pieces (non-enumerable) so it
  * can be composed AGAIN — `compose([lessGrammar, delta])` where `lessGrammar` is
  * itself a `compose([...])` result. */
-const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
+export const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
 /** The carried pieces a `compose()`/`composeLeaf()` result holds, or `undefined` when
  * the value is not a composed grammar. This is what makes a fused grammar analysable:

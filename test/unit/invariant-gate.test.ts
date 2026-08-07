@@ -41,7 +41,11 @@ describe('invariant gate', () => {
 
   // The `clean` fixture is not merely empty — it carries the shapes each rule
   // must NOT fire on: a literal getter (INV-1), an options field that IS read
-  // (INV-2), and a `delete` on a scratch object built in the same call (INV-5).
+  // (INV-2), a `delete` on a scratch object built in the same call (INV-5), a
+  // BARREL re-export (INV-8 — this codebase is mostly barrels, and a rule that
+  // fired on them would be switched off within a day), a symbol description
+  // minted once in one module (INV-9), and a comment naming a file that EXISTS
+  // (INV-10).
   it('stays silent on a tree that violates nothing', () => {
     const { code, out } = runGate([`--root=${fixture('clean')}`])
     expect(out).toContain('0 findings')
@@ -56,6 +60,12 @@ describe('invariant gate', () => {
     ['inv3', 'INV-3', 'not reachable by import'],
     ['inv4', 'INV-4', 'duplicated across modules'],
     ['inv5', 'INV-5', 'is not constructed by this function'],
+    // The three NAMING rules. Each planted fixture is a miniature of a defect
+    // this project actually shipped: one name for two engines, one sentinel
+    // minted twice, and a comment naming a module that was deleted.
+    ['inv8', 'INV-8', 'resolves to 2 DIFFERENT declarations'],
+    ['inv9', 'INV-9', 'is minted in 2 modules'],
+    ['inv10', 'INV-10', 'which does not exist'],
   ]
   for (const [dir, rule, phrase] of planted) {
     it(`${rule} fires on its planted violation and exits non-zero`, () => {

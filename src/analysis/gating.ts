@@ -25,7 +25,7 @@
  * on the fused artifact, which really runs and whose author really can fix it.
  */
 import type { Combinator, FirstSet, ParserDef } from '../types.ts'
-import { firstSetOf, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
+import { firstSetOf, intersects, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
 
 /** Why an arm's (deep) first-set is `any` / over-broad — the poison source. */
 export type FirstSetCause =
@@ -242,14 +242,22 @@ export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
 
 const isAny = (fs: FirstSet): boolean => fs.kind === 'any'
 
-/** Do two first-sets share any character? Exported because `./duplication.ts`
- *  had a byte-identical copy; every analysis module already imports this one. */
-export function intersects(a: FirstSet, b: FirstSet): boolean {
-  if (a.kind === 'any' || b.kind === 'any') return true
-  if (a.kind === 'empty' || b.kind === 'empty') return false
-  for (const ra of a.ranges) for (const rb of b.ranges) if (ra.lo <= rb.hi && rb.lo <= ra.hi) return true
-  return false
-}
+/**
+ * Do two first-sets share any character?
+ *
+ * THE DEFINITION LIVES IN `../combinators/first-set.ts`, beside `union` and the
+ * rest of the first-set algebra, and is re-exported here only because
+ * `./duplication.ts` imports it from this module.
+ *
+ * This used to be a third copy. Two byte-identical copies in `./choice-cost.ts`
+ * and `./duplication.ts` were collapsed into a declaration here, and the note
+ * recording that said `intersects` now "lives once" — while
+ * `../combinators/first-set.ts` had been exporting its own since before any of
+ * them. INV-4 could not see it: the two bodies differ only in whether the nested
+ * `for` carries braces, and INV-4 decides on byte-identity after whitespace is
+ * stripped. INV-8 sees it, because it decides on the NAME.
+ */
+export { intersects }
 
 /** The SHARED first characters of two sets (the actual overlap, not the union). */
 function intersection(a: FirstSet, b: FirstSet): FirstSet {
