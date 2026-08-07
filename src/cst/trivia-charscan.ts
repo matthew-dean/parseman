@@ -220,7 +220,14 @@ function classifyParser(p: Combinator<unknown>): TriviaArmMatcher | null {
   return classifyArm(d.source)
 }
 
-const armCache = new WeakMap<LabeledTriviaSpec, readonly TriviaArmMatcher[] | null>()
+let armSpec0: LabeledTriviaSpec | undefined
+let armSpec1: LabeledTriviaSpec | undefined
+let armSpec2: LabeledTriviaSpec | undefined
+let armSpec3: LabeledTriviaSpec | undefined
+let armValue0: readonly TriviaArmMatcher[] | null | undefined
+let armValue1: readonly TriviaArmMatcher[] | null | undefined
+let armValue2: readonly TriviaArmMatcher[] | null | undefined
+let armValue3: readonly TriviaArmMatcher[] | null | undefined
 
 /**
  * The character-level matchers for a spec's arms — index-parallel to `spec.arms`,
@@ -231,8 +238,10 @@ const armCache = new WeakMap<LabeledTriviaSpec, readonly TriviaArmMatcher[] | nu
  * produces one, and the combinator path still handles it if a host writes one.
  */
 export function charArmsFor(spec: LabeledTriviaSpec): readonly TriviaArmMatcher[] | null {
-  const hit = armCache.get(spec)
-  if (hit !== undefined) return hit
+  if (spec === armSpec0) return armValue0!
+  if (spec === armSpec1) return armValue1!
+  if (spec === armSpec2) return armValue2!
+  if (spec === armSpec3) return armValue3!
   let arms: TriviaArmMatcher[] | null = []
   if (spec.minRepeats > 1) {
     arms = null
@@ -243,7 +252,14 @@ export function charArmsFor(spec: LabeledTriviaSpec): readonly TriviaArmMatcher[
       arms.push(c)
     }
   }
-  armCache.set(spec, arms)
+  armSpec3 = armSpec2
+  armValue3 = armValue2
+  armSpec2 = armSpec1
+  armValue2 = armValue1
+  armSpec1 = armSpec0
+  armValue1 = armValue0
+  armSpec0 = spec
+  armValue0 = arms
   return arms
 }
 

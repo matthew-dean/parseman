@@ -411,12 +411,16 @@ function safeJson(v: unknown): string {
 }
 
 let anonCounter = 0
-const anonIds = new WeakMap<object, number>()
+/** Duplication analysis is an opt-in construction-time diagnostic.  Do not
+ * allocate its identity map merely because a table artifact imports the public
+ * table entry; create it only when an unresolvable anonymous ref is diagnosed. */
+let anonIds: Map<object, number> | undefined
 /** Identity key for an UNNAMED unresolvable ref: nothing can bind it by name, so
  *  two of them are the same slot only when they are the same object. */
 function anonId(p: object): number {
-  let id = anonIds.get(p)
-  if (id === undefined) { id = ++anonCounter; anonIds.set(p, id) }
+  const ids = anonIds ??= new Map<object, number>()
+  let id = ids.get(p)
+  if (id === undefined) { id = ++anonCounter; ids.set(p, id) }
   return id
 }
 

@@ -35,12 +35,12 @@ import {
 } from '../../src/index.ts'
 import {
   GRAMMAR_REFLECTION,
-  attachGrammarReflection,
   collectGrammarReflection,
   grammarReflectionOf,
   grammarReflectionSource,
   mergeGrammarReflections,
 } from '../../src/cst/reflection.ts'
+import { attachGrammarReflection } from '../../src/cst/reflection-attach.ts'
 
 function synthetic(def: ParserDef, inner: Combinator<unknown> = literal('x')): Combinator<unknown> {
   return {

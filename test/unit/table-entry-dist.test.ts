@@ -31,6 +31,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 import { existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { build } from 'esbuild'
 import { resolve, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -89,6 +90,44 @@ describe('parseman/table — the SHIPPED entry runs a classifiedTrivia grammar',
       expect(JSON.stringify(fromTable), `table vs interpreter on ${JSON.stringify(input)}`)
         .toBe(JSON.stringify(fromInterpreter))
     }
+  })
+})
+
+describe('parseman/table — the macro artifact dependency', () => {
+  it('initializes no WeakMap or descriptor metadata cache', () => {
+    // This is deliberately a fresh Node process.  The property is about the
+    // package export a consumer imports, not a source module already resident in
+    // Vitest's graph; an in-process import can only prove a previous test warmed
+    // the same cache first.
+    const probe = `
+      const RealWeakMap = globalThis.WeakMap
+      const realDefine = Object.defineProperty
+      let weakMaps = 0
+      let descriptors = 0
+      class CountedWeakMap extends RealWeakMap {
+        constructor(...args) { super(...args); weakMaps++ }
+      }
+      globalThis.WeakMap = CountedWeakMap
+      Object.defineProperty = new Proxy(realDefine, {
+        apply(target, thisArg, args) { descriptors++; return Reflect.apply(target, thisArg, args) },
+      })
+      try {
+        const runtime = await import('parseman/table')
+        console.log(JSON.stringify({ weakMaps, descriptors, tableRules: typeof runtime.tableRules }))
+      } finally {
+        globalThis.WeakMap = RealWeakMap
+        Object.defineProperty = realDefine
+      }
+    `
+    const out = execFileSync(process.execPath, ['--input-type=module', '--eval', probe], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    })
+    expect(JSON.parse(out) as { weakMaps: number, descriptors: number, tableRules: string }).toEqual({
+      weakMaps: 0,
+      descriptors: 0,
+      tableRules: 'function',
+    })
   })
 })
 

@@ -25,7 +25,7 @@
  *   INV-9  no cross-module KEY string minted in more than one module
  *   INV-10 no comment naming a repo path that does not exist
  *   INV-11 one engine, one public name — no `as` rename across engine vocabularies
- *   INV-12 no descriptor installation or WeakMap side cache in table runtime
+ *   INV-12 no descriptor installation or WeakMap side cache in table runtime graph
  *
  * INV-8/9/10 are the NAMING rules. They exist because every duplicate-definition
  * defect this project has paid for was found by accident, and three of the five
@@ -289,9 +289,10 @@ for (const [file, { ast, lineAt }] of parsed) {
  * then parsed through millions of hot calls.  `Object.defineProperty` after
  * construction is the slowest way to add a field in V8; a WeakMap merely moves
  * that identity/lookup cost out of sight.  Metadata must instead be present in
- * the table/map shape from birth.  This is deliberately scoped to `src/table/`:
- * it is a source-decidable rule for the shipped table runtime, not a claim that
- * every compiler-only analysis cache in the repository is on a parse path.
+ * the table/map shape from birth.  The direct `src/table/` check catches an
+ * obvious local regression; the import-closure check below is the deciding
+ * half.  An artifact imports `src/table/index.ts`, so a cache in any helper it
+ * reaches is still an import-time allocation on every consumer's table path.
  *
  * Generated macro artifacts have their own executable assertions in the macro
  * artifact tests, including `rules`, `compose`, and `composeLeaf`; this check
@@ -317,6 +318,65 @@ for (const [file, { ast, lineAt }] of parsed) {
         `INV-12:weakmap:${file}:${scope}`)
     }
   })
+}
+
+/**
+ * The macro's public dependency is a deliberately narrow entry, not the broad
+ * public `parseman/table` barrel. Follow its local static imports the same way
+ * the bundler does, so this gate cannot be satisfied by moving a WeakMap one
+ * directory upward and importing it from the runtime.
+ */
+{
+  const entry = 'src/table/index.ts'
+  const runtimeFiles = new Set()
+  const stack = [entry]
+  const localTarget = (from, spec) => {
+    if (typeof spec !== 'string' || !spec.startsWith('.')) return null
+    const base = relative(ROOT, resolve(ROOT, dirname(from), spec))
+    if (parsed.has(base)) return base
+    if (parsed.has(base.replace(/\.js$/, '.ts'))) return base.replace(/\.js$/, '.ts')
+    if (parsed.has(join(base, 'index.ts'))) return join(base, 'index.ts')
+    return null
+  }
+  while (stack.length) {
+    const file = stack.pop()
+    if (!file || runtimeFiles.has(file)) continue
+    runtimeFiles.add(file)
+    const found = parsed.get(file)
+    if (!found) continue
+    walk(found.ast, (n) => {
+      if (n.type !== 'ImportDeclaration' && n.type !== 'ExportNamedDeclaration' && n.type !== 'ExportAllDeclaration') return
+      const target = localTarget(file, n.source?.value)
+      if (target) stack.push(target)
+    })
+  }
+  for (const file of runtimeFiles) {
+    const found = parsed.get(file)
+    if (!found) continue
+    const { ast, lineAt } = found
+    walkScoped(ast, (n, scope) => {
+      // This is an IMPORT-time graph check.  A construction-only helper can be
+      // bundled but dead until its explicit API is called; the fresh-process
+      // artifact test below decides actual execution.  What must never happen
+      // merely by loading a generated parser is a module-scope allocation or
+      // descriptor write.
+      if (scope === '<module>' && n.type === 'CallExpression') {
+        const c = n.callee
+        const which = c && (c.type === 'StaticMemberExpression' || c.type === 'MemberExpression') && !c.computed
+          && isId(c.object, 'Object') ? c.property?.name : undefined
+        if (which === 'defineProperty' || which === 'defineProperties') {
+          report('INV-12', file, lineAt(n.start),
+            `Object.${which} is reachable from the emitted table-runtime entry in \`${scope}\`. Generated artifacts import this graph, so it transitions a runtime object after construction.`,
+            `INV-12:runtime-descriptor:${file}:${scope}`)
+        }
+      }
+      if (scope === '<module>' && n.type === 'NewExpression' && isId(n.callee, 'WeakMap')) {
+        report('INV-12', file, lineAt(n.start),
+          `WeakMap is reachable from the emitted table-runtime entry in \`${scope}\`. Generated artifacts import this graph, so it allocates an identity cache before their first parse.`,
+          `INV-12:runtime-weakmap:${file}:${scope}`)
+      }
+    })
+  }
 }
 
 /* ================================================================== *

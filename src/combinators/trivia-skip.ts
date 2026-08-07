@@ -31,7 +31,23 @@ export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fi
 
 const NOOP_COMMIT = () => {}
 export type FastTriviaScanner = (input: string, cur: number) => number
-const fastTriviaCache = new WeakMap<Combinator<unknown>, FastTriviaScanner | null>()
+/**
+ * Bounded structural cache for the handful of trivia grammars a process actively
+ * parses.  A module-global WeakMap used to allocate on every table-runtime
+ * import, even though emitted artifacts only need this during construction.
+ *
+ * Four scalar slots keep the common grammar switches hot without a collection,
+ * a per-parser property transition, or an unbounded process-retaining cache.
+ * Cache misses merely rebuild a construction-time scanner and remain correct.
+ */
+let fastTrivia0: Combinator<unknown> | undefined
+let fastTrivia1: Combinator<unknown> | undefined
+let fastTrivia2: Combinator<unknown> | undefined
+let fastTrivia3: Combinator<unknown> | undefined
+let fastScanner0: FastTriviaScanner | null | undefined
+let fastScanner1: FastTriviaScanner | null | undefined
+let fastScanner2: FastTriviaScanner | null | undefined
+let fastScanner3: FastTriviaScanner | null | undefined
 
 /** True when trivia recording must be deferred until the following term commits. */
 export function needsDeferredTriviaCommit(ctx: ParseContext): boolean {
@@ -403,10 +419,19 @@ export function probeTriviaEnd(input: string, cur: number, ctx: ParseContext): n
  * option branches on EVERY sequence term.
  */
 export function fastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner | null {
-  const cached = fastTriviaCache.get(trivia)
-  if (cached !== undefined) return cached
+  if (trivia === fastTrivia0) return fastScanner0!
+  if (trivia === fastTrivia1) return fastScanner1!
+  if (trivia === fastTrivia2) return fastScanner2!
+  if (trivia === fastTrivia3) return fastScanner3!
   const scanner = buildFastTriviaScanner(trivia)
-  fastTriviaCache.set(trivia, scanner)
+  fastTrivia3 = fastTrivia2
+  fastScanner3 = fastScanner2
+  fastTrivia2 = fastTrivia1
+  fastScanner2 = fastScanner1
+  fastTrivia1 = fastTrivia0
+  fastScanner1 = fastScanner0
+  fastTrivia0 = trivia
+  fastScanner0 = scanner
   return scanner
 }
 

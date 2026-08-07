@@ -6,7 +6,7 @@ import { consumeTrivia } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { annotateSpanFromLineContext } from '../line-index.ts'
-import { NODE_TAG, NODE_TYPE } from '../cst/reflection.ts'
+import { NODE_TAG, NODE_TYPE } from '../cst/reflection-symbols.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into

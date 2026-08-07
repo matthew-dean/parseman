@@ -67,17 +67,23 @@ compile-time objects) is untouched.
 ### INV-12 — no descriptor installation or `WeakMap` side cache in table runtime
 
 Decides: any `Object.defineProperty` / `Object.defineProperties` call or
-`new WeakMap()` expression under `src/table/**`.
+`new WeakMap()` expression under `src/table/**`, **and** the full local static
+import closure of `src/table/index.ts` — the exact public entry macro artifacts
+import as `parseman/table`.
 
 The shipped table architecture builds a stable registry once and then drives
 parses through it. Descriptor mutation installs fields after construction;
 `WeakMap` hides the same metadata behind an identity lookup. Both are the wrong
 shape for that runtime. Table metadata must be present in the registry's
 construction shape, and host specialization must use explicit fixed-shape
-state. Macro artifact tests additionally execute `rules`, `compose`, and
+state. The closure check prevents moving a **module-scope** cache into a helper
+outside `src/table/` and still loading it on every generated-parser import. A fresh-node
+test imports the built `parseman/table-runtime` artifact with `WeakMap` and
+`Object.defineProperty` counters, so the source graph and the published bundle
+are both proven. Macro artifact tests additionally execute `rules`, `compose`, and
 `composeLeaf` transforms and reject descriptor output or spread-visible metadata.
 
-False-positive risk: **zero**. The scope is only the table runtime and both
+False-positive risk: **zero**. The scope is only the table runtime graph and both
 forbidden forms are direct AST nodes. The gate has planted descriptor and
 `WeakMap` fixtures, so CI proves each half fails.
 

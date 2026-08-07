@@ -236,6 +236,7 @@ describe('the macro path never reaches the Function constructor', () => {
   it('the emitted module text contains no eval-family construct', () => {
     for (const c of CASES) {
       const { source } = macroArtifact(c.map)
+      expect(source, `${c.name}: emitted module runtime`).toContain("from \"parseman/table\"")
       expect(source, `${c.name}: emitted module`).not.toMatch(/\bnew\s+Function\b/)
       expect(source, `${c.name}: emitted module`).not.toMatch(/\beval\s*\(/)
     }
