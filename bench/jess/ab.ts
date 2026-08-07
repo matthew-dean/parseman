@@ -50,14 +50,30 @@
  *                               having broken around that rename. Fixing it is a
  *                               jess-repo change and is NOT done here.
  *
- * ## Same engine on both sides
+ * ## Same MACRO on both sides — NOT the same engine
  *
- * The comparison is CODEGEN vs CODEGEN by default, and a mixed pair is refused.
- * 0.46 has no `src/table/` — the table landed in the 0.47 stack — so the
- * tempting default of "each side's shipping engine" would fold "what did 0.47
- * do to the grammar" together with "how does the table compare to codegen",
- * which is fixture.ts's question, not this one. It also does not produce a
- * stable number; see `solo`.
+ * The comparison is MACRO vs MACRO by default, and a mixed pair is refused. 0.46
+ * has no `src/table/` — the table landed in the 0.47 stack — so the tempting
+ * default of "each side's shipping engine" would fold "what did 0.47 do to the
+ * grammar" together with "how does the table compare to codegen", which is
+ * fixture.ts's question, not this one. It also does not produce a stable number;
+ * see `solo`.
+ *
+ * THIS SECTION USED TO SAY "Same engine on both sides", AND IT WAS FALSE. The
+ * flag was spelled `codegen` and defaulted on both sides, but `codegen` only ever
+ * named the MACRO — and `src/compiler/codegen.ts` is DELETED at HEAD, where the
+ * macro instead routes `compileLinkableTable` → `compileRuleMapRunnable` →
+ * `assembledRules` → the emitted assembly. So the banner announced one engine
+ * while the run measured 0.46's source lowering against HEAD's emitted table.
+ * The harness could already SEE it — the leg shapes read `entryFn 888 B` against
+ * `(anon) 406 B`, and `Leg`'s own comment says two legs whose shapes differ "are
+ * not comparable no matter what the engine LABELS say" — and it printed the
+ * mismatch and carried on under the contrary headline.
+ *
+ * The COMPARISON is left exactly as it was: each side's macro output is what a
+ * user of that release gets, which is the right thing for a release A/B. Only the
+ * CLAIM is corrected. `Leg.lowering` is detected per side and printed, and the
+ * banner names the two lowerings rather than asserting they are one.
  *
  * ## Reading a result — three things, not one
  *
@@ -69,7 +85,7 @@
  * 3. The loadavg at both ends. Far apart means the box moved under the run.
  *
  * Usage:
- *   pnpm bench:jess:ab                       # less, codegen vs codegen
+ *   pnpm bench:jess:ab                       # less, macro vs macro (see above)
  *   pnpm bench:jess:ab css
  *   pnpm bench:jess:ab all
  *   pnpm bench:jess:ab less --ref=<sha>
@@ -214,8 +230,12 @@ function solo(leg: Leg, input: string, m: Measurement): number {
   return median(samples)
 }
 
-const ENGINES = ['table', 'codegen', 'interpreter'] as const
+// `macro` WAS SPELLED `codegen`, and the rename is the point: it selects the
+// MACRO, and what the macro lowers to is a property of the side. `codegen` is
+// still accepted so committed invocations keep working, and is normalised below.
+const ENGINES = ['table', 'macro', 'interpreter'] as const
 type Engine = (typeof ENGINES)[number]
+const normEngine = (e: string): Engine => (e === 'codegen' ? 'macro' : e) as Engine
 
 type Entry = Parameters<typeof run>[0]
 type Runner = (entry: Entry, input: string) => ReturnType<typeof run>
@@ -246,6 +266,33 @@ type Leg = {
   srcReal: string
   /** `typeof` the entry, plus its source size when it is a function. */
   shape: string
+  /**
+   * WHAT THE MACRO ACTUALLY LOWERED TO on this side — detected, never assumed.
+   *
+   * `engine: 'macro'` names a REQUEST ("lower this grammar with the macro"), and
+   * the answer is a property of the side's `src/`, not of the flag. 0.46 has
+   * `src/compiler/codegen.ts` and lowers to generated source; HEAD deleted it and
+   * the macro routes `compileLinkableTable` → `compileRuleMapRunnable` →
+   * `assembledRules` → the EMITTED ASSEMBLY. So the historic default of
+   * `codegen` on both sides names one engine and runs two.
+   *
+   * That is still the right comparison for a RELEASE — it is what users get on
+   * each side — but it is not the same engine, and this field is what stops the
+   * banner claiming otherwise.
+   */
+  lowering: string
+}
+
+/**
+ * The macro's realised lowering for one `src/`, from the FILE that decides it.
+ *
+ * `src/compiler/codegen.ts` is the source lowerer. Its presence is the whole
+ * discriminator, and it is checked on the side's own tree rather than inferred
+ * from a version string, because a `--ref=<sha>` may sit anywhere in the stack.
+ */
+function loweringOf(engine: Engine, src: string): string {
+  if (engine !== 'macro') return engine
+  return existsSync(path.join(src, 'compiler', 'codegen.ts')) ? 'macro→source' : 'macro→emitted'
 }
 
 /** What the entry actually IS, in a form two legs can be compared on. */
@@ -317,11 +364,13 @@ async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: str
 
   const srcReal = realpathSync(src)
 
-  if (engine === 'codegen') {
+  const lowering = loweringOf(engine, src)
+
+  if (engine === 'macro') {
     const mod = await import(`pm-side:${side}:macro:${grammarPath}`) as Record<string, Record<string, unknown>>
     const entry = mod[name]?.[ENTRY] as Entry
-    if (typeof entry !== 'function') throw new Error(`${side} codegen: not a function — the macro did not run`)
-    return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry) }
+    if (typeof entry !== 'function') throw new Error(`${side} macro: not a function — the macro did not run`)
+    return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry), lowering }
   }
 
   const mod = await import(`pm-side:${side}:${grammarPath}`) as Record<string, Record<string, unknown>>
@@ -335,19 +384,19 @@ async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: str
   if (engine === 'interpreter') {
     const entry = rules[ENTRY] as Entry
     if (typeof entry === 'function') throw new Error(`${side} interpreter: got a function — macro lowering leaked`)
-    return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry) }
+    return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry), lowering }
   }
 
   if (!existsSync(path.join(src, 'table', 'encode.ts'))) {
     throw new Error(
       `${src} has no src/table/ — the table engine landed in the 0.47 stack, so --ref-engine=table `
-      + 'cannot be honoured at this reference. Use codegen (the shipping engine there) or interpreter.',
+      + 'cannot be honoured at this reference. Use macro (the shipping lowering there) or interpreter.',
     )
   }
   const enc = await import(`pm-side:${side}:${path.join(src, 'table/encode.ts')}`) as Pick<TableModule, 'encodeTable'>
   const exec = await import(`pm-side:${side}:${path.join(src, 'table/exec.ts')}`) as Pick<TableModule, 'tableRules'>
   const entry = exec.tableRules(enc.encodeTable(rules, VARIANT_SETTINGS.ast))[ENTRY] as Entry
-  return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry) }
+  return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry), lowering }
 }
 
 /** THE PROTOCOL, printed with the numbers. A figure without it is not quotable. */
@@ -500,7 +549,19 @@ async function measureDialect(
   // finding, and no amount of re-running the timing will produce a better one.
   console.log(`    legs (${TWO_GRAPH ? 'TWO-GRAPH mode — the only shape measured to be unbiased' : 'rich mode — see --two-graph'}):`)
   for (const l of [head, ref, ref2, ref3, head2, head3, interp].filter((l): l is Leg => l !== null)) {
-    console.log(`      ${l.side.padEnd(3)} ${l.engine.padEnd(11)} ${l.shape.padEnd(34)} ${l.srcReal}`)
+    console.log(`      ${l.side.padEnd(3)} ${l.engine.padEnd(11)} ${l.lowering.padEnd(14)} ${l.shape.padEnd(34)} ${l.srcReal}`)
+  }
+  // THE ENGINE CLAIM, MADE FROM WHAT WAS DETECTED rather than from the flags.
+  // Same request on both sides does NOT imply same engine — see the header. The
+  // gate pair is the only pair whose lowerings decide how a row may be read.
+  if (head.lowering === ref.lowering) {
+    console.log(`    engine: SAME on both sides — ${head.lowering}`)
+  } else {
+    console.log(`    engine: DIFFERENT — head ${head.lowering}, ref ${ref.lowering}`)
+    console.log('      This is a release A/B (each side\'s macro output is what that release ships),')
+    console.log('      NOT an engine-held-still comparison. Do not quote a row here as the cost of a')
+    console.log('      grammar change: it also carries the lowering change. fixture.ts holds the')
+    console.log('      release still and moves the engine, which is the other half.')
   }
 
   for (const rel of FIXTURES[dialect]) {
@@ -681,10 +742,13 @@ async function main(): Promise<void> {
   const requested = first === undefined || first.startsWith('--') ? 'less' : first
   const dialects: Dialect[] = requested === 'all' ? [...DIALECTS] : [requested as Dialect]
   for (const d of dialects) if (!DIALECTS.includes(d)) throw new Error(`unknown dialect '${d}'`)
-  const headEngine = (argValue('--head-engine') ?? 'codegen') as Engine
-  const refEngine = (argValue('--ref-engine') ?? 'codegen') as Engine
+  const headEngine = normEngine(argValue('--head-engine') ?? 'macro')
+  const refEngine = normEngine(argValue('--ref-engine') ?? 'macro')
   for (const e of [headEngine, refEngine]) if (!ENGINES.includes(e)) throw new Error(`unknown engine '${e}'`)
-  // MIXED ENGINES ARE REFUSED, and the default is codegen on BOTH sides.
+  // MIXED ENGINE REQUESTS ARE REFUSED, and the default is the macro on BOTH
+  // sides. Note what this can and cannot enforce: it holds the REQUEST equal, and
+  // what each side's macro lowers to is detected and reported by `loweringOf`,
+  // not constrained here. At this anchor the two differ, and that is printed.
   //
   // The obvious default was HEAD's shipping engine (table) against the
   // reference's (codegen, since 0.46 has no table). It is wrong twice over. It is
