@@ -66,6 +66,8 @@ describe('invariant gate', () => {
     ['inv8', 'INV-8', 'resolves to 2 DIFFERENT declarations'],
     ['inv9', 'INV-9', 'is minted in 2 modules'],
     ['inv10', 'INV-10', 'which does not exist'],
+    ['inv12-descriptor', 'INV-12', 'installs a descriptor after construction'],
+    ['inv12-weakmap', 'INV-12', 'hides metadata behind an identity lookup'],
     // INV-11 plants BOTH halves in one fixture. 11a is `import { execRules as
     // tableRules }` — the edit that let the reference interpreter answer to the
     // shipped engine's name for two releases. 11b is a renaming re-export from an

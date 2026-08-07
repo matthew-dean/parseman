@@ -41,7 +41,7 @@ bypassed with it. So:
   under-report. A finding you can argue with is worth less than a finding
   nobody can.
 
-## The five rules
+## The rules
 
 ### INV-1 — no accessor descriptor installed with `Object.defineProperty`
 
@@ -63,6 +63,23 @@ False-positive risk: **very low**. The distinction — imperative install versus
 shape-at-construction — is syntactic, and every non-accessor
 `Object.defineProperty` in the tree (there are ~25, all `value:` on
 compile-time objects) is untouched.
+
+### INV-12 — no descriptor installation or `WeakMap` side cache in table runtime
+
+Decides: any `Object.defineProperty` / `Object.defineProperties` call or
+`new WeakMap()` expression under `src/table/**`.
+
+The shipped table architecture builds a stable registry once and then drives
+parses through it. Descriptor mutation installs fields after construction;
+`WeakMap` hides the same metadata behind an identity lookup. Both are the wrong
+shape for that runtime. Table metadata must be present in the registry's
+construction shape, and host specialization must use explicit fixed-shape
+state. Macro artifact tests additionally execute `rules`, `compose`, and
+`composeLeaf` transforms and reject descriptor output or spread-visible metadata.
+
+False-positive risk: **zero**. The scope is only the table runtime and both
+forbidden forms are direct AST nodes. The gate has planted descriptor and
+`WeakMap` fixtures, so CI proves each half fails.
 
 ### INV-2 — no field in a public `*Options` type that nothing reads
 

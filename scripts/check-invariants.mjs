@@ -25,6 +25,7 @@
  *   INV-9  no cross-module KEY string minted in more than one module
  *   INV-10 no comment naming a repo path that does not exist
  *   INV-11 one engine, one public name — no `as` rename across engine vocabularies
+ *   INV-12 no descriptor installation or WeakMap side cache in table runtime
  *
  * INV-8/9/10 are the NAMING rules. They exist because every duplicate-definition
  * defect this project has paid for was found by accident, and three of the five
@@ -277,6 +278,43 @@ for (const [file, { ast, lineAt }] of parsed) {
             `INV-1:${file}:${scope}`)
         }
       }
+    }
+  })
+}
+
+/* ================================================================== *
+ * INV-12 — table runtime must not install descriptors or side-cache metadata.
+ *
+ * TABLE ARTIFACTS are the 0.47 architecture: they are constructed once and
+ * then parsed through millions of hot calls.  `Object.defineProperty` after
+ * construction is the slowest way to add a field in V8; a WeakMap merely moves
+ * that identity/lookup cost out of sight.  Metadata must instead be present in
+ * the table/map shape from birth.  This is deliberately scoped to `src/table/`:
+ * it is a source-decidable rule for the shipped table runtime, not a claim that
+ * every compiler-only analysis cache in the repository is on a parse path.
+ *
+ * Generated macro artifacts have their own executable assertions in the macro
+ * artifact tests, including `rules`, `compose`, and `composeLeaf`; this check
+ * makes reintroducing either forbidden primitive in their shared runtime a CI
+ * failure before a benchmark is even run.
+ * ================================================================== */
+for (const [file, { ast, lineAt }] of parsed) {
+  if (!file.replaceAll('\\', '/').startsWith('src/table/')) continue
+  walkScoped(ast, (n, scope) => {
+    if (n.type === 'CallExpression') {
+      const c = n.callee
+      const which = c && (c.type === 'StaticMemberExpression' || c.type === 'MemberExpression') && !c.computed
+        && isId(c.object, 'Object') ? c.property?.name : undefined
+      if (which === 'defineProperty' || which === 'defineProperties') {
+        report('INV-12', file, lineAt(n.start),
+          `Object.${which} in table runtime \`${scope}\` installs a descriptor after construction. Build the required metadata into the table/map shape before it escapes instead.`,
+          `INV-12:descriptor:${file}:${scope}`)
+      }
+    }
+    if (n.type === 'NewExpression' && isId(n.callee, 'WeakMap')) {
+      report('INV-12', file, lineAt(n.start),
+        `WeakMap side cache in table runtime \`${scope}\` hides metadata behind an identity lookup. Carry it in the table/map shape instead.`,
+        `INV-12:weakmap:${file}:${scope}`)
     }
   })
 }
