@@ -91,6 +91,14 @@ That is a size trade, and a large one — it moves the emitted engine's source f
 the runtime into the artifact. Measured: `example/json` 1,382 B → 58,823 B, the
 CSS example 8,987 B → 341,517 B. Pre-compile the grammars whose parse speed you
 need; leave the rest.
+
+**The default is a current judgement, not a settled one.** It is off because
+38–42× on the artifact would hand back the size win the table lowering exists
+for, and because nothing yet shows the pre-compiled path buying enough to pay
+for that. Both halves of that are measurements, and either can move — a macro
+artifact's parse speed against `assembledRules` is under investigation as of
+0.47. If pre-compiling turns out to close a gap the default path has, this
+default is an owner decision to revisit, not a design commitment.
 :::
 
 Compiling has a per-grammar cost (~75–650 µs depending on grammar size), so it pays off

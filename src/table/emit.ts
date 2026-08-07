@@ -157,6 +157,15 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
    * instead of carrying. Defaulting it ON would hand back the 14x size win the
    * table lowering exists for, so the default is OFF and `defaultAssemblyCfgs`
    * is the one-liner for a consumer who wants emitted speed under a CSP.
+   *
+   * THE DEFAULT IS A MEASUREMENT, NOT A COMMITMENT. It rests on two numbers —
+   * the size cost above, and the absence of a demonstrated speed gap the
+   * pre-compiled path closes — and only the first of those is settled. A macro
+   * artifact measured ~29% slower than `assembledRules` over the same grammar
+   * during 0.47 (36.0 vs 27.8 ms, 0/16 wins, -0.1% control, identical trees);
+   * that is being diagnosed as an emitted-PROGRAM difference, not an engine
+   * one, but if pre-compiling turns out to close it the default is an owner
+   * decision to reopen. Do not harden this into a design rule.
    */
   if (cfgs.length === 0) return ['a:[],']
   const t = resolveTable(prog)
