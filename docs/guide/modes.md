@@ -70,6 +70,27 @@ compiled.inlineExpression                        // self-contained expr (what th
 `compile()` uses `new Function` under the hood, so it cannot run where a strict
 [Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP) blocks
 `'unsafe-eval'`. Use the interpreter or the macro build plugin in those environments.
+
+A **macro-built table artifact never calls the `Function` constructor**, at build
+or at parse — including the first `parse()`, which is where the table engine used
+to build its emitted assembly. `test/unit/no-function-constructor.test.ts` decides
+this by proxying `globalThis.Function` and counting calls across a full parse of
+every example grammar, for every option set.
+
+By default such an artifact runs the table engine's **closure** path. To keep the
+faster **emitted** path under a CSP, ask the build to pre-compile the assemblies
+into the artifact:
+
+```ts
+import { emitTableModule, defaultAssemblyCfgs } from 'parseman/table'
+
+emitTableModule(prog, { assemblies: defaultAssemblyCfgs(prog) })
+```
+
+That is a size trade, and a large one — it moves the emitted engine's source from
+the runtime into the artifact. Measured: `example/json` 1,382 B → 58,823 B, the
+CSS example 8,987 B → 341,517 B. Pre-compile the grammars whose parse speed you
+need; leave the rest.
 :::
 
 Compiling has a per-grammar cost (~75–650 µs depending on grammar size), so it pays off

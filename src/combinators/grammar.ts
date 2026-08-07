@@ -68,12 +68,68 @@ function createParseLineContext(input: string, pos: number): { lineIndex: LineIn
   return { lineIndex, lineScannedTo: pos }
 }
 
+/** The three pre-written `trackLines` resolvers. One is SELECTED at link time. */
+const TRACK_LINES_ON = (): boolean => true
+const TRACK_LINES_OFF = (): boolean => false
+const TRACK_LINES_INHERIT = (ctx: ParseContext | undefined): boolean => ctx?.trackLines === true
+
+/**
+ * A trivia scope.
+ *
+ * ── NO RULE MAY CONSULT AN OPTION WHILE IT PARSES ───────────────────────────
+ *
+ * `opts` is fixed when `parser(opts, root)` is called. That is LINK TIME — the
+ * same moment `assemble.ts` resolves `RunCfg` into a choice of piece, and the
+ * same rule (`RunCfg`'s header, `scripts/check-invariants.mjs` INV-6/INV-7).
+ * Everything below used to be read INSIDE `parse`, which a nested scope enters
+ * on every visit, so a grammar with a `parser({ trivia })` region paid nine
+ * option reads per entry for answers that could not change.
+ *
+ * They are now resolved once, here, and the parse path reads only the resolved
+ * values. Where the answer genuinely depends on the CALLER's context — an
+ * inherited `trackLines`, inherited trivia labels — a pre-written variant is
+ * SELECTED at link time rather than branched on per entry. Selecting costs one
+ * closure per scope in the grammar; branching cost one test per entry per parse.
+ *
+ * `_ctx.trivia`, `_ctx.captureTrivia` and the CST sinks stay where they are:
+ * those are per-scope RUNTIME state that `node()` opens and closes mid-parse,
+ * not configuration. Resolving them early would be wrong, not fast.
+ */
 export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanParser<T> {
   const clearTrivia = opts.trivia === null
   const opaqueRootCapture = opts.rootCapture === 'opaque'
   if (opaqueRootCapture && opts.trivia === undefined) {
     throw new TypeError('parser({ rootCapture: \'opaque\' }) requires an explicit trivia scope.')
   }
+  /** This scope's own trivia, or `undefined` for cleared/inherited. */
+  const scopeTrivia: Combinator<unknown> | undefined = clearTrivia ? undefined : (opts.trivia ?? undefined)
+  /**
+   * `?._meta?.` and not `?._meta.`: the macro's own evaluator builds a
+   * `parser({ trivia: /re/ })` from source text, so a raw RegExp reaches here.
+   * The reads used to happen inside `parse`, where such a scope threw only if it
+   * ever ran; hoisting them to construction must not turn that into a build-time
+   * throw. (`test/unit/plugin-coverage.test.ts`, "anyValue edge forms".)
+   */
+  const scopeLabels = scopeTrivia?._meta?.triviaKindLabels
+  /** Does this scope have to refuse an unclassified root scope? Link-time fact. */
+  const refuseUnclassified = scopeTrivia !== undefined
+    && !scopeTrivia._meta?.rootTriviaClassified && !opaqueRootCapture
+  const forceCaptureTrivia = opts.captureTrivia === true
+  const trackLinesOf = opts.trackLines === true ? TRACK_LINES_ON
+    : opts.trackLines === false ? TRACK_LINES_OFF
+    : TRACK_LINES_INHERIT
+  /**
+   * The per-node capture mask, resolved as far as this scope can resolve it.
+   *
+   * With its own labelled trivia the mask is a constant and is computed once.
+   * With INHERITED labels it depends on the caller, so the link step selects the
+   * deriving variant instead — `undefined` here means "no mask to install".
+   */
+  const captureKinds = clearTrivia ? undefined : opts.captureTriviaKinds
+  const ownCaptureMask = captureKinds === undefined ? undefined
+    : scopeLabels !== undefined ? triviaKindMask(scopeLabels, captureKinds)
+    : undefined
+  const inheritCaptureMask = captureKinds !== undefined && scopeLabels === undefined
   return {
     _tag: 'grammar',
     _meta: {
@@ -89,18 +145,15 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
     _def: {
       tag: 'grammar',
       parser: root as Combinator<unknown>,
-      triviaParser: clearTrivia ? undefined : (opts.trivia ?? undefined),
+      triviaParser: scopeTrivia,
       clearTrivia,
       ...(opaqueRootCapture ? { rootCapture: 'opaque' as const } : {}),
       ...(opts.captureTrivia ? { captureTrivia: true } : {}),
       trackLines: opts.trackLines ?? false,
     },
     parse(input: string, pos?: number, _ctx?: ParseContext): ParseResult<T> {
-      if (opts.trivia !== undefined && opts.trivia !== null
-        && !opts.trivia._meta.rootTriviaClassified && !opaqueRootCapture) {
-        refuseUnclassifiedRootScope(_ctx?._rootTriviaStrictScopes)
-      }
-      const trackLines = opts.trackLines ?? _ctx?.trackLines ?? false
+      if (refuseUnclassified) refuseUnclassifiedRootScope(_ctx?._rootTriviaStrictScopes)
+      const trackLines = trackLinesOf(_ctx)
       const lineContext = trackLines && _ctx?._lineIndex === undefined && _ctx?._lineStarts === undefined
         ? createParseLineContext(input, pos ?? 0)
         : undefined
@@ -121,19 +174,18 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
       if (clearTrivia) {
         ctx.trivia = undefined
         ctx.triviaKindLabels = undefined
-      } else if (opts.trivia != null) {
-        ctx.trivia = opts.trivia
-        if (opts.trivia._meta.triviaKindLabels) ctx.triviaKindLabels = opts.trivia._meta.triviaKindLabels
+      } else if (scopeTrivia !== undefined) {
+        ctx.trivia = scopeTrivia
+        if (scopeLabels) ctx.triviaKindLabels = scopeLabels
       }
-      if (opts.captureTrivia || _ctx?.captureTrivia) ctx.captureTrivia = true
+      if (forceCaptureTrivia || _ctx?.captureTrivia) ctx.captureTrivia = true
       // Kind-filter for per-node capture. Resolve against this scope's trivia
       // labels — this parser's own trivia if it declares one, else the INHERITED
       // labels (`_ctx.triviaKindLabels`), so captureTriviaKinds still applies when
       // trivia is inherited rather than re-declared here. No labels → undefined
       // (capture all).
-      if (opts.captureTriviaKinds && !clearTrivia) {
-        ctx._triviaCaptureMask = triviaKindMask(opts.trivia?._meta.triviaKindLabels ?? _ctx?.triviaKindLabels, opts.captureTriviaKinds)
-      }
+      if (ownCaptureMask !== undefined) ctx._triviaCaptureMask = ownCaptureMask
+      else if (inheritCaptureMask) ctx._triviaCaptureMask = triviaKindMask(_ctx?.triviaKindLabels, captureKinds)
       // This is a property of the local trivia scope, not a post-parse filter:
       // nested recognition can still skip its trivia, but selected root rows
       // must never be written for an explicitly opaque region.

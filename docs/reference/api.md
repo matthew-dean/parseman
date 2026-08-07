@@ -922,7 +922,13 @@ calls too (open recursion). Each item is a grammar (a `rules()` result) or an
 already-compiled artifact.
 
 - **With the macro (build time):** `compose([...])` is fused into **static source** — a
-  plain closure of direct calls. **No `new Function`, no eval** in the emitted code.
+  plain closure of direct calls. **No `new Function`, no eval** in the emitted code, and
+  none at parse time either: a macro-built table artifact never reaches the `Function`
+  constructor on any option set, which
+  `test/unit/no-function-constructor.test.ts` decides by counting constructor calls
+  across a real parse rather than by scanning the emitted text. (Scanning the text
+  cannot see it — the source string was assembled at runtime and never appeared in the
+  artifact, which is how this claim was false for as long as it was written down.)
 - **Without the macro (runtime):** `compose([...])` fuses when it runs, via `new Function`
   — the same JIT `compile()` uses (so, like `compile()`, it needs `'unsafe-eval'` under a
   strict CSP). Parsing is never eval; only the one-time fuse is.

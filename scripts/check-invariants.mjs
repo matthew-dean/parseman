@@ -20,6 +20,7 @@
  *   INV-4  no declaration body duplicated across modules
  *   INV-5  no `delete` on an object the enclosing function did not construct
  *   INV-6  no assembled piece body reads a per-parse config field
+ *   INV-7  no combinator parse path reads a construction-time option
  *
  * Usage:
  *   node scripts/check-invariants.mjs            # gate — exits 1 on any new finding
@@ -614,6 +615,105 @@ const MIN_DUP_CHARS = 160
       })
     }
     walkScoped(ast, (n) => { if (isPiece(n)) scan(n.body, lineAt(n.start)) })
+  }
+}
+
+/* ================================================================== *
+ * INV-7 — no combinator `parse` body may read a CONSTRUCTION-TIME OPTION.
+ *
+ * DECIDES: a member read off an identifier named `opts` / `options` / `_opts`
+ * inside a function that is a combinator's `parse` — either the property
+ * `parse(...)` of an object literal, or any `(input, pos, ctx)` body.
+ *
+ * WHY: this is INV-6's rule for the OTHER engine. `parser(opts, root)` fixes
+ * `opts` when the grammar is built; a `parse` body that reads it is asking a
+ * question whose answer was already known, once per scope entry, for the whole
+ * life of the process. `combinators/grammar.ts` read NINE of them per entry —
+ * `trivia` five times, `trackLines`, `captureTrivia`, `captureTriviaKinds`
+ * twice — and a nested `parser({ trivia })` region is entered as often as the
+ * rule containing it runs.
+ *
+ * The resolution is the same one INV-6 names: decide at LINK time and SELECT a
+ * pre-written variant, rather than emit one body that tests. Overgeneration is
+ * cheap; a per-entry test is not.
+ *
+ * DELIBERATELY NOT FLAGGED: `ctx` reads. A `ctx.trivia` / `ctx.captureTrivia`
+ * read is per-scope RUNTIME state that `node()` opens and closes mid-parse, not
+ * configuration — resolving it early would be wrong, not fast. INV-6 draws the
+ * same line for the same reason.
+ *
+ * ALSO NOT FLAGGED: the top-level `parse(combinator, input, opts)` entry, whose
+ * `opts` arrive per CALL. That is the run-start boundary, the same irreducible
+ * consult `AssemblyCache.forCtx` carries the argument for.
+ * ================================================================== */
+{
+  const OPTION_BASES = new Set(['opts', 'options', '_opts'])
+  /**
+   * THE CRITERION IS WHERE THE BINDING COMES FROM, not which file it is in.
+   *
+   * An `opts` that is a PARAMETER of the parse function arrives per CALL — that
+   * is the run-start boundary (`parse(combinator, input, opts)`, a language
+   * service's `parse(src, opts)`), the same irreducible consult
+   * `AssemblyCache.forCtx` carries the argument for. An `opts` captured from an
+   * ENCLOSING scope was fixed when the combinator was built, and reading it here
+   * is the violation.
+   */
+  const paramNames = (fn) => {
+    const out = new Set()
+    const add = (x) => {
+      if (!x || typeof x !== 'object') return
+      if (x.type === 'Identifier') out.add(x.name)
+      else if (x.type === 'AssignmentPattern') add(x.left)
+      else if (x.type === 'RestElement') add(x.argument)
+      else if (x.type === 'ObjectPattern') for (const q of x.properties ?? []) add(q.value ?? q.argument)
+      else if (x.type === 'ArrayPattern') for (const q of x.elements ?? []) add(q)
+      else if (x.type === 'TSParameterProperty') add(x.parameter)
+    }
+    for (const x of fn.params ?? []) add(x)
+    return out
+  }
+  for (const [file, entry] of parsed) {
+    if (!file.startsWith('src/')) continue
+    const { ast, lineAt } = entry
+    const isParseBody = (n, parent) => {
+      if (n.type !== 'ArrowFunctionExpression' && n.type !== 'FunctionExpression'
+        && n.type !== 'FunctionDeclaration') return false
+      const named = (n.id && n.id.name === 'parse')
+        || (parent && parent.key && parent.key.name === 'parse'
+          && (parent.type === 'ObjectProperty' || parent.type === 'Property'
+            || parent.type === 'MethodDefinition' || parent.type === 'PropertyDefinition'))
+      if (named) return true
+      const p = n.params ?? []
+      const names = p.map((x) => (x.type === 'Identifier' ? x.name : null))
+      return names.length >= 3 && (names[0] === 'input' || names[0] === '_input')
+        && typeof names[2] === 'string' && /ctx/i.test(names[2])
+    }
+    const scan = (node, atLine, own) => {
+      walkScoped(node, (n) => {
+        if (n.type !== 'StaticMemberExpression' && n.type !== 'MemberExpression') return
+        if (n.computed) return
+        let obj = unwrap(n.object)
+        while (obj && (obj.type === 'TSNonNullExpression' || obj.type === 'ChainExpression')) {
+          obj = unwrap(obj.expression)
+        }
+        if (!obj || obj.type !== 'Identifier' || !OPTION_BASES.has(obj.name)) return
+        if (own.has(obj.name)) return
+        const f = n.property?.name ?? '?'
+        report('INV-7', file, lineAt(n.start),
+          `parse body (opened at line ${atLine}) reads the construction-time option \`${obj.name}.${f}\` — `
+          + 'that answer is fixed when the combinator is built; resolve it there and SELECT a pre-written '
+          + 'variant, the way `parser()` selects its trackLines resolver',
+          `INV-7:${file}:${obj.name}.${f}:${atLine}`)
+      })
+    }
+    const visit = (n, parent) => {
+      if (n === null || typeof n !== 'object') return
+      if (Array.isArray(n)) { for (const c of n) visit(c, parent); return }
+      if (typeof n.type !== 'string') { for (const k in n) visit(n[k], parent); return }
+      if (isParseBody(n, parent)) scan(n.body, lineAt(n.start), paramNames(n))
+      for (const k in n) { if (k === 'type') continue; visit(n[k], n) }
+    }
+    visit(ast, null)
   }
 }
 
