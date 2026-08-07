@@ -394,13 +394,13 @@ export function emitFoldedModule(folded: FoldedProgram, opts: FoldedEmitOptions 
   })
   const names = opts.names ?? {}
   return [
-    `import { tableVariants } from ${jsString(runtime)}`,
-    `const _t = {`,
+    `import { expandCompactFolded, tableVariants } from ${jsString(runtime)}`,
+    `const _t = /* @__PURE__ */ expandCompactFolded({`,
     `b:{`,
     ...base,
     `},`,
     `v:{${variants.join(',')}}`,
-    `}`,
+    `})`,
     ...Object.keys(names).map(n =>
       `export const ${names[n]!} = /* @__PURE__ */ tableVariants(_t, ${jsString(n)})`),
   ].join('\n')

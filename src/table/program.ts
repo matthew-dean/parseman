@@ -306,7 +306,7 @@ export type CompactProgram = {
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   if ('code' in p) return p
-  return {
+  return ownTableProgram({
     code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
     ...(p.lb === undefined ? {} : { labels: p.lb }),
@@ -319,7 +319,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.rv === undefined ? {} : { rec: p.rv }),
     ...(p.cv === undefined ? {} : { cov: p.cv }),
     ...(p.a === undefined ? {} : { asm: p.a }),
-  }
+  })
 }
 
 /** One `dispatch()`'s routing tables, in serialisable form. */
@@ -421,6 +421,21 @@ export type ResolvedTable = {
   /** Per trivia entry: does it carry kind labels? Decided here, never per parse. */
   readonly triviaLabelled: readonly boolean[]
   readonly rules: Readonly<Record<string, number>>
+}
+
+/**
+ * Runtime state owned by a table object from the moment that object is made.
+ * The symbol stays out of wire data; the nested cell lets resolution fill the
+ * cache without changing the program object's V8 shape.
+ */
+const TABLE_RUNTIME = Symbol('parseman.tableRuntime')
+type RuntimeTableProgram = TableProgram & {
+  readonly [TABLE_RUNTIME]?: { resolved: ResolvedTable | undefined }
+}
+
+/** Give an internally-created program its fixed-shape runtime owner. */
+export function ownTableProgram(prog: TableProgram, resolved?: ResolvedTable): TableProgram {
+  return { ...prog, [TABLE_RUNTIME]: { resolved } } as RuntimeTableProgram
 }
 
 /** A compiled entry, shaped exactly like a codegen rule function. */
@@ -564,10 +579,9 @@ function buildTrivia(spec: TriviaSpec): Combinator<unknown> {
   return classifiedTrivia(arms)
 }
 
-const _tableCache = new WeakMap<TableProgram, ResolvedTable>()
-
 export function resolveTable(prog: TableProgram): ResolvedTable {
-  const hit = _tableCache.get(prog)
+  const owner = (prog as RuntimeTableProgram)[TABLE_RUNTIME]
+  const hit = owner?.resolved
   if (hit !== undefined) return hit
   const cc = prog.cc.map(resolveClass)
   const triviaBuilt = (prog.triviaSpecs ?? []).map(buildTrivia)
@@ -591,7 +605,7 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
     })),
     rules: prog.rules,
   }
-  _tableCache.set(prog, built)
+  if (owner !== undefined) owner.resolved = built
   return built
 }
 
@@ -627,6 +641,18 @@ export type FoldedProgram = {
   readonly base: TableProgram
   /** Variant name → its edits. The base's own name maps to an empty delta. */
   readonly variants: Readonly<Record<string, TableDelta>>
+}
+
+const FOLDED_RUNTIME = Symbol('parseman.foldedRuntime')
+type RuntimeFoldedProgram = FoldedProgram & {
+  readonly [FOLDED_RUNTIME]?: { byName: Map<string, TableProgram> }
+}
+
+function ownFoldedProgram(
+  base: TableProgram,
+  variants: Readonly<Record<string, TableDelta>>,
+): FoldedProgram {
+  return { base, variants, [FOLDED_RUNTIME]: { byName: new Map() } } as RuntimeFoldedProgram
 }
 
 /** The wire form a folded artifact prints — short keys, as `CompactProgram`. */
@@ -764,11 +790,8 @@ export function foldPrograms(
       ...(p.hostMode === undefined ? {} : { hostMode: p.hostMode }),
     }
   }
-  return { base, variants }
+  return ownFoldedProgram(base, variants)
 }
-
-/** WeakMap-keyed per folded program, so repeated selection is a lookup. */
-const _variantCache = new WeakMap<FoldedProgram, Map<string, TableProgram>>()
 
 /**
  * Materialise ONE variant of a folded table, at load, when it is selected.
@@ -785,9 +808,8 @@ const _variantCache = new WeakMap<FoldedProgram, Map<string, TableProgram>>()
  * half of G5 is untouched.
  */
 export function unfoldVariant(folded: FoldedProgram, name: string): TableProgram {
-  let byName = _variantCache.get(folded)
-  if (byName === undefined) { byName = new Map(); _variantCache.set(folded, byName) }
-  const hit = byName.get(name)
+  const byName = (folded as RuntimeFoldedProgram)[FOLDED_RUNTIME]?.byName
+  const hit = byName?.get(name)
   if (hit !== undefined) return hit
   const d = folded.variants[name]
   if (d === undefined) {
@@ -800,7 +822,7 @@ export function unfoldVariant(folded: FoldedProgram, name: string): TableProgram
   const code = [...base.code]
   let ip = 0
   for (let i = 0; i < d.at.length; i++) { ip += d.at[i]!; code[ip] = d.to[i]! }
-  const prog: TableProgram = {
+  const raw: TableProgram = {
     ...base,
     code,
     ...(d.lines === undefined ? {} : { lines: d.lines }),
@@ -809,8 +831,10 @@ export function unfoldVariant(folded: FoldedProgram, name: string): TableProgram
   // Seeded from the BASE's resolved table: `cc`, `disp`, `dsp` and the rebuilt
   // trivia are identical by `foldPrograms`' own assertion, so N variants cost
   // ONE of each between them. Only the code stream is per variant.
-  _tableCache.set(prog, { ...resolveTable(base), prog, code: Int32Array.from(code) })
-  byName.set(name, prog)
+  const prog = ownTableProgram(raw)
+  const owner = (prog as RuntimeTableProgram)[TABLE_RUNTIME]!
+  owner.resolved = { ...resolveTable(base), prog, code: Int32Array.from(code) }
+  byName?.set(name, prog)
   return prog
 }
 
@@ -824,5 +848,5 @@ export function expandCompactFolded(f: CompactFolded): FoldedProgram {
       ...(d.h === undefined ? {} : { hostMode: d.h }),
     }
   }
-  return { base: expandCompact(f.b), variants }
+  return ownFoldedProgram(expandCompact(f.b), variants)
 }

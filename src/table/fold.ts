@@ -1,6 +1,10 @@
 import { tableRules } from './assemble.ts'
 import { expandCompactFolded, unfoldVariant, type CompactFolded, type FoldedProgram, type TableRule } from './program.ts'
 
+// Emitted folded modules expand their wire literal ONCE, so every named export
+// shares the family's structural variant/resolution owner.
+export { expandCompactFolded } from './program.ts'
+
 /**
  * Select ONE variant of a folded table and build its rule map.
  *

@@ -20,7 +20,7 @@ import { missingInferredType } from '../combinators/node.ts'
 import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
-import { covKindCode, encodeClassSpec } from './program.ts'
+import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 
 /**
@@ -1455,7 +1455,7 @@ class Encoder {
   finish(): TableProgram {
     if (this.code.length === 0) this.emit(OP_EMPTY)
     this.collapseIndirection()
-    return {
+    return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
       ...(this.labels === undefined ? {} : { labels: this.labels }),
@@ -1470,7 +1470,7 @@ class Encoder {
       ...(this.rec ? { rec: 1 as const } : {}),
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
-    }
+    })
   }
 }
 

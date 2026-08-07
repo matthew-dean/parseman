@@ -15,7 +15,7 @@ import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { GRAMMAR_COVERAGE_DEFINITIONS } from '../grammar-metadata.ts'
 import { reachableIps } from './inspect.ts'
 import { OP_NODE, OP_NODE_TRACK, OP_SCOPE } from './ops.ts'
-import { covDefinitions, resolveTable, type TableProgram, type TableRule } from './program.ts'
+import { covDefinitions, resolveTable, type ResolvedTable, type TableProgram, type TableRule } from './program.ts'
 
 const EMPTY_FX: string[] = []
 
@@ -82,6 +82,7 @@ export function stampRuleMap(
   prog: TableProgram,
   d: RuleRunner,
   artifactMetadata: Readonly<Record<symbol, unknown>> = {},
+  resolved: ResolvedTable = resolveTable(prog),
 ): Record<string, TableRule> {
   // `run()` reads trivia metadata off the ENTRY and takes its
   // `typeof r === 'function'` branch for compiled entries, which codegen stamps
@@ -99,12 +100,12 @@ export function stampRuleMap(
   // Read from the ENTRY ROW, not from one program-wide slot: `encodeRule` wraps each
   // rule's entry in `OP_SCOPE <triviaSlot> <body>` iff THAT rule has ambient trivia,
   // and a `composeLeaf` grammar's pieces do not agree (the same disagreement
-  // `scanSkipOf` exists for). `resolveTable` is memoised per program, so this is the
-  // array both drivers already built.
+  // `scanSkipOf` exists for). The owning driver passes its resolved table, so
+  // this is the exact trivia array it already built.
   const triviaOfRule = (ip: number): Combinator<unknown> | undefined => {
     if (prog.code[ip] !== OP_SCOPE) return undefined
     const slot = prog.code[ip + 1]!
-    return slot < 0 ? undefined : resolveTable(prog).trivia[slot]
+    return slot < 0 ? undefined : resolved.trivia[slot]
   }
   const baseMeta = prog.labels === undefined && prog.classified !== 1
     ? undefined

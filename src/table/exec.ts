@@ -1668,5 +1668,5 @@ export function execRules(
     // never gives them — a divergence that is invisible, because the parse
     // succeeds having skipped over a delimiter it should have stopped at.
     scanSkipFor: ri => d.scanSkip[prog.scanSkipOf?.[ri] ?? -1],
-  }, artifactMetadata)
+  }, artifactMetadata, t)
 }

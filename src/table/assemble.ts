@@ -2766,15 +2766,19 @@ export class AssemblyCache {
   private readonly t: ResolvedTable
   private readonly prog: TableProgram
   private readonly byCfg: Array<Assembly | undefined> = Array.from({ length: 64 })
-  /** Predicate-specialised assemblies are owned by their host identity. */
-  private readonly byHost = new WeakMap<object, {
-    predicate: (type: string) => boolean
-    assemblies: Array<Assembly | undefined>
-  }>()
+  /**
+   * Monomorphic predicate inline cache. An assembly depends on the predicate
+   * FUNCTION and the scalar cfg key, not on the host object that carries it, so
+   * retaining the host would add neither correctness nor reuse. Stable parsing
+   * is one identity comparison plus an array index; replacing the predicate
+   * replaces this specialisation without retaining either host.
+   */
+  private hostPredicate: ((type: string) => boolean) | undefined
+  private hostAssemblies: Array<Assembly | undefined> | undefined
 
-  constructor(prog: TableProgram) {
+  constructor(prog: TableProgram, resolved: ResolvedTable = resolveTable(prog)) {
     this.prog = prog
-    this.t = resolveTable(prog)
+    this.t = resolved
   }
 
   for(cfg: RunCfg): Assembly {
@@ -2825,8 +2829,8 @@ export class AssemblyCache {
    * It allocates nothing: the key is packed from the ctx's own bits by `cfgKeyOf`,
    * which takes them as arguments precisely so no `RunCfg` need exist here — that
    * object is built only on the miss that builds an assembly. A host trivia
-   * predicate additionally selects a host-identity cache because it cannot be
-   * represented by a scalar bit.
+   * predicate additionally selects its identity-specialised inline cache
+   * because a function cannot be represented by a scalar bit.
    *
    * DO NOT CACHE THE RESULT ACROSS CALLS. Keying it on anything but the `ctx`'s
    * own option bits is how `tableRules` handed a strict parse the PREVIOUS
@@ -2844,16 +2848,18 @@ export class AssemblyCache {
     const probe = ctx._probe !== undefined
     const key = cfgKeyOf(hostCst, trackLines, tolerant, coverage, probe, hostReadsChildren)
     let cache = this.byCfg
-    if (host !== undefined && hostCaptureTrivia !== undefined) {
+    if (hostCaptureTrivia !== undefined) {
       // The predicate is host configuration, not parse state. Specialising each
       // node once keeps it out of the hot path, so its behaviour must stay stable
       // for this function identity. Replacing the function is supported: the
-      // identity check below installs a fresh cache for the same host object.
-      const prior = this.byHost.get(host)
-      if (prior !== undefined && prior.predicate === hostCaptureTrivia) cache = prior.assemblies
+      // identity check below installs a fresh cache when it is replaced.
+      if (this.hostPredicate === hostCaptureTrivia) {
+        cache = this.hostAssemblies!
+      }
       else {
         cache = Array.from({ length: 64 })
-        this.byHost.set(host, { predicate: hostCaptureTrivia, assemblies: cache })
+        this.hostPredicate = hostCaptureTrivia
+        this.hostAssemblies = cache
       }
     }
     const hit = cache[key]
@@ -2882,7 +2888,8 @@ export function tableRules(
   artifactMetadata: Readonly<Record<symbol, unknown>> = {},
 ): Record<string, TableRule> {
   const prog = expandCompact(source)
-  const cache = new AssemblyCache(prog)
+  const resolved = resolveTable(prog)
+  const cache = new AssemblyCache(prog, resolved)
   const names = Object.keys(prog.rules)
   const skipOf = prog.scanSkipOf
   let last: unknown
@@ -2920,5 +2927,5 @@ export function tableRules(
       selected = a
       return a.scanSkip[skipOf?.[ri] ?? -1]
     },
-  }, artifactMetadata)
+  }, artifactMetadata, resolved)
 }
