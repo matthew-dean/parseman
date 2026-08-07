@@ -42,6 +42,37 @@ function emittableConst(v: unknown): boolean {
   return false
 }
 
+/**
+ * Does the rule-map entry `winner` bottom out AT the reference `p`?
+ *
+ * The question `Encoder.winners` has to ask before resolving a `g.X` by name. A
+ * map entry that IS the reference — directly, or under the scope wrappers that
+ * `rules()` puts there — is not an override to resolve to; it is the reference's
+ * own binding, and the only thing that reaches the rule's BODY from there is the
+ * ref's thunk. Resolving by name instead hands back the row already in flight for
+ * that entry, which is an alias cycle rather than a parser (see `winners`).
+ *
+ * ONLY WRAPPERS `rules()` ITSELF INTRODUCES are unwrapped — `parser()`/`noTrivia`
+ * scopes (`grammar`) and `trivia()`. Both are single-child and both can encode to
+ * NO ROW, which is what makes the cycle degenerate. Walking further, into a
+ * `seq()` or a `choice()` arm, would answer a different question: a rule whose
+ * body legitimately contains a reference to itself is ordinary recursion and must
+ * keep resolving by name.
+ */
+function wrapsRef(winner: Combinator<unknown>, p: Combinator<unknown>): boolean {
+  let cur = winner
+  // Bounded rather than `while (true)`: `_def.parser` is author-supplied and a
+  // hand-built cycle of scopes would otherwise hang the encoder. Nothing legal
+  // nests these more than a couple deep.
+  for (let n = 0; n < 16; n++) {
+    if (cur === p) return true
+    const d = cur._def as ParserDef
+    if (d.tag !== 'grammar' && d.tag !== 'trivia') return false
+    cur = d.parser
+  }
+  return false
+}
+
 /** Raised when a construct has no opcode yet. Prototype scope is explicit. */
 export class UnsupportedConstruct extends Error {
   readonly tag: string
@@ -153,10 +184,25 @@ class Encoder {
    * scope, so the name lookup has to be explicit and is done here.
    *
    * For a NON-merged map this is a no-op: the name resolves to the same
-   * combinator the thunk returns. The `_win !== p` guard is load-bearing — a
+   * combinator the thunk returns. The self-resolution guard is load-bearing — a
    * rule map entry may BE the named lazy proxy for its own body, and resolving
    * that to itself would return the in-progress memoized row and never encode
    * the body at all.
+   *
+   * THAT GUARD CANNOT BE OBJECT IDENTITY. `rules({ trackLines: true }, …)`
+   * REPLACES every map entry with `parser({ trackLines: true }, entry)` carrying
+   * the SAME `_ruleName` (`combinators/parser.ts:228-241`), so for all four
+   * `*PositionsGrammar` exports the entry is a WRAPPER around the rule's own lazy
+   * proxy. `winner !== p` is then trivially true, the proxy resolves by name to
+   * the wrapper that is already in flight, `node()` hands back the recursion
+   * trampoline, and `case 'grammar'` — a `parser()` scope with no trivia, no
+   * capture and no root policy emits NO ROW — passes that trampoline straight out
+   * as the wrapper's own offset. The trampoline is patched to itself, the rule's
+   * real body is never encoded, and every parse dies on its first byte with
+   * `Maximum call stack size exceeded`: 87/87 css, 314/314 less, 24/24 jess and
+   * 2408/2408 scss files, all four `-lines` variants, from `dccb7fa` (which added
+   * this map) to `90aa867`. So the question is not "is the winner this object"
+   * but "does the winner bottom out AT this reference", and `wrapsRef` asks that.
    */
   winners: Readonly<Record<string, Combinator<unknown>>> | undefined = undefined
   triviaSpecs: TriviaSpec[] = []
@@ -606,7 +652,23 @@ class Encoder {
     } else {
       this.memo.set(p, ip)
     }
-    for (const slot of patches) this.code[slot] = ip
+    for (const slot of patches) {
+      // A TRAMPOLINE PATCHED TO ITSELF IS NOT A TABLE. `OP_RULE ip → ip` makes no
+      // progress in either driver: `exec.ts`'s `case OP_RULE` recurses on the same
+      // `ip`, and `assemble.ts` builds a piece that calls itself, so the first byte
+      // of the first file is `Maximum call stack size exceeded`. It is produced
+      // when a combinator's whole encoding emits NO row of its own and resolves
+      // back to the trampoline reserved for it — an ALIAS CYCLE, never a grammar
+      // this table can run. Raised here, at the one line that can write it, so the
+      // encoder names the construct instead of every parse dying at run time.
+      if (slot - 1 === ip) {
+        const rule = (p as unknown as { _ruleName?: string })._ruleName
+        throw new Error(
+          `table lowering: alias cycle — ${p._tag}${rule === undefined ? '' : ` (rule '${rule}')`} encodes to its own recursion trampoline at ${ip}`,
+        )
+      }
+      this.code[slot] = ip
+    }
     return { ip }
   }
 
@@ -1099,7 +1161,7 @@ class Encoder {
         // merged (composed) map, and why the identity guard is required.
         const refName = (p as unknown as { _ruleName?: string })._ruleName
         const winner = refName === undefined ? undefined : this.winners?.[refName]
-        if (winner !== undefined && winner !== p) return this.scopedRef(p, winner)
+        if (winner !== undefined && !wrapsRef(winner, p)) return this.scopedRef(p, winner)
         let resolved: Combinator<unknown>
         try { resolved = d.thunk() }
         catch {
