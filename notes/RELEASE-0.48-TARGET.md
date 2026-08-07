@@ -141,6 +141,14 @@ factory,” and it must preserve the one canonical `TableProgram` shape. All old
 uses below of “emitted assembly — what ships” are historical descriptions of the
 now-removed split, not current architecture or release evidence.
 
+The final 0.47 compact-path attempts are also **MEASURED-NULL**: sink-free
+context selection and a direct exclusive-ASCII choice runner both preserved the
+canonical closure object and passed correctness tests, but were neutral or
+slower (the direct choice experiment: 29.218 / 238.145 µs versus 29.152 /
+236.899 µs on JSON medium / large). Do not add context-specialization branches
+to the release path. The missing win is a piece-graph/inlining problem, not an
+unproven property-load or match-array cleanup.
+
 The remaining `QUEUED` entries are the 0.48 work. The wrong-parse defects found
 during 0.47 (`expect()` not clearing the ctx-global commit bit;
 `caseInsensitive` dropped from dispatch matcher arms), plus the §10 defects now
