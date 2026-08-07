@@ -5,8 +5,8 @@
  * READ THIS FIRST: THIS MEASURES THE INTERPRETER, NOT THE SHIPPED PARSER.
  * ----------------------------------------------------------------------
  * The interpreter's `firstMatch` loop (src/combinators/choice.ts:149-165) enters every
- * alternative unconditionally. COMPILED output does not: `emitFirstMatch`
- * (src/compiler/codegen.ts:2246-2277) emits a per-arm first-CHARACTER guard, so an arm
+ * alternative unconditionally. The EMITTED engine does not: `src/table/emit-assembly.ts`
+ * hoists a per-choice candidate mask and emits a per-arm first-CHARACTER guard, so an arm
  * whose first set excludes the character at the current position is never entered.
  * First-set gating is this project's single largest parse lever — 25-48% across all
  * four jess parsers — and a naive interpreted profile is blind to every byte of it.
@@ -645,8 +645,8 @@ export function analyzeChoiceInventory(
  * THE BLIND SPOT THIS EXISTS TO CLOSE.
  *
  * The interpreter's `firstMatch` loop (src/combinators/choice.ts:149-165) enters every
- * arm unconditionally. Compiled output does NOT: `emitFirstMatch`
- * (src/compiler/codegen.ts:2246-2277) emits a per-arm first-CHARACTER guard, so an arm
+ * arm unconditionally. The EMITTED engine does NOT: `src/table/emit-assembly.ts`
+ * hoists a per-choice candidate mask and emits a per-arm first-CHARACTER guard, so an arm
  * whose first set excludes the character at the current position is never entered at
  * all. First-set gating is the project's single largest parse lever — 25-48% across all
  * four jess parsers — and an instrument that measures the interpreter is blind to every
@@ -687,7 +687,8 @@ function compiledFirstCharGate(p: Combinator<unknown>): FirstSet | null {
 }
 
 /**
- * A verbatim replica of `canMatchEmptyAtStart` (src/compiler/codegen.ts).
+ * A verbatim replica of `canMatchEmptyAtStart`, which lived in the source lowering
+ * deleted in `37c57b5`. Nothing shares this definition today: it is the last copy.
  *
  * Deliberately SHALLOW, and that is not an approximation — it is the behaviour. A
  * `node()`-wrapped nullable parser falls to `default: false`, so codegen treats it as

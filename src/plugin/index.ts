@@ -35,7 +35,7 @@ import {
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
 import type { HostMode } from '../cst/host-mode.ts'
-import { pickRuleMaps } from '../compiler/linker.ts'
+import { COMPOSED_PIECES, pickRuleMaps } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -1160,7 +1160,15 @@ function transformMacroImpl(
         }
       }
       stubNames.push(local)
-      stubVals.push({ [Symbol.for('parseman.composedPieces')]: subPieces })
+      // The KEY comes from the linker, which owns it. Spelling `Symbol.for('…')`
+      // here made the string the contract between a build-time module and a
+      // runtime one, with nothing checking: renaming it in `linker.ts` would have
+      // left this stub keying on the old name, and a carried-pieces lookup that
+      // silently finds nothing produces a grammar that composes to less than it
+      // should — no type error, no failing test. (The `Symbol.for('…')` spellings
+      // further down are EMITTED SOURCE TEXT, not this module's own key: they are
+      // strings by necessity and the runtime resolves them through the registry.)
+      stubVals.push({ [COMPOSED_PIECES]: subPieces })
     }
     try {
       // Build-time eval of the carried literal with ancestor spreads stubbed — NOT

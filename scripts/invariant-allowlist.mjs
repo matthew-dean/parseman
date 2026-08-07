@@ -57,15 +57,30 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * THE RATCHET. Must equal `ALLOW.size` exactly or the gate fails.
  *
  * Was 18. Two `INV-4` entries left when the analysis helpers they named were
- * deduplicated — `childrenOf` and `intersects` now live once, in
+ * deduplicated — `childrenOf` and `intersects` were collapsed into
  * `src/analysis/gating.ts`, imported by the modules that had copies.
  *
  * 13 -> 14 when `src/table/exec.ts` finally became unreachable. It was supposed
  * to be unreachable from `63666b6`; it was not, and INV-3 stayed quiet because
  * two modules were still importing the interpreter by mistake. Removing that
  * import is what surfaced the entry.
+ *
+ * THAT FIRST NOTE WAS WRONG ABOUT `intersects`, and INV-8 is why we know. It said the
+ * helper "now lives once". It did not: `src/combinators/first-set.ts` had been
+ * exporting its own `intersects` the whole time, and the dedup lane never saw it
+ * because INV-4 decides on byte-identity after whitespace is stripped and the two
+ * bodies differed only in whether the nested `for` carried braces. A rule that
+ * compares BODIES cannot find a copy that was retyped; a rule that compares NAMES
+ * can. `intersects` now genuinely lives once, in `src/combinators/first-set.ts`.
+ *
+ * 14 -> 28. Three new rules (INV-8/9/10) surfaced 13 findings that previously had
+ * no representation at all — not "green", but invisible. Ten are historical prose
+ * references (INV-10) that name a deleted file BECAUSE it is deleted, and three are
+ * argued name/key collisions. Every one of them is a claim someone can now read,
+ * rather than a fact nobody could see. Adding a rule always surfaces a backlog; the
+ * backlog is the point.
  */
-export const ALLOW_COUNT = 14
+export const ALLOW_COUNT = 28
 
 /**
  * finding key -> { category, why, ref? }
@@ -160,4 +175,83 @@ export const ALLOW = new Map([
     { category: 'DEBT', why: 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx', ref: 'docs/design/invariant-gate.md#the-allowlist' }],
   ['INV-5:src/compiler/linker.ts:fusePieces:meta.grammarHostMode',
     { category: 'DEBT', why: 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx', ref: 'docs/design/invariant-gate.md#the-allowlist' }],
+
+  /* ---- INV-8 x2: one name, two declarations ----------------------------
+   * The other two findings this rule produced were COLLAPSED rather than listed
+   * (`intersects` to `src/combinators/first-set.ts`, `groupDigits` to
+   * `src/analysis/terminal.ts`). These two are not collapsible in this lane. */
+
+  // `run` is the PUBLIC entry point and it means two different functions:
+  // `parseman` hands out `functional/run-tabled.ts`'s (lowers a combinator entry to
+  // a table, then drives), `parseman/run` hands out `functional/run.ts`'s (the bare
+  // driver, whose tiny module closure is the whole reason that entry exists and is
+  // pinned by test/unit/run-entry-closure.test.ts). Both sites argue for themselves
+  // in prose. BY-DESIGN, not DEBT — but recorded here rather than trusted, because
+  // this is `tableRules`'s exact shape on a far more used surface, and the argument
+  // now has to survive being restated whenever either site moves. If the design ever
+  // changes, the entry goes stale and the gate makes someone look again.
+  ['INV-8:run:src/functional/run-tabled.ts#run|src/functional/run.ts#run',
+    { category: 'BY-DESIGN', why: 'two published entry points, deliberately different drivers; argued at both sites' }],
+
+  // `tableRules` — the finding this rule was built to prove it could see. The name
+  // resolves to the reference INTERPRETER via `src/table/exec.ts` and to the shipped
+  // ASSEMBLER via `src/table/index.ts`'s `assembledRules` alias, and it type-checks
+  // either way because both are `Record<string, TableRule>`. Owned by a live lane;
+  // this entry exists so the gate is green on the rule, not on the defect.
+  ['INV-8:tableRules:src/table/assemble.ts#assembledRules|src/table/exec.ts#tableRules',
+    { category: 'DEBT', why: 'one name, two engines — the motivating defect; rename or collapse', ref: 'lane/name-collision' }],
+
+  /* ---- INV-9 x1 --------------------------------------------------------
+   * The other finding was COLLAPSED: `parseman.composedPieces` is now exported as
+   * `COMPOSED_PIECES` from `src/compiler/linker.ts` and imported by the plugin. */
+
+  // `Symbol('pm.fail')` is minted in THREE modules — `src/table/exec.ts`,
+  // `src/table/assemble.ts` and `src/table/exec-baseline.ts` — so all three hold
+  // symbols that are not equal to each other. Safe only because the `TableRule` ABI
+  // converts before they cross, which is a property of the boundary and not of the
+  // design. The known instance named two of the three; INV-9 found the third.
+  ['INV-9:pm.fail',
+    { category: 'DEBT', why: 'three private symbols for one sentinel; give it one owner (src/table/cell.ts)', ref: 'exp/mixture' }],
+
+  /* ---- INV-10 x10: prose that names a deleted file BECAUSE it is deleted ----
+   * These are the rule's honest limit. INV-10 decides whether a path in a comment
+   * resolves; it cannot decide whether the sentence MEANT it to. Every entry below
+   * is a historical reference — "`X` is DELETED at HEAD", "salvaged from `X`",
+   * "imports from `X` rather than the package entry" — where naming the vanished
+   * file is the whole point of the sentence.
+   *
+   * Listing them is not a shrug. It converts an ambiguous reference into a stated
+   * one, and it arms a trap worth arming: if anyone ever re-creates a file named
+   * here, the entry goes stale and the gate fails, forcing a re-read of prose that
+   * would otherwise have silently started describing a different thing.
+   *
+   * Nine of the ten point at the source lowering deleted in `37c57b5`. That is the
+   * measure of how far one deletion's prose reaches: the twelve references in
+   * `src/` were repaired in this commit, and these ten are the ones where the past
+   * tense is load-bearing. */
+  // Arrived with the 0.47 merge, and it is the GOOD kind of historical reference:
+  // the file exists to CORRECT `fixture.ts`'s mislabelled columns, and saying
+  // "`src/compiler/codegen.ts` was deleted in 37c57b5" is the correction.
+  ['INV-10:bench/jess/capoff-agg.mjs:src/compiler/codegen.ts',
+    { category: 'BY-DESIGN', why: 'historical — the sentence exists to state that this file was deleted' }],
+  ['INV-10:bench/alloc-model.ts:bench/alloc-profile.ts',
+    { category: 'BY-DESIGN', why: 'historical — the sentence says the file existed only for one profiling run' }],
+  ['INV-10:bench/jess/ab.ts:src/compiler/codegen.ts',
+    { category: 'BY-DESIGN', why: 'historical — the A/B harness explains that HEAD DELETED this and the old side still has it' }],
+  ['INV-10:bench/jess/ab.ts:test/parse-bench.mjs',
+    { category: 'BY-DESIGN', why: 'historical — names where those files used to live' }],
+  ['INV-10:bench/jess/load-one.ts:src/parse-error.ts',
+    { category: 'BY-DESIGN', why: 'historical — names the path the loader must NOT point at' }],
+  ['INV-10:bench/size-guard.ts:src/compiler/codegen.ts',
+    { category: 'BY-DESIGN', why: 'historical — describes what the two-engine size split used to measure' }],
+  ['INV-10:test/helpers/eval-macro-module.ts:src/compiler/codegen.ts',
+    { category: 'BY-DESIGN', why: 'historical — records why the helper imported the lowering directly' }],
+  ['INV-10:test/unit/choice-cost.test.ts:src/compiler/codegen.ts',
+    { category: 'BY-DESIGN', why: 'historical — cites the deleted emitter the gating claim came from' }],
+  ['INV-10:test/unit/choice-cost.test.ts:test/unit/codegen-output.test.ts',
+    { category: 'BY-DESIGN', why: 'historical — names the suite that used to pin emitted output' }],
+  ['INV-10:test/unit/first-set-dispatch.test.ts:test/unit/choice-dispatch.test.ts',
+    { category: 'BY-DESIGN', why: 'historical — "salvaged from", naming the suite this one replaced' }],
+  ['INV-10:test/unit/macro-grammar-coverage.test.ts:src/compiler/codegen.ts',
+    { category: 'BY-DESIGN', why: 'historical — records why coverage was imported from the lowering' }],
 ])

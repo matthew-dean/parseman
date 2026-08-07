@@ -7,7 +7,7 @@
  * 0.45 collapsed three functions a caller had to choose between into one
  * `diagnoseGrammar()`. That removed the wrong choice but not the real defect: it is
  * still something you must know exists, import, and write a script around. rustc and
- * clippy are commands. `parseman diagnose src/grammar.ts` is found by typing
+ * clippy are commands. `parseman diagnose examples/css/parser.ts` is found by typing
  * `parseman --help`; a library export is found by reading the source.
  *
  * FOUR LAYERS, AND THIS IS THE FOURTH
@@ -132,7 +132,7 @@ async function registerTsIfNeeded(path: string): Promise<void> {
  *
  * A grammar written for the macro imports parseman as `import { … } from 'parseman'
  * with { type: 'macro' }`. Node's default loader rejects any `type` it does not know, so
- * `parseman diagnose src/grammar.ts` died with `TypeError: Import attribute "type" with
+ * `parseman diagnose examples/css/parser.ts` died with `TypeError: Import attribute "type" with
  * value "macro" is not supported` on EVERY macro-authored grammar — that is, on the
  * grammars this command exists to serve.
  *

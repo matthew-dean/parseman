@@ -11,8 +11,8 @@
  * Everything here is also reachable from the CLI, which is the surface most people
  * want:
  *
- *     parseman diagnose src/grammar.ts
- *     parseman fix src/grammar.ts --corpus test/fixtures
+ *     parseman diagnose examples/css/parser.ts
+ *     parseman fix examples/css/parser.ts --corpus test/fixtures
  */
 export { proposeFixes, applyFixEdits } from './fix.ts'
 export type {

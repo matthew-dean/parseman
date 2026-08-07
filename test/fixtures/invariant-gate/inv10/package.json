@@ -1,0 +1,1 @@
+{ "name": "invariant-gate-fixture", "private": true, "exports": { ".": { "import": "./dist/index.js" } } }
