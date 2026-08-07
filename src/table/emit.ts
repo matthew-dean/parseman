@@ -1,4 +1,7 @@
 import type { FoldedProgram, TableProgram } from './program.ts'
+import { resolveTable } from './program.ts'
+import { EMITTED_PARAMS, Unemittable, emitAssemblySource } from './emit-assembly.ts'
+import { cfgKey, type RunCfg } from './assemble.ts'
 
 /**
  * Print a program as the module a build emits.
@@ -96,9 +99,113 @@ function emitDispatchSpec(d: import('./program.ts').DispatchSpec): string {
     + '}'
 }
 
+/**
+ * THE OPTION SETS A BUILD PRE-COMPILES, by default.
+ *
+ * `hostCst` and `trackLines` are ENCODE settings (`TableSettings`), so a program
+ * already fixes them — a table encoded for `hostMode: 'ast'` has no CST rows to
+ * select. `tolerant` is a per-CALL option (`run({ tolerant })`), so both answers
+ * are live for one artifact and both are emitted.
+ *
+ * `coverage` is never emitted: `emitAssemblySource` refuses a coverage assembly
+ * outright, so there is nothing to pre-compile and the closure engine is the
+ * correct answer. `probe` (`completionsAt`) is not emitted by default either —
+ * it is a language-service path, cold, and doubling every artifact for it is a
+ * cost with no reader. Both fall to the closure engine, which is OBSERVABLE on
+ * `Assembly.emitRefusal` rather than silent.
+ *
+ * Overgeneration is deliberate: an emitted variant nobody selects costs bytes
+ * and zero runtime.
+ */
+export function defaultAssemblyCfgs(prog: TableProgram): RunCfg[] {
+  const hostCst = prog.hostMode === 'cst'
+  const trackLines = prog.lines === 1
+  return [false, true].map(tolerant => ({
+    hostCst, trackLines, tolerant, coverage: false, probe: false,
+  }))
+}
+
+/**
+ * Print the assemblies a build pre-compiled, as the `a:` field of the program
+ * literal — see `TableProgram.asm`.
+ *
+ * THE FACTORY IS A REAL FUNCTION LITERAL. That is the whole point: `assemble.ts`
+ * used to build the identical text at RUN TIME and hand it to `new Function`,
+ * which a Content-Security-Policy without `unsafe-eval` forbids — so the two
+ * shipped statements that a macro build is the CSP answer were false. Emitting
+ * it here is not a new engine; it is the SAME emitter, called at the only time
+ * the answer is actually a constant.
+ *
+ * A refusal is not an error. `Unemittable` names a construct the emitter does
+ * not lower; that option set simply gets no entry, and `assemble.ts` runs the
+ * closure engine for it and RECORDS why on `Assembly.emitRefusal`.
+ */
+function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
+  /**
+   * `a:[]` IS NOT `a` ABSENT, and the difference is the whole property.
+   *
+   * The field's PRESENCE is the artifact saying "a build produced me". That is
+   * what switches the runtime `Function` constructor off (`assemble.ts`), and it
+   * costs four bytes. Its CONTENTS are the assemblies the build chose to
+   * pre-compile; with none, the artifact runs the closure engine — no eval, no
+   * size growth, and the refusal readable on `Assembly.emitRefusal`.
+   *
+   * Pre-compiling is therefore a SPEED option, not a correctness one, and it is
+   * priced: two assemblies take json's module from 1,382 B to 58,823 B (42.6x)
+   * and css's from 8,987 B to 341,517 B (38.0x). That is the emitted engine's
+   * source, which the runtime used to build with `new Function` on every load
+   * instead of carrying. Defaulting it ON would hand back the 14x size win the
+   * table lowering exists for, so the default is OFF and `defaultAssemblyCfgs`
+   * is the one-liner for a consumer who wants emitted speed under a CSP.
+   */
+  if (cfgs.length === 0) return ['a:[],']
+  const t = resolveTable(prog)
+  // The scan pool and the scan-skip sets are linked from subtrees, so their
+  // sites need emitted names too — same list `assemble.ts` builds.
+  const extraIps: number[] = []
+  for (const s of prog.scans ?? []) {
+    for (const r of s.skip) extraIps.push(r[0])
+    if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
+  }
+  for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
+
+  const out: string[] = []
+  const seen = new Set<number>()
+  for (const cfg of cfgs) {
+    const key = cfgKey(cfg)
+    if (seen.has(key)) continue
+    seen.add(key)
+    let em
+    try {
+      em = emitAssemblySource(t, prog, cfg, extraIps)
+    } catch (e) {
+      if (e instanceof Unemittable) continue
+      throw e
+    }
+    const plan = em.plan
+    out.push('{'
+      + `key:${key},`
+      + `factory:function(${EMITTED_PARAMS.join(',')}){${em.source}\n},`
+      + 'plan:{'
+      + `classes:[${plan.classes.map(r => `[${r.join(',')}]`).join(',')}],`
+      + `armExpected:[${plan.armExpected.map(r => `[${r.join(',')}]`).join(',')}],`
+      + `masks:[${plan.masks.join(',')}]`
+      + '},'
+      + `reached:[${[...em.reached].join(',')}]`
+      + '}')
+  }
+  return [`a:[${out.join(',')}],`]
+}
+
 export type EmitOptions = {
   /** Name of the exported binding. */
   readonly name?: string
+  /**
+   * Option sets to PRE-COMPILE into the artifact — see `defaultAssemblyCfgs`.
+   * `[]` emits none, which restores the pre-0.47 artifact byte-for-byte and
+   * hands every parse back to the runtime `Function` constructor.
+   */
+  readonly assemblies?: readonly RunCfg[]
   /**
    * Sources for the author callbacks, in `prog.fns` order. A build has these
    * from the module it is lowering; pass `undefined` to emit a placeholder and
@@ -128,8 +235,9 @@ function assertPrintable(prog: TableProgram, who: string): void {
  * `tableRules` reads. Shared with the folded emitter, which prints exactly these
  * for its ONE base table.
  */
-function programFields(prog: TableProgram, fns: readonly string[]): string[] {
+function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOptions = {}): string[] {
   return [
+    ...emitAssemblies(prog, opts.assemblies ?? []),
     `c:[${prog.code.join(',')}],`,
     `k:[${prog.k.map(emitConst).join(',')}],`,
     `x:[${prog.cc.map(jsString).join(',')}],`,
@@ -179,7 +287,7 @@ export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): str
   return [
     `import { tableRules } from ${jsString(runtime)}`,
     `export const ${name} = /* @__PURE__ */ tableRules({`,
-    ...programFields(prog, fns),
+    ...programFields(prog, fns, opts),
     `})`,
   ].join('\n')
 }
@@ -219,7 +327,7 @@ export function emitTableExpression(prog: TableProgram, opts: ExpressionEmitOpti
   const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
   return [
     `/* @__PURE__ */ ${ref}({`,
-    ...programFields(prog, fns),
+    ...programFields(prog, fns, opts),
     entry === null ? `})` : `})[${jsString(entry)}]`,
   ].join('\n')
 }

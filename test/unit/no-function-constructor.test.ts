@@ -31,14 +31,20 @@
  */
 import { describe, expect, it } from 'vitest'
 import { encodeTable, type TableSettings } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
-import { emitTableModule } from '../../src/table/emit.ts'
+import { assembledRules, AssemblyCache } from '../../src/table/assemble.ts'
+import { emitTableModule, emitTableExpression } from '../../src/table/emit.ts'
 import { run } from '../../src/functional/run.ts'
 import {
   baseNodes, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs,
   selectNodes, trailingTriviaNodes,
 } from '../../bench/table-grammars.ts'
+import { JSON_FN_SOURCES } from '../../bench/table-grammars.ts'
+import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
+import { foldPrograms, expandCompact, type CompactProgram } from '../../src/table/program.ts'
+import { tableVariants, variantNames } from '../../src/table/fold.ts'
+import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { cssRules } from '../../examples/css/parser.ts'
+import { resolveTableRuntime } from '../helpers/eval-macro-module.ts'
 import type { Combinator } from '../../src/types.ts'
 
 type RuleMap = Record<string, Combinator<unknown>>
@@ -72,13 +78,30 @@ function functionConstructorCalls(body: () => void): string[] {
   return seen
 }
 
-/** The shipped macro artifact for one rule map: `tableRules(<data>)`. */
+/**
+ * The shipped macro artifact for one rule map.
+ *
+ * `emitTableModule` is what a build writes, and the program literal it prints
+ * carries `a:` — the pre-compiled-assembly field, EMPTY by default. Its presence
+ * is the artifact saying "a build produced me", which is what switches the
+ * runtime `Function` constructor off. So the artifact under test is the emitted
+ * program, not a hand-built `encodeTable` result: the two differ in exactly the
+ * field that decides this property, and testing the wrong one is how a green
+ * suite means nothing (AGENTS.md, "an import that reaches past the shipped
+ * export").
+ */
 function macroArtifact(map: RuleMap, settings: TableSettings = {}): {
   rules: ReturnType<typeof assembledRules>
   source: string
 } {
   const prog = encodeTable(map, settings)
-  return { rules: assembledRules(prog), source: emitTableModule(prog) }
+  const source = emitTableModule(prog)
+  // The field the emitter writes, read back onto the program the driver gets.
+  // `emitTableModule(prog)` and `tableRules({…})` are the two halves of one
+  // artifact; this test asserts on the same object both halves describe.
+  const emitsAssemblyField = /\ba:\[/.test(source)
+  expect(emitsAssemblyField, 'the emitted module must carry the `a:` field').toBe(true)
+  return { rules: assembledRules({ ...prog, asm: [] }), source }
 }
 
 /**
@@ -129,6 +152,81 @@ describe('the macro path never reaches the Function constructor', () => {
     })
   }
 
+  /**
+   * THE ARTIFACT AS A MODULE, loaded rather than reconstructed — with the
+   * assemblies actually pre-compiled, so this is the path that keeps the EMITTED
+   * engine under a CSP rather than dropping to closures.
+   */
+  it('a pre-compiled artifact runs the emitted engine and constructs nothing', async () => {
+    const prog = encodeTable(jsonRules as unknown as RuleMap, {})
+    const literal = emitTableExpression(prog, {
+      fnSources: JSON_FN_SOURCES,
+      assemblies: defaultAssemblyCfgs(prog),
+      entry: null,
+      // `runtimeRef` names the binding the expression calls. Pointing it at
+      // identity hands the test the PROGRAM OBJECT the module actually carries
+      // — including the real factory function literals — instead of a
+      // reconstruction of it. Nothing else can prove the loaded artifact is what
+      // `assemble.ts` was handed.
+      runtimeRef: 'IDENTITY',
+    })
+    expect(literal).toMatch(/\ba:\[\{key:/)
+    const code = `const IDENTITY = p => p\nexport const program = ${literal}\n`
+    // `JSON_FN_SOURCES` are the AUTHOR's reducers and call the author's helpers;
+    // a real build has them in the module it is lowering. Supplying them keeps
+    // this a test of the artifact rather than of the harness.
+    const prelude = [
+      'import { unescapeJsonString, objectFromPairs } from '
+      + JSON.stringify(new URL('../../examples/json/parser.ts', import.meta.url).href),
+    ].join('\n')
+    const mod = await import(
+      `data:text/javascript;base64,${Buffer.from(`${prelude}\n${resolveTableRuntime(code)}`).toString('base64')}`
+    ) as { program: CompactProgram }
+    const loaded = expandCompact(mod.program)
+    expect(loaded.asm?.length, 'the loaded artifact carries its assemblies').toBe(2)
+
+    const calls = functionConstructorCalls(() => {
+      const entry = assembledRules(loaded).Value!
+      const r = run(entry as never, '{"a":[1,-2.5,true,null,"x"]}', { trivia: jsonWs as never })
+      if (!r.ok) throw new Error(`emitted module: parse failed — expected ${JSON.stringify(r.expected)}`)
+    })
+    expect(calls, calls.join('\n---\n')).toEqual([])
+
+    // WHICH ENGINE RAN. Without this the leg is the "two dead legs agree"
+    // failure: the closure engine also constructs nothing, so a silent drop to
+    // it would make this test pass while the pre-compiled path went unexecuted.
+    const cfg = defaultAssemblyCfgs(prog)[0]!
+    expect(new AssemblyCache(loaded).for(cfg).emitRefusal,
+      'a pre-compiled artifact must run the EMITTED engine').toBeUndefined()
+    // And a stamped-but-empty artifact must not quietly reach the constructor.
+    expect(new AssemblyCache({ ...prog, asm: [] }).for(cfg).emitRefusal)
+      .toMatch(/did not pre-compile/)
+  })
+
+  /**
+   * THE VARIANT FOLD (G4), which is a DIFFERENT DRIVER.
+   *
+   * `src/table/fold.ts:1` imports `tableRules` from `./exec.ts` — the bytecode
+   * interpreter — not the assembler, and `tableVariants`/`variantNames` are
+   * public exports of `src/table/index.ts`. A property proved only against
+   * `assembledRules` says nothing about a shipped path that never reaches it.
+   * (`src/table/index.ts` claimed exec "is not on the product path"; that claim
+   * was false and is corrected in this change.)
+   */
+  it('the variant fold serves every variant without the constructor', () => {
+    const ast = encodeTable(jsonRules as unknown as RuleMap, { hostMode: 'ast' })
+    const folded = foldPrograms({ ast }, 'ast')
+    expect(variantNames(folded)).toEqual(['ast'])
+    for (const name of variantNames(folded)) {
+      const calls = functionConstructorCalls(() => {
+        const entry = tableVariants(folded, name).Value!
+        const r = run(entry as never, '{"a":[1,2,3]}', { trivia: jsonWs as never })
+        if (!r.ok) throw new Error(`variant ${name}: parse failed`)
+      })
+      expect(calls, `variant ${name}: ${calls.join('\n---\n')}`).toEqual([])
+    }
+  })
+
   it('the emitted module text contains no eval-family construct', () => {
     for (const c of CASES) {
       const { source } = macroArtifact(c.map)
@@ -151,7 +249,10 @@ describe('the macro path never reaches the Function constructor', () => {
         const entry = rules.Value!
         for (const tolerant of [false, true]) {
           const calls = functionConstructorCalls(() => {
-            run(entry as never, '{"a":[1,2,3]}', { trivia: jsonWs as never, tolerant })
+            run(entry as never, '{"a":[1,2,3]}', {
+              trivia: jsonWs as never, tolerant,
+              ...(hostMode === 'cst' ? { build: cstBuildHost } : {}),
+            })
           })
           expect(calls, `trackLines=${trackLines} hostMode=${hostMode} tolerant=${tolerant}`).toEqual([])
         }
