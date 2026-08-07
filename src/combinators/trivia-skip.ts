@@ -245,7 +245,16 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
       return scanWithLabels(input, cur, ctx)
     }
 
-    if (ctx.triviaKindLabels) return { end: skipWithLabels(input, cur, ctx), commit: NOOP_COMMIT }
+    // LABELLED TRIVIA WITH NOTHING TO RECORD. The branch above took every sink,
+    // so no log, no root log and no capture sink is live here: the only thing
+    // that can escape this call is `end`. `advanceTrivia:205` has always answered
+    // that with the fused scanner, labels or not; this is the same answer in the
+    // twin that returns a `TriviaScan`, and it is the difference between one
+    // regex-shaped run and a per-character classify whose kind is then dropped.
+    if (ctx.triviaKindLabels) {
+      const labelledFast = fastTriviaScanner(triviaP)
+      return { end: labelledFast ? labelledFast(input, cur) : skipWithLabels(input, cur, ctx), commit: NOOP_COMMIT }
+    }
 
     if (log !== undefined || rootLog !== undefined || captureTl) {
       // CAPTURE DOES NOT NEED THE INTERPRETER. What lands in either sink is the
@@ -285,8 +294,13 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
     return scan
   }
 
+  // The `trackLines` twin of the branch above, same reasoning: nothing records,
+  // so `end` is the whole result and the fused scanner produces it. The line
+  // range is recorded from the SPAN either way, which is why the scanner loses
+  // nothing here that `skipWithLabels` was providing.
   if (ctx.triviaKindLabels) {
-    const end = skipWithLabels(input, cur, ctx)
+    const labelledFast = fastTriviaScanner(triviaP)
+    const end = labelledFast ? labelledFast(input, cur) : skipWithLabels(input, cur, ctx)
     if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
     return { end, commit: NOOP_COMMIT }
   }
@@ -433,8 +447,26 @@ function loopScanner(arms: FastTriviaScanner[]): FastTriviaScanner {
 }
 
 function regexTriviaScanner(parser: Combinator<unknown>): FastTriviaScanner | null {
-  if (parser._def.tag !== 'regex' || parser._def.flags) return null
-  const source = parser._def.source
+  // A `label()` WRAPPER IS A NAME, NOT A SHAPE. `classifiedTrivia()` builds
+  // `trivia(oneOrMore(choice(label(name, regex)…)))` (combinators/map.ts), and
+  // this declined the whole thing on the wrapper alone — every arm BODY is a
+  // plain regex, and `encode.ts:288` already reads them straight back out as
+  // `[label, source, flags]` triples.
+  //
+  // What a label carries is which KIND matched, and this scanner never answered
+  // that question for an unlabelled grammar either: it returns an end offset and
+  // nothing else. So unwrapping loses no information the result could hold. The
+  // caller decides whether kinds are needed and only reaches here when they are
+  // not — see `scanTrivia`, which still routes every recording path through
+  // `scanWithLabels`.
+  //
+  // The cost of declining was not a slower scan, it was NO scan: with
+  // `fastTriviaScanner` null for all four of jess's trivia slots, `program.ts:475`
+  // filled `triviaScan` with nulls, `advanceTrivia:205` fell past its fast arm,
+  // and every trivia gap in every dialect went through the labelled char scanner.
+  const d = parser._def.tag === 'label' ? parser._def.parser._def : parser._def
+  if (d.tag !== 'regex' || d.flags) return null
+  const source = d.source
   return classRunSource(source)
     ?? altStarSource(source)
     ?? prefixRunSource(source)
