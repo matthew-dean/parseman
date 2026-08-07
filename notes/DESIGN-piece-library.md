@@ -15,6 +15,17 @@ Everything numbered `M-n` below is a measurement I ran in this lane, with the co
 numbered `H-n` is a **hypothesis** — not measured, stated with its falsifier, and named for a lane.
 Nothing else in this document is load-bearing.
 
+**Scope: this is 0.48 work. 0.47 ships without it.** The 0.47 bar is basic competence under the
+table closure architecture — features work, no huge outliers, jess's grammars compile correctly,
+perf acceptable to the owner. Not beating 0.46, and not a settled architecture. So nothing here is
+sized to be safe enough to land this week; it is sized to be *right*, on whatever timescale the
+measurement takes. Where a number is not yet measured this document says so and hands it to a lane
+rather than guessing forward.
+
+Two general questions were re-scoped into this document so their lanes could land small for 0.47 —
+**how site labelling should work** (from `lane/capoff`) and **how options bind to pieces** (from
+`lane/no-new-function`). Both are answered in §7, which shows they are one question.
+
 ---
 
 ## 0. The three rules, and what each one turns into
@@ -28,6 +39,28 @@ Nothing else in this document is load-bearing.
 Two endpoints are disqualified and this document does not revisit them: the fully abstract
 closure table (2.0–2.3× slower, remeasured by `lane/emitprofile` at `c274a04`) and fully inline
 codegen (`example/css` 224,100 B).
+
+### 0.1 — There are TWO engines, not three, and the axis is per-construct
+
+An earlier framing of this work — including my own first draft — treated *emitted source* and
+*linked closures* as two candidate architectures to choose between. **They are not.** Traced at
+`6bc265f`: `emit-assembly.ts` has exactly **one** importer in all of `src/` (`assemble.ts:101`) and
+the sole consumer of its output is `new Function(...EMITTED_PARAMS, em.source)` at
+`assemble.ts:2536`. It is not a peer engine; it is a source-emission stage bolted inside the
+compiled engine, and `lane/no-new-function` is removing it.
+
+So: **interpreter and compiled. Two.** The real axis is not "which engine" but, per construct:
+
+> **shared driver ↔ specialised**, with the specialised form produced at macro/build time into
+> shipped source.
+
+In the owner's words: *a set of pre-written building blocks, reused everywhere they work, with
+custom versions only in the few spots where reuse actually costs speed.* §2 is the procedure for
+deciding "the few spots"; §3 is the block set; §4 is where reuse wins outright.
+
+This changes how §5's byte numbers must be read. `emitAssemblySource`'s output is **not a rival
+engine's artifact** — it is the best available *measurement of what the specialised form costs in
+bytes*, taken from the very stage that is being deleted. It is a ruler, not a destination.
 
 ---
 
@@ -232,6 +265,16 @@ already fused) are both coherent and the naive middle is not.
 single shared wrapper literal restores the parent's optimisation for one extra frame and one
 FunctionLiteral total, for the whole library. It is the cheap 80%-solution for the long tail.
 
+> **For `exp/wiring`, which owns overgeneration and partial sharing.** M-3 says the seven linking
+> strategies should be expected to be *indistinguishable on inlining* when the callee kind is
+> uniform — closure capture, constant index, property and variable index all inlined identically
+> here. If the sweep finds a spread between them anyway, the difference is **not** IC state and the
+> mechanism has to be named before it is designed against; my first guess would be the
+> `max-inlined-bytecode-size` interaction of §M-5, because different wirings change the *parent's*
+> bytecode size, not the child's dispatch. And D7's `wrapper` row is the measured shape of partial
+> sharing: it recovers the parent body and **not** the callee, which is a real half-win and should
+> be priced as one rather than scored pass/fail.
+
 **What never earns a piece.** An option. Options select *which generated body a site links to*;
 they are not a slot-kind and they do not enter D2. Their cost is bytes (§5), which is why §5 treats
 them with dedup and overgeneration rather than with the taxonomy.
@@ -338,7 +381,11 @@ grammar in a bundle, and is tree-shakeable. So 224,100 B and 9,229 B are both pe
 and only Tier G is compared against them. The design's byte cost is not one number; it is
 `(fixed library, once) + (generated bodies, per grammar per shipped option set)`.
 
-### 5.2 Measured, first-hand: what `emitAssemblySource` costs today
+### 5.2 Measured, first-hand: what the specialised form costs in bytes
+
+Read per §0.1: `emitAssemblySource` is a stage being deleted, not an engine. Its output is used
+here only because it is the one place in the tree that already renders every construct in its
+fully-specialised per-site form, so it is the ruler for what §2's D4/D5 produce.
 
 `probe/emitsize.mjs`, this worktree, Node v24.11.1:
 
@@ -383,7 +430,7 @@ a relayed 16–21%.** My fixtures are the toy examples and the relay's were jess
 can be right; but `trackLines` is the axis the whole "generate once, vary a fifth" story leans on,
 and a 3× disagreement on it must be resolved before it is planned against.
 
-> **H-3 (for `exp/mixture` or `lane/emitprofile`).** Re-run `probe/bodyshare.mjs`'s method against
+> **H-3 (for `exp/mixture`).** Re-run `probe/bodyshare.mjs`'s method against
 > jess's four grammars. **Falsified if** `trackLines` diverges ≤25% of bodies there, in which case
 > the relay is right and the toys are unrepresentative. Deterministic; no timing.
 
@@ -414,7 +461,10 @@ measured css pair, and is what §6 assumes).
 
 ## 6. Generation, and the no-`Function` requirement
 
-### 6.1 The mechanism already exists and runs at the wrong time
+### 6.1 The renderer already exists and runs at the wrong time
+
+Not a third engine (§0.1) — a stage. The point is that the *text-rendering* half of specialisation
+is already written and debugged, and only its schedule is wrong.
 
 `emit-assembly.ts` (1,638 lines) is the piece generator. Its vocabulary is real and must be used
 rather than replaced with placeholders: `_pf<ip>` per site (`:603`), `_r_<RuleName>` per rule
@@ -505,7 +555,75 @@ it catches reintroduction at review time. `lane/no-new-function` owns both.
 
 ---
 
-## 7. Rule 3: binding options before the parse
+## 7. Binding time — the one mechanism behind both general questions
+
+Two questions were re-scoped into this document when `lane/capoff` and `lane/no-new-function` were
+cut down to land small for 0.47: **how site labelling should work**, and **how options bind to
+pieces**. They look like two problems. They are one, and the unifying idea is *when a fact becomes
+known*.
+
+### 7.1 The binding-time lattice
+
+Every fact a piece could consult is determined at exactly one of three times. The law is: **bind at
+the earliest time the fact is determined, and never later.**
+
+| bound at | determined by | example | mechanism |
+|---|---|---|---|
+| **encode** | program structure alone | is this sequence term inside a trivia-bearing scope? is this leaf dynamically inside an `OP_NODE`? | **site label** (`site-labels.ts`) |
+| **link** | the caller's option set, fixed for the parse | `hostCst`, `tolerant`, `trackLines`, `coverage`, `probe` | **`cfgKey`** → which generated body a site binds to |
+| **parse** | genuinely varying within one parse | the position; the input | the only things allowed to be arguments |
+
+`RunCfg`'s existing doc discipline (`assemble.ts:213–277`) is the *link* row's admission test, and it
+is correct: a bit belongs there only if it is fixed for the lifetime of a parse. `site-labels.ts`'s
+header states the *encode* row's, equally correctly: a label says what is true **at that site**
+rather than what is true for the parse, so it is legal where a bit is not — `ctx.trivia` is
+per-scope and `ctx._cstBuf` is per-node, and neither could ever be a bit.
+
+Both mechanisms already exist and are well built. What was missing is the statement that they are
+the same move at two different times, and that **there is no third mechanism and no parse-time row.**
+
+### 7.2 Site labelling, generally: it is two-stage partial evaluation
+
+The reason `cap` is three-valued is worth stating precisely, because it is the general shape and not
+a quirk. `site-labels.ts:38–41` notes that `OP_NODE` writes `ctx.captureTrivia` the literal
+`readsTrivia || hostCst`, "resolved at emit". `readsTrivia` is structural — encode knows it.
+`hostCst` is an option — encode does **not** know it. So the honest label at encode is not a fact;
+it is a **residual**, a small expression in the cfg bits.
+
+That gives the general rule:
+
+> **Stage 1, at encode:** compute what program structure determines, leaving residuals
+> parameterised by cfg bits. **Stage 2, at link:** substitute the cfg bits; every residual collapses
+> to a constant and selects a body. Neither stage runs at parse time.
+
+Three-valued lattices like `CAP_UNKNOWN` are what an un-substituted residual looks like when you are
+forced to store it as an enum. Under two-stage evaluation the third value is not a third fact — it
+is "not yet substituted", exactly as the existing header says ("the lattice's top element, not a
+third fact"). This also answers whether the labelling pass should run per-cfg: it need not, and
+should not. Run it once, keep residuals, substitute at link. That is strictly cheaper than 32 passes
+and strictly more honest than pretending encode knows `hostCst`.
+
+**The soundness law, which the existing pass gets right and which any extension must keep.**
+`buf === false` means *unknown*, never *guaranteed absent*, because no root can prove absence —
+every entry point (`prog.rules`, plus the `extraIps` a scan pool reaches from outside the emitted
+scope) is called with a context the pass cannot see. Hence:
+
+> **A site label licenses dropping a TEST. It never licenses dropping WORK** — unless it is a
+> must-analysis over a root set proven complete.
+
+That single sentence is what rules out the unsound elision the header warns about (dropping a leaf's
+capture when `hostCst === false`, when `OP_NODE` opens `_cstBuf` regardless of host mode). It is also
+the reason §4.5's `OP_ADJ` and §9.7's capture-reachability are the two places this design can emit
+wrong output rather than a slow parse: both are tempting *must*-analyses over a root set nobody has
+proven complete. `lane/capoff`'s narrow 0.47 fix is compatible with all of this; it is the same
+lattice with one residual substituted early.
+
+### 7.3 Options binding to pieces, generally
+
+An option is a **link-row** fact by definition — it is fixed for the parse and supplied by the
+caller. So the general answer is a one-liner: *an option is never read; it selects.* The interesting
+part is the places where the current code lets an option arrive **later than link**, because those
+are the only real defects.
 
 Rule 3 is violated in more places than the one named, and the fix is the same for all of them.
 
@@ -591,7 +709,19 @@ identity reference. Rule 3 does not admit that justification.
    Relatedly, `bench/table-lowering-identity.ts:19` imports `tableRules` from `exec.ts`, so the
    ~2,800-file corpus sweep has never executed `assemble.ts` — the same defect the
    `consumed-sweep.ts` fix just addressed, in the gate this design's correctness rests on.
-10. **jess's real Less grammar is not in this repo.** `bench/workloads/less.ts` is a vendored
+10. **`exec.ts` IS on the product path, and a public export runs it.** `src/table/index.ts:25–26`
+    asserts of the bytecode interpreter: *"It is not on the product path and nothing emitted imports
+    it."* Both halves are false at `6bc265f`. `src/table/fold.ts:1` imports `tableRules` from
+    `./exec.ts` and is re-exported publicly as `tableVariants`/`variantNames` (`index.ts:48`);
+    `src/compiler/linker.ts:24` imports it and `:334` runs it for `compose()` fusion. Worse than
+    "nothing emitted imports it": **`src/table/emit.ts:265` *emits* `import { tableVariants } from …`
+    into the generated module**, and `:273` calls it per variant — so a folded artifact ships code
+    that runs the interpreter driver while the rest of the product runs the assembler. That is
+    precisely the two-live-drivers drift the same comment warns about two paragraphs earlier
+    (`index.ts:18–20`), already realised. It also means `example/*` fold fixtures and `compose()`
+    users are not exercising the engine this design is about. Not this document's fix, but it must
+    not be discovered later as a surprise: it silently narrows what every corpus gate covers.
+11. **jess's real Less grammar is not in this repo.** `bench/workloads/less.ts` is a vendored
     re-creation (its own header says so). Every "less" cardinality in §3/§4 is the vendored
     grammar's.
 
@@ -638,7 +768,9 @@ trivia path is 27.5–28.4% of self-time per `lane/emitprofile` — a *provision
 commits behind the standard base (§1, M-5). Saying "cold sites get the slow
 shape" is only safe if trivia sites are cold, and I have not established that they are. If trivia
 scanning is hot everywhere, §4.4 is not a correct genericity call — it is a deferred defect, and
-D3's threshold has to be set by execution count on the trivia path specifically.
+D3's threshold has to be set by execution count on the trivia path specifically. **`lane/capoff`'s
+dump of the actually-emitted trivia-skip functions is the input that settles this**, and it should
+be read before §4.4 is treated as decided.
 
 **9.7 — `OP_ADJ` (§4.5), capture-reachability, and the site-attribute record are the three places
 this design can produce silently wrong output** rather than a slow parse. They are the ones to gate
