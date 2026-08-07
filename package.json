@@ -82,6 +82,7 @@
     "check:differentials": "node scripts/check-differentials.mjs",
     "bench": "node --import tsx/esm bench/run.ts",
     "bench:parseman": "node --import tsx/esm bench/parseman.ts",
+    "bench:closure-json": "node --import tsx/esm bench/closure-json-path.ts",
     "bench:composeleaf": "node --import tsx/esm bench/composeleaf-firstset.ts",
     "bench:incremental": "node --import tsx/esm bench/incremental-run.ts",
     "bench:literal": "node --import tsx/esm bench/literal-match.ts",

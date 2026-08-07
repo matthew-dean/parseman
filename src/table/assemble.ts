@@ -641,6 +641,26 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       TERMV = v
       return EC.e
     }
+    // The overwhelmingly common AST/value parse has no live rollback sink.  Do
+    // not manufacture zero marks and then copy seven zero lengths for it: with
+    // no buffer, leaves, fields, diagnostics, or trivia logs, `skipTrivia()`
+    // cannot create anything that a failed following term would need to undo.
+    // This is exactly `markCst(ctx) === false`, spelled here so that the hot
+    // success path has neither its scalar writes nor its failure-only locals.
+    if (ctx._cstBuf === undefined
+      && ctx._cstLeaves === undefined
+      && ctx._cstRawChildren === undefined
+      && ctx._cstTriviaLog === undefined
+      && ctx._fields === undefined
+      && ctx._errors === undefined
+      && ctx._triviaLog === undefined
+      && ctx._rootTriviaLog === undefined) {
+      const scanEnd = skipTrivia(input, cur, ctx)
+      const v = child(input, scanEnd, ctx)
+      if (v === FAIL) return -1
+      TERMV = v
+      return EC.e > scanEnd ? EC.e : cur
+    }
     // SCALAR MARKS — no per-term mark object, as `exec.ts` established.
     const need = markCst(ctx)
     const mRaw = MRAW
@@ -866,10 +886,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const xf = fx[code[ip + 2]!] as string[]
         return (input, pos, ctx) => {
           re.lastIndex = pos
-          const m = re.exec(input)
-          if (m !== null) {
-            const v = m[0]
-            const e = pos + v.length
+          // `regex()` rows are sticky and expose only their whole match.  `exec()`
+          // materialises a RegExpResult array just to read m[0]; `test()` performs
+          // the identical sticky match and leaves its end in `lastIndex`.  This is
+          // the exact primitive the emitted table body uses, so the compact closure
+          // path must not retain an allocation on every regex token.
+          if (re.test(input)) {
+            const e = re.lastIndex
+            const v = input.slice(pos, e)
             if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
             EC.e = e
             return v
@@ -885,10 +909,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const xf = fx[code[ip + 2]!] as string[]
         return (input, pos, ctx) => {
           re.lastIndex = pos
-          const m = re.exec(input)
-          if (m !== null) {
-            const v = m[0]
-            const e = pos + v.length
+          if (re.test(input)) {
+            const e = re.lastIndex
+            const v = input.slice(pos, e)
             if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
             trackLinesInto(ctx, input, e)
             EC.e = e
