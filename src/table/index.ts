@@ -22,8 +22,20 @@
  * swap was `exec === assembled` on the identity sweep, which it clears.
  *
  * `exec.ts` stays REFERENCE — the sweep still gates the assembler against it,
- * and it is what a divergence gets bisected against. It is not on the product
- * path and nothing emitted imports it.
+ * and it is what a divergence gets bisected against. Nothing under `src/` binds
+ * it; only `bench/` and `test/` do, as the reference side of a differential.
+ *
+ * THAT SENTENCE WAS FALSE FOR TWO RELEASES, and the shape of the failure is
+ * worth keeping. `63666b6` made the assembler `tableRules` by editing THIS FILE
+ * and nothing else. `exec.ts` exports its own function ALSO called `tableRules`
+ * with the identical signature, so any module reaching PAST this entry bound the
+ * interpreter, type-checked clean and ran correctly — just slower. Two modules
+ * did: `table/fold.ts` (predating the swap) and `compiler/linker.ts` (added
+ * after it, in `37c57b5`). Between them they put the whole `compose()`/`fuse()`
+ * composition path and every folded artifact's `tableVariants` load on the
+ * reference engine. Both now import `assembledRules` BY ITS OWN NAME, which is
+ * the actual fix: a re-export that renames an engine is a trap for as long as
+ * two functions share the name across a module boundary.
  */
 export { assembledRules as tableRules, assembledRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
