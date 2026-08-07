@@ -37,9 +37,22 @@ export type Split = {
   head: string
   /** Top-level piece declarations, in emission order. */
   decls: Array<{ ip: number; body: string; whole: string }>
-  /** `const _r_X=_pfN` lines and anything else between/after the decls. */
+  /**
+   * The `const _r_<Rule>=_pf<N>` rule-entry bindings.
+   *
+   * A multi-rule map emits one after EACH rule is linked, so they are
+   * interleaved with the piece declarations rather than collected at the end —
+   * `example/css` has `const _r_Entry=_pf878` sitting between two pieces. Every
+   * rewrite below hoists them to just before the tail, which is sound because
+   * each is a `const` binding of an already-declared piece and nothing between
+   * them reads one. Anything else appearing between declarations is REFUSED:
+   * silently relocating unknown code is how a rewrite changes semantics.
+   */
+  entries: string[]
   tail: string
 }
+
+const ENTRY_BINDING = /^const _r_[A-Za-z0-9_$]+=_pf\d+$/
 
 /**
  * Find the end of the `{ … }` block starting at `open`, skipping string
@@ -93,23 +106,36 @@ export function split(src: string): Split {
     DECL.lastIndex = close + 1
   }
   if (decls.length === 0) throw new Error('wiring: no piece declarations found')
-  // The decls are contiguous apart from newlines; anything between them would be
-  // dropped by a rewrite, so refuse rather than lose it.
+  // Everything between the declarations must be a rule-entry binding. Anything
+  // else would be dropped or moved by a rewrite, so refuse rather than lose it.
+  const entries: string[] = []
   let cursor = first
   for (const d of decls) {
     const at = src.indexOf(d.whole, cursor)
-    const between = src.slice(cursor, at)
-    if (between.trim() !== '') throw new Error(`wiring: unexpected text between piece declarations: ${JSON.stringify(between.slice(0, 80))}`)
+    for (const line of src.slice(cursor, at).split('\n')) {
+      const t = line.trim()
+      if (t === '') continue
+      if (!ENTRY_BINDING.test(t)) throw new Error(`wiring: unexpected text between piece declarations: ${JSON.stringify(t.slice(0, 80))}`)
+      entries.push(t)
+    }
     cursor = at + d.whole.length
   }
-  return { head: src.slice(0, first), decls, tail: src.slice(last) }
+  return { head: src.slice(0, first), decls, entries, tail: src.slice(last) }
 }
 
+/**
+ * Prove the splitter understands the text: every byte is accounted for as head,
+ * a declaration, a rule-entry binding, or tail. A rewrite that cannot see all
+ * of its input can silently drop a piece and still parse correctly on the inputs
+ * anyone tried.
+ */
 export function verifySplit(src: string): void {
   const s = split(src)
-  const rejoined = s.head + s.decls.map(d => d.whole).join('\n') + s.tail
-  if (rejoined !== src) {
-    throw new Error('wiring: split/rejoin is not byte-identical — the splitter does not understand this text')
+  const accounted = s.head.length + s.decls.reduce((n, d) => n + d.whole.length, 0)
+    + s.entries.reduce((n, e) => n + e.length, 0) + s.tail.length
+  const whitespace = src.length - accounted
+  if (whitespace < 0 || whitespace > s.decls.length + s.entries.length + 2) {
+    throw new Error(`wiring: split does not account for the text (${whitespace} bytes unexplained)`)
   }
 }
 
@@ -137,17 +163,20 @@ function w1Array(src: string): string {
     if (n === undefined) throw new Error(`wiring: reference to unknown piece _pf${ip}`)
     return `P[${n}]`
   }
-  const bodies = s.decls.map(d => `P[${slot.get(d.ip)!}]=function(input,pos,ctx){${rename(d.body, at)}}`)
-  return `${s.head}\nconst P=new Array(${s.decls.length})\n${bodies.join('\n')}\n${rename(s.tail, at)}`
+  // NAMED function expressions. An anonymous one gets an empty `SharedFunctionInfo`
+  // name and disappears from `--trace-turbo-inlining`, which reads as "V8 never
+  // considered it" — a wiring result that is an artifact of the rewrite's spelling.
+  const bodies = s.decls.map(d => `P[${slot.get(d.ip)!}]=function _pf${d.ip}(input,pos,ctx){${rename(d.body, at)}}`)
+  return `${s.head}\nconst P=new Array(${s.decls.length})\n${bodies.join('\n')}\n${rename(s.entries.join('\n'), at)}\n${rename(s.tail, at)}`
 }
 
 /* ── W2: property on a linked object, resolved once into a local const ─────── */
 
 function w2ObjectConst(src: string): string {
   const s = split(src)
-  const props = s.decls.map(d => `p${d.ip}:function(input,pos,ctx){${d.body}}`)
+  const props = s.decls.map(d => `p${d.ip}:function _pf${d.ip}_(input,pos,ctx){${d.body}}`)
   const binds = s.decls.map(d => `const _pf${d.ip}=L.p${d.ip}`)
-  return `${s.head}\nconst L={\n${props.join(',\n')}\n}\n${binds.join('\n')}\n${s.tail}`
+  return `${s.head}\nconst L={\n${props.join(',\n')}\n}\n${binds.join('\n')}\n${s.entries.join('\n')}\n${s.tail}`
 }
 
 /* ── W3: closure capture — the link step hands each piece its callees ──────── */
@@ -169,7 +198,7 @@ function w3ClosureCapture(src: string): string {
 
   const factories = s.decls.map((d) => {
     const params = refs(d.body).filter(r => byIp.has(r)).map(r => `c${r}`).join(',')
-    return `const mk${d.ip}=(${params})=>function(input,pos,ctx){${rename(d.body, ip => (byIp.has(ip) ? `c${ip}` : `_pf${ip}`))}}`
+    return `const mk${d.ip}=(${params})=>function _pf${d.ip}_(input,pos,ctx){${rename(d.body, ip => (byIp.has(ip) ? `c${ip}` : `_pf${ip}`))}}`
   })
 
   // Build order: anything whose callees are all built; stub what is left.
@@ -198,7 +227,7 @@ function w3ClosureCapture(src: string): string {
     link.unshift(`let _pf${pick}\nconst s${pick}=(input,pos,ctx)=>_pf${pick}(input,pos,ctx)`)
     stubbed.add(pick)
   }
-  return `${s.head}\n${factories.join('\n')}\n${link.join('\n')}\n${s.tail}`
+  return `${s.head}\n${factories.join('\n')}\n${link.join('\n')}\n${s.entries.join('\n')}\n${s.tail}`
 }
 
 /* ── W4: a monomorphic wrapper per site in front of a shared body ──────────── */
@@ -225,13 +254,47 @@ function w4Wrapper(src: string): string {
     }
     wrap.push(`function _pf${d.ip}(input,pos,ctx){return _im${owner}(input,pos,ctx)}`)
   }
-  return `${s.head}\n${impl.join('\n')}\n${wrap.join('\n')}\n${s.tail}`
+  return `${s.head}\n${impl.join('\n')}\n${wrap.join('\n')}\n${s.entries.join('\n')}\n${s.tail}`
 }
 
 /** How many of a grammar's piece bodies are byte-identical duplicates. */
 export function duplicateBodies(src: string): { sites: number; distinct: number } {
   const s = split(src)
   return { sites: s.decls.length, distinct: new Set(s.decls.map(d => d.body)).size }
+}
+
+/**
+ * THE SIZE CENSUS — what a real piece body actually weighs.
+ *
+ * V8's inlining budget is stated in BYTECODE bytes, and every wiring result
+ * anyone has is from probes with ~51-byte bodies. Source bytes are not bytecode
+ * bytes, but they are the only figure obtainable without a trace, they are
+ * deterministic, and they establish the ORDER OF MAGNITUDE the real pieces sit
+ * at — which is the whole question.
+ */
+export function bodySizes(src: string): {
+  sites: number
+  min: number
+  p50: number
+  p90: number
+  max: number
+  total: number
+  /** Sites in each source-byte band, bracketing V8's 460 / 920 / 4600 budgets. */
+  bands: Record<string, number>
+} {
+  const sizes = split(src).decls.map(d => d.body.length).sort((a, b) => a - b)
+  const at = (q: number): number => sizes[Math.min(sizes.length - 1, Math.floor(sizes.length * q))]!
+  const bands: Record<string, number> = { '<460': 0, '460-920': 0, '920-4600': 0, '>4600': 0 }
+  for (const n of sizes) {
+    if (n < 460) bands['<460']!++
+    else if (n < 920) bands['460-920']!++
+    else if (n < 4600) bands['920-4600']!++
+    else bands['>4600']!++
+  }
+  return {
+    sites: sizes.length, min: sizes[0]!, p50: at(0.5), p90: at(0.9), max: sizes.at(-1)!,
+    total: sizes.reduce((a, b) => a + b, 0), bands,
+  }
 }
 
 /* ── W5: switch dispatch on a small integer ────────────────────────────────── */
@@ -257,7 +320,7 @@ function w5Switch(src: string): string {
   const arms = s.decls.map(d => `case ${slot.get(d.ip)!}:return _im${d.ip}(input,pos,ctx)`)
   const disp = `function _disp(id,input,pos,ctx){switch(id){\n${arms.join('\n')}\n}}`
   // The tail binds rule entries by NAME, and those are not calls.
-  const tail = s.tail.replace(/\b_pf(\d+)\b/g, (_, d: string) => `_im${d}`)
+  const tail = `${s.entries.join('\n')}\n${s.tail}`.replace(/\b_pf(\d+)\b/g, (_, d: string) => `_im${d}`)
   void call
   return `${s.head}\n${disp}\n${bodies.join('\n')}\n${tail}`
 }
@@ -306,7 +369,34 @@ _snapBuf[0]=n;_snapBuf[1]=raw;_snapBuf[2]=tl;_snapBuf[3]=lv;_snapBuf[4]=lg;_snap
 return _snapBuf
 }`
   void SNAP
-  return `${s.head}\n${helper}\n${bodies.join('\n')}\n${s.tail}`
+  return `${s.head}\n${helper}\n${bodies.join('\n')}\n${s.entries.join('\n')}\n${s.tail}`
+}
+
+/* ── W6: overgeneration — every option variant emitted, the link step picks ── */
+
+/**
+ * OWNER-NAMED STRATEGY: "trying with generating some functions that don't get
+ * used and some that do".
+ *
+ * The live half is the baseline wiring, untouched — direct hoisted names, so the
+ * runtime cost of the un-picked variant is exactly zero. The other variant's
+ * pieces are carried alongside under `_qf<N>` and never referenced. They are
+ * BYTES ONLY: V8 pre-parses them and never compiles a body it does not call.
+ *
+ * The dead variant's bodies may reference prelude constants this variant does
+ * not declare. That is sound precisely because they never run — and it is also
+ * the honest statement of what overgeneration costs a real build: the SHARED
+ * prelude has to cover the union, or each variant carries its own.
+ */
+export function w6Overgenerate(otherSource: string): (src: string) => string {
+  const dead = split(otherSource).decls
+    .map(d => `function _qf${d.ip}(input,pos,ctx){${d.body.replace(/\b_pf(\d+)\b/g, (_, n: string) => `_qf${n}`)}}`)
+    .join('\n')
+  return (src) => {
+    verifySplit(src)
+    const s = split(src)
+    return `${s.head}\n${s.decls.map(d => d.whole).join('\n')}\n${dead}\n${s.entries.join('\n')}\n${s.tail}`
+  }
 }
 
 const MODES: Record<WiringMode, (src: string) => string> = {

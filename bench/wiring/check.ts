@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { setWiring, lastEmittedBytes } from '../../src/table/assemble.ts'
 import { PARSEMAN_VERSION } from '../../src/version.ts'
 import { buildWorkloads, type Workload } from '../workloads/index.ts'
-import { WIRING_MODES, rewire, duplicateBodies, type WiringMode } from './rewire.ts'
+import { WIRING_MODES, rewire, duplicateBodies, bodySizes, type WiringMode } from './rewire.ts'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
@@ -70,15 +70,33 @@ function main(): void {
   mkdirSync(path.dirname(outPath), { recursive: true })
   const stamp = new Date().toISOString()
 
-  for (const w of buildWorkloads()) {
+  const only = process.argv.slice(2).filter(a => !a.startsWith('-'))
+  const all = buildWorkloads()
+  const chosen = only.length === 0 ? all : all.filter(w => only.some(o => w.id.includes(o)))
+  if (chosen.length === 0) { console.error(`no workload matches ${only.join(', ')}`); process.exit(1) }
+  console.log(`workloads: ${chosen.map(w => w.id).join(', ')}\n`)
+
+  for (const w of chosen) {
     // The unrewritten emitted text, for the duplicate-body census W4 rests on.
     let census = { sites: 0, distinct: 0 }
     let captured = ''
     setWiring((s) => { captured = s; return s })
     try { const p = w.make(); p.parse() } finally { setWiring(undefined) }
-    if (captured !== '') { try { census = duplicateBodies(captured) } catch { /* shape refused */ } }
+    let sizes: ReturnType<typeof bodySizes> | undefined
+    if (captured !== '') {
+      census = duplicateBodies(captured)
+      sizes = bodySizes(captured)
+    }
 
     console.log(`${w.id}  ${w.bytes} B input   sites ${census.sites}  distinct bodies ${census.distinct}`)
+    if (sizes !== undefined) {
+      console.log(`  piece body SOURCE bytes: min ${sizes.min}  p50 ${sizes.p50}  p90 ${sizes.p90}  max ${sizes.max}`)
+      console.log(`  bands ${Object.entries(sizes.bands).map(([k, v]) => `${k}:${v}`).join('  ')}`)
+      appendFileSync(outPath, `${JSON.stringify({
+        kind: 'body-size-census', stamp, sha, srcDirty: dirty, parsemanVersion: PARSEMAN_VERSION,
+        node: process.version, workload: w.id, ...sizes,
+      })}\n`)
+    }
     const rows = sweep(w)
     const base = rows[0]!.bytes
     for (const r of rows) {
