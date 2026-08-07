@@ -20,7 +20,7 @@ import { missingInferredType } from '../combinators/node.ts'
 import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
-import { covKindCode } from './program.ts'
+import { covKindCode, encodeClassSpec } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 
 /**
@@ -431,11 +431,14 @@ class Encoder {
     return i
   }
 
-  /** A first set becomes a char class STRING of `[lo, hi]` pairs, or −1 for `any`. */
+  /** A first set becomes a char class STRING of `[lo, hi]` code-point pairs, or −1 for `any`. */
   private charClass(fs: FirstSet): number {
     if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
-    let spec = ''
-    for (const r of fs.ranges) spec += String.fromCharCode(r.lo, r.hi)
+    // `fromCharCode` truncates every endpoint to 16 bits. That silently turned
+    // U+1F600 into U+F600 in the dispatch table: `lead()` correctly produced the
+    // astral code point, but no encoded class could claim it. The shared codec
+    // keeps BMP endpoints compact and escapes astral endpoints unambiguously.
+    const spec = encodeClassSpec(fs.ranges)
     const hit = this.ccIndex.get(spec)
     if (hit !== undefined) return hit
     const i = this.cc.length
@@ -1017,6 +1020,9 @@ class Encoder {
           | (d.collapse === true ? 32 : 0)
           | (d.unwrap === true ? 64 : 0)
           | (d.trailingTrivia === true ? 128 : 0)
+          // Distinguish grammar-owned capture from a structural node's default
+          // capture. A runtime host predicate may narrow only the latter.
+          | (d.captureTrivia === true ? 1 : 0)
         const body = this.emit(
           this.track ? OP_NODE_TRACK : OP_NODE,
           d.build === undefined ? -1 : this.fn(d.build, d.buildSrc ?? null),
@@ -1506,7 +1512,19 @@ export function encodeTableProgram(
   const seen = new Set<Combinator<unknown>>()
   const track = settings.trackLines === true
     || names.some(n => hasScopedTrackLines(ruleMap[n]!, seen))
-  const enc = new Encoder(track === (settings.trackLines === true) ? settings : { ...settings, trackLines: true })
+  // Same precedence as compileRuleMap/compose: an explicit lowering option wins;
+  // otherwise a `rules({ hostMode: 'cst' })` declaration stamped on its entries
+  // selects CST. (`'ast'` is the unstamped default.) Reading only `settings`
+  // produced two opposite contracts for one grammar: compose refused a hostless
+  // run while public encodeTable silently emitted and stamped an AST table.
+  const hostMode = settings.hostMode
+    ?? names.map(n => ruleMap[n]!._meta.grammarHostMode).find(Boolean)
+  const resolvedSettings = {
+    ...settings,
+    ...(hostMode === undefined ? {} : { hostMode }),
+    ...(track ? { trackLines: true } : {}),
+  }
+  const enc = new Encoder(resolvedSettings)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   const prog = enc.finish()

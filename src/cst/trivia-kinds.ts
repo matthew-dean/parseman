@@ -38,8 +38,9 @@ export function analyzeLabeledTrivia(trivia: Combinator<unknown>): LabeledTrivia
   let minRepeats = 1
 
   if (core._def.tag === 'oneOrMore') {
+    const min = core._def.min
     core = core._def.parser
-    minRepeats = 1
+    minRepeats = min
   } else if (core._def.tag === 'many') {
     core = core._def.parser
     minRepeats = 0

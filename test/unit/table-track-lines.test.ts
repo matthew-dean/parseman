@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { choice, literal, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { choice, expect as expectC, literal, regex, rules, sequence, trivia } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
+import { compile } from '../../src/table/compile.ts'
 import { OP_RULE } from '../../src/table/ops.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
@@ -125,5 +126,38 @@ describe('table lowering of rules({ trackLines: true })', () => {
     const r = run(execRules(prog)['List'] as never, '[\n  [ ab ]\n]')
     expect(r.ok).toBe(true)
     expect(r.span).toMatchObject({ startLine: 1, startColumn: 1, endLine: 3, endColumn: 2 })
+  })
+
+  it('annotates zero-width expect() recovery errors in every table engine', () => {
+    const grammar = rules(
+      { trackLines: true },
+      () => ({ Doc: sequence(literal('a\n'), expectC(literal('x'), 'x')) }),
+    ) as unknown as Record<string, Combinator<unknown>>
+    const prog = encodeTable(grammar, { trackLines: true })
+    const input = 'a\n'
+    const expectedSpan = {
+      start: 2, end: 2,
+      startLine: 2, startColumn: 1,
+      endLine: 2, endColumn: 1,
+    }
+
+    const interpreter = run(grammar.Doc! as never, input, { tolerant: true })
+    const reference = run(execRules(prog).Doc! as never, input, { tolerant: true })
+    const assembled = run(tableRules(prog).Doc! as never, input, { tolerant: true })
+    const compiled = compile(grammar.Doc!, undefined, { trackLines: true }).parseWithErrors(input)
+
+    for (const [name, result] of [
+      ['interpreter', interpreter],
+      ['exec.ts', reference],
+      ['tableRules', assembled],
+      ['compile()', compiled],
+    ] as const) {
+      expect(result.ok, name).toBe(true)
+      expect(result.errors, name).toHaveLength(1)
+      expect(result.errors[0]!.span, name).toEqual(expectedSpan)
+      if (!result.ok) throw new Error(`${name} unexpectedly failed`)
+      expect((result.value as unknown[])[1], `${name}: embedded error`)
+        .toMatchObject({ _tag: 'parseError', span: expectedSpan, expected: ['x'] })
+    }
   })
 })

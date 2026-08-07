@@ -3,6 +3,9 @@ import { annotateSpanFromLineContext } from '../line-index.ts'
 
 /** Lazy per-node capture state — arrays materialized on first push. */
 export type CstCaptureBuf = {
+  /** Table-host specialisation: collect source-order raw entries without the
+   * duplicate semantic children view. Selected once for the enclosing node. */
+  rawOnly?: true | undefined
   single?: unknown | undefined
   ch?: unknown[] | undefined
   rawSingle?: unknown | undefined
@@ -85,9 +88,11 @@ export function pushCstLeaf(ctx: ParseContext, leaf: unknown): void {
 export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknown): void {
   const b = ctx._cstBuf
   if (b) {
-    if (b.ch) b.ch.push(built)
-    else if (b.single !== undefined) { b.ch = [b.single, built]; b.single = undefined }
-    else b.single = built
+    if (b.rawOnly !== true) {
+      if (b.ch) b.ch.push(built)
+      else if (b.single !== undefined) { b.ch = [b.single, built]; b.single = undefined }
+      else b.single = built
+    }
 
     if (b.raw) b.raw.push(rawEntry)
     else if (b.rawSingle !== undefined) { b.raw = [b.rawSingle, rawEntry]; b.rawSingle = undefined }

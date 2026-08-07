@@ -40,7 +40,7 @@ import { committed, spanLines, stampRuleMap } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
-  expandCompact, resolveTable,
+  decodeClassSpec, expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
@@ -185,6 +185,8 @@ type Driver = {
   end: () => number
   /** Per-parse reset of the trivia leaf swap. See `begin` in `makeDriver`. */
   begin: (ctx: ParseContext) => void
+  /** Restore a suspended outer entry after a re-entrant parse. */
+  finish: () => void
   /** Ambient `scanSkip` sets, rebuilt from `prog.scanSkip`, indexed as encoded. */
   scanSkip: readonly (readonly Combinator<unknown>[])[]
 }
@@ -236,6 +238,10 @@ function makeDriver(
    * Recovery is DORMANT until a parse sets `ctx._tolerant`.
    */
   const REC = prog.rec === 1
+  // Line tracking is table data, selected once at encode time. `OP_EXPECT` has
+  // no tracked opcode variant, so it reads this assembly-wide constant when it
+  // constructs the zero-width recovery diagnostic.
+  const LINES = prog.lines === 1
   /**
    * Sync sentinels by char-class index, built at most once each. The ranges are
    * recoverable from the class spec, and `firstSetSentinel` is the interpreter's
@@ -247,8 +253,7 @@ function makeDriver(
     if (cls < 0) return undefined
     if (sentinels.has(cls)) return sentinels.get(cls)
     const spec = prog.cc[cls]!
-    const ranges: { lo: number; hi: number }[] = []
-    for (let i = 0; i < spec.length; i += 2) ranges.push({ lo: spec.charCodeAt(i), hi: spec.charCodeAt(i + 1) })
+    const ranges = decodeClassSpec(spec)
     const made = firstSetSentinel({ kind: 'ranges', ranges }) ?? undefined
     sentinels.set(cls, made)
     return made
@@ -259,6 +264,20 @@ function makeDriver(
    * re-deriving on every node. Decided once in `begin`.
    */
   let HOSTCST = false
+  let HOSTREADSCHILDREN = true
+  let HOSTCAPTURETRIVIA: ((type: string) => boolean) | undefined
+  type DriverFrame = {
+    scan: FastTriviaScanner | null
+    fast: boolean
+    hostCst: boolean
+    hostReadsChildren: boolean
+    hostCaptureTrivia: ((type: string) => boolean) | undefined
+    end: number
+  }
+  // The ordinary path stays allocation-free. A frame exists only while a host
+  // callback re-enters this same reference driver before its outer parse ends.
+  const frames: DriverFrame[] = []
+  let depth = 0
 
   /**
    * Capture goes through the runtime's own buffer (`src/cst/capture-buffer.ts`),
@@ -517,15 +536,11 @@ function makeDriver(
         if (v !== FAIL) return v
         // Mirrors src/combinators/expect.ts:135-150 — succeed at zero width with
         // a ParseError value, and record it in the flat sink when present.
-        // TODO(table/expect-span-lines): the interpreter annotates this span with
-        // line/column when `ctx.trackLines` is on (`combinators/expect.ts:145`,
-        // `annotateSpanFromLineContext`) and neither table driver does — measured
-        // divergence, `expect()` only, PRE-EXISTING and left alone here because it
-        // needs `spanLines` proven equivalent to `annotateSpanFromLineContext`
-        // first, and `recordLineRangeFromContext` decided for the zero-width case.
-        // List-recovery errors are unaffected: `recoverScan` annotates for every
-        // engine. Tracked in the recovery lane's report.
-        const span = { start: pos, end: pos }
+        // The table-wide tracking bit selects the same shared span helper used
+        // for tracked node and root spans. The failed child has already scanned
+        // through `pos`, so its terminal rows have populated `_lineStarts` before
+        // this zero-width diagnostic is constructed.
+        const span = LINES ? spanLines(ctx, pos, pos) : { start: pos, end: pos }
         const err = { _tag: 'parseError' as const, span, expected: fx[code[ip + 2]!] as string[] }
         ctx._errors?.push(err)
         // A TOLERANT `expect()` also embeds the error in the TREE (expect.ts:150,
@@ -1307,16 +1322,30 @@ function makeDriver(
         // said — the encode-time flags under-approximate here by construction.
         const host = ctx.build
         const hostCst = HOSTCST
+        const type = k[code[ip + 5]!] as string
+        const structural = code[ip + 1]! < 0 && code[ip + 4]! < 0
+        const grammarCapture = (flags & 1) !== 0 || (flags & 128) !== 0
+        const hostCapturesThisType = structural && HOSTCAPTURETRIVIA !== undefined
+          ? HOSTCAPTURETRIVIA(type)
+          : undefined
+        const captureWide = (flags & 4) !== 0 || hostCst
+          ? !structural || grammarCapture || hostCapturesThisType !== false
+          : hostCapturesThisType === true
+        const keepChildren = !structural || HOSTREADSCHILDREN
+          || (flags & 32) !== 0 || (flags & 64) !== 0
+        const rawOnly = !keepChildren
         const saved = beginCstNodeCapture(ctx)
+        if (rawOnly) {
+          ctx._cstBuf = { rawOnly: true }
+        }
         const savedFields = ctx._fields
         ctx._fields = (flags & 16) !== 0 || hostCst ? [] : undefined
-        if ((flags & 4) === 0 && !hostCst) ctx.captureTrivia = false
+        ctx.captureTrivia = captureWide
         // Per-node-type trivia-kind mask — see `assemble.ts`. Structural nodes
         // only (no builder, no projection), matching `node.ts:260`.
-        const structural = code[ip + 1]! < 0 && code[ip + 4]! < 0
         const savedMask = structural ? ctx._triviaCaptureMask : undefined
         if (structural && host?._parsemanTriviaKinds !== undefined) {
-          ctx._triviaCaptureMask = host._parsemanTriviaKinds(k[code[ip + 5]!] as string)
+          ctx._triviaCaptureMask = host._parsemanTriviaKinds(type)
         }
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if (v !== FAIL && (flags & 128) !== 0 && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
@@ -1330,7 +1359,6 @@ function makeDriver(
         const st = (flags & 8) !== 0 && ctx.state !== undefined
           ? Object.assign({}, ctx.state as Record<string, unknown>)
           : undefined
-        const type = k[code[ip + 5]!] as string
         const tagIdx = code[ip + 6]!
         const tags = tagIdx < 0 ? undefined : k[tagIdx] as readonly string[]
 
@@ -1358,6 +1386,7 @@ function makeDriver(
           // no-op for every grammar whose rules carry reducers (node.ts says so
           // in as many words). jess turns this on for `NamedColor`.
           (hostCst || (buildIdx < 0 && proj < 0))
+          && keepChildren
           && host?._parsemanCstCollapse !== undefined
           && kids.length === 1
           && cap.rawChildren.length === 1
@@ -1388,7 +1417,9 @@ function makeDriver(
           nd = { _tag: 'node', type, span, state: st ?? null, children: kids }
         }
         // A ROOT NODE IS NOT A CHILD — see the same guard in `assemble.ts`.
-        if (saved.buf !== undefined || saved.ch !== undefined) pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+        if (saved.buf !== undefined || saved.ch !== undefined) {
+          pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+        }
         EC.e = end
         return nd
       }
@@ -1495,8 +1526,7 @@ function makeDriver(
     if (cls === -2) return { kind: 'empty' }
     if (cls < 0) return { kind: 'any' }
     const spec = prog.cc[cls] ?? ''
-    const ranges: Array<{ lo: number; hi: number }> = []
-    for (let i = 0; i < spec.length; i += 2) ranges.push({ lo: spec.charCodeAt(i), hi: spec.charCodeAt(i + 1) })
+    const ranges = decodeClassSpec(spec)
     return { kind: 'ranges', ranges }
   }
 
@@ -1534,13 +1564,44 @@ function makeDriver(
    * would skip trivia this grammar never declared.
    */
   function begin(ctx: ParseContext): void {
-    FAST = ctx.trackLines !== true
-    SCAN = null
     const host = ctx.build
-    HOSTCST = host !== undefined && cstOutputHost(host)
+    // Read user-owned host properties before touching the active frame. A
+    // throwing getter must not leave the driver one level deeper or half reset.
+    const nextFast = ctx.trackLines !== true
+    const nextHostCst = host !== undefined && cstOutputHost(host)
+    const nextHostReadsChildren = host?._parsemanReadsChildren !== false
+      || host?._parsemanCstCollapse !== undefined
+    const nextHostCaptureTrivia = host?._parsemanCaptureTrivia
+    if (depth > 0) {
+      frames.push({
+        scan: SCAN, fast: FAST,
+        hostCst: HOSTCST, hostReadsChildren: HOSTREADSCHILDREN,
+        hostCaptureTrivia: HOSTCAPTURETRIVIA,
+        end: EC.e,
+      })
+    }
+    depth++
+    FAST = nextFast
+    SCAN = null
+    HOSTCST = nextHostCst
+    HOSTREADSCHILDREN = nextHostReadsChildren
+    HOSTCAPTURETRIVIA = nextHostCaptureTrivia
   }
 
-  return { exec, end: () => EC.e, begin, scanSkip }
+  function finish(): void {
+    if (depth <= 0) throw new Error('parseman table reference driver frame underflow')
+    depth--
+    if (depth === 0) return
+    const prior = frames.pop()!
+    SCAN = prior.scan
+    FAST = prior.fast
+    HOSTCST = prior.hostCst
+    HOSTREADSCHILDREN = prior.hostReadsChildren
+    HOSTCAPTURETRIVIA = prior.hostCaptureTrivia
+    EC.e = prior.end
+  }
+
+  return { exec, end: () => EC.e, begin, finish, scanSkip }
 }
 
 /**
@@ -1588,10 +1649,16 @@ export function execRules(
   return stampRuleMap(prog, {
     runRule: (ri, input, pos, ctx) => {
       d.begin(ctx)
-      const v = d.exec(entries[ri]!, input, pos, ctx)
-      if (v === FAIL) return -1
-      last = v
-      return d.end()
+      try {
+        const v = d.exec(entries[ri]!, input, pos, ctx)
+        if (v === FAIL) return -1
+        last = v
+        return d.end()
+      } finally {
+        // Host reducers are ordinary user code and may re-enter this exact rule
+        // map (or throw). Restore its scan/host/end frame on every exit.
+        d.finish()
+      }
     },
     lastValue: () => last,
     // Chosen PER RULE, from `scanSkipOf`: `run()` reads the ENTRY rule's own

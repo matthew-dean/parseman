@@ -118,7 +118,7 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  * property read per terminal miss — the same price codegen pays.
  */
 import {
-  classHas, expandCompact, resolveTable,
+  classHas, decodeClassSpec, expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
@@ -218,6 +218,19 @@ type TermRunner = (input: string, cur: number, ctx: ParseContext) => number
 export type RunCfg = {
   /** Is this parse's host a CST-output host? Fixes `OP_NODE`'s whole shape. */
   readonly hostCst: boolean
+  /**
+   * Does the structural host consume the semantic `children` array? `false`
+   * selects raw-only node collectors. Collapse forces this back to true at the
+   * run boundary because its predicate consumes both child views.
+   */
+  readonly hostReadsChildren?: boolean
+  /**
+   * Structural node types whose host consumes trivia. Evaluated while an
+   * assembly is built, once per node site, never from the node execution path.
+   * Absent means the backwards-compatible default: capture every structural
+   * node's trivia.
+   */
+  readonly hostCaptureTrivia?: ((type: string) => boolean) | undefined
   /** `ctx.trackLines` — decides whether the trivia leaf swap is legal at all. */
   readonly trackLines: boolean
   /**
@@ -281,23 +294,24 @@ export type RunCfg = {
   readonly probe: boolean
 }
 
-/** THE bit packing for an assembly cache key. Five bits, so at most thirty-two
- * assemblies per table.
+/** THE bit packing for an assembly cache key. Six bits, so at most sixty-four
+ * ordinary assemblies per table. Host trivia predicates use a host-identity
+ * cache in addition to this key because their per-type answer is not one bit.
  *
- * Taken as five booleans rather than as a `RunCfg` because `AssemblyCache.forCtx`
+ * Taken as six booleans rather than as a `RunCfg` because `AssemblyCache.forCtx`
  * runs once per entry invocation and must allocate nothing — it derives these bits
  * from the `ctx` and builds a `RunCfg` only on the miss. That constraint is why the
  * packing was written twice, 2500 lines apart in this file, and a bit added to one
  * copy but not the other is a cache COLLISION: a parse served the wrong assembly.
  * Splitting the packing from the object read satisfies both callers from one place. */
-function cfgKeyOf(hostCst: boolean, trackLines: boolean, tolerant: boolean, coverage: boolean, probe: boolean): number {
+function cfgKeyOf(hostCst: boolean, trackLines: boolean, tolerant: boolean, coverage: boolean, probe: boolean, hostReadsChildren = true): number {
   return (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0)
-    | (coverage ? 8 : 0) | (probe ? 16 : 0)
+    | (coverage ? 8 : 0) | (probe ? 16 : 0) | (hostReadsChildren ? 0 : 32)
 }
 
 /** The cfg key an assembly is cached under. */
 export function cfgKey(c: RunCfg): number {
-  return cfgKeyOf(c.hostCst, c.trackLines, c.tolerant, c.coverage, c.probe)
+  return cfgKeyOf(c.hostCst, c.trackLines, c.tolerant, c.coverage, c.probe, c.hostReadsChildren)
 }
 
 export type Assembly = {
@@ -381,8 +395,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const hit = sentinels.get(cls)
     if (hit !== undefined || sentinels.has(cls)) return hit
     const spec = prog.cc[cls]!
-    const ranges: { lo: number; hi: number }[] = []
-    for (let i = 0; i < spec.length; i += 2) ranges.push({ lo: spec.charCodeAt(i), hi: spec.charCodeAt(i + 1) })
+    const ranges = decodeClassSpec(spec)
     const made = firstSetSentinel({ kind: 'ranges', ranges }) ?? undefined
     sentinels.set(cls, made)
     return made
@@ -1060,14 +1073,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_EXPECT: {
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
-        // TODO(table/expect-span-lines): the interpreter annotates this span with
-        // line/column when `ctx.trackLines` is on (`combinators/expect.ts:145`,
-        // `annotateSpanFromLineContext`) and neither table driver does — measured
-        // divergence, `expect()` only, PRE-EXISTING and left alone here because it
-        // needs `spanLines` proven equivalent to `annotateSpanFromLineContext`
-        // first, and `recordLineRangeFromContext` decided for the zero-width case.
-        // List-recovery errors are unaffected: `recoverScan` annotates for every
-        // engine. Tracked in the recovery lane's report.
+        // Line tracking is table data (`OP_EXPECT` has no tracked opcode variant).
+        // Use the same helper as tracked node/root spans so an expect() recovery
+        // diagnostic carries the interpreter's line/column contract in both
+        // table engines. Do not use the incoming ctx bit: a grammar scope can
+        // declare tracking even when the outer run context begins untracked.
+        const expectSpan = (ctx: ParseContext, pos: number) =>
+          prog.lines === 1 ? spanLines(ctx, pos, pos) : { start: pos, end: pos }
         // TOLERANT `expect()` EMBEDS ITS ERROR IN THE TREE, not only in the flat
         // `_errors` side-channel (`combinators/expect.ts:150`, and codegen's
         // `_ctx._rec.capture` at codegen.ts:4470) — so a tree walk finds every
@@ -1078,7 +1090,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           return (input, pos, ctx) => {
             const v = child(input, pos, ctx)
             if (v !== FAIL) return v
-            const span = { start: pos, end: pos }
+            const span = expectSpan(ctx, pos)
             const err = { _tag: 'parseError' as const, span, expected: xf }
             ctx._errors?.push(err)
             if (ctx._tolerant === true) captureError(ctx, err)
@@ -1098,7 +1110,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (input, pos, ctx) => {
           const v = child(input, pos, ctx)
           if (v !== FAIL) return v
-          const span = { start: pos, end: pos }
+          const span = expectSpan(ctx, pos)
           const err = { _tag: 'parseError' as const, span, expected: xf }
           ctx._errors?.push(err)
           ctx._fc = false
@@ -2353,8 +2365,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // in `exec.ts`'s node case — the single most-executed non-terminal at
         // 145,512 executions per parse of `benchmark.less`. `cstOutputHost(ctx.build)`
         // is fixed by `run()` before the entry is called, so it selects the piece.
-        const wantFields = hasFields || hostCst
-        const captureWide = readsTrivia || hostCst
         const build = buildIdx >= 0
           ? fns[buildIdx] as (
             children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
@@ -2366,6 +2376,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // takes a per-node-type trivia-kind mask off the host (`node.ts:260`).
         // Assembly-time, so a node with a reducer pays nothing for the question.
         const structural = build === undefined && proj < 0
+        const grammarCapture = (flags & 1) !== 0 || trailingTrivia
+        const hostCapturesThisType = structural && cfg.hostCaptureTrivia !== undefined
+          ? cfg.hostCaptureTrivia(type)
+          : undefined
+        const wantFields = hasFields || hostCst
+        const captureWide = readsTrivia || hostCst
+          ? !structural || grammarCapture || hostCapturesThisType !== false
+          : hostCapturesThisType === true
+        // Only a plain structural host call can omit semantic children. Every
+        // operation that consumes them keeps the lazy buffer, including either
+        // grammar collapse form and the host collapse predicate.
+        const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
+        const rawOnly = !keepChildren
         return (input, pos, ctx) => {
           const host = HOST
           // `beginCstNodeCapture`/`endCstNodeCapture` INLINED, and the two objects
@@ -2383,7 +2406,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const sTl = ctx._cstTriviaLog
           const sCap = ctx.captureTrivia
           const sBuf = ctx._cstBuf
-          const buf: CstCaptureBuf = {}
+          const buf: CstCaptureBuf = rawOnly ? { rawOnly: true } : {}
           ctx._cstBuf = buf
           ctx._cstChildren = undefined
           ctx._cstLeaves = undefined
@@ -2408,7 +2431,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(ctx._fields) : undefined
           ctx._fields = savedFields
           if (structural) ctx._triviaCaptureMask = savedMask
-          const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+          const kids = rawOnly ? EMPTY_CH : buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+          const hostKids = kids
           const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
           const tlog = buf.tl ?? EMPTY_TLOG
           ctx._cstBuf = sBuf
@@ -2433,6 +2457,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // HOST COLLAPSE — applies wherever the node's VALUE comes from the
             // host, which is any node under a CST host, not only builder-less ones.
             (hostCst || (build === undefined && proj < 0))
+            && keepChildren
             && host?._parsemanCstCollapse !== undefined
             && kids.length === 1
             && rawKids.length === 1
@@ -2451,7 +2476,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               nd = build(kids, fieldMap, span, rawKids, captureWide ? tlog : EMPTY_TL, st)
             }
           } else if (host !== undefined) {
-            nd = host(type, kids, fieldMap, span, rawKids, tlog, st, tags)
+            nd = host(type, hostKids, fieldMap, span, rawKids, tlog, st, tags)
           } else {
             nd = { _tag: 'node', type, span, state: st ?? null, children: kids }
           }
@@ -2460,7 +2485,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // undefined` (node.ts:326). An outer `_cstLeaves` alone is a caller's
           // own sink, not a parent node, and pushing into it published the root
           // node as a leaf of itself.
-          if (sBuf !== undefined || sCh !== undefined) pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+          if (sBuf !== undefined || sCh !== undefined) {
+            pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+          }
           EC.e = end
           return nd
         }
@@ -2501,8 +2528,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (cls === -2) return { kind: 'empty' }
     if (cls < 0) return { kind: 'any' }
     const spec = prog.cc[cls] ?? ''
-    const ranges: Array<{ lo: number; hi: number }> = []
-    for (let i = 0; i < spec.length; i += 2) ranges.push({ lo: spec.charCodeAt(i), hi: spec.charCodeAt(i + 1) })
+    const ranges = decodeClassSpec(spec)
     return { kind: 'ranges', ranges }
   }
 
@@ -2553,7 +2579,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
      * decided by nothing. `test/unit/no-function-constructor.test.ts` decides it
      * now, by counting constructor calls across a real parse.
      */
-    const pre = prog.asm?.find(a => a.key === cfgKey(cfg))
+    // A build-time assembly cannot know a runtime host's per-type trivia
+    // predicate. Never serve the scalar-keyed default factory for a
+    // predicate-specialised parse; lower a fresh host-owned assembly instead.
+    const pre = cfg.hostCaptureTrivia === undefined
+      ? prog.asm?.find(a => a.key === cfgKey(cfg))
+      : undefined
     if (pre !== undefined) {
       const pools = rebuildPools(t.cc, t.fx, pre.plan)
       emitted = pre.factory(
@@ -2725,25 +2756,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
  *
  * The option set is not known when the rule map is created — `ctx.build`,
  * `ctx.trackLines` and `ctx._tolerant` arrive with the parse — so the entry
- * computes the three-bit key and takes the assembly for it, building it the first
+ * computes the scalar key and takes the assembly for it, building it the first
  * time that combination is seen. That is the "assembled at run start" half of G5:
- * at most eight assemblies per table per process, each holding ONLY the pieces
+ * only the option combinations a process actually uses, each holding the pieces
  * its options reach. A process that never parses tolerantly never builds, and
  * never runs, a single recovery piece.
  */
 export class AssemblyCache {
   private readonly t: ResolvedTable
   private readonly prog: TableProgram
-  private readonly byCfg: Array<Assembly | undefined> = [
-    undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined,
-  ]
+  private readonly byCfg: Array<Assembly | undefined> = Array.from({ length: 64 })
+  /** Predicate-specialised assemblies are owned by their host identity. */
+  private readonly byHost = new WeakMap<object, {
+    predicate: (type: string) => boolean
+    assemblies: Array<Assembly | undefined>
+  }>()
 
   constructor(prog: TableProgram) {
     this.prog = prog
@@ -2752,6 +2779,8 @@ export class AssemblyCache {
 
   for(cfg: RunCfg): Assembly {
     const key = cfgKey(cfg)
+    // No host identity is available to own this predicate specialisation.
+    if (cfg.hostCaptureTrivia !== undefined) return assemble(this.t, this.prog, cfg)
     const hit = this.byCfg[key]
     if (hit !== undefined) return hit
     const made = assemble(this.t, this.prog, cfg)
@@ -2772,7 +2801,7 @@ export class AssemblyCache {
    * IRREDUCIBLE, and it is worth stating precisely so nobody re-opens it:
    *
    *   A table entry has the artifact signature `(input, pos, ctx)`, shared with
-   *   codegen. All five option bits live on that `ctx`, and every one of them is
+   *   codegen. All scalar option bits live on that `ctx`, and every one of them is
    *   supplied PER CALL by the caller — `run()` takes `tolerant`, `build` and
    *   `instrumentation` as options on an artifact it was handed;
    *   `combinators/grammar.ts` sets `trackLines` on scope entry;
@@ -2795,8 +2824,9 @@ export class AssemblyCache {
    *
    * It allocates nothing: the key is packed from the ctx's own bits by `cfgKeyOf`,
    * which takes them as arguments precisely so no `RunCfg` need exist here — that
-   * object is built only on the miss that builds an assembly, at most thirty-two
-   * times per table per process.
+   * object is built only on the miss that builds an assembly. A host trivia
+   * predicate additionally selects a host-identity cache because it cannot be
+   * represented by a scalar bit.
    *
    * DO NOT CACHE THE RESULT ACROSS CALLS. Keying it on anything but the `ctx`'s
    * own option bits is how `tableRules` handed a strict parse the PREVIOUS
@@ -2805,15 +2835,34 @@ export class AssemblyCache {
   forCtx(ctx: ParseContext): Assembly {
     const host = ctx.build
     const hostCst = host !== undefined && cstOutputHost(host)
+    const hostReadsChildren = host?._parsemanReadsChildren !== false
+      || host?._parsemanCstCollapse !== undefined
+    const hostCaptureTrivia = host?._parsemanCaptureTrivia
     const trackLines = ctx.trackLines === true
     const tolerant = ctx._tolerant === true
     const coverage = ctx._grammarCoverage !== undefined
     const probe = ctx._probe !== undefined
-    const key = cfgKeyOf(hostCst, trackLines, tolerant, coverage, probe)
-    const hit = this.byCfg[key]
+    const key = cfgKeyOf(hostCst, trackLines, tolerant, coverage, probe, hostReadsChildren)
+    let cache = this.byCfg
+    if (host !== undefined && hostCaptureTrivia !== undefined) {
+      // The predicate is host configuration, not parse state. Specialising each
+      // node once keeps it out of the hot path, so its behaviour must stay stable
+      // for this function identity. Replacing the function is supported: the
+      // identity check below installs a fresh cache for the same host object.
+      const prior = this.byHost.get(host)
+      if (prior !== undefined && prior.predicate === hostCaptureTrivia) cache = prior.assemblies
+      else {
+        cache = Array.from({ length: 64 })
+        this.byHost.set(host, { predicate: hostCaptureTrivia, assemblies: cache })
+      }
+    }
+    const hit = cache[key]
     if (hit !== undefined) return hit
-    const made = assemble(this.t, this.prog, { hostCst, trackLines, tolerant, coverage, probe })
-    this.byCfg[key] = made
+    const made = assemble(this.t, this.prog, {
+      hostCst, hostReadsChildren, hostCaptureTrivia,
+      trackLines, tolerant, coverage, probe,
+    })
+    cache[key] = made
     return made
   }
 }
@@ -2823,7 +2872,7 @@ export class AssemblyCache {
  * through linked closures instead of the bytecode interpreter.
  *
  * THE ONE config read is HERE, at the boundary, once per entry invocation:
- * `AssemblyCache.forCtx` turns the `ctx` into a five-bit option set and takes the
+ * `AssemblyCache.forCtx` turns the `ctx` into a scalar option set and takes the
  * assembly built for it. Everything past that point is pieces, and no piece body
  * reads an option — `scripts/check-invariants.mjs` INV-6 asserts it. `forCtx`
  * carries the argument for why that read is irreducible rather than merely cheap.

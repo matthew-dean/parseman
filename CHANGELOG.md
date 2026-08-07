@@ -142,36 +142,72 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   carries no counters — so a row or arm-entry tally in this file describes the
   opcode interpreter, not the shipping path.
 
-- **KNOWN BROKEN AT THIS RELEASE — none of the following is fixed.**
+- **HISTORICAL AUDIT SNAPSHOT (`90aa867`) — all five findings below were
+  superseded before the unreleased 0.47 branch reached its current tip.** The
+  failure descriptions and their measurement consequences are kept because
+  they describe the checkout against which the original 0.47 measurements were
+  taken; they are not the release's current defect list.
 
-  - **The `*-lines` grammar variants cannot parse anything.** `ast-lines` and
+  - **FIXED (`8683433`): the `*-lines` grammar variants could not parse
+    anything.** `ast-lines` and
     `cst-lines` build a self-referential `OP_RULE ip -> ip` row, which every
     engine meets as a stack overflow on **every file of every corpus**, all four
     dialects. A **pre-existing encoder defect**, not introduced here; the
     emitter's new refusal names it instead of compiling it into a
     `ReferenceError`. Consequence: every consumed sweep and every A/B figure in
-    this release is `variant: 'ast'`, so **`trackLines` is unmeasured**, not
-    measured-and-fine. A lane is on it.
-  - **`benchmark.jess` accepts 0 of its 124 bytes** — `ok: true`, `errors: 0` —
+    this historical snapshot is `variant: 'ast'`, so those figures leave
+    **`trackLines` unmeasured**. The fix rejects the self-loop and the post-fix
+    consumed sweep covers the line-aware variants; it does not retroactively
+    turn the older figures into line-aware measurements.
+  - **FIXED (`d0036b4`): `benchmark.jess` accepted 0 of its 124 bytes** —
+    `ok: true`, `errors: 0` —
     on **0.46 and 0.47 alike**, across `compiled`, `interpreted` and `table`.
     Recorded in `notes/results/parse-consumed.jsonl`; re-derivable without
     running anything. This is the exact silent-truncation mode the consumed
     baseline exists to catch, sitting in the jess dialect's own timing fixture,
-    and it predates the release.
-  - **`tolerant: true` assemblies refuse emission in all four dialects**
+    and it predates the release. The document-root trailing-trivia fix now
+    consumes 124/124; charts made from the older rows still measure the empty
+    parse and remain invalid for jess.
+  - **FIXED (`958f6ad`): `tolerant: true` assemblies refused emission in all
+    four dialects**
     (`src/table/emit-assembly.ts:372`). Recovery parses therefore run the
     **closure engine**, never the emitted assembly that serves strict parses. No
-    recovery figure in this release describes the same engine as a strict one.
-  - **`parseClassOperand` has a latent compound-body hole.** It accepts any body
+    recovery figure in this historical snapshot describes the same engine as a
+    strict one. Tolerant assemblies now emit; the old figures still describe the
+    closure engine.
+  - **FIXED (`b25be52`): `parseClassOperand` had a latent compound-body hole.**
+    It accepted any body
     opening `[` and closing `]` (`src/regex/classes.ts:82`), so a SEQUENCE like
     `[ \t\n\r\f]*[\$(]` reads as one class. The fix above put the guard at ONE
     caller (`src/table/scan-shapes.ts`), deliberately, to avoid moving first
-    sets; `src/combinators/trivia-skip.ts` and the first-set analyser still call
-    it unguarded. Nothing mis-lowers through them today, and nothing prevents it.
-  - **`forCtx` is still a per-parse option consult** (`src/table/assemble.ts`),
-    the last standing violation of this project's own criterion — *build the
-    reference at run start, then run with no logic branching for that option
-    input*. One read per parse rather than per row, but the criterion says none.
+    sets. The shared parser now requires the class to close at the fragment's
+    final character, so every caller rejects a compound body; regression tests
+    cover the shared contract.
+  - **OWNER RULING — BY DESIGN: `forCtx` is the run-start selection required by
+    G5, not a violation.** The artifact's options arrive on each call, so the
+    assembly cannot be selected earlier without changing the public artifact
+    contract. `forCtx` reads them once at the entry boundary; INV-6 enforces that
+    no rule or combinator body reads them after selection. The source comment
+    records the ruling and its measured one-call-per-entry boundary.
+
+- **The 0.47 audit closes three table-parity gaps without claiming the open
+  parse-time regression is resolved.**
+
+  - Under `trackLines`, zero-width `expect()` recovery errors now receive the
+    same line/column-enriched span from the interpreter, reference table driver,
+    closure assembly and emitted assembly. All table paths use the shared
+    `spanLines` helper, with a four-engine regression test.
+  - Table-backed artifacts still do not implement `_grammarTrace`'s six phases;
+    that parity project remains a 0.48 target. They now reject a supplied trace
+    sink with a `TypeError` instead of silently returning a plausible empty
+    trace. Coverage counters remain supported.
+  - The table engines now honor structural-host capability metadata that the
+    old source lowering already exposed: `_parsemanReadsChildren = false`
+    suppresses the semantic children collector while preserving
+    `rawChildren`, and `_parsemanCaptureTrivia(type)` is evaluated once per
+    structural node site when the host-specialized assembly is built. Host
+    identity/predicate changes cannot reuse an incompatible cached assembly;
+    unwrap/collapse nodes retain their required children.
 
 - **A rule reference re-establishes its OWN trivia scope, in both engines — this
   release had been silently parsing 68.5% of `benchmark.less` and reporting

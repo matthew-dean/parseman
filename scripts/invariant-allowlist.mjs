@@ -102,11 +102,15 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * OWN BRANCH — the entry only went stale when the fix and the exemption arrived
  * in the same tree, and nothing but the stale-entry check would have said so.
  *
+ * 27 -> 24. The three linker metadata sites no longer `delete` properties from
+ * long-lived `_meta` objects. Assigning `undefined` preserves their stable shape
+ * while retaining the readers' existing absent-value semantics.
+ *
  * That is the case the check exists for. A DEBT entry naming the lane that owes
  * it is a promise, and this is what it looks like when the promise is kept: the
  * entry does not get to survive the fix.
  */
-export const ALLOW_COUNT = 27
+export const ALLOW_COUNT = 24
 
 /**
  * finding key -> { category, why, ref? }
@@ -193,22 +197,6 @@ export const ALLOW = new Map([
   ['INV-3:src/compiler/token-dispatch.ts',
     { category: 'DEBT', why: 'derived-tokenization lane — wire into the compiler or delete', ref: 'docs/design/derived-tokenization.md' }],
 
-
-  // INV-5 x3 on `_meta` — `const meta = slot._meta` / `value._meta` is an ALIAS
-  // of a combinator's long-lived meta object, and `_meta` is read during
-  // interpreted parses. Cold sites (fuse time), so the cost is the shape the
-  // object carries afterwards rather than the delete itself. Fix is to assign a
-  // fixed absent value, which is available here: these readers test
-  // `!== undefined`, not presence. A stated, available fix with nobody assigned
-  // to it is exactly what DEBT means; the `ref` points at where the fix is
-  // argued, because no lane owns these three yet.
-  ['INV-5:src/compiler/linker.ts:repointRef:meta.triviaKindLabels',
-    { category: 'DEBT', why: 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx', ref: 'docs/design/invariant-gate.md#the-allowlist' }],
-  ['INV-5:src/compiler/linker.ts:repointRef:meta.disjoint',
-    { category: 'DEBT', why: 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx', ref: 'docs/design/invariant-gate.md#the-allowlist' }],
-  ['INV-5:src/compiler/linker.ts:fusePieces:meta.grammarHostMode',
-    { category: 'DEBT', why: 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx', ref: 'docs/design/invariant-gate.md#the-allowlist' }],
-
   /* ---- INV-8 x2: one name, two declarations ----------------------------
    * The other two findings this rule produced were COLLAPSED rather than listed
    * (`intersects` to `src/combinators/first-set.ts`, `groupDigits` to
@@ -238,13 +226,12 @@ export const ALLOW = new Map([
    * The other finding was COLLAPSED: `parseman.composedPieces` is now exported as
    * `COMPOSED_PIECES` from `src/compiler/linker.ts` and imported by the plugin. */
 
-  // `Symbol('pm.fail')` is minted in THREE modules — `src/table/exec.ts`,
-  // `src/table/assemble.ts` and `src/table/exec-baseline.ts` — so all three hold
-  // symbols that are not equal to each other. Safe only because the `TableRule` ABI
-  // converts before they cross, which is a property of the boundary and not of the
-  // design. The known instance named two of the three; INV-9 found the third.
+  // The live reference and assembled engines share `FAIL` from `src/table/cell.ts`.
+  // The only second `Symbol('pm.fail')` belongs to `exec-baseline.ts`, a deliberately
+  // frozen pre-change copy whose independence is the ablation control. It crosses
+  // only the public `TableRule` result boundary, never the live engine's cell ABI.
   ['INV-9:pm.fail',
-    { category: 'DEBT', why: 'three private symbols for one sentinel; give it one owner (src/table/cell.ts)', ref: 'exp/mixture' }],
+    { category: 'BY-DESIGN', why: 'the live engines share cell.ts; the sole second sentinel is isolated in the frozen ablation control' }],
 
   /* ---- INV-10 x10: prose that names a deleted file BECAUSE it is deleted ----
    * These are the rule's honest limit. INV-10 decides whether a path in a comment

@@ -434,10 +434,10 @@ ref. Debt that is never restated is debt that is never paid.
 
 There is deliberately no wildcard syntax and no per-rule blanket.
 
-**16 allowlist entries covering 24 finding sites** stand today — 7 `BY-DESIGN`,
-1 `RULE-BUG`, 9 `DEBT` — in three groups. (18 covering 26 at the commit that
-added the gate; the ratchet's first act was to take the two `INV-4` analysis
-duplications below off the list by fixing them.)
+**24 allowlist entries** stand today — 20 `BY-DESIGN`, 1 `RULE-BUG`, and 3
+`DEBT`. The three linker metadata debts left when their `delete` operations were
+replaced with stable `undefined` assignments; the token-streaming groundwork
+remains active, tracked debt until its planned compiler integration lands.
 
 Five are the **frozen ablation controls** — `src/table/exec-baseline.ts` and
 `src/table/encode-baseline.ts`, deliberate frozen copies kept in process so
@@ -459,11 +459,11 @@ could land separately from the fixes:
   first access and a second conflicting one fails loudly. Argued at the site,
   and listed rather than carved out of the rule so that if the site changes the
   entry goes stale and someone has to look again.
-- `INV-3 src/compiler/token-alphabet.ts`, `INV-3 src/compiler/token-scanner.ts`
-  — **`DEBT`**, ref `docs/design/derived-tokenization.md`. The lane landed its
-  alphabet and scanner before the consumer that reads them: precisely the
-  "analysis nothing imports" shape, caught this time. A design lane decides
-  whether they get wired or deleted; either way the entries go.
+- `INV-3 src/compiler/token-alphabet.ts`, `INV-3 src/compiler/token-scanner.ts`,
+  and `INV-3 src/compiler/token-dispatch.ts` — **`DEBT`**, ref
+  `docs/design/derived-tokenization.md`. These are active 0.48 token-streaming
+  groundwork, intentionally not wired into the 0.47 product path yet. Their
+  entries leave when that planned integration makes them reachable.
 
 `INV-4 childrenOf` (`analysis/choice-cost.ts` ↔ `analysis/duplication.ts`) and
 `INV-4 intersects` (`analysis/duplication.ts` ↔ `analysis/gating.ts`) were also
@@ -471,25 +471,10 @@ in this group. Both were one import each, and both are now gone: the helpers
 live once in `analysis/gating.ts`, the module every analysis pass already
 imports.
 
-Seven entries — all `DEBT` — cover the **`delete`-on-long-lived-object findings**, 15 sites:
-
-- `INV-5 ctx._triviaLog` / `ctx._rootTriviaLog` in `combinators/token.ts` (6
-  sites) and `table/exec.ts` (6 sites) — **the sharpest instance in the
-  catalogue**, running per token and per leaf on the object every combinator
-  reads on every step. The driver copies exist because the table driver is
-  deliberately *mirrored* from the combinator for behavioural fidelity, which is
-  what three-way identity rewards: one shape defect became two. A separate lane
-  is measuring what these cost end to end and may remove them; when it lands,
-  these entries go stale and the gate will REQUIRE their deletion. That is the
-  intended interaction, not a conflict. Ref `lane/ctx-shape`.
-- `INV-5 meta.triviaKindLabels`, `meta.disjoint`, `meta.grammarHostMode` in
-  `compiler/linker.ts` (3 sites) — `const meta = slot._meta` is an alias of a
-  combinator's long-lived meta, which is read during interpreted parses. Cold
-  sites, so the cost is the shape the object carries afterwards. Unlike `ctx`,
-  these readers test `!== undefined` rather than presence, so `= undefined` IS a
-  drop-in here. **No lane owns these three yet**; the `ref` points back at this
-  section, which is where the available fix is written down. That is the weakest
-  ref on the list and the next one that should get a real owner.
+The `INV-5` linker metadata debt is now paid. `repointRef()` and `fusePieces()`
+clear `triviaKindLabels`, `disjoint`, and `grammarHostMode` with `= undefined`,
+preserving the stable shape of the long-lived `_meta` objects without changing
+the readers' absent-value semantics.
 
 ## Candidate checks that were REJECTED
 

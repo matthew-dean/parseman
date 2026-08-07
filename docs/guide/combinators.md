@@ -51,7 +51,7 @@ Three words that sound alike but play different roles:
 | `expect(c, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Skips ambient trivia + `scanSkip` opaque units by default. |
 | `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` — including the delimiters. |
-| `routed()` | Use the value/span already consumed by an enclosing `dispatch()` branch. |
+| `routed(fallback?)` | With no argument, use the value/span already consumed by an enclosing `dispatch()` branch. With a fallback, reuse that value when routed or parse the fallback when the same production is used standalone. |
 
 ## Helpers (produce combinators at definition time)
 
@@ -441,6 +441,13 @@ This keeps the lexical split, fallback behavior, and CST/AST ownership in the
 grammar expression. Use tail-only branches when the routed value belongs to an
 outer category node; use `routed()` inside branch nodes when each selected form
 should own that same source span.
+
+`routed()` is forwarding-only: without a routed value at the selector position,
+it fails. Use `routed(head)` only when the same production is deliberately used
+both from a selected `dispatch` arm and directly. In a dispatch arm it forwards
+the already-consumed head; used directly, it parses `head` in place. This removes
+a duplicated `Original`/`RoutedOriginal` production without re-scanning the
+selector in the dispatched case.
 
 If the first parser fails, an enclosing `choice` can still try a later arm. If
 the first parser succeeds and a `when` key matches, that tail is committed: its

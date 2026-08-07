@@ -11,26 +11,32 @@
  * (3) the collapse contract (`_parsemanCstCollapse`, which inspects children) keeps
  * chV even when the opt-out is also set.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, expectTypeOf } from 'vitest'
 import { node, regex, sequence, literal, many, trivia, parser, rules, type BuildHost } from '../../src/index.ts'
 import { compile } from '../../src/table/compile.ts'
+import { encodeTable } from '../../src/table/encode.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
+import { run } from '../../src/functional/run.ts'
 
 const rw = trivia(regex(/[ \t\n\r\f]+/))
 // Nested structural grammar: Doc → many(Pair); Pair → Word ':' Word. Leaves
 // (Word terminals + ':') and sub-nodes (Pair) both flow into the collectors.
-const { Doc } = rules({ trivia: rw }, g => ({
+const grammar = rules({ trivia: rw }, g => ({
   Word: node('Word', regex(/[a-z]+/)),
   Pair: node('Pair', sequence(g.Word, literal(':'), g.Word)),
   Doc: node('Doc', many(g.Pair)),
 }))
+const { Doc } = grammar
 const compiled = compile(Doc)
+const reference = execRules(encodeTable(grammar)).Doc!
 const INPUT = 'a : b  c : d'
 
 /** Structural host that builds purely from rawChildren, like cssCstBuildHost. */
 const fromRaw = (optOut: boolean): BuildHost => {
   const h: BuildHost = (
     type: string,
-    _children: ReadonlyArray<unknown> | undefined,
+    _children: ReadonlyArray<unknown>,
     _fields: unknown,
     span: { start: number; end: number },
     rawChildren: ReadonlyArray<unknown>,
@@ -46,6 +52,70 @@ const parse = (build: BuildHost) => {
 }
 
 describe('_parsemanReadsChildren opt-out — structural children-array elision', () => {
+  it('preserves the public BuildHost children parameter as a required array', () => {
+    // The opt-out is framework-internal. Widening this public parameter to
+    // `undefined` makes every existing explicitly typed host fail strict
+    // function-variance checks even though it never opts out.
+    expectTypeOf<Parameters<BuildHost>[1]>().toEqualTypeOf<ReadonlyArray<unknown>>()
+    const ordinary: BuildHost = (_type: string, children: ReadonlyArray<unknown>) => children.length
+    expect(ordinary('X', [], undefined, { start: 0, end: 0 }, [], [], undefined)).toBe(0)
+  })
+
+  it('restores reference-driver host configuration after a re-entrant parse', () => {
+    const nestedGrammar = rules({ trivia: rw }, g => ({
+      Child: node('Child', sequence(literal('a'), literal('b'))),
+      Doc: node('Doc', sequence(g.Child, g.Child)),
+    }))
+    const prog = encodeTable(nestedGrammar)
+    const entries = [
+      ['interpreter', nestedGrammar.Doc],
+      ['reference', execRules(prog).Doc!],
+      ['emitted assembly', tableRules(prog).Doc!],
+      // An `asm` inventory forbids runtime source construction and selects the
+      // closure fallback, so both production assembly engines are explicit.
+      ['closure assembly', tableRules({ ...prog, asm: [] }).Doc!],
+    ] as const
+
+    for (const [engine, entry] of entries) {
+      for (const nestedExit of ['return', 'throw'] as const) {
+        let nested = false
+        const seen: Array<[string, number]> = []
+        const innerHost = Object.assign(
+          (type: string) => {
+            if (nestedExit === 'throw') throw new Error('nested host failure')
+            return { type }
+          },
+          { _parsemanCaptureTrivia: () => false },
+        )
+        const outerHost = Object.assign(
+          (
+            type: string,
+            _children: ReadonlyArray<unknown>,
+            _fields: unknown,
+            _span: unknown,
+            _raw: ReadonlyArray<unknown>,
+            triviaLog: readonly number[],
+          ) => {
+            seen.push([type, triviaLog.length])
+            if (type === 'Child' && !nested) {
+              nested = true
+              if (nestedExit === 'throw') {
+                expect(() => run(entry as never, 'a b a b', { build: innerHost as never })).toThrow('nested host failure')
+              } else {
+                expect(run(entry as never, 'a b a b', { build: innerHost as never }).ok, engine).toBe(true)
+              }
+            }
+            return { type }
+          },
+          { _parsemanCaptureTrivia: () => true },
+        )
+
+        expect(run(entry as never, 'a b a b', { build: outerHost as never }).ok, `${engine}: ${nestedExit}`).toBe(true)
+        expect(seen, `${engine}: ${nestedExit}`).toEqual([['Child', 3], ['Child', 3], ['Doc', 3]])
+      }
+    }
+  })
+
   it('produces byte-identical output to the non-opted-out host', () => {
     const base = parse(fromRaw(false))
     const opt = parse(fromRaw(true))
@@ -55,13 +125,7 @@ describe('_parsemanReadsChildren opt-out — structural children-array elision',
     expect(JSON.stringify(opt.r.value)).toBe(JSON.stringify(base.r.value))
   })
 
-  // CAPABILITY GAP, not a spelling change. `_parsemanReadsChildren = false` let the
-  // source lowering skip BUILDING the children array for a host that declared it never
-  // reads it; the table always builds it, so the host sees a populated array instead of
-  // `undefined`. Semantically harmless — the host receives more than it asked for — but
-  // the elision is the entire point of the opt-out, so this is owed, not withdrawn.
-  // Implementing it must be ASSEMBLY-SELECTED (a cfgKey bit), never a per-node flag test.
-  it.todo('hands the opt-out host children===undefined while rawChildren stays fully populated', () => {
+  it('hands the opt-out host the shared empty children array while rawChildren stays fully populated', () => {
     const seen: Array<{ type: string; children: unknown; rawLen: number }> = []
     const spy: BuildHost = (type, children, _f, span, rawChildren) => {
       seen.push({ type, children, rawLen: rawChildren.length })
@@ -70,12 +134,20 @@ describe('_parsemanReadsChildren opt-out — structural children-array elision',
     spy._parsemanReadsChildren = false
     const { r, ctx } = parse(spy)
     expect(r.ok).toBe(true)
-    // every structural node saw an elided children arg…
-    expect(seen.every(s => s.children === undefined)).toBe(true)
+    // every structural node saw an empty sentinel rather than a materialized
+    // duplicate of rawChildren…
+    expect(seen.every(s => Array.isArray(s.children) && s.children.length === 0)).toBe(true)
     // …but rawChildren carried the real structure: a Pair has 3 (Word, ':', Word),
     // the Doc has 2 Pairs. Proves leaves + sub-nodes reached rawChildren w/o chV.
     const pair = seen.find(s => s.type === 'Pair')!
     expect(pair.rawLen).toBe(3)
+    expect(seen.find(s => s.type === 'Doc')!.rawLen).toBe(2)
+
+    seen.length = 0
+    const referenceResult = reference(INPUT, 0, { trackLines: false, build: spy })
+    expect(referenceResult.ok).toBe(true)
+    expect(seen.every(s => Array.isArray(s.children) && s.children.length === 0)).toBe(true)
+    expect(seen.find(s => s.type === 'Pair')!.rawLen).toBe(3)
     expect(seen.find(s => s.type === 'Doc')!.rawLen).toBe(2)
   })
 

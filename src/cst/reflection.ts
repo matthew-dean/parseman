@@ -50,9 +50,10 @@ function childrenOf(def: ParserDef): readonly Combinator<unknown>[] {
     case 'peek':
     case 'node':
     case 'withCtx':
-    case 'recover':
     case 'expect':
       return [def.parser]
+    case 'recover':
+      return [def.parser, def.sentinel]
     case 'grammar':
       return def.triviaParser ? [def.parser, def.triviaParser] : [def.parser]
     case 'sepBy':

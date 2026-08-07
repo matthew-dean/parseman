@@ -144,7 +144,8 @@ function resolveTrackLines(
 }
 
 /**
- * Apply grammar-level trivia / scan-skip passed as OPTIONS.
+ * Apply grammar-level trivia / scan-skip passed as OPTIONS to ENCODING-LOCAL
+ * rule wrappers.
  *
  * `rules({ trivia }, …)` stamps `_meta.grammarTrivia` on every non-trivia rule
  * (combinators/parser.ts:203) and `encodeTable` reads it from there, per rule.
@@ -156,20 +157,41 @@ function resolveTrackLines(
  *
  * Only fills a GAP: a rule that already carries its own stamp keeps it, so a
  * `composeLeaf` map whose pieces legitimately disagree is not flattened.
+ *
+ * The wrappers are load-bearing. This used to write directly to `rule._meta`,
+ * which made a compile option part of the caller's grammar forever: compile the
+ * same map once with whitespace trivia and a later compile with comma trivia
+ * would still use whitespace. Encoding is synchronous, but a copy is safer than
+ * a save/restore mutation (including on the exception path), and keeps compiler
+ * options out of long-lived grammar metadata altogether.
  */
-function applyAmbient(
+function withAmbient(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts: TableRuleMapOptions,
-): void {
-  for (const [, rule] of ruleMap) {
-    if (rule._meta.isTrivia) continue
-    const meta = rule._meta as {
-      grammarTrivia?: Combinator<unknown>
-      grammarScanSkip?: Combinator<unknown>[]
+): ReadonlyArray<readonly [string, Combinator<unknown>]> {
+  if (opts.trivia === undefined && opts.scanSkip === undefined) return ruleMap
+
+  const wrappers = new Map<Combinator<unknown>, Combinator<unknown>>()
+  return ruleMap.map(([name, rule]) => {
+    if (rule._meta.isTrivia) return [name, rule] as const
+    const addTrivia = opts.trivia !== undefined && rule._meta.grammarTrivia === undefined
+    const addScanSkip = opts.scanSkip !== undefined && rule._meta.grammarScanSkip === undefined
+    if (!addTrivia && !addScanSkip) return [name, rule] as const
+
+    let wrapped = wrappers.get(rule)
+    if (wrapped === undefined) {
+      wrapped = {
+        ...rule,
+        _meta: {
+          ...rule._meta,
+          ...(addTrivia ? { grammarTrivia: opts.trivia } : {}),
+          ...(addScanSkip ? { grammarScanSkip: opts.scanSkip } : {}),
+        },
+      }
+      wrappers.set(rule, wrapped)
     }
-    if (opts.trivia !== undefined && meta.grammarTrivia === undefined) meta.grammarTrivia = opts.trivia
-    if (opts.scanSkip !== undefined && meta.grammarScanSkip === undefined) meta.grammarScanSkip = opts.scanSkip
-  }
+    return [name, wrapped] as const
+  })
 }
 
 /**
@@ -210,13 +232,18 @@ function encodeForRun(
   opts: TableRuleMapOptions,
 ): { prog: TableProgram; fnSrcs: (string | null)[]; hostMode: HostMode; plan: ReturnType<typeof buildGrammarPlan> | undefined } | null {
   runDuplicationDiagnosticRules(ruleMap, opts.duplication)
+  const encodeMap = withAmbient(ruleMap, opts)
+  // WINNERS ARE THE NON-`lazy` ENTRIES, exactly as `codegen.ts:5639` picks them.
+  // A `rules()` map stores named lazy proxies beside resolved bodies, and the plan
+  // uses the winner map to give a shared subtree ONE owner; filtering differently
+  // here would mint `rule:` ids the source lowering does not, so a consumer
+  // comparing the two engines' coverage would be comparing two denominators.
   const plan = opts.coverage === true
     ? buildGrammarPlan(
-        ruleMap.map(([, rule]) => rule),
-        Object.fromEntries(ruleMap.filter(([, rule]) => rule._def.tag !== 'lazy')),
+        encodeMap.map(([, rule]) => rule),
+        Object.fromEntries(encodeMap.filter(([, rule]) => rule._def.tag !== 'lazy')),
       )
     : undefined
-  applyAmbient(ruleMap, opts)
   const hostMode = resolveHostMode(ruleMap, opts.hostMode)
   const settings: TableSettings = {
     hostMode,
@@ -225,7 +252,7 @@ function encodeForRun(
     ...(plan === undefined ? {} : { coverage: plan }),
   }
   try {
-    const { prog, fnSrcs } = encodeTableProgram(Object.fromEntries(ruleMap), settings)
+    const { prog, fnSrcs } = encodeTableProgram(Object.fromEntries(encodeMap), settings)
     return { prog, fnSrcs, hostMode, plan }
   } catch (e) {
     opts.refusals?.push(e instanceof Error ? e.message : String(e))
@@ -237,39 +264,13 @@ export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts: TableRuleMapOptions = {},
 ): CompiledRuleMapTable | null {
-  // WINNERS ARE THE NON-`lazy` ENTRIES, exactly as `codegen.ts:5639` picks them.
-  // A `rules()` map stores named lazy proxies beside resolved bodies, and the plan
-  // uses the winner map to give a shared subtree ONE owner; filtering differently
-  // here would mint `rule:` ids the source lowering does not, so a consumer
-  // comparing the two engines' coverage would be comparing two denominators.
-  runDuplicationDiagnosticRules(ruleMap, opts.duplication)
-  const plan = opts.coverage === true
-    ? buildGrammarPlan(
-        ruleMap.map(([, rule]) => rule),
-        Object.fromEntries(ruleMap.filter(([, rule]) => rule._def.tag !== 'lazy')),
-      )
-    : undefined
-  applyAmbient(ruleMap, opts)
-  const hostMode = resolveHostMode(ruleMap, opts.hostMode)
-  const settings: TableSettings = {
-    hostMode,
-    ...(resolveTrackLines(ruleMap, opts.trackLines) ? { trackLines: true } : {}),
-    ...(opts.recovery === true ? { recovery: true } : {}),
-    ...(plan === undefined ? {} : { coverage: plan }),
-  }
-
   // ALL-OR-NOTHING, exactly as `compileRuleMap` is. A construct with no opcode
   // (`UnsupportedConstruct`) and a `g.X` reference that resolves to nothing
   // (the lazy thunk throws) both mean this map cannot become a table, and the
   // caller's existing "leave this rules() call interpreted" fallback covers it.
-  let encoded: { prog: TableProgram; fnSrcs: (string | null)[] }
-  try {
-    encoded = encodeTableProgram(Object.fromEntries(ruleMap), settings)
-  } catch (e) {
-    opts.refusals?.push(e instanceof Error ? e.message : String(e))
-    return null
-  }
-  const { prog, fnSrcs } = encoded
+  const encoded = encodeForRun(ruleMap, opts)
+  if (encoded === null) return null
+  const { prog, fnSrcs, hostMode, plan } = encoded
 
   // RUNTIME-ONLY: the program parses but cannot be PRINTED (a live trivia
   // combinator parked in the pool, say). `compileRuleMap` returns null for its

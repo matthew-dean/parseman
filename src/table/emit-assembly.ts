@@ -420,7 +420,15 @@ export function rebuildPools(
 export function emitAssemblySource(
   t: ResolvedTable,
   prog: TableProgram,
-  cfg: { hostCst: boolean; trackLines: boolean; tolerant: boolean; coverage: boolean; probe: boolean },
+  cfg: {
+    hostCst: boolean
+    hostReadsChildren?: boolean
+    hostCaptureTrivia?: ((type: string) => boolean) | undefined
+    trackLines: boolean
+    tolerant: boolean
+    coverage: boolean
+    probe: boolean
+  },
   extraIps: readonly number[] = [],
 ): EmitResult {
   const { code, k, disp, dsp, triviaLabelled } = t
@@ -964,7 +972,7 @@ return v
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-const err={_tag:'parseError',span:{start:pos,end:pos},expected:${xf}}
+const err={_tag:'parseError',span:${prog.lines === 1 ? 'spanLines(ctx,pos,pos)' : '{start:pos,end:pos}'},expected:${xf}}
 const es=ctx._errors
 if(es!==undefined)es.push(err)
 ${REC ? 'if(ctx._tolerant===true)captureError(ctx,err)\n' : ''}ctx._fc=false
@@ -1608,13 +1616,20 @@ return out
         // HOST MODE IS AN OPTION, and it decided five runtime ternaries in the
         // interpreter's node case — the most-executed non-terminal in any of
         // these grammars. It selects the emitted shape instead.
-        const wantFields = hasFields || hostCst
-        const captureWide = readsTrivia || hostCst
         const build = buildIdx >= 0 ? fnRef(buildIdx) : undefined
         const structural = build === undefined && proj < 0
+        const grammarCapture = (flags & 1) !== 0 || trailingTrivia
+        const hostCapturesThisType = structural && cfg.hostCaptureTrivia !== undefined
+          ? cfg.hostCaptureTrivia(type)
+          : undefined
+        const wantFields = hasFields || hostCst
+        const captureWide = readsTrivia || hostCst
+          ? !structural || grammarCapture || hostCapturesThisType !== false
+          : hostCapturesThisType === true
+        const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
         const ty = q(type)
         const stArg = readsState ? 'st' : '(ctx.state!==undefined?Object.assign({},ctx.state):undefined)'
-        const hostCall = `_pfHost(${ty},kids,fieldMap,span,rawKids,tlog,${stArg},${tags})`
+        const hostCall = `_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,${stArg},${tags})`
         let value: string
         if (proj >= 0) {
           value = hostCst
@@ -1625,20 +1640,37 @@ return out
           const direct = `${build}(kids,fieldMap,span,rawKids,${captureWide ? 'tlog' : 'EMPTY_TL'},st)`
           value = hostCst ? `nd=_pfHost!==undefined?${hostCall}:${direct}` : `nd=${direct}`
         } else {
-          value = `nd=_pfHost!==undefined?_pfHost(${ty},kids,fieldMap,span,rawKids,tlog,st,${tags}):{_tag:'node',type:${ty},span,state:st??null,children:kids}`
+          value = `nd=_pfHost!==undefined?_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,st,${tags}):{_tag:'node',type:${ty},span,state:st??null,children:kids}`
         }
         // HOST COLLAPSE applies wherever the node's VALUE comes from the host —
         // any node under a CST host, not only the builder-less ones.
-        const collapsible = hostCst || (build === undefined && proj < 0)
-        return `${head}
-const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
-const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf
-const buf={}
+        const collapsible = keepChildren && (hostCst || (build === undefined && proj < 0))
+        const openCapture = keepChildren
+          ? `const buf={}
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
-ctx._cstTriviaLog=undefined
+ctx._cstTriviaLog=undefined`
+          : `const buf={rawOnly:true}
+ctx._cstBuf=buf
+ctx._cstChildren=undefined
+ctx._cstLeaves=undefined
+ctx._cstRawChildren=undefined
+ctx._cstTriviaLog=undefined`
+        const finishCapture = keepChildren
+          ? `const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
+const hostKids=kids
+const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
+const tlog=buf.tl??EMPTY_TLOG`
+          : `const kids=EMPTY_CH
+const hostKids=kids
+const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
+const tlog=buf.tl??EMPTY_TLOG`
+        return `${head}
+const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf
+${openCapture}
 ctx.captureTrivia=${captureWide}
 const savedFields=ctx._fields
 ctx._fields=${wantFields ? '[]' : 'undefined'}
@@ -1649,9 +1681,7 @@ ${trailingTrivia && L.tri !== TRI_NONE
   ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})EC.e=consumeTrivia(input,EC.e,ctx)\n`
   : ''}const fieldMap=${wantFields ? 'buildFieldMap(ctx._fields)' : 'undefined'}
 ctx._fields=savedFields
-${structural ? 'ctx._triviaCaptureMask=savedMask\n' : ''}const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
-const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
-const tlog=buf.tl??EMPTY_TLOG
+${structural ? 'ctx._triviaCaptureMask=savedMask\n' : ''}${finishCapture}
 ctx._cstBuf=sBuf
 ctx._cstChildren=sCh
 ctx._cstLeaves=sLv

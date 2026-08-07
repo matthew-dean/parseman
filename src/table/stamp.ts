@@ -116,6 +116,16 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
     const name = names[ri]!
     const index = ri
     const entryFn = (input: string, pos: number, ctx: ParseContext): ParseResult<unknown> => {
+      // The table lowering ships coverage counters in 0.47 but not codegen's
+      // fine-grained trace phases. Failing at the artifact boundary is deliberate:
+      // accepting the public sink and writing no events produces a plausible empty
+      // trace, which is indistinguishable from a genuinely unvisited grammar.
+      if (ctx._grammarTrace !== undefined) {
+        throw new TypeError(
+          'parseman: grammar tracing is not supported by table-backed parsers in 0.47; '
+            + 'remove the _grammarTrace sink or run the combinator through the interpreter',
+        )
+      }
       // Ambient scanSkip, which `run()` cannot install for a function entry.
       // Chosen PER RULE, because that is what `run()` does — it reads the ENTRY
       // rule's own `_meta.grammarScanSkip`. One program-wide set instead gave a

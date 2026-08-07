@@ -28,7 +28,10 @@ export type Runnable =
 
 export type RunOptions = {
   /** Optional hooks for a coverage-enabled compiled or macro parser. Ordinary
-   * parses omit this completely, so instrumentation has no normal-path cost. */
+   * parses omit this completely, so instrumentation has no normal-path cost.
+   * Table-backed 0.47 artifacts support `_grammarCoverage` but reject
+   * `_grammarTrace` explicitly; interpreted/source-lowered entries may support
+   * both. */
   instrumentation?: {
     _grammarCoverage?: (id: string) => void
     _grammarTrace?: { write(event: { id: string; phase: 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack' | 'rollback'; offset: number; end?: number }): void }

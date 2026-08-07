@@ -147,10 +147,11 @@ export type CstCollapsePredicate = (
 
 export type BuildHost = ((
   type: string,
-  // `undefined` when a structural host opts out of the duplicate children array
-  // via `_parsemanReadsChildren === false` (codegen elides the chV allocation).
-  // Hosts that read `children` must tolerate an omitted array (e.g. `children ?? []`).
-  children: ReadonlyArray<unknown> | undefined,
+  // Always an array by public contract. When a structural host opts out of the
+  // duplicate children collector via `_parsemanReadsChildren === false`, it
+  // receives the shared empty array while `rawChildren` retains the full source
+  // view. Keeping this non-optional preserves assignability for existing hosts.
+  children: ReadonlyArray<unknown>,
   fields: FieldMap | undefined,
   span: { start: number; end: number },
   rawChildren: ReadonlyArray<unknown>,
@@ -173,7 +174,13 @@ export type BuildHost = ((
    * `_parsemanCstCollapse` (which inspects `children`).
    */
   _parsemanReadsChildren?: boolean | undefined
-  /** Framework-internal: node types whose structural host wants triviaLog. */
+  /**
+   * Framework-internal: node types whose structural host wants triviaLog.
+   * This predicate is assembly-specialisation configuration: both its identity
+   * and behaviour must remain stable after the host is first used. To change
+   * the selection, assign a NEW predicate function; replacing its identity
+   * invalidates the host's cached specialisation.
+   */
   _parsemanCaptureTrivia?: ((type: string) => boolean) | undefined
   /**
    * Framework-internal: per-node-type trivia-kind filter for the captured

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { compileRuleMap, compileRuleMapRunnable, type TableRuleMapOptions } from '../../src/table/compile-rule-map.ts'
 import { compileLinkableTable } from '../../src/compiler/compile-linkable-table.ts'
 import { tableRules } from '../../src/table/index.ts'
 import { run } from '../../src/functional/run.ts'
-import { choice, literal, regex, rules, sepBy, sequence, transform } from '../../src/index.ts'
+import { choice, literal, regex, rules, scanTo, sepBy, sequence, transform } from '../../src/index.ts'
+import { createGrammarCoverageCollector, createGrammarInstrumentationContext } from '../../src/coverage.ts'
 import { jsonRules, JSON_FN_SOURCES, baseNodes } from '../../bench/table-grammars.ts'
-import type { Combinator } from '../../src/types.ts'
+import type { Combinator, ParseContext, ParseResult } from '../../src/types.ts'
 
 /**
  * `compileRuleMap()` — the table counterpart of `compileRuleMap()`.
@@ -91,6 +92,75 @@ describe('compileRuleMap() matches compileRuleMap()\'s contract', () => {
     const c = compileRuleMap(g)
     expect(c).not.toBeNull()
     expect(c?.replacement).toContain('v => v[1]')
+  })
+})
+
+describe.each([
+  ['compileRuleMap()', compileRuleMap],
+  ['compileRuleMapRunnable()', compileRuleMapRunnable],
+] as const)('%s keeps compile options local to the artifact', (_name, lower) => {
+  function rulesFrom(
+    entries: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+    opts: TableRuleMapOptions,
+  ) {
+    const compiled = lower(entries, opts)
+    expect(compiled).not.toBeNull()
+    return compiled!.rules
+  }
+
+  it('can compile the same map repeatedly with different ambient trivia', () => {
+    const entry = sequence(literal('a'), literal('b'))
+    const entries = [['Entry', entry]] as const
+    const space = regex(/ +/)
+    const comma = regex(/,+/)
+
+    const spaced = rulesFrom(entries, { trivia: space })
+    expect(run(spaced.Entry as never, 'a b').ok).toBe(true)
+    expect(entry._meta.grammarTrivia).toBeUndefined()
+
+    const commaSeparated = rulesFrom(entries, { trivia: comma })
+    expect(run(commaSeparated.Entry as never, 'a,b').ok).toBe(true)
+    expect(run(commaSeparated.Entry as never, 'a b').ok).toBe(false)
+    expect(entry._meta.grammarTrivia).toBeUndefined()
+  })
+
+  it('can compile the same map repeatedly with different ambient scanSkip', () => {
+    const entry = sequence(scanTo(literal(';')), literal(';'))
+    const entries = [['Entry', entry]] as const
+    const quoted = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+    const parenthesized = sequence(literal('('), regex(/[^)]*/), literal(')'))
+
+    const skipQuotes = rulesFrom(entries, { scanSkip: [quoted] })
+    const quoteResult = run(skipQuotes.Entry as never, 'a"x;y"b;')
+    expect(quoteResult.ok && (quoteResult.value as string[])[0]).toBe('a"x;y"b')
+    expect(entry._meta.grammarScanSkip).toBeUndefined()
+
+    const skipParens = rulesFrom(entries, { scanSkip: [parenthesized] })
+    const parenResult = run(skipParens.Entry as never, 'a(;)b;')
+    expect(parenResult.ok && (parenResult.value as string[])[0]).toBe('a(;)b')
+    expect(entry._meta.grammarScanSkip).toBeUndefined()
+  })
+
+  it('keeps coverage rule identities aligned with ambient wrappers', () => {
+    const entry = sequence(scanTo(literal(';')), literal(';'), literal('z'))
+    const quoted = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+    const compiled = lower([['Entry', entry]], {
+      trivia: regex(/ +/),
+      scanSkip: [quoted],
+      coverage: true,
+    })
+    expect(compiled).not.toBeNull()
+    const collector = createGrammarCoverageCollector(compiled!.coverageDefinitions!)
+    const ctx = createGrammarInstrumentationContext({ collector })
+    const rule = compiled!.rules.Entry as unknown as (
+      input: string,
+      pos: number,
+      ctx: ParseContext,
+    ) => ParseResult<unknown>
+    expect(rule('a"x;y"b; z', 0, ctx).ok).toBe(true)
+    expect(collector.snapshot().hits).toContain('rule:Entry')
+    expect(entry._meta.grammarTrivia).toBeUndefined()
+    expect(entry._meta.grammarScanSkip).toBeUndefined()
   })
 })
 

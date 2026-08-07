@@ -9,7 +9,7 @@ import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
 /**
  * One assembly the BUILD already compiled, so the run does not have to.
  *
- * `key` is `cfgKey(RunCfg)` — the five option bits an assembly is specialised
+ * `key` is `cfgKey(RunCfg)` — the scalar option bits an assembly is specialised
  * for. `factory` is the emitted scope as a real function literal, taking
  * `EMITTED_PARAMS` in order. `plan` rebuilds the three data pools the factory
  * expects (see `PoolPlan`), and `reached` is the emitter's site set, which
@@ -426,12 +426,77 @@ export type ResolvedTable = {
 /** A compiled entry, shaped exactly like a codegen rule function. */
 export type TableRule = (input: string, pos: number, ctx: ParseContext) => ParseResult<unknown>
 
+// A valid range always has lo <= hi, so this pair cannot be the first encoded
+// range. It marks the wide format without stealing or escaping any BMP code
+// point (notably U+FFFF, which appears often in generated negated classes).
+const WIDE_CLASS_PREFIX_LO = 0xffff
+const WIDE_CLASS_PREFIX_HI = 0
+
+/** Fail closed on a class range before it reaches either wire format. */
+function validateClassRange(lo: number, hi: number): void {
+  for (const cp of [lo, hi]) {
+    if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff) {
+      throw new TypeError(`table char-class endpoint is outside Unicode: ${cp}`)
+    }
+  }
+  if (lo > hi) {
+    throw new TypeError(`table char-class range is descending: ${lo} > ${hi}`)
+  }
+}
+
+/** Encode consecutive `[lo, hi]` code-point pairs without truncating astral endpoints. */
+export function encodeClassSpec(ranges: readonly { lo: number; hi: number }[]): string {
+  let wide = false
+  for (const range of ranges) {
+    validateClassRange(range.lo, range.hi)
+    if (range.hi > 0xffff) wide = true
+  }
+  if (!wide) {
+    let spec = ''
+    for (const range of ranges) spec += String.fromCharCode(range.lo, range.hi)
+    return spec
+  }
+
+  let spec = String.fromCharCode(WIDE_CLASS_PREFIX_LO, WIDE_CLASS_PREFIX_HI)
+  for (const range of ranges) {
+    spec += String.fromCharCode(
+      range.lo >>> 16, range.lo & 0xffff,
+      range.hi >>> 16, range.hi & 0xffff,
+    )
+  }
+  return spec
+}
+
+/** Decode the consecutive `[lo, hi]` code-point pairs in a class spec. */
+export function decodeClassSpec(spec: string): Array<{ lo: number; hi: number }> {
+  if (spec.charCodeAt(0) === WIDE_CLASS_PREFIX_LO && spec.charCodeAt(1) === WIDE_CLASS_PREFIX_HI) {
+    if ((spec.length - 2) % 4 !== 0) throw new TypeError('table char-class spec has a truncated wide range')
+    if (spec.length === 2) throw new TypeError('table char-class spec has a wide prefix but no ranges')
+    const ranges: Array<{ lo: number; hi: number }> = []
+    for (let i = 2; i < spec.length; i += 4) {
+      const lo = spec.charCodeAt(i) * 0x10000 + spec.charCodeAt(i + 1)
+      const hi = spec.charCodeAt(i + 2) * 0x10000 + spec.charCodeAt(i + 3)
+      validateClassRange(lo, hi)
+      ranges.push({ lo, hi })
+    }
+    return ranges
+  }
+
+  if (spec.length % 2 !== 0) throw new TypeError('table char-class spec has an unmatched range endpoint')
+  const ranges: Array<{ lo: number; hi: number }> = []
+  for (let i = 0; i < spec.length; i += 2) {
+    const lo = spec.charCodeAt(i)
+    const hi = spec.charCodeAt(i + 1)
+    validateClassRange(lo, hi)
+    ranges.push({ lo, hi })
+  }
+  return ranges
+}
+
 export function resolveClass(spec: string): ResolvedClass {
   const ascii = new Uint8Array(128)
   const hi: number[] = []
-  for (let i = 0; i < spec.length; i += 2) {
-    const lo = spec.charCodeAt(i)
-    const up = spec.charCodeAt(i + 1)
+  for (const { lo, hi: up } of decodeClassSpec(spec)) {
     if (lo < 128) for (let c = lo; c <= Math.min(up, 127); c++) ascii[c] = 1
     if (up >= 128) hi.push(Math.max(lo, 128), up)
   }

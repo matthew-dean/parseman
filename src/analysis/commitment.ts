@@ -216,10 +216,16 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
     case 'choice':
       return false
     case 'dispatch':
-      return capturesLeaf(d.selector, seen) ||
-        d.cases.some(x => mayLeavePartialCapture(x.parser, seen, triviaActive) || capturesLeaf(x.parser, seen)) ||
-        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, seen, triviaActive) || capturesLeaf(x.parser, seen)) : false) ||
-        (d.otherwise ? mayLeavePartialCapture(d.otherwise, seen, triviaActive) || capturesLeaf(d.otherwise, seen) : false)
+      // These are independent graph predicates. Sharing one mutable `seen` set
+      // between them made the first walk hide the arm from the second: an atomic
+      // literal arm, for example, was visited by `mayLeavePartialCapture` (false)
+      // and then skipped by `capturesLeaf` (also false because already seen).
+      // Fork the ancestor set for each proof so cycle protection remains, while
+      // one proof cannot erase evidence needed by another.
+      return capturesLeaf(d.selector, new Set(seen)) ||
+        d.cases.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive) || capturesLeaf(x.parser, new Set(seen))) ||
+        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive) || capturesLeaf(x.parser, new Set(seen))) : false) ||
+        (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive) || capturesLeaf(d.otherwise, new Set(seen)) : false)
     case 'attempt':
       return false
     // optional never fails; many/oneOrMore only "fail" with zero captured items.

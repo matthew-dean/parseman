@@ -246,16 +246,20 @@ describe('the table lowering counts grammar coverage', () => {
     expect(JSON.stringify(covered)).toBe(JSON.stringify(ordinary))
   })
 
-  it('a trace sink receives NOTHING — the 0.48 gap is known, not silent', () => {
-    // Stated as a test rather than left to a comment. If trace parity lands, this
-    // is the assertion that has to be rewritten, which is the point of pinning it.
+  it('rejects a trace sink instead of returning a plausible empty trace', () => {
+    // Trace phases remain 0.48 work, but the public sink must not be silently
+    // accepted: an empty result is indistinguishable from a valid trace with no
+    // visited sites. Coverage remains independently supported by this artifact.
     const compiled = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
     const events: unknown[] = []
     const ctx = createGrammarInstrumentationContext({
       collector: createGrammarCoverageCollector(compiled.coverageDefinitions!),
       trace: { write: e => { events.push(e) }, snapshot: () => ({ events: [], truncated: false, dropped: 0 }) },
     })
-    expect((compiled.rules['Value'] as unknown as Rule)('true', 0, ctx).ok).toBe(true)
+    expect(() => (compiled.rules['Value'] as unknown as Rule)('true', 0, ctx))
+      .toThrow(TypeError)
+    expect(() => (compiled.rules['Value'] as unknown as Rule)('true', 0, ctx))
+      .toThrow(/grammar tracing is not supported by table-backed parsers/)
     expect(events).toEqual([])
   })
 

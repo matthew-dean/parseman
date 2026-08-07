@@ -248,7 +248,20 @@ export function node<N>(
       // captures unconditionally there because it knows the mode at compile time.
       const hasDirectValue = build !== undefined || project !== undefined
       const hostCst = hasDirectValue && cstOutputHost(ctx.build)
-      const effTrivia = capturesTrivia || hostCst
+      const structural = !hasDirectValue
+      const hostCapturesThisType = structural
+        && def.type !== undefined
+        && ctx.build?._parsemanCaptureTrivia !== undefined
+        ? ctx.build._parsemanCaptureTrivia(def.type)
+        : undefined
+      // Structural nodes capture for their host by default, but the host may
+      // narrow that default by node type. Grammar-owned capture is authoritative:
+      // an explicit `captureTrivia`/`trailingTrivia` request cannot be disabled by
+      // the host. Direct builders (including a CST host that bypasses one) retain
+      // their existing arity/CST-host decision and never consult this predicate.
+      const effTrivia = structural
+        ? captureTrivia || trailingTrivia || hostCapturesThisType !== false
+        : capturesTrivia || hostCst
       const effFields = capturesFields || (hostCst && hasOwnFields)
       const saved = beginCstNodeCapture(ctx)
       const savedFields = ctx._fields

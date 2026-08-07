@@ -5,7 +5,7 @@ import { execRulesBaseline } from '../../src/table/exec-baseline.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { defaultAssemblyCfgs, emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram, reachableOps } from '../../src/table/inspect.ts'
-import { resolveTable, type TableProgram, type TableRule } from '../../src/table/program.ts'
+import { decodeClassSpec, encodeClassSpec, resolveTable, type TableProgram, type TableRule } from '../../src/table/program.ts'
 import { OP_CHOICE, OP_EMPTY, OP_NODE, OP_RULE } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose } from '../../src/compiler/linker.ts'
@@ -32,6 +32,36 @@ const one = (rule: unknown, input: string, opts?: Record<string, unknown>): unkn
   run(rule as never, input, opts as never).value
 
 describe('table driver — rows the grammar corpus never reached', () => {
+  it('the class-spec codec round-trips BMP, surrogate and astral endpoints', () => {
+    const ranges = [
+      { lo: 0x61, hi: 0x7a },
+      { lo: 0xd800, hi: 0xdfff },
+      { lo: 0xffff, hi: 0xffff },
+      { lo: 0x1f600, hi: 0x10ffff },
+    ]
+    expect(decodeClassSpec(encodeClassSpec(ranges))).toEqual(ranges)
+
+    // U+FFFF is the wide-format marker's first word. As a valid BMP singleton
+    // its second word is also U+FFFF, so it stays an unambiguous narrow pair.
+    const bmpBoundary = encodeClassSpec([{ lo: 0xffff, hi: 0xffff }])
+    expect(bmpBoundary).toHaveLength(2)
+    expect(decodeClassSpec(bmpBoundary)).toEqual([{ lo: 0xffff, hi: 0xffff }])
+  })
+
+  it('the class-spec codec rejects malformed narrow and wide ranges', () => {
+    const wide = (...words: number[]) => String.fromCharCode(0xffff, 0, ...words)
+
+    // Without the ordering check this IS the two-word wide prefix and silently
+    // decoded as an empty class.
+    expect(() => encodeClassSpec([{ lo: 0xffff, hi: 0 }])).toThrow(/descending/)
+    expect(() => decodeClassSpec(String.fromCharCode(0x62, 0x61))).toThrow(/descending/)
+    expect(() => decodeClassSpec(wide())).toThrow(/no ranges/)
+    // U+10000..U+FFFF is descending in the wide representation.
+    expect(() => decodeClassSpec(wide(1, 0, 0, 0xffff))).toThrow(/descending/)
+    // U+110000 is the first code point beyond Unicode's upper bound.
+    expect(() => decodeClassSpec(wide(0, 0, 0x11, 0))).toThrow(/outside Unicode/)
+  })
+
   it('COLLAPSE really collapses — and no existing case ever ran it', () => {
     // `selectNodes.Doc` tries Proj, then Unwr, then Coll. Every input the suite
     // used ('abc', '123', 'abc123', '', '###') is claimed by Proj or Unwr, so the
@@ -206,13 +236,11 @@ describe('table driver — rows the grammar corpus never reached', () => {
     }
   })
 
-  it('an astral arm is rejected by the table AND the compiled path (interpreter differs)', () => {
+  it('an astral arm dispatches identically in the interpreter, table and compiled path', () => {
     // Disjoint single-character arms above U+007F land in the dispatch table's
-    // `hi` triples. The BMP ones are picked correctly; an ASTRAL one is not
-    // matched — and the COMPILED path rejects it too, so this is a pre-existing
-    // first-set/code-point divergence with the interpreter and not something the
-    // table introduced. Pinned here so the table is not blamed for it later, and
-    // so a fix that moves one engine has to move the other.
+    // `hi` triples. The BMP ones were picked correctly while an ASTRAL one was
+    // missed. The class pool stays a compact string, with astral endpoints
+    // escaped into high/low words so they survive encode without truncation.
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: choice(
         transform(literal('é'), () => 'e-acute'),
@@ -224,14 +252,13 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Doc!
     expect(one(t, 'é')).toBe('e-acute')
     expect(one(t, 'ü')).toBe('u-uml')
-    expect(run(t as never, '\u{1F600}').ok).toBe(false)
-    expect(run(compiled as never, '\u{1F600}').ok).toBe(false)
+    expect(one(t, '\u{1F600}')).toBe('grin')
+    expect(one(compiled, '\u{1F600}')).toBe('grin')
     expect(one(g.Doc, '\u{1F600}')).toBe('grin')
 
     // NOTE ON THIS TEST'S TITLE. It carried a SECOND, independent claim: that a
-    // dispatch miss reports an empty expected set. That half is now fixed and
-    // has moved to its own test below — the astral divergence above is
-    // unaffected by it and remains pinned here on its own.
+    // dispatch miss reports an empty expected set. That half has its own parity
+    // assertion below.
   })
 
   it('a dispatch miss names every arm, as both shipped engines do', () => {

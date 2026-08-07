@@ -799,9 +799,9 @@ function repointRef(slot: RefSlot, target: Combinator<unknown>, name: string): v
   meta.canMatchNewline = target._meta.canMatchNewline
   meta.isTrivia = target._meta.isTrivia
   if (target._meta.triviaKindLabels !== undefined) meta.triviaKindLabels = target._meta.triviaKindLabels
-  else delete meta.triviaKindLabels
+  else (meta as { triviaKindLabels: readonly string[] | undefined }).triviaKindLabels = undefined
   if (target._meta.disjoint !== undefined) meta.disjoint = target._meta.disjoint
-  else delete meta.disjoint
+  else (meta as { disjoint: boolean | undefined }).disjoint = undefined
 }
 
 /** Flatten one `fuseInterpreted()` item to the rule maps it contributes, in order. */
@@ -931,7 +931,7 @@ function fusePieces(
     // option wins, otherwise the owning piece's own `rules({ hostMode })` stamp.
     if (opts?.hostMode !== undefined && !meta.isTrivia) {
       if (opts.hostMode === 'cst') meta.grammarHostMode = 'cst'
-      else delete meta.grammarHostMode
+      else (meta as { grammarHostMode: HostMode | undefined }).grammarHostMode = undefined
     }
   }
   Object.defineProperty(out, INTERPRETED_PIECES, {

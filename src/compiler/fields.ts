@@ -27,6 +27,7 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
     case 'grammar': return parserHasOwnFields(d.parser, seen) || (d.triviaParser ? parserHasOwnFields(d.triviaParser, seen) : false)
     case 'scanTo': return parserHasOwnFields(d.sentinel, seen) || d.skip.some(x => parserHasOwnFields(x, seen))
     case 'recover': return parserHasOwnFields(d.parser, seen) || parserHasOwnFields(d.sentinel, seen)
+    case 'routed': return d.fallback ? parserHasOwnFields(d.fallback, seen) : false
     case 'many':
     case 'oneOrMore':
     case 'optional':
@@ -108,6 +109,9 @@ function hasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator<unknown>>, t
     case 'token':
     case 'leaf':
       return false
+    // In dispatch position routed() reuses the already-consumed selector and has
+    // no trivia boundary. Outside dispatch, only its concrete fallback runs.
+    case 'routed': return d.fallback ? parserHasTriviaSite(d.fallback, seen) : false
     // Transparent single-child wrappers: recurse.
     case 'optional':
     case 'attempt':
@@ -149,6 +153,7 @@ export function parserEnablesTriviaCapture(p: Combinator<unknown>, seen: Set<Com
     case 'sepBy': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.separator, seen)
     case 'scanTo': return parserEnablesTriviaCapture(d.sentinel, seen) || d.skip.some(x => parserEnablesTriviaCapture(x, seen))
     case 'recover': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.sentinel, seen)
+    case 'routed': return d.fallback ? parserEnablesTriviaCapture(d.fallback, seen) : false
     case 'many':
     case 'oneOrMore':
     case 'optional':

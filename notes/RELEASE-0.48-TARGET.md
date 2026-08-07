@@ -13,31 +13,27 @@ not a sixth bucket, it is an admission.
 is structural: it is not a backlog.** It is four things interleaved — deferred
 work items, retracted figures, measurement-hygiene rules, and disclosed defects.
 Only the first of those four is an "idea". The retractions and rules are marked
-`REFERENCE`; the disclosed defects with no owner are marked `UNCLASSIFIABLE`
-rather than forced into `QUEUED`, because nobody has decided to do them, nobody
-has rejected them, and they are not ideas — they are known-broken facts recorded
-so a reader does not have to rediscover them.
+`REFERENCE`. Disclosed defects with no owner were originally marked
+`UNCLASSIFIABLE`; the current disposition below moves each repaired defect to
+`LANDED` while preserving the checkout and measurements that first exposed it.
 
 ## COUNTS — 30 items
 
 | marker | count |
 |---|---:|
-| `LANDED` | 4 |
+| `LANDED` | 9 |
 | `MEASURED-NULL` | 2 |
-| `REJECTED` | 6 |
-| **`QUEUED`** | **11** |
+| `REJECTED` | 7 |
+| **`QUEUED`** | **7** |
 | `REFERENCE` | 4 |
-| `UNCLASSIFIABLE` | 3 |
+| `UNCLASSIFIABLE` | 1 |
 
-> ### **Untried in this file: 11, all `QUEUED`.** None is in `PERF_IDEAS.md`'s index; that index covers `PERF_IDEAS.md` only.
-> §1 `_grammarTrace` parity for the table · §2 token streaming · §4 CST leaf span
-> line-annotation (`TODO(table/expect-span-lines)`) · §7 expected-set granularity
+> ### **Untried in this file: 7, all `QUEUED`.** None is in `PERF_IDEAS.md`'s index; that index covers `PERF_IDEAS.md` only.
+> §1 `_grammarTrace` parity for the table · §2 token streaming · §7 expected-set granularity
 > on rule refs (blocked on §6) · §8 the 0.47 parse-time regression, **the headline
 > 0.48 item** · §8b the un-built **child-kind specialisation axis** · §9 recover
 > the deleted literal/regex/trivia fast paths (= `PERF_IDEAS.md` **U-53**) · §9b
-> write down what the trivia scope rule IS · §10.1 the broken `*-lines` variants ·
-> §10.4 `parseClassOperand`'s unguarded callers · §10.5 `forCtx`'s per-parse
-> config consult (= `PERF_IDEAS.md` **U-52**).
+> write down what the trivia scope rule IS.
 
 **Per-item markers.** §1 `QUEUED` (owner ruling: counters are enough to ship) ·
 §2 `QUEUED`, and note its *benefit* is `UNMEASURED` by construction — "A prior
@@ -49,7 +45,8 @@ data rows are the labelled-trivia scanner `LANDED` (−0.8 ms, 16/16 wins, ±1%
 control) and two textbook `MEASURED-NULL`s — per-`node()` capture allocation
 (~291k allocs/parse, predicted 1.5–3.0 ms, **measured zero**, V8 absorbs
 young-gen non-escaping allocation) and the CST mark protocol (predicted 0.5–0.9
-ms, **measured zero**, V8 already inlines it) · §4 `QUEUED` · §5 `LANDED`
+ms, **measured zero**, V8 already inlines it) · §4 `LANDED` in the 0.47 audit ·
+§5 `LANDED`
 (`c398044`) · §5b `LANDED` (`10d21d8`) · §6 stale `disjoint` flag `REJECTED` —
 despite "deferred" framing, the recorded owner ruling is *not to fix it*, on
 blast-radius grounds, not on a measurement · §7 `QUEUED` (pinned as a subset
@@ -66,20 +63,23 @@ withdrawn · §8b `QUEUED` for the child-kind axis, `REFERENCE` for the owner's
 specification restatement; **the five mechanisms proposed for the gap during 0.47
 are all `REJECTED`** and the file says "Do not re-propose them" — runtime
 `compose()`, per-parse assembly, per-rule assembly, startup cost, interpreter
-fallback · §9 `QUEUED` (= U-53) · §9b `QUEUED` · §10.1 `QUEUED` (lane assigned) ·
-§10.2 and §10.3 **`UNCLASSIFIABLE`** — unassigned known-broken defects stated for
-disclosure, with no disposition · §10.4 `QUEUED` · §10.5 `QUEUED` (= U-52) ·
+fallback · §9 `QUEUED` (= U-53) · §9b `QUEUED` · §10.1–§10.4 `LANDED` on the
+current unreleased 0.47 branch · §10.5 `REJECTED` as a defect after the owner
+ruling established that `forCtx` is G5's required run-start selection, not a
+run-path option branch ·
 `## Standing hazard` **`UNCLASSIFIABLE`** — a measurement-hygiene rule that
 invalidates a whole class of prior figures, plus the `expected`-digest rider
 (`PERF_IDEAS.md` U-55).
 
-> ### THREE FACTS FROM THIS FILE THAT GOVERN EVERY OTHER FIGURE IN THE REPO
-> 1. **`benchmark.jess` accepts 0 of its 124 bytes** — `ok: true`, `errors: 0`,
->    `consumed: 0`, on **0.46 and 0.47 alike**. Any `jess` row in any chart is
->    measuring an immediate accept of nothing.
-> 2. **`tolerant: true` assemblies refuse emission in all four dialects**, so
->    recovery parses run the closure engine. Every recovery figure describes a
->    different engine from every strict figure.
+> ### THREE HISTORICAL FACTS, WITH THEIR CURRENT DISPOSITIONS
+> 1. At the recorded checkout, **`benchmark.jess` accepted 0 of its 124 bytes** —
+>    `ok: true`, `errors: 0`, `consumed: 0`, on **0.46 and 0.47 alike**. Fixed by
+>    `d0036b4`; the post-fix rows at that commit consume 124/124, but any chart
+>    built from the older rows still measures an immediate accept of nothing.
+> 2. At the recorded checkout, **`tolerant: true` assemblies refused emission
+>    in all four dialects**, so recovery parses ran the closure engine. Fixed by
+>    `958f6ad`; old recovery figures still describe a different engine from the
+>    old strict figures and must not be relabelled.
 > 3. **Every `PM_TABLE_COUNT` figure describes an engine nobody runs** — every row
 >    count, arm-entry count and per-op tally in this repo's notes and CHANGELOG is
 >    a measurement of the bytecode interpreter, not of the shipping path.
@@ -88,12 +88,15 @@ invalidates a whole class of prior figures, plus the `expected`-digest rider
 > `notes/results/parse-consumed.jsonl` are tagged `"engine":"table"` and are
 > actually the reference interpreter**, 11 of 29 bench harnesses are mislabelled,
 > and `CHANGELOG.md:756-762` (the "codegen / table / interpreter" fixture table
-> present in this tree) carries the same defect. Its correction banner is on
-> `lane/name-collision` (`7f954af`) and **is not merged into `release/0.47.0` yet**.
+> present in this tree) carries the same defect. The correction is now merged
+> into `release/0.47.0` (`1f84d10`). The historical records were deliberately
+> not regenerated, so their old labels remain evidence of the hazard rather
+> than corrected data.
 >
-> Also open, and unmeasured: **`trackLines` is unmeasured, not
-> measured-and-fine** — the `*-lines` grammar variants build a self-referential
-> `OP_RULE ip→ip` and stack-overflow on every file of every corpus (§10.1).
+> Also historical: the original figures left **`trackLines` unmeasured, not
+> measured-and-fine**, because the `*-lines` grammar variants built a
+> self-referential `OP_RULE ip→ip`. Fixed by `8683433`; the post-fix sweep covers
+> the variants, but the original figures remain AST-only (§10.1).
 >
 > **`PERF_IDEAS.md`'s 2026-08-07 fact I1 also refutes a figure this file carries**:
 > §3's "trivia scanner profiled at ~7.3% of parse self-time and was worth ~3.4%"
@@ -105,13 +108,14 @@ invalidates a whole class of prior figures, plus the `expected`-digest rider
 
 0.47 is the table cutover: one lowering, one driver, the macro build emitting a
 table instead of a second recognition engine. Everything below was found during
-that work, understood well enough to size, and **deferred on purpose** rather
-than half-done. Each entry says what it is, why it was deferred, and what it
-costs to pick up.
+that work, understood well enough to size, and either **deferred on purpose** or
+subsequently closed before release. Each entry records its current disposition
+without rewriting the historical measurement context.
 
-Nothing here is a bug being ignored. The two wrong-parse defects found during
-0.47 (`expect()` not clearing the ctx-global commit bit; `caseInsensitive`
-dropped from dispatch matcher arms) were fixed in 0.47, not shelved.
+The remaining `QUEUED` entries are the 0.48 work. The wrong-parse defects found
+during 0.47 (`expect()` not clearing the ctx-global commit bit;
+`caseInsensitive` dropped from dispatch matcher arms), plus the §10 defects now
+marked `LANDED`, were fixed in 0.47 rather than shelved.
 
 ---
 
@@ -120,10 +124,16 @@ dropped from dispatch matcher arms) were fixed in 0.47, not shelved.
 **What.** Coverage COUNTERS ship in 0.47. The six trace phases — `attempt`,
 `selected`, `success`, `failure`, `backtrack`, `rollback` — do not.
 
-**Why deferred.** Codegen emits them at roughly **40 fine-grained sites** in
-`src/compiler/codegen.ts`. Matching that in the table is not a task, it is a
-project, and it would have blocked the cutover for the duration. Owner ruling:
-counters are enough to ship.
+**0.47 audit disposition.** Parity remains `QUEUED` for 0.48. Table-backed
+artifacts now reject a supplied `_grammarTrace` sink with a `TypeError` at the
+artifact boundary instead of accepting it and returning a plausible empty
+trace. That is explicit capability reporting, not trace implementation;
+interpreted combinators remain the supported trace path.
+
+**Why deferred.** The retired source lowering emitted them at roughly **40
+fine-grained sites** in the former `src/compiler/codegen.ts`. Matching that in
+the table is not a task, it is a project, and it would have blocked the cutover
+for the duration. Owner ruling: counters are enough to ship.
 
 **Cost to pick up.** Every trace site needs a table equivalent, and the
 instrumented pieces must stay assembly-SELECTED rather than testing a flag per
@@ -136,10 +146,18 @@ node (INV-6). Expect the `cfgKey` assembly-key space to need another bit.
 **What.** Leaves consume classified TOKENS rather than characters.
 
 **Why deferred.** It was an original requirement of the design that never
-landed, and `src/compiler/token-scanner.ts` + `token-alphabet.ts` are already
-in-tree as built-but-never-wired analysis — they carry `DEBT` entries in
+landed, and `src/compiler/token-scanner.ts`, `token-alphabet.ts` and
+`token-dispatch.ts` are already in-tree as built-but-never-wired analysis — they
+carry `DEBT` entries in
 `scripts/invariant-allowlist.mjs` pointing at `docs/design/derived-tokenization.md`.
 0.47 stayed on the cutover instead.
+
+**Current disposition.** Still `QUEUED`, with its groundwork deliberately
+preserved rather than mistaken for dead code or a completed feature. See
+`notes/TOKEN-STREAM-GROUNDWORK.md` for the static probe, the scanner correctness
+hole, the stale dispatch half, the reusable packing/folding utilities, and the
+first independently landable wiring step. An experiment is ongoing separately;
+it has not resolved §8, and this note makes no speed or memory claim for it.
 
 **Carry this forward, it is the part people get wrong.** A prior bound of
 ~1.4 ms was measured against the BYTECODE INTERPRETER — it measured *scanning*
@@ -203,19 +221,34 @@ or drop the claim.
 
 ---
 
-## 4. CST leaf span line-annotation
+## 4. CST leaf and recovery-error span line-annotation — LANDED
 
 **What.** Under `trackLines`, the interpreter annotates `expect()` error spans
-with line/column (`expect.ts:145`). Neither table driver does, and CST **leaf**
-spans (the `pushCstLeaf` sites) are not annotated either.
+and CST leaf spans with line/column. The table's zero-width `expect()` recovery
+errors were the remaining divergence.
 
-**Why deferred.** Pre-existing, unrelated to the cutover, and fixing it needs
-`spanLines` proven equivalent to `annotateSpanFromLineContext` first.
-`recoverScan` annotates for everyone, so LIST recovery is unaffected.
+**0.47 audit disposition.** The reference table driver, closure assembly and
+emitted assembly now use the shared `spanLines` helper for the zero-width
+recovery span when the program tracks lines. A regression compares those three
+paths with the interpreter. `pushCstLeaf` already funnels line-aware leaves
+through `annotateSpanFromLineContext`, and `recoverScan` remains shared for LIST
+recovery.
 
-**Marker in-tree:** `TODO(table/expect-span-lines)` at both sites. Two
-assertions in `test/unit/line-index.test.ts` fail on this once `compile()` is
-flipped.
+The stale `TODO(table/expect-span-lines)` markers have been removed.
+
+### 4b. Structural host capabilities — LANDED in the 0.47 audit
+
+This is an audit addendum outside the original 30-item ledger above.
+
+The table engines now honor the capability metadata the old source lowering
+exposed. `_parsemanReadsChildren = false` skips the semantic children collector
+for structural nodes while retaining `rawChildren`; unwrap/collapse nodes keep
+children because they inspect them. `_parsemanCaptureTrivia(type)` is evaluated
+once per structural node site when a host-specialized assembly is built, and
+the assembly cache is isolated by host identity and predicate version so one
+host cannot inherit another host's decisions. These close the table parity
+TODOs; they do not claim §8's broader child-kind specialization or performance
+regression is resolved.
 
 ---
 
@@ -496,6 +529,46 @@ were wrong. A control proves the box was quiet. It does not prove the two sides
 are different builds. **Check what a harness builds before quoting what it
 prints.**
 
+### 0.47 release-audit handoff — measured attempts, all default-off
+
+The release audit re-ran the two-graph comparison on Node 25.9.0. Its exact
+absolute timings differ from the earlier machine, but the conclusion is
+stronger rather than different: `benchmark.less` was 55.55 / 17.35 ms
+(**3.202×**) and `gen-workload.less` was 162.81 / 47.81 ms (**3.405×**), with
+paired/solo agreement within 3% and load 4.44 → 4.55. This is acceptable 0.47
+performance debt only if the release candidate still beats relevant external
+parsers on equivalent medium/large workloads; parsing identity and artifact
+size remain hard release blockers regardless.
+
+A shipped-assembly CPU profile ranked self time as `_accSet` 4.7%, `_rbBuf`
+4.3%, `pushCstChild` 2.5%, GC 2.4%, `rawEntry` 2.0%, `scanTrivia` 1.8%,
+`inRanges` 1.6%, and `lead` 1.4%. Three implementation attempts were made with
+full-result digest parity and none should ship:
+
+- A conservative token cursor wired the existing token-stream groundwork into
+  literal-led choices. It proved correctness but admitted exactly one choice per
+  shipping dialect, added 1.7–2.8 KB of emitted source, and made Less +3.77%
+  slower against a +0.73% control. CSS/SCSS results were noise. Preserve the
+  groundwork; do not enable it until eligibility expands enough to amortize
+  scanner setup while proving boundary and language non-overlap.
+- An indexed/single-item `_accSet` path was +1.4% / +1.8% on the two Less
+  fixtures and was reverted.
+- `_rbBuf` profiling found 143,285 calls per `benchmark.less` parse; 81.3% needed
+  no state change. Runtime exact-state guards nevertheless measured from +0.3%
+  to +2.2%, within or worse than the +1.5% / +2.8% self-noise floor, and were
+  reverted.
+
+The next 0.48 experiments are therefore structural, not helper micro-tuning:
+
+1. Prove arm effects at compile time and omit rollback marks/calls when an arm
+   cannot mutate CST buffers, trivia, fields, or errors.
+2. Premerge or copy-on-write expected sets so terminal failure does one
+   allocation/copy while preserving ordering, duplicates, and diagnostics.
+3. Reduce CST child/raw materialization (`pushCstChild` + GC + `rawEntry` are
+   roughly 6.9% self time).
+4. Emit site-specialized trivia/range/lead scans rather than adding generic
+   runtime branches.
+
 ---
 
 ## 8b. THE DESIGN, STATED BY THE OWNER — read this before touching the assembler
@@ -668,52 +741,61 @@ independent of an engine that reproduced it accidentally.
 
 ---
 
-## 10. KNOWN BROKEN AT 0.47 — stated here, not buried
+## 10. HISTORICAL `90aa867` DEFECT SNAPSHOT — current dispositions
 
-None of this is fixed at `90aa867`. It is listed so a reader does not have to
-discover it.
+None of this was fixed at `90aa867`. The descriptions are retained because they
+govern measurements taken at that checkout; all five findings have since been
+closed on the current unreleased 0.47 branch or ruled by design.
 
-1. **The `*-lines` grammar variants cannot parse anything.** `ast-lines` and
+1. **LANDED (`8683433`): the `*-lines` grammar variants could not parse
+   anything.** `ast-lines` and
    `cst-lines` (`bench/jess/grammars.ts:42`, `trackLines: true`) build a
    self-referential `OP_RULE ip→ip` and stack-overflow on **every file of every
-   corpus**, all four dialects. Pre-existing, not introduced by the 0.47 stack, and
-   a lane is on it. Consequence for everything else in this file: every consumed
-   sweep and every A/B figure quoted anywhere is `variant: 'ast'` only, so
-   **`trackLines` is unmeasured, not measured-and-fine.**
+   corpus**, all four dialects. It was pre-existing, not introduced by the 0.47
+   stack. Consequence for measurements at that checkout: every consumed sweep
+   and every A/B figure quoted there is `variant: 'ast'` only, so those figures
+   leave **`trackLines` unmeasured, not measured-and-fine.** The fix prevents the
+   self-referential rule row; the post-fix sweep covers the line variants.
 
-2. **`benchmark.jess` accepts 0 of its 124 bytes.** `ok: true`, `errors: 0`,
+2. **LANDED (`d0036b4`): `benchmark.jess` accepted 0 of its 124 bytes.**
+   `ok: true`, `errors: 0`,
    `consumed: 0` — on **0.46 and 0.47 alike**, on all of `compiled`,
    `interpreted` and `table`. Verifiable in `notes/results/parse-consumed.jsonl`
    without re-running anything. This is the silent-truncation failure mode the
    whole consumed baseline exists to catch, sitting in the jess dialect's own
    timing fixture, and it predates the release. Any `jess` row in any chart is
-   measuring an immediate accept of nothing.
+   measuring an immediate accept of nothing if it came from that snapshot. The
+   document-root trailing-trivia fix restores 124/124 consumption.
 
-3. **`tolerant: true` assemblies refuse emission in all four dialects.**
-   `src/table/emit-assembly.ts:372` throws `Unemittable('a recovery (tolerant)
+3. **LANDED (`958f6ad`): `tolerant: true` assemblies refused emission in all
+   four dialects.** At that checkout,
+   `src/table/emit-assembly.ts:372` threw `Unemittable('a recovery (tolerant)
    assembly')`. Recovery parses therefore run the **closure engine**
    (`src/table/assemble.ts`), never the emitted assembly that ships for strict
    parses. Every recovery figure describes a different engine from every strict
-   figure.
+   figure at that checkout. Tolerant assemblies now emit; the historical figures
+   remain closure-engine figures.
 
-4. **`parseClassOperand` has a latent compound-body hole.** It accepts any body
+4. **LANDED (`b25be52`): `parseClassOperand` had a latent compound-body hole.**
+   It accepted any body
    that starts `[` and ends `]` (`src/regex/classes.ts:82`), so
    `[ \t\n\r\f]*[\$(]` — a sequence — parses as one class whose members are the
    garbage union of everything between the outer brackets. The 0.47 fix put the
    guard `isWholeClassToken` at **one caller**
    (`src/table/scan-shapes.ts:659`), deliberately, to avoid moving first sets.
-   The other callers — `src/combinators/trivia-skip.ts:511`, `:640`, and the
-   first-set analyser — still call it unguarded. Nothing currently mis-lowers
-   through them; nothing stops one from doing so.
+   The completed fix moved the contract into shared `parseClassOperand`: a class
+   must close at the fragment's final character, so the trivia and first-set
+   callers now reject compound bodies too. Regression tests pin the shared
+   behavior.
 
-5. **`forCtx` is still a per-parse option consult** — the last standing violation
-   of this project's own stated criterion (*build the grammar reference at run
-   start, make the swaps at that point, then run with no logic branching for that
-   option input*). `src/table/assemble.ts:2672` reads five `ctx` fields per parse
-   at the `runRule` boundary. It is one read per parse rather than per row, and
-   its own comment concedes it is "THE ONLY CONFIG READ ON THE RUN PATH" — but
-   the criterion says none. (That comment also still says "three-bit option set"
-   while the code computes a five-bit key.)
+5. **REJECTED AS A DEFECT — owner ruling: `forCtx` is G5's run-start step.** The
+   artifact's option values arrive on each call, so selecting the assembly before
+   that boundary would require changing the artifact contract. `forCtx` reads the
+   options once at entry, chooses the specialized assembly, and nothing past that
+   point branches on them; INV-6 enforces the latter mechanically. The detailed
+   argument and the measured one-call-per-entry result now live beside `forCtx`
+   in `src/table/assemble.ts`. This is the criterion's first clause — *build the
+   grammar reference on run start* — not its prohibited second clause.
 
 ---
 

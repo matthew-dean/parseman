@@ -217,12 +217,14 @@ export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
     case 'dispatch': return [
       d.selector,
       ...d.cases.map(c => c.parser),
+      ...(d.matchers ? d.matchers.map(c => c.parser) : []),
       ...(d.otherwise === undefined ? [] : [d.otherwise]),
     ]
     case 'sepBy': return [d.parser, d.separator]
     case 'recover': return [d.parser, d.sentinel]
     case 'scanTo': return [d.sentinel, ...d.skip]
     case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
+    case 'routed': return d.fallback ? [d.fallback] : []
     // A `lazy` is a REFERENCE, not a subtree. Descending through it would make
     // every rule's walk cover the whole reachable grammar — site paths become
     // nonsense, and a structural hash includes half the grammar. Treated as a
@@ -593,19 +595,11 @@ export function analyzeGatingRules(
       raw.push({ g: analyzeChoice(p, d, rule, opts?.resolveRef), rule, arms: d.parsers })
       antiPatterns.push(...detectAntiPatterns(rule, d.parsers))
     }
-    // Structural recursion (+ through refs once).
-    const rec = d as Record<string, unknown>
-    const kids: Combinator<unknown>[] = []
-    if (Array.isArray(rec.parsers)) kids.push(...(rec.parsers as Combinator<unknown>[]))
-    for (const k of ['parser', 'main', 'skipped', 'separator', 'sentinel'] as const)
-      if (rec[k]) kids.push(rec[k] as Combinator<unknown>)
-    if (d.tag === 'dispatch') {
-      kids.push(d.selector)
-      for (const c of d.cases) kids.push(c.parser)
-      if (d.matchers) for (const c of d.matchers) kids.push(c.parser)
-      if (d.otherwise !== undefined) kids.push(d.otherwise)
-    }
-    if (Array.isArray(rec.skip)) kids.push(...(rec.skip as Combinator<unknown>[]))
+    // Structural recursion (+ through refs once). Keep the child inventory in
+    // one place: choice-cost, duplication and dependency analysis use the same
+    // authored edge order, including matcher arms, grammar trivia, and routed
+    // fallbacks.
+    const kids = [...childrenOf(d)]
     // Deliberately NOT `resolveRef`-aware: the WALK must visit the same choices with
     // and without a resolver, so a choice's `id` (per-rule occurrence order) is the
     // same in both passes — that identity is what lets the fuse-time diagnostic report

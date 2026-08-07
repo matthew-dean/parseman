@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { encodeTable, UnsupportedConstruct } from '../../src/table/encode.ts'
+import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose, cstBuildHost } from '../../src/compiler/linker.ts'
@@ -123,13 +123,10 @@ describe('encodeTable({ hostMode })', () => {
     expect(() => run(compiledCst as never, 'abc')).toThrow(/host mode "cst"/)
   })
 
-  it("GAP, now LIVE: rules({ hostMode: 'cst' }) is dropped, so the two lowerings disagree", () => {
-    // `rules({ hostMode })` stamps `_meta.grammarHostMode`, which `compile()`
-    // reads. `encodeTable` reads only its own `TableSettings` and ignores the
-    // stamp. That was inert while nothing stamped the table; now that the mode
-    // decides which runs are ADMITTED, the same grammar has two opposite
-    // contracts: the compiled artifact REFUSES a hostless parse, and the table
-    // happily returns AST from it.
+  it("rules({ hostMode: 'cst' }) selects the same mode in both lowerings", () => {
+    // `rules({ hostMode })` stamps `_meta.grammarHostMode`; every lowering must
+    // consume that declaration when no explicit option overrides it. Otherwise
+    // the same grammar has two opposite host-admission contracts.
     const declared = rules<Record<string, Combinator<unknown>>>({ hostMode: 'cst' }, g => ({
       Word: node('Word', regex(/[a-z]+/), c => ({ t: 'Word', c })),
       Doc: node('Doc', many(g.Word!), c => ({ t: 'Doc', c })),
@@ -138,13 +135,19 @@ describe('encodeTable({ hostMode })', () => {
 
     const table = execRules(encodeTable(declared))
     const compiled = compose([declared as never]) as unknown as Record<string, unknown>
-    expect((table as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('ast')
+    expect((table as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
     expect((compiled as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
-    // The divergence, in one pair of lines.
-    expect(run(table.Doc! as never, 'abc').ok).toBe(true)
+    expect(() => run(table.Doc! as never, 'abc')).toThrow(/host mode "cst"/)
     expect(() => run(compiled.Doc as never, 'abc')).toThrow(/host mode "cst"/)
-    // The table is still byte-identical to the undeclared grammar's.
-    expect(encodeTable(declared).code).toEqual(encodeTable(lowArity).code)
+
+    const host = cstBuildHost({ tags: true })
+    expect(run(table.Doc! as never, 'abc', { build: host as never }).ok).toBe(true)
+    expect(run(compiled.Doc as never, 'abc', { build: host as never }).ok).toBe(true)
+
+    // An explicit setting retains the same precedence compile/compose gives it.
+    const explicitAst = execRules(encodeTable(declared, { hostMode: 'ast' }))
+    expect((explicitAst as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('ast')
+    expect(run(explicitAst.Doc! as never, 'abc').ok).toBe(true)
   })
 
   it('a structural node lowers in BOTH host modes, and matches the interpreter', () => {

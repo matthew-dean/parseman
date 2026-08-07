@@ -56,12 +56,15 @@ export const OP_XFORM = 9
  * (−1 = none), `c` is the child offset, `proj` the projected child index (−1 =
  * none), `type` and `tags` index the const pool (`tags` −1 = none).
  *
- * `flags` is a BIT FIELD, not a boolean: bit 2 (`&4`) = the builder reads
+ * `flags` is a BIT FIELD, not a boolean: bit 0 (`&1`) = grammar-owned explicit
+ * `captureTrivia`, bit 2 (`&4`) = the builder reads
  * `triviaLog`, bit 3 (`&8`) = it reads `ctx.state`, bit 4 (`&16`) = the node has
  * read fields, bit 5 (`&32`) = `collapse`, bit 6 (`&64`) = `unwrap`, bit 7
- * (`&128`) = `trailingTrivia`. Bits 2 and 3 are resolved at ENCODE time from the
- * reducer's declared arity by the same analysis codegen runs, and forced on under
- * `hostMode: 'cst'`. The driver reads the bits and re-derives nothing.
+ * (`&128`) = `trailingTrivia`. Bit 0 distinguishes capture a host may not
+ * suppress from a structural node's default capture. Bits 2 and 3 are resolved at ENCODE time
+ * from the reducer's declared arity by the same analysis codegen runs, and
+ * forced on under `hostMode: 'cst'`. The driver reads the bits and re-derives
+ * nothing.
  *
  * TWO ENCODERS SHARE THIS OPCODE and they do NOT agree on its length. The layout
  * above is `encode.ts` / `exec.ts`. `encode-baseline.ts` / `exec-baseline.ts` emit

@@ -86,9 +86,11 @@ export type TableCompileOptions = {
    *
    * COUNTERS ONLY — owner ruling. `_grammarTrace`'s six phases are emitted at
    * ~40 fine-grained sites by codegen and are deferred to 0.48
-   * (`notes/RELEASE-0.48-TARGET.md` §1). A trace sink installed on a context
-   * running a table simply receives nothing; the plugin's coverage path reads
-   * `_grammarCoverage` and the definitions stamp, neither of which is trace.
+   * (`notes/RELEASE-0.48-TARGET.md` §1). A table entry rejects a context carrying
+   * a trace sink before parsing: silently returning an empty trace would look
+   * exactly like a real trace whose grammar sites were never visited. The
+   * plugin's coverage path reads `_grammarCoverage` and the definitions stamp,
+   * neither of which is trace.
    *
    * The remaining options below are accepted for signature compatibility with
    * `compile()`. Any that the table lowering cannot honour THROWS rather than
