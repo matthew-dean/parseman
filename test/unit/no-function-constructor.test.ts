@@ -43,7 +43,9 @@ import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { foldPrograms, expandCompact, type CompactProgram } from '../../src/table/program.ts'
 import { tableVariants, variantNames } from '../../src/table/fold.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
+import { compile } from '../../src/table/compile.ts'
 import { cssRules } from '../../examples/css/parser.ts'
+import { jsonDoc } from '../../examples/json/parser.ts'
 import { resolveTableRuntime } from '../helpers/eval-macro-module.ts'
 import type { Combinator } from '../../src/types.ts'
 
@@ -265,5 +267,20 @@ describe('the macro path never reaches the Function constructor', () => {
         }
       }
     }
+  })
+})
+
+describe('runtime compile and macro use one compact table artifact', () => {
+  it('runtime compile stamps the same empty assembly inventory and constructs no function', () => {
+    let compiled!: ReturnType<typeof compile>
+    const calls = functionConstructorCalls(() => {
+      compiled = compile(jsonDoc)
+      const r = compiled.parse('{"a":[1,true,null]}')
+      if (!r.ok) throw new Error(`runtime compile failed — expected ${JSON.stringify(r.expected)}`)
+    })
+
+    expect(calls).toEqual([])
+    expect(compiled.source).toContain('a:[],')
+    expect(compiled.inlineExpression).toContain('a:[],')
   })
 })

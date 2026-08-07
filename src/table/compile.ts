@@ -154,7 +154,18 @@ function compileImpl<T>(
   // `compileRuleMap` has guarded this since it was written (compile-rule-map.ts);
   // this is the same guard on the single-root entry point.
   const { prog, fnSrcs } = encodeTableProgram({ [ENTRY]: combinator as Combinator<unknown> }, settings)
-  const entry = tableRules(prog)[ENTRY]!
+  /**
+   * `compile()` and the macro must hand the driver the SAME artifact shape.
+   *
+   * An absent `asm` previously selected runtime `new Function` emission while
+   * macro output printed `a:[]` and selected closure assembly. That made one
+   * grammar have two normal execution paths. The compact table artifact is now
+   * canonical: both paths carry an explicit empty inventory and use the shared
+   * closure assembler. Static factories remain an opt-in experiment until they
+   * can satisfy both semantic identity and the size budget.
+   */
+  const artifact = { ...prog, asm: [] as const }
+  const entry = tableRules(artifact)[ENTRY]!
 
   // Captured-first, supplied-as-fill-in. The encoder records a source per author
   // callback from the def (`fnSrc` / `buildSrc` / `predSrc` / `gateSrcs`), which the
@@ -188,9 +199,9 @@ function compileImpl<T>(
   ]
   const printable = runtimeOnly.length === 0
   const emitOpts = { fnSources: sources as string[] }
-  const source = printable ? emitTableModule(prog, { name: 'grammar', ...emitOpts }) : ''
+  const source = printable ? emitTableModule(artifact, { name: 'grammar', ...emitOpts }) : ''
   const inlineExpression = printable
-    ? emitTableExpression(prog, { entry: ENTRY, runtimeRef: opts.runtimeRef ?? 'tableRules', ...emitOpts })
+    ? emitTableExpression(artifact, { entry: ENTRY, runtimeRef: opts.runtimeRef ?? 'tableRules', ...emitOpts })
     : null
 
   const runOnce = (input: string, pos: number, ctx: ParseContext): ParseResult<T> =>

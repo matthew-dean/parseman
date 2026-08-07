@@ -101,12 +101,15 @@ function tableEntryFor(c: Combinator<unknown>, hostCst: boolean, tolerant: boole
   const declared = c._meta.grammarHostMode
   const hostMode = declared ?? (hostCst ? 'cst' : 'ast')
   const trackLines = c._def.tag === 'grammar' ? c._def.trackLines : false
-  const prog = encodeTable({ [ENTRY]: c }, {
+  const encoded = encodeTable({ [ENTRY]: c }, {
     hostMode,
     ...(trackLines ? { trackLines: true } : {}),
     ...(tolerant ? { recovery: true } : {}),
   })
-  const made = tableRules(prog)[ENTRY]!
+  // Match compiler-produced and macro-produced table artifacts: an explicit
+  // empty inventory selects the shared closure assembler rather than making
+  // this public runtime convenience a hidden `new Function` path.
+  const made = tableRules({ ...encoded, asm: [] })[ENTRY]!
   slots[i] = made
   return made
 }

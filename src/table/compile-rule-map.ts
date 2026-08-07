@@ -218,14 +218,15 @@ export function compileRuleMapRunnable(
   const encoded = encodeForRun(ruleMap, opts)
   if (encoded === null) return null
   const { prog, hostMode, plan } = encoded
+  const artifact = { ...prog, asm: [] as const }
   return {
     keys: ruleMap.map(([key]) => key),
     hostMode,
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    rules: tableRules(prog),
-    prog,
+    rules: tableRules(artifact),
+    prog: artifact,
   }
 }
 
@@ -273,13 +274,14 @@ export function compileRuleMap(
   const encoded = encodeForRun(ruleMap, opts)
   if (encoded === null) return null
   const { prog, fnSrcs, hostMode, plan } = encoded
+  const artifact = { ...prog, asm: [] as const }
 
   // RUNTIME-ONLY: the program parses but cannot be PRINTED (a live trivia
   // combinator parked in the pool, say). `compileRuleMap` returns null for its
   // own unprintable cases rather than emitting something that loads and
   // misbehaves; this is the same answer to the same question.
-  if (prog.runtimeOnly !== undefined && prog.runtimeOnly.length > 0) {
-    opts.refusals?.push(...prog.runtimeOnly)
+  if (artifact.runtimeOnly !== undefined && artifact.runtimeOnly.length > 0) {
+    opts.refusals?.push(...artifact.runtimeOnly)
     return null
   }
   // The `mfCovered && buildCovered` gate, for the table's reducer pool: without
@@ -304,7 +306,7 @@ export function compileRuleMap(
     )
   }
 
-  const replacementWithMetadata = (metadataSource?: string): string => emitTableExpression(prog, {
+  const replacementWithMetadata = (metadataSource?: string): string => emitTableExpression(artifact, {
     entry: null,
     runtimeRef: opts.runtimeRef ?? 'tableRules',
     fnSources: sources as string[],
@@ -327,7 +329,7 @@ export function compileRuleMap(
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    rules: tableRules(prog),
-    prog,
+    rules: tableRules(artifact),
+    prog: artifact,
   }
 }
