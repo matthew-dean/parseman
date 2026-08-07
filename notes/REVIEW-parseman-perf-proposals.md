@@ -4,6 +4,60 @@ Reviewer pass over `~/git/oss/jess/docs/future/parseman-perf-proposals.md`, cros
 against `notes/PERF_IDEAS.md` + `notes/INTERPRETER_PERF_IDEAS.md` and the live trivia source
 (`src/combinators/trivia-skip.ts`, `src/cst/trivia-kinds.ts`, `src/cst/trivia-entries.ts`).
 
+
+---
+
+## STATUS CONVENTION (repo-wide, adopted 2026-08-07)
+
+`LANDED` · `MEASURED-NULL` · `REJECTED` · `QUEUED` · `UNMEASURED` · `REFERENCE`.
+Definitions and the repo-wide picture: `PERF_IDEAS.md` § STATUS CONVENTION AND
+COUNTS. Strikethroughs and "partial ✅" are retired; a compound item carries one
+marker per part. `UNCLASSIFIABLE` is used where an item genuinely does not fit,
+with the reason stated — it is not a sixth bucket, it is an admission.
+
+## COUNTS — 8 items
+
+| marker | count |
+|---|---:|
+| `LANDED` | 2 |
+| `REJECTED` | 3 |
+| `QUEUED` | 2 |
+| **`UNMEASURED`** | **1** |
+| `UNCLASSIFIABLE` | 1 |
+
+> ### **Untried in this file: 3 — and 2 of the 3 are already tracked elsewhere.**
+> - `2.1` collapse `children`/`rawChildren` when no trivia captured — `QUEUED` = **`PERF_IDEAS.md` U-29**
+> - `2.2(b)` per-call-site skip-only vs skip+log — `QUEUED` = **`PERF_IDEAS.md` U-30**
+> - *One cheaper alternative worth pricing first* — a range query (binary search on the flat global log) filtered to comment kinds, needing **no new capture mode at all** — `UNMEASURED`, **file-local, not in any other backlog.** The file's only concrete finding on it is that the source doc's zero-cost premise is false: "So 'just read the free global log' isn't free as stated."
+
+**Per-item markers.** `2.1` `QUEUED` (= U-29; the file's "Real, but oversized"
+means *do it, bank it as allocation/GC, not wall-clock*) · `2.2` **`UNCLASSIFIABLE`
+as one row** — the file itself splits it: **(b)** `QUEUED` (= U-30), **(a)**
+`REJECTED`, and note *why* (a) is rejected, because it matters: it is
+pre-discounted by analogy to a *class* of micro-tweak measured neutral-to-negative
+twice, not by a measurement of this tweak · `2.3` single-frame node-scope
+save/restore `REJECTED` — the file schedules it last and prototype-gated, but the
+grounds cited are two prior measured regressions of the analogous shape
+(+50%, +32–47%), so honest reading is queued-to-be-killed · `2.4` declarative
+host-capture descriptor `REJECTED` *as a perf item* (memoized, not hot), retained
+as hygiene riding along with 2.1 · `2.5` comment-lift and `## The trivia/comment
+concern` (its reshape into a kind-filtered capture) are both **`LANDED`** — they
+shipped as `_triviaCaptureMask` / `triviaKindMask`; see `PERF_IDEAS.md`
+"Already landed" · `idea #5` (trivia-call elision by a no-trivia-possible proof)
+`REJECTED` — its home is `PERF_IDEAS.md` §5 / Q-40 #3, where it was scoped and
+deprioritized · `## Recommended re-ordering` and `## Corrections to fold back into
+the jess doc` are `REFERENCE` (a priority ordering and five documentation-edit
+instructions against another repo's file; neither is a proposal).
+
+> ### PROVENANCE WARNING FOR THIS FILE
+> **Its code citations are rigorous and its measurement citations are not**, and
+> that asymmetry is the file's most notable property. Every number in it is a
+> second-hand citation with no fixture, harness, command or commit: "~7% alloc /
+> 0% time", "+50%", "+32–47%", "−52%", "8.6% host cost", "the 10× work". Source
+> references (`trivia-skip.ts:89`, `node.ts:129/132`, `src/cst/trivia-kinds.ts`)
+> are precise and can be trusted. **Quote the file for what the code does, never
+> for what it costs.**
+
 ## TL;DR verdict
 
 | # | Proposal | Win? | Reconciliation with parser-thing evidence |
