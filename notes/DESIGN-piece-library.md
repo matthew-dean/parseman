@@ -34,7 +34,7 @@ Two general questions were re-scoped into this document so their lanes could lan
 |---|---|
 | **1. If you are building a function, codegen it ahead of time.** | `emitAssemblySource` already generates every body. It runs at the wrong time. Move the call into the macro; ship the text as a module. §6. |
 | **2. Runtime may work at start; never `Function`.** | `link` = calling the shipped module's factory with its runtime bindings. `assemble.ts:2536` deletes. §6.3 makes it a test that is red on today's HEAD. |
-| **3. While parsing, no rule consults options.** | Options are bound into the *selection of which body* the macro emitted and which the linker picked. `grammar.ts:103` resolves at §4.4. |
+| **3. While parsing, no rule consults options.** | Options are bound into the *selection of which body* the macro emitted and which the linker picked. The binding-time law is §7.1; `grammar.ts:103` resolves at §7.4. |
 
 Two endpoints are disqualified and this document does not revisit them: the fully abstract
 closure table (2.0–2.3× slower, remeasured by `lane/emitprofile` at `c274a04`) and fully inline
@@ -181,14 +181,24 @@ far over 4,600 bytecode bytes. Those bodies are inlining **roots**: they inline 
 anything above them, and they may absorb at most 920 cumulative bytecode bytes of callees inside
 themselves.
 
-It also gives a candidate mechanism for the finding `lane/emitprofile` flagged as unattributed —
-though note that lane's profile was taken at `90e115c9`, **9 commits behind** the standard base, and
-one of the intervening commits is `09f3452 fix(table): a parse must not inherit the previous parse's
-assembly` — a defect that distorts exactly this kind of repeated-parse profile. **Treat its shares
-(trivia 27.5–28.4%, CST capture 12.4–13.4%, 46.3 vs 26.8 MB/parse) as provisional until re-taken on
-`6bc265f`.** What survives regardless is presence/absence: 0.46 has zero self-time in those four
-files while producing byte-identical output including `rootTrivia`. The reducer figure below is
-subject to the same caveat.
+It also gives a candidate mechanism for the finding `lane/emitprofile` flagged as unattributed.
+
+> **Two retractions, both measured by `lane/capoff`, recorded here because this document cited the
+> withdrawn figures.**
+>
+> - **`46.3` vs `26.8` MB/parse is retracted as unreproduced.** The allocation figure with stated
+>   provenance is **34.68 MB/parse at `6bc265f`** — css `benchmark.css` (123,029 B), 100 parses
+>   after 5 warmups, all `ok=100` with full `consumed`, via `--trace-gc` byte deltas. It cannot be
+>   reconciled with 46.3 without the other lane's harness. **Use 34.7.** Nothing in this document's
+>   byte or allocation argument rests on 46.3 — §5 is entirely artifact bytes, not heap bytes — so
+>   no re-basing is needed, but the figure must not be re-cited.
+> - **The `09f3452` inflation caveat I added in an earlier revision is retracted entirely.** Same
+>   protocol at both commits: `90e115c9` 34.78 → `6bc265f` 34.68 MB/parse, a **0.3%** difference. It
+>   inflated nothing. That caveat was speculation and it was wrong; the profile's shares stand on
+>   their own.
+
+What survives independently of any of this is presence/absence: 0.46 has zero self-time in those
+four files while producing byte-identical output including `rootTrivia`.
 
 **jess's author reducers are identical source on both sides and run 1.30–1.32× slower under the
 emitted engine.** A reducer called from a small `_pf` that is itself inlined into its parent is
@@ -618,7 +628,63 @@ wrong output rather than a slow parse: both are tempting *must*-analyses over a 
 proven complete. `lane/capoff`'s narrow 0.47 fix is compatible with all of this; it is the same
 lattice with one residual substituted early.
 
-### 7.3 Options binding to pieces, generally
+### 7.3 The worked example, and the first 0.48 unit: `rawChildren` is dead work
+
+Everything in §7.1–7.2 is abstract until it decides something. Here is the case that it decides, and
+it is the unit I would land first — **it removes work rather than moving a branch**, so it is the
+`(B)`-ground of §2's procedure, not the IC ground, and it is independent of every unmeasured
+hypothesis in this document.
+
+**The defect.** Every leaf is written into **two** parallel collectors. `_pushLeafBuf`
+(`emit-assembly.ts:133–142`, verified verbatim in this lane) pushes each leaf into `b.ch`/`b.single`
+*and* into `b.raw`/`b.rawSingle`. `emitMark(buf:true)` reads both lengths at every mark; `_rbBuf`
+truncates both at every rollback. In emitted css/ast that is **206 `_pushLeafBuf`, 678 `_rbBuf`,
+749 `_accSet`** sites (`lane/capoff`). The assembler carries the same pair —
+`assemble.ts:455–456` reads `b.raw`/`b.rawSingle` into `MRAW` at every mark.
+
+**Why it is dead.** `rawKids` is materialised once, at `assemble.ts:2387`, and reaches exactly two
+consumers: a CST host (`:2419`, `:2424`, as the 5th positional argument) and a builder's **4th formal
+parameter** (`:2426`, `build(kids, fieldMap, span, rawKids, …)`). Every node def reachable in css and
+less has builder arity ≤ 3. So in AST mode with those grammars, the second collector is maintained
+per leaf, per mark, per rollback, and read by nobody.
+
+**Why it is only half of the 12.4% CST-capture attribution, and the other half is live.** Neither
+this document nor the brief named the mechanism correctly. `lane/capoff` dumped emitted css/ast
+source before and after forcing the cap label: **1,049,296 bytes both times, identical** — so **cap
+labels cost nothing**, corroborating `exp/mixture` from a second direction. The driver is the `buf`
+axis plus `OP_NODE` opening `ctx._cstBuf` unconditionally, and most of *that* is genuinely live:
+`_cstBuf` collects the node's children and `build(kids, …)` consumes them in AST mode too. **Do not
+try to elide `_cstBuf`.** `rawChildren` is the separable dead half.
+
+**Why this is a §7 problem and not a peephole.** The question "does any reachable builder read
+`rawKids`?" is determined by program structure alone — it is an **encode-row** fact by §7.1, and it
+should be bound there. The oracle is already written and already tested and is **called from nowhere
+in `src/`**: `buildReadsRaw` (`build-arity.ts:309`), with `buildReadsChildren` (`:301`) in the same
+condition — both verified uncalled outside `test/unit/build-arity.test.ts` in this lane. And
+`encode.ts:1014–1019` derives an `OP_NODE` flag word with bits for trivia (4), state (8), fields
+(16), collapse (32), unwrap (64) and trailingTrivia (128) — and **no bit for raw**. The whole shape
+of the fix is: one more bit, derived by an oracle that exists, consumed by the two collector
+emitters.
+
+**The soundness check from §7.2 applies and is the reason this needs care.** This is a *must*
+-analysis — "no reachable builder reads raw" — and §7.2's law says a label licenses dropping a test,
+and licenses dropping **work** only over a root set proven complete. The root set here is
+`prog.rules` plus `extraIps`, exactly the set `site-labels.ts`'s header says cannot prove absence. So
+the bit must be derived **conservatively**: set "raw is dead" only when every `NodeDef` in the
+encoded program answers `buildReadsRaw === false` *and* the host mode is non-CST. `hostCst` is a
+cfg bit, so by §7.2 this is a residual at encode substituted at link — the two-stage shape exactly.
+Getting it wrong drops CST children silently, which is §9.7's failure class.
+
+**Status:** deferred out of 0.47 because a new `OP_NODE` flag bit is assembly-key adjacent. It is
+**unmeasured** as a speed win — I have verified the dead-ness statically, not priced it.
+
+> **H-4 (for whoever takes it).** Eliding the `raw` collector removes a measurable share of the
+> 34.68 MB/parse allocation and of the CST-capture self-time. **Falsified if** a build with
+> `_pushLeafBuf`'s raw arm stubbed out shows no allocation delta on css `benchmark.css` under
+> capoff's protocol — which would mean the pair is being optimised away already and the cost is
+> elsewhere. That stub is a ten-line change and settles it before any encoder work starts.
+
+### 7.4 Options binding to pieces, generally
 
 An option is a **link-row** fact by definition — it is fixed for the parse and supplied by the
 caller. So the general answer is a one-liner: *an option is never read; it selects.* The interesting
@@ -702,14 +768,26 @@ identity reference. Rule 3 does not admit that justification.
 7. **The size gate measures the per-grammar artifact only** (`bench/size-guard.ts:454`, `:465`).
    Tier S is not counted by it. Comparing a shipped library against 224,100 B is comparing
    different things.
-8. **`trackLines` divergence is 66.3% / 48.6% on these fixtures, not 16–21%** (§5.3). Flagged as
-   H-3 rather than asserted, because the relay measured different grammars.
-9. **`PM_TABLE_COUNT` instruments `exec.ts`.** Honoured: every count in this document is either
+8. **`trackLines` divergence is 66.3% / 48.6% on these fixtures, not 16–21%** (§5.3). Now the
+   primary figure — the relayed 16–21% has no stated provenance and two sibling figures from the
+   same source were subsequently retracted (§1, M-5). Still only one lane and two toy fixtures:
+   see §9.4.
+9. **`rawChildren` is dead work with an unused oracle already in the tree** (§7.3). Verified in this
+   lane: `buildReadsRaw`/`buildReadsChildren` (`build-arity.ts:309`, `:301`) are called from nowhere
+   in `src/`, `encode.ts:1014–1019` has no raw bit, and `assemble.ts:2426`'s
+   `build(kids, fieldMap, span, rawKids, …)` is a 4th formal parameter no reachable css or less node
+   def declares. Not a correction to the brief so much as a finding the brief handed me; recorded
+   here because it is the first 0.48 unit and the only one independent of every open hypothesis.
+10. **Cap labels cost zero bytes** — `lane/capoff` dumped emitted css/ast before and after forcing
+   the cap label and got 1,049,296 bytes **identical**. My §3.1 lists site attributes as an axis
+   that "earns a distinct piece"; for the `cap` field specifically that is now measured false, and
+   §7.2 explains why (it is a residual, not a fact). The `buf` field is the one that costs.
+11. **`PM_TABLE_COUNT` instruments `exec.ts`.** Honoured: every count in this document is either
    re-derived here (`probe/*`, `reachableIps`) or attributed to the lane that measured it.
    Relatedly, `bench/table-lowering-identity.ts:19` imports `tableRules` from `exec.ts`, so the
    ~2,800-file corpus sweep has never executed `assemble.ts` — the same defect the
    `consumed-sweep.ts` fix just addressed, in the gate this design's correctness rests on.
-10. **`exec.ts` IS on the product path, and a public export runs it.** `src/table/index.ts:25–26`
+12. **`exec.ts` IS on the product path, and a public export runs it.** `src/table/index.ts:25–26`
     asserts of the bytecode interpreter: *"It is not on the product path and nothing emitted imports
     it."* Both halves are false at `6bc265f`. `src/table/fold.ts:1` imports `tableRules` from
     `./exec.ts` and is re-exported publicly as `tableVariants`/`variantNames` (`index.ts:48`);
@@ -721,7 +799,7 @@ identity reference. Rule 3 does not admit that justification.
     (`index.ts:18–20`), already realised. It also means `example/*` fold fixtures and `compose()`
     users are not exercising the engine this design is about. Not this document's fix, but it must
     not be discovered later as a surprise: it silently narrows what every corpus gate covers.
-11. **jess's real Less grammar is not in this repo.** `bench/workloads/less.ts` is a vendored
+13. **jess's real Less grammar is not in this repo.** `bench/workloads/less.ts` is a vendored
     re-creation (its own header says so). Every "less" cardinality in §3/§4 is the vendored
     grammar's.
 
@@ -752,10 +830,15 @@ grammar. It is the most confident-sounding claim in this document and the least 
 One `probe/budget.mjs` ladder extended past 460 settles the first half; only `exp/mixture` settles
 the second.
 
-**9.4 — §5.3's `trackLines` divergence contradicts a measurement I was handed** (H-3). One of us is
-measuring something the other is not. My method is per-body sha1 against cfgKey 0 on the toy
-fixtures, which is reproducible from `probe/bodyshare.mjs`; I would rather be shown wrong now than
-plan a fifth of an artifact against a number that is three times off.
+**9.4 — §5.3's `trackLines` divergence: mine is now the primary number, and that is a downgrade in
+confidence, not an upgrade.** I originally flagged 66.3%/48.6% against a relayed 16–21% as a
+disagreement to be resolved. Two of the three figures relayed from that source have since failed to
+reproduce (§1, M-5), so the relayed 16–21% is the suspect one and my measurement stands until
+someone reproduces 16–21% **with stated provenance**. But note what that leaves: a load-bearing
+number resting on **one lane, one method, two toy fixtures**, with no independent confirmation. The
+per-body sha1 method is reproducible from `notes/probes/piece-library/bodyshare.mjs` and takes
+seconds; H-3 (run it against jess's four grammars) is now more valuable than before, not less,
+because it is the only remaining check on it.
 
 **9.5 — I did not measure the reducer finding, only offer a mechanism for it (H-1).** "Identical
 source, 1.30–1.32× slower" is the sharpest unexplained fact in the tree and my budget explanation
@@ -764,8 +847,8 @@ owner in this design either.
 
 **9.6 — The `ScanShape` fallback (§4.4) is where I am least comfortable calling something
 "correct genericity."** Tier S reproduces `inRanges`, and `inRanges` is on the trivia path, and the
-trivia path is 27.5–28.4% of self-time per `lane/emitprofile` — a *provisional* figure taken 9
-commits behind the standard base (§1, M-5). Saying "cold sites get the slow
+trivia path is 27.5–28.4% of self-time per `lane/emitprofile` (a figure that **stands** — the
+staleness caveat I attached to it in an earlier revision is retracted at §1, M-5). Saying "cold sites get the slow
 shape" is only safe if trivia sites are cold, and I have not established that they are. If trivia
 scanning is hot everywhere, §4.4 is not a correct genericity call — it is a deferred defect, and
 D3's threshold has to be set by execution count on the trivia path specifically. **`lane/capoff`'s
