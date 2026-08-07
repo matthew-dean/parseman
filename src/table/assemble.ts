@@ -134,6 +134,23 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
 const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | undefined> } })
   .process?.env?.PM_TABLE_EMIT !== '0'
 
+/**
+ * EXPERIMENT HOOK (branch `exp/wiring`) — rewrite the emitted assembly's
+ * INTER-PIECE WIRING before it is compiled.
+ *
+ * Read once per ASSEMBLY, never on a parse path. It exists so several wiring
+ * shapes can be compared in ONE process, which is the only comparison this
+ * repo's own A/B guidance accepts. `undefined` is the shipped wiring.
+ *
+ * Not for merge: the shipped answer is to emit the chosen wiring at macro time,
+ * not to rewrite text at run start.
+ */
+let WIRE: ((source: string) => string) | undefined
+let LAST_EMITTED_BYTES = 0
+export function setWiring(f: ((source: string) => string) | undefined): void { WIRE = f }
+/** Bytes of the text the LAST assembly compiled — the emitted-size half of the sweep. */
+export function lastEmittedBytes(): number { return LAST_EMITTED_BYTES }
+
 /** Failure sentinel — identity-compared, never inspected. Mirrors `exec.ts`. */
 const FAIL: unique symbol = Symbol('pm.fail')
 
@@ -2531,14 +2548,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
        * propagates, with the offending source attached.
        */
       let factory: EmittedFactory
+      const emSource = WIRE === undefined ? em.source : WIRE(em.source)
+      LAST_EMITTED_BYTES = emSource.length
       try {
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-        factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
+        factory = new Function(...EMITTED_PARAMS, emSource) as EmittedFactory
       } catch (e) {
         if (e instanceof SyntaxError) {
           throw new Error(
             `table emitter: generated invalid JavaScript (${e.message}). This is a defect in `
-            + 'emit-assembly.ts, not a property of the grammar.\n' + em.source,
+            + 'emit-assembly.ts, not a property of the grammar.\n' + emSource,
           )
         }
         throw new Unemittable(`the Function constructor (${String(e)})`)
