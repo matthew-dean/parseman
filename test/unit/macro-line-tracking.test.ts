@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { cstBuildHost } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { evalMacroModule, resolveTableRuntime } from '../helpers/eval-macro-module.ts'
+import { evalMacroExports, evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import * as pm from '../../src/index.ts'
 
@@ -20,7 +20,13 @@ type ModuleExports = Record<string, Record<string, RuleFn>>
 async function build(code: string, id = 'macro-line-tracking.ts'): Promise<{ mod: ModuleExports; code: string; warnings: string[] }> {
   const out = transformMacro(code, id, new Set(['parseman']))
   if (!out) throw new Error('macro did not transform')
-  const mod = await import(`data:text/javascript;base64,${Buffer.from(resolveTableRuntime(out.code)).toString('base64')}`) as ModuleExports
+  // Vitest transforms ordinary TypeScript imports, but Node 20 does not apply
+  // that transform to a raw `.ts` child import reached from a `data:` module.
+  // The emitted table's only external binding is `tableRules`; this shared
+  // loader-free harness supplies it and evaluates the artifact itself, which is
+  // the behavior this suite is asserting (line-aware table data), not Node's
+  // URL-loader policy.
+  const mod = evalMacroExports(out.code) as ModuleExports
   return { mod, code: out.code, warnings: out.warnings ?? [] }
 }
 

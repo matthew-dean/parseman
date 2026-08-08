@@ -13,7 +13,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { resolveTableRuntime } from '../helpers/eval-macro-module.ts'
+import { evalMacroExports } from '../helpers/eval-macro-module.ts'
 
 const FM = Symbol.for('parseman.fusedHostMode')
 const FE = Symbol.for('parseman.fusedHostElided')
@@ -33,7 +33,10 @@ const cstHost = Object.assign(
 async function build(code: string): Promise<{ mod: Record<string, any>; warnings: string[] }> {
   const out = transformMacro(code, 'test.ts', new Set(['parseman']))
   if (!out) throw new Error('macro did not transform')
-  const mod = await import(`data:text/javascript;base64,${Buffer.from(resolveTableRuntime(out.code)).toString('base64')}`)
+  // Keep this a macro-artifact test, not a Node-version-dependent `data:` →
+  // raw-TypeScript loader test. The table artifact has one external binding,
+  // supplied by the shared loader-free evaluator.
+  const mod = evalMacroExports(out.code)
   return { mod, warnings: out.warnings ?? [] }
 }
 

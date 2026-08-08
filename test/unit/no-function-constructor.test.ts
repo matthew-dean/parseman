@@ -44,8 +44,7 @@ import { tableVariants, variantNames } from '../../src/table/fold.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { compile } from '../../src/table/compile.ts'
 import { cssRules } from '../../examples/css/parser.ts'
-import { jsonDoc } from '../../examples/json/parser.ts'
-import { resolveTableRuntime } from '../helpers/eval-macro-module.ts'
+import { jsonDoc, unescapeJsonString, objectFromPairs } from '../../examples/json/parser.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import type { Combinator } from '../../src/types.ts'
@@ -178,14 +177,17 @@ describe('the macro path never reaches the Function constructor', () => {
     // `JSON_FN_SOURCES` are the AUTHOR's reducers and call the author's helpers;
     // a real build has them in the module it is lowering. Supplying them keeps
     // this a test of the artifact rather than of the harness.
-    const prelude = [
-      'import { unescapeJsonString, objectFromPairs } from '
-      + JSON.stringify(new URL('../../examples/json/parser.ts', import.meta.url).href),
-    ].join('\n')
-    const mod = await import(
-      `data:text/javascript;base64,${Buffer.from(`${prelude}\n${resolveTableRuntime(code)}`).toString('base64')}`
-    ) as { program: CompactProgram }
-    const loaded = expandCompact(mod.program)
+    // This test needs the real factory literals, not Node's behavior when a
+    // `data:` parent statically imports a raw TypeScript file. Node 20 does not
+    // run Vitest's TS transform for that child import (newer Nodes happen to),
+    // so inject the two author helpers exactly as a real module's lexical
+    // bindings would. `evalMacroModule` evaluates the literal before the
+    // constructor spy starts; the property below still observes parse time.
+    const program = evalMacroModule<CompactProgram>(code, 'program', {
+      unescapeJsonString,
+      objectFromPairs,
+    })
+    const loaded = expandCompact(program)
     expect(loaded.asm?.length, 'the loaded artifact carries its assemblies').toBe(2)
 
     const calls = functionConstructorCalls(() => {
