@@ -38,21 +38,36 @@ export type DensityNode = {
   triviaLen: number
 }
 
-function mk(
-  type: string,
+type DensityBuild = (
   children: ReadonlyArray<unknown>,
-  rawChildren: ReadonlyArray<unknown>,
+  fields: unknown,
   span: { start: number; end: number },
+  rawChildren: ReadonlyArray<unknown>,
   triviaLog: readonly number[],
-): DensityNode {
-  return {
-    type,
-    span: { start: span.start, end: span.end },
-    children: [...children],
-    rawCount: rawChildren.length,
-    triviaLen: triviaLog.length,
-  }
-}
+) => DensityNode
+
+/**
+ * These reducers deliberately have no free bindings. The gate copies this
+ * grammar to the pinned 0.46 source compiler as well as compiling it at HEAD;
+ * both need to serialize and run the same node construction work before their
+ * timings are comparable.
+ */
+const stylesheetNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
+  type: 'Stylesheet', span: { start: span.start, end: span.end }, children: [...children],
+  rawCount: rawChildren.length, triviaLen: triviaLog.length,
+})
+const ruleNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
+  type: 'Rule', span: { start: span.start, end: span.end }, children: [...children],
+  rawCount: rawChildren.length, triviaLen: triviaLog.length,
+})
+const declarationNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
+  type: 'Declaration', span: { start: span.start, end: span.end }, children: [...children],
+  rawCount: rawChildren.length, triviaLen: triviaLog.length,
+})
+const dimensionNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
+  type: 'Dimension', span: { start: span.start, end: span.end }, children: [...children],
+  rawCount: rawChildren.length, triviaLen: triviaLog.length,
+})
 
 const ws = regex(/[ \t\n\r\f]+/)
 const comment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)
@@ -117,7 +132,7 @@ export function densityGrammar(guardsPerValue: number): Combinator<unknown> {
   }) => {
     const Stylesheet = node('Stylesheet',
       parser({ trivia: rw }, many(r.Rule)),
-      (c, _f, s, raw, tl) => mk('Stylesheet', c, raw, s, tl))
+      stylesheetNode)
 
     const Rule = node('Rule',
       parser({ trivia: rw }, sequence(
@@ -126,7 +141,7 @@ export function densityGrammar(guardsPerValue: number): Combinator<unknown> {
         many(r.Declaration),
         literal('}'),
       )),
-      (c, _f, s, raw, tl) => mk('Rule', c, raw, s, tl))
+      ruleNode)
 
     // `attempt` so a failed declaration rolls the whole transaction back rather
     // than leaving half a capture behind — the six-sink restore shape.
@@ -137,7 +152,7 @@ export function densityGrammar(guardsPerValue: number): Combinator<unknown> {
         oneOrMore(r.Value),
         literal(';'),
       ))),
-      (c, _f, s, raw, tl) => mk('Declaration', c, raw, s, tl))
+      declarationNode)
 
     // The guards sit in front of every value term, so density scales with the
     // value count of the input rather than with the rule count.
@@ -145,7 +160,7 @@ export function densityGrammar(guardsPerValue: number): Combinator<unknown> {
 
     const Dimension = node('Dimension',
       sequence(num, optional(unit)),
-      (c, _f, s, raw, tl) => mk('Dimension', c, raw, s, tl))
+      dimensionNode)
 
     return { Stylesheet, Rule, Declaration, Value, Dimension }
   })
@@ -229,7 +244,7 @@ export function expectedWidthGrammar(prefixDepth: number): Combinator<unknown> {
   }) => {
     const Stylesheet = node('Stylesheet',
       parser({ trivia: rw }, many(r.Rule)),
-      (c, _f, s, raw, tl) => mk('Stylesheet', c, raw, s, tl))
+      stylesheetNode)
 
     const Rule = node('Rule',
       parser({ trivia: rw }, sequence(
@@ -238,7 +253,7 @@ export function expectedWidthGrammar(prefixDepth: number): Combinator<unknown> {
         many(r.Declaration),
         literal('}'),
       )),
-      (c, _f, s, raw, tl) => mk('Rule', c, raw, s, tl))
+      ruleNode)
 
     const Declaration = node('Declaration',
       attempt(parser({ trivia: rw }, sequence(
@@ -247,7 +262,7 @@ export function expectedWidthGrammar(prefixDepth: number): Combinator<unknown> {
         oneOrMore(r.Value),
         literal(';'),
       ))),
-      (c, _f, s, raw, tl) => mk('Declaration', c, raw, s, tl))
+      declarationNode)
 
     // Each arm: the nullable prefix, then that arm's own terminal.
     const arm = (tail: Combinator<unknown>): Combinator<unknown> => seqOf(...prefix, tail)
@@ -257,7 +272,7 @@ export function expectedWidthGrammar(prefixDepth: number): Combinator<unknown> {
 
     const Dimension = node('Dimension',
       sequence(num, optional(unit)),
-      (c, _f, s, raw, tl) => mk('Dimension', c, raw, s, tl))
+      dimensionNode)
 
     return { Stylesheet, Rule, Declaration, Value, Dimension }
   })
