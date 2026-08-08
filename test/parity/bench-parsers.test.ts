@@ -23,7 +23,6 @@ import { buildJisonGraphQL } from '../../bench/jison-graphql.ts'
 import { buildParsimmonCSV } from '../../bench/parsimmon-csv.ts'
 import { buildPeggyCSV } from '../../bench/peggy-csv.ts'
 import { buildNearleyCSV } from '../../bench/nearley-csv.ts'
-import { buildChevrotainCSV } from '../../bench/chevrotain-csv.ts'
 import { buildParsimmonJSON } from '../../bench/parsimmon-json.ts'
 import { buildPeggyJSON } from '../../bench/peggy-json.ts'
 import { buildNearleyJSON } from '../../bench/nearley-json.ts'
@@ -49,6 +48,7 @@ import {
 const HAS_GROUP_BY = typeof (Object as { groupBy?: unknown }).groupBy === 'function'
 const chevrotain = HAS_GROUP_BY
   ? {
+      csv: (await import('../../bench/chevrotain-csv.ts')).buildChevrotainCSV(),
       gql: (await import('../../bench/chevrotain-graphql.ts')).buildChevrotainGraphQL(),
       json: (await import('../../bench/chevrotain-json.ts')).buildChevrotainJSON(),
     }
@@ -125,7 +125,7 @@ describe('CSV bench parsers consume the whole chart input and build the same row
     Peggy: buildPeggyCSV(),
     Parsimmon: buildParsimmonCSV(),
     Nearley: buildNearleyCSV(),
-    Chevrotain: buildChevrotainCSV(),
+    ...(chevrotain ? { Chevrotain: chevrotain.csv } : {}),
   }
   for (const [fxName, input] of Object.entries(fixtures)) {
     it(`Parséman — ${fxName} consumes every byte`, () => {
