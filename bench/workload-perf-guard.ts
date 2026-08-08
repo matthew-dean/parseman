@@ -66,6 +66,7 @@ import {
   materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign, peakThresholds,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
+import { classifyWorkloadShelves, SHELVED_WORKLOADS } from './workload-perf-shelf.ts'
 import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
 import type { Workload } from './workloads/index.ts'
 
@@ -187,6 +188,12 @@ const { passRows, calibration } = measurePasses(
 )
 const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
+// 0.47's owner accepted five measured table-architecture regressions against the
+// committed 0.46 reference. The shelf is deliberately unavailable for a moved
+// reference, self-check, or peak comparison: it is a bounded exception to this
+// one pinned release comparison, never a generic tolerance override.
+const RELEASE_SHELF = !SELF && !PEAK && argValue('--ref') === null
+const shelf = RELEASE_SHELF ? classifyWorkloadShelves(rows) : null
 
 console.log(
   PEAK
@@ -214,6 +221,34 @@ for (const v of rows) {
     + `   won ${v.passes.map(r => `${r.wins}/${r.pairs}`).join(' ')}`
     + `   breached ${v.breachCount}/${M.passes}`,
   )
+}
+if (shelf !== null) {
+  console.log('\n  SHELVED 0.47 REGRESSIONS (bounded, tracked, never silent):')
+  for (const row of shelf.shelved) {
+    console.log(
+      `    SHELVED ${row.id}: worst median ${sign(row.worstMedian)} / min ${sign(row.worstMin)}`
+      + ` (ceilings +${row.shelf.medianPct}% / +${row.shelf.minPct}%)`,
+    )
+    console.log(`      → remove in ${row.shelf.tracking}`)
+  }
+  for (const row of shelf.worsened) {
+    console.error(
+      `    WORSENED ${row.id}: worst median ${sign(row.worstMedian)} / min ${sign(row.worstMin)}`
+      + ` exceeds accepted ceilings +${row.shelf.medianPct}% / +${row.shelf.minPct}%`,
+    )
+    console.error(`      → ${row.shelf.tracking}`)
+  }
+  for (const row of shelf.recovered) {
+    console.error(`    RECOVERED ${row.id}: no longer regressed — REMOVE FROM THE 0.47 SHELF`)
+    console.error(`      → ${row.shelf.tracking}`)
+  }
+  for (const row of shelf.unmeasured) {
+    console.log(`    UNMEASURED ${row.id}: --only run did not inspect this shelf entry`)
+    console.log(`      → ${row.shelf.tracking}`)
+  }
+  if (shelf.shelved.length === 0 && shelf.worsened.length === 0 && shelf.recovered.length === 0) {
+    console.log(`    no measured entries (configured: ${Object.keys(SHELVED_WORKLOADS).join(', ')})`)
+  }
 }
 console.log(
   `\nmeasured NULL — a control pair of two REFERENCE instances, identical code, same passes and positions.`
@@ -350,9 +385,12 @@ if (PEAK) {
   console.error(waiver.message)
   process.exit(waiver.applied ? 0 : 1)
 }
-if (failures.length > 0) {
-  console.error(`\n${GATE}: REGRESSION in ${failures.length} workload(s) vs ${REF}:`)
-  for (const f of failures) {
+const blocked = shelf === null
+  ? failures
+  : rows.filter(v => shelf.unknown.includes(v) || shelf.worsened.some(row => row.id === v.id))
+if (blocked.length > 0) {
+  console.error(`\n${GATE}: REGRESSION in ${blocked.length} workload(s) vs ${REF}:`)
+  for (const f of blocked) {
     console.error(
       `  ${f.id}: median ${f.passes.map(r => sign(r.dMedian)).join(' ')}`
       + `, breached ${f.breachCount}/${M.passes} passes`,
@@ -364,8 +402,13 @@ if (failures.length > 0) {
     + '\nless/* alone points at speculation or expected-set width, less/* and css/* together points at'
     + '\nsomething every stylesheet grammar pays, and graphql/json moving too points at codegen or the'
     + '\nruntime with capture switched off.'
-    + '\n\nDo not widen the threshold to make this pass. Either fix it, or land the number visibly.',
+    + '\n\nDo not widen the threshold to make this pass. The 0.47 shelf accepts only five named rows and only'
+    + '\nthrough their measured per-pass ceilings; it cannot admit this new or worsened result. Fix it.',
   )
   process.exit(1)
 }
-console.log(`\n${GATE}: ok`)
+if (shelf !== null && shelf.shelved.length > 0) {
+  console.log(`\n${GATE}: ok — ${shelf.shelved.length} bounded 0.47 shelf row(s) remain; tracked for 0.48.`)
+} else {
+  console.log(`\n${GATE}: ok`)
+}
