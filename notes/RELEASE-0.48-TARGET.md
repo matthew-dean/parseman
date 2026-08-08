@@ -553,6 +553,38 @@ said css regressed, and css regressed 2.8×. The shelf is now hiding a real,
 reproduced, at-scale regression, and 0.48's framing is **"recover a 2.3×–2.9×
 regression"**, not "close a 4–9% gap."
 
+### 0.47 grammar-density shelf — bounded, named, and still compared to 0.46
+
+`bench/grammar-perf-guard.ts` independently compares the synthetic rollback and
+expected-set axes against `a5dc9bd` (0.46). Three exact Node 24 candidate runs
+(`855a0ea`, then `67be2d7` with this bench-only shelf work) completed all five
+paired passes only after `67be2d7` made the copied fixture's reducers serialize
+identically in both compiler generations. They are therefore real 0.47 slowdowns,
+not changed parse results. The ranges below are the envelope across all three
+complete runs; every ceiling is that observed worst pass plus a fixed 10
+percentage-point noise headroom, rounded upward — it is not a new baseline.
+
+| case | candidate median envelope | candidate min envelope | shelf ceiling (median / min) |
+|---|---:|---:|---:|
+| `rollback/none` | +132.6%…+187.1% | +156.9%…+189.7% | **+200% / +200%** |
+| `rollback/sparse` | +153.8%…+187.6% | +171.5%…+196.3% | **+200% / +210%** |
+| `rollback/medium` | +228.2%…+255.4% | +239.3%…+268.6% | **+270% / +280%** |
+| `rollback/dense` | +299.0%…+353.1% | +328.6%…+365.3% | **+370% / +380%** |
+| `expected/none` | +132.7%…+172.8% | +137.2%…+169.4% | **+185% / +180%** |
+| `expected/narrow` | +124.1%…+181.2% | +151.0%…+179.8% | **+195% / +190%** |
+| `expected/wide` | +373.2%…+424.5% | +390.0%…+441.5% | **+440% / +460%** |
+
+The shelf is active **only** for the normal working-tree gate against its default
+0.46 reference: never `--quick`, `--self`, `--ref`, or `--head-ref` replay. It
+does not relax result identity: the two sides must still produce exactly the same
+parse result before timing begins. An unlisted strict regression blocks. A named
+row that no longer fails the normal strict-majority gate prints `RECOVERED` and
+must be removed. A named row blocks again when a strict majority of its
+independent passes exceeds either of the ceiling columns above, so one noisy pass
+does not override the gate's existing majority policy. This is accepted 0.47
+debt, not a new baseline; 0.48 owns shrinking and deleting every one of these
+entries.
+
 ### The engine inventory, because "the table" is now ambiguous
 
 Three engines run in this repo, and a note that says "the table" without saying
