@@ -1,9 +1,19 @@
 /**
- * Derived tokenization, part 1: the terminal ALPHABET.
+ * Derived tokenization groundwork: primitive kernels and lexical-token families.
  *
- * Parseman knows every terminal in the composed grammar at macro time — every
- * `literal`, `keywords`, and `regex`. This module walks the combinator graph
- * and assigns each distinct terminal a small integer TOKEN ID.
+ * `collectAlphabet()` is the preserved primitive-terminal scanner groundwork:
+ * it knows every `literal`, `keywords`, and `regex` in the composed grammar and
+ * assigns each one a small integer KERNEL id. Those ids are implementation
+ * details, not parser tokens. In particular, unwrapping
+ * `token(sequence(identifier, optional(literal('('))))` must never publish an
+ * identifier id followed by a `(` id: `token()` defines ONE contiguous source
+ * token and ONE CST leaf for the complete range.
+ *
+ * `collectLexicalAlphabet()` is the production-facing boundary. It assigns ids
+ * to authored `token()` families, normalizes effect-free bodies into canonical
+ * lexical IR, interns equivalent recognizers, and records the downstream
+ * `dispatch()` outcome classifiers over the same range. Primitive terminals
+ * stay private recognizer machinery.
  *
  * Two things are deliberately separated, because conflating them is what makes
  * a naive derived scanner useless:
@@ -21,6 +31,8 @@
  * module only decides WHAT the tokens are and WHICH ones each site may see.
  */
 import type { Combinator, ParserDef } from '../types.ts'
+import { matchesEmpty } from '../combinators/first-set.ts'
+import { branchUsesRouted } from '../combinators/dispatch.ts'
 
 /** A terminal in the derived alphabet, with its globally assigned id. */
 export type TokenTerminal =
@@ -41,6 +53,109 @@ export type Alphabet = {
   /** The combinator that contributed each id (first one wins), for candidate sets. */
   originOf: Map<number, Combinator<unknown>>
 }
+
+/** Effect-free recognition IR underneath one authored `token()` boundary. */
+export type LexicalIr =
+  | { readonly kind: 'literal'; readonly value: string; readonly caseInsensitive: boolean }
+  | { readonly kind: 'keywords'; readonly words: readonly string[]; readonly caseInsensitive: boolean; readonly boundary: string | undefined }
+  | { readonly kind: 'regex'; readonly source: string; readonly flags: string }
+  | { readonly kind: 'sequence'; readonly parts: readonly LexicalIr[] }
+  | { readonly kind: 'choice'; readonly arms: readonly LexicalIr[] }
+  | { readonly kind: 'repeat'; readonly body: LexicalIr; readonly min: number; readonly max: number | null; readonly greedy: boolean; readonly mode: 'possessive' | 'backtracking' }
+  | { readonly kind: 'assert'; readonly positive: boolean; readonly body: LexicalIr }
+
+/** One canonical recognizer spec, shared by every family with equal lexical IR. */
+export type LexicalRecognizer = {
+  readonly id: number
+  readonly key: string
+  readonly ir: LexicalIr
+}
+
+/**
+ * Spelling-specific failure/probe contract. Families may share recognition IR
+ * without sharing where a structured spelling fails or what it expects.
+ */
+export type LexicalDiagnosticPlan = {
+  readonly id: number
+  readonly body: Combinator<unknown>
+}
+
+/** One globally interned lexical family/base-token id. */
+export type LexicalTokenFamily = {
+  readonly id: number
+  readonly recognizerId: number
+}
+
+/** One authored `token()` site, with spelling-specific diagnostics/effects. */
+export type LexicalTokenSite = {
+  readonly parser: Combinator<unknown>
+  readonly body: Combinator<unknown>
+  /** Absent on a refused site; refused metadata allocates no diagnostic plan. */
+  readonly diagnosticId?: number
+  /** All three are absent when normalization declined. */
+  readonly familyId?: number
+  readonly recognizerId?: number
+  readonly refusal?: string
+}
+
+export type LexicalOutcomeMatch =
+  | { readonly kind: 'exact'; readonly values: readonly string[]; readonly caseInsensitive: boolean }
+  | { readonly kind: 'startsWith' | 'endsWith'; readonly value: string; readonly caseInsensitive: boolean }
+  | { readonly kind: 'matches'; readonly value: string; readonly flags: string; readonly caseInsensitive: boolean }
+  | { readonly kind: 'otherwise'; readonly excluding: readonly Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>[] }
+
+/** A globally reusable classification id for one family/range predicate. */
+export type LexicalOutcomeSpec = {
+  readonly id: number
+  readonly familyId: number
+  readonly match: LexicalOutcomeMatch
+}
+
+/** One compatible view over a family range at a particular dispatch site. */
+export type LexicalTokenOutcome = {
+  readonly id: number
+  readonly match: LexicalOutcomeMatch
+}
+
+/** One ordered dispatch arm. IDs classify; this route owns the branch/cut. */
+export type LexicalTokenRoute = {
+  readonly index: number
+  readonly kind: 'exact' | 'matcher' | 'otherwise'
+  readonly acceptedIds: readonly number[]
+  readonly matches: readonly LexicalOutcomeMatch[]
+  readonly parser: Combinator<unknown>
+  readonly usesRouted: boolean
+}
+
+/** Dispatch outcomes stay site-local; ordered dispatch semantics are unchanged. */
+export type LexicalTokenClassifier = {
+  readonly dispatch: Combinator<unknown>
+  readonly familyId: number
+  /** True when reaching token() crossed a wrapper whose effects must still run. */
+  readonly selectorEffects: boolean
+  /** Compatible range views, flattened and allowed to repeat an id by route. */
+  readonly outcomes: readonly LexicalTokenOutcome[]
+  /** Authoritative ordered route/cut identity. */
+  readonly routes: readonly LexicalTokenRoute[]
+}
+
+export type LexicalAlphabet = {
+  /**
+   * Compiler-only graph metadata. `diagnostics`, `sites`, `classifiers`, and
+   * `familyIdOf` contain live combinators/Maps and are NOT TableProgram data.
+   * A serializer must project the numeric/IR specs and relocate site references.
+   */
+  readonly recognizers: readonly LexicalRecognizer[]
+  readonly diagnostics: readonly LexicalDiagnosticPlan[]
+  readonly families: readonly LexicalTokenFamily[]
+  readonly sites: readonly LexicalTokenSite[]
+  readonly outcomes: readonly LexicalOutcomeSpec[]
+  readonly classifiers: readonly LexicalTokenClassifier[]
+  readonly familyIdOf: ReadonlyMap<Combinator<unknown>, number>
+}
+
+/** Lexical-family ids occupy their own published namespace. */
+export const FIRST_LEXICAL_FAMILY_ID = 3
 
 function keyOf(def: ParserDef): string | undefined {
   switch (def.tag) {
@@ -119,6 +234,486 @@ export function collectAlphabet(
   }
   for (const r of roots) walk(r)
   return { terminals, byKey, originOf }
+}
+
+type Normalized = { ir: LexicalIr } | { refusal: string }
+
+function regexFlags(flags: string): string {
+  // regex() itself owns stickiness and ignores authored global/sticky state.
+  return new RegExp('', flags.replace(/[gy]/g, '')).flags
+}
+
+function sequenceIr(parts: LexicalIr[]): LexicalIr {
+  const flat: LexicalIr[] = []
+  for (const part of parts) {
+    if (part.kind === 'sequence') flat.push(...part.parts)
+    else flat.push(part)
+  }
+  return flat.length === 1 ? flat[0]! : { kind: 'sequence', parts: flat }
+}
+
+/**
+ * The first production normalization is deliberately proof-bounded: a single
+ * repeated positive character class followed by one optional escaped literal.
+ * This covers the identifier + optional '(' family while keeping regex
+ * backtracking distinct from PEG possessive repetition everywhere else.
+ */
+function provenOptionalLiteralSuffix(
+  source: string,
+  flags: string,
+): { base: string; suffix: string } | undefined {
+  const match = /^(\[(?:\\.|[^\]\\])+\]\+)(\\[.*+?^$(){}|[\]\\/])\?$/.exec(source)
+  if (match === null) return undefined
+  const base = match[1]!
+  const suffix = match[2]!.slice(1)
+  // A one-character oracle is exact for this bounded base shape: the base is one
+  // positive character class repeated with '+'. If the class cannot consume the
+  // suffix character, the regex quantifier cannot backtrack across the suffix.
+  const baseFlags = regexFlags(flags)
+  if (new RegExp(`^(?:${base})$`, baseFlags).test(suffix)) return undefined
+  return { base, suffix }
+}
+
+function normalizeRegex(source: string, flags: string): LexicalIr {
+  const proof = provenOptionalLiteralSuffix(source, flags)
+  if (proof === undefined) return { kind: 'regex', source, flags }
+  return {
+    kind: 'sequence',
+    parts: [
+      { kind: 'regex', source: proof.base, flags },
+      {
+        kind: 'repeat',
+        body: {
+          kind: 'literal',
+          value: proof.suffix,
+          caseInsensitive: flags.includes('i') && /[A-Za-z]/.test(proof.suffix),
+        },
+        min: 0,
+        max: 1,
+        greedy: true,
+        mode: 'possessive',
+      },
+    ],
+  }
+}
+
+function normalizeLexical(
+  parser: Combinator<unknown>,
+  resolve: ((name: string) => Combinator<unknown> | undefined) | undefined,
+  stack: Set<Combinator<unknown>>,
+): Normalized {
+  if (stack.has(parser)) return { refusal: 'recursive token body' }
+  stack.add(parser)
+  const done = (result: Normalized): Normalized => { stack.delete(parser); return result }
+  const child = (value: Combinator<unknown>): Normalized => normalizeLexical(value, resolve, stack)
+  const def = parser._def
+
+  switch (def.tag) {
+    case 'literal':
+      return done({ ir: {
+        kind: 'literal',
+        value: def.caseInsensitive ? def.value.replace(/[A-Z]/g, c => c.toLowerCase()) : def.value,
+        caseInsensitive: def.caseInsensitive,
+      } })
+    case 'keywords':
+      { const words = [...new Set(def.words.map(word => def.caseInsensitive
+        ? word.replace(/[A-Z]/g, c => c.toLowerCase())
+        : word))].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0))
+      return done({ ir: {
+        kind: 'keywords', words, caseInsensitive: def.caseInsensitive, boundary: def.boundary,
+      } }) }
+    case 'regex':
+      return done({ ir: normalizeRegex(def.source, regexFlags(def.flags)) })
+    case 'sequence': {
+      const parts: LexicalIr[] = []
+      for (const entry of def.parsers) {
+        const normalized = child(entry)
+        if ('refusal' in normalized) return done(normalized)
+        if (normalized.ir.kind === 'sequence') parts.push(...normalized.ir.parts)
+        else parts.push(normalized.ir)
+      }
+      return done({ ir: sequenceIr(parts) })
+    }
+    case 'choice': {
+      if (def.gates.some(gate => gate !== null)) return done({ refusal: 'choice has a dynamic gate' })
+      if (def.autoNot.some(check => check !== null)) return done({ refusal: 'choice has contextual prefix rejection' })
+      if (!def.disjoint && def.strategy.tag !== 'firstMatch') {
+        return done({ refusal: `choice strategy ${def.strategy.tag} is not canonical lexical order` })
+      }
+      const arms: LexicalIr[] = []
+      for (const entry of def.parsers) {
+        const normalized = child(entry)
+        if ('refusal' in normalized) return done(normalized)
+        arms.push(normalized.ir)
+      }
+      return done({ ir: arms.length === 1 ? arms[0]! : { kind: 'choice', arms } })
+    }
+    case 'optional': {
+      const normalized = child(def.parser)
+      return done('refusal' in normalized ? normalized : {
+        ir: { kind: 'repeat', body: normalized.ir, min: 0, max: 1, greedy: true, mode: 'possessive' },
+      })
+    }
+    case 'many':
+    case 'oneOrMore': {
+      if (matchesEmpty(def.parser)) return done({ refusal: 'repeat body may not make progress' })
+      const normalized = child(def.parser)
+      return done('refusal' in normalized ? normalized : {
+        ir: { kind: 'repeat', body: normalized.ir, min: def.min, max: def.max ?? null, greedy: true, mode: 'possessive' },
+      })
+    }
+    case 'not':
+    case 'peek': {
+      const normalized = child(def.parser)
+      return done('refusal' in normalized ? normalized : {
+        ir: { kind: 'assert', positive: def.tag === 'peek', body: normalized.ir },
+      })
+    }
+    case 'lazy': {
+      let target: Combinator<unknown> | undefined
+      try { target = def.thunk() } catch { target = undefined }
+      if (target === undefined && resolve !== undefined) {
+        const name = (parser as unknown as { _ruleName?: string })._ruleName
+        if (name !== undefined) target = resolve(name)
+      }
+      return done(target === undefined ? { refusal: 'unresolved lazy token body' } : child(target))
+    }
+    case 'token':
+    case 'trivia':
+      return done(child(def.parser))
+    case 'grammar':
+      if (def.trackLines) return done({ refusal: 'token body has line-tracking effects' })
+      if (def.triviaParser !== undefined || def.captureTrivia === true || def.rootCapture !== undefined) {
+        return done({ refusal: 'token body has a trivia-bearing scope' })
+      }
+      return done(child(def.parser))
+    case 'transform': return done({ refusal: 'transform is effectful' })
+    case 'leaf': return done({ refusal: 'leaf is effectful' })
+    case 'node': return done({ refusal: 'node is effectful' })
+    case 'field': return done({ refusal: 'field is effectful' })
+    case 'label': return done({ refusal: 'label changes diagnostics' })
+    case 'expect': return done({ refusal: 'expect changes diagnostics' })
+    case 'attempt': return done({ refusal: 'attempt changes commitment' })
+    case 'withCtx': return done({ refusal: 'withCtx is dynamic' })
+    case 'guard': return done({ refusal: 'guard is dynamic' })
+    case 'adjacency': return done({ refusal: 'adjacency depends on parser state' })
+    case 'recover': return done({ refusal: 'recover is effectful' })
+    case 'scanTo': return done({ refusal: 'scanTo is not a lexical run' })
+    case 'sepBy': return done({ refusal: 'separated repetition is not a lexical run' })
+    case 'dispatch': return done({ refusal: 'nested dispatch has semantic outcomes' })
+    case 'routed': return done({ refusal: 'routed depends on an outer dispatch' })
+    case 'unknown': return done({ refusal: 'unknown parser body' })
+  }
+}
+
+function tokenBoundary(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+  seen: Set<Combinator<unknown>> = new Set(),
+  selectorEffects = false,
+): { token: Combinator<unknown>; selectorEffects: boolean } | undefined {
+  if (seen.has(parser)) return undefined
+  seen.add(parser)
+  const def = parser._def
+  if (def.tag === 'token') return { token: parser, selectorEffects }
+  if (def.tag === 'lazy') {
+    let target: Combinator<unknown> | undefined
+    try { target = def.thunk() } catch { target = undefined }
+    if (target === undefined && resolve !== undefined) {
+      const name = (parser as unknown as { _ruleName?: string })._ruleName
+      if (name !== undefined) target = resolve(name)
+    }
+    return target === undefined ? undefined : tokenBoundary(target, resolve, seen, true)
+  }
+  // Value-preserving does NOT mean effect-free: label/field/expect/attempt and
+  // scopes carry diagnostics, capture, commitment, or state. Do not inspect
+  // through them until a consumer proves those effects still execute.
+  return undefined
+}
+
+/**
+ * Catalog authored lexical tokens and their dispatch views without confusing
+ * private child terminals for source tokens. This is metadata only: consumers
+ * still have to lower the canonical IR in every shipping engine before enabling
+ * an admission path.
+ */
+export function collectLexicalAlphabet(
+  roots: ReadonlyArray<Combinator<unknown>>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): LexicalAlphabet {
+  const tokenParsers: Combinator<unknown>[] = []
+  const dispatchParsers: Combinator<unknown>[] = []
+  const seenTop = new Set<Combinator<unknown>>()
+  const seenOwned = new Set<Combinator<unknown>>()
+
+  const walk = (parser: Combinator<unknown>, owner?: Combinator<unknown>): void => {
+    const seen = owner === undefined ? seenTop : seenOwned
+    if (seen.has(parser)) return
+    seen.add(parser)
+    if (owner === undefined && parser._def.tag === 'token') tokenParsers.push(parser)
+    if (owner === undefined && parser._def.tag === 'dispatch') dispatchParsers.push(parser)
+    const nextOwner = owner ?? (parser._def.tag === 'token' ? parser : undefined)
+    for (const entry of tokenChildren(parser, resolve)) walk(entry, nextOwner)
+  }
+  for (const root of roots) walk(root)
+
+  const familyIdOf = new Map<Combinator<unknown>, number>()
+  const recognizers: LexicalRecognizer[] = []
+  const diagnostics: LexicalDiagnosticPlan[] = []
+  const recognizerByKey = new Map<string, number>()
+  const sites: LexicalTokenSite[] = []
+  for (const parser of tokenParsers) {
+    const def = parser._def
+    if (def.tag !== 'token') continue
+    const normalized = normalizeLexical(def.parser, resolve, new Set())
+    if ('refusal' in normalized) {
+      sites.push({ parser, body: def.parser, refusal: normalized.refusal })
+      continue
+    }
+    if (matchesEmpty(def.parser)) {
+      sites.push({ parser, body: def.parser, refusal: 'token body may match empty' })
+      continue
+    }
+    const diagnosticId = diagnostics.length
+    diagnostics.push({ id: diagnosticId, body: def.parser })
+    const ir = normalized.ir
+    const key = JSON.stringify(ir)
+    let recognizerId = recognizerByKey.get(key)
+    if (recognizerId === undefined) {
+      recognizerId = recognizers.length
+      recognizerByKey.set(key, recognizerId)
+      recognizers.push({ id: recognizerId, key, ir })
+    }
+    const familyId = FIRST_LEXICAL_FAMILY_ID + recognizerId
+    familyIdOf.set(parser, familyId)
+    sites.push({ parser, body: def.parser, diagnosticId, recognizerId, familyId })
+  }
+  const families: LexicalTokenFamily[] = recognizers.map(recognizer => ({
+    id: FIRST_LEXICAL_FAMILY_ID + recognizer.id,
+    recognizerId: recognizer.id,
+  }))
+
+  let nextOutcomeId = FIRST_LEXICAL_FAMILY_ID + families.length
+  const outcomes: LexicalOutcomeSpec[] = []
+  const outcomeIdByKey = new Map<string, number>()
+  const foldAscii = (value: string): string => value.replace(/[A-Z]/g, c => c.toLowerCase())
+  const fixedContainsExact = (
+    exact: Extract<LexicalOutcomeMatch, { kind: 'exact' }>,
+    fixed: Extract<LexicalOutcomeMatch, { kind: 'startsWith' | 'endsWith' }>,
+  ): boolean => {
+    // A CI exact predicate admits case variants. A case-sensitive fixed
+    // predicate containing letters cannot be proven to contain all of them.
+    if (exact.caseInsensitive && !fixed.caseInsensitive && /[A-Za-z]/.test(fixed.value)) return false
+    const needle = fixed.caseInsensitive ? foldAscii(fixed.value) : fixed.value
+    return exact.values.every(raw => {
+      const value = fixed.caseInsensitive ? foldAscii(raw) : raw
+      return fixed.kind === 'startsWith' ? value.startsWith(needle) : value.endsWith(needle)
+    })
+  }
+  const outcomeKey = (match: LexicalOutcomeMatch): string => {
+    if (match.kind === 'exact') {
+      const values = [...new Set(match.values
+        .map(value => match.caseInsensitive ? foldAscii(value) : value))].sort()
+      return JSON.stringify({ kind: match.kind, values, caseInsensitive: match.caseInsensitive })
+    }
+    if (match.kind === 'startsWith' || match.kind === 'endsWith') {
+      return JSON.stringify({
+        kind: match.kind,
+        value: match.caseInsensitive ? foldAscii(match.value) : match.value,
+        caseInsensitive: match.caseInsensitive,
+      })
+    }
+    if (match.kind === 'matches') {
+      const rawFlags = match.caseInsensitive && !match.flags.includes('i') ? `${match.flags}i` : match.flags
+      // Dispatch builds a fresh RegExp for each test. `g` therefore has no
+      // observable lastIndex history and is redundant; sticky `y` is semantic
+      // (`/x/y` fails on "ax", `/x/` succeeds) and MUST remain.
+      const flags = new RegExp('', rawFlags.replace(/g/g, '')).flags
+      return JSON.stringify({ kind: match.kind, value: match.value, flags })
+    }
+    if (match.kind === 'otherwise') {
+      const fixed = match.excluding.filter((entry): entry is Extract<LexicalOutcomeMatch, { kind: 'startsWith' | 'endsWith' }> =>
+        entry.kind === 'startsWith' || entry.kind === 'endsWith')
+      const reduced: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>[] = []
+      for (const entry of match.excluding) {
+        if (entry.kind !== 'exact') { reduced.push(entry); continue }
+        const values = entry.values.filter(value => !fixed.some(candidate =>
+          fixedContainsExact({ ...entry, values: [value] }, candidate)))
+        if (values.length > 0) reduced.push({ ...entry, values })
+      }
+      return JSON.stringify({
+        kind: match.kind,
+        excluding: [...new Set(reduced.map(outcomeKey))].sort(),
+      })
+    }
+    throw new Error('parseman: unknown lexical outcome predicate')
+  }
+  const internOutcome = (familyId: number, match: LexicalOutcomeMatch): number => {
+    if (match.kind === 'exact' && match.values.length !== 1) {
+      throw new Error('parseman: global exact lexical outcomes must be atomic')
+    }
+    const key = `${familyId}\u0000${outcomeKey(match)}`
+    const prior = outcomeIdByKey.get(key)
+    if (prior !== undefined) return prior
+    const id = nextOutcomeId++
+    outcomeIdByKey.set(key, id)
+    outcomes.push({ id, familyId, match })
+    return id
+  }
+  const classifiers: LexicalTokenClassifier[] = []
+  for (const parser of dispatchParsers) {
+    const def = parser._def
+    if (def.tag !== 'dispatch') continue
+    const boundary = tokenBoundary(def.selector, resolve)
+    const familyId = boundary === undefined ? undefined : familyIdOf.get(boundary.token)
+    if (familyId === undefined) continue
+    const outcomes: LexicalTokenOutcome[] = []
+    const routes: LexicalTokenRoute[] = []
+    const exclusions: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>[] = []
+    for (const entry of def.cases) {
+      // Exact subtype ids are ATOMIC even when one dispatch arm groups keys.
+      // The site route is represented by multiple outcomes pointing at the same
+      // parser, so URL_OPEN keeps one global id whether another site groups it
+      // with VAR_OPEN/CALC_OPEN or routes it alone.
+      const matches: LexicalOutcomeMatch[] = []
+      const acceptedIds: number[] = []
+      for (const key of entry.keys) {
+        const match: LexicalOutcomeMatch = {
+          kind: 'exact', values: [key], caseInsensitive: entry.caseInsensitive,
+        }
+        const id = internOutcome(familyId, match)
+        exclusions.push(match)
+        matches.push(match)
+        acceptedIds.push(id)
+        outcomes.push({ id, match })
+      }
+      routes.push({
+        index: routes.length, kind: 'exact', acceptedIds, matches,
+        parser: entry.parser, usesRouted: branchUsesRouted(entry),
+      })
+    }
+    for (const entry of def.matchers ?? []) {
+      const match: LexicalOutcomeMatch = entry.kind === 'matches'
+        ? { kind: 'matches', value: entry.value, flags: entry.flags ?? '', caseInsensitive: entry.caseInsensitive }
+        : { kind: entry.kind, value: entry.value, caseInsensitive: entry.caseInsensitive }
+      exclusions.push(match)
+      const id = internOutcome(familyId, match)
+      outcomes.push({ id, match })
+      routes.push({
+        index: routes.length, kind: 'matcher', acceptedIds: [id], matches: [match],
+        parser: entry.parser, usesRouted: branchUsesRouted(entry),
+      })
+    }
+    if (def.otherwise !== undefined) {
+      const match: LexicalOutcomeMatch = { kind: 'otherwise', excluding: exclusions }
+      const id = internOutcome(familyId, match)
+      outcomes.push({ id, match })
+      routes.push({
+        index: routes.length, kind: 'otherwise', acceptedIds: [id], matches: [match],
+        parser: def.otherwise,
+        usesRouted: branchUsesRouted({ parser: def.otherwise, usesRouted: def.otherwiseUsesRouted }),
+      })
+    }
+    for (const route of routes) {
+      if (route.matches.length !== route.acceptedIds.length) {
+        throw new Error('parseman: lexical route match/id arity mismatch')
+      }
+    }
+    classifiers.push({
+      dispatch: parser, familyId, selectorEffects: boundary?.selectorEffects ?? false, outcomes, routes,
+    })
+  }
+
+  // Deliberately do not return `primitiveKernels`: collectAlphabet() remains a
+  // separate historical/kernel API, while this is the only family/site seam.
+  // A choice-admission consumer therefore cannot accidentally publish a child
+  // literal/regex id by reading a field from LexicalAlphabet.
+  return { recognizers, diagnostics, families, sites, outcomes, classifiers, familyIdOf }
+}
+
+function foldAsciiCode(code: number): number {
+  return code >= 65 && code <= 90 ? code + 32 : code
+}
+
+function rangeEquals(input: string, start: number, end: number, value: string, folded: boolean): boolean {
+  if (end - start !== value.length) return false
+  for (let i = 0; i < value.length; i++) {
+    const actual = input.charCodeAt(start + i)
+    const expected = value.charCodeAt(i)
+    if ((folded ? foldAsciiCode(actual) : actual) !== (folded ? foldAsciiCode(expected) : expected)) return false
+  }
+  return true
+}
+
+function rangeStartsWith(input: string, start: number, end: number, value: string, folded: boolean): boolean {
+  return start + value.length <= end && rangeEquals(input, start, start + value.length, value, folded)
+}
+
+function rangeEndsWith(input: string, start: number, end: number, value: string, folded: boolean): boolean {
+  return end - value.length >= start && rangeEquals(input, end - value.length, end, value, folded)
+}
+
+function lexicalOutcomeMatches(
+  match: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>,
+  input: string,
+  start: number,
+  end: number,
+): boolean {
+  if (match.kind === 'exact') {
+    return match.values.some(value => rangeEquals(input, start, end, value, match.caseInsensitive))
+  }
+  if (match.kind === 'startsWith') return rangeStartsWith(input, start, end, match.value, match.caseInsensitive)
+  if (match.kind === 'endsWith') return rangeEndsWith(input, start, end, match.value, match.caseInsensitive)
+  if ('flags' in match) {
+    const flags = match.caseInsensitive && !match.flags.includes('i') ? `${match.flags}i` : match.flags
+    return new RegExp(match.value, flags).test(input.slice(start, end))
+  }
+  return false
+}
+
+/**
+ * Metadata/reference oracle for compatible same-range views. Exact/prefix/suffix
+ * checks read char codes directly; regex matcher views slice only in this cold
+ * oracle. Production token cursors must lower matcher plans without treating
+ * this helper as their allocation contract.
+ */
+export function compatibleLexicalOutcomes(
+  classifier: LexicalTokenClassifier,
+  input: string,
+  start: number,
+  end: number,
+): number[] {
+  const ids: number[] = []
+  let otherwise: number | undefined
+  for (const outcome of classifier.outcomes) {
+    const match = outcome.match
+    if (match.kind === 'otherwise') { otherwise = outcome.id; continue }
+    if (lexicalOutcomeMatches(match, input, start, end) && !ids.includes(outcome.id)) ids.push(outcome.id)
+  }
+  if (ids.length === 0 && otherwise !== undefined) ids.push(otherwise)
+  return ids
+}
+
+/**
+ * Cold oracle for dispatch selection precedence. Compatible views are a set;
+ * selected routing is still exact cases first, then matcher source order, then
+ * otherwise, and a selected branch failure remains committed.
+ */
+export function selectedLexicalOutcome(
+  classifier: LexicalTokenClassifier,
+  input: string,
+  start: number,
+  end: number,
+): { route: LexicalTokenRoute; outcomeId: number } | undefined {
+  for (const route of classifier.routes) {
+    for (let i = 0; i < route.matches.length; i++) {
+      const match = route.matches[i]!
+      if (match.kind === 'otherwise' || lexicalOutcomeMatches(match, input, start, end)) {
+        return { route, outcomeId: route.acceptedIds[i]! }
+      }
+    }
+  }
+  return undefined
 }
 
 /** The id already assigned to this terminal, if it is one. */
