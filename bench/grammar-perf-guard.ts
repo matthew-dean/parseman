@@ -89,7 +89,7 @@
  *
  * Usage:
  *   pnpm perf:guard:grammars                  # the gate
- *   pnpm perf:guard:grammars --quick          # 2 rounds x 1 run — TRIAGE ONLY, does not gate
+ *   pnpm perf:guard:grammars --quick          # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
  *   pnpm perf:guard:grammars --ref=<sha>      # move the A side
  *   pnpm perf:guard:grammars --head-ref=<sha> # build the B side from a commit, not the working tree
  *   pnpm perf:guard:grammars --self           # measure the noise floor: reference against ITSELF
@@ -104,7 +104,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign,
   type Case, type Thresholds,
 } from './ab-harness.ts'
 import { classifyCandidateShelf, type CandidateCeiling } from './grammar-perf-shelf.ts'
@@ -159,7 +159,9 @@ const HEAD_REF = SELF ? REF : HEAD_REF_ARG
 const SHELF_ACTIVE = !QUICK && !SELF && REF_ARG === null && HEAD_REF_ARG === null
 
 const M: GateMeasurement = QUICK
-  ? { ...CONFIG.measurement, rounds: 2, runs: 1, passes: 1 }
+  // Keep quick mode cheap, but never reduce it to one V8 compilation draw. The
+  // broad gate proved that shape can false-fail byte-identical realistic parsers.
+  ? { ...CONFIG.measurement, rounds: 2, runs: 2, passes: 3 }
   : CONFIG.measurement
 
 /**
@@ -261,10 +263,14 @@ console.log(
 for (const v of rows) {
   const worst = v.passes.reduce((a, b) => (b.dMedian > a.dMedian ? b : a))
   const best = v.passes.reduce((a, b) => (b.dMedian < a.dMedian ? b : a))
+  const centerMedian = median(v.passes.map(r => r.dMedian))
+  const centerMin = median(v.passes.map(r => r.dMin))
+  const fasterPasses = v.passes.filter(r => r.dMedian < 0).length
   console.log(
     `  ${v.failed ? 'FAIL' : 'ok  '}  ${v.id.padEnd(17)} ${(detail.get(v.id) ?? '').padStart(12)}`
-    + `   median ${sign(best.dMedian)} … ${sign(worst.dMedian)}`
-    + `   min ${sign(Math.min(...v.passes.map(r => r.dMin)))} … ${sign(Math.max(...v.passes.map(r => r.dMin)))}`
+    + `   center median ${sign(centerMedian)}, min ${sign(centerMin)}, faster ${fasterPasses}/${v.passes.length} passes`
+    + `   range median ${sign(best.dMedian)} … ${sign(worst.dMedian)}`
+    + `, min ${sign(Math.min(...v.passes.map(r => r.dMin)))} … ${sign(Math.max(...v.passes.map(r => r.dMin)))}`
     + `   won ${v.passes.map(r => `${r.wins}/${r.pairs}`).join(' ')}`
     + `   breached ${v.breachCount}/${M.passes}`,
   )

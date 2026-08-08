@@ -46,7 +46,7 @@
  *
  * Usage:
  *   pnpm perf:workloads                       # the gate
- *   pnpm perf:workloads --quick               # 2 rounds x 1 run — TRIAGE ONLY, does not gate
+ *   pnpm perf:workloads --quick               # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
  *   pnpm perf:workloads --only=less           # substring filter on workload id
  *   pnpm perf:workloads --ref=<sha>           # move the A side
  *   pnpm perf:workloads --head-ref=<sha>      # build the B side from a commit, not the working tree
@@ -63,7 +63,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign, peakThresholds,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
 import { classifyWorkloadShelves, SHELVED_WORKLOADS, usesPinned047WorkloadShelf } from './workload-perf-shelf.ts'
@@ -106,7 +106,10 @@ const HEAD_REF = SELF ? REF : argValue('--head-ref')
 const ONLY = argValue('--only')
 
 const M: GateMeasurement = QUICK
-  ? { ...CONFIG.measurement, rounds: 2, runs: 1, passes: 1 }
+  // One compiled pair is one draw of the V8 instance lottery, not a sample.
+  // A one-pass self-check false-failed identical Less parsers at +12.6%; three
+  // fresh pairs keep triage under ten seconds while giving the center a meaning.
+  ? { ...CONFIG.measurement, rounds: 2, runs: 2, passes: 3 }
   : CONFIG.measurement
 
 /**
@@ -220,10 +223,14 @@ console.log(
 for (const v of rows) {
   const worst = v.passes.reduce((a, b) => (b.dMedian > a.dMedian ? b : a))
   const best = v.passes.reduce((a, b) => (b.dMedian < a.dMedian ? b : a))
+  const centerMedian = median(v.passes.map(r => r.dMedian))
+  const centerMin = median(v.passes.map(r => r.dMin))
+  const fasterPasses = v.passes.filter(r => r.dMedian < 0).length
   console.log(
     `  ${v.failed ? 'FAIL' : 'ok  '}  ${v.id.padEnd(18)} ${(detail.get(v.id) ?? '').padStart(6)}`
-    + `   median ${sign(best.dMedian)} … ${sign(worst.dMedian)}`
-    + `   min ${sign(Math.min(...v.passes.map(r => r.dMin)))} … ${sign(Math.max(...v.passes.map(r => r.dMin)))}`
+    + `   center median ${sign(centerMedian)}, min ${sign(centerMin)}, faster ${fasterPasses}/${v.passes.length} passes`
+    + `   range median ${sign(best.dMedian)} … ${sign(worst.dMedian)}`
+    + `, min ${sign(Math.min(...v.passes.map(r => r.dMin)))} … ${sign(Math.max(...v.passes.map(r => r.dMin)))}`
     + `   won ${v.passes.map(r => `${r.wins}/${r.pairs}`).join(' ')}`
     + `   breached ${v.breachCount}/${M.passes}`,
   )
