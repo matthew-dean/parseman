@@ -850,7 +850,9 @@ function makeDriver(
         if (REC) ctx._sync = inheritedSync
         EC.e = cur
         if (fused) {
-          const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+          const reducer = code[ip + 1]!
+          if (reducer < 0) return values![~reducer]
+          const fn = fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           if (COUNT) siteFn('SEQX fn()', fn)
           return fn(values, { start: pos, end: cur })
         }

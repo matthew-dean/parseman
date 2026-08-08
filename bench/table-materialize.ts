@@ -222,7 +222,11 @@ function materialize(prog: TableProgram, opts: { specializeTerminals?: boolean }
         }
       }
       case OP_SEQX: {
-        const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+        const reducer = code[ip + 1]!
+        const projection = reducer < 0 ? ~reducer : -1
+        const fn = projection < 0
+          ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
+          : undefined
         const n = code[ip + 2]!
         // The driver's SEQ terminal fast path, materialised: a LIT/RX child runs
         // IN PLACE rather than through a call. Dropping it here would measure a
@@ -329,7 +333,7 @@ function materialize(prog: TableProgram, opts: { specializeTerminals?: boolean }
             cur = END
           }
           END = cur
-          return fn(values, { start: pos, end: cur })
+          return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
         }
       }
       case OP_OPT: {

@@ -22,6 +22,7 @@ import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
+import { directArrayProjection } from '../compiler/direct-projection.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -1001,7 +1002,14 @@ class Encoder {
         if (inner.tag === 'sequence' && !this.memo.has(d.parser) && !this.pending.has(d.parser)) {
           const kids = inner.parsers.map(c => this.node(c).ip)
           const head = this.emitHead(OP_SEQX, 2 + kids.length + (this.rec ? kids.length : 0))
-          this.code[head + 1] = this.fn(d.fn, d.fnSrc ?? null)
+          const projection = directArrayProjection(d.fn, d.fnSrc, kids.length)
+          // A negative operand describes an already-parsed child (`~index`),
+          // while every function-pool index remains non-negative.  The row is
+          // otherwise unchanged, so projection fusion costs no table words and
+          // does not create a second closure/factory shape.
+          this.code[head + 1] = projection === null
+            ? this.fn(d.fn, d.fnSrc ?? null)
+            : ~projection
           this.code[head + 2] = kids.length
           for (let i = 0; i < kids.length; i++) this.code[head + 3 + i] = kids[i]!
           if (this.rec) {

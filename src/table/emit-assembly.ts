@@ -1187,7 +1187,9 @@ return v
             throw new Unemittable('a sequence carrying an adjacency assertion (OP_ADJ)')
           }
         }
-        const fn = fused ? fnRef(code[ip + 1]!) : undefined
+        const reducer = fused ? code[ip + 1]! : -1
+        const projection = reducer < 0 ? ~reducer : -1
+        const fn = fused && projection < 0 ? fnRef(reducer) : undefined
         const kids: string[] = []
         for (let i = 0; i < n; i++) kids.push(link(code[base + i]!))
         /**
@@ -1224,7 +1226,9 @@ return v
         parts.push(`const v0=${kids[0]}(input,pos,ctx)`, 'if(v0===FAIL)return FAIL')
         const close = (): string => REC ? `${parts.join('\n')}\n}finally{ctx._sync=${sy}}\n}` : `${parts.join('\n')}\n}`
         if (n === 1) {
-          parts.push(fused ? `return ${fn}([v0],{start:pos,end:EC.e})` : wantValues ? 'return [v0]' : 'return undefined')
+          parts.push(fused
+            ? projection === 0 ? 'return v0' : `return ${fn}([v0],{start:pos,end:EC.e})`
+            : wantValues ? 'return [v0]' : 'return undefined')
           return close()
         }
         parts.push('let cur=EC.e')
@@ -1238,7 +1242,7 @@ return v
         }
         parts.push('EC.e=cur')
         parts.push(fused
-          ? `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
+          ? projection >= 0 ? `return ${names[projection]}` : `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
           : wantValues ? `return [${names.join(',')}]` : 'return undefined')
         return close()
       }

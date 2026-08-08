@@ -123,6 +123,11 @@ export const OP_EXPECT = 21
 /**
  * `SEQX f n c1 … cn` — a `transform()` whose child is a `sequence()`.
  *
+ * `f >= 0` indexes the reducer in `prog.fns`. `f < 0` is the descriptor
+ * `~childIndex`: the transform is the exact direct projection
+ * `([…, value, …]) => value`, so the row returns that already-parsed child and
+ * carries no reducer.  Both forms have the same row width.
+ *
  * That pair is the dominant shape in every grammar here (json is nine of them),
  * and running it as two rows costs two switch dispatches and two JS call frames
  * per rule invocation where the emitted code pays neither. Fusing them into one

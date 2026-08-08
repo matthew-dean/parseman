@@ -1467,8 +1467,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const kids: Piece[] = new Array<Piece>(n)
         for (let i = 0; i < n; i++) kids[i] = link(code[base + i]!)
         const wantValues = op !== OP_SEQV
-        const fn = fused
-          ? fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+        const reducer = fused ? code[ip + 1]! : -1
+        const projection = reducer < 0 ? ~reducer : -1
+        const fn = fused && projection < 0
+          ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           : undefined
 
         /**
@@ -1588,7 +1590,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runSyncTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return fn!(values, { start: pos, end: cur })
+              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1654,7 +1656,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runAdjTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return fn!(values, { start: pos, end: cur })
+              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1697,7 +1699,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
               if (v === FAIL) return FAIL
-              return fn!([v], { start: pos, end: EC.e })
+              return projection === 0 ? v : fn!([v], { start: pos, end: EC.e })
             }
           }
           if (wantValues) {
@@ -1723,7 +1725,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = nextTerm(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
-              return fn!([v0, TERMV], { start: pos, end: cur })
+              return projection === 0 ? v0
+                : projection === 1 ? TERMV
+                : fn!([v0, TERMV], { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1758,7 +1762,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               cur = nextTerm(k2, input, cur, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
-              return fn!([v0, v1, TERMV], { start: pos, end: cur })
+              return projection === 0 ? v0
+                : projection === 1 ? v1
+                : projection === 2 ? TERMV
+                : fn!([v0, v1, TERMV], { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1792,7 +1799,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const cur = runTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
             EC.e = cur
-            return fn!(values, { start: pos, end: cur })
+            return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
           }
         }
         if (wantValues) {

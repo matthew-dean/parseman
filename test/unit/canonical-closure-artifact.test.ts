@@ -89,4 +89,20 @@ const grammar = rules(g => ({ Entry: literal('ok') }))
       expect(entry('ok', 0, {}).ok).toBe(true)
     })).toBe(0)
   })
+
+  it('a macro round-trip preserves a descriptor-backed sequence projection', () => {
+    const out = transformMacro(`
+import { literal, rules, sequence, transform } from 'parseman' with { type: 'macro' }
+const grammar = rules(g => ({
+  Entry: transform(sequence(literal('left'), literal('right')), ([, value]) => value)
+}))
+`, 'canonical-projection.ts', new Set(['parseman']))
+    expect(out?.warnings).toEqual([])
+    expect(out?.code).toContain('a:[],')
+
+    const entry = evalMacroModule<(input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>(out!.code, 'grammar.Entry')
+    expect(functionCalls(() => {
+      expect(entry('leftright', 0, {})).toMatchObject({ ok: true, value: 'right' })
+    })).toBe(0)
+  })
 })
