@@ -86,7 +86,13 @@ Code-equivalent heads `60610fc` / `aae9b30` were measured twice against the pinn
 0.46 reference with the repository's paired, order-alternated production gate on
 Node 24.11.1. Each replicate used five independently recompiled passes and 60 A/B
 pairs. Both sides compiled the shipping workload grammars from byte-identical inputs
-and passed full parse/result/EOF identity before timing. The second replicate is the
+and passed the gate's then-current parse/result identity before timing. A subsequent
+direct `run()` audit found that the CSS grammar leaves the fixture's final newline at
+offset 65,553 of 65,554: both legs agree and the byte is only permitted trailing trivia,
+so this is not a meaningful prefix speedup, but the gate did **not** literally prove
+EOF despite claiming it did. The rows below are therefore directional shelf evidence,
+not release proof, until the gate rejects partial consumption or the benchmark grammar
+consumes its permitted trailing trivia. The second replicate is the
 canonical row below because its captured invocation printed engine/source realpaths
 before every number; the first is retained as an independent valid replicate. Exact
 individual pass values were not stored, so an exact ten-pass pooled median cannot be
@@ -110,7 +116,8 @@ last `5901774` audit and are labelled accordingly.
 
 An exact-parent attribution gate compared integrated `aae9b30` directly with
 pre-projection/materializer `6f34165` on these same five standard workloads, again
-with five independent recompiles and full identity. It measured CSS **+1.0%**,
+with five independent recompiles and the same then-current identity check (including
+the CSS trailing-newline caveat above). It measured CSS **+1.0%**,
 Less stylesheet **+0.9%**, mixins **+1.3%**, GraphQL **−1.0%**, and JSON **−2.2%**.
 Thus the integrated pair is flat on the standard CSS/Less surfaces and gives a small
 consistent JSON win; the larger terminal-node result remains specific to the actual
