@@ -124,7 +124,8 @@ export type TableProgram = {
    */
   readonly runtimeOnly?: readonly string[]
   /**
-   * Trivia specs, referenced by index from `OP_SCOPE` and from the rule entries.
+   * Trivia specs, referenced by index from `OP_SCOPE`, `OP_SCOPE_CAP` and
+   * `OP_SCOPE_PLAIN` rule/restoration entries.
    *
    * `classifiedTrivia()` is `trivia(oneOrMore(choice(label(name, arm)…)))` with
    * regex arms — entirely structural, so it lowers to DATA and is rebuilt at

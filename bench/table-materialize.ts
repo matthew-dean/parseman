@@ -53,7 +53,7 @@ import { run } from '../src/functional/run.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../src/combinators/trivia-skip.ts'
 import { cstCaptureActive, pushCstLeaf, rollbackCstCapture, saveCstMark, type CstRollbackMark } from '../src/cst/capture-buffer.ts'
 import {
-  OP_CHOICE, OP_LIT, OP_OPT, OP_REP, OP_REPV, OP_RX, OP_SCOPE, OP_SEQX, OP_XFORM,
+  OP_CHOICE, OP_LIT, OP_OPT, OP_REP, OP_REPV, OP_RX, OP_SCOPE, OP_SCOPE_PLAIN, OP_SEQX, OP_XFORM,
 } from '../src/table/ops.ts'
 import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
@@ -197,7 +197,8 @@ function materialize(prog: TableProgram, opts: { specializeTerminals?: boolean }
           return FAIL
         }
       }
-      case OP_SCOPE: {
+      case OP_SCOPE:
+      case OP_SCOPE_PLAIN: {
         const ki = code[ip + 1]!
         const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
         const labels = scopeTrivia?._meta.triviaKindLabels

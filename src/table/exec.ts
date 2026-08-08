@@ -17,7 +17,7 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
@@ -709,7 +709,8 @@ function makeDriver(
       }
 
       case OP_SCOPE:
-      case OP_SCOPE_CAP: {
+      case OP_SCOPE_CAP:
+      case OP_SCOPE_PLAIN: {
         const ki = code[ip + 1]!
         const saved = ctx.trivia
         const savedLabels = ctx.triviaKindLabels
@@ -738,7 +739,7 @@ function makeDriver(
         // (`grammar.ts:141`), and the flag is restored here because the table
         // shares one ctx where `parser()` copies it. Bit 2 = the unclassified-scope
         // refusal `grammar.ts:98` raises.
-        const policy = code[ip + 3]!
+        const policy = code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
         if ((policy & 2) !== 0) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
         const savedRootCap = ctx._rootTriviaCapture
         if ((policy & 1) !== 0) ctx._rootTriviaCapture = false

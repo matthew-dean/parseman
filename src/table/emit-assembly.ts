@@ -54,7 +54,7 @@ import {
   OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
-  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 import type { ResolvedClass, ResolvedTable, TableProgram } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
@@ -750,22 +750,22 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
     if (op === OP_RULE) return code[ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
-    // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE`, so a
+    // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
     // entry — six context stores, a scanner swap and their six restores, per
     // call, to arrive at the values already there.
     //
     // The label is what makes this decidable: `tri >= 0` can ONLY have come from
-    // an enclosing `OP_SCOPE` carrying that slot, and that scope set
+    // an enclosing scope carrying that slot, and that scope set
     // `ctx.triviaKindLabels` and `_pfScan` from the same slot, so all three are
-    // already the values this row would write. Restricted to plain `OP_SCOPE`
-    // with no root-capture policy: `OP_SCOPE_CAP` also raises `captureTrivia`,
-    // and the two flag bits are a real refusal and a real save/restore.
+    // already the values this row would write. `OP_SCOPE_PLAIN` has no root
+    // policy by construction; a policy-bearing `OP_SCOPE` aliases only when its
+    // literal policy is zero. `OP_SCOPE_CAP` also raises `captureTrivia`.
     //
     // `ki >= 0` is required rather than implied: `TRI_NONE` and `TRI_UNKNOWN` are
     // themselves negative, so comparing a negative operand against a lattice
     // element would read "unknown" as a match.
-    if (op === OP_SCOPE && code[ip + 3]! === 0 && code[ip + 1]! >= 0
+    if ((op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0)) && code[ip + 1]! >= 0
       && labels.at(ip).tri === code[ip + 1]!) {
       return code[ip + 2]!
     }
@@ -1064,10 +1064,11 @@ return r.value
       }
 
       case OP_SCOPE:
-      case OP_SCOPE_CAP: {
+      case OP_SCOPE_CAP:
+      case OP_SCOPE_PLAIN: {
         const ki = code[ip + 1]!
         const cap = op === OP_SCOPE_CAP
-        const flags = code[ip + 3]!
+        const flags = op === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
         const child = link(code[ip + 2]!)
         // THE SWAP, RESOLVED AT EMIT. `swapLegal` is `!trackLines`, an option;
         // the other two are table data. All three are known here, so the body
