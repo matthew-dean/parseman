@@ -121,7 +121,7 @@ count
 tokenIds[count]
 starts[count]      # omitted when every view starts at position
 ends[count]
-flags[count]       # adjacency and other proven lexical facts
+flags[count]       # other proven lexical facts; never used to split an atomic token
 ```
 
 The unique case has one integer id and end. Same-token or prefix overlap retains a
@@ -130,6 +130,15 @@ same `[start,end)` range without duplicating it. No match object, `{ type, value
 span }`, or copied substring is allocated per recognition. A semantic consumer slices
 the input only when its result actually requires the text; integer dispatch,
 lookahead, admission, and failed trial do not.
+
+CSS lexical atoms stay atomic. In particular, `foo(` is one `FUNCTION_OPEN`
+classification whose range includes the name and `(`; it is never represented as an
+`IDENT` token plus an adjacent `LPAREN` token. Plain `foo` is `IDENT` only when the
+active lexical context does not recognize a function token at that range. Less may
+extend the accepted name/interpolation family, but an accepted function opener is
+still one virtual token with one id, start, and end. Parser-level multi-token admission
+starts after that atomic range; it must not reconstruct lexical tokens from adjacency
+flags.
 
 The concrete storage may be a structure of packed integer arrays, an interleaved
 integer array, or V8-fast Smi arrays. That is a measured representation choice, not a
@@ -207,10 +216,11 @@ production. It is the reason the cursor must retain a **compatible token-prefix 
 rather than only one longest token.
 
 At the relevant statement/selector context, recognition should derive and cache the
-shared opener tokens once—for example class/id sigil, identifier/interpolation, opening
-parenthesis, brace, semicolon, colon, or other distinguishing punctuation. A compiled
-arm-signature table then removes only arms whose token prefix is impossible. The
-signature is a numbered sequence over virtual range classifications, not a string key:
+shared opener tokens once—for example a class/id sigil followed by either an atomic
+`FUNCTION_OPEN` range or a plain identifier/interpolation range, then later braces,
+semicolons, colons, or other distinguishing tokens. A compiled arm-signature table
+then removes only arms whose token prefix is impossible. The signature is a numbered
+sequence over virtual range classifications, not a string key:
 
 ```text
 packed token-id sequence -> packed signature trie/table -> compatible arm mask
