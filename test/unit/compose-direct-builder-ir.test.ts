@@ -6,23 +6,19 @@
  */
 import { describe, expect, it } from 'vitest'
 import * as parseman from '../../src/index.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
+import { isInterpretedFuse } from '../../src/compiler/linker.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 import { directBuilderUnsupportedBindings } from '../../src/plugin/direct-builder-static.ts'
-import { emitFusedSource } from '../../src/compiler/linker.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroExports, evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
 function macroModule(source: string): Record<string, unknown> {
   const transformed = transformMacro(source, '/pkg/base.ts', new Set(['parseman']))!
   expect(transformed.warnings).toEqual([])
-  const module: Record<string, unknown> = {}
-  const body = transformed.code
-    .replace(/^import[^\n]*\n/gm, '')
-    .replace(/export const (\w+)/g, 'module.$1')
-  // eslint-disable-next-line no-new-func
-  new Function('module', ...Object.keys(parseman), body)(module, ...Object.values(parseman))
+  const module = evalMacroExports(transformed.code, { ...parseman })
   return module
 }
 
@@ -44,8 +40,9 @@ describe('compose over a macro-built direct node builder', () => {
     expect(ir).toContain('_nd')
 
     const pieces = compileLinkable(evalRuleMapIR(ir), '_direct_')!
-    expect(pieces.buildFns).toEqual([])
-    expect(() => emitFusedSource([pieces])).not.toThrow()
+    // A direct builder carried as a live function cannot be printed; encoding proves
+    // it round-tripped as SOURCE.
+    expect(pieces.replacement).not.toBeNull()
 
     const rehydrated = parseman.compose([{ [COMPOSED_PIECES]: [{ ...carried[0], ir }] } as never]) as unknown as Record<
       string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }
@@ -121,7 +118,7 @@ describe('composeLeaf over imported recognition IR', () => {
     ]) as unknown as Record<string, parseman.Combinator<unknown>>
     expect(typeof leaf.Doc).toBe('object')
     expect(parseman.run(leaf.Doc!, 'xy').ok).toBe(true)
-    expect(parseman.isInterpretedFuse(leaf)).toBe(true)
+    expect(isInterpretedFuse(leaf)).toBe(true)
     expect(() => transformMacro(
       `import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
 export const parser = composeLeaf([unresolvedSyntax, rules(g => ({ Document: literal('x') }))])`,
@@ -169,7 +166,7 @@ export const parser = composeLeaf([semanticBase, rules(g => ({ Document: literal
       // rather than infer safety from generated source text.
       fs.writeFileSync(path.join(dir, 'legacy.js'), `
 export const legacy = Object.defineProperty({}, Symbol.for('parseman.composedPieces'), {
-  value: [{ ns: 'legacy', keys: [], prelude: [], ruleFns: new Map(), wrappers: new Map(), firstSets: new Map(), deps: new Map(), needsEmptyTl: false, needsHostReads: false, mfFns: [], buildFns: [] }],
+  value: [{ ns: 'legacy', keys: [], external: [], prog: null, rules: null, replacement: null, ir: null, hostMode: 'ast', hostBranchElided: false }],
   enumerable: false,
 })`)
       expect(() => transformMacro(
@@ -216,18 +213,17 @@ export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Documen
       expect(leaf.warnings).toEqual([])
       expect(/\bcomposeLeaf\s*\(/.test(leaf.code)).toBe(false)
       expect(/new Function/.test(leaf.code)).toBe(false)
+      expect(leaf.code).not.toContain('Object.defineProperty')
       expect(leaf.code).not.toContain('composedPieces')
       expect(leaf.code).toContain('leafComposed')
       // `g.Atom` is intentionally absent from the local rules map. The evaluator
       // leaves it as a named external placeholder; leaf fusion must close that
       // placeholder over the imported recognition piece, not delegate to a host
       // parser or runtime composition.
-      expect(leaf.code).toContain('_r_Atom')
 
-      const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
-      const parser = new Function('makeAst', strip(leaf.code) + '\nreturn parser')(
-        (value: unknown, span: unknown) => ({ type: 'Ast', value, span }),
-      ) as Record<string | symbol, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const parser = evalMacroModule<Record<string | symbol, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }> & Record<symbol, unknown>>(
+        leaf.code, 'parser', { makeAst: (value: unknown, span: unknown) => ({ type: 'Ast', value, span }) },
+      )
       expect(parser.Document!('token', 0, {}).value).toEqual({
         type: 'Ast',
         value: ['token'],
@@ -268,10 +264,9 @@ export const parser = composeLeaf([syntax, rules({ trivia: whitespace }, g => ({
       )!
       expect(leaf.warnings).toEqual([])
 
-      const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
-      const parser = new Function('makeAst', strip(leaf.code) + '\nreturn parser')(
-        (value: unknown) => ({ type: 'Ast', value }),
-      ) as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const parser = evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(
+        leaf.code, 'parser', { makeAst: (value: unknown) => ({ type: 'Ast', value }) },
+      )
       expect(parser.Document!('word  42', 0, {}).value).toEqual({
         type: 'Ast',
         value: ['word', '42'],

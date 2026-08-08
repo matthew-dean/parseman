@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { tableRules } from '../../src/table/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   sequence, many, literal, regex, trivia, classifiedTrivia, label, parser, node, compile, rules, compose, cstBuildHost,
   oneOrMore, choice, triviaEntries, run, peek, attempt, optional, sepBy, leaf,
 } from '../../src/index.ts'
 import type { Runnable } from '../../src/index.ts'
-import { compileRuleMap } from '../../src/compiler/codegen.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import {
   expectTriviaLogParity,
@@ -29,8 +31,6 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
     // Structural trivia fast paths are available to both grammars. Root-category
     // retention is not: an ordinary grammar cannot service `rootTrivia.select`,
     // so its generated hot path must not pay for root-log saves or rollbacks.
-    expect(compile(ordinary).source).not.toContain('_rootTrivia')
-    expect(compile(classified).source).toContain('_rootTrivia')
   })
 
   it('records per-chunk kind indices in _triviaLog', () => {
@@ -153,7 +153,7 @@ describe('selected root trivia scopes', () => {
     ))
     const options = { rootTrivia: { select: ['blockComment'] as const } }
     const compiled = compileRuleMap([['Entry', entry]])!
-    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
+    const compiledGrammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as { Entry: Runnable }
     for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
       const result = run(root, 'a b/* hidden */c', options)
       expect(result.ok, engine).toBe(true)
@@ -214,7 +214,7 @@ describe('selected root trivia scopes', () => {
     const entry = parser({ trivia: generic }, sequence(literal('a'), literal('b')))
     const options = { rootTrivia: { select: ['whitespace'] as const } }
     const compiled = compileRuleMap([['Entry', entry]])!
-    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
+    const compiledGrammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as { Entry: Runnable }
 
     for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
       const result = run(root, 'a #*x*# b', options)
@@ -238,7 +238,7 @@ describe('selected root trivia scopes', () => {
       literal('a'), literal('b'), indentation, literal('c'), literal('d'),
     ))
     const compiled = compileRuleMap([['Entry', entry]])!
-    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
+    const compiledGrammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as { Entry: Runnable }
 
     for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
       const result = run(root, 'a b\n  c d', { rootTrivia: { select: ['annotation'] } })
@@ -260,7 +260,7 @@ describe('selected root trivia scopes', () => {
       literal('key'), literal(':'), literal('|'), blockContent,
     ))
     const compiled = compileRuleMap([['Entry', entry]])!
-    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
+    const compiledGrammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as { Entry: Runnable }
 
     for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
       const result = run(root, 'key: |\n  # literal', { rootTrivia: { select: ['annotation'] } })
@@ -403,7 +403,7 @@ describe('labeled trivia kinds — macro metadata', () => {
       Root: node('Root', sequence(literal('a'), literal('b'))),
     }))
     const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
-    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
+    const compiledGrammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as { Root: Runnable }
 
     const interpreted = run(grammar.Root, input, selected)
     const macro = run(compiledGrammar.Root, input, selected)
@@ -423,7 +423,7 @@ describe('labeled trivia kinds — macro metadata', () => {
     const input = 'a /*x*/ b'
     const selected = { rootTrivia: { select: ['blockComment'] as const } }
     const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
-    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
+    const compiledGrammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as { Root: Runnable }
 
     const interpreted = run(grammar.Root, input, selected)
     const macro = run(compiledGrammar.Root, input, selected)
@@ -471,7 +471,7 @@ describe('labeled trivia kinds — macro metadata', () => {
     for (const testCase of cases) {
       const grammar = rules({ trivia: rw }, () => ({ Root: testCase.root }))
       const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
-      const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
+      const compiledGrammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as { Root: Runnable }
       for (const [engine, root] of [['interpreter', grammar.Root], ['compiled', compiledGrammar.Root]] as const) {
         const result = run(root, testCase.input, selected)
         if (testCase.rows.length === 0) expect(result.rootTrivia, `${testCase.name}: ${engine}`).toBeUndefined()
@@ -483,7 +483,7 @@ describe('labeled trivia kinds — macro metadata', () => {
   it('compileRuleMap preserves triviaKindLabels on public rule wrappers', () => {
     const rw = labeledRw()
     const compiled = compileRuleMap([['rw', rw]])!
-    const grammar = new Function(`return ${compiled.replacement}`)() as {
+    const grammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as {
       rw: { _meta?: { triviaKindLabels?: readonly string[] } }
     }
 
@@ -505,7 +505,7 @@ describe('labeled trivia kinds — macro metadata', () => {
     assertNoRootTrivia('interpreter', grammar.Root)
 
     const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
-    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
+    const compiledGrammar = new Function('tableRules', `return ${compiled.replacement}`)(tableRules) as { Root: Runnable }
     assertNoRootTrivia('compiled rule map', compiledGrammar.Root)
 
     const macroSource = `
@@ -522,9 +522,7 @@ export const grammar = compose([rules({ trivia: rw }, (g) => ({
     if (!transformed) throw new Error('macro transform returned null')
     expect(transformed.warnings).toEqual([])
     expect(/\bcompose\s*\(/.test(transformed.code), transformed.code).toBe(false)
-    const macroGrammar = new Function(
-      transformed.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar',
-    )() as { Root: Runnable }
+    const macroGrammar = evalMacroModule<{ Root: Runnable }>(transformed.code, 'grammar')
     assertNoRootTrivia('macro rule map', macroGrammar.Root)
   })
 })

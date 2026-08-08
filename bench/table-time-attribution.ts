@@ -1,23 +1,31 @@
 /**
- * WHERE the table driver's time goes.
+ * WHERE the REFERENCE bytecode interpreter's time goes.
+ *
+ * WHICH ENGINES THIS BINDS. `execRules()` (`src/table/exec.ts`) is the REFERENCE
+ * bytecode interpreter and is NOT what ships; `compose()`
+ * (`src/compiler/linker.ts`) is the shipped ASSEMBLER. No source-lowering
+ * "codegen" engine is profiled here — the source lowering was DELETED in
+ * `37c57b5`.
  *
  * Two independent instruments, because a plausible mechanism has been wrong
  * three times in this lane and a measurement has been right three times:
  *
- *   1. a V8 CPU profile of the table path, attributed to FUNCTION, so the answer
- *      names a callee rather than a theory;
+ *   1. a V8 CPU profile of the reference-interpreter path, attributed to
+ *      FUNCTION, so the answer names a callee rather than a theory;
  *   2. an ABLATION ladder — the same parse with one suspected cost removed at a
  *      time — so each candidate gets a number rather than a share of a profile.
  *
  * The scaling is the thing to explain: the gap widens with input size
- * (+82% small, +228% medium, +275% large). A constant interpretive overhead
- * cannot do that. Something is per-item.
+ * (+82% small, +228% medium, +275% large). Those three figures are the REFERENCE
+ * INTERPRETER against the assembler — they are not a figure for any shipped
+ * engine. A constant interpretive overhead cannot produce that curve. Something
+ * is per-item.
  */
 import { Session } from 'node:inspector/promises'
 import { writeFileSync } from 'node:fs'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+import { execRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
 import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON } from './fixtures.ts'
@@ -68,13 +76,13 @@ async function main(): Promise<void> {
   console.log('')
   const map = jsonRules as unknown as Record<string, Combinator<unknown>>
   const compiled = (compose([map as never]) as unknown as Record<string, Entry>).Value!
-  const table = tableRules(encodeTable(map)).Value! as unknown as Entry
+  const table = execRules(encodeTable(map)).Value! as unknown as Entry
   const text = LARGE_JSON
   const triviaOpt = { trivia: jsonWs as Entry }
 
   console.log('=== CPU profile, LARGE json, attributed to function')
-  await profile('table   ', () => { run(table, text, triviaOpt) }, 300, '/tmp/pm-table-table.cpuprofile')
-  await profile('compiled', () => { run(compiled, text, triviaOpt) }, 300, '/tmp/pm-table-compiled.cpuprofile')
+  await profile('exec (reference)   ', () => { run(table, text, triviaOpt) }, 300, '/tmp/pm-table-table.cpuprofile')
+  await profile('assembled (shipped)', () => { run(compiled, text, triviaOpt) }, 300, '/tmp/pm-table-compiled.cpuprofile')
 }
 
 void main()

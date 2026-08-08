@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { checkIdentity } from '../../bench/table-lowering-identity.ts'
 import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, cutUnderChoice, cutUnderMany, forbidSep, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes, trailingSep, trailingTriviaNodes } from '../../bench/table-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
-import { many, node, regex, rules } from '../../src/index.ts'
+import { literal, many, node, oneOrMore, oneOrMoreSep, regex, rules, sepBy, trivia } from '../../src/index.ts'
+import { csvParser } from '../../examples/csv/parser.ts'
 import type { Combinator } from '../../src/types.ts'
 
 /**
@@ -34,23 +35,68 @@ describe('table lowering — tree identity', () => {
         { name: 'unicode-key', input: '{"\\u00e9": "caf\\u00e9"}' },
         { name: 'bad-trailing-comma', input: '[1,2,]' },
         { name: 'bad-unclosed', input: '{"a":' },
+        // A dispatch HIT that fails inside the arm, next to a dispatch MISS. The
+        // miss (`@@@`: no arm claims `@`) agrees everywhere; the hit is where the
+        // stale `disjoint` below shows.
+        { name: 'bad-bare', input: 'nope' },
         { name: 'bad-garbage', input: '@@@' },
       ],
       { trivia: jsonWs },
     )
-    // TWO CASES ARE KNOWN-DIVERGENT and named rather than excluded, so this fails
-    // if a THIRD appears or if these are fixed without the list being updated.
+    // THE THREE REJECTING CASES DIVERGE, and all three are ONE defect, which is
+    // not in the failure-reporting code at all. See `STALE_DISJOINT` below.
     //
-    // Both are failure-REPORTING divergences, newly visible because the identity
-    // digest now covers `expected` — it compared only success before, which made
-    // every difference in HOW a parse fails invisible to every sweep. The
-    // remaining gap is furthest-failure merging: both engines report the set at
-    // the furthest position reached (so `[1,2,]` includes the enclosing `"]"`),
-    // while the table reports the failing choice's own union at its own
-    // position. The trees and consumption agree; only the expected set differs.
-    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-trailing-comma', 'bad-unclosed']
+    // NOT furthest-failure merging, which the previous note here claimed and
+    // which no engine performs on the `expected` path — `failAt`
+    // (combinators/probe.ts) and `probeUpdate` (codegen.ts) are the library's
+    // only positional merges, they are gated on `_ctx._probe`, and they surface
+    // as `RunResult.furthestFail`. Every `_fe`/`_fx` site in all three drivers is
+    // last-write-wins.
+    //
+    // `Value` is `choice(g.Obj, g.Arr, g.Str, g.Num, g.True, g.False, g.Null)`.
+    // At the moment `choice()` runs, those `g.X` arms are `ref()` slots whose
+    // first set is still `any()` (combinators/ref.ts:21 — `define()` fills the
+    // meta in place, AFTERWARDS), so `areDisjoint` says no and `disjoint` freezes
+    // FALSE (combinators/choice.ts:35). The interpreter and codegen both read
+    // that frozen flag, so both firstMatch all seven arms and concatenate seven
+    // expected sets. `encode.ts:439` recomputes disjointness from the RESOLVED
+    // classes, gets the right answer, and dispatches to one arm — so the table
+    // reports one arm's set. The rule is the same in all three; the set of arms
+    // ATTEMPTED is not, and no change to failure recording can reconcile that.
+    //
+    // The proof is the next case: `examples/json/parser.ts` is the SAME LANGUAGE
+    // spelled with local consts instead of `g.X` refs, so its arms' first sets
+    // are resolved when `choice()` runs, `disjoint` is TRUE in every engine, and
+    // it diverges on NOTHING.
+    const STALE_DISJOINT = ['bad-bare', 'bad-trailing-comma', 'bad-unclosed']
     expect([...new Set(r.mismatches.map(m => m.case))].sort())
-      .toEqual(KNOWN_EXPECTED_SET_DIVERGENCE)
+      .toEqual(STALE_DISJOINT)
+  })
+
+  it('the SHIPPED json grammar — same language, resolved arms — agrees on every case', async () => {
+    // The control for the row above. Identical inputs, including all four that
+    // reject. `jsonValue`'s choice arms are local consts, so `disjoint` is
+    // computed from real first sets and every engine dispatches to the same arm.
+    // Zero divergences: with the same dispatch decision, the three engines agree
+    // on the expected set as well as the tree.
+    const { jsonValue, ws } = await import('../../examples/json/parser.ts')
+    const r = checkIdentity(
+      { jsonValue } as unknown as Record<string, Combinator<unknown>>,
+      'jsonValue',
+      [
+        { name: 'scalars', input: '[1, -2.5, 1e10, true, false, null, "a\\nb", "\\u0041"]' },
+        { name: 'nested', input: '{"a":{"b":[{"c":[[[]]]}]},"d":[]}' },
+        { name: 'empty-obj', input: '{}' },
+        { name: 'ws', input: '  {  "a" :  [ 1 , 2 ]  ,  "b" : null  }  ' },
+        { name: 'bad-trailing-comma', input: '[1,2,]' },
+        { name: 'bad-unclosed', input: '{"a":' },
+        { name: 'bad-bare', input: 'nope' },
+        { name: 'bad-garbage', input: '@@@' },
+      ],
+      { trivia: ws },
+    )
+    expect(r.mismatches).toEqual([])
+    expect(r.total).toBeGreaterThan(0)
   })
 
   it('a node()-building grammar agrees, including sepBy separator demotion', () => {
@@ -92,8 +138,8 @@ describe('table lowering — tree identity', () => {
     const spansOf = (v: unknown): Array<Record<string, unknown>> =>
       (v as { spans: Array<Record<string, unknown>> }).spans
 
-    const plain = run(tableRules(encodeTable(probe)).Doc! as never, input)
-    const tracked = run(tableRules(encodeTable(probe, { trackLines: true })).Doc! as never, input)
+    const plain = run(execRules(encodeTable(probe)).Doc! as never, input)
+    const tracked = run(execRules(encodeTable(probe, { trackLines: true })).Doc! as never, input)
     expect(plain.ok).toBe(true)
     expect(tracked.ok).toBe(true)
     expect(Object.keys(spansOf(plain.value)[0]!)).toEqual(['start', 'end'])
@@ -128,14 +174,12 @@ describe('table lowering — three-way identity across every encodable grammar',
     const { checkIdentity: ci } = await import('../../bench/table-lowering-identity.ts')
     const { JSON_CASES } = await import('./table-identity-cases.ts')
     const r = ci(jsonRules as unknown as Record<string, Combinator<unknown>>, 'Value', JSON_CASES, { trivia: jsonWs })
-    // Two KNOWN failure-reporting divergences, named rather than excluded, so a
-    // third one fails this and so does fixing these without updating the list.
-    // Newly visible: the identity digest now covers `expected`, where before it
-    // compared only success. The residual gap is furthest-failure merging —
-    // both engines report the set at the furthest position reached (so `[1,2,]`
-    // includes the enclosing `"]"`) while the table reports the failing choice's
-    // own union at its own position. Trees and consumption agree.
-    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-trailing-comma', 'bad-unclosed']
+    // The same THREE rejecting cases as the `tree identity` row above, and the
+    // same single cause: `jsonRules.Value`'s arms are `g.X` refs, so `disjoint`
+    // froze FALSE at construction (choice.ts:35 / ref.ts:21) and the two engines
+    // firstMatch seven arms where the table dispatches to one. Read the long note
+    // there; the SHIPPED spelling of the same language diverges on nothing.
+    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-bare', 'bad-trailing-comma', 'bad-unclosed']
     expect([...new Set(r.mismatches.map(m => m.case))].sort(), JSON.stringify(r.mismatches.slice(0, 3)))
       .toEqual(KNOWN_EXPECTED_SET_DIVERGENCE)
     expect(r.total).toBeGreaterThan(0)
@@ -188,7 +232,7 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('the field map is POPULATED, not vacuously undefined on all three paths', () => {
     // Three paths agreeing that the map is `undefined` would pass the identity
     // check above while the capability did nothing. Assert the contents.
-    const table = tableRules(encodeTable(fieldNodes)).Doc!
+    const table = execRules(encodeTable(fieldNodes)).Doc!
     const fieldsOf = (input: string): Record<string, unknown> => {
       const v = run(table as never, input).value
       return (v as { c: Array<{ f: Record<string, unknown> }> }).c[0]!.f
@@ -237,7 +281,7 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('dispatch selects the RIGHT arm, which identity alone cannot show', () => {
     // If two arms produced the same tree for an input, identity would pass while
     // the wrong arm ran. Each arm returns a distinct marker, read back here.
-    const table = tableRules(encodeTable(dispatchNodes)).Doc!
+    const table = execRules(encodeTable(dispatchNodes)).Doc!
     const armFor = (input: string): unknown => {
       const r = run(table as never, input)
       // dispatch yields [selectorValue, armValue]
@@ -253,7 +297,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(run(table as never, '@whatever').unconsumedFrom).toBe(null)
 
     // A miss with no otherwise() is a FAILURE, not a silent empty match.
-    const noFb = tableRules(encodeTable(dispatchNoFallback)).Doc!
+    const noFb = execRules(encodeTable(dispatchNoFallback)).Doc!
     expect(run(noFb as never, '@media').ok).toBe(true)
     expect(run(noFb as never, '@nope').ok).toBe(false)
   })
@@ -285,7 +329,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     ])
     expect(r.mismatches).toEqual([])
 
-    const table = tableRules(encodeTable(selectNodes)).Doc!
+    const table = execRules(encodeTable(selectNodes)).Doc!
     const kids = (input: string): unknown[] =>
       (run(table as never, input).value as { c: unknown[] }).c
 
@@ -311,7 +355,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // collapse body was always single-child, so the arity it named could not
     // occur, and `expect(length).toBeGreaterThan(0)` passed for any non-empty
     // array regardless.
-    const table = tableRules(encodeTable(selectNodes)).Doc!
+    const table = execRules(encodeTable(selectNodes)).Doc!
     const kids = (run(table as never, 'zz!zz').value as { c: unknown[] }).c
     const node0 = kids[0] as Record<string, unknown>
     expect(node0._tag).toBe('node')
@@ -330,7 +374,7 @@ describe('table lowering — three-way identity across every encodable grammar',
 
     // The node's SPAN must extend over the trailing run. Consuming it after the
     // capture scope closed would leave the span short and log it in the parent.
-    const table = tableRules(encodeTable(trailingTriviaNodes)).Root!
+    const table = execRules(encodeTable(trailingTriviaNodes)).Root!
     const withTail = run(table as never, 'ab cd   ', { trivia: jsonWs as never }).value as { end: number }
     const noTail = run(table as never, 'ab cd', { trivia: jsonWs as never }).value as { end: number }
     expect(noTail.end).toBe(5)
@@ -358,7 +402,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // pairing, and these tests only passed before because the table carried no
     // stamped mode at all.
     const host = cstBuildHost({ tags: true })
-    const table = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const table = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
     const out = run(table as never, 'abc', { build: host as never })
     expect(out.ok).toBe(true)
 
@@ -382,7 +426,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // `NamedColor`, which HAS a reducer, so the reducer-bearing case is the one
     // that matters and the one asserted here.
     const collapsing = cstBuildHost({ tags: true, collapse: (t: string) => t === 'Marked' })
-    const table = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const table = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
     const out = run(table as never, 'abc', { build: collapsing as never })
     const kid = ((out.value as Record<string, unknown>).children as Array<Record<string, unknown>>)[0]!
     // Collapsed: the node IS its single child, so the leaf surfaces directly.
@@ -396,8 +440,8 @@ describe('table lowering — three-way identity across every encodable grammar',
     // Two TABLES from one grammar — the 'cst' one is driven with a host, the
     // 'ast' one with its own builders. That is the shape the engine allows, and
     // the two must differ or the host is not reaching the node.
-    const cstTable = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
-    const astTable = tableRules(encodeTable(hostNodes)).Doc!
+    const cstTable = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const astTable = execRules(encodeTable(hostNodes)).Doc!
     const withHost = JSON.stringify(run(cstTable as never, 'abc', { build: cstBuildHost({ tags: true }) as never }).value)
     const withBuilder = JSON.stringify(run(astTable as never, 'abc').value)
     expect(withHost).not.toBe(withBuilder)
@@ -424,7 +468,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(pooled.length).toBeGreaterThan(0)
     for (const re of pooled) re.lastIndex = 0
 
-    const table = tableRules(prog).Doc!
+    const table = execRules(prog).Doc!
     run(table as never, '(a,1)zz(b)7')
 
     // At least one pooled regex must show it was USED by the parse.
@@ -453,7 +497,7 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('rootTrivia records the exact comment span, and matches the interpreter', () => {
     const input = 'aa /* keep me */ bb'
     const opts = { rootTrivia: { select: ['comment'] } } as never
-    const table = tableRules(encodeTable(rootTriviaNodes)).Doc!
+    const table = execRules(encodeTable(rootTriviaNodes)).Doc!
 
     const fromTable = run(table as never, input, opts)
     const fromInterp = run(rootTriviaNodes.Doc! as never, input, opts)
@@ -473,7 +517,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // Whitespace is labelled but not selected, so it must produce nothing —
     // a driver that logged every trivia run would still pass a length check.
     const opts = { rootTrivia: { select: ['comment'] } } as never
-    const table = tableRules(encodeTable(rootTriviaNodes)).Doc!
+    const table = execRules(encodeTable(rootTriviaNodes)).Doc!
     const fromTable = run(table as never, 'aa    bb', opts)
     const fromInterp = run(rootTriviaNodes.Doc! as never, 'aa    bb', opts)
     expect(fromTable.ok).toBe(true)
@@ -488,7 +532,7 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('the table entry carries the trivia metadata run() reads off it', () => {
     // Without this stamp `run({ rootTrivia })` rejects a grammar that plainly
     // HAS labelled trivia, because it inspects the entry rather than the table.
-    const entry = tableRules(encodeTable(rootTriviaNodes)).Doc!
+    const entry = execRules(encodeTable(rootTriviaNodes)).Doc!
     expect((entry as { _meta?: { triviaKindLabels?: readonly string[] } })._meta?.triviaKindLabels)
       .toEqual(['space', 'comment'])
   })
@@ -498,7 +542,7 @@ describe('table lowering — three-way identity across every encodable grammar',
    *
    * Emitting IS the point of this lowering, and it had NO behavioural coverage —
    * the only emit test asserted the output STRING contained `tableRules(` and no
-   * `function`. Nothing ever fed an emitted module back through `tableRules` and
+   * `function`. Nothing ever fed an emitted module back through `execRules` and
    * parsed with it, so every field the driver reads but the emitter forgot to
    * write was invisible. Two such fields shipped: `p` (dispatch specs) threw
    * "Cannot read properties of undefined (reading 'byKey')" on every input, and
@@ -507,12 +551,14 @@ describe('table lowering — three-way identity across every encodable grammar',
    * A string assertion cannot catch a missing field. Only a parse can.
    */
   function roundTrip(prog: ReturnType<typeof encodeTable>, fnSources: string[]): Record<string, unknown> {
-    const src = emitTableModule(prog, { name: 'g', fnSources })
+    // Bound to `execRules` below, so the emitted source must NAME the reference
+    // engine rather than the shipped `tableRules` it otherwise defaults to.
+    const src = emitTableModule(prog, { name: 'g', runtimeRef: 'execRules', fnSources })
     // Strip the import and evaluate the literal, so the test exercises the
     // EMITTED SHAPE rather than a module loader.
     const body = src.replace(/^import .*$/m, '').replace(/^export const g = /m, 'return ')
     // eslint-disable-next-line no-new-func
-    return (new Function('tableRules', `${body}`) as (t: typeof tableRules) => Record<string, unknown>)(tableRules)
+    return (new Function('execRules', `${body}`) as (t: typeof execRules) => Record<string, unknown>)(execRules)
   }
 
   it('an emitted DISPATCH grammar round-trips and parses', () => {
@@ -521,7 +567,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     const emitted = roundTrip(prog, [
       `() => 'K:media'`, `() => 'CI:import'`, `() => 'M:vendor'`, `v => 'O:' + String(v)`,
     ])
-    const inMemory = tableRules(prog)
+    const inMemory = execRules(prog)
     for (const input of ['@media', '@IMPORT', '@-webkit-x', '@whatever', 'nope']) {
       const a = run(inMemory.Doc! as never, input)
       const b = run(emitted.Doc as never, input)
@@ -550,7 +596,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // do with the lowering under test.
     expect(prog.fns.length).toBe(2)
     const emitted = roundTrip(prog, [`c => ({ t: 'Word', c })`, `c => ({ t: 'Doc', c })`])
-    const inMemory = tableRules(prog)
+    const inMemory = execRules(prog)
     const input = 'aa /* keep me */ bb'
     const opts = { rootTrivia: { select: ['comment'] } } as never
 
@@ -590,7 +636,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // stamped the mode onto the entry — so `run()` read it as 'ast' and the
     // table returned the grammar's own AST objects with ok:true while paying
     // full CST capture. `encodeTable` with `hostMode` had ZERO coverage.
-    const cst = tableRules(encodeTable(hostNodes, { hostMode: 'cst' }))
+    const cst = execRules(encodeTable(hostNodes, { hostMode: 'cst' }))
     expect(() => run(cst.Doc! as never, 'abc')).toThrow()
 
     // With a CST host it is fine, and the host — not the reducer — builds.
@@ -599,7 +645,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect((withHost.value as Record<string, unknown>).t).toBeUndefined()
 
     // And an 'ast' table is unaffected.
-    const ast = tableRules(encodeTable(hostNodes))
+    const ast = execRules(encodeTable(hostNodes))
     expect(run(ast.Doc! as never, 'abc').ok).toBe(true)
   })
 
@@ -617,7 +663,7 @@ describe('table lowering — three-way identity across every encodable grammar',
       ['choice', cutUnderChoice, '@x'],
       ['many', cutUnderMany, '@x!@x'],
     ] as const) {
-      const table = tableRules(encodeTable(g)).Doc!
+      const table = execRules(encodeTable(g)).Doc!
       const fromTable = run(table as never, input)
       const fromInterp = run(g.Doc! as never, input)
       expect(fromTable.ok, `${name}: must not accept what the interpreter rejects`).toBe(fromInterp.ok)
@@ -631,8 +677,8 @@ describe('table lowering — three-way identity across every encodable grammar',
     // nobody, so 'a,b,' stopped at 3 while both engines consumed to 4. The
     // contrast against `forbid` is what makes this test about the BIT rather
     // than about the parse happening to succeed.
-    const allow = tableRules(encodeTable(trailingSep)).Doc!
-    const forbid = tableRules(encodeTable(forbidSep)).Doc!
+    const allow = execRules(encodeTable(trailingSep)).Doc!
+    const forbid = execRules(encodeTable(forbidSep)).Doc!
 
     const a = run(allow as never, 'a,b,')
     expect(a.ok).toBe(true)
@@ -642,5 +688,230 @@ describe('table lowering — three-way identity across every encodable grammar',
     const f = run(forbid as never, 'a,b,')
     expect(f.unconsumedFrom).toBe(run(forbidSep.Doc! as never, 'a,b,').unconsumedFrom)
     expect(f.unconsumedFrom).toBe(3)
+  })
+
+  /**
+   * A NULLABLE repetition ITEM — the one shape the 2,833-file corpus sweep never
+   * contained, and the only known case where the table was the odd engine out. It
+   * was found in parseman's own `examples/csv`, whose unquoted field is
+   * a regex matching a possibly-empty run of non-comma, non-newline characters:
+   * an empty CSV line is ONE empty field, not zero fields.
+   *
+   * `repItem`'s zero-width stop is a TERMINATION device — a `many` loop whose only
+   * source of progress is the item spins forever without it. The driver applied it
+   * to every item, including the ones `repItem` never parses: `oneOrMore`/`atLeast`
+   * parse the mandatory first item themselves (repeat.ts:203) and `sepBy` parses
+   * BOTH its first (:412) and every post-separator item (:481) itself, because a
+   * separated list is advanced by its SEPARATOR and needs no such stop. The result
+   * was a table that returned `[]` for `sepBy` over `",a"` having consumed NOTHING
+   * — a wrong tree that dropped real input, with no error.
+   *
+   * Pinned as the ENGINE-AGREEMENT it is, plus the literal values, so neither a
+   * table regression nor a silent move in the two shipped engines can pass.
+   */
+  it('a NULLABLE repetition item: all three engines agree, and count a zero-width item', () => {
+    const Field = regex(/[^,]*/)
+    const shapes = {
+      Many: many(Field),
+      More: oneOrMore(Field),
+      Sep: sepBy(Field, literal(',')),
+      SepMin: oneOrMoreSep(Field, literal(',')),
+      SepTrail: sepBy(Field, literal(','), { trailing: 'allow' }),
+    } as unknown as Record<string, Combinator<unknown>>
+
+    const r = checkIdentity(shapes, 'Sep', [
+      { name: 'empty', input: '' },
+      { name: 'bare-sep', input: ',' },
+      { name: 'two-seps', input: ',,' },
+      { name: 'trailing-empty', input: 'a,' },
+      { name: 'leading-empty', input: ',a' },
+      { name: 'plain', input: 'a,b' },
+    ])
+    expect(r.mismatches).toEqual([])
+    expect(r.matched).toBe(r.total)
+
+    const tbl = execRules(encodeTable(shapes))
+    const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
+    // A SEPARATED list counts items as separators + 1, zero-width or not — the
+    // `,a` row is the one no reading of `(item (sep item)*)?` can call `[]`.
+    expect(val('Sep', '')).toEqual([''])
+    expect(val('Sep', ',')).toEqual(['', ''])
+    expect(val('Sep', ',a')).toEqual(['', 'a'])
+    expect(val('Sep', 'a,')).toEqual(['a', ''])
+    expect(val('SepMin', '')).toEqual([''])
+    expect(val('SepTrail', 'a,')).toEqual(['a', ''])
+    // `many` is the one that genuinely must stop: its loop has no other source of
+    // progress, so a zero-width item ends the list and yields NO item.
+    expect(val('Many', '')).toEqual([])
+    expect(val('Many', ',a')).toEqual([])
+    // …and the mandatory first item is not subject to that stop, in all three.
+    expect(val('More', '')).toEqual([''])
+    expect(val('More', ',a')).toEqual([''])
+  })
+
+  it('the csv example drops its trailing empty row on all three engines', () => {
+    // The defect's real-world face: `row` is `sepBy(field, comma)` over a nullable
+    // field, and the grammar's drop-trailing-empty-row transform tests for exactly
+    // `['']`. Under the table's `[]` it never fired, so a 4-row fixture parsed as
+    // 5 — a wrong tree, no error, invisible to every assertion but this one.
+    const map = { CSV: csvParser } as unknown as Record<string, Combinator<unknown>>
+    const r = checkIdentity(map, 'CSV', [
+      { name: 'trailing-newline', input: 'a,b\n1,2\n3,4\n5,6\n' },
+      { name: 'no-trailing-newline', input: 'a,b\n1,2' },
+      { name: 'empty-fields', input: 'a,,b\n,,\n' },
+    ])
+    expect(r.mismatches).toEqual([])
+    expect(run(execRules(encodeTable(map)).CSV! as never, 'a,b\n1,2\n3,4\n5,6\n').value)
+      .toEqual([['a', 'b'], ['1', '2'], ['3', '4'], ['5', '6']])
+  })
+
+  /**
+   * `sepBy` with `min >= 2` — the SEPARATED twin of the `min >= 2` shape 1c5b2e8
+   * settled for `many`, and the case where a list can still owe a required item
+   * at EOF.
+   *
+   * Same contract: `min` counts ITEMS, `oneOrMoreSep(i, s)` IS
+   * `sepBy(i, s, { min: 1 })` (repeat.ts:285), and a `{ min: n }` prefix is finite
+   * by construction, so it takes the n-item derivation rather than stopping. The
+   * loop's `cur < input.length` head is a TERMINATION device for the greedy tail,
+   * exactly as `repItem`'s two stops are, and it must not end a mandatory prefix.
+   *
+   * The SEPARATOR is what decides whether that derivation exists at all, and it is
+   * the axis the three-way disagreement turned on — so both halves are pinned:
+   * with a nullable separator the empty string HAS an n-item derivation and the
+   * list must take it; with a real separator n items need n-1 separators, there is
+   * no derivation, and the list must fail. Note `matchesEmpty` (first-set.ts:112)
+   * consults only `d.parser` and reports `true` for BOTH, so it cannot be the
+   * authority here — it over-approximates, in its documented-safe direction.
+   */
+  it('sepBy {min: n} pads to n when the separator is nullable, and fails when it is not', () => {
+    const NullItem = regex(/[^,]*/)
+    const NullSep = regex(/,*/)
+    const shapes = {
+      Pad2: sepBy(NullItem, NullSep, { min: 2 }),
+      Pad3: sepBy(NullItem, NullSep, { min: 3 }),
+      NoPad: sepBy(NullItem, literal(','), { min: 2 }),
+      HardItem: sepBy(regex(/[a-z]+/), NullSep, { min: 2 }),
+    } as unknown as Record<string, Combinator<unknown>>
+    const cases = [
+      { name: 'empty', input: '' },
+      { name: 'one-item', input: 'a' },
+      { name: 'two-items', input: 'a,b' },
+    ]
+    for (const rule of Object.keys(shapes)) {
+      const r = checkIdentity(shapes, rule, cases)
+      expect(r.mismatches, rule).toEqual([])
+    }
+
+    const tbl = execRules(encodeTable(shapes))
+    const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
+    // A nullable separator: the derivation exists, so `min` pads with zero-width
+    // items rather than failing. Consumes nothing on the empty string.
+    expect(val('Pad2', '')).toEqual(['', ''])
+    expect(val('Pad3', '')).toEqual(['', '', ''])
+    expect(val('Pad2', 'a')).toEqual(['a', ''])
+    expect(val('Pad3', 'a,b')).toEqual(['a', 'b', ''])
+    // A real separator: no derivation, so the list FAILS rather than padding…
+    expect(run(tbl.NoPad! as never, 'a').ok).toBe(false)
+    expect(run(tbl.HardItem! as never, 'a').ok).toBe(false)
+    // …reporting the ITEM it is stuck wanting, not the separator it last tried.
+    expect(run(tbl.NoPad! as never, 'a').expected).toEqual(['/[^,]*/'])
+    expect(run(tbl.NoPad! as never, 'a').expected)
+      .toEqual(run(shapes.NoPad! as never, 'a').expected)
+  })
+
+  /**
+   * `min >= 2` — the bound the three engines each got HALF right, and the only
+   * shape where all three shipped a different answer.
+   *
+   * The contract, from `RepeatOptions`: `min` counts ITEMS, `oneOrMore(x)` IS
+   * `many(x, { min: 1 })` (repeat.ts:105, :114 — the identical combinator), and
+   * `first-set.ts`'s `matchesEmpty` reports `case 'oneOrMore': me(d.parser)` — a
+   * `min`-bearing repeat is NULLABLE exactly when its item is, for ANY `min`. A
+   * combinator the analysis declares nullable must match the empty string.
+   *
+   * So `x*` over a nullable `x` derives the empty string with ANY number of items,
+   * and `{ min: n }` takes the n-item derivation. `many` (min 0) takes the FEWEST
+   * because its unbounded loop's only source of progress is the item, so it must
+   * stop at zero width — a TERMINATION device, not a semantic filter. A prefix of
+   * exactly `n` items is finite by construction and cannot spin, so the stop does
+   * not apply to it. This is the same rule 00b9f79 settled for `sepBy`.
+   *
+   * Each engine violated one half and no two the same one, which is why "the
+   * majority answer" was wrong here: the compiled engine alone padded (and had
+   * the nullable case right), while the interpreter and table alone skipped the
+   * inter-item trivia (and had the trivia case right).
+   */
+  it('min >= 2 over a NULLABLE item: all three pad to `min` items rather than refusing', () => {
+    const Field = regex(/[^,]*/)
+    const shapes = {
+      Many: many(Field),
+      Min1: many(Field, { min: 1 }),
+      Min2: many(Field, { min: 2 }),
+      Min3: many(Field, { min: 3 }),
+      Min5: many(Field, { min: 5 }),
+      Min2Max3: many(Field, { min: 2, max: 3 }),
+    } as unknown as Record<string, Combinator<unknown>>
+
+    const r = checkIdentity(shapes, 'Min2', [
+      { name: 'empty', input: '' },
+      { name: 'one-field', input: 'a' },
+      { name: 'stops-at-sep', input: 'a,b' },
+      { name: 'leading-sep', input: ',a' },
+    ])
+    expect(r.mismatches).toEqual([])
+    expect(r.matched).toBe(r.total)
+
+    const tbl = execRules(encodeTable(shapes))
+    const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
+    // The unbounded list still stops at zero width — the termination device stands.
+    expect(val('Many', '')).toEqual([])
+    expect(val('Many', 'a,b')).toEqual(['a'])
+    // min 1 is unmoved (it was already right in all three, and is `oneOrMore`).
+    expect(val('Min1', '')).toEqual([''])
+    // `min` counts ITEMS, so `n` of them come back — `max` never enters into it.
+    expect(val('Min2', '')).toEqual(['', ''])
+    expect(val('Min2', 'a,b')).toEqual(['a', ''])
+    expect(val('Min3', 'a,b')).toEqual(['a', '', ''])
+    expect(val('Min5', '')).toEqual(['', '', '', '', ''])
+    expect(val('Min2Max3', 'a,b')).toEqual(['a', ''])
+    // …and the list is still SHORT of a real second field: `,b` is unconsumed, so
+    // the padding never pretends to have read input it did not read.
+    expect(run(tbl.Min2! as never, 'a,b').unconsumedFrom).toBe(1)
+  })
+
+  it('min >= 2 skips INTER-ITEM trivia before every mandatory item, in all three', () => {
+    // The repeat owns the trivia BETWEEN its items; only the trivia before the
+    // FIRST belongs to the enclosing context. The compiled engine inlined items
+    // 2..min flush against each other with no skip, so `many(a, { min: 2 })`
+    // REJECTED `"a a"` — which `many(a)` parses as two items. A `{ min: 2 }` list
+    // refusing a list the unbounded one returns with 2 items contradicts `min`
+    // counting items, and it is a NON-nullable item, so ordinary grammars are
+    // exposed to it and not just the nullable corner.
+    const ws = trivia(regex(/[ \t]*/))
+    const A = literal('a')
+    const shapes = rules<Record<string, Combinator<unknown>>>({ trivia: ws }, () => ({
+      Min1: many(A, { min: 1 }),
+      Min2: many(A, { min: 2 }),
+      Min3: many(A, { min: 3 }),
+    })) as unknown as Record<string, Combinator<unknown>>
+
+    for (const entry of ['Min1', 'Min2', 'Min3']) {
+      const r = checkIdentity(shapes, entry, [
+        { name: 'spaced-2', input: 'a a' },
+        { name: 'spaced-3', input: 'a a a' },
+        { name: 'tight', input: 'aa' },
+        { name: 'wide', input: 'a  a  a' },
+        { name: 'short', input: 'a' },
+      ], { trivia: ws })
+      expect({ entry, mismatches: r.mismatches }).toEqual({ entry, mismatches: [] })
+    }
+
+    const tbl = execRules(encodeTable(shapes))
+    const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input, { trivia: ws as never }).value
+    expect(val('Min2', 'a a')).toEqual(['a', 'a'])
+    expect(val('Min3', 'a  a  a')).toEqual(['a', 'a', 'a'])
+    // Still genuinely bounded: two items cannot be found in one.
+    expect(run(tbl.Min3! as never, 'a a', { trivia: ws as never }).ok).toBe(false)
   })
 })

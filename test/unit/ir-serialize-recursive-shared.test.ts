@@ -14,8 +14,7 @@
 import { describe, it, expect } from 'vitest'
 import { rules, regex, literal, sequence, choice, many, transform, expect as expectC } from '../../src/index.ts'
 import { ref } from '../../src/combinators/ref.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { fuseRules } from '../../src/compiler/linker.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 
 import type { Combinator } from '../../src/types.ts'
@@ -41,7 +40,7 @@ function group(open: string, close: string, inner: Comb): Comb {
 function run(rm: ReadonlyArray<readonly [string, unknown]>): RunMap {
   const pieces = compileLinkable(rm as never, '_t_')
   if (!pieces) throw new Error('not linkable')
-  return fuseRules([pieces]) as unknown as RunMap
+  return pieces.rules as unknown as RunMap
 }
 
 /** Serialize, compose, re-lower, and compare against the original on every input. */

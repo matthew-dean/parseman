@@ -38,7 +38,6 @@ Three words that sound alike but play different roles:
 | `oneOrMoreSep(c, sep, opts?)` | Non-empty separated list — sugar for `sepBy(c, sep, { min: 1 })`. |
 | `keepSeparator(sep)` | Wrap a separator to KEEP it in `children`. Default is items only. |
 | `transform(c, fn)` | Map the result: `fn(value, span) → newValue`. |
-| `skip(main, skipped)` | Match `main` then `skipped`; return `main`'s value. |
 | `token(c)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
 | `leaf(c, reducer)` | Treat a structural grammar as one semantic leaf, without touching trivia. |
 | `label(name, c)` | Attach a string label to a combinator arm (metadata; used for per-chunk trivia kinds). |
@@ -52,7 +51,7 @@ Three words that sound alike but play different roles:
 | `expect(c, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Skips ambient trivia + `scanSkip` opaque units by default. |
 | `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` — including the delimiters. |
-| `routed()` | Use the value/span already consumed by an enclosing `dispatch()` branch. |
+| `routed(fallback?)` | With no argument, use the value/span already consumed by an enclosing `dispatch()` branch. With a fallback, reuse that value when routed or parse the fallback when the same production is used standalone. |
 
 ## Helpers (produce combinators at definition time)
 
@@ -443,6 +442,13 @@ grammar expression. Use tail-only branches when the routed value belongs to an
 outer category node; use `routed()` inside branch nodes when each selected form
 should own that same source span.
 
+`routed()` is forwarding-only: without a routed value at the selector position,
+it fails. Use `routed(head)` only when the same production is deliberately used
+both from a selected `dispatch` arm and directly. In a dispatch arm it forwards
+the already-consumed head; used directly, it parses `head` in place. This removes
+a duplicated `Original`/`RoutedOriginal` production without re-scanning the
+selector in the dispatched case.
+
 If the first parser fails, an enclosing `choice` can still try a later arm. If
 the first parser succeeds and a `when` key matches, that tail is committed: its
 failure is returned immediately and neither `otherwise` nor an outer fallback is
@@ -729,19 +735,6 @@ parse(spanned, 'abc').value
 `transform` is for plain value-mapping. For rules that build a syntax tree with
 captured children and trivia, use [`node()`](./ast) — see
 [`transform` vs `node`](#mapping-vs-building-transform-vs-node).
-
-### `skip`
-
-Match both, return only `main`'s value, with the span extended across both.
-
-```ts
-// [verify]
-import { skip, regex, literal, parse } from 'parseman'
-
-const line = skip(regex(/[^\n]*/), literal('\n'))
-parse(line, 'hello\nworld')
-// → { ok: true, value: 'hello', span: { start: 0, end: 6 } }
-```
 
 ### `token`
 

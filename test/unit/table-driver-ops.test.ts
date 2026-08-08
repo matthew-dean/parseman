@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { execRulesBaseline } from '../../src/table/exec-baseline.ts'
+import { tableRules } from '../../src/table/assemble.ts'
+import { defaultAssemblyCfgs, emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram, reachableOps } from '../../src/table/inspect.ts'
-import { resolveTable, type TableProgram } from '../../src/table/program.ts'
-import { OP_EMPTY, OP_NODE } from '../../src/table/ops.ts'
+import { decodeClassSpec, encodeClassSpec, resolveTable, type TableProgram, type TableRule } from '../../src/table/program.ts'
+import { OP_CHOICE, OP_EMPTY, OP_NODE, OP_RULE } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose } from '../../src/compiler/linker.ts'
 import { selectNodes } from '../../bench/table-grammars.ts'
@@ -29,12 +32,42 @@ const one = (rule: unknown, input: string, opts?: Record<string, unknown>): unkn
   run(rule as never, input, opts as never).value
 
 describe('table driver — rows the grammar corpus never reached', () => {
+  it('the class-spec codec round-trips BMP, surrogate and astral endpoints', () => {
+    const ranges = [
+      { lo: 0x61, hi: 0x7a },
+      { lo: 0xd800, hi: 0xdfff },
+      { lo: 0xffff, hi: 0xffff },
+      { lo: 0x1f600, hi: 0x10ffff },
+    ]
+    expect(decodeClassSpec(encodeClassSpec(ranges))).toEqual(ranges)
+
+    // U+FFFF is the wide-format marker's first word. As a valid BMP singleton
+    // its second word is also U+FFFF, so it stays an unambiguous narrow pair.
+    const bmpBoundary = encodeClassSpec([{ lo: 0xffff, hi: 0xffff }])
+    expect(bmpBoundary).toHaveLength(2)
+    expect(decodeClassSpec(bmpBoundary)).toEqual([{ lo: 0xffff, hi: 0xffff }])
+  })
+
+  it('the class-spec codec rejects malformed narrow and wide ranges', () => {
+    const wide = (...words: number[]) => String.fromCharCode(0xffff, 0, ...words)
+
+    // Without the ordering check this IS the two-word wide prefix and silently
+    // decoded as an empty class.
+    expect(() => encodeClassSpec([{ lo: 0xffff, hi: 0 }])).toThrow(/descending/)
+    expect(() => decodeClassSpec(String.fromCharCode(0x62, 0x61))).toThrow(/descending/)
+    expect(() => decodeClassSpec(wide())).toThrow(/no ranges/)
+    // U+10000..U+FFFF is descending in the wide representation.
+    expect(() => decodeClassSpec(wide(1, 0, 0, 0xffff))).toThrow(/descending/)
+    // U+110000 is the first code point beyond Unicode's upper bound.
+    expect(() => decodeClassSpec(wide(0, 0, 0x11, 0))).toThrow(/outside Unicode/)
+  })
+
   it('COLLAPSE really collapses — and no existing case ever ran it', () => {
     // `selectNodes.Doc` tries Proj, then Unwr, then Coll. Every input the suite
     // used ('abc', '123', 'abc123', '', '###') is claimed by Proj or Unwr, so the
     // collapse branch of OP_NODE executed on NO test path — while two tests carry
     // "collapse" in their names. 'zz' is the input that reaches it.
-    const table = tableRules(encodeTable(selectNodes)).Doc!
+    const table = execRules(encodeTable(selectNodes)).Doc!
     const kid = (one(table, 'zz') as { c: unknown[] }).c[0] as Record<string, unknown>
     // Collapsed: the value IS the single captured child, so the `Coll` wrapper is
     // gone and the Marker surfaces in its place. Not collapsing would leave a
@@ -54,7 +87,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
       Two: node('Two', sequence(literal('a'), literal('b')), { collapse: true }),
       One: node('One', sequence(literal('a')), { collapse: true }),
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     const two = one(t.Two, 'ab') as Record<string, unknown>
     expect(two._tag).toBe('node')
     expect(two.type).toBe('Two')
@@ -72,7 +105,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
       Peeked: transform(sequence(peek(literal('ab')), literal('a')), v => (v as unknown[])[1]) as Combinator<unknown>,
       NotB: transform(sequence(not(literal('b')), literal('a')), v => (v as unknown[])[1]) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     // The peek must not eat 'ab' — the literal after it still has to match 'a'.
     const peeked = run(t.Peeked! as never, 'ab')
     expect(peeked.ok).toBe(true)
@@ -94,7 +127,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: transform(sequence(literal('a'), expectC(literal('b'), 'a b')), v => (v as unknown[])[1]) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const hit = run(t as never, 'ab')
     expect(hit.ok).toBe(true)
     expect(hit.value).toBe('b')
@@ -110,7 +143,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: leaf(sequence(literal('ab'), literal('cd')), (_v, span) => `${span.start}-${span.end}`) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     expect(one(t, 'abcd')).toBe('0-4')
     expect(one(t, 'abcd')).toBe(one(g.Doc, 'abcd'))
   })
@@ -124,10 +157,10 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const bare = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: routed() as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const fb = tableRules(encodeTable(withFallback)).Doc!
+    const fb = execRules(encodeTable(withFallback)).Doc!
     expect(one(fb, 'x')).toBe('x')
     expect(run(fb as never, 'y').ok).toBe(false)
-    const none = tableRules(encodeTable(bare)).Doc!
+    const none = execRules(encodeTable(bare)).Doc!
     expect(run(none as never, 'x').ok).toBe(false)
     expect(run(none as never, 'x').expected).toEqual(['routed()'])
     expect(JSON.stringify(run(fb as never, 'y'))).toBe(JSON.stringify(run(withFallback.Doc! as never, 'y')))
@@ -153,7 +186,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
         regex(/@[a-z]+/) as Combinator<unknown>,
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(inChoice)).Doc!
+    const t = execRules(encodeTable(inChoice)).Doc!
     const compiledChoice = (compose([inChoice as never]) as unknown as Record<string, unknown>).Doc!
     expect(one(t, '@x!')).toEqual(['@x', '!'])          // the arm, when it works
     // The cut: the second arm must NOT re-recognise `@x`.
@@ -168,7 +201,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const inMany = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: many(dispatch(regex(/@[a-z]+/), when('@x', transform(literal('!'), () => 'hit'))) as unknown as Combinator<unknown>) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const tm = tableRules(encodeTable(inMany)).Doc!
+    const tm = execRules(encodeTable(inMany)).Doc!
     const compiledMany = (compose([inMany as never]) as unknown as Record<string, unknown>).Doc!
     const fromTable = run(tm as never, '@x!@x')
     expect(fromTable.ok).toBe(false)
@@ -191,7 +224,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
         transform(regex(/[0-9]+/), v => `digit:${String(v)}`),
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     expect(one(t, 'é')).toBe('accent:é')
     expect(one(t, '\u{1F600}')).toBe('emoji:\u{1F600}')
     expect(one(t, '7')).toBe('digit:7')
@@ -203,13 +236,11 @@ describe('table driver — rows the grammar corpus never reached', () => {
     }
   })
 
-  it('an astral arm is rejected by the table AND the compiled path (interpreter differs)', () => {
+  it('an astral arm dispatches identically in the interpreter, table and compiled path', () => {
     // Disjoint single-character arms above U+007F land in the dispatch table's
-    // `hi` triples. The BMP ones are picked correctly; an ASTRAL one is not
-    // matched — and the COMPILED path rejects it too, so this is a pre-existing
-    // first-set/code-point divergence with the interpreter and not something the
-    // table introduced. Pinned here so the table is not blamed for it later, and
-    // so a fix that moves one engine has to move the other.
+    // `hi` triples. The BMP ones were picked correctly while an ASTRAL one was
+    // missed. The class pool stays a compact string, with astral endpoints
+    // escaped into high/low words so they survive encode without truncation.
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: choice(
         transform(literal('é'), () => 'e-acute'),
@@ -217,18 +248,17 @@ describe('table driver — rows the grammar corpus never reached', () => {
         transform(literal('\u{1F600}'), () => 'grin'),
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Doc!
     expect(one(t, 'é')).toBe('e-acute')
     expect(one(t, 'ü')).toBe('u-uml')
-    expect(run(t as never, '\u{1F600}').ok).toBe(false)
-    expect(run(compiled as never, '\u{1F600}').ok).toBe(false)
+    expect(one(t, '\u{1F600}')).toBe('grin')
+    expect(one(compiled, '\u{1F600}')).toBe('grin')
     expect(one(g.Doc, '\u{1F600}')).toBe('grin')
 
     // NOTE ON THIS TEST'S TITLE. It carried a SECOND, independent claim: that a
-    // dispatch miss reports an empty expected set. That half is now fixed and
-    // has moved to its own test below — the astral divergence above is
-    // unaffected by it and remains pinned here on its own.
+    // dispatch miss reports an empty expected set. That half has its own parity
+    // assertion below.
   })
 
   it('a dispatch miss names every arm, as both shipped engines do', () => {
@@ -244,7 +274,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
         transform(literal('\u{1F600}'), () => 'grin'),
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Doc!
     const fromTable = run(t as never, 'e').expected
     expect(fromTable).toHaveLength(3)
@@ -259,7 +289,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: token(sequence(literal('a'), literal('b'))) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const miss = run(t as never, 'ax')
     expect(miss.ok).toBe(false)
     expect(JSON.stringify(miss)).toBe(JSON.stringify(run(g.Doc! as never, 'ax')))
@@ -272,7 +302,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: many(transform(literal(''), () => 'z')) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const out = run(t as never, 'abc')
     expect(out.ok).toBe(true)
     expect(out.value).toEqual([])
@@ -284,7 +314,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Two: sepBy(regex(/[a-z]/), literal(','), { min: 2 }) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     expect(run(t.Two! as never, 'a').ok).toBe(false)
     expect(one(t.Two, 'a,b')).toEqual(['a', 'b'])
     // Accept/reject and value parity. (The expected SET on the `min` failure
@@ -305,7 +335,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Trail: sepBy(regex(/[a-z]/), literal(','), { trailing: 'allow' }) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Trail!
+    const t = execRules(encodeTable(g)).Trail!
     const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Trail!
     // FIXED — bit 0 is read. The trailing separator is consumed, matching both
     // shipped engines, and the ITEMS are unchanged (a list contributes its items
@@ -321,7 +351,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const forbid = rules<Record<string, Combinator<unknown>>>(() => ({
       Trail: sepBy(regex(/[a-z]/), literal(',')) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const tf = tableRules(encodeTable(forbid)).Trail!
+    const tf = execRules(encodeTable(forbid)).Trail!
     expect(run(tf as never, 'a,b,').span.end).toBe(3)
     expect(run(forbid.Trail! as never, 'a,b,').span.end).toBe(3)
   })
@@ -336,17 +366,60 @@ describe('table driver — contract with the table itself', () => {
     ({ code, k: [], fns: [], cc: [], fx: [], disp: [], dsp: [], rules: rules_ })
 
   it('OP_EMPTY succeeds at zero width', () => {
-    const r = run(tableRules(prog([OP_EMPTY], { Doc: 0 })).Doc! as never, 'abc')
+    const r = run(execRules(prog([OP_EMPTY], { Doc: 0 })).Doc! as never, 'abc')
     expect(r.ok).toBe(true)
     expect(r.value).toBe('')
     expect(r.span).toEqual({ start: 0, end: 0 })
+  })
+
+  /**
+   * ...and it succeeds at zero width in EVERY engine, with the same value.
+   *
+   * The test above ran `execRules` only, and that is precisely how the divergence
+   * survived: `emit-assembly.ts` returned `null` for OP_EMPTY where `exec.ts`,
+   * `exec-baseline.ts` and `assemble.ts` all returned `''`. The three-way identity
+   * sweep compares engines on grammars built from the combinator API, and no
+   * combinator lowers to OP_EMPTY — the opcode is emitted only as `finish()` padding
+   * when the rule map is EMPTY (encode.ts), and an empty rule map gives the emitter
+   * zero walk roots, so its OP_EMPTY arm was never compiled.
+   *
+   * Nothing ASSERTS that. It is two unguarded facts that happen to compose: no
+   * producer, and no roots. An `epsilon()` combinator, or an optimizer collapsing a
+   * zero-width construct, makes the divergence live with no build-time signal. This
+   * test removes the dependence on that accident — it reaches the row as DATA, which
+   * is the stated contract of this whole describe block, and pins all four engines
+   * to one answer.
+   */
+  it('OP_EMPTY yields the SAME value in all four engines', () => {
+    const p = prog([OP_EMPTY], { Doc: 0 })
+    const engines: Array<[string, Record<string, TableRule>]> = [
+      ['exec', execRules(p)],
+      ['exec-baseline', execRulesBaseline(p)],
+      ['assembled', tableRules(p)],
+    ]
+    for (const [name, rulesOf] of engines) {
+      const r = run(rulesOf.Doc! as never, 'abc')
+      expect(r.ok, name).toBe(true)
+      // `null` here is the emitted engine disagreeing with the other three.
+      expect(r.value, name).toBe('')
+      expect(r.span, name).toEqual({ start: 0, end: 0 })
+    }
+  })
+
+  it('the EMITTED module lowers OP_EMPTY to the same value it means everywhere else', () => {
+    // Asserted on the emitted SOURCE: `tableRules` may serve this program from the
+    // closure engine, which would hide the emitter's answer behind an agreeing one.
+    const p = prog([OP_EMPTY], { Doc: 0 })
+    const src = emitTableModule(p, { assemblies: defaultAssemblyCfgs(p) })
+    expect(src).toMatch(/EC\.e=pos;return ''/)
+    expect(src).not.toMatch(/EC\.e=pos;return null/)
   })
 
   it('an unknown opcode THROWS in the driver and in the inspector', () => {
     // Both readers decode the same stream. A new row taught to one and not the
     // other is the failure this pair of throws exists to make loud.
     const bogus = prog([9999], { Doc: 0 })
-    expect(() => run(tableRules(bogus).Doc! as never, 'a')).toThrow(/unknown opcode 9999/)
+    expect(() => run(execRules(bogus).Doc! as never, 'a')).toThrow(/unknown opcode 9999/)
     expect(() => reachableOps(bogus)).toThrow(/unknown opcode 9999/)
   })
 
@@ -397,7 +470,7 @@ describe('table driver — dispatch fallback ownership', () => {
         otherwise(transform(literal('!'), () => 'other')),
       ) as unknown as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     expect(one(t, '@x!')).toEqual(['@x', 'hit'])
     expect(one(t, '@y!')).toEqual(['@y', 'other'])
     expect(JSON.stringify(run(t as never, '@y!'))).toBe(JSON.stringify(run(g.Doc! as never, '@y!')))
@@ -430,6 +503,36 @@ describe('OP_NAMES covers every declared opcode', () => {
     const spelled = declared.map(([, code]) => names[code]!)
     expect(new Set(spelled).size).toBe(spelled.length)
   })
+
+  /**
+   * THE EDGE TABLE IS A THIRD COPY OF THE OPCODE LIST — now a first copy, gated.
+   *
+   * "Which operand slots hold child instructions" was written twice: `site-labels.ts`
+   * over the 35 opcodes the emitter lowers, and `inspect.ts`'s `reachableIps` over all
+   * 40. They agreed slot-for-slot everywhere they overlapped, which is what made the
+   * duplication invisible — adding an opcode meant editing two switches in two files,
+   * and NOTHING failed if you edited one. `site-labels.ts`'s header warned about that
+   * drift while guarding only against it happening inside `site-labels.ts`.
+   *
+   * Collapsed to `child-slots.ts`. This is the gate that keeps it collapsed: asserted
+   * over the MODULE's exports, so a new opcode cannot be added without an edge answer,
+   * exactly as the block above does for names. The operands are zeroed, so every
+   * count-prefixed row (SEQ, CHOICE, DISPATCH, GREEDY) reports zero children — this
+   * asserts RECOGNITION, which is the half that silently regresses.
+   */
+  it('child-slots.ts has an edge answer for each OP_* constant', async () => {
+    const ops = await import('../../src/table/ops.ts')
+    const { childSlots } = await import('../../src/table/child-slots.ts')
+    const declared: Array<[string, number]> = Object.entries(ops as Record<string, unknown>)
+      .filter(([n, v]) => n.startsWith('OP_') && n !== 'OP_NAMES' && typeof v === 'number')
+      .map(([n, v]) => [n, v as number])
+    const unknown = declared.filter(([, code]) => {
+      const stream = new Int32Array(16)
+      stream[0] = code
+      return !childSlots(stream, 0, [])
+    }).map(([n]) => n)
+    expect(unknown, 'every opcode must declare which slots are children').toEqual([])
+  })
 })
 
 /**
@@ -449,10 +552,94 @@ describe('table driver — the committed bit does not survive a parse', () => {
       // this parse assigns `_fc` and only the entry reset can clear it.
       Doc: literal('a') as unknown as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const ctx = { _fc: true } as unknown as Parameters<typeof t>[2]
     const r = t('a', 0, ctx)
     expect(r.ok).toBe(true)
     expect((ctx as unknown as { _fc?: boolean })._fc, 'a committed failure must not leak across parses').toBe(false)
+  })
+})
+
+/**
+ * THE PEEPHOLE'S OPERAND MAP IS PART OF THE OPCODE CONTRACT.
+ *
+ * `collapseIndirection` rewrites child slots to skip `OP_RULE` trampolines, and
+ * it needs each opcode's child offsets EXACTLY. For `OP_CHOICE` it had them off
+ * by one — arms start at `ip+4`, and `ip+3` is the choice's own expected-set
+ * index — so it read the `fx` index as a code offset and wrote a resolved offset
+ * back over it whenever the row at that offset happened to be an `OP_RULE`; the
+ * bogus "target" was then walked as if it were an instruction and ITS operands
+ * rewritten. The visible half of the same bug is milder and deterministic: the
+ * LAST arm was never collapsed, so it kept its trampoline.
+ *
+ * Nothing caught it. Every table test passed with the map wrong, which is why
+ * this asserts the STRUCTURE rather than a parse outcome.
+ */
+describe('table encode — the collapse peephole reads OP_CHOICE operands correctly', () => {
+  it('every reachable choice keeps a valid expected-set index and no trampoline arms', () => {
+    // The recursive reference is LAST in the choice, so it is still in flight when
+    // the arm is encoded and lands as an `OP_RULE` trampoline — exactly the arm
+    // the off-by-one skipped. (Never run; the shape is what is under test.)
+    const g = rules<Record<string, Combinator<unknown>>>(gr => ({
+      A: node('A', choice(literal('x'), sequence(literal('('), gr.A!, literal(')')), gr.A!), c => ({ t: 'A', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const prog = encodeTable(g)
+    const code = prog.code
+    let choices = 0
+    for (let ip = 0; ip < code.length; ip++) {
+      if (code[ip] !== OP_CHOICE) continue
+      choices++
+      const n = code[ip + 2]!
+      const fxi = code[ip + 3]!
+      expect(fxi, `choice at ${ip} indexes a real expected set`).toBeGreaterThanOrEqual(0)
+      expect(fxi).toBeLessThan(prog.fx.length)
+      for (let i = 0; i < n; i++) {
+        expect(code[code[ip + 4 + i]!], `choice at ${ip}, arm ${i} is collapsed`).not.toBe(OP_RULE)
+      }
+    }
+    // Not vacuous: there IS a choice, with three arms, and the table parses.
+    expect(choices).toBe(1)
+    expect(run(execRules(prog).A! as never, '(x)').ok).toBe(true)
+  })
+})
+
+/**
+ * THE FALLBACK'S ROUTED BIT, WALKED RATHER THAN READ.
+ *
+ * `otherwise()` computes `usesRouted` when it is CONSTRUCTED, and a `g.X`
+ * reference inside the arm is unresolved at that moment — its thunk throws and
+ * `parserUsesRouted` answers `false`. The interpreter never trusts the stored
+ * flag alone; it ORs it with a live walk at parse time. The encoder read only the
+ * flag, so the fallback ran at the selector's END with no routed token and the
+ * `routed()` inside it had nothing to yield.
+ *
+ * Measured on jess's css grammar, this failed `@charset "UTF-8";` — one line of
+ * plain CSS — with `expected: ["routed()"]`, and 2 of 3 jess-dialect corpus files.
+ */
+describe('table encode — a dispatch fallback that reaches routed() through a REF', () => {
+  it('routes the token to the otherwise arm, as the interpreter does', () => {
+    const g = rules<Record<string, Combinator<unknown>>>(gr => ({
+      // The `routed()` is behind `gr.Tail`, so `otherwise()`'s construction-time
+      // analysis cannot see it. Nothing else about the arm changes.
+      Tail: node('Tail', sequence(routed(), literal('!')), c => ({ t: 'Tail', c })),
+      Doc: dispatch(
+        regex(/@[a-z]+/),
+        when('@known', literal('!')),
+        otherwise(gr.Tail!),
+      ) as unknown as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    // The flag really is unset — otherwise this test would pass either way.
+    const cases = (g.Doc!._def as { otherwiseUsesRouted?: boolean }).otherwiseUsesRouted
+    expect(cases, 'the stored flag misses the ref').not.toBe(true)
+    const t = execRules(encodeTable(g)).Doc!
+    for (const input of ['@other!', '@known!', '@other']) {
+      expect(JSON.stringify(run(t as never, input)), input)
+        .toBe(JSON.stringify(run(g.Doc! as never, input)))
+    }
+    // Not vacuous: the fallback really consumed the routed token and built a node.
+    // `dispatch` yields `[key, armValue]`, so the arm's tree is the second slot.
+    const v = (run(t as never, '@other!').value as [string, { t: string; c: Array<{ value?: string }> }])[1]
+    expect(v.t).toBe('Tail')
+    expect(v.c[0]!.value, 'the routed token reached the arm').toBe('@other')
   })
 })

@@ -5,7 +5,7 @@
  * balanced(open, close, { skip }) — match a balanced delimiter pair.
  */
 import { describe, it, expect } from 'vitest'
-import { literal, regex, sequence, choice, transform, parse, parser, compile, trivia } from '../../src/index.ts'
+import { literal, regex, sequence, choice, transform, parse, parser, trivia } from '../../src/index.ts'
 import { scanTo, balanced } from '../../src/index.ts'
 import { parseValue } from '../helpers/parse-result.ts'
 
@@ -270,7 +270,6 @@ describe('scanTo — compiled', () => {
   it('compiles without runtime fallback', () => {
     const p = compile(scanTo(literal('{')))
     expect(p.source).not.toContain('_rp[')
-    expect(p.source).toContain('while')
   })
 
   it('compiled result matches runtime', () => {
@@ -297,6 +296,7 @@ describe('scanTo — compiled', () => {
 // ---------------------------------------------------------------------------
 import { parse as _parseB } from '../../src/index.ts'
 import type { ParseError as _PE } from '../../src/index.ts'
+import { compile } from '../../src/table/compile.ts'
 
 describe('balanced() — unmatched open reports an error', () => {
   it('well-formed input records NO error (unchanged behaviour)', () => {

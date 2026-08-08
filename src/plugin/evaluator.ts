@@ -16,6 +16,7 @@ import type {
 import type { Combinator } from '../types.ts'
 import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
+import { rules, type RulesOptions } from '../combinators/parser.ts'
 import * as parseman from '../index.ts'
 import { directBuilderUnsupportedBindings } from './direct-builder-static.ts'
 import type { ReducerResolver } from './reducer-resolver.ts'
@@ -81,6 +82,18 @@ function stripTsFromSource(node: Node, code: string): string {
   }
   return out + code.slice(cur, end)
 }
+
+/**
+ * The stand-in for a `withCtx(extra, …)` argument the macro could not evaluate.
+ *
+ * It is a CLASS INSTANCE on purpose. `{}` would be indistinguishable from an
+ * author's own empty state object, so the table encoder would intern it, print
+ * it, and ship a grammar whose every state gate is silently false. A non-plain
+ * prototype fails `emittableConst`, which is what turns "we don't know the state"
+ * into a named `runtimeOnly` refusal instead of a wrong artifact.
+ */
+class UnevaluatedExtra {}
+const UNEVALUATED_EXTRA: unknown = new UnevaluatedExtra()
 
 // ---------------------------------------------------------------------------
 // Reducer resolution
@@ -217,7 +230,6 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   choice:    (...a) => (parseman.choice as (...p: Combinator<unknown>[]) => Combinator<unknown>)(...(a as Combinator<unknown>[])),
   attempt:   (...a) => parseman.attempt(a[0] as Combinator<unknown>),
   optional:  (...a) => parseman.optional(a[0] as Combinator<unknown>),
-  skip:      (...a) => parseman.skip(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>),
   trivia:    (...a) => parseman.trivia(a[0] as Combinator<unknown>),
   classifiedTrivia: (...a) =>
     parseman.classifiedTrivia(
@@ -251,11 +263,26 @@ function isScopeEntry(v: unknown): v is ScopeEntry {
   return !!v && typeof v === 'object' && 'combi' in v && 'mfSrcs' in v
 }
 
-/** Read a non-computed object-property key name (Identifier or Literal), or null. */
-function propName(p: ObjectProperty): string | null {
-  if (p.computed) return null
-  const key = p.key as unknown as { type: string; name?: string; value?: unknown }
-  return key.type === 'Identifier' ? key.name ?? null
+/** THE reader for an object-literal property key, for every consumer in the plugin.
+ *
+ * Returns the key a JavaScript engine would use, or null when the property does not
+ * name a static key at all — a spread, a rest, or a COMPUTED key whose value is not
+ * known until runtime.
+ *
+ * Both halves are load-bearing and each was got wrong somewhere:
+ *   - a quoted key is a `Literal`, not an `Identifier`. Reading only `key.name` sees
+ *     `{ 'hostMode': 'cst' }` as having no hostMode, and drops the option SILENTLY.
+ *   - `key.name` is also populated for a COMPUTED key `{ [hostMode]: … }`, where the
+ *     identifier is a variable and the actual key is its value. Reading only
+ *     `key.name` there invents an option the source never set.
+ *
+ * So an Identifier-only reader both misses keys that are present and matches keys that
+ * are not. Three option readers in plugin/index.ts each re-derived one wrong half; the
+ * fix is this one function, imported. */
+export function propName(p: { type?: string; computed?: boolean; key?: unknown }): string | null {
+  if ((p.type !== undefined && p.type !== 'Property') || p.computed || !p.key) return null
+  const key = p.key as { type?: string; name?: unknown; value?: unknown }
+  return key.type === 'Identifier' ? (typeof key.name === 'string' ? key.name : null)
     : key.type === 'Literal' ? String(key.value)
     : null
 }
@@ -492,10 +519,7 @@ function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
     if ((prop as { type?: string }).type !== 'Property') return STATIC_NODE_OPTIONS_FAILED
     const p = prop as unknown as ObjectProperty
     if (p.computed) return STATIC_NODE_OPTIONS_FAILED
-    const key = p.key as unknown as { type: string; name?: string; value?: unknown }
-    const name = key.type === 'Identifier' ? key.name
-      : key.type === 'Literal' ? String(key.value)
-      : undefined
+    const name = propName(p as never)
     if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
       const value = staticLiteralValue(p.value)
       if (value === true) opts[name] = true
@@ -846,7 +870,19 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const inner = anyValue(innerArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null
     try {
-      const combi = parseman.withCtx({}, inner)
+      // THE VALUE, not just its source text. Codegen only ever needed `extraSrc`
+      // — it prints `() => (extra)` into `_mf` — so `{}` was an adequate stand-in
+      // for the def's own `extra`. The TABLE ENCODER reads `d.extra` and interns
+      // it in the const pool, so the placeholder became the artifact: the pool
+      // held a bare `{}` and every `withCtx` gate predicate (`s => !!(s && s.inner)`)
+      // was present and permanently false. Evaluate the argument; the placeholder
+      // survives only when it cannot be evaluated, and then it is `emittableConst`
+      // that decides — a plain `{}` extras object is indistinguishable from an
+      // author's `{}`, so an unevaluable one must NOT masquerade as empty state.
+      const evaluated = anyValue(extraArg as Expression, scope, code, [])
+      const usable = typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)
+        && Object.getPrototypeOf(evaluated) === Object.prototype
+      const combi = parseman.withCtx(usable ? evaluated : UNEVALUATED_EXTRA, inner)
       if (combi._def.tag !== 'withCtx') return null
       combi._def.extraSrc = extraSrc
       return combi
@@ -962,13 +998,7 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
   if (node.type === 'ObjectExpression') {
     const obj: Record<string, unknown> = {}
     for (const prop of node.properties) {
-      if (prop.type !== 'Property') return null
-      if ((prop as unknown as ObjectProperty).computed) return null
-      const key = (prop as unknown as ObjectProperty).key.type === 'Identifier'
-        ? ((prop as unknown as ObjectProperty).key as { name: string }).name
-        : (prop as unknown as ObjectProperty).key.type === 'Literal'
-        ? String(((prop as unknown as ObjectProperty).key as { value: unknown }).value)
-        : null
+      const key = propName(prop as never)
       if (key === null) return null
       obj[key] = anyValue((prop as unknown as ObjectProperty).value as Expression, scope, code, mfs)
     }
@@ -999,9 +1029,11 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
       if (typeof key !== 'string' && typeof key !== 'number') return null
       return (obj as Record<string | number, unknown>)[key] ?? null
     }
-    const propName = (mem.property as { name?: string }).name
-    if (!propName) return null
-    return (obj as Record<string, unknown>)[propName] ?? null
+    // A member ACCESS name (`obj.foo`), not an object-literal key — a different thing
+    // from `propName`, and named apart from it so it cannot shadow the shared reader.
+    const memberName = (mem.property as { name?: string }).name
+    if (!memberName) return null
+    return (obj as Record<string, unknown>)[memberName] ?? null
   }
 
   if (node.type === 'CallExpression') {
@@ -1097,24 +1129,15 @@ export function evaluateCombinatorArray(
 // A rules() factory's returned object is a flat map of `key: combinator` — the
 // ONLY composition mechanism is compose() (see linker.ts). `...frag(g)` spreads
 // are not supported: a spread property makes the factory non-statically-evaluable
-// (propKey returns null below), so it falls back to the interpreter.
+// (propName returns null below), so it falls back to the interpreter.
 // ---------------------------------------------------------------------------
-
-/** Extract just the property key of a rules() return `Property`, or null
- * (a spread / computed / shorthand-rest property → not statically evaluable). */
-function propKey(prop: { type: string; computed?: boolean; key?: { type: string; name?: string; value?: unknown } }): string | null {
-  if (prop.type !== 'Property' || prop.computed || !prop.key) return null
-  if (prop.key.type === 'Identifier') return prop.key.name ?? null
-  if (prop.key.type === 'Literal') return String(prop.key.value)
-  return null
-}
 
 /** Collect every rule key from a rules() return object. A non-`key: value`
  * property (spread / computed / rest) → null → the caller falls back. */
 function collectRuleKeys(retObj: ObjectExpression): string[] | null {
   const out: string[] = []
   for (const prop of (retObj as unknown as { properties: Array<{ type: string }> }).properties) {
-    const key = propKey(prop as never)
+    const key = propName(prop as never)
     if (!key) return null
     out.push(key)
   }
@@ -1136,7 +1159,7 @@ type RuleEntry = { key: string; value: Expression; scope: XScope; code: string }
 function flattenRuleEntries(retObj: ObjectExpression, scope: XScope, code: string): RuleEntry[] | null {
   const out: RuleEntry[] = []
   for (const prop of (retObj as unknown as { properties: Array<{ type: string; value?: unknown }> }).properties) {
-    const key = propKey(prop as never)
+    const key = propName(prop as never)
     if (!key) return null
     out.push({ key, value: (prop as { value: Expression }).value, scope, code })
   }
@@ -1246,6 +1269,20 @@ export function evaluateParserFactory(
   code: string,
   mapFnSources: string[],  // receives ONLY the return-expression mfSrcs
   out?: { reason?: string },  // receives a SPECIFIC failure reason (see evalBodyStatements)
+  /**
+   * The `rules({ … }, factory)` options this call site declared, THREADED THROUGH
+   * rather than reapplied afterwards.
+   *
+   * `plugin/index.ts` used to stamp `grammarScanSkip`, `grammarHostMode` and
+   * `grammarTrackLines` onto the evaluated rules in three loops of its own,
+   * carrying a comment that it had to "because the macro evaluates the FACTORY
+   * directly and never calls `rules()`". It calls `rules()` now, so the options
+   * belong where every other caller puts them: in the argument. That also gets
+   * the `trackLines` half right for the first time — `rules()` does not merely
+   * stamp it, it WRAPS each rule in a `grammarParser({ trackLines: true })` scope
+   * (`parser.ts:228-242`), which the macro's stamp-only copy never did.
+   */
+  options?: RulesOptions,
 ): Map<string, Combinator<unknown>> | null {
   if (factoryNode.type !== 'ArrowFunctionExpression' && factoryNode.type !== 'FunctionDeclaration' && factoryNode.type !== 'FunctionExpression') return null
 
@@ -1294,68 +1331,99 @@ export function evaluateParserFactory(
   // UNIQUE key (first occurrence).
   const keys = collectRuleKeys(retObj as unknown as ObjectExpression)
   if (!keys) return null
-  const ruleRefs = new Map<string, Combinator<unknown> & { define(p: Combinator<unknown>): void }>()
-  const tagRef = (r: Combinator<unknown>, name: string): void => {
-    ;(r as unknown as { _ruleName?: string })._ruleName = name
-    if (r._def.tag === 'node' && r._def.type === undefined) r._def.type = name
+
+  /*
+   * ── ONE GRAMMAR-EVALUATION PATH ────────────────────────────────────────────
+   *
+   * Everything below this point used to be a SECOND IMPLEMENTATION of `rules()`:
+   * mint a `ref()` per key, build a `g` proxy that hands back a placeholder for
+   * any name, evaluate, define each slot, tag each rule. `rules()`
+   * (`combinators/parser.ts:136`) does exactly that, and the two had drifted —
+   * the copy never ran the closing `markUnusedValues`, so every macro-lowered
+   * grammar reached the encoder with `valueUnused` unset and the shipped artifact
+   * built 318 sequence tuples and 90 repeat arrays per parse of `benchmark.less`
+   * that nothing reads. That was fixed by calling the real pass; this removes the
+   * copy that made the omission possible, so there is nothing left to omit.
+   *
+   * `rules()` takes a FACTORY, which is precisely what this function has — not as
+   * a JS closure, but as an AST it can evaluate on demand. So the collapse is to
+   * hand `rules()` a closure that evaluates that AST against whatever proxy
+   * `rules()` supplies, and let `rules()` own every step it already owned:
+   *
+   *   - the `g` proxy, INCLUDING the external-ref behaviour. `rules()`'s proxy
+   *     mints a tagged placeholder for ANY name touched, which is what the local
+   *     `externalRefs` map was reproducing — a `g.X` this grammar references but
+   *     does not define, bound later by the fuse.
+   *   - the define loop, the self-alias check, `tagRule` (byte-identical to the
+   *     `tagRef` that lived here, `_ruleName` plus the untyped-`node()` type).
+   *   - the ambient `trivia` / `scanSkip` stamps and the `hostMode` / `trackLines`
+   *     stamps, which `plugin/index.ts` was applying itself in three more loops
+   *     with a comment saying it had to "because the macro never calls `rules()`".
+   *   - `markUnusedValues`, `RULE_ORDER`, and the grammar reflection.
+   *
+   * WHAT THIS CHANGES ABOUT THE RESULT, deliberately: a key the factory never
+   * referenced through `g` now comes back as the parser itself rather than a
+   * `lazy` wrapping it, because that is what `rules()` produces and the runtime
+   * shape is the one the encoder is measured good on. A key that IS referenced
+   * still comes back as its placeholder, so recursion is unchanged.
+   *
+   * A failure inside the factory cannot `return null` from here — it is running
+   * under `rules()` — so it throws `ABORT` and is caught below. `rules()`'s own
+   * self-alias `Error` is caught by the same handler, preserving this function's
+   * "return null and let the caller fall back to the interpreter" contract rather
+   * than turning a tolerated shape into a build failure.
+   */
+  const ABORT = Symbol('parseman: factory not statically evaluable')
+  let built: Record<string, Combinator<unknown>>
+  try {
+    built = rules(options ?? {}, (g: Record<string, Combinator<unknown>>) => {
+      // Outer ScopeEntry values carry their mfSrcs and are replayed by scopeGet()
+      // when body statements or return expressions reference them.
+      const localScope: XScope = new Map(scope as XScope)
+      localScope.set(proxyName, g)
+
+      // ── Phase 1: the factory's own body statements ────────────────────────
+      if (!evalBodyStatements(statements, localScope, code, out)) throw ABORT
+
+      // ── Phase 2: flatten the return object → dedup last-wins → evaluate ────
+      // `flattenRuleEntries` returns the ordered (key, valueExpr, scope). A later
+      // property of the same name wins.
+      const entries = flattenRuleEntries(retObj as unknown as ObjectExpression, localScope, code)
+      if (!entries) throw ABORT
+      const finalByKey = new Map<string, RuleEntry>()
+      for (const e of entries) finalByKey.set(e.key, e) // keeps first position, updates value → last wins
+      const definitions: Record<string, Combinator<unknown>> = {}
+      for (const [key, e] of finalByKey) {
+        const val = anyValue(e.value, e.scope, e.code, mapFnSources)
+        if (!isCombinator(val)) throw ABORT
+        definitions[key] = val as Combinator<unknown>
+      }
+      return definitions
+    }) as unknown as Record<string, Combinator<unknown>>
+  } catch (e) {
+    if (e === ABORT) return null
+    // `rules()` throws on a rule that is a direct alias to itself. This function's
+    // contract is `null` — "leave it interpreted" — not a thrown build failure, and
+    // the interpreter accepts the same shape, so the caller's existing fallback is
+    // the right answer. Anything else is a real defect and must not be swallowed.
+    if (e instanceof Error && /cannot be a direct alias to itself/.test(e.message)) return null
+    throw e
   }
-  const ruleNameOf = (r: Combinator<unknown>): string | undefined =>
-    (r as unknown as { _ruleName?: string })._ruleName
-  const isNamedRuleRefForAnotherRule = (r: Combinator<unknown>, key: string): boolean => {
-    const name = r._def.tag === 'lazy' ? ruleNameOf(r) : undefined
-    return name !== undefined && name !== key
-  }
-  for (const key of keys) {
-    if (!ruleRefs.has(key)) {
-      const r = ref<unknown>() as Combinator<unknown> & { define(p: Combinator<unknown>): void }
-      tagRef(r, key)
-      ruleRefs.set(key, r)
-    }
-  }
 
-  // Build local extended scope: outer scope (typed as XScope) + g proxy.
-  // The proxy returns a rule ref for ANY name: LOCAL keys get the ref defined in
-  // Phase 2; any OTHER name is an EXTERNAL ref — a rule this grammar references
-  // but doesn't define, provided by a base grammar it's `compose()`d over. Tagged
-  // with `_ruleName`, codegen emits a by-name `_r_<Name>` call (resolved at
-  // fusion) instead of trying to inline it. This is what lets an inline delta
-  // reference the composed base's rules (`g.Num`, `g.Quoted`, …).
-  const externalRefs = new Map<string, Combinator<unknown>>()
-  const gProxy = new Proxy(Object.fromEntries(ruleRefs) as Record<string, Combinator<unknown>>, {
-    get(target, prop): unknown {
-      if (typeof prop !== 'string' || prop in target) return (target as Record<string, unknown>)[prop as string]
-      let ext = externalRefs.get(prop)
-      if (!ext) { ext = ref<unknown>() as Combinator<unknown>; tagRef(ext, prop); externalRefs.set(prop, ext) }
-      return ext
-    },
-  })
-
-  // Note: outer ScopeEntry values carry their mfSrcs and will be replayed by
-  // scopeGet() when body statements or return expressions reference them.
-  const localScope: XScope = new Map(scope as XScope)
-  localScope.set(proxyName, gProxy)
-
-  // ── Phase 1: evaluate the factory's own body statements ───────────────────
-  if (!evalBodyStatements(statements, localScope, code, out)) return null
-
-  // ── Phase 2: flatten the return object → dedup last-wins → eval + define ──
-  // flattenRuleEntries returns the ordered (key, valueExpr, scope). A later property
-  // of the same name wins (refs throw on double-define, so each key defines once).
-  const entries = flattenRuleEntries(retObj as unknown as ObjectExpression, localScope, code)
-  if (!entries) return null
-  const finalByKey = new Map<string, RuleEntry>()
-  for (const e of entries) finalByKey.set(e.key, e) // set() keeps first insert position, updates value → last wins
-  for (const [key, e] of finalByKey) {
-    const val = anyValue(e.value, e.scope, e.code, mapFnSources)
-    if (!isCombinator(val)) return null
-    if (val === ruleRefs.get(key)) return null
-    if (!isNamedRuleRefForAnotherRule(val as Combinator<unknown>, key)) {
-      tagRef(val as Combinator<unknown>, key)
-    }
-    ruleRefs.get(key)!.define(val as Combinator<unknown>)
-  }
-
-  return ruleRefs as Map<string, Combinator<unknown>>
+  /*
+   * DECLARED KEYS ONLY, in DECLARATION order.
+   *
+   * `rules()` returns its whole cache, which also holds a placeholder for every
+   * EXTERNAL name the factory touched — a `g.X` provided by another piece. Those
+   * are references, not rules of this map, and handing them back would mint
+   * `rule:` ids this grammar does not define, widen the coverage denominator and
+   * put an undefined slot in the emitted map. The previous implementation
+   * returned only its own `ruleRefs` for the same reason; this preserves that
+   * contract exactly while letting `rules()` own everything else.
+   */
+  const map = new Map<string, Combinator<unknown>>()
+  for (const key of keys) map.set(key, built[key]!)
+  return map
 }
 
 /** A combinator slot created by ref() — has a callable `define`. */

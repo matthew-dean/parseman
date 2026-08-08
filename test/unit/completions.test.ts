@@ -11,7 +11,7 @@ describe('completionsAt()', () => {
   const bracket = sequence(literal('['), optional(items), literal(']'))
 
   it('uses top-level failure when probe recorded nothing (gate combinator)', () => {
-    expect(completionsAt(gate(() => false), '', 0)).toEqual(['guard'])
+    expect(completionsAt(gate(() => false), '', 0)).toEqual(['gate'])
   })
 
   it('prefers probe failure deeper than top-level after sepBy backtrack', () => {

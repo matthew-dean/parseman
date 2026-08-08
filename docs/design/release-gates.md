@@ -205,6 +205,18 @@ answer is to report the number, not to move the anchor.
 
 A checkout carrying neither config is not asked to re-anchor anything.
 
+### D. Differential teeth — on a RELEASE, by hand
+
+`pnpm check:differentials --strict`, on a box where the jess checkout exists.
+
+Same failure shape as a stale anchor: a differential that cannot fail reads `ok`,
+and the four jess-corpus ones are reported UNPROVEN rather than passing wherever
+that checkout is absent — which is every CI runner. So the plain mode CI runs
+proves two of six, and the release is the moment the other four have to be
+demonstrated. It is not automated here because it needs a sibling checkout this
+repo does not vendor, and a gate that silently skips is the exact defect class
+`docs/design/differential-gates.md` exists to stop.
+
 ## The escape hatches
 
 There are two, and they are disjoint on purpose.

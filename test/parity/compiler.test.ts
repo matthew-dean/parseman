@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   literal, regex, sequence, choice, many, oneOrMore, optional, sepBy, transform, parser,
-  parse as runtimeParse, compile,
+  label, withCtx, parse as runtimeParse, compile,
 } from '../../src/index.ts'
 import { trivia } from '../../src/combinators/map.ts'
 
@@ -115,4 +115,47 @@ describe('HTTP request line — compiler parity', () => {
     'POST /api HTTP/1.0\r\n',
     'BREW / HTTP/1.1\r\n',
   ])
+})
+
+/**
+ * REGRESSION: a `withCtx` whose INNER parser is MULTIPLY-REACHABLE self-aliased
+ * into infinite recursion, and the symptom was a RangeError on ANY input.
+ *
+ * The source lowering wrapped the inner in a named function and pre-registered
+ * `inner → thatFn` so other references reused it — then emitted the inner BODY
+ * through the hoist wrapper, which re-found the pre-registration and emitted a
+ * SELF-CALL whenever the inner was hoistable AND referenced twice or more.
+ *
+ * Only the BEHAVIOUR is kept here. The original file also asserted the emitted
+ * function body's text, which pinned one engine's spelling of the fix rather
+ * than the fix; this asks the question every lowering has to answer — does the
+ * shape parse, and does it parse the same as the interpreter — through the
+ * public `compile()`.
+ */
+describe('shared withCtx inner — compiler parity (self-alias regression)', () => {
+  // A shared inner combinator (hoistable `choice`, big enough to hoist),
+  // referenced from THREE positions: the withCtx wrapper plus two siblings.
+  const shared = choice(literal('a'), literal('b'), literal('c'))
+  const grammar = choice(
+    withCtx({ inner: true }, shared),
+    sequence(shared, literal('x')),
+    sequence(shared, literal('y')),
+  )
+  par('multiply-referenced withCtx inner', grammar, ['a', 'bx', 'cy', 'z', ''])
+
+  it('the raw shared inner behaves like the label()-wrapped workaround it replaced', () => {
+    // The old workaround wrapped the shared inner in a transparent, non-hoistable
+    // `label(...)` so the self-alias could not form. The RAW inner must behave
+    // identically — that equivalence is what says the workaround is unneeded.
+    const wrapped = choice(
+      withCtx({ inner: true }, label('w', shared)),
+      sequence(label('w', shared), literal('x')),
+      sequence(label('w', shared), literal('y')),
+    )
+    const raw = compile(grammar)
+    const viaLabel = compile(wrapped)
+    for (const input of ['a', 'bx', 'cy', 'z']) {
+      expect(raw.parse(input).ok, input).toBe(viaLabel.parse(input).ok)
+    }
+  })
 })

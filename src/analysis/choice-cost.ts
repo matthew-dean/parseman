@@ -5,8 +5,8 @@
  * READ THIS FIRST: THIS MEASURES THE INTERPRETER, NOT THE SHIPPED PARSER.
  * ----------------------------------------------------------------------
  * The interpreter's `firstMatch` loop (src/combinators/choice.ts:149-165) enters every
- * alternative unconditionally. COMPILED output does not: `emitFirstMatch`
- * (src/compiler/codegen.ts:2246-2277) emits a per-arm first-CHARACTER guard, so an arm
+ * alternative unconditionally. The EMITTED engine does not: `src/table/emit-assembly.ts`
+ * hoists a per-choice candidate mask and emits a per-arm first-CHARACTER guard, so an arm
  * whose first set excludes the character at the current position is never entered.
  * First-set gating is this project's single largest parse lever — 25-48% across all
  * four jess parsers — and a naive interpreted profile is blind to every byte of it.
@@ -145,6 +145,7 @@
 
 import type { Combinator, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import type { ChoiceStrategyTag } from './gating.ts'
+import { childrenOf } from './gating.ts'
 import { run } from '../functional/run.ts'
 import { firstSetOf } from '../combinators/first-set.ts'
 import type { FirstSet } from '../types.ts'
@@ -345,30 +346,7 @@ export type WastedWorkReport = {
 
 // ── grammar walk ─────────────────────────────────────────────────────────────
 
-/** Ordered structural children per def tag. `lazy` is a REFERENCE, not a subtree:
- *  descending through it would make every rule's walk cover the whole grammar and
- *  turn site paths into nonsense. */
-function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
-  switch (d.tag) {
-    case 'sequence': case 'choice': return d.parsers
-    case 'dispatch': return [
-      d.selector,
-      ...d.cases.map(c => c.parser),
-      ...(d.otherwise === undefined ? [] : [d.otherwise]),
-    ]
-    case 'skip': return [d.main, d.skipped]
-    case 'sepBy': return [d.parser, d.separator]
-    case 'recover': return [d.parser, d.sentinel]
-    case 'scanTo': return [d.sentinel, ...d.skip]
-    case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
-    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'adjacency': case 'unknown':
-      return []
-    default: {
-      const rec = d as unknown as { parser?: Combinator<unknown> }
-      return rec.parser ? [rec.parser] : []
-    }
-  }
-}
+// `childrenOf` is imported from ./gating.ts; this module used to carry a copy.
 
 const ruleNameOf = (p: Combinator<unknown>): string | undefined =>
   (p as unknown as { _ruleName?: string })._ruleName
@@ -380,7 +358,6 @@ function slotLabel(d: ParserDef, index: number): string {
     case 'sequence': return `seq[${index}]`
     case 'choice':   return `choice[${index}]`
     case 'dispatch': return index === 0 ? 'dispatch.selector' : `dispatch[${index - 1}]`
-    case 'skip':     return index === 0 ? 'skip.main' : 'skip.skipped'
     case 'sepBy':    return index === 0 ? 'sepBy.item' : 'sepBy.sep'
     case 'recover':  return index === 0 ? 'recover.parser' : 'recover.sentinel'
     case 'scanTo':   return index === 0 ? 'scanTo.sentinel' : `scanTo.skip[${index - 1}]`
@@ -668,8 +645,8 @@ export function analyzeChoiceInventory(
  * THE BLIND SPOT THIS EXISTS TO CLOSE.
  *
  * The interpreter's `firstMatch` loop (src/combinators/choice.ts:149-165) enters every
- * arm unconditionally. Compiled output does NOT: `emitFirstMatch`
- * (src/compiler/codegen.ts:2246-2277) emits a per-arm first-CHARACTER guard, so an arm
+ * arm unconditionally. The EMITTED engine does NOT: `src/table/emit-assembly.ts`
+ * hoists a per-choice candidate mask and emits a per-arm first-CHARACTER guard, so an arm
  * whose first set excludes the character at the current position is never entered at
  * all. First-set gating is the project's single largest parse lever — 25-48% across all
  * four jess parsers — and an instrument that measures the interpreter is blind to every
@@ -710,7 +687,8 @@ function compiledFirstCharGate(p: Combinator<unknown>): FirstSet | null {
 }
 
 /**
- * A verbatim replica of `canMatchEmptyAtStart` (src/compiler/codegen.ts).
+ * A verbatim replica of `canMatchEmptyAtStart`, which lived in the source lowering
+ * deleted in `37c57b5`. Nothing shares this definition today: it is the last copy.
  *
  * Deliberately SHALLOW, and that is not an approximation — it is the behaviour. A
  * `node()`-wrapped nullable parser falls to `default: false`, so codegen treats it as

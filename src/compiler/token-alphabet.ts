@@ -180,8 +180,6 @@ export function leadTerminal(
     case 'token': case 'grammar': case 'attempt': case 'expect': case 'withCtx':
     case 'oneOrMore': case 'trivia': case 'recover':
       return leadTerminal(d.parser, alphabet, resolve, depth + 1)
-    case 'skip':
-      return leadTerminal(d.main, alphabet, resolve, depth + 1)
     default:
       return undefined
   }

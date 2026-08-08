@@ -13,7 +13,7 @@
  */
 import {
   literal, regex, sequence, choice, optional, many, oneOrMore,
-  transform, trivia, parser, rules, makeWord, keywords,
+  transform, trivia, parser, parse, rules, makeWord, keywords,
   type Combinator,
 } from '../../src/index.ts'
 
@@ -249,9 +249,17 @@ export const graphqlDoc = parser({ trivia: ws }, oneOrMore(definition))
 
 export function parseGraphQL(input: string): GQLDefinition[] {
   const result = graphqlDoc.parse(input)
-  if (!result.ok) {
+  // graphqlDoc is also usable as a prefix parser. The public example helper
+  // represents a GraphQL document, so trailing non-trivia input is an error.
+  // The root's span deliberately excludes its trivia; reuse that exact grammar
+  // for the suffix instead of rejecting a legal trailing comment or comma.
+  const trailing = result.ok ? input.slice(result.span.end) : ''
+  const trailingResult = trailing === '' ? null : parse(ws, trailing)
+  if (!result.ok || (trailingResult !== null && (!trailingResult.ok || trailingResult.span.end !== trailing.length))) {
+    const offset = result.ok ? result.span.end : result.span.start
+    const expected = result.ok ? 'end of input' : result.expected.join(' or ')
     throw new SyntaxError(
-      `GraphQL parse error at offset ${result.span.start}: expected ${result.expected.join(' or ')}`,
+      `GraphQL parse error at offset ${offset}: expected ${expected}`,
     )
   }
   return result.value

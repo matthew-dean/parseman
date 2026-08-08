@@ -3,6 +3,9 @@ import { annotateSpanFromLineContext } from '../line-index.ts'
 
 /** Lazy per-node capture state — arrays materialized on first push. */
 export type CstCaptureBuf = {
+  /** Table-host specialisation: collect source-order raw entries without the
+   * duplicate semantic children view. Selected once for the enclosing node. */
+  rawOnly?: true | undefined
   single?: unknown | undefined
   ch?: unknown[] | undefined
   rawSingle?: unknown | undefined
@@ -85,9 +88,11 @@ export function pushCstLeaf(ctx: ParseContext, leaf: unknown): void {
 export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknown): void {
   const b = ctx._cstBuf
   if (b) {
-    if (b.ch) b.ch.push(built)
-    else if (b.single !== undefined) { b.ch = [b.single, built]; b.single = undefined }
-    else b.single = built
+    if (b.rawOnly !== true) {
+      if (b.ch) b.ch.push(built)
+      else if (b.single !== undefined) { b.ch = [b.single, built]; b.single = undefined }
+      else b.single = built
+    }
 
     if (b.raw) b.raw.push(rawEntry)
     else if (b.rawSingle !== undefined) { b.raw = [b.rawSingle, rawEntry]; b.rawSingle = undefined }
@@ -195,6 +200,30 @@ export function demoteCapturedToRaw(ctx: ParseContext, childrenLen: number): voi
 }
 
 export function rollbackCstCapture(ctx: ParseContext, mark: CstRollbackMark): void {
+  rollbackCstCaptureAt(ctx, mark.raw, mark.tlog, mark.leaves, mark.fields, mark.errors)
+}
+
+/**
+ * The same rollback, taking the five marks as SCALARS.
+ *
+ * `saveCstMark` allocates a five-field object, and the table driver took one per
+ * choice attempt and per repetition item — on `benchmark.less` that is 5.0%
+ * (`saveCstMark`) plus 2.1% (`saveTriviaMark`, which allocates this one AND a
+ * seven-field wrapper) of the whole parse. The compiled engine holds the same
+ * five numbers in scalar locals and allocates nothing, which is the only
+ * difference; a caller that keeps them in locals can now do the same.
+ *
+ * `rollbackCstCapture` stays as the object-taking entry point because the
+ * interpreter's call sites genuinely carry a mark around.
+ */
+export function rollbackCstCaptureAt(
+  ctx: ParseContext,
+  raw: number,
+  tlog: number,
+  leaves: number,
+  fields: number,
+  errors: number,
+): void {
   // Truncate the flat recovery-error sink alongside the CST, so a rolled-back
   // speculative branch leaves no ghost error (see saveCstMark). Guarded on a
   // present sink + a defined mark (rollbackTrivia forwards the same field).
@@ -206,22 +235,22 @@ export function rollbackCstCapture(ctx: ParseContext, mark: CstRollbackMark): vo
   // speculative branch that captured nothing still pays for every store. The
   // compare is an in-object load. Both engines must carry the guard or the
   // interpreted path silently keeps the cost the compiled path shed.
-  if (ctx._errors && mark.errors !== undefined && ctx._errors.length !== mark.errors) ctx._errors.length = mark.errors
+  if (ctx._errors && errors !== undefined && ctx._errors.length !== errors) ctx._errors.length = errors
   const b = ctx._cstBuf
   if (b) {
-    rollbackBufList(b, 'raw', 'rawSingle', mark.raw)
-    rollbackBufList(b, 'ch', 'single', mark.leaves)
+    rollbackBufList(b, 'raw', 'rawSingle', raw)
+    rollbackBufList(b, 'ch', 'single', leaves)
     if (b.tl) {
-      if (mark.tlog === 0) b.tl = undefined
-      else if (b.tl.length !== mark.tlog) b.tl.length = mark.tlog
+      if (tlog === 0) b.tl = undefined
+      else if (b.tl.length !== tlog) b.tl.length = tlog
     }
-    if (ctx._fields && ctx._fields.length !== mark.fields) ctx._fields.length = mark.fields
+    if (ctx._fields && ctx._fields.length !== fields) ctx._fields.length = fields
     return
   }
-  if (ctx._cstRawChildren && ctx._cstRawChildren.length !== mark.raw) ctx._cstRawChildren.length = mark.raw
-  if (ctx._cstTriviaLog && ctx._cstTriviaLog.length !== mark.tlog) ctx._cstTriviaLog.length = mark.tlog
-  if (ctx._cstLeaves && ctx._cstLeaves.length !== mark.leaves) ctx._cstLeaves.length = mark.leaves
-  if (ctx._fields && ctx._fields.length !== mark.fields) ctx._fields.length = mark.fields
+  if (ctx._cstRawChildren && ctx._cstRawChildren.length !== raw) ctx._cstRawChildren.length = raw
+  if (ctx._cstTriviaLog && ctx._cstTriviaLog.length !== tlog) ctx._cstTriviaLog.length = tlog
+  if (ctx._cstLeaves && ctx._cstLeaves.length !== leaves) ctx._cstLeaves.length = leaves
+  if (ctx._fields && ctx._fields.length !== fields) ctx._fields.length = fields
 }
 
 export function pushCstTriviaEntry(

@@ -16,6 +16,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { literal, regex, sequence, choice, optional, sepBy, transform, rules, compile, parse } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import type { Combinator } from '../../src/types.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 // ---------------------------------------------------------------------------
 // Grammar: a tiny expression language
@@ -84,8 +85,7 @@ beforeAll(() => {
 
   // Eval: strip `const` → `var` so new Function() can see all names,
   // then return `expr` as the last expression.
-  const fnBody = result.code.replace(/\bconst\b/g, 'var') + '\nreturn expr'
-  macroFn = new Function('Number', 'Object', fnBody)(Number, Object) as ParseFn
+  macroFn = evalMacroModule<ParseFn>(result.code, 'expr', { Number, Object })
 })
 
 // ---------------------------------------------------------------------------

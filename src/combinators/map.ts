@@ -20,21 +20,6 @@ export function transform<T, U>(
   }
 }
 
-export function skip<T, S>(main: Combinator<T>, skipped: Combinator<S>): Combinator<T> {
-  return {
-    _tag: 'skip',
-    _meta: main._meta,
-    _def: { tag: 'skip', main: main as Combinator<unknown>, skipped: skipped as Combinator<unknown> },
-    parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
-      const result = main.parse(input, pos, ctx)
-      if (!result.ok) return result
-      const s = skipped.parse(input, result.span.end, ctx)
-      if (!s.ok) return result
-      return { ok: true, value: result.value, span: { start: result.span.start, end: s.span.end } }
-    },
-  }
-}
-
 export function trivia<T>(combinator: Combinator<T>): Combinator<T> {
   const kindLabels = analyzeLabeledTrivia(combinator as Combinator<unknown>)?.labels
   return {

@@ -76,7 +76,7 @@ const CHART_TITLES: Record<ChartKey, string> = {
 }
 
 const INIT_TITLE = 'initialization (one-time; others: no setup cost)'
-const CST_INIT_TITLE = 'initialization (macro build: zero runtime cost; others: no setup)'
+const CST_INIT_TITLE = 'initialization (runtime compile: one-time; others: no setup)'
 
 /**
  * Rounds of measurement, each sweeping every bar in a ROTATED order.
@@ -86,7 +86,7 @@ const CST_INIT_TITLE = 'initialization (macro build: zero runtime cost; others: 
  * one measured at minute 1 (observed: the same graphql bar read 5.8µs standalone
  * and 10.5µs late in a serial run). That drift lands straight on the bar-vs-bar
  * comparison the chart exists to make, and it favours whichever bar is measured
- * FIRST — `parseman-macro`, in all four charts. A self-published comparison must
+ * FIRST — `parseman-runtime`, in all four charts. A self-published comparison must
  * not carry a bias pointing that direction.
  *
  * Rounds alone do NOT fix it, and it is worth being precise about why: with a

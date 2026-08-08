@@ -7,7 +7,7 @@
  *
  *   interpreted   the combinator graph            (semantic reference)
  *   compiled      compileRuleMap()                (what ships today)
- *   table         encodeTable() + tableRules()    (what this lane builds)
+ *   table         encodeTable() + tableRules()  (what this lane builds)
  *
  * `interpreted ≡ compiled` is already gated by `test/parity/*`, so
  * `table ≡ interpreted` and `table ≡ compiled` together pin the new path.
@@ -16,7 +16,20 @@ import { digestValue } from '../src/oracle/index.ts'
 import { run } from '../src/functional/run.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable, type TableSettings } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+/**
+ * `tableRules` IS THE SHIPPED TABLE ENGINE — `src/table/index.ts` re-exports
+ * it under the name `tableRules`, and `compile`/`compileRuleMap` build
+ * through it. This sweep imported a same-named export from `src/table/exec.ts`
+ * instead, which is the REFERENCE driver: every case here, and every case in the
+ * CI subset (`test/unit/table-identity.test.ts`), gated a driver nothing ships
+ * while the assembler went unexecuted.
+ *
+ * Both legs run now. `assembled` is the one under gate; `reference` stays because
+ * `exec.ts` is what an assembler divergence gets bisected against, and losing it
+ * would trade one blind spot for another.
+ */
+import { tableRules } from '../src/table/assemble.ts'
+import { execRules as referenceRules } from '../src/table/exec.ts'
 import type { Combinator } from '../src/types.ts'
 
 export type Paths = {
@@ -25,7 +38,7 @@ export type Paths = {
   table: ReturnType<typeof tableRules>
 }
 
-/** Build the three paths for one rule map + settings pair. */
+/** Build the shipped table path for one rule map + settings pair. */
 export function buildPaths(
   ruleMap: Record<string, Combinator<unknown>>,
   settings: TableSettings = {},
@@ -83,9 +96,11 @@ export function checkIdentity(
   const prog = encodeTable(ruleMap, settings)
   const tbl = tableRules(prog)[entryRule]
   if (tbl === undefined) throw new Error(`table has no rule '${entryRule}'`)
+  const ref = referenceRules(prog)[entryRule]
+  if (ref === undefined) throw new Error(`reference table has no rule '${entryRule}'`)
 
-  // The shipped compiled path, fused at runtime (same codegen, `new Function`
-  // instead of a build-time splice).
+  // The public composed path, lowered to the same canonical closure table
+  // artifact as macro output.
   const compiledMap = opts.interpreterOnly
     ? undefined
     : compose([ruleMap as never]) as unknown as Record<string, RunnableLike>
@@ -98,9 +113,11 @@ export function checkIdentity(
     const di = digestRun(interp as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
     const dc = comp === undefined ? undefined : digestRun(comp, c.input, opts.trivia as RunnableLike | undefined)
     const dt = digestRun(tbl as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
+    const dr = digestRun(ref as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
     let ok = true
     if (dt !== di) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs interpreted', a: dt, b: di }) }
     if (dc !== undefined && dt !== dc) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs compiled', a: dt, b: dc }) }
+    if (dt !== dr) { ok = false; report.mismatches.push({ case: c.name, path: 'assembled vs reference table', a: dt, b: dr }) }
     if (ok) report.matched++
   }
   return report

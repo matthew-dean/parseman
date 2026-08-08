@@ -2,10 +2,14 @@
  * The variant story: one driver, four tables.
  *
  * `trackLines` × `hostMode` is the axis jess's css parser instantiates four
- * times over one set of shared recognition pieces. Under the shipped lowering
- * each of those four is a separate emitted copy of every rule. Under the table
- * lowering they
- * are four TABLES over ONE driver.
+ * times over one set of shared recognition pieces. Under the SOURCE lowering
+ * that this repo used to have — DELETED in `37c57b5`
+ * — each of those four was a separate emitted copy of every rule. Under the
+ * table lowering they are four TABLES over ONE driver.
+ *
+ * The engine bound below is `execRules()` (`src/table/exec.ts`), the REFERENCE
+ * bytecode interpreter; the encoder and the driver-option check are what this
+ * file is actually about, and both are shared with the shipped assembler.
  *
  * This prints, for each settings pair:
  *   - the emitted table bytes
@@ -17,7 +21,7 @@ import { readFileSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { encodeTable, type TableSettings } from '../src/table/encode.ts'
 import { emitTableModule } from '../src/table/emit.ts'
-import { tableRules } from '../src/table/exec.ts'
+import { execRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
 import { opHistogram } from '../src/table/inspect.ts'
 import { nodeLadder } from './table-grammars.ts'
@@ -60,7 +64,7 @@ function main(): void {
     console.log(`    table ${Buffer.byteLength(src)} B (gzip ${gzipSync(src).length}), ${prog.code.length} words   [${marks}]`)
     // The table is LIVE: build it from the same settings and parse with it.
     // A table that only measures is not a demonstration.
-    const live = tableRules(encodeTable(spanProbe, settings))
+    const live = execRules(encodeTable(spanProbe, settings))
     const r = run(live.Doc! as never, INPUT)
     const spans = (r.value as { spans: Array<Record<string, number>> }).spans
     console.log(`    live parse of ${JSON.stringify(INPUT)}: ok=${r.ok}  node span = ${JSON.stringify(spans[1] ?? spans[0])}`)
@@ -69,8 +73,9 @@ function main(): void {
   const total = tables.reduce((a, t) => a + t.bytes, 0)
   console.log('')
   console.log(`  FOUR variants total ${total} B of table.`)
-  console.log(`  The 16-rule ladder under the SHIPPED lowering is 82,273 B for ONE variant`)
-  console.log(`  (bench/table-size.ts, /tmp/pm-table-size/ladder-16/g.codegen.js) — four of them is 4x that,`)
+  console.log(`  The 16-rule ladder under the SOURCE lowering was 82,273 B for ONE variant`)
+  console.log(`  (bench/table-size.ts, /tmp/pm-table-size/ladder-16/g.codegen.js; that lowering`)
+  console.log(`  was DELETED in 37c57b5) — four of them is 4x that,`)
   console.log(`  which is exactly the defect notes/size-reduction.md records for jess's css parser.`)
   console.log('')
 

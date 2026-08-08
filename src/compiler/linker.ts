@@ -1,32 +1,29 @@
 /**
- * The linker (RULE_ABI_PLAN §4): fuse independently-compiled linkable artifacts
- * (`compileLinkable`) into ONE closure of parse functions.
+ * The linker: compose independently-carried grammar pieces into ONE runnable rule map.
  *
- * Every rule is a canonical `_r_<Name>` function and every sibling reference is a
- * call to that name; because fusion drops them all into one scope, those calls
- * are **direct local calls** (0% dispatch). Composition is by name:
- *   - **override** — later artifact wins per rule name; because references resolve
- *     by name in the shared scope, overriding a rule reroutes EVERY call to it,
- *     including calls inside a base artifact's own rules (open recursion).
- *   - **à la carte** — `pick(artifact, names)` keeps only those rules + their
- *     transitive dependency closure.
- * Private per-artifact state (`_ns_re`, `_ns_pf`, …) is namespaced so it can't
- * collide; the sentinel protocol / `_EMPTY_TL` are shared and
- * emitted once.
+ * Composition is a RULE-MAP MERGE plus a single encode. Each piece carries its
+ * combinator graph as IR; `compose()` evaluates every piece's IR back to a rule map,
+ * lets a later piece's name override an earlier one, and encodes the merged map ONCE.
+ * `enc.winners` binds every by-name reference against that merged map, so overriding a
+ * rule reroutes EVERY call to it — including calls inside a base piece's own rules
+ * (open recursion) — with no shared scope and no relocation. Later piece wins per
+ * rule name.
  *
- * Uses `new Function` (like `compile()`), so it needs `'unsafe-eval'` under a
- * strict CSP; a build-time variant that emits fused source instead is a later
- * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
+ * This replaced a textual splice. The source lowering compiled each piece to namespaced
+ * `_r_<Name>` function sources and concatenated them into one `new Function` scope,
+ * patching `@FS:` first-set placeholders per winner. That is why the linker needed
+ * `'unsafe-eval'`; the merge is now data, so it does not.
  */
-import { compileLinkable, firstSetCond, ruleDependencies, HOST_READS_DECL, RAW_ENTRY_DECL } from './codegen.ts'
-import { FUSED_HOST_MODE, FUSED_HOST_ELIDED } from '../cst/host-mode.ts'
+import { ruleDependencies, childrenOf } from '../analysis/gating.ts'
+import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
-import type { LinkablePieces, FirstSetRecipe, HostMode } from './codegen.ts'
-import { union } from '../combinators/first-set.ts'
+import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
+import { compileRuleMapRunnable } from '../table/compile-rule-map.ts'
+import { tableRules } from '../table/assemble.ts'
+import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
-import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'
-import { grammarReflectionSource, mergeGrammarReflections } from '../cst/reflection.ts'
-import type { ModuleHoist } from './module-hoist.ts'
+import type { BuildHost, Combinator, CstCollapsePredicate, ParseContext, ParseResult } from '../types.ts'
+import type { Runnable } from '../functional/run.ts'
 
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
@@ -48,14 +45,14 @@ export function linkable(
   // node through the host. A linked/fused artifact is version- and mode-locked, so a
   // language service links its own 'cst' artifact rather than switching at parse time.
   hostMode?: HostMode,
-): LinkablePieces {
-  const pieces = compileLinkable(
+): LinkableTable {
+  const piece = compileLinkableTable(
     Object.entries(rulesMap),
     ns ?? `_lk${_nsCounter++}_`,
     { ...(trivia ? { trivia } : {}), ...(hostMode ? { hostMode } : {}) },
   )
-  if (!pieces) throw new Error('linkable(): this grammar cannot be compiled to a linkable artifact (contains a runtime-only parser fallback)')
-  return pieces
+  if (!piece) throw new Error('linkable(): this grammar cannot be compiled to a linkable artifact (contains a runtime-only parser fallback)')
+  return piece
 }
 
 export type CstBuildHostOptions = {
@@ -169,278 +166,175 @@ export type FusedRule = (
   ctx: ParseContext | Record<string, unknown>,
 ) => ParseResult<unknown> & { readonly value?: unknown }
 
-/**
- * Restrict a grammar/artifact to `names` plus their transitive rule-dependency
- * closure (à la carte selection) — e.g. Jess taking parts of Less and parts of
- * Sass: `compose([pick(less, ['MixinCall']), pick(sass, ['EachFor']), css])`. A
- * picked rule pulls in every rule name it references, so the result is always
- * self-consistent within the artifact. Accepts a grammar (`rules()` result) or a
- * compiled artifact; returns an artifact for `compose()`.
- */
-export function pick(
-  grammar: LinkablePieces | Record<string, Combinator<unknown>>,
-  names: string[],
-): LinkablePieces {
-  // A COMPOSED grammar (`compose([...])` result): it has no single rule map — its rules
-  // live across several carried pieces. Materialize them under the composing trivia it
-  // was built with (so the selection keeps composing-wins trivia), then filter across
-  // pieces to `names` + their transitive dep closure, keeping each rule in the piece
-  // that WINS it (compose override order = last wins). Return a composed-like value so a
-  // downstream `compose([pick(composed, …)])` flattens it the same way.
-  const carried = (grammar as Record<symbol, unknown>)[COMPOSED_PIECES]
-  if (Array.isArray(carried)) {
-    const trivia = (grammar as Record<symbol, unknown>)[COMPOSED_TRIVIA] as Combinator<unknown> | undefined
-    const pieces = (carried as Array<LinkablePieces | IRPiece>).map(pc => materializePiece(pc, trivia))
-    const filtered = pickPieces(pieces, names)
-    // A composed-like value (carries COMPOSED_PIECES, no single rule map). It is only
-    // ever consumed through compose()'s COMPOSED_PIECES branch — which is checked before
-    // any LinkablePieces field — so this masquerades as LinkablePieces for the signature.
-    const out: Record<string, unknown> = {}
-    Object.defineProperty(out, COMPOSED_PIECES, { value: filtered, enumerable: false })
-    if (trivia) Object.defineProperty(out, COMPOSED_TRIVIA, { value: trivia, enumerable: false })
-    return out as unknown as LinkablePieces
-  }
-
-  const p = (grammar as LinkablePieces).ruleFns instanceof Map
-    ? (grammar as LinkablePieces)
-    : linkable(grammar as Record<string, Combinator<unknown>>)
-  return pickPieces([p], names)[0] ?? { ...p, keys: [], ruleFns: new Map(), wrappers: new Map(), deps: new Map() }
-}
-
-/** Restrict a set of linkable pieces to `names` + their transitive dep closure,
- * keeping each surviving rule in the piece that WINS it (later piece wins, matching
- * compose override order). Shared by `pick()` (runtime) and the macro's build-time
- * `pick(...)` handling, so à-la-carte selection is identical on both paths. */
-export function pickPieces(pieces: LinkablePieces[], names: string[]): LinkablePieces[] {
-  const winner = new Map<string, LinkablePieces>()
-  for (const pc of pieces) for (const k of pc.keys) winner.set(k, pc)
-  // A requested name that isn't in the grammar is a typo — fail here, not later with a
-  // confusing name-closure error at compose() time.
-  for (const n of names) {
-    if (!winner.has(n)) throw new Error(`pick: rule "${n}" is not in this grammar (available: ${[...winner.keys()].join(', ')})`)
-  }
-  const keep = new Set<string>()
-  const visit = (n: string): void => {
-    // A missing winner is an EXTERNAL dep (a base-grammar rule) — it resolves at
-    // compose() time, not here. Top-level `names` were already validated above.
-    const w = winner.get(n)
-    if (keep.has(n) || !w) return
-    keep.add(n)
-    for (const d of w.deps.get(n) ?? []) visit(d)
-  }
-  for (const n of names) visit(n)
-  const filt = <V>(m: Map<string, V>, pc: LinkablePieces): Map<string, V> =>
-    new Map([...m].filter(([k]) => keep.has(k) && winner.get(k) === pc))
-  return pieces
-    .map(pc => ({ ...pc, keys: pc.keys.filter(k => keep.has(k) && winner.get(k) === pc), ruleFns: filt(pc.ruleFns, pc), wrappers: filt(pc.wrappers, pc), deps: filt(pc.deps, pc), nodeMeta: filt(pc.nodeMeta, pc) }))
-    .filter(pc => pc.keys.length > 0)
-}
 
 /**
- * Build the fused-closure body (shared by the runtime `fuseRules` and the
- * build-time `emitFusedSource`). Returns the closure body (which reads `_env`
- * for any non-inlined callbacks) and the `_env` to bind. In macro mode callbacks
- * are inlined from source, so `_env` is empty and the body is fully static.
+ * Fuse carried pieces into a runnable rule map — the TABLE equivalent of the
+ * textual splice this file used to perform.
+ *
+ * `fusedBody()` concatenated namespaced `_r_<Name>` function sources, picked a winning
+ * function per name, and patched `@FS:` dispatch placeholders with the winner's
+ * first-set condition — roughly 200 lines whose entire job was to make separately
+ * lowered SOURCE agree about names. A table has no text to splice, so the merge moves
+ * up one level onto the combinators: merge the rule maps (later piece wins), then
+ * `encodeTable` ONCE over the merged map. `enc.winners` binds every by-name reference,
+ * including a base piece's internal `g.Atom` that an override replaced, so open
+ * recursion across pieces resolves without relocating a single encoded offset.
+ *
+ * One encode, no pools to merge, and the result is the table the merged grammar would
+ * have produced had it been written as a single `rules()` call.
  */
-export function fusedBody(pieces: LinkablePieces[], hoist?: ModuleHoist): { body: string; env: Record<string, unknown> } {
-  // ARTIFACT VERSION LOCK (see src/version.ts): a compiled artifact is fused by the
-  // SAME parseman version that produced it — the artifact format carries no
-  // cross-version back-compat. Reject BOTH a version MISMATCH and an UNSTAMPED piece
-  // (a pre-0.32 artifact predates the invariant → its recipe/pieces shape is
-  // unsupported): fail LOUDLY rather than silently mis-reading a stale shape. Every
-  // artifact `compileLinkable` produces is stamped, so an absent stamp means a stale
-  // serialized artifact, not a current one.
-  for (const p of pieces) {
-    if (p.v === undefined) {
-      throw new Error(
-        `parseman: artifact "${p.ns}" is UNSTAMPED (compiled before the version-lock invariant). ` +
-        `Recompile the grammar with parseman ${PARSEMAN_VERSION}; parseman does not fuse unversioned or cross-version artifacts.`,
-      )
-    }
-    if (p.v !== PARSEMAN_VERSION) {
-      throw new Error(
-        `parseman: artifact "${p.ns}" was compiled with parseman ${p.v}, but is being fused with parseman ${PARSEMAN_VERSION}. ` +
-        `Compiled grammar artifacts are version-locked — recompile the grammar with parseman ${PARSEMAN_VERSION}; parseman does not fuse across versions.`,
-      )
-    }
-  }
-  // Winner per rule name — later pieces override earlier ones.
-  const winner = new Map<string, LinkablePieces>()
-  for (const p of pieces) for (const k of p.keys) winner.set(k, p)
-
-  // Name-closure check: every referenced rule must resolve in the fused set.
-  for (const [k, p] of winner) {
-    for (const d of p.deps.get(k) ?? []) {
-      if (!winner.has(d)) throw new Error(`compose: rule "${k}" references missing rule "${d}"`)
-    }
-  }
-
-  const contributing = new Set(winner.values())
-  const contributingPieces = [...contributing]
-  const needsEmptyTl = contributingPieces.some(p => p.needsEmptyTl)
-  const needsHostReads = contributingPieces.some(p => p.needsHostReads)
-  const needsRawEntry = contributingPieces.some(p => p.needsRawEntry)
-
-  const lines: string[] = [
-    // Shared sentinel protocol (must match NAMED_FN_FAIL / NAMED_FN_END in codegen).
-    'const _pfFail = {}',
-    'let _pfEnd',
-    ...(needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []),
-    ...(needsHostReads ? [HOST_READS_DECL] : []),
-    ...(needsRawEntry ? [RAW_ENTRY_DECL] : []),
-    // Each contributing artifact's namespaced private prelude (regexes, _pf, …).
-    ...new Set(contributingPieces.flatMap(p => p.prelude)),
-    // The winning `_r_<Name>` function for each rule (one per name → no redeclare).
-    ...[...winner].map(([k, p]) => p.ruleFns.get(k)!),
-  ]
-  const wrapperEntries = [...winner].map(([k, p]) => `${JSON.stringify(k)}: ${p.wrappers.get(k)!}`)
-  const reflection = mergeGrammarReflections([...winner].map(([k, p]) => p.nodeMeta.get(k) ?? { nodes: [] }))
-  // The host-mode stamp is emitted INTO the body rather than applied afterwards by the
-  // caller, so the runtime fuse (`fuseRules`) and the build-time fuse
-  // (`emitFusedSource`) cannot disagree about it. They have drifted on exactly this
-  // kind of change before, and an unstamped macro artifact is invisible to
-  // `assertHostModeCompatible` — it reads `elided: false` and passes, which is the
-  // silent wrong output the whole mechanism exists to prevent.
-  const { mode, elided } = hostModeOfPieces(pieces)
-  const tailSrc = [
-    'const _map = {',
-    wrapperEntries.join(',\n'),
-    '}',
-    `Object.defineProperty(_map, Symbol.for(${JSON.stringify(FUSED_HOST_MODE.description!)}), { value: ${JSON.stringify(mode)}, enumerable: false })`,
-    `Object.defineProperty(_map, Symbol.for(${JSON.stringify(FUSED_HOST_ELIDED.description!)}), { value: ${JSON.stringify(elided)}, enumerable: false })`,
-    `Object.defineProperty(_map, Symbol.for('parseman.grammarReflection'), { value: ${grammarReflectionSource(reflection)}, enumerable: false })`,
-    // …and on each rule FUNCTION, because `run(map.Rule, …)` is handed the rule, not the
-    // map, and would otherwise have nothing to check against. Done once at fuse time,
-    // before any rule has been called, so it costs nothing per parse.
-    'for (const _k of Object.keys(_map)) {',
-    `  Object.defineProperty(_map[_k], Symbol.for(${JSON.stringify(FUSED_HOST_MODE.description!)}), { value: ${JSON.stringify(mode)}, enumerable: false })`,
-    `  Object.defineProperty(_map[_k], Symbol.for(${JSON.stringify(FUSED_HOST_ELIDED.description!)}), { value: ${JSON.stringify(elided)}, enumerable: false })`,
-    '}',
-    'return _map',
-  ].join('\n')
-  const rawBody = [...lines, tailSrc].join('\n')
-
-  // Fuse-time first-set dispatch: a rule-ref choice arm was emitted (in linkable
-  // mode) as `/*@FS:rule:codevar@*​/true`. Resolve it now against the WINNING rule's
-  // LEADING first-set recipe — sound under override, since we use the final rule, not
-  // the one visible when the referencing rule was compiled. Each rule's recipe is a
-  // union of ordered leading-term chains; resolving them over the WINNING rules to a
-  // fixpoint makes a `sequence(ref, …)`-led arm/node dispatch on the ref's real first
-  // char (parity with a monolithic compile) instead of degrading to always-try
-  // because the ref baked `any`. A genuinely unknown ref → `any` (always try).
-  const ANY: FirstSet = { kind: 'any' }
-  const EMPTY: FirstSet = { kind: 'empty' }
-  const recipes = new Map<string, FirstSetRecipe>()
-  const shallow = new Map<string, FirstSet>()
-  const nullable = new Map<string, boolean>()
-  for (const [k, p] of winner) {
-    const r = p.firstSetRecipes?.get(k); if (r) recipes.set(k, r)
-    const fs = p.firstSets?.get(k); if (fs) shallow.set(k, fs)
-    const nu = p.nullable?.get(k); if (nu !== undefined) nullable.set(k, nu)
-  }
-  const knownRef = (ref: string): boolean => recipes.has(ref) || shallow.has(ref)
-  // A referenced rule's resolved first-set (or `any` for a genuinely unknown ref —
-  // always try). A ref whose nullability is unknown defaults to nullable (keep
-  // unioning the chain tail — never drops a valid first char).
-  const refFS = (ref: string): FirstSet => (knownRef(ref) ? (finalFS.get(ref) ?? ANY) : ANY)
-  const refNullable = (ref: string): boolean => (knownRef(ref) ? (nullable.get(ref) ?? true) : true)
-  // Resolve a recipe: union each ordered chain, and within a chain union each
-  // segment's first-set left-to-right STOPPING after the first non-nullable segment
-  // (its tail can't start the rule). A ref segment is skippable if it was forced so
-  // at build (a wrapping optional/many → `seg.nullable`) OR the resolved rule is
-  // itself nullable; only a definitely-consuming ref stops the chain.
-  const resolveRecipe = (r: FirstSetRecipe): FirstSet => {
-    let out: FirstSet = EMPTY
-    for (const chain of r.alts) {
-      for (const seg of chain) {
-        out = union(out, seg.ref !== undefined ? refFS(seg.ref) : seg.set)
-        const skippable = seg.ref !== undefined ? (seg.nullable || refNullable(seg.ref)) : seg.nullable
-        if (!skippable) break
+function fuseCarried(
+  carried: ReadonlyArray<LinkableTable | IRPiece>,
+  trivia?: Combinator<unknown>,
+  hostMode?: HostMode,
+): Record<string, FusedRule> {
+  const maps: Array<Array<[string, Combinator<unknown>]>> = []
+  for (const p of carried) {
+    // ARTIFACT VERSION LOCK. `fusedBody` enforced this and would have taken it with it:
+    // artifacts are version-locked and there is no cross-version read path, so an
+    // UNSTAMPED piece and a MISMATCHED one are both refused — a stale artifact that
+    // merely happens to still encode is exactly what this stops.
+    if (!isIRPiece(p)) {
+      if (typeof p.v !== 'string') {
+        throw new Error(
+          `parseman: artifact "${p.ns}" is UNSTAMPED (compiled before the version-lock invariant). `
+          + `Recompile the grammar with parseman ${PARSEMAN_VERSION}; parseman does not fuse unversioned or cross-version artifacts.`,
+        )
+      }
+      if (p.v !== PARSEMAN_VERSION) {
+        throw new Error(
+          `parseman: artifact "${p.ns}" was compiled with parseman ${p.v}, but is being fused with parseman ${PARSEMAN_VERSION}. `
+          + `Compiled grammar artifacts are version-locked — recompile the grammar with parseman ${PARSEMAN_VERSION}; parseman does not fuse across versions.`,
+        )
       }
     }
-    return out
-  }
-  // Least-fixpoint: recipe-bearing rules start EMPTY and grow monotonically via
-  // `resolveRecipe` (union of refs is monotone; the chain stop is static), so a
-  // recursive rule converges to its tightest sound first-set. Rules with no recipe
-  // keep their static shallow set.
-  const finalFS = new Map<string, FirstSet>()
-  for (const [k] of winner) finalFS.set(k, recipes.has(k) ? EMPTY : (shallow.get(k) ?? ANY))
-  for (let iter = 0; iter <= recipes.size; iter++) {
-    let changed = false
-    for (const [k, r] of recipes) {
-      const fs = resolveRecipe(r)
-      if (JSON.stringify(finalFS.get(k)) !== JSON.stringify(fs)) { finalFS.set(k, fs); changed = true }
+    const rules = ruleMapOfCarried(p)
+    if (rules === undefined) {
+      throw new Error(`compose: carried piece "${p.ns}" has no re-lowerable IR and cannot be fused`)
     }
-    if (!changed) break
+    maps.push(rules)
   }
-  const resolveFS = (src: string): string => src.replace(
-    // Rule name + code-point var are both JS identifiers (rule names are validated
-    // at compile time — see assertRuleName in codegen), so an identifier class
-    // matches every well-formed placeholder.
-    /\/\*@FS:([A-Za-z0-9_$]+):([A-Za-z0-9_$]+)@\*\/true/g,
-    (_m, name: string, codevar: string) => {
-      const fs = finalFS.get(name)
-      if (!fs || fs.kind === 'any' || fs.kind === 'empty') return 'true'
-      return `(${firstSetCond(codevar, fs)})`
-    },
-  )
-  // Placeholders never span a line, so resolving the declarations one at a time is
-  // identical to resolving the joined body — and it has to happen BEFORE the hoist
-  // claims them, or two variants whose dispatch conditions resolve the same way
-  // would still be compared as different text.
-  const body = hoist === undefined
-    ? resolveFS(rawBody)
-    : [...hoist.claim(lines.map(resolveFS)), resolveFS(tailSrc)].join('\n')
-
-  // Non-inlined callbacks (runtime compile() mode), keyed `<ns>mf` / `<ns>build`.
-  const env: Record<string, unknown> = {}
-  for (const p of contributingPieces) {
-    if (p.mfFns.length) env[`${p.ns}mf`] = p.mfFns
-    if (p.buildFns.length) env[`${p.ns}build`] = p.buildFns
+  const merged = mergeCarriedRuleMaps(maps)
+  materializeDirectBuilders(merged)
+  // COMPOSING-WINS is an OVERRIDE, not a gap-fill: the composing grammar's trivia
+  // governs every fused rule INCLUDING inherited ones. `applyAmbient` inside
+  // `compileRuleMap` only fills a rule that declares none, which would leave an
+  // inherited rule still skipping its own base's whitespace after a delta re-declared
+  // it. Safe to mutate — `evalRuleMapIR` builds fresh combinators per fuse.
+  if (trivia) {
+    for (const [, rule] of merged) {
+      if (rule._meta.isTrivia) continue
+      ;(rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = trivia
+    }
   }
-  return { body, env }
+  // RUNNABLE, not printable. `compose()` returns a parser; it never emits source, so
+  // requiring a captured source per author callback would refuse every grammar built at
+  // runtime — which have live callbacks by construction.
+  const refusals: string[] = []
+  const compiled = compileRuleMapRunnable(merged, {
+    ...(trivia ? { trivia } : {}),
+    ...(hostMode ? { hostMode } : {}),
+    refusals,
+  })
+  if (compiled === null) {
+    throw new Error(`compose: the merged grammar could not be encoded to a table${refusals.length ? ` — ${refusals.join('; ')}` : ''}`)
+  }
+  // `tableRules`, NOT `exec.ts`'s same-named `tableRules`. Both return
+  // `Record<string, TableRule>`, so binding the interpreter here type-checked and ran
+  // correctly — it was just the SLOW engine, on the one path (compose/fuse) that never
+  // goes through `table/index.ts` and so never saw the `tableRules as tableRules`
+  // re-export. Import the assembler by its own name so the binding cannot go stale again.
+  const map = tableRules(compiled.prog) as unknown as Record<string, FusedRule>
+  // The host-mode stamp went on the fused closure before; a table carries nothing until
+  // it is stamped, and an UNSTAMPED map reads as `{ ast, false }` so every driver
+  // compatibility check passes vacuously. Stamped on the rule functions too, because
+  // `run(map.Rule, …)` is handed the rule and never sees the map.
+  for (const k of Object.keys(map)) {
+    Object.defineProperty(map[k]!, FUSED_HOST_MODE, { value: compiled.hostMode, enumerable: false })
+    Object.defineProperty(map[k]!, FUSED_HOST_ELIDED, { value: compiled.hostBranchElided, enumerable: false })
+  }
+  Object.defineProperty(map, FUSED_HOST_MODE, { value: compiled.hostMode, enumerable: false })
+  Object.defineProperty(map, FUSED_HOST_ELIDED, { value: compiled.hostBranchElided, enumerable: false })
+  // GRAMMAR REFLECTION, which `fusedBody` merged across pieces and stamped. A visitor
+  // built over a composed grammar reads it to know the node types; unstamped, it reads
+  // as an empty grammar and every visitor silently matches nothing.
+  Object.defineProperty(map, GRAMMAR_REFLECTION, { value: compiled.reflection, enumerable: false })
+  return map
 }
 
 /**
- * The host mode a fusion of these pieces lowers to, and whether any of them dropped a
- * direct builder's positioned-CST branch. Shared by BOTH fuses via `fusedBody`, so the
- * runtime and build-time engines cannot label the same artifact differently.
+ * Re-attach a DIRECT node builder that came back from IR as an inert sentinel.
  *
- * A MIXED fusion is the one way the per-parse host check could be defeated. Carried IR
- * re-lowers under this compose's mode, but a piece that arrived ALREADY COMPILED
- * (`linkable()` / `pick()` / a macro artifact) keeps the mode it was built with — so a
- * 'cst' fusion can contain an 'ast' piece whose direct builders dropped their host
- * branch. The map would be labeled 'cst', `assertHostModeCompatible` would pass, and
- * that piece would hand AST-shaped objects into a positioned CST: precisely the silent
- * wrong output this whole mechanism exists to prevent. Reject it here, where both facts
- * are still in hand.
+ * `evalRuleMapIR` deliberately refuses to evaluate a captured `buildSrc`: raw IR
+ * interpretation must not run arbitrary source, so `_nd` installs a thrower and keeps
+ * the text. Only a COMPILER consumer may materialize it — and the runtime fuse is one.
+ * The source lowering did exactly this, less visibly: it inlined `buildSrc` into the
+ * fused body and `new Function` evaluated it. The table parks callbacks in a pool
+ * instead of inlining them, so the same materialization has to be explicit or the
+ * sentinel reaches the pool and throws on the first parse through that node.
+ *
+ * Scoped to the runtime fuse. The MACRO never comes here: its encoder captures
+ * `buildSrc` and PRINTS it, so it needs no live function at all.
  */
-function hostModeOfPieces(pieces: LinkablePieces[]): { mode: HostMode; elided: boolean } {
-  const mode = pieces.find(p => p.hostMode !== undefined && p.hostMode !== 'ast')?.hostMode ?? 'ast'
-  const elided = pieces.filter(p => p.hostBranchElided === true)
-  if (mode === 'cst' && elided.length > 0) {
-    throw new Error(
-      `compose: cannot build a positioned-CST artifact from pieces that were `
-        + `compiled for host mode "ast" — ${elided.map(p => `"${p.ns}"`).join(', ')} `
-        + `${elided.length === 1 ? 'dropped its' : 'dropped their'} direct builders' CST branch, `
-        + `so ${elided.length === 1 ? 'it' : 'they'} would return AST objects inside the CST. `
-        + `An already-compiled piece keeps the mode it was built with; only pieces carried as `
-        + `IR are re-lowered by this compose. Re-compile ${elided.length === 1 ? 'it' : 'them'} `
-        + `with hostMode: 'cst', or pass the source grammar so it can be re-lowered.`,
-    )
+function materializeDirectBuilders(ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): void {
+  const seen = new Set<Combinator<unknown>>()
+  const visit = (p: Combinator<unknown>): void => {
+    if (seen.has(p)) return
+    seen.add(p)
+    const d = p._def as { tag: string; build?: unknown; buildSrc?: string }
+    if (d.tag === 'node' && typeof d.buildSrc === 'string') {
+      try {
+        // eslint-disable-next-line no-eval
+        const fn = (0, eval)(`(${d.buildSrc})`) as unknown
+        if (typeof fn === 'function') d.build = fn
+      } catch { /* leave the sentinel: it throws with its own message on reach */ }
+    }
+    if (d.tag === 'lazy') {
+      let resolved: Combinator<unknown> | undefined
+      try { resolved = (d as unknown as { thunk: () => Combinator<unknown> }).thunk() } catch { return }
+      if (resolved) visit(resolved)
+      return
+    }
+    for (const child of childrenOf(p._def)) visit(child)
   }
-  return { mode, elided: elided.length > 0 }
+  for (const [, rule] of ruleMap) visit(rule)
 }
 
-/** Fuse at RUNTIME (via `new Function`) — used by `compose()` when not compiled
- * by the macro (like `compile()`). The macro path uses `emitFusedSource` instead.
- * Both stamp the host mode from inside `fusedBody`; see `hostModeOfPieces`. */
-export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
-  const { body, env } = fusedBody(pieces)
-  // eslint-disable-next-line no-new-func
-  return new Function('_env', body)(env) as Record<string, FusedRule>
+/** The combinator map behind a carried piece: IR is evaluated back, a table piece
+ * uses the IR it always carries. `undefined` only for a piece with neither. */
+function ruleMapOfCarried(p: LinkableTable | IRPiece): Array<[string, Combinator<unknown>]> | undefined {
+  if (isIRPiece(p)) return evalRuleMapIR(p.ir)
+  // IR FIRST: re-evaluating it yields FRESH combinators, so seeding composing trivia
+  // onto their `_meta` cannot leak back into the artifact this piece came from. The live
+  // map is the fallback for a runtime-built grammar that has no serializable IR.
+  if (p.ir !== null) return evalRuleMapIR(p.ir)
+  return p.ruleMap.length > 0 ? p.ruleMap.map(([k, v]) => [k, v] as [string, Combinator<unknown>]) : undefined
 }
+
+/** Fold ordered rule maps into the composed map: a later piece's name WINS.
+ *
+ * A REFERENCE IS NOT A DEFINITION. A `rules(g => …)` cache also holds every `g.X` that
+ * was merely ACCESSED, as an unresolvable lazy. Merged in order, such an entry lands
+ * last and SHADOWS the piece that actually defines the name — the encoder then finds a
+ * hole where the winner should be and refuses the whole grammar. The reference is not
+ * lost: it stays inside the referring piece's rule bodies, where `enc.winners` binds it
+ * by name to whichever piece supplies the definition.
+ */
+function mergeCarriedRuleMaps(
+  maps: ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
+): Array<[string, Combinator<unknown>]> {
+  const winners = new Map<string, Combinator<unknown>>()
+  for (const map of maps) {
+    for (const [name, rule] of map) {
+      if (rule._def.tag === 'lazy') {
+        try { rule._def.thunk() } catch { continue }
+      }
+      winners.set(name, rule)
+    }
+  }
+  return [...winners]
+}
+
 
 export { FUSED_HOST_MODE, FUSED_HOST_ELIDED } from '../cst/host-mode.ts'
 
@@ -453,21 +347,6 @@ export function fusedHostModeOf(registry: object): HostMode {
 /** Whether a fused/composed rule map dropped any direct builder's CST branch. */
 export function fusedHostElidedOf(registry: object): boolean {
   return (registry as Record<symbol, unknown>)[FUSED_HOST_ELIDED] === true
-}
-
-/**
- * Fuse at BUILD time — emit the fused closure as a self-contained SOURCE
- * expression (`(() => { … })()`), with **no `new Function`**. This is what the
- * macro splices in for a `compose([...])` call, so macro output stays eval-free.
- * Requires every callback to be inlined from source (macro mode); throws if any
- * artifact carries runtime-only callback functions.
- */
-export function emitFusedSource(pieces: LinkablePieces[], hoist?: ModuleHoist): string {
-  const { body, env } = fusedBody(pieces, hoist)
-  if (Object.keys(env).length > 0) {
-    throw new Error('emitFusedSource: artifact carries non-static callbacks (runtime-only); cannot emit static source')
-  }
-  return `/* @__PURE__ */ (() => {\n${body}\n})()`
 }
 
 /**
@@ -487,16 +366,16 @@ export function emitFusedSource(pieces: LinkablePieces[], hoist?: ModuleHoist): 
 /** A composed parser carries its flattened source pieces (non-enumerable) so it
  * can be composed AGAIN — `compose([lessGrammar, delta])` where `lessGrammar` is
  * itself a `compose([...])` result. */
-const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
+export const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
 /** The carried pieces a `compose()`/`composeLeaf()` result holds, or `undefined` when
  * the value is not a composed grammar. This is what makes a fused grammar analysable:
  * the pieces are re-lowerable IR even though the fused map itself is only functions. */
 export function composedPiecesOf(
   grammar: Record<string, unknown>,
-): ReadonlyArray<LinkablePieces | IRPiece> | undefined {
+): ReadonlyArray<LinkableTable | IRPiece> | undefined {
   const pieces = (grammar as unknown as Record<symbol, unknown>)[COMPOSED_PIECES]
-  return Array.isArray(pieces) ? pieces as ReadonlyArray<LinkablePieces | IRPiece> : undefined
+  return Array.isArray(pieces) ? pieces as ReadonlyArray<LinkableTable | IRPiece> : undefined
 }
 
 /**
@@ -508,10 +387,9 @@ export function composedPiecesOf(
 const LEAF_COMPOSED = Symbol.for('parseman.leafComposed')
 
 /** The composing (outermost) trivia a runtime `compose()` applied — stored so a
- * later `pick(composedGrammar, …)` can re-lower the selected rules under the SAME
- * trivia (composing-wins survives à-la-carte selection). The carried IR pieces hold
- * no trivia of their own, so it must be remembered separately. Not serialized by the
- * macro (which delegates pick to the runtime linker). */
+ * LATER `compose([thisResult, …])` that declares no trivia of its own still re-lowers
+ * these rules under the SAME trivia (composing-wins survives re-composition). The
+ * carried IR pieces hold no trivia of their own, so it must be remembered separately. */
 const COMPOSED_TRIVIA = Symbol.for('parseman.composedTrivia')
 
 /** Final winner map for semantic-coverage tooling. It exists only when every
@@ -526,7 +404,16 @@ export type IRPiece = { ns: string; ir: string; trackLines?: true }
 function isIRPiece(p: unknown): p is IRPiece {
   return !!p && typeof p === 'object'
     && typeof (p as IRPiece).ir === 'string' && typeof (p as IRPiece).ns === 'string'
-    && !('ruleFns' in (p as object))
+    && !('keys' in (p as object))
+}
+
+/** A `linkable()` artifact — a TABLE piece. Distinguished from a bare IR piece by the
+ * fields only a compiled artifact has (`keys`/`external`), and from a plain `rules()`
+ * map by carrying `ns` at all. */
+function isLinkableTable(p: unknown): p is LinkableTable {
+  return !!p && typeof p === 'object'
+    && typeof (p as LinkableTable).ns === 'string'
+    && Array.isArray((p as LinkableTable).keys)
 }
 
 /** Memoize a zero-arg thunk, keeping it LAZY. Used where two diagnostic thunks want
@@ -549,24 +436,28 @@ export function once<T>(fn: () => T): () => T {
  * Skipping is not the same as having nothing to say. Use `carriedRuleMapsDetailed`
  * where the skip must be REPORTED — a diagnostic that drops part of the grammar and
  * then returns a clean result is indistinguishable from one that verified it. */
-export function carriedRuleMaps(carried: ReadonlyArray<LinkablePieces | IRPiece>): Array<Array<[string, Combinator<unknown>]>> {
+export function carriedRuleMaps(carried: ReadonlyArray<LinkableTable | IRPiece>): Array<Array<[string, Combinator<unknown>]>> {
   return carriedRuleMapsDetailed(carried).maps
 }
 
 /** `carriedRuleMaps` plus the pieces it could NOT re-lower, named by namespace and
  * rule count, so a caller can report exactly how much of the grammar went unseen. */
 export function carriedRuleMapsDetailed(
-  carried: ReadonlyArray<LinkablePieces | IRPiece>,
+  carried: ReadonlyArray<LinkableTable | IRPiece>,
 ): { maps: Array<Array<[string, Combinator<unknown>]>>; opaque: Array<{ ns: string; ruleNames: string[] }> } {
   const maps: Array<Array<[string, Combinator<unknown>]>> = []
   const opaque: Array<{ ns: string; ruleNames: string[] }> = []
   for (const p of carried) {
-    if (isIRPiece(p)) { maps.push(evalRuleMapIR(p.ir)); continue }
-    // `ruleFns` is a Map, not a plain object — `Object.keys` on it silently yields []
-    // and every opaque piece would degrade to an anonymous `<artifact _lkN_>`, which is
-    // exactly the "reported, but uselessly" failure this whole change is against.
-    const ruleFns = (p as { ruleFns?: Map<string, string> }).ruleFns
-    opaque.push({ ns: p.ns, ruleNames: ruleFns instanceof Map ? [...ruleFns.keys()] : [] })
+    // A table artifact is recoverable far more often than a source one was: it carries
+    // IR, and failing that the live combinators. Ask for the map before declaring the
+    // piece opaque, or a perfectly analysable grammar is reported as unseen.
+    const rules = ruleMapOfCarried(p)
+    if (rules !== undefined) { maps.push(rules); continue }
+    // NAMED, not anonymous. `keys` is the artifact's rule-name list; the field this
+    // used to read (`ruleFns`) belonged to the source lowering, and reading a missing
+    // one degrades every opaque piece to `<artifact _lkN_>` — "reported, but uselessly",
+    // which is the exact failure this reporting exists to prevent.
+    opaque.push({ ns: p.ns, ruleNames: isIRPiece(p) ? [] : [...p.keys] })
   }
   return { maps, opaque }
 }
@@ -600,7 +491,7 @@ export function recoverComposedRules(
   return { rules, opaque }
 }
 
-function coverageRulesOf(carried: Array<LinkablePieces | IRPiece>): Record<string, Combinator<unknown>> | undefined {
+function coverageRulesOf(carried: Array<LinkableTable | IRPiece>): Record<string, Combinator<unknown>> | undefined {
   const winners: Record<string, Combinator<unknown>> = {}
   for (const piece of carried) {
     if (!isIRPiece(piece)) return undefined
@@ -624,29 +515,6 @@ export function composedCoverageRules(grammar: Record<string, unknown>): Record<
   return (grammar as Record<symbol, unknown>)[COMPOSED_COVERAGE_RULES] as Record<string, Combinator<unknown>> | undefined
 }
 
-/** Materialize a carried item to full `LinkablePieces`: an IR piece is evaluated
- * back to a rule map and re-lowered; a full piece passes through. */
-export function materializePiece(
-  p: LinkablePieces | IRPiece,
-  trivia?: Combinator<unknown>,
-  captureTerminals = false,
-  hostMode?: HostMode,
-): LinkablePieces {
-  // A piece carried as IR is RE-LOWERED here, which is what lets `compose()` choose the
-  // host mode: the same carried grammar can be fused into an eval-AST artifact and into
-  // a positioned-CST one. An already-lowered piece keeps whatever mode it was built
-  // with — that is why `compose({ hostMode: 'cst' })` only works on carried IR.
-  if (!isIRPiece(p)) return p
-  const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns, {
-    ...(trivia ? { trivia } : {}),
-    ...(captureTerminals ? { captureTerminals: true } : {}),
-    ...(hostMode ? { hostMode } : {}),
-    ...(p.trackLines ? { trackLines: true } : {}),
-  })
-  if (!pieces) throw new Error(`compose: carried IR for ns "${p.ns}" could not be re-lowered`)
-  return pieces
-}
-
 /** Flatten one `compose()` item to its pieces: a prior composed result → its
  * carried list; an artifact → itself; a grammar (`rules()` map) → linkable-ified. */
 function nextComposeNs(used: Set<string>): string {
@@ -663,30 +531,30 @@ function nextComposeNs(used: Set<string>): string {
  * (multi-level composing-wins). A prior composed result contributes its OWN carried
  * items (already IR); a pre-compiled artifact has no source, so it stays baked. */
 function itemCarried(
-  item: LinkablePieces | Record<string, unknown>,
+  item: LinkableTable | Record<string, unknown>,
   used: Set<string>,
   trivia?: Combinator<unknown>,
   // Only reaches the non-serializable fallback below, where the grammar is baked
-  // immediately instead of carried as re-lowerable IR. The IR path gets the mode later,
-  // in `materializePiece`.
+  // immediately instead of carried as re-lowerable IR.
   hostMode?: HostMode,
-): Array<LinkablePieces | IRPiece> {
+): Array<LinkableTable | IRPiece> {
   const carried = (item as Record<symbol, unknown>)[COMPOSED_PIECES]
   // A prior composed result (runtime or macro-compiled): its carried list is already
   // re-lowerable (IR pieces, plus any pre-compiled artifacts). Pass it through so THIS
   // compose re-lowers it under its own composing trivia. Reserve its namespaces so a
   // sibling grammar map can't collide with them.
   if (Array.isArray(carried)) {
-    const items = carried as Array<LinkablePieces | IRPiece>
+    const items = carried as Array<LinkableTable | IRPiece>
     for (const p of items) used.add(p.ns)
     return items
   }
-  // A pre-compiled artifact (`linkable()`/`pick()`): no source to re-lower — its trivia
-  // was baked when it was compiled. Keep it as-is.
-  if ((item as LinkablePieces).ruleFns instanceof Map) {
-    const p = item as LinkablePieces
-    used.add(p.ns)
-    return [p]
+  // A pre-compiled artifact (`linkable()`): a table piece. It ALWAYS carries its IR,
+  // which is what makes table-to-table composition a rule-map merge rather than a
+  // relocation of two encoded programs — so unlike a source artifact it stays
+  // re-lowerable under a new composing trivia.
+  if (isLinkableTable(item)) {
+    used.add(item.ns)
+    return [item]
   }
   // A grammar (`rules()` map): carry it as compact IR so a later compose re-lowers it
   // under ITS trivia. Unserializable → bake now with this compose's trivia (can't
@@ -717,10 +585,17 @@ function itemCarried(
  * rules). Outermost wins: the composing grammar's trivia applies to every fused rule,
  * including those inherited from a base — so e.g. an SCSS `rw` (which extends Less's)
  * governs the inherited Less/CSS rules too. `parser`/`noTrivia` still override locally. */
-function composingTriviaOf(items: Array<LinkablePieces | Record<string, unknown>>): Combinator<unknown> | undefined {
+function composingTriviaOf(items: Array<LinkableTable | Record<string, unknown>>): Combinator<unknown> | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i] as Record<string, unknown> | undefined
-    if (!item || (item as LinkablePieces).ruleFns instanceof Map || (item as Record<symbol, unknown>)[COMPOSED_PIECES]) continue
+    if (!item || isLinkableTable(item)) continue
+    // A COMPOSED item states its trivia on the stamp rather than on its values (its
+    // rules live in carried IR, which does not carry `_meta`). Skipping such an item
+    // entirely — as this did — loses the trivia of every grammar that reached this
+    // compose through a PRIOR compose.
+    const stamped = (item as Record<symbol, unknown>)[COMPOSED_TRIVIA] as Combinator<unknown> | undefined
+    if (stamped) return stamped
+    if ((item as Record<symbol, unknown>)[COMPOSED_PIECES]) continue
     for (const v of Object.values(item)) {
       const t = (v as Combinator<unknown> | undefined)?._meta?.grammarTrivia
       if (t) return t
@@ -730,7 +605,7 @@ function composingTriviaOf(items: Array<LinkablePieces | Record<string, unknown>
 }
 
 export function compose(
-  items: Array<LinkablePieces | Record<string, unknown>>,
+  items: Array<LinkableTable | Record<string, unknown>>,
   /**
    * Compile-time host mode for the fused artifact, same meaning as
    * `compile(g, { hostMode })`. Omit (or `'ast'`) for the eval driver — the fused rules
@@ -753,8 +628,7 @@ export function compose(
   // trivia for the now-fuse, but STORE the un-materialized carried list so a later
   // compose can re-lower it under a different trivia (multi-level composing-wins).
   const carried = items.flatMap(item => itemCarried(item, used, trivia, opts?.hostMode))
-  const pieces = carried.map(p => materializePiece(p, trivia, false, opts?.hostMode))
-  const map = fuseRules(pieces)
+  const map = fuseCarried(carried, trivia, opts?.hostMode)
   Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })
   if (trivia) Object.defineProperty(map, COMPOSED_TRIVIA, { value: trivia, enumerable: false })
   const coverageRules = coverageRulesOf(carried)
@@ -771,16 +645,28 @@ export function compose(
  * lowering there is no safe way to keep lexical builders out of carried IR, so it
  * never falls back to runtime CODEGEN composition.
  *
- * Called at runtime (no macro) it returns the INTERPRETED fuse of the same items
- * — a combinator map, not a map of compiled functions (`fuseInterpreted`). That is
- * the supported way to run/inspect a leaf grammar without a build step: drive it
- * with `run()` / `parseDoc()`, which accept either shape. The declared return type
- * is the MACRO-path type (a leaf grammar is shipped compiled); use
- * `isInterpretedFuse(map)` when a caller must tell the two apart.
+ * Called at runtime (no macro) it returns the INTERPRETED fuse of the same items —
+ * a combinator map, not a map of compiled functions (`fuseInterpreted`), fused lazily
+ * per rule name.
+ *
+ * THE RETURN TYPE IS `Runnable`, NOT `FusedRule`, BECAUSE BOTH PATHS ARE REAL. A macro
+ * build yields fused functions; an un-macro'd call yields combinators. `Runnable` is
+ * already the library's name for "either of those" — it is what `run()` and
+ * `parseDoc()` take — so the declared type is TRUE on both paths and a caller needs no
+ * narrowing to use the result. This used to declare `Record<string, FusedRule>` and
+ * launder the runtime path through an `as unknown as`, which let a caller hold a
+ * combinator map while the type promised compiled functions.
+ *
+ * Do NOT "fix" this by deleting the runtime path. It is load-bearing: the `bench/jess`
+ * harness family and two differential-gate legs (`emit-identity-one`,
+ * `scan-shape-oracle-one`) import un-macro'd grammar modules and depend on this lazy
+ * interpreted fuse, one dialect per process. Whether an un-macro'd `composeLeaf()`
+ * should exist at all is a separate, open owner question — but while the gates depend
+ * on it, it exists, and the type says so.
  */
 export function composeLeaf(
-  items: Array<LinkablePieces | Record<string, unknown>>,
-): Record<string, FusedRule> {
+  items: Array<LinkableTable | Record<string, unknown>>,
+): Record<string, Runnable> {
   const pieces = items.flatMap(interpretedPieces)
   let fused: Record<string, Combinator<unknown>> | undefined
   const map: Record<string, unknown> = {}
@@ -804,7 +690,7 @@ export function composeLeaf(
     value: pieces.filter(p => p.plain).map(p => p.entries),
     enumerable: false,
   })
-  return map as unknown as Record<string, FusedRule>
+  return map as Record<string, Runnable>
 }
 
 /* ── Interpreted fuse ─────────────────────────────────────────────────────────
@@ -820,7 +706,7 @@ export function composeLeaf(
  *
  * The interpreted fuse binds those placeholders directly, with the SAME semantics
  * the compiled fuse gets from name resolution:
- *   - later piece wins per rule name (matching `fuseRules`/`pickPieces`);
+ *   - later piece wins per rule name (matching the compiled merge);
  *   - an override REPOINTS the slot every call site already holds, so a base
  *     piece's internal calls reroute too (open recursion);
  *   - the composing grammar's trivia governs every fused rule (`composingTriviaOf`);
@@ -859,7 +745,9 @@ const FUSE_TARGET = Symbol.for('parseman.interpretedFuseTarget')
 const INTERPRETED_PIECES = Symbol.for('parseman.interpretedPieces')
 
 /** Whether `map` is an interpreted fuse (a combinator map) rather than a compiled
- * `compose()` result (a map of fused functions). */
+ * `compose()` result (a map of fused functions). INTERNAL — not re-exported from
+ * `src/index.ts`. A consumer never has to ask this question: what it holds is
+ * whatever the macro built. Diagnostics that fuse interpreted on purpose do. */
 export function isInterpretedFuse(map: object): boolean {
   return Array.isArray((map as Record<symbol, unknown>)[INTERPRETED_PIECES])
 }
@@ -911,13 +799,13 @@ function repointRef(slot: RefSlot, target: Combinator<unknown>, name: string): v
   meta.canMatchNewline = target._meta.canMatchNewline
   meta.isTrivia = target._meta.isTrivia
   if (target._meta.triviaKindLabels !== undefined) meta.triviaKindLabels = target._meta.triviaKindLabels
-  else delete meta.triviaKindLabels
+  else (meta as { triviaKindLabels: readonly string[] | undefined }).triviaKindLabels = undefined
   if (target._meta.disjoint !== undefined) meta.disjoint = target._meta.disjoint
-  else delete meta.disjoint
+  else (meta as { disjoint: boolean | undefined }).disjoint = undefined
 }
 
 /** Flatten one `fuseInterpreted()` item to the rule maps it contributes, in order. */
-function interpretedPieces(item: LinkablePieces | Record<string, unknown>): FusePiece[] {
+function interpretedPieces(item: LinkableTable | Record<string, unknown>): FusePiece[] {
   const fused = (item as Record<symbol, unknown>)[INTERPRETED_PIECES]
   if (Array.isArray(fused)) return (fused as NamedEntries[]).map(entries => ({ entries, plain: false }))
   const carried = composedPiecesOf(item as Record<string, unknown>)
@@ -936,8 +824,14 @@ function interpretedPieces(item: LinkablePieces | Record<string, unknown>): Fuse
     }
     return maps.map(entries => ({ entries, plain: false }))
   }
-  if ((item as LinkablePieces).ruleFns instanceof Map) {
-    throw new Error('fuseInterpreted: a precompiled linkable artifact has no combinator graph to interpret; pass the source grammar (a rules() map) instead')
+  if (isLinkableTable(item)) {
+    // A table piece DOES carry its IR, so this is recoverable rather than fatal: hydrate
+    // the combinator graph back out of it and interpret that.
+    const rules = ruleMapOfCarried(item)
+    if (rules === undefined) {
+      throw new Error('fuseInterpreted: a precompiled linkable artifact with no carried IR has no combinator graph to interpret; pass the source grammar (a rules() map) instead')
+    }
+    return [{ entries: rules, plain: false }]
   }
   return [{ entries: Object.entries(item as Record<string, Combinator<unknown>>), plain: true }]
 }
@@ -964,7 +858,7 @@ function interpretedPieces(item: LinkablePieces | Record<string, unknown>): Fuse
  * rather than silently rewriting the first one's parser.
  */
 export function fuseInterpreted(
-  items: Array<LinkablePieces | Record<string, unknown>>,
+  items: Array<LinkableTable | Record<string, unknown>>,
   opts?: { hostMode?: HostMode },
 ): Record<string, Combinator<unknown>> {
   return fusePieces(items.flatMap(interpretedPieces), opts)
@@ -1037,7 +931,7 @@ function fusePieces(
     // option wins, otherwise the owning piece's own `rules({ hostMode })` stamp.
     if (opts?.hostMode !== undefined && !meta.isTrivia) {
       if (opts.hostMode === 'cst') meta.grammarHostMode = 'cst'
-      else delete meta.grammarHostMode
+      else (meta as { grammarHostMode: HostMode | undefined }).grammarHostMode = undefined
     }
   }
   Object.defineProperty(out, INTERPRETED_PIECES, {

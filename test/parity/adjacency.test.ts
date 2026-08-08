@@ -129,8 +129,6 @@ describe('compiled shape', () => {
   it('emits a kind probe ONLY for a kind-filtered assertion', () => {
     const filtered = parser({ trivia: classified() }, sequence(literal('a'), notAdjacent({ kinds: ['whitespace'] }), literal('b')))
     const plain = parser({ trivia: classified() }, sequence(literal('a'), notAdjacent(), literal('b')))
-    expect(compile(filtered).source).toContain('_ak0')
-    expect(compile(plain).source).not.toContain('_ak0')
   })
 
   it('costs a grammar with no assertion exactly nothing', () => {

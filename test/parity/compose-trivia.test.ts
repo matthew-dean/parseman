@@ -1,15 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { classifiedTrivia, parser, rules, compose, trivia, sequence, literal, oneOrMore, regex, run } from '../../src/index.ts'
 import type { Runnable } from '../../src/index.ts'
+import * as parseman from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 // Eval a fully-macro-compiled module (import already stripped, no `new Function`
 // eval inside it) and return its top-level bindings. The emitted compose is a
 // self-contained fused IIFE, so this executes the SAME code the plugin ships.
-function evalMacroModule(code: string, ...names: string[]): Record<string, any> {
-  const body = code.replace(/\bexport\s+/g, '')
-  // eslint-disable-next-line no-new-func
-  return new Function(`${body}\nreturn { ${names.join(', ')} }`)()
+function evalFused(code: string, ...names: string[]): Record<string, any> {
+  // Anything the macro left as a runtime call needs the real library in scope.
+  return evalMacroModule(code, `{ ${names.join(', ')} }`, { ...parseman })
 }
 
 const rw = trivia(oneOrMore(regex(/[ \t\n]+/)))
@@ -55,15 +56,22 @@ export const g = compose([base, rules({ trivia: rw }, (g) => ({ Doc: sequence(li
     // `compose([...])` call (the options-first `rules({trivia}, …)` used to break the
     // plugin's piece disambiguation and force that fallback).
     expect(src.includes('compose(['), 'compose must inline, not fall back to runtime').toBe(false)
-    // …and the fused rules must skip trivia between terms.
-    expect(/_tf\d/.test(src), 'macro-fused compose output must contain a trivia-skip').toBe(true)
+    // …and the fused rules must skip trivia between terms. This used to grep the output
+    // for `_tf<n>`, codegen's emitted trivia-skip function. The table encodes the skip as
+    // DATA, and which pool it lands in is an encoder detail — so assert the PROPERTY the
+    // name of this test claims, by running the fused grammar. That is also what the
+    // runtime-fuse case above asserts, so the two now agree on what is being checked.
+    const { g: fused } = evalFused(src, 'g')
+    expect(run(fused.Doc, 'x a b y').ok, 'fused rules must skip trivia between terms').toBe(true)
+    expect(run(fused.Doc, 'x a b y').span.end).toBe(7)
+    expect(run(fused.Pair, 'a b').ok, 'inherited rule must skip trivia too').toBe(true)
     // The import must be fully removed (nothing fell back to the interpreter).
     expect(src.includes("from 'parseman'"), 'macro import must be fully stripped').toBe(false)
 
     // Strongest check: EXECUTE the emitted module and prove composing-wins reaches an
     // INHERITED rule. The delta's Doc references the base's Pair; the composing grammar's
     // trivia must be baked into that inherited Pair too, not just Doc's own terms.
-    const { g } = evalMacroModule(src, 'g')
+    const { g } = evalFused(src, 'g')
     // Doc = 'x' Pair 'y' ; Pair = 'a' 'b', all trivia-separated.
     expect(run(g.Doc, 'x a b y').ok, 'fused Doc parses with trivia').toBe(true)
     expect(run(g.Doc, 'x a b y').span.end).toBe(7)
@@ -90,7 +98,7 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
 `
     const out = transformMacro(code, 'selected-compose.ts', new Set(['parseman']))
     expect(out).not.toBeNull()
-    const { g } = evalMacroModule(out!.code, 'g')
+    const { g } = evalFused(out!.code, 'g')
     const result = run(g.Doc, 'x a /*x*/ b y', { rootTrivia: { select: ['blockComment'] } })
 
     expect(result.rootTrivia).toMatchObject({
@@ -136,7 +144,7 @@ export const g = composeLeaf([syntax, rules({ trivia: rw }, g => ({ Doc: sequenc
 `
     const out = transformMacro(code, 'selected-compose-leaf.ts', new Set(['parseman']))
     expect(out).not.toBeNull()
-    const { g } = evalMacroModule(out!.code, 'g')
+    const { g } = evalFused(out!.code, 'g')
     const result = run(g.Doc, 'x a /*x*/ b y', { rootTrivia: { select: ['blockComment'] } })
 
     expect(result.rootTrivia).toMatchObject({
@@ -176,7 +184,7 @@ export const g = rules({ trivia: root }, (g) => ({
 `
     const out = transformMacro(code, 'selected-trivia.ts', new Set(['parseman']))
     expect(out).not.toBeNull()
-    const { g } = evalMacroModule(out!.code, 'g')
+    const { g } = evalFused(out!.code, 'g')
 
     expect(() => run(g.Doc, 'a /* hidden */ b', {
       rootTrivia: { select: ['blockComment'] },

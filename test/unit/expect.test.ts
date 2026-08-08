@@ -11,6 +11,7 @@
  * can drift. deriveExpected() and furthestFail are exercised separately.
  */
 import { describe, it, expect as vexpect, beforeAll } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, sequence, choice, many, optional,
   expect, compile, parse, isParseError, ref, keywords,
@@ -45,8 +46,7 @@ beforeAll(async () => {
   if (!result) throw new Error('macro transform returned null — import not detected')
   if (result.code.includes("from 'parseman'"))
     throw new Error('macro transform did not remove the import — compilation failed')
-  const fnBody = result.code.replace(/\bconst\b/g, 'var') + '\nreturn block'
-  macroFn = new Function(fnBody)() as ParseFn
+  macroFn = evalMacroModule<ParseFn>(result.code, 'block')
 })
 
 function interpParse(input: string) {

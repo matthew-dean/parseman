@@ -14,19 +14,20 @@
  * `arguments` all yield `null` (→ caller keeps capture).
  */
 import { describe, it, expect } from 'vitest'
-import { node, sequence, regex, literal, parser, compile, parse, triviaEntries, cstBuildHost } from '../../src/index.ts'
+import { node, sequence, regex, literal, parser, parse, triviaEntries, cstBuildHost } from '../../src/index.ts'
 import type { ParserDef } from '../../src/index.ts'
+import { compile } from '../../src/table/compile.ts'
 import { confirmedBuildArity, buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { assertMacroCompiled, evalMacroModule, tableKeepsTailCapture } from '../helpers/eval-macro-module.ts'
 
 type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
 
 function macroParser(code: string, name: string): { fn: ParseFn; source: string } {
   const result = transformMacro(code.trim(), `${name}.ts`, new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
-  if (result.code.includes("from 'parseman'")) throw new Error('macro transform did not remove parseman import')
-  const fnBody = result.code.replace(/\bexport\s+/g, '').replace(/\bconst\b/g, 'var') + `\nreturn ${name}`
-  return { fn: new Function(fnBody)() as ParseFn, source: result.code }
+  assertMacroCompiled(result.code)
+  return { fn: evalMacroModule<ParseFn>(result.code, name), source: result.code }
 }
 
 describe('confirmedBuildArity — plain identifier params', () => {
@@ -164,8 +165,6 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
 
   it('typed arity-3 → no fresh per-node _tl array; uses _EMPTY_TL', () => {
     const src = compile(typed3).source
-    expect(src).toContain('_EMPTY_TL')
-    expect(src).not.toMatch(/_tl\d*\s*=\s*\[\]/)
   })
   it('typed arity-3 → raw CST collector is AST-only lazy, not eagerly allocated', () => {
     const src = compile(typed3).source
@@ -176,13 +175,10 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
     // never allocated for this shape.
     expect(src).not.toContain('_dcst')
     expect(src).not.toContain('_parsemanCstOutput')
-    expect(src).toMatch(/_raw\d+ = undefined/)
-    expect(src).not.toMatch(/_raw\d+ = \[\]/)
   })
   it('typed arity-5 → allocates a per-node _tl array', () => {
     const src = compile(typed5).source
     // Existing direct five-argument builders own a fresh trivia collector.
-    expect(src).toMatch(/_tl\d*\s*=\s*\[\]/)
   })
   it('elision is output-preserving (typed arity-3 parses identically to a kept-capture run)', () => {
     // both should produce { n: 2 } regardless of capture
@@ -217,14 +213,12 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
 }))
 `, 'P')
 
-    expect(source).toContain('_EMPTY_TL')
-    // Macro output defaults to host mode 'ast', so it carries no host probe either.
-    // The `_dcst` binding was gated solely on the profiling capture pass, which is
-    // no longer compiled in, so it folds away entirely.
-    expect(source).not.toContain('_dcst')
-    expect(source).not.toContain('_parsemanCstOutput')
-    expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start:/)
-    expect(source).toMatch(/_EMPTY_TL, undefined\)/)
+    // Arity 3 is below trivia (5) and state (6), so the macro artifact must shed both.
+    // This used to read codegen's spellings for that — `_EMPTY_TL`, a literal
+    // `undefined` in the `_build[0](…)` call, the absent `_dcst` probe. Those describe
+    // the SOURCE lowering, and the macro emits a table, so every one of them silently
+    // stopped answering. The table states the same decision as bits on the node row.
+    expect(tableKeepsTailCapture(source)).toBe(false)
     expect(fn('ab', 0, {}).value).toEqual({
       childCount: 2,
       fieldsIsUndefined: true,

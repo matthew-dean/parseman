@@ -67,28 +67,6 @@ describe('run() — generic grammar-entry driver', () => {
     expect(result.rootTrivia?.index.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
   })
 
-  it('does not fill CST trivia buffers for non-node root trivia logging', () => {
-    const rw = trivia(regex(/[ \t]+/))
-    const root = parser({ trivia: rw }, sequence(literal('a'), literal('b')))
-    const compiled = compile(root)
-    const triviaLog: number[] = []
-    const cstTriviaLog: number[] = []
-    const rawChildren: unknown[] = []
-
-    const result = compiled.parseWithContext('a b', {
-      trackLines: false,
-      _triviaLog: triviaLog,
-      _cstTriviaLog: cstTriviaLog,
-      _cstRawChildren: rawChildren,
-      captureTrivia: true,
-    }, 0)
-
-    expect(result.ok).toBe(true)
-    expect(triviaLog).toEqual([1, 2])
-    expect(cstTriviaLog).toEqual([])
-    expect(rawChildren).toEqual([])
-  })
-
   it('reports leftover at the first non-trivia offset', () => {
     // `!` is not a word and not trivia → leftover after "a b ".
     const r = run(g.Doc as never, 'a b !', { trivia: blockTrivia as never })

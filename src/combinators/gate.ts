@@ -34,9 +34,17 @@ export function gate(predicate: (state: unknown) => boolean): Combinator<null> {
     parse(_input: string, pos: number, ctx: ParseContext): ParseResult<null> {
       if (predicate(ctx.state))
         return { ok: true, value: null, span: { start: pos, end: pos } }
-      // Keep the 'guard' failure label for byte-identical output parity with the
-      // compiled path and the pre-rename API (the rename is API-surface only).
-      return { ok: false, expected: ['guard'], span: { start: pos, end: pos } }
+      // The label is the PUBLIC name. It used to be `'guard'`, justified in a
+      // comment here as "parity with the compiled path" — which had not been true
+      // since the rename: codegen emitted `'gate'` and this emitted `'guard'`, so
+      // the same failing input reported a different expected set depending on
+      // which engine ran it. Nothing caught it because no test compared the two
+      // engines' expected sets on a state-scoped failure.
+      //
+      // `guard` was removed as a public name in 0.44.0, so it also pointed users
+      // at something they could no longer find. The def TAG stays `'guard'` —
+      // that is internal and the encoder switches on it.
+      return { ok: false, expected: ['gate'], span: { start: pos, end: pos } }
     },
   }
 }

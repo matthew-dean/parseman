@@ -4,13 +4,13 @@ import { recordDegradation } from './degradation.ts'
 export type GrammarCoverageDefinition = { id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }
 export type GrammarCoveragePlan = {
   definitions: readonly GrammarCoverageDefinition[]
-  choices: WeakMap<Combinator<unknown>, readonly string[]>
-  dispatches: WeakMap<Combinator<unknown>, readonly string[]>
+  choices: Map<Combinator<unknown>, readonly string[]>
+  dispatches: Map<Combinator<unknown>, readonly string[]>
   /** Trace-only transaction identity. Attempts are not coverage definitions: a
    * rejected transaction must not create a semantic winner or denominator. */
-  attempts: WeakMap<Combinator<unknown>, string>
-  labels: WeakMap<Combinator<unknown>, readonly string[]>
-  rules: WeakMap<Combinator<unknown>, string>
+  attempts: Map<Combinator<unknown>, string>
+  labels: Map<Combinator<unknown>, readonly string[]>
+  rules: Map<Combinator<unknown>, string>
 }
 
 function idPart(value: string): string {
@@ -33,7 +33,6 @@ function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>)
     case 'dispatch': return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.matchers ? def.matchers.map(entry => entry.parser) : []), ...(def.otherwise ? [def.otherwise] : [])]
     case 'many': case 'oneOrMore': case 'optional': case 'attempt': case 'transform': case 'trivia': case 'token': case 'leaf': case 'label': case 'field': case 'grammar': case 'not': case 'peek': case 'node': case 'guard': case 'adjacency': case 'withCtx': case 'recover': case 'expect': return 'parser' in def ? [def.parser] : []
     case 'sepBy': return [def.parser, def.separator]
-    case 'skip': return [def.main, def.skipped]
     case 'scanTo': return [def.sentinel, ...def.skip]
     case 'lazy': {
       let resolved: Combinator<unknown>
@@ -67,11 +66,14 @@ function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>)
  * subtree still has one stable owner. */
 export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinator<unknown>[], winners?: Record<string, Combinator<unknown>>): GrammarCoveragePlan {
   const definitions = new Map<string, GrammarCoverageDefinition>()
-  const choices = new WeakMap<Combinator<unknown>, readonly string[]>()
-  const dispatches = new WeakMap<Combinator<unknown>, readonly string[]>()
-  const attempts = new WeakMap<Combinator<unknown>, string>()
-  const labels = new WeakMap<Combinator<unknown>, readonly string[]>()
-  const rules = new WeakMap<Combinator<unknown>, string>()
+  // This plan is per grammar compilation and returned with its definitions; it
+  // does not need a process-global weak side cache.  Ordinary Maps make that
+  // finite ownership explicit and keep WeakMap out of the shipped table graph.
+  const choices = new Map<Combinator<unknown>, readonly string[]>()
+  const dispatches = new Map<Combinator<unknown>, readonly string[]>()
+  const attempts = new Map<Combinator<unknown>, string>()
+  const labels = new Map<Combinator<unknown>, readonly string[]>()
+  const rules = new Map<Combinator<unknown>, string>()
   // A `rules()` map stores named lazy proxies while code generation may emit
   // either that proxy or its resolved body.  Final composed winners are the
   // authority for both identities; relying on `_ruleName` alone loses direct

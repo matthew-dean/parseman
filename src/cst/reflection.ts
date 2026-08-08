@@ -1,8 +1,7 @@
 import type { Combinator, ParserDef } from '../types.ts'
+import { GRAMMAR_REFLECTION, NODE_TAG, NODE_TYPE } from './reflection-symbols.ts'
 
-export const GRAMMAR_REFLECTION: unique symbol = Symbol.for('parseman.grammarReflection') as never
-export const NODE_TYPE: unique symbol = Symbol.for('parseman.type.nodeType') as never
-export const NODE_TAG: unique symbol = Symbol.for('parseman.type.nodeTag') as never
+export { GRAMMAR_REFLECTION, NODE_TYPE, NODE_TAG } from './reflection-symbols.ts'
 
 export type GrammarNodeReflection = {
   type: string
@@ -50,15 +49,14 @@ function childrenOf(def: ParserDef): readonly Combinator<unknown>[] {
     case 'peek':
     case 'node':
     case 'withCtx':
-    case 'recover':
     case 'expect':
       return [def.parser]
+    case 'recover':
+      return [def.parser, def.sentinel]
     case 'grammar':
       return def.triviaParser ? [def.parser, def.triviaParser] : [def.parser]
     case 'sepBy':
       return [def.parser, def.separator]
-    case 'skip':
-      return [def.main, def.skipped]
     case 'scanTo':
       return [def.sentinel, ...def.skip]
     case 'routed':
@@ -140,11 +138,6 @@ export function mergeGrammarReflections(reflections: readonly GrammarReflection[
     }
   }
   return { nodes: [...byType].map(([type, tags]) => ({ type, tags })) }
-}
-
-export function attachGrammarReflection<T extends object>(grammar: T, reflection: GrammarReflection): T {
-  Object.defineProperty(grammar, GRAMMAR_REFLECTION, { value: reflection, enumerable: false, configurable: true })
-  return grammar
 }
 
 export function grammarReflectionOf(grammar: object): GrammarReflection | undefined {

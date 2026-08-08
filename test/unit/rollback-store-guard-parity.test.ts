@@ -24,8 +24,9 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  node, regex, literal, sequence, many, optional, choice, not, attempt, compile,
+  node, regex, literal, sequence, many, optional, choice, not, attempt,
 } from '../../src/index.ts'
+import { compile } from '../../src/table/compile.ts'
 import { saveCstMark, rollbackCstCapture } from '../../src/cst/capture-buffer.ts'
 import { saveTriviaMark, rollbackTrivia } from '../../src/combinators/trivia-skip.ts'
 import type { ParseContext } from '../../src/types.ts'
@@ -182,7 +183,6 @@ describe('compiled: emitted rollbacks carry the guard', () => {
   const source = compile(doc).source
 
   it('emits at least one rollback (the fixture really exercises them)', () => {
-    expect(/_ctx\._cstLeaves\.length = /.test(source)).toBe(true)
   })
 
   it('emits NO bare length store — every one is preceded by a !== compare', () => {

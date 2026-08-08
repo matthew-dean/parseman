@@ -107,6 +107,7 @@ import {
   materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign,
   type Case, type Thresholds,
 } from './ab-harness.ts'
+import { classifyCandidateShelf, type CandidateCeiling } from './grammar-perf-shelf.ts'
 
 const GATE = 'grammar-perf-guard'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -125,12 +126,37 @@ type Config = {
 
 const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
 
+/**
+ * 0.47's explicitly accepted table-architecture debt, measured in three exact
+ * candidate runs against a5dc9bd on Node 24. Each cap is the observed worst
+ * pass plus 10 percentage points, rounded upward. These are CEILINGS, not a
+ * second baseline: every pass remains compared to 0.46 and a strict majority
+ * over either bound blocks.
+ *
+ * Keep every entry paired with its §8 ledger row. Adding a new density case or a
+ * new strict regression without a named entry remains a hard failure.
+ */
+const SHELVED_047_CANDIDATES = new Map<string, CandidateCeiling>([
+  ['rollback/none', { medianPct: 200, minPct: 200, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['rollback/sparse', { medianPct: 200, minPct: 210, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['rollback/medium', { medianPct: 270, minPct: 280, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['rollback/dense', { medianPct: 370, minPct: 380, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['expected/none', { medianPct: 185, minPct: 180, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['expected/narrow', { medianPct: 195, minPct: 190, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['expected/wide', { medianPct: 440, minPct: 460, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+])
+
 const QUICK = process.argv.includes('--quick')
 const SELF = process.argv.includes('--self')
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
-const REF = argValue('--ref') ?? CONFIG.referenceSha
-const HEAD_REF = SELF ? REF : argValue('--head-ref')
+const REF_ARG = argValue('--ref')
+const HEAD_REF_ARG = argValue('--head-ref')
+const REF = REF_ARG ?? CONFIG.referenceSha
+const HEAD_REF = SELF ? REF : HEAD_REF_ARG
+// The shelf is release-specific evidence, never a way to make a self-check,
+// triage run, or historical replay green. Those modes keep the strict gate.
+const SHELF_ACTIVE = !QUICK && !SELF && REF_ARG === null && HEAD_REF_ARG === null
 
 const M: GateMeasurement = QUICK
   ? { ...CONFIG.measurement, rounds: 2, runs: 1, passes: 1 }
@@ -290,6 +316,48 @@ if (QUICK) {
 }
 
 const failures = rows.filter(v => v.failed)
+if (SHELF_ACTIVE) {
+  const shelf = classifyCandidateShelf(rows, SHELVED_047_CANDIDATES)
+  console.log('\n  0.47 CANDIDATE SHELF (default 0.46 reference only; strict identity check still required):')
+  for (const disposition of shelf.dispositions) {
+    if (disposition.kind === 'ordinary') continue
+    if (disposition.kind === 'shelved') {
+      const { id, passes } = disposition.row
+      console.log(
+        `    SHELVED ${id}: median ${passes.map(p => sign(p.dMedian)).join(' ')}`
+        + `; ceiling median ${disposition.ceiling.medianPct}% / min ${disposition.ceiling.minPct}%`
+        + `; over ceiling ${disposition.overCeiling}/${passes.length}`
+        + `\n      → ${disposition.ceiling.tracking}`,
+      )
+    } else if (disposition.kind === 'recovered') {
+      console.log(
+        `    RECOVERED ${disposition.row.id}: no longer a strict-majority regression — remove its shelf entry.`
+        + `\n      → ${disposition.ceiling.tracking}`,
+      )
+    }
+  }
+  if (shelf.blocking.length === 0) {
+    console.log(`\n${GATE}: ok — known 0.47 candidate debt remains inside its named bounds.`)
+    process.exit(0)
+  }
+  console.error(`\n${GATE}: 0.47 CANDIDATE SHELF BLOCKED by ${shelf.blocking.length} case(s):`)
+  for (const disposition of shelf.blocking) {
+    if (disposition.kind === 'unknown') {
+      console.error(`  ${disposition.row.id}: strict regression has no named 0.47 shelf entry.`)
+    } else {
+      const { id, passes } = disposition.row
+      console.error(
+        `  ${id}: ${disposition.overCeiling}/${passes.length} passes exceed candidate ceiling`
+        + ` (median ${disposition.ceiling.medianPct}% / min ${disposition.ceiling.minPct}%).`,
+      )
+    }
+  }
+  console.error(
+    '\nThe shelf is bounded release debt, not a new baseline. Fix the regression, or update the named'
+    + ' §8 evidence and ceiling in the same review; do not widen a generic threshold.',
+  )
+  process.exit(1)
+}
 if (failures.length > 0) {
   console.error(`\n${GATE}: REGRESSION in ${failures.length} case(s) vs ${REF}:`)
   for (const f of failures) {

@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 describe('composeLeaf source-private recognition modules', () => {
   it('macro-lowers a sibling .ts grammar imported through its future .js specifier', () => {
@@ -25,13 +26,16 @@ export const parser = composeLeaf([
       expect(leaf?.warnings).toEqual([])
       expect(leaf?.code).not.toMatch(/\bcomposeLeaf\s*\(/)
       expect(leaf?.code).not.toContain('new Function')
-      expect(leaf?.code).toContain('_r_Atom')
+      expect(leaf?.code).toContain('tableRules(')  // the imported rule was fused in
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it('instruments final composeLeaf winners through imported recognition and a local reduction', () => {
+  // Asserts rule ENTER/SUCCESS trace phases — deferred to 0.48 by owner ruling
+  // (notes/RELEASE-0.48-TARGET.md section 1). Coverage COUNTERS ship in 0.47; the six
+  // trace phases do not. Kept because the capability is owed.
+  it.todo('instruments final composeLeaf winners through imported recognition and a local reduction', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-leaf-coverage-'))
     try {
       fs.writeFileSync(path.join(dir, 'package.json'), '{}')
@@ -51,11 +55,11 @@ export const parser = composeLeaf([
       const covered = transformMacro(source, path.join(dir, 'leaf.ts'), new Set(['parseman']), false, false, true)!
       expect(ordinary.warnings).toEqual([])
       expect(covered.warnings).toEqual([])
-      expect(ordinary.code).not.toContain('_grammarCoverage')
-      expect(covered.code).toContain('_grammarCoverage')
+      expect(ordinary.code).not.toContain('grammarCoverageDefinitions')
+      expect(covered.code).toContain('grammarCoverageDefinitions')
       expect(covered.code).not.toMatch(/\bcomposeLeaf\s*\(/)
 
-      const makeParser = (code: string) => new Function(code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const makeParser = (code: string) => evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(code, 'parser')
       const ordinaryParser = makeParser(ordinary.code)
       const parser = makeParser(covered.code)
       const hits: string[] = []
@@ -98,7 +102,7 @@ export const parser = composeLeaf([
 `
       const result = transformMacro(source, path.join(dir, 'leaf.ts'), new Set(['parseman']), false, false, true)!
       expect(result.warnings).toEqual([])
-      const parser = new Function(result.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const parser = evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(result.code, 'parser')
       const hits: string[] = []
       expect(parser.Document!('(nested)!', 0, { _grammarCoverage: (id: string) => hits.push(id) })).toMatchObject({ ok: true })
       expect(hits).toEqual(expect.arrayContaining(['rule:Group', 'rule:Document']))
@@ -129,7 +133,7 @@ export const parser = composeLeaf([recognition, local])
 `
       const result = transformMacro(source, path.join(dir, 'leaf.ts'), new Set(['parseman']))!
       expect(result.warnings).toEqual([])
-      const parser = new Function(result.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var').replace(/\bconst\b/g, 'var') + '\nreturn parser')() as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const parser = evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(result.code, 'parser')
       // `a ";b" ;` — the `;` inside the string must be skipped; the scan lands on
       // the REAL `;` at the end, so Doc consumes the whole input.
       const r = parser.Doc!('a ";b" ;', 0, {})
@@ -155,7 +159,7 @@ export const parser = composeLeaf([recognition, rules(g => ({ Document: g.Atom }
 `, path.join(dir, 'leaf.ts'), new Set(['parseman']))
       expect(leaf?.warnings).toEqual([])
       expect(leaf?.code).not.toMatch(/\bcomposeLeaf\s*\(/)
-      expect(leaf?.code).toContain('_r_Atom')
+      expect(leaf?.code).toContain('tableRules(')  // the imported rule was fused in
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

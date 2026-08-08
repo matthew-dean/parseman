@@ -6,6 +6,7 @@ import { choice } from './choice.ts'
 import { many } from './repeat.ts'
 import { transform } from './map.ts'
 import { expect } from './expect.ts'
+import { createDetachedParseContext } from '../parse-context.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
@@ -119,11 +120,8 @@ export function scanTo(
       // collector-free context so their internal literal()/regex() don't push.
       // The error channel IS forwarded, so a committed skipper (e.g. balanced()
       // whose open delimiter was consumed) can still report an unmatched close.
-      const probeCtx: ParseContext = {
-        trackLines: false,
-        state: ctx.state,
-        ...(ctx._errors !== undefined ? { _errors: ctx._errors } : {}),
-      }
+      const probeCtx = createDetachedParseContext(false, ctx.state)
+      probeCtx._errors = ctx._errors
 
       // Record the scanned text as a CSTLeaf so buildNode-driven grammars can
       // see it in children/rawChildren (it would otherwise be lost — only the
@@ -179,6 +177,58 @@ export type BalancedAmbient = Combinator<string> & {
 }
 
 /**
+ * Marker: this combinator IS a balanced interior — its delimiters, and the fact
+ * that everything between them is a scan rather than authored structure.
+ *
+ * Set by `buildBalancedInterior`, so EVERY balanced carries it: the ambient one,
+ * the `raw` one, and each interior the ambient cache rebuilds. `_balancedAmbient`
+ * cannot serve this purpose — it is absent on `raw`, and it means "re-resolve
+ * ambient scanSkip", which is a different claim.
+ *
+ * Read by the spec/railroad emitter, which renders a balanced as its delimiters
+ * around an opaque interior. That is not a simplification: the delimiters are
+ * FIXED at construction and the interior genuinely is a delimiter scan, so the
+ * rendering states exactly what the construct is. Expanding the lowered shape
+ * instead would print the content-run regex and the `self` back-edge, which are
+ * emitter machinery, not language.
+ */
+export type BalancedMarked = Combinator<string> & {
+  _balanced?: { open: string; close: string }
+}
+
+/**
+ * The table lowering's marker, on the object `balanced()` RETURNS.
+ *
+ * Deliberately not `_balancedAmbient`, and deliberately on the OUTER combinator.
+ * `_balancedAmbient` means "rebuild my interior with the ambient scanSkip", which
+ * is false for `raw`, and it sits on the INNER combinator because that is the one
+ * codegen's dedup and the interior `self` back-edge address. Reading `_def` (or
+ * the ambient marker) off the outer object gets the wrong thing — a structural
+ * encoder made exactly that mistake and lowered the wrong parser, silently.
+ *
+ * This marker instead records the CONSTRUCTOR ARGUMENTS, so an encoder can carry
+ * a `balanced()` as data and let `balanced()` itself rebuild it. It is present on
+ * every `balanced()`, `raw` included.
+ */
+export type BalancedSpec = Combinator<string> & {
+  _balancedSpec?: {
+    open: string
+    close: string
+    ownSkip: Combinator<unknown>[]
+    strict: boolean
+    raw: boolean
+  }
+}
+
+function markSpec(
+  outer: Combinator<string>,
+  open: string, close: string, ownSkip: Combinator<unknown>[], strict: boolean, raw: boolean,
+): Combinator<string> {
+  ;(outer as BalancedSpec)._balancedSpec = { open, close, ownSkip, strict, raw }
+  return outer
+}
+
+/**
  * Match a balanced open/close pair, skipping over any holes inside.
  * Returns the full matched text including delimiters.
  *
@@ -202,7 +252,7 @@ export function balanced(
   const strict = options.strict ?? false
   const combi = buildBalancedInterior(open, close, ownSkip, strict)
   // `raw` keeps the pre-ambient behavior: the eager interior (per-call skip only).
-  if (options.raw) return token(combi)
+  if (options.raw) return markSpec(token(combi), open, close, ownSkip, strict, true)
 
   // Ambient-aware in place — the returned combinator KEEPS its identity (its own
   // interior `self` ref points back to it, and ir-serialize / codegen dedup rely
@@ -252,7 +302,7 @@ export function balanced(
    * delimiters are FIXED at construction, so collapsing to one string is
    * legitimate here — which is exactly why it must actually collapse.
    */
-  return token(combi)
+  return markSpec(token(combi), open, close, ownSkip, strict, false)
 }
 
 /** Build a balanced open/close interior for a FIXED skip set (no ambient). */
@@ -313,6 +363,10 @@ export function buildBalancedInterior(
     // composeLeaf artifacts while user-authored transform() remains excluded.
     combi._def.recognitionOnly = true
   }
+  // Record what this interior IS, before the self-ref closes the cycle. Any walker
+  // that would otherwise descend through `self` forever can stop here and render
+  // the construct instead of its lowering.
+  ;(combi as BalancedMarked)._balanced = { open, close }
   self.define(combi as Combinator<string>)
   return combi
 }

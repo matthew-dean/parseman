@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rules, choice, sequence, literal, regex, optional, sepBy, many, oneOrMore,
-  not, peek, keywords, word, makeWord, trivia, transform, node, dispatch, endsWith, startsWith, when, otherwise, routed, token, type Combinator,
+  not, peek, keywords, word, makeWord, trivia, transform, node, dispatch, endsWith, startsWith, when, otherwise, routed, token, balanced, scanTo, ref, type Combinator,
 } from '../../src/index.ts'
 import { toEBNF, toRailroadHtml, toRailroadSvg, RAILROAD_CSS, buildSpecModel } from '../../src/spec/index.ts'
 
@@ -435,5 +435,60 @@ describe('spec — static railroad SVG', () => {
 
   it('exports the diagram CSS for styling embedded SVGs', () => {
     expect(RAILROAD_CSS).toContain('svg.railroad-diagram')
+  })
+})
+
+describe('spec — balanced() and anonymous cycles', () => {
+  // `balanced()` builds its interior with a self-referencing `ref()` so a nested
+  // open is consumed recursively. That back-edge carries no `_ruleName`, and the
+  // walk used to cut cycles ONLY at named rules — so every rule reaching a
+  // balanced walked forever: RangeError at the default stack, SIGSEGV at a raised
+  // one. A true cycle, not deep-but-finite recursion.
+
+  it('renders a balanced as its delimiters around an opaque interior', () => {
+    const g = rules(() => ({ Group: sequence(literal('url'), balanced('(', ')')) }))
+    expect(toEBNF(g).trim()).toBe('Group ::= "url" "(" /* balanced … */ ")"')
+  })
+
+  it('covers every balanced flavour — raw, strict, and per-call skip', () => {
+    const g = rules(() => ({
+      Plain: balanced('(', ')'),
+      Strict: balanced('[', ']', { strict: true }),
+      Raw: balanced('{', '}', { raw: true }),
+      Skipping: balanced('(', ')', { skip: [regex(/"[^"]*"/)] }),
+    }))
+    expect(toEBNF(g).trim().split('\n')).toEqual([
+      'Plain ::= "(" /* balanced … */ ")"',
+      'Strict ::= "[" /* balanced … */ "]"',
+      'Raw ::= "{" /* balanced … */ "}"',
+      'Skipping ::= "(" /* balanced … */ ")"',
+    ])
+  })
+
+  it('draws a balanced in a railroad diagram (delimiters visible, interior a comment)', () => {
+    const g = rules(() => ({ Group: balanced('(', ')') }))
+    const [svg] = toRailroadSvg(g)
+    expect(svg!.name).toBe('Group')
+    expect(svg!.svg).toContain('(')
+    expect(svg!.svg).toContain(')')
+    expect(svg!.svg).toContain('balanced …')
+  })
+
+  it('cuts an ANONYMOUS self-reference that never passes through a named rule', () => {
+    const inner = ref<unknown>()
+    inner.define(sequence(literal('<'), many(choice(inner, literal('a'))), literal('>')))
+    const g = rules(() => ({ Tag: sequence(literal('t'), inner) }))
+    expect(toEBNF(g).trim()).toBe('Tag ::= "t" "<" (/* (recursive) */ | "a")* ">"')
+  })
+
+  it('still expands a SHARED combinator at every position — sharing is not a cycle', () => {
+    const shared = sequence(literal('a'), literal('b'))
+    const g = rules(() => ({ Twice: sequence(shared, literal('-'), shared) }))
+    expect(toEBNF(g).trim()).toBe('Twice ::= "a" "b" "-" "a" "b"')
+  })
+
+  it('scanTo does NOT share the cycle — its def is a leaf the walk never descends', () => {
+    const g = rules(() => ({ Sel: sequence(literal('x'), scanTo(literal('{'))) }))
+    expect(toEBNF(g).trim()).toBe('Sel ::= "x" /* … */')
   })
 })

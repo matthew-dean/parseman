@@ -66,7 +66,6 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     case 'field':
     case 'withCtx':
     case 'recover':   return deriveExpected(def.parser)
-    case 'skip':      return deriveExpected(def.main)
     case 'expect':    return def.expected
     case 'node':
     case 'grammar':

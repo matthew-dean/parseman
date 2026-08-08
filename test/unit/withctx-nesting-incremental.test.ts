@@ -196,6 +196,14 @@ const grammar = rules((self) => ({
     expect(out!.code).not.toContain('rules(')
     // the gate predicate + the withCtx extra getter are inlined as mapFns
     expect(out!.code).toMatch(/s\.inner/)
-    expect(out!.code).toMatch(/inner:\s*true/)
+    // NOT repointed at codegen: this asserts the withCtx EXTRAS reach the artifact.
+    // The evaluator used to build the def with a PLACEHOLDER `{}` — codegen only
+    // read `extraSrc`, so the value never mattered — and the table encoder interned
+    // that placeholder, leaving the gate below it permanently false.
+    //
+    // The key may be quoted: the table's const pool is JSON-ish and prints
+    // `{"inner":true}`, codegen prints an object literal. Both put the VALUE in the
+    // artifact, which is the property under test; the quoting is not.
+    expect(out!.code).toMatch(/"?inner"?:\s*true/)
   })
 })

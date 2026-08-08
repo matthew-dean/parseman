@@ -6,7 +6,7 @@ import { consumeTrivia } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { annotateSpanFromLineContext } from '../line-index.ts'
-import { NODE_TAG, NODE_TYPE } from '../cst/reflection.ts'
+import { NODE_TAG, NODE_TYPE } from '../cst/reflection-symbols.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
@@ -112,7 +112,13 @@ function isCstChild(value: unknown): boolean {
       || (value as { _tag?: string })._tag === 'parseError')
 }
 
-function missingInferredType(): never {
+/**
+ * The authoring error for `node()` with no rules() key, raised IDENTICALLY by
+ * every engine. Exported because the table encoder used to answer it with
+ * `UnsupportedConstruct: no opcode for 'node(inferred type)'` — a message that
+ * reads as a table gap and names neither the mistake nor the fix.
+ */
+export function missingInferredType(): never {
   throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
 }
 
@@ -242,7 +248,20 @@ export function node<N>(
       // captures unconditionally there because it knows the mode at compile time.
       const hasDirectValue = build !== undefined || project !== undefined
       const hostCst = hasDirectValue && cstOutputHost(ctx.build)
-      const effTrivia = capturesTrivia || hostCst
+      const structural = !hasDirectValue
+      const hostCapturesThisType = structural
+        && def.type !== undefined
+        && ctx.build?._parsemanCaptureTrivia !== undefined
+        ? ctx.build._parsemanCaptureTrivia(def.type)
+        : undefined
+      // Structural nodes capture for their host by default, but the host may
+      // narrow that default by node type. Grammar-owned capture is authoritative:
+      // an explicit `captureTrivia`/`trailingTrivia` request cannot be disabled by
+      // the host. Direct builders (including a CST host that bypasses one) retain
+      // their existing arity/CST-host decision and never consult this predicate.
+      const effTrivia = structural
+        ? captureTrivia || trailingTrivia || hostCapturesThisType !== false
+        : capturesTrivia || hostCst
       const effFields = capturesFields || (hostCst && hasOwnFields)
       const saved = beginCstNodeCapture(ctx)
       const savedFields = ctx._fields

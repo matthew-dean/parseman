@@ -29,8 +29,6 @@ export type DegradationLevel = 'off' | 'warn' | 'error'
 export type DegradationCode =
   /** A node build's formal parameter list could not be read → all capture tiers kept. */
   | 'build-arity-unconfirmed'
-  /** A node build looks like an `mk(...)` wrapper but did not match → no inline-mk. */
-  | 'mk-inline-missed'
   /** A composed/carried piece is an opaque artifact → its rules were not analysed. */
   | 'opaque-artifact'
   /** A coverage-definition request could not read the grammar → empty is NOT a zero. */

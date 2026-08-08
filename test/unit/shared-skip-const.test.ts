@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest'
 import { scanTo, balanced, literal, regex, parse } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evaluateCombinatorArray } from '../../src/plugin/evaluator.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 // ── Interpreter reference (inline array) ─────────────────────────────────────
 const str = regex(/"(?:[^"\\]|\\.)*"/)
@@ -52,9 +53,7 @@ describe('shared skip const — macro compilation', () => {
 
   it('the compiled parser matches the interpreter (incl. nested string precedence)', () => {
     const result = transformMacro(NAMED, 'shared-skip.ts', new Set(['parseman']))!
-    const fnBody = result.code.replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn upToSemi'
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    const compiled = new Function(fnBody)() as (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }
+    const compiled = evalMacroModule<(i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>(result.code, 'upToSemi')
     for (const input of ['(a "(" b) "x;y";', '();', 'plain;', '(nested (deep) "(" );']) {
       const i = parse(refScan, input)
       const m = compiled(input, 0, {})

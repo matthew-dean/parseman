@@ -18,6 +18,7 @@
 import { describe, it, expect } from 'vitest'
 import { sequence, optional, oneOrMore, many, choice, literal, regex, node, rules, compile, parse, transform, compose } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import type { Combinator, FirstSet } from '../../src/index.ts'
 
 const inFirstSet = (fs: FirstSet, code: number): boolean =>
@@ -148,10 +149,8 @@ describe('macro-compiled dispatch — nullable-prefix arm', () => {
   const evalMacro = (src: string): Record<string, (i: string, p: number, c: Record<string, unknown>) => { ok: boolean; span: { end: number } }> => {
     const out = transformMacro(src, '/pkg/fs.ts', new Set(['parseman']))!
     expect(out.warnings).toEqual([])
-    // eslint-disable-next-line no-new-func
-    return new Function(
-      out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar',
-    )() as ReturnType<typeof evalMacro>
+    // `tableRules` is the emitted module's ONE external reference; inject it.
+    return evalMacroModule(out.code, 'grammar') as ReturnType<typeof evalMacro>
   }
 
   it('macro-compiled compose reaches the `@`-led ref arm (fuse substitution + fix)', () => {
@@ -191,5 +190,124 @@ describe('compose/fuse dispatch — nullable-prefix ref arm', () => {
     expect(g.stmt!('@{x}', 0, {}).ok).toBe(true)
     expect(g.stmt!('.@{y}', 0, {}).ok).toBe(true)
     expect(g.stmt!('42', 0, {}).ok).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6. Dispatch SHAPES, compared across the three engines a caller can reach.
+//
+//    Salvaged from `test/unit/choice-dispatch.test.ts`, which existed to pin the
+//    source lowering's emitted TEXT — that a keyword choice printed a `switch`,
+//    that a wide char-class arm printed `>= 48 &&`, that a two-arm choice printed
+//    neither. Those are one engine's spelling of a decision, and they die with
+//    it. The decision itself is observable without reading any source: every arm
+//    must be reachable, a first char belonging to no arm must fail AT the start,
+//    and the three engines must agree on both.
+//
+//    The four shapes are kept because they are four different dispatch plans — a
+//    multi-char keyword set, single-char operators, a literal mixed with a wide
+//    class, and a two-arm choice below the jump-table threshold. `csvField` (the
+//    partial first-set arm guard) is NOT repeated here: its accept/reject
+//    behaviour is covered whole in `test/examples/csv.test.ts` on both engines,
+//    and in `test/unit/table-identity.test.ts`.
+// ---------------------------------------------------------------------------
+describe('choice dispatch shapes — interpreter, compile(), macro agree', () => {
+  type Ran = { ok: boolean; value?: unknown; end: number }
+  type ParseFn = (input: string, pos: number, ctx: Record<string, unknown>) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
+
+  const modesFor = (combinator: Combinator<unknown>, macroSrc: string, exportName: string): ReadonlyArray<readonly [string, (input: string) => Ran]> => {
+    const compiled = compile(combinator)
+    let macroFn: ParseFn | undefined
+    const macro = (): ParseFn => {
+      if (!macroFn) {
+        const out = transformMacro(macroSrc, 'choice-dispatch-shapes.ts', new Set(['parseman']))!
+        macroFn = evalMacroModule<ParseFn>(out.code, exportName)
+      }
+      return macroFn
+    }
+    return [
+      ['interpreter', (input) => {
+        const r = parse(combinator, input)
+        return { ok: r.ok, value: r.ok ? r.value : undefined, end: r.span.end }
+      }],
+      ['compile()', (input) => {
+        const r = compiled.parse(input, 0)
+        return { ok: r.ok, value: r.ok ? r.value : undefined, end: r.span.end }
+      }],
+      ['macro', (input) => {
+        const r = macro()(input, 0, {})
+        return { ok: r.ok, value: r.ok ? r.value : undefined, end: r.span.end }
+      }],
+    ] as const
+  }
+
+  describe('multi-char keyword set', () => {
+    const methods = choice(literal('GET'), literal('POST'), literal('DELETE')) as Combinator<unknown>
+    for (const [mode, run] of modesFor(
+      methods,
+      `import { literal, choice } from 'parseman' with { type: 'macro' }\nexport const methods = choice(literal('GET'), literal('POST'), literal('DELETE'))`,
+      'methods',
+    )) {
+      it(`${mode}: dispatches each arm`, () => {
+        expect(run('GET').value).toBe('GET')
+        expect(run('POST').value).toBe('POST')
+        expect(run('DELETE').value).toBe('DELETE')
+      })
+      it(`${mode}: a first char in no arm fails AT the start`, () => {
+        const r = run('XYZ')
+        expect(r.ok).toBe(false)
+        expect(r.end).toBe(0)
+      })
+      it(`${mode}: EOF fails`, () => {
+        expect(run('').ok).toBe(false)
+      })
+      it(`${mode}: right first char, wrong body still fails`, () => {
+        expect(run('GOT').ok).toBe(false)
+      })
+    }
+  })
+
+  describe('single-char operators', () => {
+    const ops = choice(literal('+'), literal('-'), literal('*'), literal('/'), literal('%')) as Combinator<unknown>
+    for (const [mode, run] of modesFor(
+      ops,
+      `import { literal, choice } from 'parseman' with { type: 'macro' }\nexport const ops = choice(literal('+'), literal('-'), literal('*'), literal('/'), literal('%'))`,
+      'ops',
+    )) {
+      it(`${mode}: each operator matches`, () => {
+        for (const op of ['+', '-', '*', '/', '%']) expect(run(op).value).toBe(op)
+      })
+      it(`${mode}: a non-operator fails`, () => {
+        expect(run('=').ok).toBe(false)
+      })
+    }
+  })
+
+  describe('literal mixed with a wide char class', () => {
+    const litOrDigits = choice(literal('x'), regex(/[0-9]+/)) as Combinator<unknown>
+    for (const [mode, run] of modesFor(
+      litOrDigits,
+      `import { literal, regex, choice } from 'parseman' with { type: 'macro' }\nexport const litOrDigits = choice(literal('x'), regex(/[0-9]+/))`,
+      'litOrDigits',
+    )) {
+      it(`${mode}: literal arm`, () => { expect(run('x').value).toBe('x') })
+      it(`${mode}: digit-run arm`, () => { expect(run('420').value).toBe('420') })
+      it(`${mode}: neither fails`, () => { expect(run('z').ok).toBe(false) })
+    }
+  })
+
+  describe('two-arm choice, below the jump-table threshold', () => {
+    const twoLit = choice(literal('a'), literal('b')) as Combinator<unknown>
+    for (const [mode, run] of modesFor(
+      twoLit,
+      `import { literal, choice } from 'parseman' with { type: 'macro' }\nexport const twoLit = choice(literal('a'), literal('b'))`,
+      'twoLit',
+    )) {
+      it(`${mode}: both arms, and a miss`, () => {
+        expect(run('a').value).toBe('a')
+        expect(run('b').value).toBe('b')
+        expect(run('c').ok).toBe(false)
+      })
+    }
   })
 })

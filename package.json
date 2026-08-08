@@ -64,6 +64,7 @@
   },
   "files": [
     "dist",
+    "src",
     "README.md"
   ],
   "scripts": {
@@ -77,8 +78,11 @@
     "typecheck": "tsc",
     "lint": "oxlint --ignore-path .oxlintignore src test examples bench",
     "check:control-bytes": "node scripts/check-control-bytes.mjs",
+    "check:invariants": "node scripts/check-invariants.mjs",
+    "check:differentials": "node scripts/check-differentials.mjs",
     "bench": "node --import tsx/esm bench/run.ts",
     "bench:parseman": "node --import tsx/esm bench/parseman.ts",
+    "bench:closure-json": "node --import tsx/esm bench/closure-json-path.ts",
     "bench:composeleaf": "node --import tsx/esm bench/composeleaf-firstset.ts",
     "bench:incremental": "node --import tsx/esm bench/incremental-run.ts",
     "bench:literal": "node --import tsx/esm bench/literal-match.ts",
@@ -116,7 +120,17 @@
     "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report",
     "spelling:gate": "node --import tsx/esm bench/spelling-equivalence.ts",
     "spelling:baseline": "node --import tsx/esm bench/spelling-equivalence.ts --update",
-    "bench:margin": "node --import tsx/esm bench/svg-margin.ts"
+    "bench:margin": "node --import tsx/esm bench/svg-margin.ts",
+    "divergence:jess": "node --import ./bench/jess/register.mjs bench/jess/divergence.ts",
+    "size:jess": "node --import ./bench/jess/register.mjs bench/jess/size.ts",
+    "fold:jess": "node --import ./bench/jess/register.mjs bench/jess/fold-size.ts",
+    "fold:identity": "node --import ./bench/jess/register.mjs bench/jess/fold-identity.ts",
+    "fold:load": "node --import ./bench/jess/register.mjs bench/jess/fold-load.ts",
+    "speed:jess": "node --import ./bench/jess/register.mjs bench/jess/speed.ts",
+    "load:jess": "node --import ./bench/jess/register.mjs bench/jess/load.ts",
+    "fixture:jess": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts",
+    "bench:less": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts less",
+    "bench:jess:ab": "node --import ./bench/jess/ab-register.mjs bench/jess/ab.ts"
   },
   "keywords": [
     "parser",

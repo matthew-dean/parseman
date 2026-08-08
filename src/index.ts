@@ -1,18 +1,16 @@
-export type { Combinator, ParseResult, ParseOk, ParseFail, ParseContext, ParseError, Span, ParserMeta, FirstSet, CharRange, ParserDef, ChoiceStrategy, AutoNotCheck, GatedArm, DispatchCase, DispatchMatcherCase, BuildHost, CstCollapsePredicate, FieldCapture, FieldMap } from './types.ts'
+export type { Combinator, CompiledParser, ParseResult, ParseOk, ParseFail, ParseContext, ParseError, Span, ParserMeta, FirstSet, CharRange, ParserDef, ChoiceStrategy, AutoNotCheck, GatedArm, DispatchCase, DispatchMatcherCase, BuildHost, CstCollapsePredicate, FieldCapture, FieldMap } from './types.ts'
 
 export { literal } from './combinators/literal.ts'
 export type { LiteralOptions } from './combinators/literal.ts'
 
+// `regex()` derives its own first-set: the analyzer (`./regex/first-set.ts`) is
+// imported directly by `./combinators/regex.ts`, NOT registered here. It used to
+// be wired in from this entry, which made `regex()`'s first-set depend on whether
+// the library entry was in the bundle's module graph — and `parseman/table` is a
+// separate graph, so its `regex()` fell back to the permissive `any()` set and
+// `classifiedTrivia()` rejected every table-lowered grammar. See the comment on
+// the import in `./combinators/regex.ts`.
 export { regex } from './combinators/regex.ts'
-// Wire the hand-rolled first-set analyzer into `regex()`. Importing the library
-// entry opts you into precise choice-dispatch fast paths; a deep-path
-// `import { regex }` (no library entry) gets a permissive fallback, so the
-// analyzer tree-shakes out entirely. The analyzer is a small dependency-free
-// regex parser (`./regex/first-set.ts`) — no `regexp-tree`, no codegen — so
-// interpreter-only bundles stay lean.
-import { registerRegexAnalyzer } from './combinators/regex.ts'
-import { firstSetFromRegex } from './regex/first-set.ts'
-registerRegexAnalyzer(firstSetFromRegex)
 export { keywords, word, makeWord } from './combinators/keywords.ts'
 export type { KeywordsOptions, WordOptions } from './combinators/keywords.ts'
 
@@ -30,13 +28,43 @@ export { peek } from './combinators/peek.ts'
 export { node } from './combinators/node.ts'
 export type { BuildNode, NodeCombinator, NodeOptions, NodeProjectOptions } from './combinators/node.ts'
 // lazy() is intentionally NOT exported.
-export { transform, skip, trivia, classifiedTrivia, label, field } from './combinators/map.ts'
+export { transform, trivia, classifiedTrivia, label, field } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
 export { token, leaf } from './combinators/token.ts'
 
-export { compile } from './compiler/codegen.ts'
-export type { CompiledParser, LinkablePieces, DuplicationOption, HostMode } from './compiler/codegen.ts'
+export { compile } from './table/compile.ts'
+/*
+ * `CompiledParser` is exported above, from `./types.ts` — it is the contract
+ * `compile()` answers to, so it lives with the library's types.
+ *
+ * TWO NAMES USED TO SIT HERE and no longer do. Neither was ever documented and
+ * nothing outside the source lowering referenced either; they were in the barrel
+ * because the barrel re-exported the engine, not because anything asked for them.
+ *
+ *   `LinkablePieces`    — the SOURCE-LOWERING linkable IR. Every field of it is
+ *                         source text or an input to resolving source text (see
+ *                         `compile-linkable-table.ts`), so it has no meaning for a
+ *                         table artifact and dies with the source lowering. The
+ *                         public composable-piece type is `LinkableTable`, below.
+ *   `DuplicationOption` — an option bag for the source lowering's duplication
+ *                         diagnostic, used nowhere else. The public diagnostic
+ *                         surface is `analyzeDuplication` /
+ *                         `AnalyzeDuplicationOptions`, exported further down.
+ *
+ * `HostMode` stays: it names the `hostMode` option on `rules()` and `compile()`,
+ * which is public. It now comes from the artifact↔host contract module that has
+ * owned the definition all along.
+ */
+export type { HostMode } from './cst/host-mode.ts'
+/**
+ * `linkable()` produces TABLES too — the table counterpart of `compileLinkable`.
+ * A piece is a table when it is self-contained, and always carries its IR, which
+ * is what makes table-to-table composition a rule-map merge and one encode rather
+ * than a merge of two already-encoded programs.
+ */
+export { compileLinkableTable, type LinkableTable, type LinkableTableOptions } from './compiler/compile-linkable-table.ts'
+export type { DuplicationOption } from './table/duplication-hook.ts'
 
 // THE diagnostic entry point. `compile()` never reports anything: diagnostics are a
 // deliberate act, not a side effect of producing an artifact. `diagnoseGrammar` accepts
@@ -94,12 +122,22 @@ export type {
   ArmOverlapFinding, RewriteFinding, RewriteKind, SepByVerdict, KeywordRegexFinding, DivergentNodeFinding,
   StructureLossFinding,
 } from './analysis/duplication.ts'
-// `pick()` is deliberately NOT re-exported: build-inlining a `pick()` of an imported
-// grammar can't yet carry that grammar's ambient trivia across the module boundary, so
-// the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)
-// for later exploration of that lowering. `composeLeaf()` is terminal by design;
-// ordinary reusable grammar composition remains `compose()`.
-export { compose, composeLeaf, cstBuildHost, fuseInterpreted, isInterpretedFuse } from './compiler/linker.ts'
+// `composeLeaf()` is terminal by design; ordinary reusable grammar composition is
+// `compose()`. There is no à-la-carte rule selection: compose small pieces instead.
+//
+// `fuseInterpreted()` / `isInterpretedFuse()` are deliberately NOT re-exported. The
+// interpreted fuse is a DIAGNOSTIC engine — it is how the differential harnesses and
+// bench legs run a grammar without reaching codegen — not a supported way to ship a
+// parser. Publishing it advertised a second engine with the same grammar and different
+// runtime characteristics, and `isInterpretedFuse` existed as an escape hatch that not
+// even Parseman called. Both stay internal (./compiler/linker.ts).
+//
+// Withdrawing the discriminator is only safe because `composeLeaf()` no longer LIES
+// about which engine it returned: it is typed `Record<string, Runnable>`, true on both
+// paths, and `Runnable` is what `run()`/`parseDoc()` take. Were that type ever narrowed
+// back to `FusedRule`, `isInterpretedFuse` would have to be re-exported in the same
+// change — a dual shape with no way to detect it is the worse of the two.
+export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans } from './line-index.ts'
@@ -118,7 +156,14 @@ export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, Node
 
 export { parseDoc } from './functional/doc.ts'
 export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts'
-export { run } from './functional/run.ts'
+/* THE PUBLIC PARSE PATH IS THE TABLE. `functional/run.ts` is the driver and
+ * still walks a combinator directly when handed one — that branch is the
+ * interpreter, and it stays reachable from `test/` and the identity sweep so a
+ * table/codegen divergence has something to be bisected against. It is not what
+ * the main entry hands out. See `functional/run-tabled.ts` for why the encode
+ * cannot live inside the driver (`parseman/run`'s closure) and why the cache is
+ * load-bearing rather than an optimisation. */
+export { run } from './functional/run-tabled.ts'
 export type { RootTriviaCapture, RunResult, RunOptions, Runnable } from './functional/run.ts'
 export { GRAMMAR_COVERAGE_DEFINITIONS, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, grammarCoverageDefinitions, composedGrammarCoverageDefinitions, runWithGrammarCoverage } from './coverage.ts'
 export type { GrammarCoverageCollector, GrammarCoverageDefinition, GrammarCoverageSnapshot, GrammarInstrumentationContext, GrammarTraceEvent, GrammarTracePhase, GrammarTraceSink, GrammarTraceSnapshot } from './coverage.ts'

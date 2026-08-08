@@ -339,10 +339,6 @@ arm matches at every position, so it disables its `choice`'s first-char dispatch
 Map a successful value (and span) through `fn(value, span)`. For plain value-mapping only;
 use [`node`](#node-type-combinator-build-opts) for tree building.
 
-### `skip(main, skipped)`
-
-Match `main` then `skipped`; return `main`'s value, with the span extended across both.
-
 ### `token(combinator)`
 
 Run `combinator` with active trivia cleared and return the matched source text as a
@@ -508,12 +504,22 @@ export const grammar = composeLeaf([
 ```
 
 Every item before the final local map must prove recognition-only. `composeLeaf`
-is terminal: it cannot be fed into another `compose()`/`composeLeaf()` call. It
-is publicly exported so macro source can import it; an unlowered runtime call
-returns an **interpreted** fuse instead — the same shape `fuseInterpreted()`
-produces, fused lazily on first rule access rather than at construction. It is a
-different engine, not a different grammar, so the macro build remains the one
-that ships.
+is terminal: it cannot be fed into another `compose()`/`composeLeaf()` call.
+
+**Build it with the macro.** The macro is the only supported way to produce a leaf
+grammar: it lowers the call to static fused source, and a call it cannot fuse is a
+build error (`composeLeaf() must macro-fuse`), never a silent fallback. An unlowered
+runtime call does not produce that artifact — it yields Parseman's internal
+interpreted fuse, which exists for diagnostics and differential harnesses. That is a
+different engine, not a different grammar, and it is not a supported way to ship a
+parser.
+
+Because both paths are real, `composeLeaf` returns `Record<string, Runnable>`, not
+`Record<string, FusedRule>`. `Runnable` is "a compiled rule *or* a combinator", which
+is exactly what [`run`](#runentry-input-opts) and
+[`parseDoc`](#parsedocregistry-rootrule-input-opts) accept, so the declared type is
+true on both paths and you never narrow to use the result. Annotate a leaf grammar as
+`Record<keyof MyRules, Runnable>`.
 
 ## Trees
 
@@ -825,11 +831,11 @@ run(g.Value, '12 x', { trivia: g.rw })  // unconsumedFrom → offset of 'x'
 
 ### `compile(combinator, mapFnSources?)`
 
-JIT-compile a combinator tree to an optimized JS function at runtime. Returns a
+Lower a combinator tree to the shared compact table runtime at runtime. Returns a
 [`CompiledParser`](./types#compiledparser) exposing `.parse()`, `.parseWithContext()`,
 `.parseWithErrors()`, plus the generated `.source` and `.inlineExpression` strings.
-Requires `new Function` (won't run under a strict CSP). See
-[The three modes](../guide/modes#compile-runtime-jit).
+It uses the same explicit `a:[]` closure table artifact as macro output and does
+not require `new Function`; see [The three modes](../guide/modes#compile-runtime-lowering).
 
 ## Spec generation
 
@@ -925,11 +931,11 @@ re-binds every rule reference in one shared scope, an override reroutes the base
 calls too (open recursion). Each item is a grammar (a `rules()` result) or an
 already-compiled artifact.
 
-- **With the macro (build time):** `compose([...])` is fused into **static source** — a
-  plain closure of direct calls. **No `new Function`, no eval** in the emitted code.
-- **Without the macro (runtime):** `compose([...])` fuses when it runs, via `new Function`
-  — the same JIT `compile()` uses (so, like `compile()`, it needs `'unsafe-eval'` under a
-  strict CSP). Parsing is never eval; only the one-time fuse is.
+- **With the macro (build time):** `compose([...])` becomes a compact table program that
+  imports the shared table runtime. **No `new Function`, no eval** in the emitted code or
+  at parse time.
+- **Without the macro (runtime):** `compose([...])` lowers to the same compact closure
+  table program. It has the same CSP behavior and does not take a separate JIT path.
 
 ## Error recovery
 

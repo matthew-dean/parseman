@@ -49,6 +49,7 @@
 import type {
   ChoiceInventoryReport, ChoiceInventoryEntry, WastedWorkReport, ArmDeclineReason, SiteDeclineReason,
 } from './choice-cost.ts'
+import { groupDigits } from './format-number.ts'
 
 export type RenderOptions = {
   /** Rows to show. Default 20. The report always holds all of them. */
@@ -62,18 +63,17 @@ export type RenderOptions = {
 
 // ── formatting primitives ────────────────────────────────────────────────────
 
-/** Deterministic thousands grouping. `toLocaleString()` is locale-dependent and would
- *  make the output differ between machines — the one thing a gateable rendering
- *  cannot do. */
-export function groupDigits(n: number): string {
-  const s = String(Math.trunc(Math.abs(n)))
-  let out = ''
-  for (let i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 === 0) out += ','
-    out += s[i]
-  }
-  return (n < 0 ? '-' : '') + out
-}
+/**
+ * Deterministic thousands grouping. `toLocaleString()` is locale-dependent and
+ * would make the output differ between machines — the one thing a gateable
+ * rendering cannot do.
+ *
+ * DEFINED IN `./format-number.ts` and re-exported here because this module's own
+ * callers import it from here. It was a byte-identical second copy: `./terminal.ts`
+ * declared one, this file declared another, and the two were one edit away from
+ * disagreeing about how a report reads on two different screens.
+ */
+export { groupDigits }
 
 /** Byte counts at a glance. Binary units, fixed to one decimal, so 1,376,256 renders
  *  as `1.3 MB` on every machine. */

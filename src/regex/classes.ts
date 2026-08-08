@@ -46,6 +46,89 @@ export function readUnicodeEscape(body: string, i: number): { cp: number; next: 
   return { cp: Number.parseInt(hex, 16), next: i + 6 }
 }
 
+/** Regex syntax characters that cannot appear in a LITERAL fragment unescaped. */
+const META = new Set('()[]{}*+?|^$.'.split(''))
+
+/**
+ * A regex fragment that is a plain run of literal characters → its code points,
+ * or null when the fragment contains any operator (so a caller can never mistake
+ * `a*` for the two-char literal `a*`). An empty fragment returns null, because
+ * every caller wants "at least one char to match".
+ */
+export function literalCodePoints(frag: string): number[] | null {
+  const out: number[] = []
+  let i = 0
+  while (i < frag.length) {
+    const ch = frag[i]!
+    if (ch === '\\') {
+      const e = frag[i + 1]
+      if (e === undefined) return null
+      out.push(e in CLASS_ESCAPES ? CLASS_ESCAPES[e]! : e.codePointAt(0)!)
+      i += 2
+      continue
+    }
+    if (META.has(ch)) return null
+    out.push(ch.codePointAt(0)!)
+    i += 1
+  }
+  return out.length ? out : null
+}
+
+/**
+ * Index of the `]` that CLOSES the class opening at `body[0]`, honouring `\]`,
+ * or −1 if the class is unterminated. A leading `^` is negation, never a member;
+ * every other char up to the first unescaped `]` is. This is JS's own non-`u`
+ * reading, under which `[]` is the empty class — so in `[]]` the FIRST `]`
+ * closes and a literal `]` follows, and this returns 1, not 2.
+ */
+function classCloseIndex(body: string): number {
+  let i = 1
+  if (body[i] === '^') i++
+  while (i < body.length) {
+    const ch = body[i]
+    if (ch === '\\') { i += 2; continue }
+    if (ch === ']') return i
+    i++
+  }
+  return -1
+}
+
+/**
+ * A single-character MATCHER fragment as a (possibly negated) range set: a
+ * bracketed class `[…]`/`[^…]`, a `\d`/`\w`/`\s` shorthand, or one literal char.
+ * Anything wider (a group, a multi-char literal, `.`) returns null.
+ *
+ * "Bracketed class" means the WHOLE fragment is ONE class. Testing only that it
+ * opens with `[` and ends with `]` is a different, weaker question, and
+ * `[ \t\n\r\f]*[\$(]` answers it while being a SEQUENCE — a whitespace run, then
+ * one of `$(`. Read as a single class its members become the garbage union of
+ * everything between the OUTER brackets, whitespace and `*` and `[` included, so
+ * scss's `\+(?=[ \t\n\r\f]*[\$(])` matched a `+` before a space; the shape oracle
+ * caught it at 203 positions of the scss corpus. Every caller here asks "is this
+ * ONE char matcher", so a fragment that is not gets null — declining costs a
+ * lowering or widens a first-set to `any()`, both of which only forgo a fast
+ * path, whereas accepting yields a wrong member set, which is a wrong scan or a
+ * wrong dispatch.
+ */
+export function parseClassOperand(body: string): { ranges: Array<[number, number]>; negated: boolean } | null {
+  if (body === '\\d' || body === '\\w' || body === '\\s') {
+    return { ranges: shorthandRanges(body[1] as 'd' | 'w' | 's'), negated: false }
+  }
+  if (body.length >= 2 && body[0] === '[') {
+    // The class must close at the LAST char; anything after it is a second token
+    // (a quantifier, another class, a literal) that this fragment cannot express.
+    if (classCloseIndex(body) !== body.length - 1) return null
+    let inner = body.slice(1, -1)
+    const negated = inner.startsWith('^')
+    if (negated) inner = inner.slice(1)
+    const ranges = parseClassRanges(inner)
+    return ranges ? { ranges, negated } : null
+  }
+  const cps = literalCodePoints(body)
+  if (cps && cps.length === 1) return { ranges: [[cps[0]!, cps[0]!]], negated: false }
+  return null
+}
+
 type ClassAtom = { cp: number } | { set: Array<[number, number]> }
 
 /**

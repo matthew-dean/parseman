@@ -72,7 +72,6 @@ export type ParserDef =
   // that is a terminated list, spelled `many(sequence(item, term))`.
   | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: number; max?: number; trailing?: 'allow'; /** Author opted in via `keepSeparator()`: separators stay in `children`. Absent = items only. */ keepSeparators?: true }
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; recognitionOnly?: boolean }
-  | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
   | { tag: 'token';     parser: Combinator<unknown> }
   // `fallback` is what `routed()` parses IN PLACE when there is no dispatch-consumed
@@ -148,10 +147,11 @@ export type CstCollapsePredicate = (
 
 export type BuildHost = ((
   type: string,
-  // `undefined` when a structural host opts out of the duplicate children array
-  // via `_parsemanReadsChildren === false` (codegen elides the chV allocation).
-  // Hosts that read `children` must tolerate an omitted array (e.g. `children ?? []`).
-  children: ReadonlyArray<unknown> | undefined,
+  // Always an array by public contract. When a structural host opts out of the
+  // duplicate children collector via `_parsemanReadsChildren === false`, it
+  // receives the shared empty array while `rawChildren` retains the full source
+  // view. Keeping this non-optional preserves assignability for existing hosts.
+  children: ReadonlyArray<unknown>,
   fields: FieldMap | undefined,
   span: { start: number; end: number },
   rawChildren: ReadonlyArray<unknown>,
@@ -174,7 +174,13 @@ export type BuildHost = ((
    * `_parsemanCstCollapse` (which inspects `children`).
    */
   _parsemanReadsChildren?: boolean | undefined
-  /** Framework-internal: node types whose structural host wants triviaLog. */
+  /**
+   * Framework-internal: node types whose structural host wants triviaLog.
+   * This predicate is assembly-specialisation configuration: both its identity
+   * and behaviour must remain stable after the host is first used. To change
+   * the selection, assign a NEW predicate function; replacing its identity
+   * invalidates the host's cached specialisation.
+   */
   _parsemanCaptureTrivia?: ((type: string) => boolean) | undefined
   /**
    * Framework-internal: per-node-type trivia-kind filter for the captured
@@ -301,10 +307,10 @@ export type ParseContext = {
    * failure diagnostics at parity with the interpreter. Overwritten on each leaf
    * failure; only meaningful immediately after a sub-parse reports failure.
    */
-  _fe?: number
-  _fx?: string[]
+  _fe?: number | undefined
+  _fx?: string[] | undefined
   /** Framework-internal compiled-output committed-failure flag. */
-  _fc?: boolean
+  _fc?: boolean | undefined
   /**
    * When set by completionsAt(), tracks the highest-position ParseFail seen
    * during parsing up to _probe.offset. Used to return completions at the cursor
@@ -383,6 +389,22 @@ export type ParseContext = {
   _lineIndex?: { lineStarts: number[] } | undefined
   /** Framework-internal high-water mark for optional line tracking range scans. */
   _lineScannedTo?: number | undefined
+  /**
+   * Framework-internal coverage hook. Previously reached `ctx` only via a
+   * conditional spread of `RunOptions.instrumentation`, so an instrumented parse
+   * gave `ctx` a DIFFERENT hidden class from an ordinary one. Declared here so
+   * every `ctx` has one shape; `undefined` when not instrumented.
+   */
+  _grammarCoverage?: ((id: string) => void) | undefined
+  /** Framework-internal trace sink — same shape rationale as `_grammarCoverage`. */
+  _grammarTrace?: {
+    write(event: {
+      id: string
+      phase: 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack' | 'rollback'
+      offset: number
+      end?: number
+    }): void
+  } | undefined
 }
 
 /**
@@ -492,4 +514,50 @@ export type AutoNotCheck =
 export type GatedArm<T = unknown> = {
   gate: (state: unknown) => boolean
   combinator: Combinator<T>
+}
+
+/**
+ * WHAT `compile()` HANDS BACK — the contract, not one engine's return type.
+ *
+ * This lives with the rest of the library's types rather than inside a lowering
+ * because it is the shape BOTH lowerings answer to: `table/compile.ts` returns it
+ * today and is what `src/index.ts` exports as `compile`. It started in
+ * `compiler/codegen.ts`, which made the table import its own public contract from
+ * the engine the table replaced — backwards, and a reason the engine could not be
+ * deleted.
+ */
+export type CompiledParser<T> = {
+  parse(input: string, pos?: number): ParseResult<T>
+  /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
+  parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
+  /**
+   * Like parse(), but activates the error-collection channel. Recovery points
+   * (expect()) collect their ParseErrors into result.errors instead of only
+   * embedding them as values. Always returns ParseOk — top-level failures are
+   * still ParseFail.
+   */
+  parseWithErrors(input: string, pos?: number): ParseResult<T> & { errors: ParseError[] }
+  /** The generated source (for inspection / future source maps) */
+  source: string
+  /**
+   * A self-contained JS expression (IIFE) that evaluates to a parse function.
+   * Safe to inline directly into transformed source — no external references
+   * except for runtime-fallback parsers embedded via closures.
+   * Returns null if the parser cannot be fully inlined (e.g. contains user
+   * closures that can't be serialized).
+   */
+  inlineExpression: string | null
+  /**
+   * WHY `inlineExpression` IS NULL — one named reason per cause, present only
+   * when the artifact could not be PRINTED. A null with no reason is the failure
+   * this field exists to make impossible: the caller's fallback is "leave the
+   * grammar interpreted", which is a ~5x silent perf regression, so the reason
+   * has to reach a warning rather than being inferred from a null.
+   *
+   * Empty/absent means printable. Set by the table lowering; the source lowering's
+   * own unprintable cases predate this channel and still return a bare null.
+   */
+  runtimeOnly?: readonly string[]
+  /** Present only when compiled with `{ coverage: true }`. */
+  coverageDefinitions?: readonly import('./compiler/grammar-coverage-ids.ts').GrammarCoverageDefinition[]
 }

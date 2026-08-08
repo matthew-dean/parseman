@@ -54,11 +54,26 @@ export function adjacencyExpected(def: AdjacencyDef): string {
  * BEFORE the ambient trivia scan. No capture, no cursor movement, no ctx writes.
  */
 export function holdsAdjacency(input: string, cur: number, ctx: ParseContext, def: AdjacencyDef): boolean {
+  return adjacencyHolds(input, cur, ctx, def.polarity === 'notAdjacent', def.kinds)
+}
+
+/**
+ * The test itself, over the two things a def actually carries.
+ *
+ * Split from `holdsAdjacency` so the TABLE drivers can reach it: both decode a
+ * polarity word and a const-pool slot out of the instruction stream and have no
+ * `AdjacencyDef` object to hand — and manufacturing one per assertion, on a
+ * boundary test that is otherwise allocation-free, would be an allocation the
+ * interpreter does not pay. One implementation, three engines.
+ */
+export function adjacencyHolds(
+  input: string, cur: number, ctx: ParseContext, negated: boolean, kinds: readonly string[] | undefined,
+): boolean {
   const end = probeTriviaEnd(input, cur, ctx)
-  if (def.polarity === 'adjacent') return end === cur
+  if (!negated) return end === cur
   if (end === cur) return false
-  if (def.kinds === undefined) return true
-  const want = resolveAdjacencyKindMask(ctx.trivia, def.kinds)
+  if (kinds === undefined) return true
+  const want = resolveAdjacencyKindMask(ctx.trivia, kinds)
   const spec = analyzeLabeledTrivia(ctx.trivia!)!
   return (triviaKindMaskAt(input, cur, spec, ctx.state) & want) !== 0
 }
@@ -69,6 +84,19 @@ export function adjacencyFail(pos: number, def: AdjacencyDef): ParseFail {
 
 const NO_STANDALONE_PARSE = 'adjacency assertions are boundary tests: use adjacent()/notAdjacent() as a '
   + 'NON-FIRST term of a sequence(), where the preceding term defines the gap being asserted.'
+
+/**
+ * The error a marker in a position with no boundary raises — the same sentence
+ * from every engine.
+ *
+ * The table drivers need it for the same reason the combinator does: an
+ * assertion reached anywhere but a sequence term has no gap to test, and
+ * silently answering "no trivia here" would make `notAdjacent()` a guaranteed
+ * failure and `adjacent()` a no-op, both invisible.
+ */
+export function adjacencyMisuse(polarity: 'adjacent' | 'notAdjacent'): TypeError {
+  return new TypeError(`${polarity}(): ${NO_STANDALONE_PARSE}`)
+}
 
 function adjacencyCombinator(def: AdjacencyDef): Combinator<null> {
   const meta: ParserMeta = {
@@ -88,7 +116,7 @@ function adjacencyCombinator(def: AdjacencyDef): Combinator<null> {
       // (a bare choice arm, a node()'s whole body, a repeat item). Silently
       // answering "no trivia here" would make `notAdjacent()` a guaranteed failure
       // and `adjacent()` a no-op — both invisible. Say so instead.
-      throw new TypeError(`${def.polarity}(): ${NO_STANDALONE_PARSE}`)
+      throw adjacencyMisuse(def.polarity)
     },
   }
 }

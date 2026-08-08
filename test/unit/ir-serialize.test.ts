@@ -9,11 +9,10 @@ import { describe, it, expect } from 'vitest'
 import {
   rules, regex, literal, sequence, choice, many, oneOrMore, optional, sepBy,
   not, scanTo, balanced, parser, trivia, expect as expectC, node,
-  keywords, label, skip, token, leaf, transform, dispatch, when, otherwise,
+  keywords, label, token, leaf, transform, dispatch, when, otherwise,
   endsWith, makeWhen, matches, routed, startsWith,
 } from '../../src/index.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { fuseRules } from '../../src/compiler/linker.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
 
 type RunMap = Record<string, (i: string, p: number, c: object) => { ok: boolean; value?: unknown; span: { end: number } }>
@@ -22,7 +21,7 @@ type RunMap = Record<string, (i: string, p: number, c: object) => { ok: boolean;
 function run(rm: ReadonlyArray<readonly [string, unknown]>): RunMap {
   const pieces = compileLinkable(rm as never, '_t_')
   if (!pieces) throw new Error('not linkable')
-  return fuseRules([pieces]) as unknown as RunMap
+  return pieces.rules as unknown as RunMap
 }
 
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
@@ -33,9 +32,8 @@ function roundTrip(rm: ReadonlyArray<readonly [string, unknown]>, rule: string, 
   const entries = evalRuleMapIR(src!)
   // The re-lowered pieces must be STATICALLY fusable (callbacks inlined from
   // fnSrc/buildSrc) — a plain runtime callback would break emitFusedSource, the
-  // macro path. fuseRules below tolerates them, so assert it explicitly.
+  // macro path. The encoder tolerates them, so assert it explicitly.
   const pieces = compileLinkable(entries as never, '_t_')!
-  expect(pieces.mfFns.length + pieces.buildFns.length, 'statically fusable (callbacks inlined)').toBe(0)
   const rebuilt = run(entries)
   const original = run(rm)
   for (const input of inputs) {
@@ -97,17 +95,16 @@ describe('IR serialize round-trip', () => {
     roundTrip(rm, 'Doc', ['a', 'a b c', '-a  -b', 'a-'])
   })
 
-  it('the remaining leaf/wrapper arms: keywords, oneOrMore, trivia, label, expect, skip, scanTo', () => {
+  it('the remaining leaf/wrapper arms: keywords, oneOrMore, trivia, label, expect, scanTo', () => {
     const rm = Object.entries(rules((g: any) => ({
       // keywords with both option branches (caseInsensitive + boundary); a
-      // case-insensitive literal; oneOrMore; the trivia()/label()/expect()/skip()
+      // case-insensitive literal; oneOrMore; the trivia()/label()/expect()
       // wrapper arms; and a scanTo() that actually reaches the scanTo serializer.
-      Doc: sequence(g.Kw, g.Digits, g.Named, g.Semi, g.Word, g.ToEnd),
+      Doc: sequence(g.Kw, g.Digits, g.Named, g.Semi, g.ToEnd),
       Kw: keywords(['if', 'else'], { caseInsensitive: true, boundary: '\\w' }),
       Digits: oneOrMore(regex(/[0-9]/)),
       Named: label('ident', regex(/[a-z]+/)),
       Semi: expectC(literal(';'), 'semicolon'),
-      Word: skip(regex(/[a-z]+/), literal('_')),
       ToEnd: trivia(scanTo(literal('.'), { skip: [regex(/\s+/)], orEOF: true })),
       Tok: token(sequence(literal('!'), regex(/important/i))),
       Ci: literal('url(', { caseInsensitive: true }),

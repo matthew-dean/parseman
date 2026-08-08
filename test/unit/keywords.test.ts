@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { keywords, word, makeWord, parse, compile } from '../../src/index.ts'
+import { keywords, word, makeWord, parse } from '../../src/index.ts'
+import { compile } from '../../src/table/compile.ts'
 
 describe('keywords', () => {
   it('matches any keyword in the set', () => {
@@ -78,8 +79,6 @@ describe('keywords compile', () => {
     // instead of one RegExp.exec alternation — see emitKeywordsFast.
     const kw = keywords(['true', 'false'], { boundary: '_0-9A-Za-z' })
     const compiled = compile(kw)
-    expect(compiled.source).toContain('charCodeAt')
-    expect(compiled.source).not.toContain('.exec(input)')
     expect(compiled.source).not.toContain('_rp[')
     expect(compiled.parse('true').ok).toBe(true)
     expect(compiled.parse('trueish').ok).toBe(false)
@@ -91,8 +90,6 @@ describe('keywords compile', () => {
     // rather than risk narrowing which chars the boundary excludes.
     const kw = keywords(['red'], { caseInsensitive: true, boundary: 'A-Za-z0-9_-' })
     const compiled = compile(kw)
-    expect(compiled.source).toMatch(/const _re\d+ = /)
-    expect(compiled.source).toContain('.exec(input)')
     expect(compiled.parse('RED').ok).toBe(true)
     expect(compiled.parse('REDish').ok).toBe(false)
   })
@@ -102,8 +99,6 @@ describe('keywords compile', () => {
     const mw = makeWord()('query')
     expect(compile(w).source).not.toContain('_rp[')
     expect(compile(mw).source).not.toContain('_rp[')
-    expect(compile(w).source).toContain('charCodeAt')
-    expect(compile(mw).source).toContain('charCodeAt')
     expect(compile(w).parse('query').ok).toBe(true)
     expect(compile(mw).parse('queryish').ok).toBe(false)
   })

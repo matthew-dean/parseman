@@ -23,19 +23,20 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, propName, type Scope, type ScopeEntry } from './evaluator.ts'
+import { classifyRuleMap } from '../analysis/commitment.ts'
+import { compile } from '../table/compile.ts'
+import { compileRuleMap } from '../table/compile-rule-map.ts'
+import { compileLinkableTable } from '../compiler/compile-linkable-table.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
 import {
   beginDegradationCapture, endDegradationCapture, formatDegradation, formatDegradations,
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
-import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
-import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
-import { createModuleHoist, HOIST_MARKER_PROBE } from '../compiler/module-hoist.ts'
+import type { HostMode } from '../cst/host-mode.ts'
+import { COMPOSED_PIECES } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
-import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { grammarReflectionSource, type GrammarReflection } from '../cst/reflection.ts'
 import { createHash } from 'node:crypto'
@@ -48,6 +49,16 @@ import type {
   Statement,
   ExportNamedDeclaration,
 } from '@oxc-project/types'
+
+/**
+ * Where a lowered module imports the shared table driver from.
+ *
+ * The PUBLIC subpath, not a deep path into `src/`: this string is written into a
+ * consumer's build output, so it has to be a specifier their resolver can see.
+ * `parseman/table` is declared in package.json `exports` and re-exports
+ * `tableRules` as `tableRules` (src/table/index.ts:28).
+ */
+const TABLE_RUNTIME_SPECIFIER = 'parseman/table'
 
 export type ParsecraftPluginOptions = {
   /** Extra module specifiers to treat as parseman re-exports */
@@ -76,6 +87,39 @@ export type ParsecraftPluginOptions = {
 }
 
 const PARSEMAN_MODULE = 'parseman'
+
+/**
+ * The REASON a lowering refused, appended to the warning that reports it.
+ *
+ * A grammar that fails to lower falls back to the interpreter with the parseman
+ * import surviving — it still parses, so no test notices, and the only symptom is
+ * ~79 ms against ~14 ms on `benchmark.less`. "Couldn't be inlined" alone does not
+ * tell an author which construct to change; the compiler knows, so it says.
+ */
+function reasonSuffix(runtimeOnly: readonly string[] | undefined): string {
+  return runtimeOnly === undefined || runtimeOnly.length === 0
+    ? ''
+    : ` — ${runtimeOnly.join('; ')}`
+}
+
+/** THE reader for a build-time options object — `rules({ … }, f)`, `compose(…, { … })`.
+ *
+ * Returns the value expression for `name`, or undefined when the object does not set it.
+ * Keys are compared through `propName`, the plugin's single property-key reader, so a
+ * QUOTED key is the same key and a COMPUTED key is no key at all.
+ *
+ * This existed three times, inline, each reading only `key.name`. The runtime path reads
+ * a real object and cannot tell `{ hostMode: 'cst' }` from `{ 'hostMode': 'cst' }`; the
+ * macro could, and dropped the second — shipping an 'ast' artifact for a source that
+ * asked for 'cst', with no warning, which `assertHostModeCompatible` then passed because
+ * the artifact genuinely WAS 'ast'. Two correct copies would not have been a fix here;
+ * there were three copies and all three were wrong the same way. */
+function optionProp(optExpr: AnyNode | undefined, name: string): Expression | undefined {
+  if (optExpr?.type !== 'ObjectExpression') return undefined
+  const found = ((optExpr.properties as AnyNode[] | undefined) ?? [])
+    .find(p => propName(p as never) === name)
+  return (found as { value?: Expression } | undefined)?.value
+}
 
 function unwrapStaticExpression(expr: Expression): Expression {
   let cur = expr as unknown as { type?: string; expression?: Expression }
@@ -320,6 +364,19 @@ function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number }
       const obj = (callee?.object as { name?: string } | undefined)?.name
       const prop = (callee?.property as { name?: string } | undefined)?.name
       const args = node.arguments as AnyNode[] | undefined
+      // Table lowering: `tableRules(program, { [Symbol.for('…composedPieces')]:
+      // <literal>, … })`. The metadata object becomes the returned map's
+      // prototype, so the symbol remains readable without becoming an own key.
+      if ((callee as { type?: string; name?: string } | undefined)?.type === 'Identifier'
+        && (callee as { name?: string }).name === 'tableRules'
+        && (args?.[1] as AnyNode | undefined)?.type === 'ObjectExpression') {
+        for (const p of ((args![1] as AnyNode).properties as AnyNode[] | undefined) ?? []) {
+          if ((p as { computed?: boolean }).computed && isComposedPiecesSymbol(p.key as AnyNode) && p.value) {
+            found = { start: (p.value as AnyNode).start, end: (p.value as AnyNode).end }
+            return
+          }
+        }
+      }
       // Also accepted: `Object.assign(_g, { [Symbol.for('…composedPieces')]: <literal> })`
       // (transitional; the current emitter uses the non-enumerable defineProperty form below).
       if (obj === 'Object' && prop === 'assign' && args && (args[1] as AnyNode | undefined)?.type === 'ObjectExpression') {
@@ -461,8 +518,6 @@ export function transformMacro(
     setReducerResolver(null)
     // Both are idempotent: on the success path the body already released them and these
     // are no-ops. On an aborted transform they are what stops the leak.
-    endLoweringCapture()
-    endInlineCapCapture()
     for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
   }
 }
@@ -720,18 +775,6 @@ function transformMacroImpl(
   const scope: Scope = new Map<string, ScopeEntry>()
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
-  // Every fused IIFE in this module registers its top-level declarations here, so a
-  // declaration that is byte-identical across N variants can be emitted ONCE at
-  // module scope instead of N times. See src/compiler/module-hoist.ts for why the
-  // decision is keyed on the declared NAME (a partial `_pfFail` hoist would make a
-  // parse FAILURE read as a success).
-  // Disabled under `grammarCoverage`: the coverage denominator is read back OUT of
-  // the emitted replacement (`emittedCoverageDefinitions` scans it for `id: "…"`),
-  // and a hoisted declaration is no longer inside it. Rather than make the two
-  // passes agree about a marker, a coverage build simply keeps the duplication.
-  const moduleHoist = grammarCoverage ? undefined : createModuleHoist()
-  beginLoweringCapture()
-  beginInlineCapCapture()
   // Collect degradations instead of printing them, so they arrive on the SAME channel
   // as every other macro warning (the bundler's `this.warn`) with a `file:line` anchor.
   beginDegradationCapture()
@@ -742,6 +785,18 @@ function transformMacroImpl(
   // fully compiled pieces for downstream composition. The import must survive, but
   // this is not an unresolved shape, so it neither warns nor blocks other cleanups.
   let keepMacroImport = false
+  /**
+   * Set when any emitted replacement is a TABLE, which references the shared
+   * driver `tableRules` by name.
+   *
+   * This is the one CONTRACT DIVERGENCE the table lowering states openly
+   * (`table/compile.ts`): a table expression is not self-contained, because the
+   * driver being external is exactly why the artifact is 0.56 MB rather than
+   * 2.10 MB. Inlining the driver per grammar rebuilds the size this lowering
+   * exists to remove. So the plugin owns the import, and the free-identifier net
+   * at the end of this transform is what proves it was actually emitted.
+   */
+  let usedTableRuntime = false
   /** Exported `rules()` factories, whose bodies are left verbatim. See the push site. */
   const exportedFactories: Array<{ name: string; pos: number }> = []
   let runtimeComposeFallback = false
@@ -804,12 +859,7 @@ function transformMacroImpl(
     // map seeds them as the ambient defaults (build-time mirror of rules() tagging
     // grammarTrivia / grammarScanSkip at runtime).
     const optionsArg = (optionsFirst ? arg0 : arg1) as AnyNode | undefined
-    const optionValue = (name: string): Expression | undefined =>
-      optionsArg?.type === 'ObjectExpression'
-        ? (((optionsArg.properties as AnyNode[] | undefined) ?? []).find(
-            p => (p as { key?: { name?: string } }).key?.name === name,
-          ) as { value?: Expression } | undefined)?.value
-        : undefined
+    const optionValue = (name: string): Expression | undefined => optionProp(optionsArg, name)
 
     // Read and VALIDATE hostMode before evaluating the factory, so a mode the macro
     // cannot honour is reported even when the factory also fails to evaluate. Getting
@@ -836,15 +886,24 @@ function transformMacroImpl(
     // points nowhere near the cause, and the dominant real cause — a forward
     // reference to a const declared lower down — is one the interpreter reports
     // precisely. Two lanes lost a round to the generic text.
-    const why: { reason?: string } = {}
-    const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [], why)
-    if (!ruleMap) {
-      warn(init.start, why.reason === undefined
-        ? `${label}: rules(...) factory isn't statically evaluable`
-        : `${label}: rules(...) factory isn't statically evaluable — ${why.reason}`)
-      return null
-    }
-
+    /*
+     * THE OPTIONS GO IN, THEY ARE NOT REAPPLIED AFTERWARDS.
+     *
+     * Three loops used to live below this point, stamping `grammarScanSkip`,
+     * `grammarHostMode` and `grammarTrackLines` onto the evaluated rules, each
+     * carrying a comment that the macro "evaluates the FACTORY directly and never
+     * calls `rules()`". It does now, so the options are threaded as the
+     * `RulesOptions` argument and `rules()` applies them — the same code, on the
+     * same rules, at the same point, for the runtime and the build.
+     *
+     * That also fixes the `trackLines` half, which the stamp-only copy got wrong:
+     * `rules()` does not merely mark the rules, it WRAPS each non-trivia rule in a
+     * `grammarParser({ trackLines: true })` scope (`parser.ts:228-242`). The macro
+     * carried the setting to the encoder by a different route instead, so the two
+     * routes built structurally different maps for the same source.
+     *
+     * Evaluated BEFORE the factory because they are now inputs to it.
+     */
     const triviaValue = optionValue('trivia')
     const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
     const scanSkipValue = optionValue('scanSkip')
@@ -852,46 +911,18 @@ function transformMacroImpl(
       ? (evaluateCombinatorArray(scanSkipValue, scope, code) ?? undefined)
       : undefined
 
-    // STAMP `_meta.grammarScanSkip` on the evaluated rules, exactly as runtime
-    // `rules({ scanSkip })` does. The macro evaluates the FACTORY directly and never
-    // calls `rules()`, so without this the stamp is absent and every macro-side
-    // `compileLinkable`/`compileRuleMap` has to pass `opts.scanSkip` by hand — which
-    // was forgotten twice (the composeLeaf identifier branch, and the exported
-    // full-piece fallback), each time silently re-opening the raw-scan footgun
-    // downstream. Both compilers already fall back to this `_meta` field, so
-    // stamping here makes omission at a call site structurally impossible.
-    // Trivia rules are skipped, mirroring the runtime guard in `rules()`.
-    if (gScanSkip) {
-      for (const rule of ruleMap.values()) {
-        if (rule && !rule._meta.isTrivia) {
-          ;(rule._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip = gScanSkip
-        }
-      }
-    }
-
-    // STAMP `_meta.grammarHostMode` for exactly the reason the scanSkip stamp above
-    // gives: every macro-side lowering path (`compileRuleMap`, `compileLinkable`,
-    // `materializePiece`) falls back to this field, so no call site can forget to
-    // thread the option — and forgetting THIS one is silent, not slow.
-    //
-    // This is what makes `rules({ hostMode: 'cst' }, factory)` work under the macro,
-    // which is the only way one grammar source can be compiled for both consumers:
-    // two `rules()` call sites over one shared factory become two independent
-    // top-level artifacts, each tree-shakeable, neither paying the other's cost.
-    if (gHostMode === 'cst') {
-      for (const rule of ruleMap.values()) {
-        if (rule && !rule._meta.isTrivia) {
-          ;(rule._meta as { grammarHostMode?: 'ast' | 'cst' }).grammarHostMode = 'cst'
-        }
-      }
-    }
-
-    if (gTrackLines === true) {
-      for (const rule of ruleMap.values()) {
-        if (rule && !rule._meta.isTrivia) {
-          ;(rule._meta as { grammarTrackLines?: true }).grammarTrackLines = true
-        }
-      }
+    const why: { reason?: string } = {}
+    const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [], why, {
+      ...(gTrivia ? { trivia: gTrivia as Combinator<unknown> } : {}),
+      ...(gScanSkip ? { scanSkip: gScanSkip } : {}),
+      ...(gHostMode === 'cst' ? { hostMode: 'cst' as const } : {}),
+      ...(gTrackLines === true ? { trackLines: true } : {}),
+    })
+    if (!ruleMap) {
+      warn(init.start, why.reason === undefined
+        ? `${label}: rules(...) factory isn't statically evaluable`
+        : `${label}: rules(...) factory isn't statically evaluable — ${why.reason}`)
+      return null
     }
 
     return {
@@ -911,12 +942,21 @@ function transformMacroImpl(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
+  ): { replacement: string | null; replacementWithMetadata?: (metadataSource: string) => string; refusals?: readonly string[]; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
-    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage })
+    // The reasons, out of the encoder and into the warning. A bare "couldn't be
+    // inlined" leaves the author with a ~5x silent perf regression and no lead.
+    const refusals: string[] = []
+    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage, refusals })
+    // A table replacement names `tableRules`, which nothing in the consumer's
+    // module binds. That reference is the whole reason the artifact is small (the
+    // driver is SHARED, not inlined per grammar), so the import is owned here.
+    if (compiled !== null) usedTableRuntime = true
     return {
       replacement: compiled?.replacement ?? null,
+      ...(compiled === null ? {} : { replacementWithMetadata: compiled.replacementWithMetadata }),
+      ...(compiled === null ? { refusals } : {}),
       ruleMap: evaluated.ruleMap,
       hostMode: compiled?.hostMode ?? 'ast',
       hostBranchElided: compiled?.hostBranchElided ?? false,
@@ -944,11 +984,6 @@ function transformMacroImpl(
     && (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier'
     && (init as unknown as { callee: { name?: string } }).callee.name === 'composeLeaf'
 
-  const isPickCall = (init: Expression): boolean =>
-    init.type === 'CallExpression' &&
-    (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
-    (init as unknown as { callee: { name?: string } }).callee.name === 'pick'
-
   // Local `rules()` grammars, so a same-file `compose([myRules, …])` can recover
   // the pieces to fuse (name → the rule map evaluated at build). A grammar stays a
   // usable parser AND is composable — no opt-in wrapper.
@@ -969,55 +1004,6 @@ function transformMacroImpl(
   const nsFor = (label: string): string =>
     `_${createHash('sha1').update(`${id}#${label}`).digest('hex').slice(0, 8)}_`
 
-  /** Serialize one `LinkablePieces` to an object-literal source string.
-   *
-   * The carried rule/wrapper/prelude source is machine-consumed only (the linker
-   * concatenates it at fuse time — see fusedBody), never human-read, so we strip
-   * the pretty-printer's per-line indentation before embedding it. Only LEADING
-   * whitespace after a newline is removed: statement-separating newlines stay (ASI
-   * intact) and mid-line tokens — including the `/*@FS:…@*​/` first-set placeholders
-   * the linker rewrites — are untouched. ~16% off the carried payload, zero runtime
-   * cost (this path feeds the macro's carried literal, not runtime fuseRules). */
-  const stripIndent = (s: string): string => s.replace(/\n[ \t]+/g, '\n')
-  const serializePieces = (p: LinkablePieces): string => {
-    const mapLit = (m: Map<string, unknown>, stripVals = false): string =>
-      `new Map([${[...m].map(([k, v]) =>
-        `[${JSON.stringify(k)}, ${JSON.stringify(stripVals && typeof v === 'string' ? stripIndent(v) : v)}]`,
-      ).join(', ')}])`
-    // Stamp the ARTIFACT VERSION LOCK (src/version.ts): fusedBody refuses to link a
-    // serialized piece whose `v` differs from the linking parseman — the artifact
-    // format is version-locked and carries no cross-version back-compat.
-    return `{ v: ${JSON.stringify(p.v)}, ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
-      + `prelude: ${JSON.stringify(p.prelude.map(stripIndent))}, ruleFns: ${mapLit(p.ruleFns, true)}, `
-      + `wrappers: ${mapLit(p.wrappers, true)}, firstSets: ${mapLit(p.firstSets)}, `
-      // Carry per-rule NULLABILITY so a downstream fuse of this serialized artifact
-      // can terminate an ordered-chain recipe at a non-nullable ref to one of these
-      // rules (else the chain over-unions the tail and the arm degrades to
-      // always-try). Absent → treated as nullable (safe). Plain JSON booleans.
-      + `nullable: ${p.nullable ? mapLit(p.nullable) : 'new Map()'}, `
-      // Carry the leading first-set RECIPE so a DOWNSTREAM compose of this
-      // serialized artifact keeps monolithic-parity first-char dispatch (else
-      // fusedBody falls back to the shallow `any` first-set and the arm degrades
-      // to always-try — the regression Greptile flagged). Ordered-chain (`{alts}`)
-      // and legacy (`{concrete, refs}`) recipes are both plain JSON.
-      + `firstSetRecipes: ${p.firstSetRecipes ? mapLit(p.firstSetRecipes) : 'new Map()'}, deps: ${mapLit(p.deps)}, `
-      + `nodeMeta: ${mapLit(p.nodeMeta)}, `
-      // Carry the HOST MODE across serialization. `hostModeOfPieces` (linker.ts) reads
-      // exactly these two to classify a fused artifact, and both default to the 'ast'
-      // side when absent — so omitting them made a serialized CST piece round-trip as
-      // `{ mode: 'ast', elided: false }` and `assertHostModeCompatible` pass VACUOUSLY
-      // on the composed result. That is the same hole this change closes for the
-      // in-memory fuse, surviving on the macro's carried path.
-      //
-      // Written UNCONDITIONALLY, including `'ast'`. Elsewhere `'ast'` is "never stamped"
-      // and absence means the default, but a serialized piece is exactly where that
-      // conflation caused the bug: absent-because-ast and absent-because-dropped are
-      // indistinguishable to the reader. A serialized piece therefore always states its
-      // mode, so a future missing field is a MISSING FIELD rather than a silent 'ast'.
-      + `hostMode: ${JSON.stringify(p.hostMode ?? 'ast')}, `
-      + `hostBranchElided: ${p.hostBranchElided === true}, `
-      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, needsRawEntry: ${p.needsRawEntry}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
-  }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
    * list for a `compose()` result. */
   // A carried list entry is either a grammar's own pieces (serialized in full) or
@@ -1035,19 +1021,39 @@ function transformMacroImpl(
   // THIS module's source (the bundler renames import + references together).
   type ImportSpread = { __spreadLocal: string }
   type IRItem = { ns: string; ir: string; trackLines?: true }
-  type CarriedItem = LinkablePieces | ImportSpread | IRItem
+  type CarriedItem = ImportSpread | IRItem
   const isSpread = (it: CarriedItem): it is ImportSpread => '__spreadLocal' in it
-  const isIR = (it: CarriedItem): it is IRItem => 'ir' in it && !('ruleFns' in it)
-  // A carried entry is: an import SPREAD (live ref to an ancestor's pieces), an IR
-  // PIECE (this grammar's own rules as a compact combinator expression, re-lowered
-  // at fuse), or full LinkablePieces (fallback when a map can't be serialized).
+  const isIR = (it: CarriedItem): it is IRItem => 'ir' in it
+  // A carried entry is: an import SPREAD (live ref to an ancestor's pieces) or an IR
+  // PIECE (this grammar's own rules as a compact combinator expression, re-lowered at
+  // fuse). There is no third form — a piece that cannot serialize is not carried.
   const serializeItem = (it: CarriedItem): string =>
     isSpread(it)
       ? `...(${it.__spreadLocal}[Symbol.for('parseman.composedPieces')] ?? [])`
-      : isIR(it)
-        ? `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)}${it.trackLines ? ', trackLines: true' : ''} }`
-        : serializePieces(it)
+      : `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)}${it.trackLines ? ', trackLines: true' : ''} }`
   const serializeList = (list: CarriedItem[]): string => `[${list.map(serializeItem).join(', ')}]`
+
+  type StaticTableMetadata = {
+    carried?: CarriedItem[]
+    reflection?: GrammarReflection
+    leaf?: true
+  }
+  /** Metadata passed into `tableRules` at construction. `stampRuleMap` uses this
+   * object as the returned map's prototype, so these ordinary symbol fields are
+   * readable but never copied by object spread/Object.assign. Coverage comes
+   * directly from the emitted program's `cv` pool and host mode from `h`. */
+  const staticTableMetadataSource = (metadata: StaticTableMetadata): string => {
+    const fields = [
+      ...(metadata.carried === undefined ? [] : [
+        `[Symbol.for('parseman.composedPieces')]: ${serializeList(metadata.carried)}`,
+      ]),
+      ...(metadata.reflection === undefined ? [] : [
+        `[Symbol.for('parseman.grammarReflection')]: ${grammarReflectionSource(metadata.reflection)}`,
+      ]),
+      ...(metadata.leaf === true ? [`[Symbol.for('parseman.leafComposed')]: true`] : []),
+    ]
+    return `{ ${fields.join(', ')} }`
+  }
 
   /**
    * Attach a compiled grammar's linkable pieces onto the value, under
@@ -1062,31 +1068,6 @@ function transformMacroImpl(
    */
   const withCarriedPieces = (grammarExpr: string, list: CarriedItem[]): string =>
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
-  const withLeafMarker = (grammarExpr: string): string =>
-    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.leafComposed'), { value: true, enumerable: false })`
-  /**
-   * Stamp a macro-emitted `rules()` map with the host mode it was lowered for, and with
-   * whether any direct builder's positioned-CST branch was dropped.
-   *
-   * `compose()` output gets this from inside `fusedBody`, but a plain `rules()` grammar
-   * is emitted by `compileRuleMap` and had NO stamp at all — which is not cosmetic. The
-   * drivers read exactly these two symbols to refuse an artifact/host mismatch, so an
-   * unstamped map reads as `{ mode: 'ast', elided: false }` and every check passes
-   * vacuously. That is how a direct builder in a CST grammar reached a positioned-CST
-   * host with nothing raised and the node dropped from the tree.
-   *
-   * Stamped on the rule FUNCTIONS as well as the map, because `run(map.Rule, …)` is
-   * handed the rule and never sees the map. Mirrors `fusedBody`.
-   */
-  const withHostMode = (grammarExpr: string, mode: HostMode, elided: boolean): string =>
-    `/* @__PURE__ */ (m => { for (const k of Object.keys(m)) { `
-      + `Object.defineProperty(m[k], Symbol.for('parseman.fusedHostMode'), { value: ${JSON.stringify(mode)}, enumerable: false }); `
-      + `Object.defineProperty(m[k], Symbol.for('parseman.fusedHostElided'), { value: ${JSON.stringify(elided)}, enumerable: false }) } `
-      + `Object.defineProperty(m, Symbol.for('parseman.fusedHostMode'), { value: ${JSON.stringify(mode)}, enumerable: false }); `
-      + `Object.defineProperty(m, Symbol.for('parseman.fusedHostElided'), { value: ${JSON.stringify(elided)}, enumerable: false }); `
-      + `return m })(${grammarExpr})`
-  const withGrammarReflection = (grammarExpr: string, reflection: GrammarReflection): string =>
-    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.grammarReflection'), { value: ${grammarReflectionSource(reflection)}, enumerable: false })`
   /** Coverage-only macro output carries the exact IDs emitted in its generated
    * hooks. The metadata is non-enumerable so grammar maps keep their ordinary
    * public shape, and it is absent entirely from production builds. */
@@ -1125,14 +1106,11 @@ function transformMacroImpl(
   // later same-file compose can chain it AND re-lower it under that compose's own
   // composing trivia (composing-wins holds at every level).
   const localComposedCarried = new Map<string, CarriedItem[]>()
-  // …and each local composed grammar's OWN composing trivia, so `pick(g, …)` bakes
-  // that trivia (pick freezes its grammar's trivia, like the runtime).
-  const localComposedTrivia = new Map<string, Combinator<unknown>>()
 
   // Cache of RE-LOWERABLE pieces lists read from imported COMPILED grammars'
   // carried pieces (IR pieces + spreads left un-materialized, so the composing
   // grammar's trivia can be applied when they are finally lowered).
-  type RawItem = Parameters<typeof materializePiece>[0]  // LinkablePieces | IRPiece
+  type RawItem = IRItem
   const importedPiecesCache = new Map<string, RawItem[] | null>()
 
   /**
@@ -1179,7 +1157,15 @@ function transformMacroImpl(
         }
       }
       stubNames.push(local)
-      stubVals.push({ [Symbol.for('parseman.composedPieces')]: subPieces })
+      // The KEY comes from the linker, which owns it. Spelling `Symbol.for('…')`
+      // here made the string the contract between a build-time module and a
+      // runtime one, with nothing checking: renaming it in `linker.ts` would have
+      // left this stub keying on the old name, and a carried-pieces lookup that
+      // silently finds nothing produces a grammar that composes to less than it
+      // should — no type error, no failing test. (The `Symbol.for('…')` spellings
+      // further down are EMITTED SOURCE TEXT, not this module's own key: they are
+      // strings by necessity and the runtime resolves them through the registry.)
+      stubVals.push({ [COMPOSED_PIECES]: subPieces })
     }
     try {
       // Build-time eval of the carried literal with ancestor spreads stubbed — NOT
@@ -1205,46 +1191,47 @@ function transformMacroImpl(
     return result
   }
 
-  /** Lower a compose() carried list to fused `LinkablePieces`, seeding the composing
-   * grammar's `trivia` into EVERY re-lowerable item (composing-wins B): an IR piece
-   * is re-lowered with that trivia; an import spread's re-lowerable items are re-lowered
-   * with it too; a full baked piece (the un-serializable fallback) passes through. */
-  const materializeCarried = (
+  /**
+   * MERGE a carried list to ONE rule map — the table lowering's entire composition
+   * mechanism, and the reason it needs no linker.
+   *
+   * Source composition is a TEXTUAL splice: each piece is lowered on its own to
+   * namespaced `_r_<Name>` functions, and `fusedBody()` picks a winner per name and
+   * substitutes the `@FS:` dispatch placeholders with that winner's first-set
+   * condition. A table has no text to splice and no placeholders to resolve, so the
+   * merge moves one level UP, onto the combinators: evaluate each piece's IR back to
+   * a rule map, let a later piece's name override an earlier one — which is exactly
+   * what `compose()` means — and hand the single merged map to
+   * `compileRuleMap`, which encodes ONCE.
+   *
+   * This is what makes table composition the easy kind: no relocation of code
+   * offsets, no merging of const / fn / class / expected / dispatch pools between
+   * two already-encoded programs. `encodeTableProgram` points `enc.winners` at the
+   * merged map (`table/encode.ts:1383`), so a base piece's internal `g.Atom`
+   * resolves BY NAME to the override (`:1036`) rather than through a thunk that
+   * closes over the base. Open recursion — much of the point of compose — therefore
+   * survives the merge, and the result is the table the merged grammar would have
+   * produced had it been written as a single `rules()` call.
+   *
+   * `null` means some piece cannot contribute combinators: a FULL BAKED piece (the
+   * un-serializable fallback at `localCarried`) carries lowered SOURCE and nothing
+   * else. That shape is codegen-only, so the caller falls back to fused source
+   * rather than refusing the grammar.
+   */
+  type CarriedRuleMap = { ns: string; rules: Array<[string, Combinator<unknown>]> }
+  const carriedRuleMaps = (
     items: CarriedItem[],
-    composing?: Combinator<unknown>,
-    captureTerminals = false,
-    hostMode?: HostMode,
-  ): LinkablePieces[] => {
-    const out: LinkablePieces[] = []
-    for (const it of items) {
-      if (isSpread(it)) {
-        for (const p of importedPieces(it.__spreadLocal) ?? []) out.push(materializePiece(p, composing, captureTerminals, hostMode))
-      } else if (isIR(it)) {
-        out.push(materializePiece(it as RawItem, composing, captureTerminals, hostMode))
-      } else {
-        out.push(it)
-      }
-    }
-    return out
-  }
-
-  /** Materialize the exact combinator identities that will be lowered for a
-   * coverage-enabled terminal composition.  Coverage IDs are WeakMap keyed, so
-   * planning from a second IR hydration would silently leave the emitted pieces
-   * uninstrumented.  Opaque baked pieces deliberately fail closed: they cannot
-   * prove the post-compose winner graph. */
-  const materializeLeafCoverage = (
-    items: CarriedItem[],
-    localRules: Iterable<readonly [string, unknown]>,
-    localNs: string,
-    composing?: Combinator<unknown>,
-    captureTerminals = false,
-  ): LinkablePieces[] | null => {
-    type CoverageSource = { ns: string; rules: Array<[string, Combinator<unknown>]> }
-    const sources: CoverageSource[] = []
+  ): { pieces: CarriedRuleMap[]; trackLines: boolean } | null => {
+    const pieces: CarriedRuleMap[] = []
+    let trackLines = false
     const add = (item: RawItem): boolean => {
       if (!isIR(item)) return false
-      sources.push({ ns: item.ns, rules: evalRuleMapIR(item.ir) })
+      // `trackLines` rides on the CARRIED ITEM, not inside the IR (`IRPiece.trackLines`
+      // is a sibling field of `ir`), so it has to be lifted here. Left behind, the
+      // merged encode resolves `trackLines` from `_meta` alone and silently drops line
+      // tracking for a grammar that asked for it.
+      if (item.trackLines === true) trackLines = true
+      pieces.push({ ns: item.ns, rules: evalRuleMapIR(item.ir) })
       return true
     }
     for (const item of items) {
@@ -1253,23 +1240,73 @@ function transformMacroImpl(
         if (!imported || !imported.every(add)) return null
       } else if (!add(item as RawItem)) return null
     }
-    sources.push({ ns: localNs, rules: [...localRules] as Array<[string, Combinator<unknown>]> })
-    const winners: Record<string, Combinator<unknown>> = {}
-    for (const source of sources) for (const [name, rule] of source.rules) winners[name] = rule
-    const plan = buildGrammarPlan(Object.values(winners), winners)
-    const pieces: LinkablePieces[] = []
-    for (let index = 0; index < sources.length; index++) {
-      const source = sources[index]!
-      const piece = compileLinkable(source.rules, source.ns, {
-        ...(composing ? { trivia: composing } : {}),
-        recovery,
-        ...(index < sources.length - 1 && captureTerminals ? { captureTerminals: true } : {}),
-        coverage: plan,
-      })
-      if (!piece) return null
-      pieces.push(piece)
+    return { pieces, trackLines }
+  }
+
+  /**
+   * Fold ordered rule maps into the composed map: a later piece's name WINS, and
+   * `Map` keeps each name at its first-sighting position so the encoded rule order
+   * tracks the source lowering's rather than drifting per compose.
+   *
+   * A REFERENCE IS NOT A DEFINITION. A `rules(g => …)` cache also holds every `g.X`
+   * that was merely ACCESSED, so a delta that calls `g.Pair` carries a `Pair` entry
+   * that is an unresolved named lazy. Merged in name order that entry lands LAST and
+   * shadows the base piece which actually defines `Pair` — the encoder then finds a
+   * hole where the winner should be and refuses the whole grammar with "ref() used
+   * before .define()". The same filter guards `compileLinkableTable`'s `isLocal`
+   * (`compile-linkable-table.ts:96`), `itemCarried` (`linker.ts:696`) and
+   * `recoverComposedRules`; this is the fourth site that needs it, for the same
+   * reason, and skipping it is why cross-piece composition looked blocked.
+   *
+   * The reference itself is not lost: it stays inside the delta's own rule bodies and
+   * `enc.winners` binds it BY NAME to whichever piece supplies the definition.
+   */
+  const mergeRuleMaps = (
+    maps: ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
+  ): Array<[string, Combinator<unknown>]> => {
+    const winners = new Map<string, Combinator<unknown>>()
+    for (const map of maps) {
+      for (const [name, rule] of map) {
+        if (rule._def.tag === 'lazy') {
+          try { rule._def.thunk() } catch { continue }
+        }
+        winners.set(name, rule)
+      }
     }
-    return pieces
+    return [...winners]
+  }
+
+  const mergedCarriedRules = (
+    items: CarriedItem[],
+  ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean } | null => {
+    const carriedMaps = carriedRuleMaps(items)
+    if (carriedMaps === null) return null
+    return { rules: mergeRuleMaps(carriedMaps.pieces.map(p => p.rules)), trackLines: carriedMaps.trackLines }
+  }
+
+  /**
+   * COMPOSING-WINS, as an OVERRIDE rather than a gap-fill.
+   *
+   * `compileRuleMap`'s `applyAmbient` only fills a rule that carries no trivia of
+   * its own — correct for `composeLeaf`, whose pieces may legitimately disagree, and
+   * WRONG for `compose`, where the composing grammar's trivia governs every fused rule
+   * INCLUDING the inherited ones. Gap-filling leaves a base rule that declared its own
+   * `rules({ trivia }, …)` still skipping the base's trivia after a delta re-declared
+   * it, so `compose([css, less])` silently parses the inherited rules under css's
+   * whitespace — the multi-level composing-wins contract, inverted.
+   *
+   * Safe to mutate: every rule here came from `evalRuleMapIR`, which constructs FRESH
+   * combinators per piece per compose, so this cannot leak into another compose of the
+   * same base grammar.
+   */
+  const applyComposingTrivia = (
+    ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+    composing: Combinator<unknown>,
+  ): void => {
+    for (const [, rule] of ruleMap) {
+      if (rule._meta.isTrivia) continue
+      ;(rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = composing
+    }
   }
 
   /** Resolve one `compose([...])` argument to its RE-LOWERABLE carried items (IR
@@ -1289,61 +1326,23 @@ function transformMacroImpl(
     // downstream re-compose. The full-pieces fallback bakes it via the compile option.
     const ir = serializeRuleMap(entries as never, scanSkip)
     if (ir) return { carried: [{ ns, ir, ...(trackLines ? { trackLines: true as const } : {}) }] }
-    // FULL-PIECES FALLBACK — never taken silently.
+    // NO FULL-PIECES FALLBACK. It used to bake the grammar to lowered source when the IR
+    // would not serialize; with one lowering there is nothing to bake to, and IR is not
+    // an optimization here but the representation composition is built on.
     //
-    // This branch has no test fixture, and not for want of trying: every callback-source
-    // trigger in `serializeRuleMap` is pre-empted by the macro's own stricter guard (a
-    // direct builder must be "macro-static and self-contained", which throws first), and
-    // every "unsupported tag" trigger is a ChoiceStrategy tag (`types.ts:405-408`), not a
-    // ParserDef tag, so it never reaches that switch. It also fired ZERO times across
-    // jess's whole five-package compose chain, measured.
-    //
-    // It is kept rather than deleted because `serializeRuleMap` is a general utility whose
-    // trigger set is NOT owned by this call site: if its guards and the macro's guards
-    // ever drift apart, this is the path that catches it. What is not acceptable is
-    // reaching it without knowing. A silent fallback costs the compact IR (so a downstream
-    // re-compose cannot re-lower) and produces a larger artifact — a real degradation that
-    // previously looked like normal operation.
-    warn(0, `${label}: rule map could not be serialized to IR; carrying FULL pieces instead. `
-      + 'The artifact is correct but larger, and a downstream compose cannot re-lower it. '
+    // This is not a capability loss. The branch had no test fixture and not for want of
+    // trying: every callback-source trigger in `serializeRuleMap` is pre-empted by the
+    // macro's own stricter guard (a direct builder must be "macro-static and
+    // self-contained", which throws first), and every "unsupported tag" trigger is a
+    // ChoiceStrategy tag (`types.ts:405-408`), not a ParserDef tag, so it never reaches
+    // that switch. It fired ZERO times across jess's whole five-package compose chain.
+    // Refusing here leaves the runtime `compose()` in place, which is correct.
+    warn(0, `${label}: rule map could not be serialized to IR, so it cannot be carried for composition. `
       + 'Re-run with PARSEMAN_IR_DEBUG=1 to print the exact combinator that blocked serialization.')
-    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), ...(scanSkip ? { scanSkip } : {}), ...(trackLines ? { trackLines: true } : {}), recovery })
-    return p ? { carried: [p] } : null
+    return null
   }
 
   const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[]; importedFactories?: string[] } | null => {
-    // `pick(grammar, ['A', 'B'])` — à-la-carte selection. Resolve the inner grammar's
-    // carried items, materialize them under the INNER grammar's OWN trivia (pick freezes
-    // its grammar's trivia — it runs standalone, BEFORE any compose, so the outer
-    // composing trivia does NOT reach it; mirrors the runtime pick), then filter to the
-    // picked names + their transitive dep closure (same pickPieces() the runtime uses).
-    if (isPickCall(arg)) {
-      const pargs = (arg as unknown as { arguments: Expression[] }).arguments
-      const inner = pargs[0]
-      const namesArg = pargs[1] as AnyNode | undefined
-      if (!inner || namesArg?.type !== 'ArrayExpression') return null
-      const names: string[] = []
-      for (const el of (namesArg.elements as AnyNode[] | undefined) ?? []) {
-        // oxc emits array string elements as `Literal` (object keys as `StringLiteral`).
-        const v = (el as { type?: string; value?: unknown } | undefined)?.value
-        if ((el?.type === 'Literal' || el?.type === 'StringLiteral') && typeof v === 'string') names.push(v)
-        else return null
-      }
-      // NOTE: `pick()` is withdrawn from the public API and kept internal/experimental
-      // (see src/index.ts + docs/guide/extending.md). Its build-time lowering has known
-      // edges — an IMPORTED grammar's ambient trivia can't be carried across the module
-      // boundary here, and a picked composed grammar's trivia is frozen against a later
-      // outer compose — which is why it's held back. These are not exercised by any
-      // public grammar; they'll be resolved if/when pick is re-exposed.
-      const innerArg = argPieces(inner, `${label}_pick`)
-      if (!innerArg) return null
-      try {
-        return {
-          carried: pickPieces(materializeCarried(innerArg.carried, ownTrivia(inner)), names),
-          ...(innerArg.importedFactories ? { importedFactories: innerArg.importedFactories } : {}),
-        }
-      } catch (e) { warn(arg.start, `pick(): ${(e as Error).message}`); return null }
-    }
     // Inline `rules(g => …)` or `rules({ trivia }, g => …)` (options-first). The
     // element's OWN trivia option is ignored for lowering — composing-wins means the
     // composing grammar's trivia (computed in compileComposeCall) governs every
@@ -1388,11 +1387,9 @@ function transformMacroImpl(
     const a0 = rulesArgs[0] as AnyNode | undefined
     const a1 = rulesArgs[1] as AnyNode | undefined
     const optExpr = (a0?.type === 'ObjectExpression' ? a0 : a1?.type === 'ObjectExpression' ? a1 : undefined) as AnyNode | undefined
-    const triviaProp = ((optExpr?.properties as AnyNode[] | undefined) ?? []).find(
-      p => (p as { key?: { name?: string } }).key?.name === 'trivia',
-    ) as { value?: Expression } | undefined
-    if (!triviaProp?.value) return undefined
-    return (evaluateExpr(triviaProp.value, scope, code, []) as Combinator<unknown> | null) ?? undefined
+    const triviaValue = optionProp(optExpr, 'trivia')
+    if (!triviaValue) return undefined
+    return (evaluateExpr(triviaValue, scope, code, []) as Combinator<unknown> | null) ?? undefined
   }
   const composingTrivia = (elements: ReadonlyArray<Expression | null>): Combinator<unknown> | undefined => {
     for (let i = elements.length - 1; i >= 0; i--) {
@@ -1408,23 +1405,6 @@ function transformMacroImpl(
         if (t) return t
         // local composed / imported compiled grammar → contributes rules, not trivia.
       }
-      // a pick(...) element carries a frozen artifact → contributes rules, not trivia.
-    }
-    return undefined
-  }
-
-  /** A single grammar element's OWN declared trivia (used by pick, which freezes it):
-   * an inline `rules({ trivia }, …)`, a local `rules({ trivia }, …)`, a local composed
-   * grammar's composing trivia, or (recursively) the grammar inside a nested pick. */
-  const ownTrivia = (arg: Expression): Combinator<unknown> | undefined => {
-    if (isRulesCall(arg)) return rulesCallTrivia(arg)
-    if (isPickCall(arg)) {
-      const inner = (arg as unknown as { arguments: Expression[] }).arguments[0]
-      return inner ? ownTrivia(inner) : undefined
-    }
-    if (arg.type === 'Identifier') {
-      const name = (arg as unknown as { name: string }).name
-      return localGrammarTrivia.get(name) ?? localComposedTrivia.get(name)
     }
     return undefined
   }
@@ -1432,7 +1412,7 @@ function transformMacroImpl(
   /** Compile `compose([...])` to STATIC fused source (eval-free) + its carried
    * (re-lowerable) list (for a sidecar / same-file chaining). null → leave the
    * runtime `compose()` in place (correct, just not build-fused). */
-  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[] } | null => {
+  const compileComposeCall = (init: Expression): { replacement: string; exportedReplacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[]; coverageDefinitions?: readonly { id: string; kind: string }[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -1448,11 +1428,7 @@ function transformMacroImpl(
     // because the artifact genuinely WAS 'ast'. Same vacuous-classification shape this
     // change exists to remove, one call site over.
     const cOptions = (init as unknown as { arguments: Expression[] }).arguments[1] as AnyNode | undefined
-    const cHostModeValue = cOptions?.type === 'ObjectExpression'
-      ? (((cOptions.properties as AnyNode[] | undefined) ?? []).find(
-          p => (p as { key?: { name?: string } }).key?.name === 'hostMode',
-        ) as { value?: Expression } | undefined)?.value
-      : undefined
+    const cHostModeValue = optionProp(cOptions, 'hostMode')
     const cHostMode = cHostModeValue?.type === 'Literal'
       ? (cHostModeValue as unknown as { value?: unknown }).value
       : undefined
@@ -1473,18 +1449,50 @@ function transformMacroImpl(
     }
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
-    const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
-    try {
-      return {
-        replacement: emitFusedSource(pieces, moduleHoist),
-        carried,
+    // TABLE FIRST. The merged map IS the composed grammar (see `mergedCarriedRules`),
+    // so `compose()` lowers through the SAME `compileRuleMap` a plain `rules()`
+    // does — one encode, one `tableRules(…)` expression, no linker. `carried` is
+    // unchanged either way: it is the re-lowerable IR list, not a lowering artifact,
+    // so a downstream re-compose behaves identically whichever engine emitted here.
+    const merged = mergedCarriedRules(carried)
+    if (merged !== null) {
+      if (composing) applyComposingTrivia(merged.rules, composing)
+      const refusals: string[] = []
+      const compiled = compileRuleMap(merged.rules, {
         ...(composing ? { trivia: composing } : {}),
-        ...(importedFactories.length ? { importedFactories } : {}),
+        ...(merged.trackLines ? { trackLines: true } : {}),
+        ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
+        recovery,
+        coverage: grammarCoverage,
+        refusals,
+      })
+      if (compiled !== null) {
+        usedTableRuntime = true
+        const reflectionMetadata = staticTableMetadataSource({ reflection: compiled.reflection })
+        const exportedMetadata = staticTableMetadataSource({
+          carried,
+          reflection: compiled.reflection,
+        })
+        return {
+          replacement: compiled.replacementWithMetadata(reflectionMetadata),
+          exportedReplacement: compiled.replacementWithMetadata(exportedMetadata),
+          carried,
+          ...(composing ? { trivia: composing } : {}),
+          ...(importedFactories.length ? { importedFactories } : {}),
+          // The AUTHORITATIVE denominator, from `buildGrammarPlan` via
+          // `compileRuleMapTable`. It was computed here and dropped, leaving the
+          // compose() call site with nothing but the regex scrape — see the call site.
+          ...(compiled.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}),
+        }
       }
-    } catch (e) {
-      warn(init.start, `compose(): ${(e as Error).message}; falling back to runtime`)
+      // There is no second lowering to fall back TO. Leaving the runtime `compose()`
+      // call in place is correct (the runtime path fuses the same merged map), just not
+      // build-fused — so name the reason rather than reporting a bare refusal.
+      warn(init.start, `compose(): could not be lowered to a table; leaving the runtime compose() in place${reasonSuffix(refusals)}`)
       return null
     }
+    warn(init.start, 'compose(): a carried piece has no re-lowerable IR; leaving the runtime compose() in place')
+    return null
   }
 
   /**
@@ -1557,30 +1565,81 @@ function transformMacroImpl(
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
       const localNs = nsFor(`composeLeaf${init.start}`)
-      // The local leaf map is the LAST (winning) contributor, and is usually the one
-      // that binds the imported shapes' holes — so it must be part of the fused view.
-      const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
-      if (!plainLocalPiece) {
-        warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
+      const localEntries = [...localRules] as Array<[string, Combinator<unknown>]>
+
+      // TABLE FIRST — same merge as `compose()`, with the local leaf map appended LAST
+      // so it wins every name and binds the imported shapes' holes (`enc.winners`
+      // resolves those by name; see `mergedCarriedRules`).
+      //
+      // The recognition-only gate is preserved EXACTLY, and is the reason this path
+      // needs no `compileLinkable`: `hasDirectBuilders` / `isRecognitionOnly` are
+      // predicates over the combinator graph, not products of lowering it, so
+      // `classifyRuleMap` answers both from the piece's own rule map. Lowering every
+      // piece to read two booleans off `LinkablePieces` was the only thing making this
+      // gate look codegen-shaped.
+      //
+      // Coverage needs no `materializeLeafCoverage` counterpart here. That helper
+      // exists because coverage ids are WeakMap-keyed and planning from a second IR
+      // hydration would leave the EMITTED pieces uninstrumented; the table plans from
+      // the merged map it then encodes, so the planned identities and the encoded
+      // identities are the same objects by construction.
+      const carriedMaps = carriedRuleMaps(carried)
+      if (carriedMaps !== null) {
+        const unproven = carriedMaps.pieces.find(p => {
+          const c = classifyRuleMap(p.rules)
+          return c.hasDirectBuilders || !c.isRecognitionOnly
+        })
+        if (unproven) {
+          warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
+          return null
+        }
+        // The local grammar's OWN ambient scanSkip is stamped onto the LOCAL entries
+        // only. Passing it as a merged-map option instead would let `applyAmbient`
+        // hand it to every imported rule that happens to carry no stamp of its own —
+        // opaque units are dialect-specific, and that is precisely the leak the
+        // per-piece threading in the source path exists to avoid.
+        if (localScanSkip) {
+          for (const [, rule] of localEntries) {
+            if (rule._meta.isTrivia) continue
+            const meta = rule._meta as { grammarScanSkip?: Combinator<unknown>[] }
+            if (meta.grammarScanSkip === undefined) meta.grammarScanSkip = localScanSkip
+          }
+        }
+        const leafMerged = mergeRuleMaps([...carriedMaps.pieces.map(p => p.rules), localEntries])
+        // Composing-wins governs the leaf fuse too. The local entries are NOT freshly
+        // evaluated (they come from this module's own `rules()` factory), so they are
+        // excluded from the override — their declared trivia IS the composing candidate,
+        // and rewriting `_meta` on them would mutate the module-level grammar object.
+        if (composing) applyComposingTrivia(carriedMaps.pieces.flatMap(p => p.rules), composing)
+        const refusals: string[] = []
+        const compiled = compileRuleMap(
+          leafMerged,
+          {
+            ...(composing ? { trivia: composing } : {}),
+            ...(carriedMaps.trackLines ? { trackLines: true } : {}),
+            recovery,
+            coverage: grammarCoverage,
+            refusals,
+          },
+        )
+        if (compiled !== null) {
+          usedTableRuntime = true
+          return {
+            replacement: compiled.replacementWithMetadata(staticTableMetadataSource({
+              reflection: compiled.reflection,
+              leaf: true,
+            })),
+            ...(importedFactories.length ? { importedFactories } : {}),
+          }
+        }
+        warn(init.start, `composeLeaf(): could not be lowered to a table${reasonSuffix(refusals)}`)
         return null
       }
-      const recognitionPieces = grammarCoverage
-        ? materializeLeafCoverage(carried, localRules, localNs, composing, plainLocalPiece.hasDirectBuilders === true)
-        : materializeCarried(carried, composing, plainLocalPiece.hasDirectBuilders === true)
-      if (!recognitionPieces) {
-        warn(init.start, 'composeLeaf(): coverage needs re-lowerable recognition IR')
-        return null
-      }
-      const importedRecognitionPieces = grammarCoverage ? recognitionPieces.slice(0, -1) : recognitionPieces
-      if (importedRecognitionPieces.some(piece => piece.hasDirectBuilders !== false || piece.isRecognitionOnly !== true)) {
-        warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
-        return null
-      }
-      const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece], moduleHoist))
-      return {
-        replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} composeLeaf()`)),
-        ...(importedFactories.length ? { importedFactories } : {}),
-      }
+      // `composeLeaf` is TERMINAL and macro-only: there is no runtime composition to
+      // fall back to (the caller turns this null into a hard throw), and now no second
+      // lowering either. A piece with no re-lowerable IR is the end of the road.
+      warn(init.start, 'composeLeaf(): a recognition piece has no re-lowerable IR')
+      return null
     } catch (e) {
       warn(init.start, `composeLeaf(): ${(e as Error).message}`)
       return null
@@ -1690,11 +1749,17 @@ function transformMacroImpl(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage })
+            // `mfSrcs` is the POSITIONAL fallback the evaluator collected while it
+            // built this combinator. The encoder's def-carried sources win; this only
+            // fills holes. Passing `undefined` here is what made a ref()'s reducers
+            // print as `() => {}`.
+            const compiled = compile(refCombi, refEntry?.mfSrcs, { recovery, coverage: grammarCoverage })
             if (compiled.inlineExpression === null) {
-              warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
+              warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`
+                + reasonSuffix(compiled.runtimeOnly))
               continue
             }
+            usedTableRuntime = true
             replacements.push({ start: init.start, end: init.end, replacement: compiled.inlineExpression })
             continue
           }
@@ -1716,16 +1781,21 @@ function transformMacroImpl(
           // computed unconditionally for a SHARED SHAPE, because the pieces are the
           // proof that the shape really did compile (see below).
           //
-          // Thread `scanSkip` explicitly: this is the FULL-PIECE fallback taken when
-          // the IR isn't serializable, and it is what a downstream package composes.
+          // Thread `scanSkip` explicitly: it is what a downstream package composes.
           // (The `_meta` stamp in evaluateRulesFactory also covers it; passing it
           // here keeps the intent local and independent of that.) `trivia` is NOT
           // threaded — it is composing-wins, so the downstream compose supplies it;
           // `scanSkip` is per-piece (opaque units are dialect-specific) and must
           // travel WITH the grammar or the downstream loses ambient skipping.
+          //
+          // `compileLinkableTable` is the piece-artifact producer — the job this call
+          // site actually has. It reports `external` as a first-class field, which is
+          // what the SHARED-SHAPE check below needs, and it encodes a piece WITH holes
+          // to `prog: null` while keeping its IR, so a hole is a described state rather
+          // than a refusal.
           const ns = nsFor(varName)
           const pieces = exportPrefix || compiledRules.replacement === null
-            ? compileLinkable([...compiledRules.ruleMap], ns, {
+            ? compileLinkableTable([...compiledRules.ruleMap], ns, {
                 ...(compiledRules.scanSkip ? { scanSkip: compiledRules.scanSkip } : {}),
                 ...(compiledRules.trackLines ? { trackLines: true } : {}),
                 recovery,
@@ -1744,8 +1814,16 @@ function transformMacroImpl(
           // from swallowing a map that failed to inline for some OTHER reason and
           // merely happens to also reference an external rule.
           if (compiledRules.replacement === null) {
-            if (!pieces || !hasExternalRuleRef([...compiledRules.ruleMap])) {
-              warn(init.start, `${varName}: rule map couldn't be inlined`)
+            if (!pieces || pieces.external.length === 0) {
+              warn(init.start, `${varName}: rule map couldn't be inlined` + reasonSuffix(compiledRules.refusals))
+              // THE WHOLE MODULE FALLS BACK, for the same reason a runtime `compose()`
+              // does. This map keeps its `rules(…)` source and is therefore built by the
+              // INTERPRETER, from combinators — but its ambient trivia is an ordinary
+              // declaration that this pass may already have lowered to a compiled rule
+              // function. Mixing the two hands `rules()` a function where it needs a
+              // combinator, and it throws walking it for reflection. Partial lowering is
+              // only ever safe when every consumer of a lowered declaration also lowered.
+              runtimeComposeFallback = true
               continue
             }
             keepMacroImport = true
@@ -1754,24 +1832,45 @@ function transformMacroImpl(
           // Carry only when the pieces are fully static (no runtime-only callbacks) —
           // otherwise the grammar isn't source-free composable and we ship it as a
           // plain map.
-          let replacement = withCoverageDefinitions(
-            source,
-            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source, `${id} rules()`),
-          )
-          // Only a genuinely lowered map is stamped. The SHARED-SHAPE fallback above keeps
-          // its `rules(…)` source, and that value is built by the interpreter at runtime —
-          // which stamps itself, and which never elides a branch.
-          if (compiledRules.replacement !== null) {
-            replacement = withHostMode(replacement, compiledRules.hostMode, compiledRules.hostBranchElided)
-            replacement = withGrammarReflection(replacement, compiledRules.reflection)
-          }
-          if (exportPrefix && pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
-            // Carry the compact IR when serializable; else the full lowered pieces.
-            // Thread the grammar's scanSkip into the IR so a downstream compose of
-            // this imported grammar re-lowers its scanTo/balanced sites ambiently.
+          let carriedMetadata: CarriedItem[] | undefined
+          if (exportPrefix && pieces) {
+            // Carry the compact IR. Thread the grammar's scanSkip into it so a
+            // downstream compose of this imported grammar re-lowers its
+            // scanTo/balanced sites ambiently.
+            //
+            // IR OR NOTHING. The old alternative was to carry the fully lowered pieces,
+            // which a downstream compose could link but never RE-LOWER — so it silently
+            // froze that grammar's trivia against any later composing-wins. With one
+            // lowering there is no such artifact, and a grammar that cannot serialize
+            // simply is not carried: an absent carried list makes the downstream compose
+            // say so, where a frozen one did not.
             const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
-            replacement = withCarriedPieces(replacement, [ir ? { ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) } : pieces])
+            if (ir) carriedMetadata = [{ ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) }]
+            // NOT SILENT. An export with no carried IR cannot be composed downstream at
+            // all — the consumer's `compose()` will fall back to runtime and say so, but
+            // by then the cause is a module away. The source lowering carried fully
+            // lowered pieces here instead; the table has no such form, because merging
+            // two ALREADY-ENCODED programs means relocating code offsets and merging
+            // every pool, which is the one route `compile-linkable-table.ts` documents
+            // as deferred. Naming it at the origin is the least this can do.
+            else warn(init.start, `${varName}: exported grammar could not be serialized to IR, so it carries no `
+              + 'composable pieces — a downstream compose() of this grammar will fall back to runtime. '
+              + 'Re-run with PARSEMAN_IR_DEBUG=1 to print the combinator that blocked serialization.')
           }
+          const replacement = compiledRules.replacement !== null
+            ? compiledRules.replacementWithMetadata!(staticTableMetadataSource({
+                ...(carriedMetadata === undefined ? {} : { carried: carriedMetadata }),
+                reflection: compiledRules.reflection,
+              }))
+            : (() => {
+                const covered = withCoverageDefinitions(
+                  source,
+                  compiledRules.coverageDefinitions?.length
+                    ? compiledRules.coverageDefinitions
+                    : emittedCoverageDefinitions(source, `${id} rules()`),
+                )
+                return carriedMetadata === undefined ? covered : withCarriedPieces(covered, carriedMetadata)
+              })()
           replacements.push({ start: init.start, end: init.end, replacement })
           if (compiledRules.replacement !== null) {
             markUsedImportedFactories(compiledRules.importedFactory ? [compiledRules.importedFactory] : undefined)
@@ -1792,11 +1891,10 @@ function transformMacroImpl(
           // grammar via `import { <name> }` (re-composition, no source) and re-lower it
           // under ITS composing trivia.
           localComposedCarried.set(varName, fused.carried)
-          if (fused.trivia) localComposedTrivia.set(varName, fused.trivia)
-          const replacement = exportPrefix
-            ? withCarriedPieces(fused.replacement, fused.carried)
-            : fused.replacement
-          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} compose()`)) })
+          const replacement = exportPrefix ? fused.exportedReplacement : fused.replacement
+          // Coverage definitions already ride in the table program's `cv` pool;
+          // `tableRules` exposes that same pool through the metadata prototype.
+          replacements.push({ start: init.start, end: init.end, replacement })
           markUsedImportedFactories(fused.importedFactories)
           continue
         }
@@ -1865,14 +1963,19 @@ function transformMacroImpl(
           continue
         }
 
-        // Sources are carried on each transform's def (set by the evaluator), so
-        // codegen derives them in traversal order — no positional array needed.
-        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage })
+        // Sources are carried on each transform's def (set by the evaluator) AND
+        // collected positionally into `mapFnSources`. Codegen only needed the former;
+        // the TABLE ENCODER needs whichever is present, so hand it both — the def
+        // sources win and the positional list fills holes. Passing `undefined` here
+        // is what made every macro-lowered reducer print as `() => {}`.
+        const compiled = compile(parser, mapFnSources, { recovery, coverage: grammarCoverage })
         if (compiled.inlineExpression === null) {
-          warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
+          warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`
+            + reasonSuffix(compiled.runtimeOnly))
           continue
         }
 
+        usedTableRuntime = true
         replacements.push({
           start: init.start,
           end: init.end,
@@ -1895,7 +1998,7 @@ function transformMacroImpl(
         if (!compiledRules) continue
         // A destructured binding names INDIVIDUAL rules, so it has to inline —
         // there is no shared-shape path here (a hole has no standalone value).
-        if (compiledRules.replacement === null) { warn(init.start, `{ … }: rule map couldn't be inlined`); continue }
+        if (compiledRules.replacement === null) { warn(init.start, `{ … }: rule map couldn't be inlined` + reasonSuffix(compiledRules.refusals)); continue }
 
         // Walk the ObjectPattern properties, validating each destructured key
         // exists on the compiled rule map — collect bindings before emitting
@@ -2062,41 +2165,27 @@ function transformMacroImpl(
   // compiled parser functions with those objects (for example `trivia(ws)` after
   // `ws` was lowered), so an unresolved compose makes the whole module runtime.
   const applied = runtimeComposeFallback ? [] : replacements
-  // Decide the module-level hoist now that every fused IIFE has registered its
-  // declarations, then rewrite each replacement's markers. `resolve` is total: a
-  // hoisted declaration becomes nothing, everything else becomes its original text.
-  const hoisted = applied.length > 0 ? moduleHoist?.finalize() : undefined
+  // NO MODULE HOIST. It existed to deduplicate declarations across the fused IIFEs the
+  // source lowering emitted — `_pfFail` and friends, one copy per variant. A table
+  // replacement is a `tableRules(...)` call over a data literal: there are no emitted
+  // function declarations to share, so there is nothing to hoist and no marker to
+  // resolve.
   for (const { start, end, replacement } of applied.slice().sort((a, b) => b.start - a.start)) {
-    ms.overwrite(start, end, hoisted ? hoisted.resolve(replacement) : replacement)
-  }
-  if (hoisted !== undefined && hoisted.prelude !== '') {
-    // Anchor at the START of the earliest top-level statement whose replacement
-    // actually CLAIMED declarations. Every replacement is made from the top-level
-    // `for (const stmt of body)` loop below, so such a statement always exists; every
-    // contributing IIFE sits at or after the anchor, so a module binding those
-    // declarations already depended on is still initialized by the time they run.
-    // Anchoring at the first replacement of ANY kind would be wrong: an earlier
-    // `const ws = trivia(…)` is also a replacement, and the hoisted prelude would be
-    // emitted ahead of a binding it may read.
-    const claiming = applied.filter(r => HOIST_MARKER_PROBE.test(r.replacement))
-    // A non-empty prelude means some replacement claimed declarations, so the probe must
-    // find at least one. If it ever does not, `Math.min()` of nothing is `Infinity` and
-    // the anchor error below reports a position that does not exist — a real invariant
-    // break wearing a nonsense message. Name the invariant instead.
-    if (claiming.length === 0) {
-      throw new Error(`${id} — internal: a module-hoist prelude was produced but no applied replacement carries a hoist marker`)
-    }
-    const firstStart = Math.min(...claiming.map(r => r.start))
-    const anchor = (body as Statement[]).find(s => s.start <= firstStart && firstStart < s.end)
-    if (anchor === undefined) {
-      throw new Error(`${id} — internal: no top-level statement encloses macro replacement at ${firstStart}`)
-    }
-    ms.appendLeft(anchor.start, hoisted.prelude)
+    ms.overwrite(start, end, replacement)
   }
 
   // Stamp the generated artifact with a version-lock banner. This is the exact spot a
   // stale artifact is inspected, and the version here IS the stamp fusedBody's
   // version-lock assertion compares (see src/version.ts).
+  // THE SHARED DRIVER. A table replacement names `tableRules` and nothing in the
+  // consumer's module binds it — the macro import it might have come from is
+  // exactly what lowering deletes. Emitted only when a table was actually applied,
+  // so a module that lowered nothing (or fell back to runtime compose) does not
+  // acquire an import it never uses, and so the artifact of a source-lowered
+  // module is unchanged.
+  if (usedTableRuntime && applied.length > 0) {
+    ms.prepend(`import { tableRules } from ${JSON.stringify(TABLE_RUNTIME_SPECIFIER)}\n`)
+  }
   if (applied.length > 0) {
     ms.prepend(
       `// Generated by parseman v${PARSEMAN_VERSION} — DO NOT EDIT.\n` +
@@ -2162,16 +2251,12 @@ function transformMacroImpl(
     }
   }
 
-  // The inline-expansion cap CHANGED what was emitted. Surface it as returned data on
-  // the module's warning channel (not a console print during compile), so a build that
-  // wants to know can see it and a build that does not is unaffected.
-  for (const line of formatInlineCapSites(endInlineCapCapture(), resolveInlineMax())) warnings.push(`${id}: ${line}`)
-  const unlowered = endLoweringCapture()
-  if (warnUnloweredRegex) {
-    for (const src of unlowered) {
-      warnings.push(`${id}: regex ${src} did not lower to a fast charCodeAt scan (RegExp.exec fallback)`)
-    }
-  }
+  // NOTE: `warnUnloweredRegex` and the inline-expansion cap were both properties of the
+  // SOURCE lowering — "this regex became RegExp.exec instead of a charCodeAt scan", and
+  // "this emitted function hit INLINE_MAX_NODES". The table has no emitted function to
+  // bound and no per-regex emission choice to report, so both diagnostics are gone
+  // rather than reporting a value nothing computes. The option is still accepted so a
+  // caller's config does not break; it is now inert.
 
   setReducerResolver(null)
   // Every place the compiler chose a correct-but-slower path for this module. Reported

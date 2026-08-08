@@ -221,6 +221,40 @@ jobs:
         # remembered. See scripts/check-control-bytes.mjs.
         run: pnpm check:control-bytes
 
+      - name: Invariant gate
+        # Source-decidable checks for the defect classes this repo has already
+        # paid for: an accessor installed onto an existing object (the 0.44.0
+        # migration aid measured at 36.9% on small parses), an option declared
+        # in a public type that nothing reads (the `dispatch()` flag that was
+        # set and never read, so the cut did not fire), a module no entry point
+        # imports (analysis the shipped code does not run), and a declaration
+        # body duplicated across modules (three copies of one ASCII fold, one
+        # of them wrong). Every one of those landed while every gate was green,
+        # because a rule cannot stop a commit and a gate can.
+        #
+        # ~0.3s, no timing, no sampling — see docs/design/invariant-gate.md for
+        # what each rule decides and for the candidate checks that were
+        # REJECTED for firing on innocent code.
+        run: pnpm check:invariants
+
+      - name: Differential teeth gate
+        # Plants a real defect in `src/` and requires each registered differential
+        # to NOTICE. Six defects shipped through a fully green 3300-test suite in
+        # one day of the 0.47 cycle, and every one hid inside a comparison that
+        # could not go red — both legs the same engine, a leg that threw
+        # identically on every row, a success predicate meaning "did not throw",
+        # an option that selected a different artifact so the harness never
+        # realised the thing under test. None of that is visible in a harness's
+        # output, because a vacuous harness prints a clean, plausible number.
+        #
+        # ~4s here. The four jess-corpus differentials need a sibling checkout
+        # this repo does not vendor and are reported UNPROVEN — never as passing;
+        # `--strict` (a release, on a box that has it) makes UNPROVEN a failure.
+        # CI proves the two self-contained ones on every commit.
+        #
+        # See docs/design/differential-gates.md.
+        run: pnpm check:differentials
+
       - name: Test with coverage
         # Uses vitest.coverage.config.ts, which excludes all of test/perf/ —
         # those are timing-based benchmarks, not unit tests, and running them

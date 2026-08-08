@@ -1,6 +1,8 @@
 import type { Combinator, ParseContext } from '../types.ts'
 import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
+import { createDetachedParseContext } from '../parse-context.ts'
+import { charArmsFor, charTriviaEnd, charTriviaKindMask, charTriviaVisit } from './trivia-charscan.ts'
 
 export type TriviaChunk = { start: number; end: number; kindIndex: number }
 
@@ -10,7 +12,28 @@ export type LabeledTriviaSpec = {
   readonly minRepeats: number
 }
 
-const labeledTriviaSpecs = new WeakMap<Combinator<unknown>, LabeledTriviaSpec | null>()
+/** See `trivia-skip.ts`: bounded scalar memoisation avoids a WeakMap in the
+ * shipped table runtime while retaining the common trivia grammars. */
+let labeledTrivia0: Combinator<unknown> | undefined
+let labeledTrivia1: Combinator<unknown> | undefined
+let labeledTrivia2: Combinator<unknown> | undefined
+let labeledTrivia3: Combinator<unknown> | undefined
+let labeledSpec0: LabeledTriviaSpec | null | undefined
+let labeledSpec1: LabeledTriviaSpec | null | undefined
+let labeledSpec2: LabeledTriviaSpec | null | undefined
+let labeledSpec3: LabeledTriviaSpec | null | undefined
+
+function cacheLabeledTrivia(trivia: Combinator<unknown>, spec: LabeledTriviaSpec | null): LabeledTriviaSpec | null {
+  labeledTrivia3 = labeledTrivia2
+  labeledSpec3 = labeledSpec2
+  labeledTrivia2 = labeledTrivia1
+  labeledSpec2 = labeledSpec1
+  labeledTrivia1 = labeledTrivia0
+  labeledSpec1 = labeledSpec0
+  labeledTrivia0 = trivia
+  labeledSpec0 = spec
+  return spec
+}
 
 function unwrapTrivia(p: Combinator<unknown>): Combinator<unknown> {
   let cur = p
@@ -29,15 +52,18 @@ export function peelLabel(p: Combinator<unknown>): { label: string; parser: Comb
  * (or a single labeled arm), return the label table and matchers.
  */
 export function analyzeLabeledTrivia(trivia: Combinator<unknown>): LabeledTriviaSpec | null {
-  const cached = labeledTriviaSpecs.get(trivia)
-  if (cached !== undefined) return cached
+  if (trivia === labeledTrivia0) return labeledSpec0!
+  if (trivia === labeledTrivia1) return labeledSpec1!
+  if (trivia === labeledTrivia2) return labeledSpec2!
+  if (trivia === labeledTrivia3) return labeledSpec3!
 
   let core = unwrapTrivia(trivia)
   let minRepeats = 1
 
   if (core._def.tag === 'oneOrMore') {
+    const min = core._def.min
     core = core._def.parser
-    minRepeats = 1
+    minRepeats = min
   } else if (core._def.tag === 'many') {
     core = core._def.parser
     minRepeats = 0
@@ -49,16 +75,14 @@ export function analyzeLabeledTrivia(trivia: Combinator<unknown>): LabeledTrivia
     for (let i = 0; i < core._def.parsers.length; i++) {
       const peeled = peelLabel(core._def.parsers[i]!)
       if (!peeled) {
-        labeledTriviaSpecs.set(trivia, null)
-        return null
+        return cacheLabeledTrivia(trivia, null)
       }
       arms.push({ label: peeled.label, kindIndex: i, parser: peeled.parser })
     }
   } else {
     const peeled = peelLabel(core)
     if (!peeled) {
-      labeledTriviaSpecs.set(trivia, null)
-      return null
+      return cacheLabeledTrivia(trivia, null)
     }
     arms.push({ label: peeled.label, kindIndex: 0, parser: peeled.parser })
   }
@@ -68,8 +92,7 @@ export function analyzeLabeledTrivia(trivia: Combinator<unknown>): LabeledTrivia
     arms,
     minRepeats,
   }
-  labeledTriviaSpecs.set(trivia, spec)
-  return spec
+  return cacheLabeledTrivia(trivia, spec)
 }
 
 /** Label table on a `trivia()` combinator, if all arms are labeled. */
@@ -90,7 +113,7 @@ function matchArmAt(
   // meaning to a label nor recognizes a particular comment form; it avoids
   // entering arms whose own grammar proves they cannot start at this offset.
   if (!startsFirstSet(arm, input, pos)) return null
-  const r = arm.parse(input, pos, { trackLines: false, state })
+  const r = arm.parse(input, pos, createDetachedParseContext(false, state))
   if (!r.ok || r.span.end <= pos) return null
   return { end: r.span.end }
 }
@@ -140,6 +163,11 @@ export function scanLabeledTriviaEnd(
   spec: LabeledTriviaSpec,
   state?: unknown,
 ): number {
+  // `charArmsFor` only lowers `minRepeats <= 1`, where "no chunk matched" and
+  // "the minimum was not met" are the same position — so an end IS the answer.
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaEnd(input, cur, chars)
+
   let pos = cur
   let count = 0
 
@@ -171,6 +199,9 @@ export function visitLabeledTrivia(
   visit: (start: number, end: number, kindIndex: number) => void,
 ): number | undefined {
   if (spec.minRepeats > 1) return undefined
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaVisit(input, cur, chars, visit)
+
   let pos = cur
   let count = 0
 
@@ -292,6 +323,9 @@ export function triviaKindMaskAt(
   spec: LabeledTriviaSpec,
   state?: unknown,
 ): number {
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaKindMask(input, pos, chars)
+
   let cur = pos
   let mask = 0
   while (cur < input.length) {

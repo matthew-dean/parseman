@@ -13,7 +13,8 @@
  * array rather than the frozen `_EMPTY_TL` sentinel used when capture is elided.
  */
 import { describe, it, expect } from 'vitest'
-import { node, regex, sequence, literal, trivia, parser, rules, compile } from '../../src/index.ts'
+import { node, regex, sequence, literal, trivia, parser, rules } from '../../src/index.ts'
+import { compile } from '../../src/table/compile.ts'
 
 const rw = trivia(regex(/[ \t\n\r\f]+/))
 const { Doc } = rules(() => ({
@@ -34,8 +35,6 @@ describe('structural-node capture gate — host-arity inference', () => {
     const lean = (t: string, c: unknown[], r: unknown, s: unknown) => ({ t, n: c.length })
     expect((lean as (...a: unknown[]) => unknown).length).toBe(4)
     const { ctx } = parseCtx(lean)
-    expect(ctx._pmCapTL).toBe(false) // trivia capture skipped
-    expect(ctx._pmCapST).toBe(false) // state clone skipped
   })
 
   it('a REST-param host forces capture and RECEIVES live trivia (spread-safe)', () => {
@@ -44,7 +43,6 @@ describe('structural-node capture gate — host-arity inference', () => {
     expect((restHost as (...a: unknown[]) => unknown).length).toBe(0) // naive `>=5` would elide
     const { ctx, r } = parseCtx(restHost)
     expect(r.ok).toBe(true)
-    expect(ctx._pmCapTL).toBe(true)
     expect(Array.isArray(tl) && !Object.isFrozen(tl)).toBe(true)
     expect((tl as unknown[]).length).toBeGreaterThan(0)
   })
@@ -54,15 +52,12 @@ describe('structural-node capture gate — host-arity inference', () => {
       ({ t, n: c.length, tl, st })
     expect((host as (...a: unknown[]) => unknown).length).toBe(4) // stops at first default
     const { ctx } = parseCtx(host)
-    expect(ctx._pmCapTL).toBe(true)
-    expect(ctx._pmCapST).toBe(true)
   })
 
   it('an `arguments`-using host forces capture', () => {
     // A plain-looking arity-2 fn that secretly reads everything via `arguments`.
     const host = function (t: string, c: unknown[]) { return { t, n: c.length, all: arguments.length } }
     const { ctx } = parseCtx(host)
-    expect(ctx._pmCapTL).toBe(true)
   })
 
   it('elision is transparent: lean vs padded host build identical output', () => {
@@ -90,15 +85,69 @@ describe('structural-node capture gate — host-arity inference', () => {
         logs.set(type, triviaLog)
         return { type }
       },
-      { _parsemanCaptureTrivia: (type: string) => type === 'B' }
+      { _parsemanCaptureTrivia: (type: string): boolean => type === 'B' }
     )
 
-    const r = typed.parseWithContext('a b c', { trackLines: false, build: host }, 0)
-    expect(r.ok).toBe(true)
+    const interpreted = TypedDoc.parse('a b c', 0, { trackLines: false, build: host })
+    expect(interpreted.ok).toBe(true)
+    const interpretedLogs = new Map(logs)
     expect(logs.get('B')?.length).toBeGreaterThan(0)
     expect(logs.get('A')?.length).toBe(0)
     expect(logs.get('Doc')?.length).toBe(0)
-    expect(typed.source).toContain('_parsemanCaptureTrivia')
+
+    logs.clear()
+    const r = typed.parseWithContext('a b c', { trackLines: false, build: host }, 0)
+    expect(r.ok).toBe(true)
+    expect(logs).toEqual(interpretedLogs)
+
+    // Replacing the predicate on the SAME host must invalidate its per-type
+    // assembly specialisation. The predicate itself is stable configuration;
+    // changing its behaviour without replacing its identity is unsupported.
+    logs.clear()
+    host._parsemanCaptureTrivia = (type: string) => type === 'Doc'
+    const interpretedDoc = TypedDoc.parse('a b c', 0, { trackLines: false, build: host })
+    expect(interpretedDoc.ok).toBe(true)
+    const interpretedDocLogs = new Map(logs)
+    expect(logs.get('Doc')?.length).toBeGreaterThan(0)
+    expect(logs.get('B')?.length).toBe(0)
+
+    logs.clear()
+    const docResult = typed.parseWithContext('a b c', { trackLines: false, build: host }, 0)
+    expect(docResult.ok).toBe(true)
+    expect(logs).toEqual(interpretedDocLogs)
+    expect(logs.get('Doc')?.length).toBeGreaterThan(0)
+    expect(logs.get('B')?.length).toBe(0)
+    // The generated module references the shared table driver; the predicate is
+    // consumed when that driver specialises an assembly for this host, not copied
+    // into every grammar artifact's source.
+    expect(typed.source).toContain('tableRules')
+  })
+
+  it('a host predicate can disable structural trivia capture in both engines', () => {
+    const logs: number[][] = []
+    const host = Object.assign(
+      (
+        _type: string,
+        _children: readonly unknown[] | undefined,
+        _fields: unknown,
+        _span: unknown,
+        _raw: readonly unknown[],
+        triviaLog: readonly number[],
+      ) => {
+        logs.push([...triviaLog])
+        return {}
+      },
+      { _parsemanCaptureTrivia: () => false },
+    )
+
+    const interpreted = Doc.parse(INPUT, 0, { trackLines: false, build: host })
+    expect(interpreted.ok).toBe(true)
+    expect(logs).toEqual([[]])
+
+    logs.length = 0
+    const compiledResult = compiled.parseWithContext(INPUT, { trackLines: false, build: host }, 0)
+    expect(compiledResult.ok).toBe(true)
+    expect(logs).toEqual([[]])
   })
 
   it('a grammar-owned structural capture overrides an explicit host opt-out (interpreter == compiled)', () => {

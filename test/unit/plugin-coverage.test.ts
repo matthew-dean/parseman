@@ -7,6 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { parseSync } from 'oxc-parser'
 import type { Expression, Node } from '@oxc-project/types'
 import parsemanPlugin, { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   evaluateRefDeclaration,
   applyDefineStatement,
@@ -61,9 +62,8 @@ export const brackets = item
     item.define(sequence(literal('['), optional(item), literal(']')))
 
     const result = transform(REF_MACRO)!
-    const fnBody = result.code.replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn brackets'
     type ParseFn = (input: string, pos: number, ctx: { trackLines: boolean }) => ReturnType<typeof parse>
-    const compiled = new Function(fnBody)() as ParseFn
+    const compiled = evalMacroModule<ParseFn>(result.code, 'brackets')
 
     for (const input of ['[]', '[[]]', '[[x]]', '[a[b]]']) {
       const i = parse(item, input)
@@ -217,7 +217,22 @@ describe('evaluator — evaluateParserFactory', () => {
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
     expect(map?.has('A')).toBe(true)
-    expect(map?.get('A')?._def.tag).toBe('lazy')
+    /*
+     * THE RULE ITSELF, NOT A `lazy` WRAPPING IT.
+     *
+     * `evaluateParserFactory` used to pre-mint a `ref()` for every declared key and
+     * hand those back whether or not the factory referenced them, because it was a
+     * second implementation of `rules()`. It calls the real `rules()` now, and
+     * `rules()` only keeps a placeholder for a key something actually touched
+     * through `g` — an untouched key is stored directly (`parser.ts:170-190`).
+     *
+     * So this assertion was encoding the copy's shape, not a contract. The runtime
+     * shape is the one the encoder is measured good on, and converging on it is what
+     * removed a spurious `lazy` hop from every macro-lowered rule: 4 size fixtures
+     * dropped below their committed ceiling, and the macro's coverage ids stopped
+     * carrying a `lazy:0` segment the runtime route never had.
+     */
+    expect(map?.get('A')?._def.tag).toBe('literal')
   })
 
   it('returns null when the factory body has unsupported statements', () => {
@@ -331,8 +346,7 @@ export const grammar = rules(g => ({
     expect(result.warnings).toEqual([])
     expect(result.code).toContain('"tags":["AtRule"]')
 
-    const fnBody = result.code.replace(/\s+as const\b/g, '').replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn grammar'
-    const grammar = new Function(fnBody)() as { AtRule: (input: string, pos: number, ctx: { trackLines: boolean; build: typeof cstBuildHost }) => unknown }
+    const grammar = evalMacroModule<{ AtRule: (input: string, pos: number, ctx: { trackLines: boolean; build: typeof cstBuildHost }) => unknown }>(result.code.replace(/\s+as const\b/g, ''), 'grammar')
     expect(() => grammar.AtRule('@media', 0, { trackLines: false, build: cstBuildHost })).not.toThrow()
   })
 
@@ -366,8 +380,7 @@ export const grammar = rules(g => ({
     expect(result.warnings).toEqual([])
     expect(result.code).toContain('"tags":["x"]')
 
-    const fnBody = result.code.replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn grammar'
-    const grammar = new Function(fnBody)() as { T: (input: string, pos: number, ctx: Record<string, unknown>) => { ok: boolean; value?: unknown } }
+    const grammar = evalMacroModule<{ T: (input: string, pos: number, ctx: Record<string, unknown>) => { ok: boolean; value?: unknown } }>(result.code, 'grammar')
     const parsed = grammar.T('a', 0, { trackLines: false, build: cstBuildHost({ tags: true }) })
     expect(parsed.ok).toBe(true)
     expect(parsed.value).toMatchObject({ _tag: 'node', type: 'T', tags: ['x'] })
@@ -494,7 +507,8 @@ describe('evaluator — transform / node / sepBy / oneOrMore', () => {
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
     const ident = map?.get('Ident')
-    expect(ident?._def.tag).toBe('lazy')
+    // The rule itself, not a `lazy` wrapping it — see the note on the `A` rule above.
+    expect(ident?._def.tag).toBe('node')
     const result = run(ident!, 'abc', { build: cstBuildHost() })
     expect(result.value).toMatchObject({ _tag: 'node', type: 'Ident' })
   })
@@ -550,7 +564,8 @@ describe('evaluator — factory and define edge cases', () => {
     const call = parseInit(`const m = ${code}`)
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
-    expect(map?.get('leaf')?._def.tag).toBe('lazy')
+    // The rule itself, not a `lazy` wrapping it — see the note on the `A` rule above.
+    expect(map?.get('leaf')?._def.tag).toBe('literal')
     expect(parse(map!.get('leaf')!, 'x').ok).toBe(true)
   })
 
@@ -598,7 +613,8 @@ describe('evaluator — factory and define edge cases', () => {
     const call = parseInit(`const m = ${code}`)
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
-    expect(map?.get('kw')?._def.tag).toBe('lazy')
+    // The rule itself, not a `lazy` wrapping it — see the note on the `A` rule above.
+    expect(map?.get('kw')?._def.tag).toBe('keywords')
     expect(parse(map!.get('kw')!, 'IF').ok).toBe(true)
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { encodeTable, UnsupportedConstruct } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { encodeTable } from '../../src/table/encode.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose, cstBuildHost } from '../../src/compiler/linker.ts'
 import { FUSED_HOST_MODE } from '../../src/cst/host-mode.ts'
@@ -82,8 +82,8 @@ describe('encodeTable({ hostMode })', () => {
     // "A property exists" is not the assertion — the VALUE decides which pairing
     // is admitted, and a stamp put only on the map (or only on the entries) would
     // leave half the callers unguarded, so both are read.
-    const cst = tableRules(encodeTable(hostNodes, { hostMode: 'cst' }))
-    const ast = tableRules(encodeTable(hostNodes))
+    const cst = execRules(encodeTable(hostNodes, { hostMode: 'cst' }))
+    const ast = execRules(encodeTable(hostNodes))
     expect((cst as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
     expect((cst.Doc as unknown as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
     expect((cst.Marked as unknown as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
@@ -103,8 +103,8 @@ describe('encodeTable({ hostMode })', () => {
     // both VALID pairings are exercised in the same test and their outputs are
     // read: the 'ast' table builds the grammar's own reducer output, the 'cst'
     // table builds host nodes.
-    const cst = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
-    const ast = tableRules(encodeTable(hostNodes)).Doc!
+    const cst = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const ast = execRules(encodeTable(hostNodes)).Doc!
     const host = cstBuildHost({ tags: true })
 
     expect(() => run(cst as never, 'abc')).toThrow(/host mode "cst"/)
@@ -123,42 +123,65 @@ describe('encodeTable({ hostMode })', () => {
     expect(() => run(compiledCst as never, 'abc')).toThrow(/host mode "cst"/)
   })
 
-  it("GAP, now LIVE: rules({ hostMode: 'cst' }) is dropped, so the two lowerings disagree", () => {
-    // `rules({ hostMode })` stamps `_meta.grammarHostMode`, which `compile()`
-    // reads. `encodeTable` reads only its own `TableSettings` and ignores the
-    // stamp. That was inert while nothing stamped the table; now that the mode
-    // decides which runs are ADMITTED, the same grammar has two opposite
-    // contracts: the compiled artifact REFUSES a hostless parse, and the table
-    // happily returns AST from it.
+  it("rules({ hostMode: 'cst' }) selects the same mode in both lowerings", () => {
+    // `rules({ hostMode })` stamps `_meta.grammarHostMode`; every lowering must
+    // consume that declaration when no explicit option overrides it. Otherwise
+    // the same grammar has two opposite host-admission contracts.
     const declared = rules<Record<string, Combinator<unknown>>>({ hostMode: 'cst' }, g => ({
       Word: node('Word', regex(/[a-z]+/), c => ({ t: 'Word', c })),
       Doc: node('Doc', many(g.Word!), c => ({ t: 'Doc', c })),
     })) as unknown as Record<string, Combinator<unknown>>
     expect((declared.Doc!._meta as { grammarHostMode?: string }).grammarHostMode).toBe('cst')
 
-    const table = tableRules(encodeTable(declared))
+    const table = execRules(encodeTable(declared))
     const compiled = compose([declared as never]) as unknown as Record<string, unknown>
-    expect((table as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('ast')
+    expect((table as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
     expect((compiled as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
-    // The divergence, in one pair of lines.
-    expect(run(table.Doc! as never, 'abc').ok).toBe(true)
+    expect(() => run(table.Doc! as never, 'abc')).toThrow(/host mode "cst"/)
     expect(() => run(compiled.Doc as never, 'abc')).toThrow(/host mode "cst"/)
-    // The table is still byte-identical to the undeclared grammar's.
-    expect(encodeTable(declared).code).toEqual(encodeTable(lowArity).code)
+
+    const host = cstBuildHost({ tags: true })
+    expect(run(table.Doc! as never, 'abc', { build: host as never }).ok).toBe(true)
+    expect(run(compiled.Doc as never, 'abc', { build: host as never }).ok).toBe(true)
+
+    // An explicit setting retains the same precedence compile/compose gives it.
+    const explicitAst = execRules(encodeTable(declared, { hostMode: 'ast' }))
+    expect((explicitAst as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('ast')
+    expect(run(explicitAst.Doc! as never, 'abc').ok).toBe(true)
   })
 
-  it("'cst' does NOT unlock a structural node — it is still refused at encode time", () => {
+  it('a structural node lowers in BOTH host modes, and matches the interpreter', () => {
     // A node with no builder, no project and no collapse takes its value from a
-    // host. `hostMode: 'cst'` says a host is coming, yet the encoder refuses the
-    // construct in both modes, so a jess-shaped CST grammar cannot be lowered at
-    // all. The refusal is correct for `'ast'`; under `'cst'` it is a gap.
+    // `ctx.build` host. The encoder used to REFUSE it in both modes, on the
+    // belief that the driver had no host — so a jess-shaped CST grammar could
+    // not be lowered at all. The driver does have one: `assemble.ts` reads
+    // `ctx.build` once per parse in `begin()` and bakes host-ness into which
+    // pieces the assembly holds. The refusal was over-broad, not protective.
+    //
+    // The bar is not "it encodes" — it is that the table agrees with the
+    // interpreter WITH a host and WITHOUT one, on a match and on a failure,
+    // since a host that ran only at the root would pass a match-only test.
     const structural = rules<Record<string, Combinator<unknown>>>(g => ({
       S: node('S', regex(/[a-z]+/)),
       Doc: node('Doc', many(g.S!)),
     })) as unknown as Record<string, Combinator<unknown>>
+    // `hostMode: 'cst'` REQUIRES a positioned-CST host — running it hostless is
+    // a documented error (`assertHostModeCompatible`), not a case to compare —
+    // so only `'ast'` is exercised both ways.
+    const build = (type: string, children: unknown[]) => ({ H: type, n: children.length })
     for (const hostMode of ['ast', 'cst'] as const) {
-      expect(() => encodeTable(structural, { hostMode }), hostMode).toThrow(UnsupportedConstruct)
-      expect(() => encodeTable(structural, { hostMode }), hostMode).toThrow(/needs a ctx\.build host/)
+      const table = execRules(encodeTable(structural, { hostMode })).Doc!
+      const hosts = hostMode === 'cst'
+        ? [{ build: cstBuildHost({ tags: true }) as never }]
+        : [{ build } as never, {} as never]
+      for (const opts of hosts) {
+        for (const src of ['abc', '1', '']) {
+          const t = run(table as never, src, opts as never)
+          const i = run(structural.Doc as never, src, opts as never)
+          expect(t.ok, `${hostMode} ${JSON.stringify(src)}`).toBe(i.ok)
+          expect(t.value, `${hostMode} ${JSON.stringify(src)}`).toEqual(i.value)
+        }
+      }
     }
   })
 
@@ -166,7 +189,7 @@ describe('encodeTable({ hostMode })', () => {
     // The existing host tests assert the root and one child. A host that ran only
     // at the root — or only where a reducer was absent — would satisfy those.
     const host = cstBuildHost({ tags: true })
-    const table = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const table = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
     const root = run(table as never, 'abc', { build: host as never }).value as Record<string, unknown>
     expect(root._tag).toBe('node')
     expect(root.type).toBe('Doc')
@@ -198,7 +221,7 @@ describe('encodeTable({ hostMode })', () => {
       Word: node('Word', regex(/[a-z]/), c => ({ t: 'Word', c })),
       Pair: node('Pair', sequence(gg.Word!, gg.Word!), c => ({ t: 'Pair', c })),
     })) as unknown as Record<string, Combinator<unknown>>
-    run(tableRules(encodeTable(g, { hostMode: 'cst' })).Pair! as never, 'ab', { build: spy as never })
+    run(execRules(encodeTable(g, { hostMode: 'cst' })).Pair! as never, 'ab', { build: spy as never })
     expect(seen.map(s => s.type)).toEqual(['Word', 'Word', 'Pair'])
     expect(seen[0]!.span).toEqual({ start: 0, end: 1 })
     expect(seen[1]!.span).toEqual({ start: 1, end: 2 })

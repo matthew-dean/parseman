@@ -1,5 +1,10 @@
 /**
- * WHY the table driver's gap widens with input size.
+ * WHY the REFERENCE bytecode interpreter's gap widens with input size.
+ *
+ * WHICH ENGINES THIS BINDS. `execRules()` (`src/table/exec.ts`) is the REFERENCE
+ * bytecode interpreter, NOT what ships; `compose()` (`src/compiler/linker.ts`)
+ * is the shipped ASSEMBLER. No source-lowering "codegen" engine is involved —
+ * the source lowering was DELETED in `37c57b5`.
  *
  * Two rival explanations, and they predict different curves:
  *
@@ -11,14 +16,14 @@
  *      rises toward the true steady-state ratio — an ASYMPTOTE, not a ramp.
  *
  * Both explanations fit three points. Eight points separate them. Same grammar,
- * same driver, one process, interleaved against the compiled path with a
- * compiled-vs-compiled control.
+ * same driver, one process, interleaved against the assembled path with an
+ * assembled-vs-assembled control.
  */
 import os from 'node:os'
 import { interleave, median, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+import { execRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
 import { jsonRules } from './table-grammars.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
@@ -68,25 +73,25 @@ function main(): void {
 
   const compiledA = (compose([map as never]) as unknown as Record<string, Entry>).Value!
   const compiledB = (compose([map as never]) as unknown as Record<string, Entry>).Value!
-  const table = tableRules(encodeTable(map)).Value! as unknown as Entry
+  const table = execRules(encodeTable(map)).Value! as unknown as Entry
 
   for (const [id, text] of INPUTS) {
     const want = JSON.stringify(JSON.parse(text))
-    if (JSON.stringify(run(compiledA, text).value) !== want) { console.error(`ABORT ${id}: compiled`); process.exit(1) }
-    if (JSON.stringify(run(table, text).value) !== want) { console.error(`ABORT ${id}: table`); process.exit(1) }
+    if (JSON.stringify(run(compiledA, text).value) !== want) { console.error(`ABORT ${id}: assembled`); process.exit(1) }
+    if (JSON.stringify(run(table, text).value) !== want) { console.error(`ABORT ${id}: exec`); process.exit(1) }
   }
   console.log('  same-value precondition: OK at every size')
 
   const reps = calibrateReps(cases(compiledA))
   const contests: Contest[] = [
-    { label: 'control', a: cases(compiledA), b: cases(compiledB) },
-    { label: 'gate', a: cases(compiledA), b: cases(table) },
+    { label: 'control: assembled -> assembled', a: cases(compiledA), b: cases(compiledB) },
+    { label: 'gate: assembled -> exec', a: cases(compiledA), b: cases(table) },
   ]
   const out = interleave(contests, reps, M)
 
   console.log('')
-  console.log('    records      bytes    control(min)     gate(min)   gate ratio')
-  const ctl = out.get('control')!, gate = out.get('gate')!
+  console.log('    records      bytes    control(min)     exec(min)   exec ratio')
+  const ctl = out.get('control: assembled -> assembled')!, gate = out.get('gate: assembled -> exec')!
   for (let i = 0; i < INPUTS.length; i++) {
     const [id, text] = INPUTS[i]!
     const ca = ctl.get(`ref|${id}`)!, cb = ctl.get(`head|${id}`)!

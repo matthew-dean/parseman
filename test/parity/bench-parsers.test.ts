@@ -15,10 +15,14 @@ import { describe, it, expect } from 'vitest'
 import { compile } from '../../src/index.ts'
 import { graphqlDoc, parseGraphQL } from '../../examples/graphql/parser.ts'
 import { jsonDoc } from '../../examples/json/parser.ts'
+import { compiledCSV, parseCSV } from '../../examples/csv/parser.ts'
 import { buildParsimmonGraphQL } from '../../bench/parsimmon-graphql.ts'
 import { buildPeggyGraphQL } from '../../bench/peggy-graphql.ts'
 import { buildNearleyGraphQL } from '../../bench/nearley-graphql.ts'
 import { buildJisonGraphQL } from '../../bench/jison-graphql.ts'
+import { buildParsimmonCSV } from '../../bench/parsimmon-csv.ts'
+import { buildPeggyCSV } from '../../bench/peggy-csv.ts'
+import { buildNearleyCSV } from '../../bench/nearley-csv.ts'
 import { buildParsimmonJSON } from '../../bench/parsimmon-json.ts'
 import { buildPeggyJSON } from '../../bench/peggy-json.ts'
 import { buildNearleyJSON } from '../../bench/nearley-json.ts'
@@ -26,7 +30,8 @@ import { buildJisonJSON } from '../../bench/jison-json.ts'
 import {
   SMALL_GQL, MEDIUM_GQL, LARGE_GQL,
   SMALL_JSON, MEDIUM_JSON, LARGE_JSON,
-} from '../../bench/fixtures.ts'
+  SMALL_CSV, LARGE_CSV,
+  } from '../../bench/fixtures.ts'
 
 /**
  * Chevrotain 12 calls `Object.groupBy` (Node 21+) from `performSelfAnalysis`, which
@@ -43,6 +48,7 @@ import {
 const HAS_GROUP_BY = typeof (Object as { groupBy?: unknown }).groupBy === 'function'
 const chevrotain = HAS_GROUP_BY
   ? {
+      csv: (await import('../../bench/chevrotain-csv.ts')).buildChevrotainCSV(),
       gql: (await import('../../bench/chevrotain-graphql.ts')).buildChevrotainGraphQL(),
       json: (await import('../../bench/chevrotain-json.ts')).buildChevrotainJSON(),
     }
@@ -109,6 +115,28 @@ describe('JSON bench parsers build the same value as JSON.parse', () => {
     const reference = JSON.parse(input)
     for (const [pName, parse] of Object.entries(parsers)) {
       it(`${pName} — ${fxName}`, () => expect(parse(input)).toEqual(reference))
+    }
+  }
+})
+
+describe('CSV bench parsers consume the whole chart input and build the same rows', () => {
+  const fixtures = { small: SMALL_CSV, large: LARGE_CSV }
+  const parsers = {
+    Peggy: buildPeggyCSV(),
+    Parsimmon: buildParsimmonCSV(),
+    Nearley: buildNearleyCSV(),
+    ...(chevrotain ? { Chevrotain: chevrotain.csv } : {}),
+  }
+  for (const [fxName, input] of Object.entries(fixtures)) {
+    it(`Parséman — ${fxName} consumes every byte`, () => {
+      const result = compiledCSV.parse(input)
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.span.end).toBe(input.length)
+      expect(result.value).toEqual(parseCSV(input))
+    })
+    for (const [pName, parse] of Object.entries(parsers)) {
+      it(`${pName} — ${fxName}`, () => expect(parse(input)).toEqual(parseCSV(input)))
     }
   }
 })

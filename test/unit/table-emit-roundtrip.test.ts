@@ -5,11 +5,11 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { encodeTable } from '../../src/table/encode.ts'
 import { emitTableModule, emitTableOnly } from '../../src/table/emit.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes } from '../../bench/table-grammars.ts'
-import { balanced, literal, many, node, optional, regex, rules, sequence, token, type Combinator } from '../../src/index.ts'
+import { balanced, choice, literal, many, node, optional, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
 import type { TableProgram } from '../../src/table/program.ts'
 
 /**
@@ -37,7 +37,11 @@ async function loadEmitted(prog: TableProgram, tag: string, preamble = ''): Prom
   // placeholders would make every reducer-bearing rule return `undefined` and
   // the round-trip vacuous — the grammars here are chosen closure-free so
   // `String(fn)` is a faithful source.
-  const src = emitTableModule(prog, { name: 'g', runtime: EXEC, fnSources: prog.fns.map(f => String(f)) })
+  // `runtimeRef` NAMES the engine this round-trip binds. `runtime: EXEC` aims the
+  // emitted import at the REFERENCE interpreter — deliberately, it is the oracle
+  // here — and before the two engines had distinct names that aim was invisible
+  // from the emitted source, which read exactly like a shipped artifact.
+  const src = emitTableModule(prog, { name: 'g', runtime: EXEC, runtimeRef: 'execRules', fnSources: prog.fns.map(f => String(f)) })
   const dir = mkdtempSync(path.join(tmpdir(), `pm-table-emit-${tag}-`))
   writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}')
   const file = path.join(dir, 'grammar.ts')
@@ -57,10 +61,27 @@ function outcome(rule: unknown, input: string, opts?: Record<string, unknown>): 
 }
 
 describe('table lowering — the EMITTED module round-trips', () => {
+  it('a RECOVERY table stays a recovery table across emit', async () => {
+    // `rec` selects the pieces that read the sync operands. Emitted without it,
+    // the operands are still in `c` and nothing reads them: the module LOADS,
+    // PARSES, and silently collects no errors — a strict artifact wearing a
+    // tolerant one's shape, which is why the emitted form is asserted here and
+    // not only the in-memory one.
+    const g = sequence(literal('{'), sepBy(sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/)), literal(';')), literal('}'))
+    const prog = encodeTable({ Entry: g as Combinator<unknown> }, { recovery: true })
+    const emitted = await loadEmitted(prog, 'recovery')
+    const input = '{a:1;$$;b:2}'
+    const opts = { tolerant: true }
+    expect(outcome(emitted.Entry, input, opts)).toBe(outcome(g as Combinator<unknown>, input, opts))
+    expect(run(emitted.Entry as never, input, opts).errors)
+      .toEqual(run(g as never, input, opts).errors)
+    expect(run(emitted.Entry as never, input, opts).errors).toHaveLength(1)
+  })
+
   it('baseNodes: emitted, loaded, and parse-identical to the table AND the interpreter', async () => {
     const prog = encodeTable(baseNodes)
     const emitted = await loadEmitted(prog, 'base')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
 
     expect(Object.keys(emitted).sort()).toEqual(Object.keys(memory).sort())
 
@@ -90,7 +111,7 @@ describe('table lowering — the EMITTED module round-trips', () => {
     // success-only comparison can see — every accepting case still passes.
     const prog = encodeTable(baseNodes)
     const emitted = await loadEmitted(prog, 'fail')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     for (const input of ['(a,b', '(', '(,)']) {
       const a = run(emitted.List as never, input)
       const b = run(memory.List as never, input)
@@ -119,7 +140,7 @@ describe('table lowering — the EMITTED module round-trips', () => {
   it('field() maps survive emission, populated and not merely present', async () => {
     const prog = encodeTable(fieldNodes)
     const emitted = await loadEmitted(prog, 'field')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     for (const input of ['ab=12', '[ab=1,cd=2,ef=3]', '[ab=1;zz]', '[ab=1', '']) {
       expect(outcome(emitted.Doc, input), input).toBe(outcome(memory.Doc, input))
       expect(outcome(emitted.Doc, input), input).toBe(outcome(fieldNodes.Doc, input))
@@ -167,7 +188,7 @@ describe('table lowering — the EMITTED module round-trips', () => {
     expect(spans[0]!.span.startLine).toBe(1)
     expect(spans[1]!.span.startLine).toBe(2)
     expect(spans[1]!.span.startColumn).toBe(1)
-    expect(outcome(emitted.Doc, 'ab\ncd')).toBe(outcome(tableRules(tracked).Doc, 'ab\ncd'))
+    expect(outcome(emitted.Doc, 'ab\ncd')).toBe(outcome(execRules(tracked).Doc, 'ab\ncd'))
     // The plain module is the control: same grammar, no line fields at all.
     const plainEmitted = await loadEmitted(encodeTable(lined), 'lines-plain')
     const plainSpans = (run(plainEmitted.Doc as never, 'ab\ncd').value as { c: Array<{ span: Record<string, number> }> }).c
@@ -239,7 +260,7 @@ describe('table lowering — the emitted module carries every side table', () =>
     expect(src).toContain('p:[')
 
     const emitted = await loadEmitted(prog, 'dispatch')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     const armFor = (rules_: Record<string, unknown>, input: string): unknown =>
       (run(rules_.Doc as never, input).value as [string, unknown])[1]
     expect(armFor(emitted, '@media')).toBe('K:media')        // exact key
@@ -271,7 +292,7 @@ describe('table lowering — the emitted module carries every side table', () =>
     expect(kid.type).toBe('Marked')
     expect(kid.tags).toEqual(['decl'])
     expect(JSON.stringify(root))
-      .toBe(JSON.stringify(run(tableRules(prog).Doc! as never, 'abc', { build: host as never }).value))
+      .toBe(JSON.stringify(run(execRules(prog).Doc! as never, 'abc', { build: host as never }).value))
   })
 
   it('the emitted module carries its HOST MODE, and refuses the wrong pairing', async () => {
@@ -334,7 +355,7 @@ function objectFromPairs(pairs) {
     // table's failure position and expected set differ from both shipped engines
     // on ordinary JSON (pinned in table-encode-refusals.test.ts). The emitted
     // module must still reject exactly what the in-memory table rejects.
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     for (const input of ['[1,2,]', '{"a":', '@@@']) {
       expect(outcome(emitted.Value, input), input).toBe(outcome(memory.Value, input))
       expect(run(emitted.Value as never, input).ok, input).toBe(false)
@@ -381,36 +402,150 @@ function objectFromPairs(pairs) {
     }
   })
 
-  it('MOVED, not fixed: balanced()/scanTo() are still unemittable — now by NAME', () => {
-    // The refusal used to come out of the printer as "[object Object]", which
-    // named neither the grammar nor the construct. The program now records
-    // `runtimeOnly` and the emitter refuses with the construct in the message.
-    // The LIMIT is unchanged: such a grammar runs in memory and cannot ship as
-    // an artifact.
+  it('balanced() emits, and the module distinguishes ACCEPTANCE from RECOVERY', async () => {
+    // WAS unemittable: `balanced()` parked a live combinator, so no grammar using
+    // it could be printed. It is now `sc:` data rebuilt through `balanced()`
+    // itself.
+    //
+    // A CONSUMPTION-ONLY PROBE PROVES NOTHING HERE. `balanced()` does not fail on
+    // a crossed closure — its close is an `expect()`, so `([a)]` succeeds, spans
+    // the same text a well-formed group would, AND records one error. Asserting
+    // ok/value/span alone therefore passes on a lowering that dropped the
+    // `expect()` entirely. The error COUNT is what separates the two, so it is
+    // asserted against the interpreter on both a clean and a crossed input.
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: node('Doc', balanced('(', ')'), c => ({ t: 'Doc', c })),
     })) as unknown as Record<string, Combinator<unknown>>
     const prog = encodeTable(g)
-    expect(prog.runtimeOnly).toEqual(['balanced()'])
-    expect(() => emitTableModule(prog)).toThrow(/RUNTIME-ONLY/)
-    expect(() => emitTableModule(prog)).toThrow(/balanced\(\)/)
-    // …and it still parses in memory, which is the whole reason the escape exists.
-    expect((run(tableRules(prog).Doc! as never, '(a(b)c)').value as { c: Array<{ value: string }> }).c[0]!.value)
-      .toBe('(a(b)c)')
+    expect(prog.runtimeOnly).toBeUndefined()
+    expect(emitTableModule(prog, { fnSources: [] })).toContain('sc:[{kind:1')
+    const emitted = await loadEmitted(prog, 'balanced')
+
+    for (const input of ['(a(b)c)', '([a)]', '(a', '', 'zz', '(a"b)c")']) {
+      expect(outcome(emitted.Doc, input), input).toBe(outcome(g.Doc, input))
+    }
+    const errs = (rule: unknown, input: string): number =>
+      (run(rule as never, input, { recover: true } as never).errors ?? []).length
+    // `(a` is the RECOVERED case: ok, span to EOF, and one recorded error. It is
+    // indistinguishable from acceptance by ok/value/span, and a lowering that
+    // kept the `expect()` but lost its error channel reads as clean input.
+    expect([errs(emitted.Doc, '(a(b)c)'), errs(emitted.Doc, '([a)]'), errs(emitted.Doc, '(a')])
+      .toEqual([0, 0, 1])
+    expect(run(emitted.Doc as never, '(a').ok, 'recovery is a SUCCESS, which is the point').toBe(true)
+    for (const input of ['(a(b)c)', '([a)]', '(a']) {
+      expect(errs(emitted.Doc, input), input).toBe(errs(g.Doc, input))
+    }
+
+    // ONE child, not seven — release/0.47.0 `#3`. A lowering that lost the
+    // `token()` wrapper would still parse, still span the same text, and
+    // contribute the interior's seven pieces instead.
+    const kids = (run(emitted.Doc as never, '(a(b)c)').value as { c: unknown[] }).c
+    expect(kids).toHaveLength(1)
+    expect((kids[0] as { value: string }).value).toBe('(a(b)c)')
   })
 
-  it('emitConst accepts arrays of primitives and still refuses everything else', () => {
-    // The array refusal was the part of this pin that was never really the
-    // defect: an array of primitives round-trips through JSON.stringify exactly
-    // as a string does, so it belonged on the accept side by the guard's own
-    // criterion. The refusal itself is unchanged and still asserted — writing the
-    // TEXT `undefined` into a module is the failure it exists to prevent.
+  it('balanced({ strict }) keeps FAILING through the emitted module', async () => {
+    // `strict` rides in the spec's flags. Dropped, the group would recover and
+    // the choice below would take the balanced arm instead of the fallback —
+    // a different tree behind a parse that still succeeds.
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      Doc: node('Doc', choice(balanced('(', ')', { strict: true }), regex(/[^]*/)), c => ({ t: 'Doc', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const prog = encodeTable(g)
+    expect(prog.scans![0]!.flags & 4, 'strict is carried').toBe(4)
+    const emitted = await loadEmitted(prog, 'strict')
+    for (const input of ['(a)', '(a', '((a)']) {
+      expect(outcome(emitted.Doc, input), input).toBe(outcome(g.Doc, input))
+    }
+    // Not vacuous: the unterminated input really did fall through to the other arm.
+    expect((run(emitted.Doc as never, '(a').value as { c: Array<{ value: string }> }).c[0]!.value).toBe('(a')
+    expect(run(emitted.Doc as never, '(a', { recover: true } as never).errors).toEqual([])
+  })
+
+  it('scanTo() emits, keeps its skip list, its orEOF and its expected set', async () => {
+    // Three separable facts, each with its own discriminating input:
+    //   - the SKIP list: `{` inside the quoted run must not stop the scan;
+    //   - `orEOF`: no sentinel at all is a success for Tail and a failure for Doc;
+    //   - the SENTINEL's expected set: `["{"]`, which is carried as `sent` and
+    //     would read `["sentinel"]` if the subtree reference lost its literal.
+    const str = token(sequence(literal('"'), regex(/[^"]*/), literal('"')))
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      Doc: node('Doc', scanTo(literal('{'), { skip: [str as Combinator<unknown>] }), c => ({ t: 'Doc', c })),
+      Tail: node('Tail', scanTo(literal('{'), { orEOF: true }), c => ({ t: 'Tail', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const prog = encodeTable(g)
+    expect(prog.runtimeOnly).toBeUndefined()
+    const emitted = await loadEmitted(prog, 'scanto')
+    const memory = execRules(prog)
+    for (const input of ['a "b{c" d{', 'ab{', '{', '']) {
+      expect(outcome(emitted.Doc, input), `Doc ${input}`).toBe(outcome(g.Doc, input))
+      expect(outcome(emitted.Tail, input), `Tail ${input}`).toBe(outcome(g.Tail, input))
+    }
+    expect((run(emitted.Doc as never, 'a "b{c" d{').value as { c: Array<{ value: string }> }).c[0]!.value)
+      .toBe('a "b{c" d')
+    // A REJECTING input is compared to the in-memory table, not to the
+    // interpreter: the table reports a failure at a zero-width position where the
+    // interpreter reports the span it scanned. That divergence is the driver's
+    // failure protocol and predates this lowering (`ctx._fe` carries a position,
+    // not a span) — it is pinned in table-encode-refusals.test.ts, not smuggled
+    // into a pass here. The EXPECTED SET is compared to the interpreter, because
+    // that is what `sent` carries and what would read `["sentinel"]` if it were
+    // lost.
+    expect(outcome(emitted.Doc, 'no brace here')).toBe(outcome(memory.Doc, 'no brace here'))
+    expect(run(emitted.Doc as never, 'no brace here').ok).toBe(false)
+    expect(run(emitted.Doc as never, 'no brace here').expected)
+      .toEqual(run(g.Doc as never, 'no brace here').expected)
+    expect(run(emitted.Doc as never, 'no brace here').expected).toEqual(['"{"'])
+    expect(run(emitted.Tail as never, 'no brace here').ok).toBe(true)
+  })
+
+  it('ambient scanSkip survives emission, PER RULE, and a raw scan still ignores it', async () => {
+    // `ss:`/`so:`. The set is a property of the rule, not the program: `run()`
+    // installs the ENTRY rule's own set. Emitting one program-wide set gave rules
+    // that have none — 67 of jess's 195 css rules — a skip list the interpreter
+    // never gives them.
+    const str = token(sequence(literal('"'), regex(/[^"]*/), literal('"')))
+    const g = rules<Record<string, Combinator<unknown>>>({ scanSkip: [str as Combinator<unknown>] }, () => ({
+      Doc: node('Doc', balanced('(', ')'), c => ({ t: 'Doc', c })),
+      Raw: node('Raw', balanced('(', ')', { raw: true }), c => ({ t: 'Raw', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const prog = encodeTable(g)
+    const src = emitTableModule(prog, { fnSources: [] })
+    expect(src).toContain('ss:[[[')
+    expect(src).toContain('so:[0,0]')
+    const emitted = await loadEmitted(prog, 'scanskip')
+    // THE DISCRIMINATING INPUT: the `)` inside the string must not close the
+    // group. A module that emitted no `ss:` parses this happily and stops early —
+    // ok, no error, shorter span. Both engines are asked the same question.
+    const tricky = '("a)b")'
+    expect((run(emitted.Doc as never, tricky).value as { c: Array<{ value: string }> }).c[0]!.value).toBe(tricky)
+    expect(outcome(emitted.Doc, tricky)).toBe(outcome(g.Doc, tricky))
+    // …and `raw` opts out, so it DOES stop inside the string. Same table, same
+    // ambient set, opposite answer — which is what makes the pair evidence.
+    expect((run(emitted.Raw as never, tricky).value as { c: Array<{ value: string }> }).c[0]!.value).toBe('("a)')
+    expect(outcome(emitted.Raw, tricky)).toBe(outcome(g.Raw, tricky))
+  })
+
+  it('emitConst accepts arrays and plain objects of primitives, and still refuses everything else', () => {
+    // The array refusal was never really the defect: an array of primitives
+    // round-trips through JSON.stringify exactly as a string does, so it belonged
+    // on the accept side by the guard's own criterion. A PLAIN OBJECT of the same
+    // primitives round-trips identically, and `withCtx(extra, …)` parks one in
+    // the pool — refusing it made every withCtx-bearing grammar unemittable for
+    // no reason the criterion supports.
+    //
+    // The refusal itself is unchanged and still asserted — writing the TEXT
+    // `undefined` into a module is the failure it exists to prevent — and it
+    // still catches what a JSON round-trip would silently mangle: a class
+    // instance loses its prototype, a function value vanishes.
     const withPool = (k: readonly unknown[]): TableProgram =>
       ({ code: [], k, fns: [], cc: [], fx: [], disp: [], dsp: [], rules: {} })
-    for (const bad of [() => 0, undefined, {}, Symbol('x'), 1n, [[1]], [{}], [undefined]]) {
+    class Rich { x = 1 }
+    for (const bad of [() => 0, undefined, Symbol('x'), 1n, [[1]], [{}], [undefined],
+      new Rich(), { fn: () => 0 }, { nested: { a: 1 } }, new Map()]) {
       expect(() => emitTableModule(withPool([bad])), String(bad?.toString?.() ?? bad)).toThrow(TypeError)
     }
-    const ok = emitTableModule(withPool(['s\n"', 1, true, null, /a[b]c/giy, ['decl', 'x'], [], [1, true, null]]))
-    expect(ok).toContain('k:["s\\n\\"",1,true,null,/a[b]c/giy,["decl","x"],[],[1,true,null]]')
+    const ok = emitTableModule(withPool(['s\n"', 1, true, null, /a[b]c/giy, ['decl', 'x'], [], [1, true, null], {}, { inFn: true, tags: ['a'] }]))
+    expect(ok).toContain('k:["s\\n\\"",1,true,null,/a[b]c/giy,["decl","x"],[],[1,true,null],{},{"inFn":true,"tags":["a"]}]')
   })
 })

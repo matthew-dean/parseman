@@ -6,6 +6,7 @@
  * interpreter. Covers `many`/`oneOrMore` (sepBy compiled recovery lands next).
  */
 import { describe, it, expect } from 'vitest'
+import { tableRules } from '../../src/table/index.ts'
 import { regex, literal, sequence, many, oneOrMore, sepBy, node, rules, trivia, run, compile, completionsAt, cstBuildHost, expect as expectTok, optional } from '../../src/index.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
@@ -95,7 +96,7 @@ describe('MACRO inline-expression recovers (macro-compiled grammars are recovera
     expect(rec.inlineExpression).not.toBeNull()
     expect(/_rp\[/.test(rec.source)).toBe(false)
     // Eval the exact expression the macro pastes → a (input,_pos,_ctx) parse fn.
-    const macroFn = new Function(`return ${rec.inlineExpression}`)() as
+    const macroFn = new Function('tableRules', `return ${rec.inlineExpression}`)(tableRules) as
       (input: string, pos: number, ctx: ParseContext) => { ok: boolean; value: unknown }
     for (const input of ['{a:1$$b:2}', '{$$a:1}', '{a:1}', '{a:1@@b:2c:3}']) {
       const ri = run(block as Combinator<unknown>, input, { tolerant: true })

@@ -12,8 +12,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import { rules, balanced, regex, literal, sequence, parse } from '../../src/index.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { fuseRules } from '../../src/compiler/linker.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
+import { compose } from '../../src/compiler/linker.ts'
 import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 
 const blockComment = sequence(literal('/*'), regex(/(?:[^*]|\*(?!\/))*/), literal('*/'))
@@ -25,9 +25,9 @@ type Result = { ok: boolean; span: { end: number } }
 type Fn = (i: string, p: number, c: object) => Result
 
 function lower(entries: ReadonlyArray<readonly [string, unknown]>): Fn {
-  const pieces = compileLinkable(entries as never, '_t_')
-  if (!pieces) throw new Error('not linkable')
-  return (fuseRules([pieces]) as unknown as Record<string, Fn>).Group!
+  // Fuse through the public `compose()` — the table lowering has no separate
+  // "link already-lowered pieces" step, so a one-grammar compose IS the fuse.
+  return (compose([Object.fromEntries(entries as never)]) as unknown as Record<string, Fn>).Group!
 }
 
 describe('compose() keeps ambient scanSkip inside a balanced() interior', () => {

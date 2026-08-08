@@ -8,8 +8,8 @@
  * - trivia for automatic whitespace skipping
  * - transform() for value construction
  * - Macro compilation of recursive grammars — the rules() factory is evaluated
- *   at build time by the parseman Vite/Rollup plugin, emitting optimized inline
- *   functions with no runtime combinator overhead.
+ *   at build time by the parseman Vite/Rollup plugin, emitting a compact table
+ *   program with no runtime combinator construction.
  *
  * To extend this parser see:
  *   examples/json/jsonl.ts  — newline-delimited JSON
@@ -21,7 +21,7 @@ import {
   type Combinator,
 } from '../../src/index.ts'
 
-function unescapeJsonString(inner: string): string {
+export function unescapeJsonString(inner: string): string {
   if (!inner.includes('\\')) return inner
   return inner
     .replace(/\\"/g, '"')
@@ -35,7 +35,7 @@ function unescapeJsonString(inner: string): string {
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
 }
 
-function objectFromPairs<V>(pairs: ReadonlyArray<readonly [string, V]>): Record<string, V> {
+export function objectFromPairs<V>(pairs: ReadonlyArray<readonly [string, V]>): Record<string, V> {
   const obj = Object.create(null) as Record<string, V>
   for (const [k, v] of pairs) obj[k] = v
   return obj
@@ -110,10 +110,17 @@ export const { jsonValue } = rules<{ jsonValue: Combinator<JSONValue> }>(g => {
 export const jsonDoc = parser({ trivia: ws }, jsonValue)
 
 export function parseJSON(input: string): JSONValue {
-  const result = jsonDoc.parse(input.trim())
-  if (!result.ok) {
+  // This convenience API promises one JSON document, while the underlying
+  // combinator parser intentionally permits callers to inspect a prefix.
+  // Preserve the example's historical trim behaviour, then require that the
+  // document owns every remaining non-whitespace character.
+  const source = input.trim()
+  const result = jsonDoc.parse(source)
+  if (!result.ok || result.span.end !== source.length) {
+    const offset = result.ok ? result.span.end : result.span.start
+    const expected = result.ok ? 'end of input' : result.expected.join(' or ')
     throw new SyntaxError(
-      `JSON parse error at offset ${result.span.start}: expected ${result.expected.join(' or ')}`
+      `JSON parse error at offset ${offset}: expected ${expected}`
     )
   }
   return result.value

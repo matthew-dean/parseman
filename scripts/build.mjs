@@ -32,6 +32,11 @@ const shared = {
   bundle: true,
   external,
   sourcemap: true,
+  // Every public entry point bundles much of the same module graph. Embedding that
+  // graph in each source map duplicates the TypeScript sources eighteen times across
+  // the ESM/CJS outputs. The package ships `src/` once instead, so debuggers can still
+  // resolve the relative paths recorded by these external maps.
+  sourcesContent: false,
   target: 'es2022',
 }
 

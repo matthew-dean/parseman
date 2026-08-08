@@ -45,7 +45,8 @@ function rawEntry(v: unknown, input: string, s: number, e: number): unknown {
   return { _tag: 'leaf', value: typeof v === 'string' ? v : (typeof v === 'object' && v !== null ? input.slice(s, e) : ''), span: { start: s, end: e } }
 }
 
-/** Same semantics as codegen's `LINE_TRACK_DECL` (`src/compiler/codegen.ts:248`). */
+/** Same semantics as `trackLinesInto` in `src/table/assemble.ts`. (Named for the
+ *  source lowering before it, deleted in `37c57b5`.) */
 function trackLines(ctx: ParseContext, input: string, end: number): void {
   const from = ctx._lineScannedTo ?? 0
   if (end <= from) return
@@ -55,7 +56,8 @@ function trackLines(ctx: ParseContext, input: string, end: number): void {
   ctx._lineScannedTo = end
 }
 
-/** Same semantics as codegen's `LINE_SPAN_DECL` (`src/compiler/codegen.ts:251`). */
+/** Same semantics as `lineCol` in `src/table/run-support.ts`, which is where the
+ *  live copy moved. (Named for the source lowering before it, deleted in `37c57b5`.) */
 function lineCol(ctx: ParseContext, offset: number): [number, number] {
   const starts = ctx._lineStarts ?? [0]
   let lo = 0, hi = starts.length - 1
@@ -508,7 +510,7 @@ function makeDriver(
  * The entries have the SAME signature as codegen rule functions, so `run()`,
  * the linker's public wrappers and every consumer are unchanged.
  */
-export function tableRulesBaseline(source: TableProgram | CompactProgram): Record<string, TableRule> {
+export function execRulesBaseline(source: TableProgram | CompactProgram): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)
   const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp)

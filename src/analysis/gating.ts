@@ -25,7 +25,7 @@
  * on the fused artifact, which really runs and whose author really can fix it.
  */
 import type { Combinator, FirstSet, ParserDef } from '../types.ts'
-import { firstSetOf, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
+import { firstSetOf, intersects, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
 
 /** Why an arm's (deep) first-set is `any` / over-broad — the poison source. */
 export type FirstSetCause =
@@ -201,16 +201,65 @@ export type GatingReport = {
   antiPatterns: AntiPattern[]
 }
 
+// ── grammar walk ─────────────────────────────────────────────────────────────
+
+/**
+ * Ordered structural children per def tag. Explicit rather than "every key that
+ * holds a Combinator" because a SLOT's position is what near-duplicate detection
+ * varies — a stable, meaningful order is load-bearing, not cosmetic.
+ *
+ * Lives here, in the module every analysis pass already imports, because
+ * `./choice-cost.ts` and `./duplication.ts` each carried a byte-identical copy.
+ */
+export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
+  switch (d.tag) {
+    case 'sequence': case 'choice': return d.parsers
+    case 'dispatch': return [
+      d.selector,
+      ...d.cases.map(c => c.parser),
+      ...(d.matchers ? d.matchers.map(c => c.parser) : []),
+      ...(d.otherwise === undefined ? [] : [d.otherwise]),
+    ]
+    case 'sepBy': return [d.parser, d.separator]
+    case 'recover': return [d.parser, d.sentinel]
+    case 'scanTo': return [d.sentinel, ...d.skip]
+    case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
+    case 'routed': return d.fallback ? [d.fallback] : []
+    // A `lazy` is a REFERENCE, not a subtree. Descending through it would make
+    // every rule's walk cover the whole reachable grammar — site paths become
+    // nonsense, and a structural hash includes half the grammar. Treated as a
+    // leaf, keyed by the rule name it refers to, which is also the right
+    // semantics: two productions referencing `g.Ident` really do fill that slot
+    // the same way.
+    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'adjacency': case 'unknown':
+      return []
+    default: {
+      const rec = d as unknown as { parser?: Combinator<unknown> }
+      return rec.parser ? [rec.parser] : []
+    }
+  }
+}
+
 // ── first-set helpers (local, to avoid importing codegen and creating a cycle) ──
 
 const isAny = (fs: FirstSet): boolean => fs.kind === 'any'
 
-function intersects(a: FirstSet, b: FirstSet): boolean {
-  if (a.kind === 'any' || b.kind === 'any') return true
-  if (a.kind === 'empty' || b.kind === 'empty') return false
-  for (const ra of a.ranges) for (const rb of b.ranges) if (ra.lo <= rb.hi && rb.lo <= ra.hi) return true
-  return false
-}
+/**
+ * Do two first-sets share any character?
+ *
+ * THE DEFINITION LIVES IN `../combinators/first-set.ts`, beside `union` and the
+ * rest of the first-set algebra, and is re-exported here only because
+ * `./duplication.ts` imports it from this module.
+ *
+ * This used to be a third copy. Two byte-identical copies in `./choice-cost.ts`
+ * and `./duplication.ts` were collapsed into a declaration here, and the note
+ * recording that said `intersects` now "lives once" — while
+ * `../combinators/first-set.ts` had been exporting its own since before any of
+ * them. INV-4 could not see it: the two bodies differ only in whether the nested
+ * `for` carries braces, and INV-4 decides on byte-identity after whitespace is
+ * stripped. INV-8 sees it, because it decides on the NAME.
+ */
+export { intersects }
 
 /** The SHARED first characters of two sets (the actual overlap, not the union). */
 function intersection(a: FirstSet, b: FirstSet): FirstSet {
@@ -394,7 +443,6 @@ function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmC
       case 'oneOrMore': case 'transform': case 'label': case 'field':
       case 'trivia': case 'token': case 'leaf': case 'node': case 'grammar': case 'expect':
         return walk(d.parser)
-      case 'skip': return walk(d.main)
       case 'sequence': {
         // Scan the nullable prefix the way sequenceFirstSet does: a `not(...)` or a
         // FINITE nullable term (optional/many/nullable regex) is skipped so a LATER
@@ -547,19 +595,11 @@ export function analyzeGatingRules(
       raw.push({ g: analyzeChoice(p, d, rule, opts?.resolveRef), rule, arms: d.parsers })
       antiPatterns.push(...detectAntiPatterns(rule, d.parsers))
     }
-    // Structural recursion (+ through refs once).
-    const rec = d as Record<string, unknown>
-    const kids: Combinator<unknown>[] = []
-    if (Array.isArray(rec.parsers)) kids.push(...(rec.parsers as Combinator<unknown>[]))
-    for (const k of ['parser', 'main', 'skipped', 'separator', 'sentinel'] as const)
-      if (rec[k]) kids.push(rec[k] as Combinator<unknown>)
-    if (d.tag === 'dispatch') {
-      kids.push(d.selector)
-      for (const c of d.cases) kids.push(c.parser)
-      if (d.matchers) for (const c of d.matchers) kids.push(c.parser)
-      if (d.otherwise !== undefined) kids.push(d.otherwise)
-    }
-    if (Array.isArray(rec.skip)) kids.push(...(rec.skip as Combinator<unknown>[]))
+    // Structural recursion (+ through refs once). Keep the child inventory in
+    // one place: choice-cost, duplication and dependency analysis use the same
+    // authored edge order, including matcher arms, grammar trivia, and routed
+    // fallbacks.
+    const kids = [...childrenOf(d)]
     // Deliberately NOT `resolveRef`-aware: the WALK must visit the same choices with
     // and without a resolver, so a choice's `id` (per-rule occurrence order) is the
     // same in both passes — that identity is what lets the fuse-time diagnostic report
@@ -703,4 +743,50 @@ export function formatGatingWarnings(report: GatingReport): string[] {
   for (const ap of report.antiPatterns)
     lines.push(`parseman anti-pattern [${ap.kind}] @ ${ap.rule} arm[${ap.armIndex}]: ${ap.message}`)
   return lines
+}
+
+/**
+ * Dependency manifest for a rule map: for each rule, the set of OTHER rule names
+ * its body references. A referenced rule is a BOUNDARY — record the edge and do
+ * NOT descend into it (its own deps are its own entry). Self-references are
+ * included, because a recursive rule does depend on itself.
+ *
+ * Used for a la carte dep-closure selection (`pick`) and the compose-time name
+ * closure check. This lives here rather than in a lowering because it is a walk
+ * over the COMBINATOR GRAPH and has nothing to do with how that graph is lowered
+ * — it outlived the source lowering it was first written inside.
+ */
+export function ruleDependencies(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+): Map<string, string[]> {
+  const nameOf = new Map<Combinator<unknown>, string>()
+  for (const [name, comb] of ruleMap) nameOf.set(comb, name)
+
+  const deps = new Map<string, string[]>()
+  for (const [name, comb] of ruleMap) {
+    const found = new Set<string>()
+    const seen = new Set<Combinator<unknown>>()
+    const walk = (p: Combinator<unknown>, isRoot: boolean): void => {
+      const def = p._def
+      // `_ruleName` (set by `rules()`) also catches EXTERNAL refs — rules referenced
+      // by name but defined in another artifact — which is what makes the closure
+      // correct across a composition boundary.
+      const boundary = def.tag === 'lazy'
+        ? (nameOf.get(p) ?? (p as unknown as { _ruleName?: string })._ruleName)
+        : nameOf.get(p)
+      if (!isRoot && boundary !== undefined) { found.add(boundary); return }
+      if (seen.has(p)) return
+      seen.add(p)
+      if (def.tag === 'lazy') {
+        let resolved: Combinator<unknown>
+        try { resolved = def.thunk() } catch { return }
+        walk(resolved, false)
+        return
+      }
+      for (const child of childrenOf(def)) walk(child, false)
+    }
+    walk(comb, true)
+    deps.set(name, [...found])
+  }
+  return deps
 }

@@ -1,4 +1,6 @@
 import { run, type RunOptions, type RunResult, type Runnable } from './functional/run.ts'
+import { GRAMMAR_COVERAGE_DEFINITIONS } from './grammar-metadata.ts'
+export { GRAMMAR_COVERAGE_DEFINITIONS } from './grammar-metadata.ts'
 import type { Combinator, DispatchCase, DispatchMatcherCase, ParseContext, ParseResult } from './types.ts'
 import { choice } from './combinators/choice.ts'
 import { dispatch, endsWith, matches, otherwise, startsWith, when, type DispatchArm, type DispatchStringMatcher } from './combinators/dispatch.ts'
@@ -10,7 +12,7 @@ import { node } from './combinators/node.ts'
 import { parser as grammarParser } from './combinators/grammar.ts'
 import { expect } from './combinators/expect.ts'
 import { gate } from './combinators/gate.ts'
-import { label, field, skip, transform, trivia } from './combinators/map.ts'
+import { label, field, transform, trivia } from './combinators/map.ts'
 import { many, oneOrMore, optional, sepBy } from './combinators/repeat.ts'
 import { scanTo } from './combinators/scanTo.ts'
 import { sequence } from './combinators/sequence.ts'
@@ -63,8 +65,6 @@ export type GrammarCoverageCollector = {
 /** Metadata emitted only by a coverage-enabled macro grammar. It is attached to
  * the grammar map, rather than each rule function, so a caller chooses the
  * explicit public start rule before collecting results. */
-export const GRAMMAR_COVERAGE_DEFINITIONS: symbol = Symbol.for('parseman.grammarCoverageDefinitions')
-
 export function compiledGrammarCoverageDefinitions(grammar: Record<string, unknown>): readonly GrammarCoverageDefinition[] {
   const definitions = (grammar as Record<symbol, unknown>)[GRAMMAR_COVERAGE_DEFINITIONS]
   // `definitions.length === 0` is checked EXPLICITLY. `[].every(...)` is vacuously true,
@@ -341,7 +341,6 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         }
         case 'sepBy': return sepBy(build(def.parser), build(def.separator), { min: def.min, ...(def.max === undefined ? {} : { max: def.max }), ...(def.trailing === undefined ? {} : { trailing: def.trailing }) })
         case 'transform': return transform(build(def.parser), def.fn)
-        case 'skip': return skip(build(def.main), build(def.skipped))
         case 'trivia': return trivia(build(def.parser))
         case 'token': return token(build(def.parser))
         case 'leaf': return leaf(build(def.parser), def.fn)

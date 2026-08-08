@@ -1,10 +1,18 @@
 # Benchmarks
 
 **Parsing to JS values** — JSON → objects, CSV → rows, GraphQL → AST — is what most
-parsers do, and it's the race Parséman is built to win: **the macro build is the fastest
-general-purpose JS parser we benchmark**, beating [Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) at every grammar and size **in this suite** — the three benchmarked grammars below, not a claim about grammars nobody has measured.
+parsers do. The release gate measures Parséman's compact table artifact against
+[Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) on equivalent medium and large inputs.
 
-For **syntax tree building**, Parséman's compiled CST path (macro build) beats
+::: warning 0.47 chart refresh in progress
+The committed SVG snapshots and historical numbers below predate canonical artifact
+unification: they measured runtime `compile()` while calling it “macro build,” and that
+runtime path then used a different emitted-assembly strategy. They are historical material,
+not 0.47 release evidence. The release ledger records only a fresh run whose runtime and
+macro artifacts share the same `a:[]` closure shape.
+:::
+
+For **syntax tree building**, Parséman's table CST path is compared with
 [Lezer](https://lezer.codemirror.net/) too — while producing a richer object tree with
 spans and trivia. See [parsing to a syntax tree](#parsing-to-a-syntax-tree).
 
@@ -15,8 +23,8 @@ output shape, context-sensitive grammars, incremental re-parse, error recovery �
 Measured on Apple M4 Pro. Bars show µs per parse — shorter is faster.
 
 ::: info Basis for every timing on this page
-All Parséman bars and tables here measure the **JS-codegen lowering** — the interpreter,
-`compile()`, and the macro build. Every number is transcribed from the committed charts in
+The historical Parséman bars and tables below measure the former **JS-codegen lowering** — the interpreter,
+`compile()`, and what the charts called the macro build. Every number is transcribed from the committed charts in
 `assets/bench-*.svg`, last regenerated at **0.29.0 (2026-07-22)** by `pnpm bench:svg`.
 Re-run that command to refresh both the charts and these tables together; if a table and a
 chart disagree, the chart is the source.

@@ -18,6 +18,7 @@
  */
 import type { Combinator, ParserDef } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
+import { childrenOf } from './gating.ts'
 
 /**
  * Can `p` FAIL at all?
@@ -72,7 +73,6 @@ export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> =
     case 'grammar':
     case 'token':
     case 'leaf':      return mayFail(d.parser, seen)
-    case 'skip':      return mayFail(d.main, seen)
     case 'lazy':      { try { return mayFail(d.thunk(), seen) } catch { return true } }
     // An adjacency assertion is a TEST — failing is its whole job.
     case 'adjacency': return true
@@ -158,7 +158,6 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
     case 'grammar':
     case 'token':
     case 'leaf':      return alwaysConsumes(d.parser, seen)
-    case 'skip':      return alwaysConsumes(d.main, seen)
     case 'lazy':      { try { return alwaysConsumes(d.thunk(), seen) } catch { return false } }
     // Zero-width by definition — it asserts over the gap and moves nothing. This
     // `false` is load-bearing: it is what keeps the TRIVIA REWIND in place for the
@@ -184,7 +183,7 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  * having captured. node() buffers into a private sub-scope and discards it on
  * failure, so it never leaks. choice/firstMatch roll back each failed arm
  * internally. optional/many never "fail" with partial output. Delegating
- * wrappers (transform/label/grammar/withCtx/expect/skip) pass through to inner.
+ * wrappers (transform/label/grammar/withCtx/expect) pass through to inner.
  */
 export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true): boolean {
   if (seen.has(p)) return false
@@ -217,10 +216,16 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
     case 'choice':
       return false
     case 'dispatch':
-      return capturesLeaf(d.selector, seen) ||
-        d.cases.some(x => mayLeavePartialCapture(x.parser, seen, triviaActive) || capturesLeaf(x.parser, seen)) ||
-        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, seen, triviaActive) || capturesLeaf(x.parser, seen)) : false) ||
-        (d.otherwise ? mayLeavePartialCapture(d.otherwise, seen, triviaActive) || capturesLeaf(d.otherwise, seen) : false)
+      // These are independent graph predicates. Sharing one mutable `seen` set
+      // between them made the first walk hide the arm from the second: an atomic
+      // literal arm, for example, was visited by `mayLeavePartialCapture` (false)
+      // and then skipped by `capturesLeaf` (also false because already seen).
+      // Fork the ancestor set for each proof so cycle protection remains, while
+      // one proof cannot erase evidence needed by another.
+      return capturesLeaf(d.selector, new Set(seen)) ||
+        d.cases.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive) || capturesLeaf(x.parser, new Set(seen))) ||
+        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive) || capturesLeaf(x.parser, new Set(seen))) : false) ||
+        (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive) || capturesLeaf(d.otherwise, new Set(seen)) : false)
     case 'attempt':
       return false
     // optional never fails; many/oneOrMore only "fail" with zero captured items.
@@ -275,8 +280,6 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
     case 'withCtx':
     case 'grammar':
       return mayLeavePartialCapture(d.parser, seen, triviaActive)
-    case 'skip':
-      return mayLeavePartialCapture(d.main, seen, triviaActive)
     case 'recover':
       return mayLeavePartialCapture(d.parser, seen, triviaActive)
     case 'lazy': {
@@ -331,8 +334,6 @@ export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'grammar':
     case 'recover':
       return capturesLeaf(d.parser, seen)
-    case 'skip':
-      return capturesLeaf(d.main, seen)
     case 'scanTo':
       return true
     case 'lazy': {
@@ -367,7 +368,6 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
     case 'not':
     case 'peek':
     case 'transform': return hasNodeDef(d.parser, seen)
-    case 'skip':      return hasNodeDef(d.main, seen) || hasNodeDef(d.skipped, seen)
     case 'sequence':
     case 'choice':    return d.parsers.some(x => hasNodeDef(x, seen))
     case 'dispatch':  return hasNodeDef(d.selector, seen) || d.cases.some(x => hasNodeDef(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => hasNodeDef(entry.parser, seen)) : false) || (d.otherwise ? hasNodeDef(d.otherwise, seen) : false)
@@ -376,6 +376,60 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
     case 'recover':   return hasNodeDef(d.parser, seen) || hasNodeDef(d.sentinel, seen)
     case 'expect':    return hasNodeDef(d.parser, seen)
     case 'withCtx':   return hasNodeDef(d.parser, seen)
+    default:          return false
+  }
+}
+
+/**
+ * Whether a grammar tree owns a DIRECT semantic node reduction — a `node(..., build)`
+ * whose callback produces the value itself, as opposed to a purely structural
+ * `node(parser)`.
+ *
+ * It is the predicate behind `hostBranchElided`: an artifact only drops a
+ * positioned-CST branch if there was a direct builder to drop, so an all-structural
+ * grammar stays usable with either host (`cst/host-mode.ts`).
+ *
+ * It belongs in THIS module for the reason stated at the top of it: both lowerings
+ * must reach the same answer, and a stamp they disagree about is a driver that
+ * accepts a host it should refuse. It previously lived in `compiler/codegen.ts`,
+ * which forced `table/compile-rule-map.ts` to import the engine the table replaced.
+ *
+ * The descent mirrors the source lowering's own `childrenOf` exactly — including a
+ * `routed()` fallback and a `dispatch` matcher arm, both of which are real emit
+ * sites and neither of which `hasNodeDef` above walks.
+ */
+export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'node':      return d.build !== undefined || hasDirectBuildDef(d.parser, seen)
+    case 'lazy':      { try { return hasDirectBuildDef(d.thunk(), seen) } catch { return false } }
+    case 'grammar':
+    case 'trivia':
+    case 'token':
+    case 'leaf':
+    case 'label':
+    case 'field':
+    case 'optional':
+    case 'many':
+    case 'oneOrMore':
+    case 'attempt':
+    case 'not':
+    case 'peek':
+    case 'withCtx':
+    case 'expect':
+    case 'transform': return hasDirectBuildDef(d.parser, seen)
+    case 'sequence':
+    case 'choice':    return d.parsers.some(x => hasDirectBuildDef(x, seen))
+    case 'dispatch':  return hasDirectBuildDef(d.selector, seen)
+      || d.cases.some(x => hasDirectBuildDef(x.parser, seen))
+      || (d.matchers ? d.matchers.some(x => hasDirectBuildDef(x.parser, seen)) : false)
+      || (d.otherwise ? hasDirectBuildDef(d.otherwise, seen) : false)
+    case 'sepBy':     return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.separator, seen)
+    case 'scanTo':    return hasDirectBuildDef(d.sentinel, seen) || d.skip.some(x => hasDirectBuildDef(x, seen))
+    case 'recover':   return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.sentinel, seen)
+    case 'routed':    return d.fallback ? hasDirectBuildDef(d.fallback, seen) : false
     default:          return false
   }
 }
@@ -403,8 +457,6 @@ export function mayCommitFailure(p: Combinator<unknown>, seen: Set<Combinator<un
       return mayCommitFailure(d.parser, seen)
     case 'sepBy':
       return mayCommitFailure(d.parser, seen) || mayCommitFailure(d.separator, seen)
-    case 'skip':
-      return mayCommitFailure(d.main, seen) || mayCommitFailure(d.skipped, seen)
     case 'token':
     case 'leaf':
       return mayCommitFailure(d.parser, seen)
@@ -419,5 +471,87 @@ export function mayCommitFailure(p: Combinator<unknown>, seen: Set<Combinator<un
       return true
     default:
       return false
+  }
+}
+
+/** A leaf-composed imported piece may carry Parseman's own structural balanced
+ * text reconstruction, but never a grammar-authored semantic callback.
+ *
+ * `externalRefs` are the unresolved NAMED refs `compileLinkable`'s pre-pass already
+ * classified as external (`g.Value` naming a rule this artifact doesn't define). They
+ * are the one case that fails OPEN: the ref is a HOLE, it holds no callback of its
+ * own, and codegen emits it as a by-name `_r_<Name>` call bound at fuse time by
+ * whichever piece supplies the name — either another pre-final piece (itself put
+ * through this same gate) or the local leaf (allowed to be semantic by design). So
+ * an artifact whose only "unknown" is a hole is genuinely recognition-only.
+ *
+ * EVERY other lazy failure still fails CLOSED. In particular an UNNAMED `ref()` that
+ * was never `.define()`d is NOT external — nobody can bind it by name — so it stays
+ * an opaque subtree of unknown semantics and the answer is "semantic". Catching all
+ * errors here instead would let that (and any future thunk failure) pass the
+ * recognition-only gate. */
+function hasSemanticReduction(
+  roots: readonly Combinator<unknown>[],
+  externalRefs?: ReadonlySet<Combinator<unknown>>,
+): boolean {
+  const seen = new Set<Combinator<unknown>>()
+  const visit = (parser: Combinator<unknown>): boolean => {
+    if (seen.has(parser)) return false
+    seen.add(parser)
+    const def = parser._def
+    if (def.tag === 'transform' && !def.recognitionOnly) return true
+    if (def.tag === 'choice' && def.gates.some(Boolean)) return true
+    if (def.tag === 'guard' || def.tag === 'withCtx') return true
+    if (def.tag === 'node' && def.build !== undefined) return true
+    if (def.tag === 'lazy') {
+      if (externalRefs?.has(parser)) return false
+      try { return visit(def.thunk()) } catch { return true }
+    }
+    return childrenOf(def).some(visit)
+  }
+  return roots.some(visit)
+}
+
+/**
+ * `hasDirectBuilders` / `isRecognitionOnly` for a rule map WITHOUT lowering it.
+ *
+ * `composeLeaf()` gates on both: every pre-final grammar must prove recognition-only,
+ * and the local leaf's direct builders decide whether the recognition pieces need
+ * terminal capture. Both were only ever available as fields on `LinkablePieces`, so
+ * the gate forced a full `compileLinkable()` of every piece purely to read two
+ * booleans off the result — which is why the table lowering appeared to be blocked on
+ * porting the source lowering wholesale.
+ *
+ * They are not lowering products. Both are predicates over the COMBINATOR GRAPH, and
+ * this computes them from the graph directly, with the SAME `externalRefs` rule the
+ * lowering applies (`:6008`): a named `lazy` whose thunk throws is a HOLE, bound by
+ * name at fuse time, and is therefore not evidence of unknown semantics. An UNNAMED
+ * unresolved `ref()` stays semantic — nobody can bind it, so it fails closed.
+ */
+export function classifyRuleMap(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+): { hasDirectBuilders: boolean; isRecognitionOnly: boolean } {
+  const externalRefs = new Set<Combinator<unknown>>()
+  const scanned = new Set<Combinator<unknown>>()
+  const scanExternal = (p: Combinator<unknown>): void => {
+    if (scanned.has(p)) return
+    scanned.add(p)
+    const def = p._def
+    if (def.tag === 'lazy') {
+      let resolved: Combinator<unknown> | undefined
+      try { resolved = def.thunk() } catch { resolved = undefined }
+      if (resolved === undefined) {
+        if ((p as unknown as { _ruleName?: string })._ruleName) externalRefs.add(p)
+        return
+      }
+      scanExternal(resolved)
+      return
+    }
+    for (const child of childrenOf(def)) scanExternal(child)
+  }
+  for (const [, rule] of ruleMap) scanExternal(rule)
+  return {
+    hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule), externalRefs),
   }
 }

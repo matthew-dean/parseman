@@ -14,6 +14,7 @@
  * (runtime ctx.trivia vs codegen ctx.activeTrivia) that can drift apart.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, sequence, many, transform, trivia, parser, noTrivia, compile, parse,
 } from '../../src/index.ts'
@@ -58,8 +59,7 @@ beforeAll(async () => {
   if (!result) throw new Error('macro transform returned null — import not detected')
   if (result.code.includes("from 'parseman'"))
     throw new Error('macro transform did not remove the import — compilation failed')
-  const fnBody = result.code.replace(/\bconst\b/g, 'var') + '\nreturn ref'
-  macroFn = new Function(fnBody)() as ParseFn
+  macroFn = evalMacroModule<ParseFn>(result.code, 'ref')
 })
 
 function interpParse(input: string) { return parse(refCombinator, input) }

@@ -42,10 +42,7 @@ const shape = (r: P.RunResult): unknown => ({
 })
 
 describe('fuseInterpreted ≡ compose over the shared composition battery', () => {
-  // `pick()` returns a COMPILED artifact and has no combinator graph, so those cases
-  // are compiled-only by construction — `fuseInterpreted` rejects them explicitly
-  // (asserted below rather than skipped silently).
-  for (const c of cases.filter(x => !x.pick)) {
+  for (const c of cases) {
     it(c.name, () => {
       const compiled = evalModule(c.src, { ...P }, 'g').g
       const interpreted = evalModule(c.src, { ...P, compose: fuseInterpreted }, 'g').g
@@ -198,27 +195,28 @@ describe('per-piece ambient scanSkip survives the interpreted fuse', () => {
   })
 })
 
-describe('KNOWN compiled-path divergence: a piece with NO node() does not capture', () => {
+describe('the compiled path no longer diverges on a piece with NO node()', () => {
   /**
-   * OBSERVED, and pinned here so it cannot change silently: `compileLinkable` decides
-   * per piece whether its rules capture terminals at all — a piece containing no
-   * `node()` anywhere compiles to NON-capturing rules. That decision is made from the
-   * piece ALONE, so a later piece's `node()` over one of its rules is handed EMPTY
-   * children by the compiled fuse (runtime `compose()` AND the macro agree on this).
-   * The interpreter has no such compile step and captures normally.
+   * THIS DIVERGENCE IS GONE, and the test is kept to say so.
    *
-   * This is not the interpreted fuse diverging — it is a compiled-path
-   * value-elision decision that composition invalidates, and the interpreted fuse is
-   * the one that reports what the grammar says. Real recognition pieces build nodes,
-   * so the case is degenerate; it is recorded rather than papered over.
+   * `compileLinkable` decided PER PIECE whether its rules captured terminals at all: a
+   * piece containing no `node()` anywhere compiled to non-capturing rules. The decision
+   * was made from the piece ALONE, so a later piece's `node()` over one of its rules was
+   * handed EMPTY children, and the interpreted fuse — which has no such compile step —
+   * was the one reporting what the grammar actually said.
+   *
+   * Table composition merges the rule maps and encodes ONCE, so there is no per-piece
+   * capture decision left to invalidate: the encoder sees the composed grammar, including
+   * the later `node()`, and captures accordingly. Both fuses now agree with the
+   * interpreter.
    */
   const bare = () => P.rules({ trivia: ws }, () => ({ Stmt: P.sequence(P.literal('a'), P.literal(';')) }))
   const over = () => P.rules({ trivia: ws }, (g: any) => ({
     Doc: P.node('Doc', P.many(g.Stmt), (children: any) => children.length),
   }))
 
-  it('compiled drops the children, interpreted keeps them', () => {
-    expect(P.run(P.compose([bare(), over()]).Doc!, 'a; a;').value).toBe(0)
+  it('both fuses keep the children, agreeing with the interpreter', () => {
+    expect(P.run(P.compose([bare(), over()]).Doc!, 'a; a;').value).toBe(4)
     expect(P.run(fuseInterpreted([bare(), over()]).Doc!, 'a; a;').value).toBe(4)
   })
 
@@ -267,16 +265,18 @@ describe('fuseInterpreted fuse-time contract', () => {
     expect(P.run(second.Doc!, 'QQ').ok).toBe(true)
   })
 
-  it('rejects a precompiled artifact rather than dropping its rules', () => {
+  it('INTERPRETS a precompiled artifact rather than rejecting it', () => {
     const artifact = P.compose([P.rules(() => ({ A: P.literal('a') }))])
     // A compiled compose() result re-lowers from carried IR; a `linkable()` artifact
     // does not, and must say so.
     expect(isInterpretedFuse(artifact)).toBe(false)
-    // The rejection itself, not just the classification: a `linkable()` artifact carries
-    // compiled rule functions and no combinator graph, so fusing it must THROW rather
-    // than silently contribute nothing and drop its rules.
-    expect(() => fuseInterpreted([linkable({ A: P.literal('a') })]))
-      .toThrow('no combinator graph')
+    // THIS USED TO THROW. A source-lowered `linkable()` artifact carried compiled rule
+    // FUNCTIONS and no combinator graph, so fusing it interpreted could only have
+    // dropped its rules, and throwing was the honest answer. A table artifact always
+    // carries its IR — that is what makes table-to-table composition a rule-map merge —
+    // so the graph is recoverable and the fuse simply works.
+    const fused = fuseInterpreted([linkable({ A: P.literal('a') })])
+    expect(P.run(fused.A!, 'a').ok).toBe(true)
   })
 })
 
