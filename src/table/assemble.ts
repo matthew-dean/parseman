@@ -71,11 +71,11 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt,
+  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
   saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
-  cstCaptureActive, cstLeavesLen,
+  cstCaptureActive, cstLeavesLen, cstTlLen,
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
@@ -661,23 +661,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       TERMV = v
       return EC.e > scanEnd ? EC.e : cur
     }
-    // SCALAR MARKS — no per-term mark object, as `exec.ts` established.
-    const need = markCst(ctx)
-    const mRaw = MRAW
-    const mTl = MTL
-    const mLv = MLV
-    const mFl = need ? ctx._fields?.length ?? 0 : 0
-    const mEr = need ? ctx._errors?.length ?? 0 : 0
+    // SCALAR MARKS — only the three trivia sinks can receive ambient-scan rows.
+    // Child-owned nodes, fields and errors are deliberately outside this range.
+    const need = rollbackNeeded(ctx)
+    const mTl = need ? cstTlLen(ctx) : 0
     const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
     const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const scanEnd = skipTrivia(input, cur, ctx)
+    const scanTl = need ? cstTlLen(ctx) : 0
+    const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
+    const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const v = child(input, scanEnd, ctx)
     if (v === FAIL) return -1
     TERMV = v
     if (EC.e > scanEnd) return EC.e
     // The term matched nothing, so the trivia in front of it was never consumed
     // by anything — unrecord it and leave the cursor where it was.
-    if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+    if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
     return cur
   }
 
@@ -2630,7 +2630,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
-        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
+        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
@@ -2705,7 +2705,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
-        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
+        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
