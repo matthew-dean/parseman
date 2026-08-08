@@ -80,44 +80,86 @@ preserved.
 | T11c | Retired prototype; no commit | A zero-word `-2` operand derived exact repeat-item classes once at assembly from closed dispatch metadata, expanding separator-less CSS guard coverage from 13/32 to 24/32 while keeping 6,066 words and 109 classes. The stabilized three-pass workload screen rejected both shapes: broad derivation measured CSS +1.5%, Less stylesheet +1.1%, mixins +0.2%; restricting to nonexclusive child choices measured CSS +1.4%, Less stylesheet −0.1%, mixins −1.2%. Actual Jess table-reference screens were flat/small (CSS −1.6% versus A/A +2.9%, benchmark Less −0.9%, generated Less −1.9% versus A/A −0.7%); macro source A/B failed before timing at the independently recorded `composeLeaf` precondition and was not replaced with a stale number. Size guard, focused parity/recovery tests, and invariants were green. | REJECTED. Additional repeat coverage is exact and size-neutral but does not move CSS or either Less release bar. Keep the simpler pooled-class guard; do not add derived dispatch plumbing for a flat result. |
 | T12a | `d78ea9f` (feature lane `61c73a1`) | The encoder recognizes only an exact array-destructuring child projection such as `([, value]) => value` and stores `~childIndex` in the existing `OP_SEQX` reducer operand. Reference exec, closure assembly, and emitted assembly return the already-parsed child without allocating the reducer input array or calling a callback; all other callback syntax declines. JSON covered one static site / 3,303 calls (23.4% of callbacks), retained 138 words, and reduced its function pool 9→8. GraphQL covered six sites / 1,176 calls, retained 495 words, and reduced 27→21 functions. Five independently recompiled passes measured JSON −4.1% median / −4.2% min, faster 5/5 with 59/60 paired wins versus A/A +0.6%/+0.4%; GraphQL was flat at −0.1%/−0.5%. The tightest GraphQL comparison margin remained 1.56× over Chevrotain against a 1.05× floor. Built main/table ESM each grew 1,525 raw bytes; npm pack grew 8,265 bytes (+0.267%). A wrong-index plant returned the wrong child; permanent tests pin interpreter/reference/closure/emitted/macro identity and refusal cases. Full 3,890-test, typecheck, lint, invariants, and all six strict differential gates passed. | LANDED. This is a bounded secondary JSON win with zero program-word cost and neutral GraphQL behavior. It does not move CSS/Less release bars and does not change their priority. |
 
-## Current 0.46 shelf audit
+## Current 0.46 shelf audit — literal EOF corrected at `e5247da`
 
-Code-equivalent heads `60610fc` / `aae9b30` were measured twice against the pinned
-0.46 reference with the repository's paired, order-alternated production gate on
-Node 24.11.1. Each replicate used five independently recompiled passes and 60 A/B
-pairs. Both sides compiled the shipping workload grammars from byte-identical inputs
-and passed the gate's then-current parse/result identity before timing. A subsequent
-direct `run()` audit found that the CSS grammar leaves the fixture's final newline at
-offset 65,553 of 65,554: both legs agree and the byte is only permitted trailing trivia,
-so this is not a meaningful prefix speedup, but the gate did **not** literally prove
-EOF despite claiming it did. The rows below are therefore directional shelf evidence,
-not release proof, until the gate rejects partial consumption or the benchmark grammar
-consumes its permitted trailing trivia. The second replicate is the
-canonical row below because its captured invocation printed engine/source realpaths
-before every number; the first is retained as an independent valid replicate. Exact
-individual pass values were not stored, so an exact ten-pass pooled median cannot be
-reconstructed; the reported midpoint is explicitly the midpoint of the two five-pass
-centers. Across both replicates every candidate row lost 120/120 pairs and breached
-10/10 passes. Worst reference/reference control medians were +1.0% Less stylesheet,
-+0.9% mixins, +4.0% CSS, +2.4% GraphQL, and +1.5% JSON. These are release-audit
-figures, not new baselines or shelf ceilings. Density and toy rows below remain the
-last `5901774` audit and are labelled accordingly.
+`5fee4ef`, integrated as `e5247da`, repaired the standard workload instrument
+before this audit. The CSS and Less document roots now consume their permitted
+trailing trivia, and one shared fail-closed validator rejects a failed parse, a
+missing span, a non-zero start, a non-null `unconsumedFrom`, or a span that does
+not end at the literal input length. It runs outside the timers on **every fresh
+reference, candidate, calibration, and pass instance**. The corrected lengths are
+53,483/53,483 for Less stylesheet, 60,638/60,638 for Less mixins, 65,554/65,554
+for CSS, 49,762/49,762 for GraphQL, and 60,323/60,323 for JSON on both legs.
 
-| Surface | Candidate result vs 0.46 | Disposition |
-| --- | --- | --- |
-| production `less/stylesheet` | canonical R2 +216.3% median / +220.4% min; R1 +213.2%/+224.6%; replicate-center midpoint +214.8%/+222.5%; pooled observed median range +168.9%…+235.5% | Prior center +216.9%/+221.9%; effectively flat at the absolute endpoint, and the shelf remains. |
-| production `less/mixins` | canonical R2 +228.6%/+228.2%; R1 +221.9%/+222.0%; midpoint +225.3%/+225.1%; pooled median range +215.1%…+233.5% | Prior center +226.5%/+228.4%; effectively flat at the absolute endpoint, and the shelf remains. |
-| production `css/stylesheet` | canonical R2 +286.7%/+286.7%; R1 +289.6%/+305.8%; midpoint +288.2%/+296.3%; pooled median range +196.6%…+314.0% | The replicate centers agree around +287–290% even though individual passes remain unstable. The standard gate does not confirm the isolated actual-Jess terminal-node win; CSS remains roughly 3.9× 0.46 and fully open. |
-| production `graphql/document` | canonical R2 +101.1%/+104.2%; R1 +99.5%/+107.5%; midpoint +100.3%/+105.9%; pooled median range +76.1%…+106.0% | Prior center +103.4%/+109.9%; modest improvement, but the shelf remains. |
-| production `json/document` | canonical R2 +124.5%/+125.9%; R1 +125.1%/+127.3%; midpoint +124.8%/+126.6%; pooled median range +115.8%…+136.3% | Prior center +129.9%/+130.6%; direction agrees with the bounded projection win, but the shelf remains. |
-| density rollback axis (`5901774` audit) | median +135.5%…+273.2%; min +144.4%…+293.6% | All four named rows remain strict regressions, inside their ceilings. |
-| density expected axis (`5901774` audit) | median +80.2%…+152.8%; min +105.1%…+157.2% | All three named rows remain strict regressions, inside their ceilings. `expected/wide` improved most from its 0.47 +373.2%…+424.5% envelope. |
-| toy CSS compiled bars (`5901774` audit) | `decls` +67.3%; `selector` +104.0% | Improved from 0.47's approximately +343%/+386%; both original-baseline shelves remain. |
+The canonical result is the unmodified primary `e5247da` gate against pinned
+0.46 `a5dc9bd`: five independently recompiled passes, four rounds × three runs,
+six warmups + eleven timed samples, paired and order-alternated, with a same-position
+reference/reference control. Head loaded `src/table/compile.ts` and
+`src/table/assemble.ts`; reference loaded `.cache/workload-perf-guard-a5dc9bd/src/compiler/codegen.ts`;
+both loaded byte-identical copied `bench/workloads/index.ts` and example grammars.
+Every candidate row lost 0/12 pairs in every pass and breached 5/5. Load was
+4.25→6.63. These are current release-audit figures, **not** lower baselines or
+shelf ceilings, and pending scope-correctness/performance integration requires a
+new final audit before release.
+
+| Surface | Canonical `e5247da` center (median / min) | Five-pass range (median / min) | Same-source A/A | Disposition |
+| --- | ---: | ---: | ---: | --- |
+| production `less/stylesheet` | +219.5% / +231.2% | +210.7%…+227.4% / +215.5%…+235.8% | 36/60 control wins; worst median −0.1% | Shelf remains; roughly 3.2× 0.46. |
+| production `less/mixins` | +226.8% / +225.7% | +210.7%…+235.9% / +213.5%…+232.9% | 33/60; +0.8% | Shelf remains; roughly 3.3× 0.46. |
+| production `css/stylesheet` | +238.9% / +305.3% | +175.1%…+303.9% / +192.8%…+312.0% | 25/60; +17.4% | Shelf remains. The all-loss result is decisive; the absolute center is not sharp. |
+| production `graphql/document` | +106.1% / +108.2% | +91.0%…+112.3% / +106.3%…+113.4% | 32/60; +1.5% | Shelf remains; roughly 2.1× 0.46 in this run. |
+| production `json/document` | +123.3% / +121.7% | +119.6%…+124.4% / +120.2%…+130.2% | 29/60; +1.2% | Shelf remains; roughly 2.2× 0.46. |
+| density rollback axis (`5901774` audit) | median +135.5%…+273.2%; min +144.4%…+293.6% | — | — | All four named rows remain strict regressions, inside their ceilings. |
+| density expected axis (`5901774` audit) | median +80.2%…+152.8%; min +105.1%…+157.2% | — | — | All three named rows remain strict regressions, inside their ceilings. `expected/wide` improved most from its 0.47 +373.2%…+424.5% envelope. |
+| toy CSS compiled bars (`5901774` audit) | `decls` +67.3%; `selector` +104.0% | — | — | Both original-baseline shelves remain. |
+
+### Provenance-rich raw replication
+
+A second, print-only run used detached `/private/tmp/parseman-shelf-raw-e524` at
+the same `e5247da`. Its only change printed provenance and the already-produced
+`passRows`; it changed no grammar, compiler, timing loop, thresholds, or ordering.
+Before any number it resolved Node to
+`/opt/homebrew/Cellar/node/25.9.0_3/bin/node` (v25.9.0), the loader to
+`/Users/matthew/git/oss/parseman/node_modules/.pnpm/tsx@4.22.5/node_modules/tsx/dist/esm/index.mjs`,
+head to `src/table/compile.ts` + `src/table/assemble.ts`, reference to
+`.cache/workload-perf-guard-a5dc9bd/src/compiler/codegen.ts`, and each workload
+module to its corresponding `bench/workloads/index.ts` realpath. Load was
+3.45→3.44; calibrated repetitions were 1/2/4/10/16 in table order. All rows again
+lost 0/12 in every pass and breached 5/5.
+
+| Surface | Per-pass median deltas | Per-pass min deltas | Replication center |
+| --- | --- | --- | ---: |
+| `less/stylesheet` | +225.93, +219.28, +212.22, +227.93, +231.12% | +232.87, +222.76, +226.74, +240.56, +237.04% | +225.9% / +232.9% |
+| `less/mixins` | +223.68, +222.01, +207.77, +225.41, +230.18% | +227.49, +226.99, +210.85, +225.73, +226.85% | +223.7% / +226.9% |
+| `css/stylesheet` | +300.43, +299.15, +161.83, +293.26, +290.01% | +309.20, +312.39, +201.24, +316.93, +311.30% | +293.3% / +311.3% |
+| `graphql/document` | +75.67, +83.99, +78.80, +73.34, +78.74% | +78.55, +81.20, +76.39, +76.74, +79.91% | +78.7% / +78.5% |
+| `json/document` | +120.54, +117.74, +120.88, +117.33, +118.35% | +118.89, +120.18, +118.77, +123.85, +123.84% | +118.3% / +120.2% |
+
+Replication controls were 32/60 wins and +2.4% worst median for Less stylesheet,
+31/60 and +0.4% for mixins, 21/60 and +6.5% for CSS, 27/60 and +0.4% for
+GraphQL, and 25/60 and +1.3% for JSON. CSS's center moved +238.9→+293.3%
+between complete runs and GraphQL moved +106.1→+78.7%, so neither absolute
+center is release-grade precision. That does **not** weaken the conclusion:
+across the two corrected runs each lost 120/120 pairs and breached 10/10 passes.
+
+### Retired partial-span rows — historical direction only
+
+The earlier `282c978` headline (+216.9% Less stylesheet, +226.5% mixins,
++252.0% CSS, +103.4% GraphQL, +129.9% JSON) and code-equivalent
+`60610fc`/`aae9b30` replicates (Less stylesheet +213.2/+224.6 and
++216.3/+220.4%; mixins +221.9/+222.0 and +228.6/+228.2%; CSS
++289.6/+305.8 and +286.7/+286.7%; GraphQL +99.5/+107.5 and
++101.1/+104.2%; JSON +125.1/+127.3 and +124.5/+125.9%) passed only
+cross-leg result equality. Less stylesheet stopped at 53,482/53,483, mixins at
+60,637/60,638, and CSS at 65,553/65,554 on **both** legs. Those rows remain
+historical evidence that every shelf pointed in the same direction; they are not
+absolute measurements, release proof, baselines, ceilings, or inputs to a
+replicate-center midpoint.
 
 An exact-parent attribution gate compared integrated `aae9b30` directly with
 pre-projection/materializer `6f34165` on these same five standard workloads, again
 with five independent recompiles and the same then-current identity check (including
-the CSS trailing-newline caveat above). It measured CSS **+1.0%**,
+the three one-byte trailing-newline failures above). It measured CSS **+1.0%**,
 Less stylesheet **+0.9%**, mixins **+1.3%**, GraphQL **−1.0%**, and JSON **−2.2%**.
 Thus the integrated pair is flat on the standard CSS/Less surfaces and gives a small
 consistent JSON win; the larger terminal-node result remains specific to the actual
@@ -127,8 +169,10 @@ mechanism evidence, not a new baseline and not a substitute for the absolute row
 No one of the fourteen 0.47 shelf entries is eligible for removal yet. The
 shared-DAG/repeat, direct projection, and terminal-node changes are retained for
 their exact work reduction, correctness, bounded relative wins, and/or size effects,
-not because any one of them meets the absolute release bar. The standard five-row
-gate does not contain Jess `benchmark.less` or the separate generated-Jess fixture;
+not because any one of them meets the absolute release bar. This corrected audit
+is a checkpoint, not final release proof: scope correctness/performance work was
+still pending after `e5247da` and must be integrated and remeasured. The standard
+five-row gate does not contain Jess `benchmark.less` or the separate generated-Jess fixture;
 those remain separately labelled actual-Jess mechanism evidence, never substitutes
 for the pinned production shelf audit.
 

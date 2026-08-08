@@ -836,6 +836,46 @@ pinned-reference, checked-out-HEAD gate. `--ref`, `--head-ref`, `--self`, and
 of passes exceeds either ceiling. This is bounded release debt, not a new
 performance baseline.
 
+### Corrected 0.48 literal-EOF checkpoint — `e5247da`, not final release proof
+
+The standard workload gate formerly checked only that reference and candidate
+returned equal results. Three equal results were partial: Less stylesheet ended
+at 53,482/53,483, Less mixins at 60,637/60,638, and CSS at 65,553/65,554 on
+both legs. They left the final newline, so this was not a material prefix-speed
+shortcut, but the instrument's claim of full consumption was false. The old
+`282c978` centers (+216.9%, +226.5%, +252.0%, +103.4%, +129.9% in table order)
+and later `60610fc`/`aae9b30` replicates remain direction-only history. They are
+not absolute rows, baselines, ceilings, or release proof.
+
+`5fee4ef`, integrated as `e5247da`, made both document roots consume their
+permitted tail and made the gate fail closed on failure, a missing span, a
+non-zero start, non-null `unconsumedFrom`, or any end short of the literal input
+length. The validator runs outside timing on every fresh reference, candidate,
+calibration, and pass instance. The unmodified primary `e5247da` five-pass gate
+against pinned 0.46 `a5dc9bd` then measured:
+
+| workload | center median / min | five-pass median range | A/A worst median |
+|---|---:|---:|---:|
+| `less/stylesheet` | +219.5% / +231.2% | +210.7%…+227.4% | −0.1% |
+| `less/mixins` | +226.8% / +225.7% | +210.7%…+235.9% | +0.8% |
+| `css/stylesheet` | +238.9% / +305.3% | +175.1%…+303.9% | +17.4% |
+| `graphql/document` | +106.1% / +108.2% | +91.0%…+112.3% | +1.5% |
+| `json/document` | +123.3% / +121.7% | +119.6%…+124.4% | +1.2% |
+
+Every candidate row lost 0/12 pairs in every pass and breached 5/5. A second
+print-only detached replication at the same SHA preserved the timing protocol,
+printed Node 25.9.0 plus exact head/reference compiler, runtime, loader, and
+workload realpaths before the numbers, and retained every `passRows` record. Its
+centers were +225.9%, +223.7%, +293.3%, +78.7%, and +118.3%; every row again
+lost 0/12 in every pass and breached 5/5. CSS and GraphQL therefore have
+whole-run numeric instability, especially CSS's reference-instance draw, but no
+ambiguity in direction or release disposition. Exact per-pass vectors and
+provenance are retained in `TABLE-PERF-EXPERIMENTS-0.48.md`.
+
+These numbers do not lower 0.46, widen a shelf, or remove one. They are the
+corrected checkpoint before pending scope correctness/performance changes, which
+must be integrated and followed by a fresh final release audit.
+
 **RECONCILED — and it was the dialect harness that was wrong, not the release
 A/B.** This paragraph used to read "UNRECONCILED": `bench/jess/fixture.ts`
 measured css 1.09× and less 1.05× while old CI runs printed +666% and +780%, and
