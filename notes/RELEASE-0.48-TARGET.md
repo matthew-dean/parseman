@@ -511,12 +511,13 @@ regression, for a mechanical reason:
 > emitted by `interleave` — not a reference build. There is no 0.46 in the
 > process.
 
-So the row labelled "reference" was the macro-lowered leg at HEAD, and at 0.47
-the macro emits a table too. The contest was **emitted assembly against the
-`exec.ts` opcode driver, both at HEAD** — table against table. It cannot answer
-"versus the last release", and quoting it as if it could is what produced the
-1.09× / 1.05× / 1.09× row. `bench/jess/ab.ts` now says so in its own header,
-by name.
+So the row labelled "reference" was a table leg built at HEAD, not a release
+reference. At the historical commit where that row was collected, the contest
+was **runtime-emitted assembly against the `exec.ts` opcode driver, both at
+HEAD** — table against table. That emitted route was the now-removed split, not
+the final 0.47 shipping artifact. Either way the contest cannot answer "versus
+the last release", and quoting it as if it could is what produced the 1.09× /
+1.05× / 1.09× row. `bench/jess/ab.ts` now says so in its own header, by name.
 
 ### What HEAD vs 0.46 actually measures
 
@@ -585,19 +586,23 @@ does not override the gate's existing majority policy. This is accepted 0.47
 debt, not a new baseline; 0.48 owns shrinking and deleting every one of these
 entries.
 
-### The engine inventory, because "the table" is now ambiguous
+### Historical engine inventory — the split this audit removed
 
-Three engines run in this repo, and a note that says "the table" without saying
-which one is unreadable. On `benchmark.css` at HEAD:
+This profile inventory describes the earlier split, not current 0.47 package
+behavior. On `benchmark.css` at that historical HEAD:
 
 | engine | module | `benchmark.css` |
 |---|---|---:|
-| emitted assembly — **what ships** | `src/table/emit-assembly.ts` | 13.23 ms |
+| runtime-emitted assembly — historical `asm`-omitted route, **not what ships** | `src/table/emit-assembly.ts` | 13.23 ms |
 | `exec.ts` opcode loop — the reference | `src/table/exec.ts` | 22.18 ms |
-| closure interpreter | `src/functional/run.ts` | 43.42 ms |
+| combinator interpreter | `src/functional/run.ts` | 43.42 ms |
 
-`src/table/assemble.ts` links the closure pieces the emitter prints; it is the
-fallback whenever emission refuses (see §10). Name the engine in any figure.
+Final 0.47 compiler-created programs all carry `a:[]` and select the compact
+closure linker in `src/table/assemble.ts`; runtime `compile()`, macro output,
+rule-map/linkable compilation, `run-tabled`, and folded variants share that
+route. `src/table/emit-assembly.ts` remains experimental/diagnostic machinery,
+not the normal package artifact. Name the exact construction route and commit in
+any future figure.
 
 **Ignore the `jess` dialect row wherever it appears.** `benchmark.jess` is 124
 bytes and reports 0.00 ms — and per `notes/results/parse-consumed.jsonl` it
@@ -613,20 +618,25 @@ were wrong. A control proves the box was quiet. It does not prove the two sides
 are different builds. **Check what a harness builds before quoting what it
 prints.**
 
-### 0.47 release-audit handoff — measured attempts, all default-off
+### 0.47 release-audit handoff — final candidate and measured attempts
 
-The final release audit re-ran the two-graph comparison on Node 25.9.0 at
-`82f6e8e`: `benchmark.less` was 39.60 / 16.93 ms (**2.340×**) and
-`gen-workload.less` was 110.18 / 42.13 ms (**2.615×**); self checks ranged
-0.980–1.027× and both inputs consumed fully. This is acceptable 0.47
-performance debt only if the release candidate still beats relevant external
-parsers on equivalent medium/large workloads; parsing identity and artifact
-size remain hard release blockers regardless.
+The final production source (`a28404c`, still byte-identical under `src/` at the
+`4e1cce5` release candidate) re-ran the two-graph comparison on Node 25.9.0:
+CSS was 14.88 / 5.44 ms (**2.736×** slower), `benchmark.less` 39.39 /
+17.07 ms (**2.308×**), and `gen-workload.less` 108.44 / 42.39 ms
+(**2.558×**). Every leg consumed in full; same-source controls were 0.975× /
+0.988× / 1.011×. The external-parser release condition was separately met on
+the exact final source: JSON led Chevrotain 1.032× medium / 1.045× large, CSV led
+Peggy 3.71× large, and GraphQL led Chevrotain 1.51× / 1.66× medium/large.
+Parsing identity and artifact size remain hard blockers regardless.
 
-A shipped-assembly CPU profile ranked self time as `_accSet` 4.7%, `_rbBuf`
-4.3%, `pushCstChild` 2.5%, GC 2.4%, `rawEntry` 2.0%, `scanTrivia` 1.8%,
-`inRanges` 1.6%, and `lead` 1.4%. Three implementation attempts were made with
-full-result digest parity and none should ship:
+The older emitted-route CPU profile (`_accSet` 4.7%, `_rbBuf` 4.3%,
+`pushCstChild` 2.5%, GC 2.4%) is historical and must not be presented as the
+final compact artifact's profile. A final compact-closure Less profile instead
+ranked sequence value-array bodies 10.0%, scope swaps 8.9%, sentinel/link bodies
+6.6%, sequence runners 4.8%, `markCst` 4.2%, `nextTerm` 4.1%, and capture
+rollbacks about 6%. Three implementation attempts were made with full-result
+digest parity and none should ship:
 
 - A conservative token cursor wired the existing token-stream groundwork into
   literal-led choices. It proved correctness but admitted exactly one choice per
@@ -740,36 +750,47 @@ benches `codegen-ab.ts`, `shared-prefix-ab.ts`, `composeleaf-firstset.ts`.
 `git show 3d4dac6:src/compiler/scannable-run.ts` — none of it is lost, and 1627
 lines of literal-recognition work is not something to re-derive from scratch.
 
-**What it appears to have cost.** CI `workload-perf`, HEAD vs the pinned
-reference, on a quiet runner (load 0.27 → 1.37), null control worst median ±0.7%:
+**What the final 0.47 workload gate measures.** Earlier CI runs printed
++666%/+780% CSS/Less figures. Those remain historical evidence that the
+direction was real, but they are not the accepted candidate bounds and must not
+be quoted as current. The exact `4e1cce5` Node 24 default gate, five independent
+passes against `a5dc9bd`, produced:
 
-```
-less/mixins       59 KB   median +780.6% … +810.9%   won 0/12   breached 5/5
-css/stylesheet    64 KB   median +666.3% … +759.5%   won 0/12   breached 5/5
-json/document     59 KB   median +126.9% … +134.3%   won 0/12   breached 5/5
-graphql/document  49 KB   median  +93.4% … +112.6%   won 0/12   breached 5/5
-```
+| workload | final-run median envelope | final-run min envelope | 0.47 ceiling (median / min) |
+|---|---:|---:|---:|
+| `less/stylesheet` | +254.4%…+330.9% | +328.3%…+340.9% | **+332.3% / +348.5%** |
+| `less/mixins` | +300.7%…+326.0% | +303.4%…+328.6% | **+329.8% / +344.3%** |
+| `css/stylesheet` | +145.3%…+302.1% | +189.8%…+324.4% | **+309.6% / +333.2%** |
+| `graphql/document` | +85.2%…+119.2% | +92.6%…+126.8% | **+124.7% / +129.6%** |
+| `json/document` | +118.8%…+136.7% | +121.8%…+135.9% | **+145.8% / +146.9%** |
 
-**RECONCILED — and it was the dialect harness that was wrong, not CI.** This
-paragraph used to read "UNRECONCILED": `bench/jess/fixture.ts` measured css 1.09×
-and less 1.05× while CI measured +666% and +780%, and it listed three candidate
-explanations. The third of them was the right one — *one harness's reference leg
-is not the pre-deletion engine at all*.
+Every row still prints `FAIL` against 0.46, then `SHELVED`; result identity is
+checked before timing. The shelf applies only to these five names in the default
+pinned-reference, checked-out-HEAD gate. `--ref`, `--head-ref`, `--self`, and
+`--peak` do not use it. An unknown regression blocks, a recovered row prints
+`RECOVERED` and must be deleted, and a known row blocks when a strict majority
+of passes exceeds either ceiling. This is bounded release debt, not a new
+performance baseline.
+
+**RECONCILED — and it was the dialect harness that was wrong, not the release
+A/B.** This paragraph used to read "UNRECONCILED": `bench/jess/fixture.ts`
+measured css 1.09× and less 1.05× while old CI runs printed +666% and +780%, and
+it listed three candidate explanations. The third of them was the right one —
+*one harness's reference leg is not the pre-deletion engine at all*.
 
 `bench/jess/fixture.ts` builds **every leg at HEAD** (§8). Its `ref|` label is a
 contest's a-side, not a reference build, so it had no pre-deletion engine in the
-process and its 1.09× / 1.05× row is withdrawn. CI's `workload-perf` really does
-interleave HEAD against a pinned reference, and it is not contradicted.
+process and its 1.09× / 1.05× row is withdrawn. The current `workload-perf`
+still interleaves HEAD against a pinned reference, and the bounded rows above
+are the current evidence.
 
-What remains open is only MAGNITUDE, and the two surviving measurements are
-consistent in sign and roughly an order apart in size: CI's synthetic workloads
-read +666%/+780% where `bench/jess/ab.ts` reads **+134%/+162%** (2.340×/2.615×)
-on the shipping dialect grammars against the same 0.46 anchor. The remaining
-candidate is the second one on the old list — the CI workloads lean harder on the
-deleted scan fast paths than the dialect fixtures do. **Quote the `ab.ts`
-figures for "what did this release do to a shipping grammar"; quote CI's for
-"what did deleting these modules cost the workloads that exercised them."** They
-are different questions.
+The two surviving measurement families are consistent in sign but answer
+different questions. The final shipping-grammar A/B reads **2.308×–2.736×
+slower**; the synthetic workload gate reads the bounded per-row envelopes above.
+The workloads lean differently on the missing fast paths. Quote `ab.ts` for
+"what did this release do to a shipping grammar" and the final shelf table for
+"what does the release workload gate currently bound." Do not revive the old
++666%/+780% rows as current candidate evidence.
 
 **The 0.48 instruction.** When token streaming lands, take whatever was valuable
 out of these modules. Token streaming is where literal and regex recognition
@@ -859,10 +880,12 @@ closed on the current unreleased 0.47 branch or ruled by design.
    four dialects.** At that checkout,
    `src/table/emit-assembly.ts:372` threw `Unemittable('a recovery (tolerant)
    assembly')`. Recovery parses therefore run the **closure engine**
-   (`src/table/assemble.ts`), never the emitted assembly that ships for strict
-   parses. Every recovery figure describes a different engine from every strict
-   figure at that checkout. Tolerant assemblies now emit; the historical figures
-   remain closure-engine figures.
+   (`src/table/assemble.ts`), never the emitted assembly used by the historical
+   strict runtime-compile harness. Every recovery figure describes a different
+   engine from every strict figure at that checkout. Tolerant emission was later
+   implemented for experiments, but final 0.47 removed the normal construction
+   split and ships the compact closure route for both; the old figures remain
+   engine-specific historical evidence.
 
 4. **LANDED (`b25be52`): `parseClassOperand` had a latent compound-body hole.**
    It accepted any body
@@ -889,11 +912,13 @@ closed on the current unreleased 0.47 branch or ruled by design.
 
 ## Standing hazard for anything above
 
-**EVERY `PM_TABLE_COUNT` FIGURE DESCRIBES AN ENGINE NOBODY RUNS.** The counters
+**EVERY `PM_TABLE_COUNT` FIGURE DESCRIBES THE REFERENCE OPCODE ENGINE, NOT THE
+SHIPPING CLOSURE ROUTE.** The counters
 live in **`src/table/exec.ts` only** — `const COUNT = process.env.PM_TABLE_COUNT
 === '1'` at `exec.ts:101`, incremented inside the opcode `switch`. Neither
 `src/table/assemble.ts` nor `src/table/emit-assembly.ts` counts anything, and
-**the emitted assembly is what ships**. So every row count, arm-entry count and
+final 0.47 ships the compact closure linker in `assemble.ts`. So every row
+count, arm-entry count and
 per-op tally in this repo's notes and CHANGELOG — "497,360 rows for one parse of
 `benchmark.less`", "ungated arm entries 268,834 → 67,027", "6,005 `OP_RX` rows
 per `json/document` parse", any `OP_SCAN` execution count — is a measurement of
@@ -901,14 +926,15 @@ the **bytecode interpreter**, not of the shipping path.
 
 They are not worthless: `exec.ts` is the reference the emitter is gated against,
 so a row count is a fair proxy for *how much work the grammar implies*. They are
-worthless as statements about *what the product executes*. On the emitted path
-the same work has a different shape entirely — `balanced` is entered **12 times**
-per 123 KB parse of `benchmark.css`, against opcode-level tallies in the
-thousands, because the emitter folds the surrounding rows into straight-line
-source rather than executing them as rows.
+worthless as statements about *what the product executes*. The shipping closure
+route links pieces and calls those pieces rather than executing the opcode
+`switch`, so its work has a different shape. Historical emitted-path counts,
+such as `balanced` entered **12 times** per 123 KB `benchmark.css` parse, are a
+third engine-specific datum and are not a substitute for a closure-path profile.
 
 **Rule: any count sourced from `PM_TABLE_COUNT` must name `exec.ts` in the same
-sentence.** Do not compare one against a figure taken from the emitted engine.
+sentence.** Do not compare one against a figure taken from the closure or emitted
+engine without explicitly naming both routes and explaining the mapping.
 
 **`expected` is NOT in the identity digest.** `bench/table-lowering-identity.ts`
 digests `{ok, value, unconsumedFrom}`, so a table that accepts and rejects

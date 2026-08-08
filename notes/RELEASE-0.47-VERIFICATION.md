@@ -9,14 +9,15 @@ protocol, and status below. Update the row when the final candidate changes.
 | Item | Value | Status |
 | --- | --- | --- |
 | Remote release base | `origin/release/0.47.0` at `9c3ce450ff7cd35efc0cdc76a5f27df65a9fad2b` | pinned |
-| Code candidate | `fix/0.47-audit` at `a28404c` | canonical `a:[]` compiler/macro/fold artifact; strict example document helpers and exact chart-factory consumption gate included |
+| Code candidate | `fix/0.47-audit` production/bench candidate at `4e1cce5` (`src/` byte-identical to measured `a28404c`) | canonical `a:[]` compiler/macro/fold artifact; strict document helpers, exact chart-factory consumption, supported-Node fixes, and bounded 0.47 performance shelves included |
 | 0.46 comparison base | `a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3` (`v0.46.0`) | pinned |
 
 ## Correctness and API
 
 | Claim | Evidence | Status |
 | --- | --- | --- |
-| Table/interpreter/closure parity audit | Targeted matrix suite: rule-map, closure engines, commitment, scan shape, trivia skip, linker state, fields, line index, reflection, functional driver, dispatch matcher matrices | full suite passing (3,844 passed; 3 skipped; 22 todo); ordinary-host re-entry restores all assembly slots on return and throw |
+| Table/interpreter/closure parity audit | Targeted matrix suite: rule-map, closure engines, commitment, scan shape, trivia skip, linker state, fields, line index, reflection, functional driver, dispatch matcher matrices | Node 24 full suite passing (3,856 passed; 3 skipped; 22 todo); ordinary-host re-entry restores all assembly slots on return and throw |
+| Supported Node matrix | Exact final test suite on Node 20.19.0, 22.21.0, and 24.11.1 | Node 20: 3,848 passed / 3 skipped / 22 todo (Chevrotain 12 cases gated by its Node >=22 floor); Node 22 and 24: 3,856 passed / 3 skipped / 22 todo |
 | Public table API contract | Compile options, host mode, host capability, line/recovery, Unicode class, rule-map isolation regressions | passing in final suite |
 | Grammar analysis reaches every authored child | Dispatch matcher arms, `routed(fallback)`, grammar trivia, and recovery sentinel traversal regressions | passing in final suite |
 | Timed parser work is complete | Every enabled JSON/CSV/GraphQL `CHART_GROUPS` row runs through the exact `makeParse(chart, 'parseman-runtime')` factory and must succeed, consume the entire fixture, and equal `JSON.parse` / `parseCSV` / `parseGraphQL`; public JSON and GraphQL document helpers reject trailing syntax | passing; GraphQL still accepts legal trailing trivia/comments and low-level combinators remain prefix parsers |
@@ -28,7 +29,7 @@ protocol, and status below. Update the row when the final candidate changes.
 | Comparison | Evidence | Result | Status |
 | --- | --- | --- | --- |
 | Generated grammar output | `pnpm size:guard`, 24 established fixtures versus v0.46 | Every fixture remains smaller; 8,385 raw bytes of improvement across 16 structural fixtures were banked into tighter per-fixture ceilings. | pass |
-| Published package | `pnpm build && npm pack --dry-run --json`, v0.46 comparison | 0.47: 3,075,840 B tarball / 13,076,481 B unpacked; 0.46: 5,200,286 B / 19,958,344 B. 0.47 is 40.9% / 34.5% smaller. | pass |
+| Published package | Node 24 `pnpm build && npm pack --dry-run --json`, v0.46 comparison | 0.47: 3,080,424 B tarball / 13,076,481 B unpacked / 387 entries; 0.46: 5,200,286 B / 19,958,344 B. 0.47 is 40.8% / 34.5% smaller. The file inventory contains no `.tgz`. | pass |
 | Package maps | Build maps exclude repeated `sourcesContent`; package ships `src/` once | 131 maps parse; zero missing mapped sources in package. | pass |
 
 ## Performance: never collapse these rows into one claim
@@ -42,6 +43,8 @@ protocol, and status below. Update the row when the final candidate changes.
 | Current candidate, GraphQL external gate | Same fresh-process protocol, 3 paired/alternating rounds; Chevrotain is nearest (Peggy 15.41 / 356.58 µs; Parsimmon 59.12 / 1,632.22) | PM/Chevrotain: medium 8.655 / 13.075 µs (1.51×); large 210.228 / 349.298 µs (1.66×), 3/3 rounds at both sizes. PM A/A 1.8% / 2.2%; the bars remain non-overlapping despite Chevrotain's wider control range. | Decisive medium/large lead. | pass |
 | Commented small rows | Same final-candidate protocol with all three normally-commented small groups enabled consistently | JSON: PM 1.0178 / Chevrotain 0.9956 µs (PM 2.2% slower, 0/3). CSV: PM 0.6933 / Peggy 1.9368 µs (2.79× faster, 3/3). GraphQL: PM 1.1900 / Chevrotain 2.2137 µs (1.86× faster, 3/3). | Diagnostic only; fixed call overhead dominates and these rows do not select the release gate. | recorded |
 | CST bars | Supporting/non-identical work (rich object CST vs Lezer compact tree / Chev conversion) | Not used in the final external-equivalence gate. | Do not turn into a headline claim. | recorded |
+| Shipping-workload gate vs 0.46 | Node 24, five independent passes, strict result identity before timing | All five known rows remain 0.47 regressions. The exact default gate prints each `FAIL`, then `SHELVED` with a named candidate ceiling, and exits green only while a strict majority stays inside that ceiling. Unknown regressions and majority-worsened known rows block. | Accepted, bounded 0.47 debt; every entry points to 0.48 §8 and is disabled for `--ref`, `--head-ref`, `--self`, and peak modes. | pass with named 0.47 shelf |
+| Grammar-density gate vs 0.46 | Node 24, five independent passes over seven rollback/expected-set axes, strict result identity before timing | All seven rows remain 0.47 regressions (+110% to +438% median in the final run). The exact default gate prints each `FAIL`, then `SHELVED`; unknown and majority-worsened rows block. | Accepted, bounded 0.47 debt; the seven per-row ceilings and three-run envelopes are recorded in 0.48 §8. | pass with named 0.47 shelf |
 
 The 0.47 ship condition is **faster than the relevant external parsers on medium
 and large equivalent workloads**, not parity with 0.46. For this release the
@@ -49,27 +52,18 @@ owner accepts a reproducible small lead; this does not change the repository's
 general 1.05x confidence cushion. Small-input rows are reported as evidence but
 do not decide the gate.
 
-## Release gate still open
+## Release-gate disposition
 
-`pnpm coverage:guard` is red against the historical `ed81612` baseline after a
-successful final coverage run: lines `90.07%` vs `95.91%` (-5.84), statements
-`87.88%` vs `92.12%` (-4.24), functions `91.58%` vs `96.55%` (-4.97); branches
-improved to `86.24%` from `85.80%`. The baseline has not been rewritten and no
-exclusions were added. `ed81612` predates the table cutover entirely (zero
-`src/table` files); the candidate adds 21 table files / 13,631 lines, while the
-coverage denominator includes 18 shipped table files at 87.50% lines. Even
-theoretical 100% coverage of every remaining table line/function could only
-raise aggregate lines to 93.92% and functions to 93.77%, still below the
-historical ratchet. Raising `assemble.ts` alone to 100% would yield 92.61% lines,
-90.45% statements, and 92.76% functions. The full suite
-already added net 19,285 test lines over the baseline. This needs an explicit
-release-owner exception or a substantial new test campaign; it is the only
-remaining release decision.
+The supported Node 20, 22, and 24 coverage summaries are byte-identical. On the
+canonical Node 24 preflight, `pnpm coverage:guard` passes the historical
+`ed81612` ratchet without exclusions, a downward rebaseline, or an exception:
+lines `95.91%` (baseline `95.91%`), statements `93.44%` (baseline `92.12%`),
+functions `96.37%` (baseline `96.55%`, inside the existing 0.5pp tolerance), and
+branches `88.59%` (baseline `85.80%`). The earlier `90.07%` diagnostic was Node
+25's changed V8/module-reset aggregation and is not the supported LTS CI result.
 
-The reported `assemble.ts` aggregate also understates its exercised closure
-fallback: the dedicated module-reloaded fallback matrix runs 332 behavior
-assertions (plus one todo) with `PM_TABLE_EMIT=0` and reports 87.04% line coverage for that
-module in isolation. V8's module-reset accounting does not preserve that work
-in the aggregate report. This is not a reason to exclude code or waive the
-gate automatically; it is evidence that adding coverage-padding tests would
-not improve release confidence.
+The ordinary changelog gate is intentionally red because PR #124 is chained on
+the PR that already opened the `0.47.0` section. The repository's documented
+`release-exempt` mode passes and is the exact label this chained release PR must
+carry; it waives only that already-published-section check. It does not waive
+correctness, coverage, size, identity, or performance-bound gates.
