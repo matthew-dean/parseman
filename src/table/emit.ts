@@ -16,6 +16,29 @@ function jsString(s: string): string {
 }
 
 /**
+ * Emit the char-class pool in the shorter of two equivalent forms.
+ *
+ * A normal array repeats two quote bytes around every class. Real grammars have
+ * dozens of classes, and the recursion-stack first-set correction legitimately
+ * discovers more of them. One delimiter-joined string pays for `.split()` once
+ * and removes those repeated quotes; the resulting value handed to
+ * `expandCompact` is still the exact `string[]` its wire contract declares.
+ *
+ * Pick a delimiter absent from every encoded class. These strings contain RANGE
+ * ENDPOINTS, not regex source, so no character is universally reserved. If this
+ * small printable set is exhausted, keep the ordinary array — never escape or
+ * reinterpret class data to force the compact form.
+ */
+function emitClassPool(classes: readonly string[]): string {
+  const array = `[${classes.map(jsString).join(',')}]`
+  if (classes.length < 2) return array
+  const delimiter = '|/~?^`'.split('').find(ch => classes.every(spec => !spec.includes(ch)))
+  if (delimiter === undefined) return array
+  const split = `${jsString(classes.join(delimiter))}.split(${jsString(delimiter)})`
+  return split.length < array.length ? split : array
+}
+
+/**
  * Serialise one const-pool entry, or REFUSE it.
  *
  * The fallthrough was `JSON.stringify(v)`, which returns the VALUE `undefined`
@@ -264,7 +287,7 @@ function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOpt
     ...emitAssemblies(prog, opts.assemblies ?? []),
     `c:[${prog.code.join(',')}],`,
     `k:[${prog.k.map(emitConst).join(',')}],`,
-    `x:[${prog.cc.map(jsString).join(',')}],`,
+    `x:${emitClassPool(prog.cc)},`,
     `e:[${prog.fx.map(f => `[${f.map(jsString).join(',')}]`).join(',')}],`,
     `d:[${prog.disp.map(a => `[${a.join(',')}]`).join(',')}],`,
     `r:${JSON.stringify(prog.rules)},`,
