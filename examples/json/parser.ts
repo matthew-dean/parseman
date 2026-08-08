@@ -8,8 +8,8 @@
  * - trivia for automatic whitespace skipping
  * - transform() for value construction
  * - Macro compilation of recursive grammars — the rules() factory is evaluated
- *   at build time by the parseman Vite/Rollup plugin, emitting optimized inline
- *   functions with no runtime combinator overhead.
+ *   at build time by the parseman Vite/Rollup plugin, emitting a compact table
+ *   program with no runtime combinator construction.
  *
  * To extend this parser see:
  *   examples/json/jsonl.ts  — newline-delimited JSON
