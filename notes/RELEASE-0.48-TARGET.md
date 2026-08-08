@@ -1,12 +1,16 @@
 # 0.48 release target — recover performance on the canonical table
 
-Canonical 0.48 architecture and implementation order:
-[`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md). This file
-preserves the longer release evidence and historical decisions.
+This is the long-form release evidence register. It is not the current design or
+the active work queue:
 
-Working experiment queue: `TABLE-PERF-EXPERIMENTS-0.48.md`. Use that compact
-ledger for active status and decisions; this longer file preserves the evidence
-and historical reasoning behind the queue.
+| Question | Authority |
+| --- | --- |
+| What is 0.48 building, in what order, and what must be true to ship? | [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md) |
+| What is active, landed, rejected, or awaiting proof? | [`TABLE-PERF-EXPERIMENTS-0.48.md`](./TABLE-PERF-EXPERIMENTS-0.48.md) |
+| What measurements and historical decisions produced that direction? | this file and the linked evidence notes |
+
+Do not infer current priority from section order, a historical `QUEUED` marker,
+or the frozen count snapshot below. The canonical spec and live ledger control.
 
 ## Active release boundary
 
@@ -34,7 +38,7 @@ or external-parser wins cannot substitute for this criterion.
 
 ---
 
-## STATUS CONVENTION (repo-wide, adopted 2026-08-07)
+## Historical status taxonomy (frozen 2026-08-07)
 
 `LANDED` · `MEASURED-NULL` · `REJECTED` · `QUEUED` · `UNMEASURED` · `REFERENCE`.
 Definitions and the repo-wide picture: `PERF_IDEAS.md` § STATUS CONVENTION AND
@@ -49,7 +53,13 @@ Only the first of those four is an "idea". The retractions and rules are marked
 `UNCLASSIFIABLE`; the current disposition below moves each repaired defect to
 `LANDED` while preserving the checkout and measurements that first exposed it.
 
-## COUNTS — 30 items
+## Historical count snapshot — 30 classified items
+
+> **Not the current 0.48 queue.** These counts classify the mixed evidence that
+> existed when this register was assembled. They are retained so older notes and
+> backlinks remain intelligible. Current work and dispositions live in the
+> experiment ledger; tokenized PEG is active even though the frozen prose below
+> calls token streaming `QUEUED`.
 
 | marker | count |
 |---|---:|
@@ -225,72 +235,47 @@ node (INV-6). Expect the `cfgKey` assembly-key space to need another bit.
 
 ---
 
-## 2. Token streaming
+## 2. Tokenized PEG — active leading implementation
 
-**What.** Leaves consume classified TOKENS rather than characters.
+The current design is specified in
+[`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md) §§3–7. This
+section retains only the release-history facts needed to interpret older results.
 
-**Why deferred.** It was an original requirement of the design that never
-landed, and `src/compiler/token-scanner.ts`, `token-alphabet.ts` and
-`token-dispatch.ts` are already in-tree as built-but-never-wired analysis — they
-carry `DEBT` entries in
-`scripts/invariant-allowlist.mjs` pointing at `docs/design/derived-tokenization.md`.
-0.47 stayed on the cutover instead.
+0.47 shipped the compact table cutover without a token cursor. The preserved
+token modules were analysis prototypes, not production plumbing, and their
+mode-free/global-munch assumptions are not the 0.48 design. The production target
+is virtual token classification at `(input, position, lexicalContext)`: compact
+integer token ids and source ranges, with no required token objects or copied
+strings. A site can use those classifications to reject impossible arms while
+compatible arms continue ordered PEG trial and consume the same pending range.
 
-**Current disposition.** Still `QUEUED`, with its groundwork deliberately
-preserved rather than mistaken for dead code or a completed feature. See
-`notes/TOKEN-STREAM-GROUNDWORK.md` for the static probe, the scanner correctness
-hole, the stale dispatch half, the reusable packing/folding utilities, and the
-first independently landable wiring step. The first semantics-correct compatible-view
-prototype removed most retries at the hot Less `Value` choice but regressed production
-timing because it looped over native regex recognizers; that implementation is
-rejected. The active follow-up is a fixed/trie/seeded-kernel census, not a revival of
-longest-match or the conservative distinct-lead walker. Token streaming has not
-resolved §8, and this note makes no production speed or memory claim for it.
+The first compatible-view prototype validated the language semantics and removed
+most retries at the hot Less `Value` choice, but it was slower because it eagerly
+looped over native regex recognizers. That implementation is rejected; tokenized
+PEG is not. The active lane has completed the production census and is implementing
+lazy, seeded recognition; runtime cursor/admission wiring is not yet complete. It
+is also measuring multi-token structural admission for Less mixin declarations,
+mixin calls, and ordinary rulesets. The live status and exact measurements belong
+in T09 of the experiment ledger.
 
-**0.48 integration ruling.** Token cursor work does not put the rest of the
-performance queue on hold and does not reset a landed piece design. It must enter
-through the canonical `TableProgram` assembler as a per-site selected path. A
-shared-leading tokenized choice recognizes its current position once; incompatible
-arms reject from that result, compatible PEG arms try in source order using it, and
-the selected arm consumes it. A disjoint first-character choice may keep its cheaper
-character fork, then seed selected-arm token recognition with the already-read lead
-instead of restarting. Cheap non-choice guards such as optional-repeat
-first-character exits remain valid. Fixed terminal pieces supply the raw, seeded and
-pending-result entries into one recognition contract; no tried leaf or composite may
-rescan the same terminal.
-Sequence/repeat/node/rollback/materialisation wins remain valid where they precede classification,
-consume its result, or operate outside eligible token sites. Evaluate new work for
-that composability, then prioritize by measured production impact.
+Three constraints survive every prototype:
 
-The reverse constraint is equally important: do not land a large body of terminal
-recognition that a token cursor would immediately duplicate. Expose one recognition
-contract with raw and pending-token entries. This is a seam requirement, not a
-requirement to finish token cursors before banking compatible CSS/Less wins.
+1. unique token-to-arm decisions may jump directly, but same-token and prefix
+   overlaps retain source-order PEG semantics, rollback, commitment, probing, and
+   recovery;
+2. a character gate may remain cheaper and seed token completion with the lead it
+   already read; fixed pieces expose raw, seeded, and pending-result entries into
+   one recognition kernel;
+3. LL(k) and ALL(*) prediction are separate bounded experiments after tokenized
+   PEG works; they may not introduce stringified paths or unbounded predictor state.
 
-**0.48 semantics ruling.** The first production token path is tokenized PEG, not an
-implicit LL(k) or longest-match language change. Cheap ordered trial uses tokens; it
-is not replaced by them. Compatible same-token and prefix-overlap arms retain source
-order and the existing attempt/commit/gate/probe/recovery behavior. Unique
-token-to-arm decisions execute like LL(1), but that does not alter the public
-ordered-choice contract or force authors to left-factor every overlap. Static
-LL(k)/LL(*) and ALL(*)-style adaptive production prediction remain separate future
-experiments. The latter must include predictor construction and cache growth in its
-cost model: no stringified paths/stacks/configuration sets, hard state/byte ceilings,
-and fallback to tokenized PEG. See `docs/design/derived-tokenization.md` §2.1.
-
-**Carry this forward, it is the part people get wrong.** A prior bound of
-~1.4 ms was measured against the BYTECODE INTERPRETER — it measured *scanning*
-and was structurally blind to entry elimination. **That bound does not
-transfer.** Re-derive it against the closure assembler. The same warning applies
-to every mechanism closed against the interpreter: materialisation (~10%),
-leaf/trivia specialisation, superoperators (~1.6 ms), builder megamorphism
-(~0.1 ms). A bound measured against a replaced architecture is not evidence.
-
-What token streaming plausibly buys, from the 0.47 profile work: leaf matching
-becomes an integer compare rather than a char test or regex; first-set gating
-becomes a lookup on token kind rather than a char-class computation; trivia is
-classified once by the stream rather than scanned at every boundary. The last of
-those is the one with a measured precedent — see §3.
+The historical ~1.4 ms scanner bound was measured against the retired bytecode
+interpreter and was blind to eliminating wrapper and failed-arm entry. It does not
+bound the closure engine and must not be used to deprioritize the cursor.
+The same provenance limit applies to the retired bytecode-era bounds for
+materialization (~10%), leaf/trivia specialization, superoperators (~1.6 ms), and
+builder megamorphism (~0.1 ms): none bounds the closure assembler without
+remeasurement.
 
 ---
 

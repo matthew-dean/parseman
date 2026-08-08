@@ -3,12 +3,14 @@
 > **Authority/status (2026-08-08): evidence companion, not design authority.**
 > This note records the static probe made on `lane/tokenstream` from
 > `release/0.47.0` (`90e115c`) and the defects found in the unused token modules.
-> The canonical architecture and token/piece integration rules are
-> [`docs/design/derived-tokenization.md`](../docs/design/derived-tokenization.md),
-> [`DESIGN-piece-library.md`](./DESIGN-piece-library.md), and the 0.48 experiment
-> ledger. The shipping engine is the closure-based TableProgram assembler in
-> `src/table/assemble.ts`; this note does not claim that token cursor plumbing is
-> in production.
+> The canonical architecture, implementation order, and token/piece integration
+> rules are [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md).
+> [`derived-tokenization.md`](../docs/design/derived-tokenization.md) and
+> [`DESIGN-piece-library.md`](./DESIGN-piece-library.md) retain detailed and
+> historical reasoning; the 0.48 experiment ledger owns live dispositions. The
+> shipping engine is the closure-based TableProgram assembler in
+> `src/table/assemble.ts`; this note does not claim that comprehensive token
+> cursor plumbing is already in production.
 
 Every number below was produced on that branch with
 `bench/jess/token-axis-one.ts`. These are counts and static analysis, **not timing
@@ -158,7 +160,8 @@ keys for DFA identity; on large paths prediction construction can itself become 
 workload. Any Parseman experiment therefore needs compact integer/table identities,
 hard per-decision state and byte ceilings, fallback to tokenized PEG, and separate
 cold-construction, warm-parse, live-configuration, cache, and artifact measurements.
-Canonical detail and source links are in `docs/design/derived-tokenization.md` §2.1.
+Canonical semantics are in `docs/design/parseman-0.48.md` §§3–7; detailed source
+history remains in `docs/design/derived-tokenization.md` §2.1.
 
 ## Historical conservative static probe
 

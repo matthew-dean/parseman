@@ -1,5 +1,14 @@
 # DESIGN — the piece library: generate ahead of time, link at run start, parse with no option reads
 
+> **Authority/status (2026-08-08): detailed historical design and measurement
+> register, not the current 0.48 specification.** The canonical architecture,
+> implementation order, virtual-token representation, and ship contract are in
+> [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md). In particular,
+> the ahead-of-time factory direction in the older sections below was rejected on
+> artifact size; the shipping architecture is a compact `TableProgram` linked to
+> shared closures. Preserve the V8 and binding-time evidence here, but do not infer
+> current priority from this document's branch, section order, or hypotheses.
+
 Branch `design/balance`, on `origin/release/0.47.0` = `6bc265f5b854b256a2e8ea0df5522ca7cfd57770`,
 the base all lanes are standardised on. (This lane opened at `c8eb725`, two commits behind; the two
 byte measurements in §5 were re-run at `6bc265f` and are **byte-identical** at both, and the line
