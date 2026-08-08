@@ -27,8 +27,8 @@ static-factory artifact bloat are outside the design space.
 
 | ID | Priority | Hypothesis / mechanism | Required evidence | Owner lane | Status |
 | --- | --- | --- | --- | --- | --- |
-| T01 | P0 | Specialize linked sequence/choice pieces by child shape so literal, regex, rule, and node children do not all cross the same opaque call boundary. Avoid multiplying parent function-literal shapes. | CSS/Less/generated-Less vs 0.46 and clean 0.48; JSON medium/large; macro size; full parity. | `codegen_audit` | RUNNING — old-codegen mechanism audit and bounded fused-term design |
-| T02 | P0 | Select fixed shared pieces for dominant regex families (identifier runs, numeric runs, quoted strings, and single-class runs). Do not interpret the recursive `ScanShape` IR per match. | Same production A/B; direct regex-position oracle; opcode/grammar eligibility census; artifact delta; size guard. | `codegen_audit` | RUNNING — recognition-only numeric path measured null; fused parent/term boundary remains under comparison |
+| T01 | P0 | Specialize linked sequence/choice pieces by child shape so literal, regex, rule, and node children do not all cross the same opaque call boundary. Avoid multiplying parent function-literal shapes. | CSS/Less/generated-Less vs 0.46 and clean 0.48; JSON medium/large; macro size; full parity. | `codegen_audit` | RUNNING FOLLOW-UP — raw `NODE→RX` fusion covered 9,704 successful CSS calls but measured flat and added 773 runtime bytes, so it was rejected. Next bounded shape is terminal-node trivia/materialization specialization that consumes the shared token scalar when present and otherwise calls the same raw terminal kernel. |
+| T02 | P0 | Select fixed shared pieces for dominant regex families (identifier runs, numeric runs, quoted strings, and single-class runs). Do not interpret the recursive `ScanShape` IR per match. | Same production A/B; direct regex-position oracle; opcode/grammar eligibility census; artifact delta; size guard. | `codegen_audit` | CONVERGED INTO T09/T01 — standalone correct numeric recognition and raw `NODE→RX` duplication both measured flat. Any fixed recognizer must now prove value as the shared raw/seeded/token kernel consumed by composite pieces, not as another isolated regex body. |
 | T03 | P0 | Profile the shipped compact closure path and identify the actual V8 inlining, IC, allocation, scope, sequence, capture, and rollback costs before choosing the next structural cut. | CPU/allocation/optimization evidence on all three production fixtures plus quiet same-source controls. | `perf/0.48-profile-hotpath` | COMPLETE EVIDENCE |
 | T04 | P0 | Prove arm effects at encode time and omit rollback marks/calls where an arm cannot mutate CST buffers, trivia, fields, errors, or live captures. | Effect proof tests; adversarial rollback parity; production A/B; no new per-parse branch. | `perf/0.48-effect-proof` | MEASURED NULL — rejected prototype retired |
 | T05 | P0 | Fuse common sequence/scope/sentinel transitions into smaller reusable pieces that stay inside V8's inlining budget, prioritizing already-value-elided `SEQV`. | `--trace-turbo-inlining` or equivalent evidence; production A/B; piece-count and size deltas. | `perf/0.48-sequence-fusion` | MEASURED NULL — rejected prototype retired |
@@ -75,24 +75,26 @@ preserved.
 
 ## Current 0.46 shelf audit
 
-Candidate `5901774` was measured against the pinned 0.46 reference on Node 25.9
-with the repository's paired, order-alternated gates. Each production and density
-row used five independently recompiled passes and 60 total A/B pairs. Load average
-was 4.56→4.50 for the production gate and 4.18→4.05 for density. Every candidate
-row lost 60/60 pairs, so the remaining gap is not a load artifact; the in-run
-reference/reference controls determine the noise calibration. These are release
-audit figures, not new baselines or shelf ceilings.
+Current landed head `282c978` was measured against the pinned 0.46 reference on
+Node 25.9 with the repository's paired, order-alternated production gate. Each row
+used five independently recompiled passes and 60 total A/B pairs. Load average moved
+11.01→4.31; the worst per-workload reference/reference control median was only
++3.2%. Every candidate row lost 60/60 pairs, so the remaining gap is not a load
+artifact. The table leads with the median across independent passes, then retains
+the complete pass range. These are release-audit figures, not new baselines or shelf
+ceilings. Density and toy rows below remain the last `5901774` audit and are labelled
+accordingly.
 
-| Surface | Candidate range vs 0.46 | Disposition |
+| Surface | Candidate result vs 0.46 | Disposition |
 | --- | --- | --- |
-| production `less/stylesheet` | median +149.1%…+251.4%; min +237.6%…+265.8% | Improved relative to the +332.3%/+348.5% shelf ceiling; shelf remains. |
-| production `less/mixins` | median +228.9%…+237.4%; min +226.7%…+251.9% | Improved relative to the +329.8%/+344.3% shelf ceiling; shelf remains. |
-| production `css/stylesheet` | median +150.4%…+297.1%; min +170.4%…+302.3% | Improved relative to the +309.6%/+333.2% shelf ceiling; shelf remains. |
-| production `graphql/document` | median +78.6%…+107.9%; min +83.8%…+111.5% | Improved relative to the +124.7%/+129.6% shelf ceiling; shelf remains. |
-| production `json/document` | median +117.3%…+140.2%; min +116.7%…+144.1% | Improved relative to the +145.8%/+146.9% shelf ceiling; shelf remains. |
-| density rollback axis | median +135.5%…+273.2%; min +144.4%…+293.6% | All four named rows remain strict regressions, inside their ceilings. |
-| density expected axis | median +80.2%…+152.8%; min +105.1%…+157.2% | All three named rows remain strict regressions, inside their ceilings. `expected/wide` improved most from its 0.47 +373.2%…+424.5% envelope. |
-| toy CSS compiled bars | `decls` +67.3%; `selector` +104.0% | Improved from 0.47's approximately +343%/+386%; both original-baseline shelves remain. |
+| production `less/stylesheet` | center median +216.9%, min +221.9%; pass ranges +212.7%…+227.5% / +215.4%…+232.1% | Improved relative to the +332.3%/+348.5% shelf ceiling; shelf remains. |
+| production `less/mixins` | center median +226.5%, min +228.4%; pass ranges +225.1%…+229.1% / +224.1%…+237.0% | Improved relative to the +329.8%/+344.3% shelf ceiling; shelf remains. |
+| production `css/stylesheet` | center median +252.0%, min +288.1%; pass ranges +172.9%…+315.0% / +181.7%…+293.6% | Shelf remains; 2/5 passes exceeded the old median ceiling, so CSS is also a ceiling-excursion risk. |
+| production `graphql/document` | center median +103.4%, min +109.9%; pass ranges +81.4%…+106.0% / +87.1%…+114.0% | Improved relative to the +124.7%/+129.6% shelf ceiling; shelf remains. |
+| production `json/document` | center median +129.9%, min +130.6%; pass ranges +122.7%…+133.4% / +128.7%…+137.1% | Improved relative to the +145.8%/+146.9% shelf ceiling; shelf remains. |
+| density rollback axis (`5901774` audit) | median +135.5%…+273.2%; min +144.4%…+293.6% | All four named rows remain strict regressions, inside their ceilings. |
+| density expected axis (`5901774` audit) | median +80.2%…+152.8%; min +105.1%…+157.2% | All three named rows remain strict regressions, inside their ceilings. `expected/wide` improved most from its 0.47 +373.2%…+424.5% envelope. |
+| toy CSS compiled bars (`5901774` audit) | `decls` +67.3%; `selector` +104.0% | Improved from 0.47's approximately +343%/+386%; both original-baseline shelves remain. |
 
 No one of the fourteen 0.47 shelf entries is eligible for removal yet. The
 shared-DAG change is retained because it has exact deterministic work reduction,
