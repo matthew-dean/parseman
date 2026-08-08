@@ -69,6 +69,7 @@ import {
 import { classifyWorkloadShelves, SHELVED_WORKLOADS, usesPinned047WorkloadShelf } from './workload-perf-shelf.ts'
 import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
 import type { Workload } from './workloads/index.ts'
+import { assertWorkloadFullyConsumed } from './workloads/consumption.ts'
 
 const GATE = 'workload-perf-guard'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -127,9 +128,17 @@ async function loadSide(dir: string): Promise<Workload[]> {
   return ONLY === null ? all : all.filter(w => w.id.includes(ONLY))
 }
 
-function toCases(workloads: readonly Workload[]): Case[] {
+function toCases(workloads: readonly Workload[], side: string): Case[] {
   return workloads.map(w => {
     const built = w.make()
+    // Outside every timer, but on EVERY fresh instance: otherwise a later
+    // pass/calibration factory could silently construct a partial parser after
+    // the one-off preflight happened to pass.
+    try {
+      assertWorkloadFullyConsumed(side, w.id, w.input, built.parse())
+    } catch (error) {
+      fail(GATE, (error as Error).message)
+    }
     return {
       id: w.id,
       detail: `${(w.bytes / 1024).toFixed(0)} KB`,
@@ -162,8 +171,12 @@ for (let n = 0; n < refWorkloads.length; n++) {
   }
 }
 
-const refCases = toCases(refWorkloads)
-const headCases = toCases(headWorkloads)
+const refCases = toCases(refWorkloads, 'reference')
+const headCases = toCases(headWorkloads, 'head')
+console.log(
+  `  consumption preflight: ${refCases.length}/${refCases.length} exact on reference and head`
+  + ' (rechecked outside the timer on every fresh parser instance)',
+)
 const ALLOW_PARSE_DIFF = process.argv.includes('--allow-parse-diff')
 if (ALLOW_PARSE_DIFF && HEAD_REF === null) {
   fail(GATE, '--allow-parse-diff is only for replaying a pinned --head-ref, never for gating the working tree.')
@@ -176,7 +189,7 @@ const detail = new Map(refCases.map(c => [c.id, c.detail]))
 // raced with — a head start given to exactly one side. The repetition count it
 // produces was already applied to both sides; the WARMING was not, and that is a
 // side-dependent asymmetry in the one direction a gate must not have one.
-const reps = calibrate(toCases(refWorkloads), M)
+const reps = calibrate(toCases(refWorkloads, 'reference calibration'), M)
 console.log(
   `  ${refCases.length} workloads`
   + `   ${M.passes} passes x ${M.rounds} rounds x ${M.runs} runs, ${M.warmup} warmup + ${M.timed} timed samples, sides paired and order-alternated`
@@ -187,7 +200,7 @@ console.log(`  parses per sample: ${refCases.map(c => `${c.id} ${reps.get(c.id)}
 const T = PEAK ? peakThresholds(CONFIG.peak.allowancePct) : CONFIG.thresholds
 const load0 = os.loadavg()[0] ?? 0
 const { passRows, calibration } = measurePasses(
-  () => toCases(refWorkloads), () => toCases(headWorkloads), reps, M, T,
+  () => toCases(refWorkloads, 'reference pass'), () => toCases(headWorkloads, 'head pass'), reps, M, T,
 )
 const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)

@@ -71,9 +71,12 @@ export const cssRules = rules((g: {
 }) => {
   const unknownTok = scanTo(choice(literal(';'), literal('{'), literal('}'), literal(',')), { orEOF: true })
 
-  const Stylesheet = node('Stylesheet',
-    parser({ trivia: rw }, many(choice(g.AtRuleBlock, g.AtRuleStatement, g.Ruleset, unknownTok))),
-    (c, _fields, s, r, tl) => mk('Stylesheet', c, r, s, tl))
+  const Stylesheet = parser({ trivia: rw }, node(
+    'Stylesheet',
+    many(choice(g.AtRuleBlock, g.AtRuleStatement, g.Ruleset, unknownTok)),
+    (c, _fields, s, r, tl) => mk('Stylesheet', c, r, s, tl),
+    { trailingTrivia: true },
+  ))
 
   const Ruleset = node('Ruleset',
     parser({ trivia: rw }, sequence(g.SelectorList, literal('{'), g.declarationList, literal('}'))),
