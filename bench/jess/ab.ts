@@ -886,8 +886,10 @@ async function main(): Promise<void> {
   console.log(`\nloadavg at END ${loads()}`)
   console.log('')
   console.log('  A figure from this harness is quotable only WITH the block above it: both shas, both')
-  console.log('  engine names, the loadavg at each end, and the CONTROL row. A gap smaller than the')
-  console.log('  control is not a result in either direction, and a run whose END load is far off its')
+  console.log(`  engine names, the loadavg at each end, and ${TWO_GRAPH
+    ? 'a separate matching --self --two-graph run as its control.'
+    : 'the in-process CONTROL row.'}`)
+  console.log('  A gap smaller than that control is not a result in either direction, and a run whose END load is far off its')
   console.log('  START load measured a moving box, ceiling or no ceiling.')
 }
 
