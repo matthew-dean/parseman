@@ -939,24 +939,28 @@ identity reference. Rule 3 does not admit that justification.
 ### 7.5 Token cursors bind through the library; they do not replace it
 
 Derived tokenization is another application of the same binding-time law, not a new
-engine axis. The terminal alphabet, a site's candidate set and whether that set is
-lexically decidable are **encode-time** facts. Which raw or token-aware body the site
-uses is an **assembly/link-time** selection. The token found at `(input, pos)` is the
-parse-time result.
+engine axis. The terminal alphabet, site lexical context, first-character classes and
+available seeded kernels are **encode-time** facts. Which character-gated, raw-token,
+seeded-token or pending-result body the site uses is an **assembly/link-time**
+selection. Recognition at `(input, pos, context)` is the parse-time result.
 
 That yields four rules for piece work in 0.48:
 
-1. **Let tokenization own tokenized choices; keep cheap non-choice guards.** A choice
-   scans at its current cursor position and forks on the token id. A finite
-   first-character exclusion for an optional repeat may still stop before any child
-   or token work because it is not competing with a choice discriminator.
-2. **Make terminal pieces dual-entry, not duplicated.** Their recognition kernel must
-   support raw input and a pending classified result with identical value/span/capture/
-   failure semantics. The classifier and fallback do not get independent regex logic.
-3. **Make the pending result consumable.** A token gate that calls an ordinary leaf
-   which rescans the same span has preserved correctness and lost the design. The
-   selected leaf or fused composite must accept the already-known terminal identity,
-   end and value.
+1. **Use the cheapest sound discriminator.** A disjoint first-character choice keeps
+   its O(1) character fork; a shared-leading choice recognizes a token; same-token or
+   prefix-compatible arms retain source-order PEG trial over that shared result. A
+   finite first-character exclusion for an optional repeat may still stop before any
+   child or token work.
+2. **Make terminal pieces multi-entry, not duplicated.** Their one recognition kernel
+   must support raw input, a seed carrying the already-read lead/prefix, and a pending
+   classified result with identical value/span/capture/failure semantics. A seeded
+   kernel continues after the prefix; it does not restart recognition. The classifier
+   and fallback do not get independent regex logic.
+3. **Make every trial use and the selected arm consume the pending result.** A gate
+   that calls an ordinary leaf which rescans the same span has preserved correctness
+   and lost the design. Compatible arms reuse token id/value/end or a prefix view
+   across rollback. See `docs/design/derived-tokenization.md` §2 for the seed payload,
+   invalidation rules and three-way eager/seeded/raw measurement gate.
 4. **Do not postpone orthogonal wins.** Repeat admission, composite setup, rollback,
    node materialisation and reducer work remain outside token recognition. Bank those
    wins when their shape leaves the pending-result seam intact.

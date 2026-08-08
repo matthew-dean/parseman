@@ -106,7 +106,9 @@ is already sitting in the compiler.
 
 Authors write the same combinators they write today. The lexer is **inferred**, not
 declared. There is no grammar rewrite, no separate `.l` file, no token-name namespace
-for authors to maintain. This is a compiler change, not a language change.
+for authors to maintain. Deriving and reusing a token can be a compiler-only change;
+using tokens to predict past ordered PEG choice can be a language change. §2.1 makes
+that boundary explicit so the implementation cannot choose semantics accidentally.
 
 The alphabets are scanner-sized, not pathological. **css, walked from the live
 combinator graph** (this supersedes the 75-terminal figure in the first revision,
@@ -143,17 +145,24 @@ somewhere between 43% and 93%.
 
 ---
 
-## 2. Tokenize at the current cursor, then choose by token id (settled) [FOUNDATION]
+## 2. Recognize at the current cursor, then choose or trial from that result (settled) [FOUNDATION]
 
 The design target is to classify every statically enumerable terminal the grammar
 reaches. At a parser decision, the operation is:
 
 ```text
-token = tokenize(input, currentPosition, lexicalContext)
-branch = choose(token.id)
+recognition = tokenize(input, currentPosition, lexicalContext)
+branch = chooseInPegOrder(recognition)
 ```
 
-Tokenization is the discriminator. It is not conditional on arms already having
+`recognition` is one position-local result, not a whole-document stream. In
+the common unique case it contains one id/value/end and choice is an integer fork. If
+prefix-overlapping or same-token arms remain, it may expose compact compatible token
+views so each PEG arm can try using the already-computed recognition rather than
+rescanning characters. Tokenization is the discriminator and the substrate for cheap
+trial; it does not imply that every decision has exactly one viable arm.
+
+Tokenization is not conditional on arms already having
 distinct first characters or on the conservative lead-terminal walker proving one
 terminal per arm. Shared `@`, identifier/function, number/unit, prefix, wrapper and
 rule-ref families are the principal reason to scan the full token before choosing.
@@ -175,7 +184,7 @@ ban comprehensive tokenization.
 | --- | --- | --- |
 | **token id space** | **global** — one integer per terminal across the composed grammar | ids survive `compose()` resolution and let parser pieces fork on integers |
 | **lexical context** | supplied by the current parser site; may be a named mode, candidate-set id, or a compiled combination | the same bytes can denote different terminals in different grammar contexts |
-| **pending token** | current cursor position plus the site/context that requested it | the choice and its selected branch share one token result; no arm rescans |
+| **pending token result** | current cursor position plus the site/context that requested it | the choice and its tried/selected branches share one recognition result; the unique fast path is one id/value/end, while proven overlaps may carry compact compatible views |
 
 Candidate sets are one representation of lexical context, not an eligibility filter
 that admits only already-disjoint arms. The analysis must resolve wrapper and rule
@@ -185,16 +194,79 @@ does not make the position untokenizable.
 
 ### It composes with first-set gating; it does not replace it
 
-First-set gating already scans **one character** to reject work. At tokenized decision
-sites, the parser instead forks on the result of `tokenize(currentPosition, context)`.
-A token distinguishes `~=` from `~`, and `url(` from `u`, where a character cannot.
-Outside decisions, a sound one-character loop guard may remain cheaper than asking
-for a token solely to learn that an optional iteration has ended.
+First-set gating already reads **one character** and directly selects among disjoint
+arms. Finishing a token solely to make that same decision would add work. Token
+coverage and eager tokenization are separate questions: a terminal can be tokenizable
+even when the cheapest choice path selects its arm before requesting the full token.
 
-The intended relationship is *upgrade in place*: the gate stays where it is and its
-key gets wider. Existing gating machinery, diagnostics, and the poisoned-first-set
-rules (a `gate(...)` leading a choice arm still poisons dispatch) carry over
-unchanged.
+| decision shape | cheapest branch selection | token use |
+| --- | --- | --- |
+| disjoint first characters | existing O(1) character gate | the selected arm may finish a token from that known lead and pass it forward |
+| shared character, distinct full tokens | tokenize once, then integer-fork | selected arm consumes the result |
+| same-token or prefix overlap | tokenize once into compatible views, then ordered PEG trial | every compatible arm reuses the result across rollback |
+| non-choice optional-loop exit | character/EOF guard | request no token merely to stop the loop |
+
+A token distinguishes `~=` from `~`, and `url(` from `u`, where a character cannot.
+The intended relationship is *upgrade in place*, not “tokenize eagerly everywhere”:
+reuse the character gate when it has already solved the choice, and widen recognition
+to a token when the decision or selected arm benefits. Existing gating machinery,
+diagnostics, and the poisoned-first-set rules (a `gate(...)` leading a choice arm
+still poisons dispatch) carry over unchanged.
+
+#### Seeded recognition after a character gate
+
+When a disjoint first-character gate has already selected an arm, the selected arm
+must be able to turn that work into a token instead of restarting recognition from
+scratch. The assembly seam is conceptually:
+
+```text
+seed = {
+  position,          // post-trivia terminal start
+  lead,              // code unit/code point or class already read by the gate
+  prefixLength,      // normally 1; may be longer for a trie/prefix gate
+  lexicalContext,
+  triviaState        // adjacency / trivia facts already established
+}
+
+pending = recognizeSeeded(input, seed)
+```
+
+The recognizer starts in the state implied by `lead`/`prefixLength` and continues at
+`position + prefixLength`. It does not re-read the known prefix. The result is an
+immutable, parse-local record containing at least `{ position, contextId, tokenId,
+end, value, adjacency }`. The selected terminal consumes that record; later terminal,
+sequence or dispatch pieces can reuse its id/value/end. If an attempted arm rolls
+back to the same position and lexical context, another compatible PEG arm reuses the
+same result or compatible prefix view rather than recognizing the characters again.
+
+Recognition and consumption stay separate. Creating `pending` does not publish CST
+leaves, fields, errors, trivia or commitment. Consumption performs those effects.
+That keeps the recognition record valid across ordinary PEG rollback while preserving
+probe, tolerant recovery and expected-set behavior. Moving the cursor, changing the
+lexical context, or beginning a new parse invalidates it; a result from one context is
+never reused for a different active-terminal set at the same character position.
+
+The shared recognition contract therefore needs two entries into the same kernel:
+
+- `recognizeRaw(position, context)` for a site that has not read a prefix;
+- `recognizeSeeded(seed)` for a gate/trie that has.
+
+Literal, word, keyword-trie and straight-line scannable-terminal kernels should expose
+the seeded entry directly. A terminal backed only by an opaque native `RegExp` may be
+unable to resume after a prefix. In that case assembly chooses between eager raw-token
+recognition and the existing character-gated raw terminal path; it must not add a
+nominal seeded wrapper that simply reruns the whole regex. Comprehensive token
+coverage does not require every site to request the token at the same point.
+
+Every performance comparison keeps these three shapes separate:
+
+1. eager token recognition before choice;
+2. disjoint character gate followed by seeded token completion;
+3. current character gate followed by the raw terminal.
+
+Report terminal calls, known-prefix re-reads, pending-result hits, parse time and
+artifact bytes. A win in the shared-leading eager path does not prove seeded
+recognition wins at disjoint sites, and vice versa.
 
 ### It composes with fixed pieces; it does not reset the lowering
 
@@ -207,15 +279,19 @@ character-path work.
 
 The durable shape is layered:
 
-1. **Choose on the token at parser decisions.** Do not retain an independent
-   character gate that decides the same choice first; tokenization owns that fork.
+1. **Use the cheapest sound discriminator and pass its work forward.** A disjoint
+   first-character gate may select directly and seed later token recognition with the
+   known lead. Shared-leading choices use the token result: unique ids fork directly,
+   while compatible overlaps remain cheap ordered PEG trials over that same result.
+   Do not perform a complete character-level choice and then repeat the same terminal
+   recognition in an unrelated scanner.
 2. **Keep cheap non-choice guards.** EOF and finite first-character exclusions may
    still stop optional loops before any child or token work. Scannerless sites are
    explicit exceptions, not the conservative default.
-3. **Pass the classified result forward.** The selected terminal must consume a
-   pending result containing at least the position, terminal identity and end. A gate
-   that scans and then lets the leaf scan again is not token-cursor integration; it is
-   added work.
+3. **Pass the classified result forward.** Every tried terminal uses, and the selected
+   terminal consumes, a pending result containing at least the position, terminal
+   identity and end (or a compatible prefix view). A gate that scans and then lets an
+   arm scan again is not token-cursor integration; it is added work.
 4. **Share recognition semantics.** Fixed literal/regex recognizers are both the
    scanner's kernels and the raw-input fallback. Do not create an unrelated scanner
    implementation beside unrelated terminal pieces.
@@ -238,12 +314,75 @@ CSS. A global longest-match rule is not yet safe at every site (303/1,552 Less w
 mismatches), so each lexical context needs a proof or fallback. The next gate is a
 pending-result implementation at the proven `Value` site; timing remains unclaimed.
 
+### 2.1 Parsing semantics over tokens: three different designs
+
+Moving recognition from characters to tokens creates an LL-style prediction seam,
+but it does **not** by itself decide Parseman's parsing semantics. These are different
+architectures:
+
+| design | decision rule | effect on ordered choice |
+| --- | --- | --- |
+| **tokenized PEG** | recognize once at the position; each arm tries from the shared token result; incompatible arms fail immediately and compatible arms stay in source order | preserves Parseman's contract |
+| **LL(k) / LL(*) prediction** | select a production from bounded or regular token lookahead before parsing the arm | can change overlapping-choice behavior |
+| **ALL(*)-style adaptive prediction** | explore viable productions over token lookahead at parse time, choose a survivor, and cache the decision DFA | can preserve source-order precedence for ambiguities, but is not strict PEG prefix commitment |
+
+The release-safe first step is **tokenized PEG**. Cheap ordered trial and tokens are
+not alternatives: trial uses the shared token result. If `choice(literal('a'),
+literal('ab'))` sees `ab`, recognition may exclude unrelated arms, but it may not
+silently select `ab`: today's PEG contract lets the first arm consume `a`. The result
+must retain the compatible prefix view needed by that arm, and after an attempted arm
+rolls back the next compatible arm reuses the same position result. A unique
+token-to-arm mapping executes like LL(1), but that is an optimization result, not a
+semantic pivot. Same-token and prefix-overlap survivors stay in source order and use
+the existing attempt, commitment, runtime-gate, probe and recovery rules.
+
+This preserves an important authoring property. Parseman rewards LL(1)-like,
+first-character-disjoint arms with O(1) dispatch, but does not require authors to
+left-factor every overlap or prove that a fixed `k` distinguishes every path for the
+grammar to be correct. Ordered trial is the semantic fallback. The implementation
+goal is to make recognizing, rejecting and rolling back that trial cheap enough that
+authors can organize rules around the language rather than around a predictor.
+
+Static multi-token prediction would be an LL(k)/LL(*) feature. Adaptive prediction
+would be closer to ALL(*): the algorithm described by Parr, Harwell and Fisher
+launches alternative subparsers at a decision, advances them over lookahead, and
+caches observed prediction paths as DFA states. It resolves an ambiguity by production
+order, but it chooses the first alternative that leads to a valid parse, whereas PEG
+commits to the first alternative that matches a prefix. Those are observably different
+rules; `a | ab` is the paper's minimal example. See
+[Adaptive LL(*) Parsing: The Power of Dynamic Analysis](https://www.antlr.org/papers/allstar-techreport.pdf).
+
+Therefore the architecture decision is:
+
+1. **0.48 token work preserves PEG.** Tokenization owns recognition; every ordered
+   arm trial uses that result. It removes impossible arms cheaply but does not look
+   past a viable earlier arm to choose a later one.
+2. **LL(k) and adaptive prediction remain explicit experiments, not an accidental
+   consequence of a token cursor.** Either would need a versioned public-semantics
+   decision plus differentials for overlapping alternatives.
+3. **An ALL(*)-inspired predictor must beat tokenized PEG after charging prediction
+   construction.** Knowing the path is useful only when computing and caching it is
+   cheaper than the speculation it removes.
+
+The third rule comes from a concrete JavaScript warning. The Chevrotain ALL(*) plugin
+keys each ATN configuration with a string containing its alternative, state and whole
+call stack, then concatenates all such keys into another string for DFA-state identity
+([`dfa.ts` at `573c41b`](https://github.com/TypeFox/chevrotain-allstar/blob/573c41bdd8715c7fc929f3b97aa51731292405dd/src/dfa.ts#L30-L72)). Its predicate-set DFA
+cache is string-keyed too
+([`all-star-lookahead.ts` at `573c41b`](https://github.com/TypeFox/chevrotain-allstar/blob/573c41bdd8715c7fc929f3b97aa51731292405dd/src/all-star-lookahead.ts#L56-L94)). On large
+paths those structures can become the workload. Parseman must not copy that shape:
+prediction identities are compact integers/table words, state growth has a hard
+per-decision ceiling, and exceeding the ceiling falls back to tokenized PEG. Any
+prototype reports cold construction time, warm parse time, maximum live
+configurations, cache bytes and artifact bytes separately; a warm-only speedup cannot
+hide an explosive predictor.
+
 ---
 
-## 3. One token result per cursor decision (settled) [FOUNDATION]
+## 3. One position-recognition result per cursor decision (settled) [FOUNDATION]
 
-> **The choice scans at its current position once. The chosen branch consumes that
-> same token result. No arm rescans.**
+> **The choice recognizes its current position once. Every ordered arm trial uses
+> that result, and the chosen branch consumes it. No arm rescans characters.**
 
 This is the load-bearing invariant, and it is where the cost model changes:
 
@@ -251,15 +390,16 @@ This is the load-bearing invariant, and it is where the cost model changes:
   each arm re-examines the characters at the same position, and a failed arm that
   backtracks hands the next arm the same bytes to re-read.
 - **Under this design:** a decision pays for one tokenization at its cursor position.
-  Parser branches are integer comparisons against the result, and the selected branch
-  receives its id, value and end offset rather than matching the bytes again.
+  Incompatible branches are integer/set checks; compatible PEG trials use the same
+  recognized id/value/end or prefix view; and the selected branch receives that result
+  rather than matching the bytes again.
 
 This is the intended cost model, not a universal speed guarantee. Classification
 has a cost; at a low-frequency site or a site already decided by one character, it
 can cost more than the arm entries it removes. The implementation must therefore be
-site-selected and frequency-weighted. Where it qualifies, an arm becomes an integer
-compare and the selected terminal reuses the same result instead of emitting or
-calling a second recognizer.
+site-selected and frequency-weighted. Where it qualifies, an incompatible arm becomes
+an integer/set rejection and a compatible terminal reuses the same result instead of
+emitting or calling a second recognizer.
 
 ---
 
@@ -1028,10 +1168,13 @@ it is.**
 
 ## 12. Invariants a prototype must hold
 
-1. **One scan per cursor decision.** The choice tokenizes once and the selected arm
-   consumes that result. Two arms at the same choice never both scan.
-2. **Tokenization decides the branch.** Do not require character-disjoint arms before
-   tokenizing; shared-leading composite families are the high-value population.
+1. **One recognition pass per cursor decision.** The choice tokenizes once; every PEG
+   trial uses that result and the selected arm consumes it. Two arms at the same
+   choice never both rescan characters.
+2. **Tokenization supplies branch discrimination.** Do not require
+   character-disjoint arms before tokenizing; shared-leading composite families are
+   the high-value population. A unique id selects directly; overlap retains ordered
+   compatible token views instead of forcing another character scan.
 3. **The current parser context selects active terminals.** Mode-free maximal munch
    over every terminal is measured wrong — it produced 7 tokens for a 123 KB file
    (§10.1). This does not limit token coverage inside the correct context.
@@ -1051,15 +1194,23 @@ it is.**
 10. **One canonical engine.** Token-aware and raw-input sites are assembly-selected
     pieces over the same `TableProgram`; neither is a parallel parser or fallback
     implementation.
-11. **No scan-then-rescan.** A selected terminal consumes the classified result. If
-    it recognizes the same bytes again, the cursor has failed its integration
-    contract even when the parse is correct.
-12. **Cheap non-choice rejection survives.** Optional-loop EOF/first-character guards
-    may stop work before a token is requested. At a tokenized choice, however, the
-    token id owns branch selection.
+11. **No scan-then-rescan.** Tried and selected terminals use the classified result.
+    A prior character gate may supply the already-read lead to token recognition; it
+    must not trigger a second complete recognition of the same terminal.
+12. **Cheap character decisions survive.** Optional-loop EOF/first-character guards
+    may stop work before a token is requested, and a disjoint first-character choice
+    may select its arm before the selected arm finishes a token. Shared-leading
+    choices use the token result for discrimination.
 13. **One recognition contract.** Scanner kernels and raw terminal pieces share the
     same maximal-munch, prefix, case-fold, boundary, span and capture semantics; a
     second independently drifting recognizer is forbidden.
+14. **PEG order is preserved unless a versioned parser-semantics decision says
+    otherwise.** Tokens may reject impossible arms; they may not skip a viable earlier
+    arm merely because a later arm is a longer or globally successful match.
+15. **Prediction pays for its own machinery.** An LL(k), LL(*) or ALL(*)-style
+    experiment reports construction, cache and configuration growth separately and
+    has a bounded fallback. Stringified paths, stacks or configuration sets are
+    forbidden in the hot prediction identity.
 
 ---
 
@@ -1113,7 +1264,7 @@ re-entry point.
 
 Derived tokenization is one entry in a larger search over artifact size and parse
 speed. The rest of that search is recorded here so it survives the session that
-produced it. **28 entries.** Every entry carries a **contribution tag** (see the
+produced it. **29 entries.** Every entry carries a **contribution tag** (see the
 scheme near the top of this document) and a status. Status is one of:
 
 - `untried` — no measurement attempted;
@@ -1158,6 +1309,21 @@ The interpreter needs the same answers, and two implementations of one predicate
 drift pattern §7 and §16.3 both document — in the component that decides *what
 matches*. *Rationale:* the token design makes these answers load-bearing in two places
 at once.
+
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 29 | **Bounded integer-keyed adaptive token prediction** | **ENABLED-BY** | `untried` — only after tokenized PEG has a production baseline |
+
+*Why:* shared-token alternatives can require more than one token of lookahead, and a
+cached adaptive decision could remove repeated speculative composite parsing. *Why it
+is not the default:* it changes PEG prefix commitment if it chooses the first arm that
+leads to a complete valid path, and the Chevrotain implementation demonstrates how
+ATN/configuration and key construction can dominate the saved work. *Required shape:*
+compact integer configurations and stack identities, no path/config strings, hard
+per-decision state and byte ceilings, and fallback to tokenized PEG. *How to measure:*
+cold construction, warm parse, state/config/cache high-water marks, artifact bytes,
+and production A/B against both character PEG and tokenized PEG; plant overlapping
+choice cases that distinguish `a | ab` from `ab | a` before reporting parity.
 
 ### 14.1 Capture-bookkeeping family
 
@@ -1856,9 +2022,9 @@ In rough order of likelihood:
 
 | Claim | Status |
 | --- | --- |
-| Tokenize at the current cursor, then choose by token id | **settled (§2)** |
+| Recognize at the current cursor; direct-fork unique token ids and let compatible PEG arms trial from the shared result | **settled (§2, §2.1)** |
 | Token ids are global; the current parser context selects active terminals | **settled — and §10.1 is why** |
-| One token result per cursor decision; selected branch consumes it | **settled (§3)** |
+| One position result per cursor decision; every compatible trial uses it and the selected branch consumes it | **settled (§3)** |
 | Adjacency as a scan-time bit | **settled** |
 | Selector context as a mode flag | **settled** |
 | `dispatch` on token id; `routed()` produces a token | **settled — and now LANDED (§9.1)** |
@@ -1868,7 +2034,7 @@ In rough order of likelihood:
 | **Byte-identical tree vs a toggled baseline is the gate, not the suites** | **settled methodological invariant (§16.3)** |
 | **Parse-time claims come from interleaved rounds in one process** | **settled methodological invariant (§16.4)** |
 | Token cursor is an assembly-selected layer over fixed pieces, not a replacement lowering | **settled integration rule (§2)** |
-| Cheap non-choice loop rejection survives; token id owns tokenized choice selection | **settled integration rule (§2, §12)** |
+| Cheap character gates survive where they already decide; shared-leading choices discriminate from tokens; compatible overlap retains ordered trial | **settled integration rule (§2, §12)** |
 
 ### Hypothesis, untried, or nonexistent
 

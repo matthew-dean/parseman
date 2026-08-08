@@ -242,10 +242,14 @@ it has not resolved §8, and this note makes no speed or memory claim for it.
 **0.48 integration ruling.** Token cursor work does not put the rest of the
 performance queue on hold and does not reset a landed piece design. It must enter
 through the canonical `TableProgram` assembler as a per-site selected path. A
-tokenized choice scans at its current position and chooses on the token id; cheap
-non-choice guards such as optional-repeat first-character exits remain valid. Fixed
-terminal pieces supply the recognition semantics and raw-input fallback, and the
-selected leaf or composite must consume the classified result rather than rescan.
+shared-leading tokenized choice recognizes its current position once; incompatible
+arms reject from that result, compatible PEG arms try in source order using it, and
+the selected arm consumes it. A disjoint first-character choice may keep its cheaper
+character fork, then seed selected-arm token recognition with the already-read lead
+instead of restarting. Cheap non-choice guards such as optional-repeat
+first-character exits remain valid. Fixed terminal pieces supply the raw, seeded and
+pending-result entries into one recognition contract; no tried leaf or composite may
+rescan the same terminal.
 Sequence/repeat/node/rollback/materialisation wins remain valid where they precede classification,
 consume its result, or operate outside eligible token sites. Evaluate new work for
 that composability, then prioritize by measured production impact.
@@ -254,6 +258,17 @@ The reverse constraint is equally important: do not land a large body of termina
 recognition that a token cursor would immediately duplicate. Expose one recognition
 contract with raw and pending-token entries. This is a seam requirement, not a
 requirement to finish token cursors before banking compatible CSS/Less wins.
+
+**0.48 semantics ruling.** The first production token path is tokenized PEG, not an
+implicit LL(k) or longest-match language change. Cheap ordered trial uses tokens; it
+is not replaced by them. Compatible same-token and prefix-overlap arms retain source
+order and the existing attempt/commit/gate/probe/recovery behavior. Unique
+token-to-arm decisions execute like LL(1), but that does not alter the public
+ordered-choice contract or force authors to left-factor every overlap. Static
+LL(k)/LL(*) and ALL(*)-style adaptive production prediction remain separate future
+experiments. The latter must include predictor construction and cache growth in its
+cost model: no stringified paths/stacks/configuration sets, hard state/byte ceilings,
+and fallback to tokenized PEG. See `docs/design/derived-tokenization.md` §2.1.
 
 **Carry this forward, it is the part people get wrong.** A prior bound of
 ~1.4 ms was measured against the BYTECODE INTERPRETER — it measured *scanning*
