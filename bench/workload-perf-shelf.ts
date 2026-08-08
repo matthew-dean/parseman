@@ -30,13 +30,18 @@ export type ShelfRow = {
   shelf: WorkloadShelf
   worstMedian: number
   worstMin: number
+  /** Passes over either candidate-derived ceiling. */
+  overCeilingPasses: number
+  totalPasses: number
 }
 
 export type ShelfClassification = {
   /** Known rows still regressed, but no worse than the accepted candidate. */
   shelved: ShelfRow[]
-  /** Known rows which exceeded either hard per-pass ceiling. */
+  /** Known rows over a ceiling in a strict majority of passes. */
   worsened: ShelfRow[]
+  /** Non-majority ceiling excursions: visible, but deliberately not gate failures. */
+  excursions: ShelfRow[]
   /** A known row now passes the ordinary gate and should be removed from the shelf. */
   recovered: ShelfRow[]
   /** A configured row not present in this measurement (normally an --only run). */
@@ -48,9 +53,9 @@ export type ShelfClassification = {
 /**
  * Classify measured workload verdicts without performing timing itself.
  *
- * The hard ceilings deliberately inspect every pass, not only the majority
- * verdict. A new pass above the accepted candidate is a worsening even if the
- * ordinary noise rule keeps the row from becoming a majority failure.
+ * The candidate-derived ceiling is recorded for every pass. It uses the same
+ * strict-majority rule as the ordinary gate before blocking, so an isolated
+ * noisy excursion remains visible without defeating the gate's noise protection.
  */
 export function classifyWorkloadShelves(
   rows: readonly Verdict[],
@@ -59,6 +64,7 @@ export function classifyWorkloadShelves(
   const byId = new Map(rows.map(row => [row.id, row]))
   const shelved: ShelfRow[] = []
   const worsened: ShelfRow[] = []
+  const excursions: ShelfRow[] = []
   const recovered: ShelfRow[] = []
   const unmeasured: Array<{ id: string, shelf: WorkloadShelf }> = []
 
@@ -70,17 +76,37 @@ export function classifyWorkloadShelves(
     }
     const worstMedian = Math.max(...row.passes.map(pass => pass.dMedian))
     const worstMin = Math.max(...row.passes.map(pass => pass.dMin))
-    const checked = { id, shelf, worstMedian, worstMin }
-    if (worstMedian > shelf.medianPct || worstMin > shelf.minPct) worsened.push(checked)
-    else if (row.failed) shelved.push(checked)
-    else recovered.push(checked)
+    const overCeilingPasses = row.passes.filter(
+      pass => pass.dMedian > shelf.medianPct || pass.dMin > shelf.minPct,
+    ).length
+    const checked = { id, shelf, worstMedian, worstMin, overCeilingPasses, totalPasses: row.passes.length }
+    if (overCeilingPasses * 2 > row.passes.length) worsened.push(checked)
+    else {
+      if (row.failed) shelved.push(checked)
+      else if (overCeilingPasses === 0) recovered.push(checked)
+      // Keep this independent of the ordinary verdict: the accepted 0.47 rows
+      // are normally failed already, and an isolated over-ceiling pass must
+      // still be visible in their shelf report.
+      if (overCeilingPasses > 0) excursions.push(checked)
+    }
   }
 
   return {
     shelved,
     worsened,
+    excursions,
     recovered,
     unmeasured,
     unknown: rows.filter(row => row.failed && shelves[row.id] === undefined),
   }
+}
+
+/** A shelf never travels to a self-check, peak test, or arbitrary replay. */
+export function usesPinned047WorkloadShelf(options: {
+  self: boolean
+  peak: boolean
+  hasReferenceOverride: boolean
+  hasHeadReference: boolean
+}): boolean {
+  return !options.self && !options.peak && !options.hasReferenceOverride && !options.hasHeadReference
 }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { classifyWorkloadShelves, SHELVED_WORKLOADS, type WorkloadShelf } from '../../bench/workload-perf-shelf.ts'
+import {
+  classifyWorkloadShelves, SHELVED_WORKLOADS, usesPinned047WorkloadShelf, type WorkloadShelf,
+} from '../../bench/workload-perf-shelf.ts'
 import type { Verdict } from '../../bench/ab-harness.ts'
 
 const SHELF: Readonly<Record<string, WorkloadShelf>> = {
@@ -29,6 +31,24 @@ describe('0.47 workload performance shelf', () => {
     })
   })
 
+  it('applies the shelf only to the checked-out candidate against its pinned reference', () => {
+    expect(usesPinned047WorkloadShelf({
+      self: false, peak: false, hasReferenceOverride: false, hasHeadReference: false,
+    })).toBe(true)
+    expect(usesPinned047WorkloadShelf({
+      self: false, peak: false, hasReferenceOverride: false, hasHeadReference: true,
+    })).toBe(false)
+    expect(usesPinned047WorkloadShelf({
+      self: false, peak: false, hasReferenceOverride: true, hasHeadReference: false,
+    })).toBe(false)
+    expect(usesPinned047WorkloadShelf({
+      self: true, peak: false, hasReferenceOverride: false, hasHeadReference: false,
+    })).toBe(false)
+    expect(usesPinned047WorkloadShelf({
+      self: false, peak: true, hasReferenceOverride: false, hasHeadReference: false,
+    })).toBe(false)
+  })
+
   it('accepts only the named regression within both measured hard ceilings', () => {
     const d = classifyWorkloadShelves([verdict('known', true, [[9.9, 11.9]])], SHELF)
     expect(d.shelved.map(row => row.id)).toEqual(['known'])
@@ -36,9 +56,11 @@ describe('0.47 workload performance shelf', () => {
     expect(d.unknown).toEqual([])
   })
 
-  it('blocks a known row when either metric exceeds its candidate-derived bound', () => {
-    const d = classifyWorkloadShelves([verdict('known', true, [[10.1, 11], [9, 12.1]])], SHELF)
-    expect(d.worsened).toMatchObject([{ id: 'known', worstMedian: 10.1, worstMin: 12.1 }])
+  it('blocks a known row when a strict majority of passes exceed a candidate-derived bound', () => {
+    const d = classifyWorkloadShelves([verdict('known', true, [[10.1, 11], [9, 12.1], [0, 0]])], SHELF)
+    expect(d.worsened).toMatchObject([{
+      id: 'known', worstMedian: 10.1, worstMin: 12.1, overCeilingPasses: 2, totalPasses: 3,
+    }])
     expect(d.shelved).toEqual([])
   })
 
@@ -54,8 +76,11 @@ describe('0.47 workload performance shelf', () => {
     expect(d.shelved).toEqual([])
   })
 
-  it('does not let a non-majority regression exceed the hard ceiling silently', () => {
-    const d = classifyWorkloadShelves([verdict('known', false, [[10.01, 0]])], SHELF)
-    expect(d.worsened.map(row => row.id)).toEqual(['known'])
+  it('reports, but does not fail, an isolated ceiling excursion', () => {
+    const d = classifyWorkloadShelves([verdict('known', true, [[10.01, 0], [0, 0], [0, 0]])], SHELF)
+    expect(d.worsened).toEqual([])
+    expect(d.excursions).toMatchObject([{ id: 'known', overCeilingPasses: 1, totalPasses: 3 }])
+    expect(d.shelved.map(row => row.id)).toEqual(['known'])
+    expect(d.recovered).toEqual([])
   })
 })

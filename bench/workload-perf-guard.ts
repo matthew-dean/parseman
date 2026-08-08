@@ -66,7 +66,7 @@ import {
   materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign, peakThresholds,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
-import { classifyWorkloadShelves, SHELVED_WORKLOADS } from './workload-perf-shelf.ts'
+import { classifyWorkloadShelves, SHELVED_WORKLOADS, usesPinned047WorkloadShelf } from './workload-perf-shelf.ts'
 import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
 import type { Workload } from './workloads/index.ts'
 
@@ -190,9 +190,15 @@ const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
 // 0.47's owner accepted five measured table-architecture regressions against the
 // committed 0.46 reference. The shelf is deliberately unavailable for a moved
-// reference, self-check, or peak comparison: it is a bounded exception to this
-// one pinned release comparison, never a generic tolerance override.
-const RELEASE_SHELF = !SELF && !PEAK && argValue('--ref') === null
+// reference, a head-ref replay, self-check, or peak comparison: it is a bounded
+// exception to this one pinned release comparison, never a generic tolerance
+// override.
+const RELEASE_SHELF = usesPinned047WorkloadShelf({
+  self: SELF,
+  peak: PEAK,
+  hasReferenceOverride: argValue('--ref') !== null,
+  hasHeadReference: HEAD_REF !== null,
+})
 const shelf = RELEASE_SHELF ? classifyWorkloadShelves(rows) : null
 
 console.log(
@@ -233,8 +239,16 @@ if (shelf !== null) {
   }
   for (const row of shelf.worsened) {
     console.error(
-      `    WORSENED ${row.id}: worst median ${sign(row.worstMedian)} / min ${sign(row.worstMin)}`
-      + ` exceeds accepted ceilings +${row.shelf.medianPct}% / +${row.shelf.minPct}%`,
+      `    WORSENED ${row.id}: ${row.overCeilingPasses}/${row.totalPasses} passes over ceilings;`
+      + ` worst median ${sign(row.worstMedian)} / min ${sign(row.worstMin)}`
+      + ` (ceilings +${row.shelf.medianPct}% / +${row.shelf.minPct}%)`,
+    )
+    console.error(`      → ${row.shelf.tracking}`)
+  }
+  for (const row of shelf.excursions) {
+    console.error(
+      `    CEILING EXCURSION ${row.id}: ${row.overCeilingPasses}/${row.totalPasses} pass over ceiling;`
+      + ` visible but not blocking without a strict majority`,
     )
     console.error(`      → ${row.shelf.tracking}`)
   }
@@ -246,7 +260,7 @@ if (shelf !== null) {
     console.log(`    UNMEASURED ${row.id}: --only run did not inspect this shelf entry`)
     console.log(`      → ${row.shelf.tracking}`)
   }
-  if (shelf.shelved.length === 0 && shelf.worsened.length === 0 && shelf.recovered.length === 0) {
+  if (shelf.shelved.length === 0 && shelf.worsened.length === 0 && shelf.excursions.length === 0 && shelf.recovered.length === 0) {
     console.log(`    no measured entries (configured: ${Object.keys(SHELVED_WORKLOADS).join(', ')})`)
   }
 }
@@ -403,7 +417,8 @@ if (blocked.length > 0) {
     + '\nsomething every stylesheet grammar pays, and graphql/json moving too points at codegen or the'
     + '\nruntime with capture switched off.'
     + '\n\nDo not widen the threshold to make this pass. The 0.47 shelf accepts only five named rows and only'
-    + '\nthrough their measured per-pass ceilings; it cannot admit this new or worsened result. Fix it.',
+    + '\nthrough their measured candidate-derived ceilings in a strict majority of passes; it cannot admit this'
+    + '\nnew or consistently worsened result. Fix it.',
   )
   process.exit(1)
 }
