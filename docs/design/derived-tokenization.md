@@ -184,6 +184,46 @@ key gets wider. Existing gating machinery, diagnostics, and the poisoned-first-s
 rules (a `gate(...)` leading a choice arm still poisons dispatch) carry over
 unchanged.
 
+### It composes with fixed pieces; it does not reset the lowering
+
+The current shipping architecture adds a second integration constraint that the
+original source-codegen design did not have. `compile()` and macro artifacts carry
+one compact `TableProgram`, then `assemble.ts` links that program to shared closure
+pieces. A token cursor is therefore an **assembly-selected acceleration of those
+pieces**, not a second lexer/parser engine and not a reason to discard useful
+character-path work.
+
+The durable shape is layered:
+
+1. **Reject on the cheapest sound fact first.** EOF and finite first-character
+   exclusions stay ahead of token classification. A repeat-item guard that can stop
+   on one character should not build a token merely to rediscover the same answer.
+2. **Classify only where a wider key can avoid more work.** Eligibility and the local
+   candidate set are encode-time facts; assembly selects either a token-aware piece or
+   the ordinary raw-input piece for that site. Ineligible sites keep the current path.
+3. **Pass the classified result forward.** The selected terminal must consume a
+   pending result containing at least the position, terminal identity and end. A gate
+   that scans and then lets the leaf scan again is not token-cursor integration; it is
+   added work.
+4. **Share recognition semantics.** Fixed literal/regex recognizers are both the
+   scanner's kernels and the raw-input fallback. Do not create an unrelated scanner
+   implementation beside unrelated terminal pieces.
+5. **Keep composite improvements.** Sequence, node, repeat, rollback, capture and
+   reducer costs outside terminal recognition remain real. Token-aware pieces may
+   remove a leading-terminal call, but they do not make those costs disappear.
+
+This makes the implementation order explicit: bank a large first-character or
+composite win when it remains useful in front of, behind, or outside token-aware
+sites. Defer only a shape that would duplicate recognition or make a pending token
+impossible to consume. Token cursors constrain the seam; they do not reset the work.
+
+**Current evidence, not a ceiling.** The preserved static probe finds distinct lead
+terminals at roughly 32–44% of choice nodes, with Less the least eligible. A previous
+conservative wiring admitted one choice per dialect, added 1.7–2.8 KB, and slowed
+Less 3.77%. That rejects that wiring, not this layered design. Frequency-weighted
+coverage and result reuse on the canonical closure engine are required before a new
+speed claim.
+
 ---
 
 ## 3. One token per position (settled) [FOUNDATION]
@@ -200,9 +240,12 @@ This is the load-bearing invariant, and it is where the cost model changes:
   comparisons against an already-computed id. Backtracking to an already-scanned
   position costs nothing to re-tokenize.
 
-This is strictly better than the current character-at-a-time gating on the same
-grammar shape, and it is the mechanism by which the size win and the speed win are
-the same win: an arm that is an integer compare needs no emitted scan code.
+This is the intended cost model, not a universal speed guarantee. Classification
+has a cost; at a low-frequency site or a site already decided by one character, it
+can cost more than the arm entries it removes. The implementation must therefore be
+site-selected and frequency-weighted. Where it qualifies, an arm becomes an integer
+compare and the selected terminal reuses the same result instead of emitting or
+calling a second recognizer.
 
 ---
 
@@ -994,6 +1037,18 @@ it is.**
 9. **Every parse-time claim comes from interleaved rounds in one process.** §16.4 —
    separate-process A/B of this parse has a noise floor an order of magnitude above
    the effects being measured.
+10. **One canonical engine.** Token-aware and raw-input sites are assembly-selected
+    pieces over the same `TableProgram`; neither is a parallel parser or fallback
+    implementation.
+11. **No scan-then-rescan.** A selected terminal consumes the classified result. If
+    it recognizes the same bytes again, the cursor has failed its integration
+    contract even when the parse is correct.
+12. **Cheap rejection stays first.** A sound EOF or first-character exclusion runs
+    before classification. The cursor is paid for only when the wider token key can
+    avoid additional work.
+13. **One recognition contract.** Scanner kernels and raw terminal pieces share the
+    same maximal-munch, prefix, case-fold, boundary, span and capture semantics; a
+    second independently drifting recognizer is forbidden.
 
 ---
 
@@ -1802,6 +1857,8 @@ In rough order of likelihood:
 | Hybrid: table for cold dispatches, trie-to-id for hot, per-site from profile | **settled (§6.3)** |
 | **Byte-identical tree vs a toggled baseline is the gate, not the suites** | **settled methodological invariant (§16.3)** |
 | **Parse-time claims come from interleaved rounds in one process** | **settled methodological invariant (§16.4)** |
+| Token cursor is an assembly-selected layer over fixed pieces, not a replacement lowering | **settled integration rule (§2)** |
+| Cheap char rejection remains ahead of classification; selected leaves consume the pending result | **settled integration rule (§2, §12)** |
 
 ### Hypothesis, untried, or nonexistent
 

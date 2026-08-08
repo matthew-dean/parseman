@@ -936,6 +936,42 @@ reading misses it entirely), and `:298`'s `REC = prog.rec === 1 && cfg.tolerant`
 that then re-test `ctx._tolerant === true` internally, justified at `:294` as keeping `exec.ts` the
 identity reference. Rule 3 does not admit that justification.
 
+### 7.5 Token cursors bind through the library; they do not replace it
+
+Derived tokenization is another application of the same binding-time law, not a new
+engine axis. The terminal alphabet, a site's candidate set and whether that set is
+lexically decidable are **encode-time** facts. Which raw or token-aware body the site
+uses is an **assembly/link-time** selection. The token found at `(input, pos)` is the
+parse-time result.
+
+That yields four rules for piece work in 0.48:
+
+1. **Keep the cheapest admission check outside the cursor.** A finite first-character
+   exclusion, especially an optional repeat's loop stop, runs before a classifier.
+   Avoiding the cursor is cheaper than asking it for an integer that says "no".
+2. **Make terminal pieces dual-entry, not duplicated.** Their recognition kernel must
+   support raw input and a pending classified result with identical value/span/capture/
+   failure semantics. The classifier and fallback do not get independent regex logic.
+3. **Make the pending result consumable.** A token gate that calls an ordinary leaf
+   which rescans the same span has preserved correctness and lost the design. The
+   selected leaf or fused composite must accept the already-known terminal identity,
+   end and value.
+4. **Do not postpone orthogonal wins.** Repeat admission, composite setup, rollback,
+   node materialisation and reducer work remain outside token recognition. Bank those
+   wins when their shape leaves the pending-result seam intact.
+
+The practical review question is therefore not "pieces or tokens?" It is: **does
+this piece remain the raw fallback, the token consumer, or useful work on both paths?**
+Reject a prototype when a future cursor would delete it or duplicate its semantics;
+do not reject a large compatible win merely because cursor eligibility may expand.
+
+The current evidence prevents overclaiming. Static distinct-lead eligibility is only
+about 32–44% of choice nodes and a conservative one-choice-per-dialect cursor slowed
+Less 3.77%. Conversely, standalone numeric `charCodeAt` recognition measured flat in
+the closure engine. Both results point at the seam—classification must remove repeated
+entry/plumbing and pass its result forward—rather than proving either mechanism
+globally superior.
+
 ---
 
 ## 8. What I corrected in the brief and in the inherited notes

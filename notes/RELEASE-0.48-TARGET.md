@@ -239,6 +239,21 @@ hole, the stale dispatch half, the reusable packing/folding utilities, and the
 first independently landable wiring step. An experiment is ongoing separately;
 it has not resolved §8, and this note makes no speed or memory claim for it.
 
+**0.48 integration ruling.** Token cursor work does not put the rest of the
+performance queue on hold and does not reset a landed piece design. It must enter
+through the canonical `TableProgram` assembler as a per-site selected path. Cheap
+sound character rejection stays in front of it; fixed terminal pieces supply the
+recognition semantics and raw-input fallback; and the selected leaf or composite
+must consume the classified result rather than rescan. Sequence/repeat/node/
+rollback/materialisation wins remain valid where they precede classification,
+consume its result, or operate outside eligible token sites. Evaluate new work for
+that composability, then prioritize by measured production impact.
+
+The reverse constraint is equally important: do not land a large body of terminal
+recognition that a token cursor would immediately duplicate. Expose one recognition
+contract with raw and pending-token entries. This is a seam requirement, not a
+requirement to finish token cursors before banking compatible CSS/Less wins.
+
 **Carry this forward, it is the part people get wrong.** A prior bound of
 ~1.4 ms was measured against the BYTECODE INTERPRETER — it measured *scanning*
 and was structurally blind to entry elimination. **That bound does not
