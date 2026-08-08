@@ -106,10 +106,12 @@ according to today's PEG prefix-commitment semantics.
 The rejected seven-token CSS experiment tested mode-free global maximal munch with
 every terminal active everywhere. It did not test this design.
 
-### 3.2 Compact pending result
+### 3.2 Virtual tokens and compact pending results
 
-The common result is allocation-free scalar state owned by the active assembly and
-reset at parse begin. Conceptually it contains:
+The runtime token is a **virtual classification of an input range**, not a token
+object. Recognition does not copy the range or eagerly construct a string value.
+The common result is allocation-free scalar/packed state owned by the active assembly
+and reset at parse begin. Conceptually it contains:
 
 ```text
 input identity
@@ -117,14 +119,25 @@ position
 contextId
 count
 tokenIds[count]
+starts[count]      # omitted when every view starts at position
 ends[count]
 flags[count]       # adjacency and other proven lexical facts
 ```
 
 The unique case has one integer id and end. Same-token or prefix overlap retains a
-small compatible list in source-order-compatible form. No object is allocated per
-match. Reentrant parsing saves/restores the cursor frame exactly as it already does
-for the installed trivia scanner and end cell.
+small compatible list in source-order-compatible form. Multiple ids may classify the
+same `[start,end)` range without duplicating it. No match object, `{ type, value,
+span }`, or copied substring is allocated per recognition. A semantic consumer slices
+the input only when its result actually requires the text; integer dispatch,
+lookahead, admission, and failed trial do not.
+
+The concrete storage may be a structure of packed integer arrays, an interleaved
+integer array, or V8-fast Smi arrays. That is a measured representation choice, not a
+reason to expose token objects. Artifact tables and runtime cursor buffers are reported
+separately; typed arrays are not assumed faster without production A/B evidence.
+
+Reentrant parsing saves/restores the cursor frame exactly as it already does for the
+installed trivia scanner and end cell.
 
 The result is immutable for that `(input, position, contextId)` decision. Moving the
 position, changing context, or beginning another parse invalidates it. A result is
@@ -196,12 +209,13 @@ rather than only one longest token.
 At the relevant statement/selector context, recognition should derive and cache the
 shared opener tokens once—for example class/id sigil, identifier/interpolation, opening
 parenthesis, brace, semicolon, colon, or other distinguishing punctuation. A compiled
-arm-signature table then removes only arms whose token prefix is impossible:
+arm-signature table then removes only arms whose token prefix is impossible. The
+signature is a numbered sequence over virtual range classifications, not a string key:
 
 ```text
-tokens at current position -> compatible arm mask
-compatible arm mask        -> existing PEG arms in source order
-selected arm               -> consumes the cached token ends/values
+packed token-id sequence -> packed signature trie/table -> compatible arm mask
+compatible arm mask      -> existing PEG arms in source order
+selected arm             -> consumes cached range ends and lazily requested values
 ```
 
 This may inspect more than one token, but it remains tokenized PEG rather than LL(k)
