@@ -946,9 +946,10 @@ parse-time result.
 
 That yields four rules for piece work in 0.48:
 
-1. **Keep the cheapest admission check outside the cursor.** A finite first-character
-   exclusion, especially an optional repeat's loop stop, runs before a classifier.
-   Avoiding the cursor is cheaper than asking it for an integer that says "no".
+1. **Let tokenization own tokenized choices; keep cheap non-choice guards.** A choice
+   scans at its current cursor position and forks on the token id. A finite
+   first-character exclusion for an optional repeat may still stop before any child
+   or token work because it is not competing with a choice discriminator.
 2. **Make terminal pieces dual-entry, not duplicated.** Their recognition kernel must
    support raw input and a pending classified result with identical value/span/capture/
    failure semantics. The classifier and fallback do not get independent regex logic.
@@ -965,12 +966,13 @@ this piece remain the raw fallback, the token consumer, or useful work on both p
 Reject a prototype when a future cursor would delete it or duplicate its semantics;
 do not reject a large compatible win merely because cursor eligibility may expand.
 
-The current evidence prevents overclaiming. Static distinct-lead eligibility is only
-about 32–44% of choice nodes and a conservative one-choice-per-dialect cursor slowed
-Less 3.77%. Conversely, standalone numeric `charCodeAt` recognition measured flat in
-the closure engine. Both results point at the seam—classification must remove repeated
-entry/plumbing and pass its result forward—rather than proving either mechanism
-globally superior.
+The current evidence prevents overclaiming. Static distinct-lead eligibility selected
+sites the character gate already decided. Resolving nested/shared leads instead finds
+one Less `Value` choice where a position-token classifier can eliminate 7,734/7,927
+prior entries on benchmark.less and 27,119/30,430 on generated Less, with zero observed
+winner mismatches. CSS's corresponding whole-grammar ceiling is much smaller. This
+points at the seam—classification must own the choice and pass its result forward—and
+at site-specific lexical proofs rather than a conservative global opt-out.
 
 ---
 

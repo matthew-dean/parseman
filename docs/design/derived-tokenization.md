@@ -1,10 +1,11 @@
 # Derived tokenization
 
-**Status:** **partially landed.** Token-keyed `dispatch` is **implemented and shipped
-as the default** in `codegen.ts` (§9.1, commits `caa3d14` / `e8612eb`, selectable via
-`PARSEMAN_DISPATCH`). The scanner itself is **not** implemented — it exists only as a
-standalone prototype (§10). Sections are marked **settled** (owner decision, build to
-it), **measured**, or **hypothesis** (plausible, unmeasured).
+**Current status:** the derived scanner is **not wired into the canonical engine**.
+The 0.46 source-codegen token-keyed `dispatch` experiment (§9.1, commits `caa3d14` /
+`e8612eb`) is historical: `codegen.ts` was deleted in 0.47. The shipping path is one
+compact `TableProgram` linked to closure pieces by `assemble.ts`. Sections below mix
+current design, historical measurements, and rejected source-codegen forms; the
+status labels identify which is which.
 
 > ## Read these first — two results that invert earlier expectations
 >
@@ -142,42 +143,53 @@ somewhere between 43% and 93%.
 
 ---
 
-## 2. Scanning is on demand, never a whole-document pass (settled) [FOUNDATION]
+## 2. Tokenize at the current cursor, then choose by token id (settled) [FOUNDATION]
 
-The classic objection to lexing CSS-family languages is **modes**: the same bytes
-mean different things in a selector, a value, an at-rule prelude, and an
-interpolation. A whole-document tokenizer must therefore guess a mode ahead of the
-parser, and gets it wrong.
+The design target is to classify every statically enumerable terminal the grammar
+reaches. At a parser decision, the operation is:
 
-This design does not have a pass to be in the wrong mode for.
+```text
+token = tokenize(input, currentPosition, lexicalContext)
+branch = choose(token.id)
+```
 
-> **At a choice, scan just far enough to pick the arm.** Nothing is tokenized until a
-> decision needs it, and the decision supplies the context.
+Tokenization is the discriminator. It is not conditional on arms already having
+distinct first characters or on the conservative lead-terminal walker proving one
+terminal per arm. Shared `@`, identifier/function, number/unit, prefix, wrapper and
+rule-ref families are the principal reason to scan the full token before choosing.
 
-That makes the artifact a token **cursor**, not a token **stream**. There is no
-buffered token array produced ahead of the parser, no re-lex-on-mode-switch, no
-"restart the tokenizer at position N" recovery path.
+`lexicalContext` is supplied by the current parser site: selector, value, at-rule
+prelude, interpolation, or a compiled candidate-set identity. The scanner does not
+guess it. The cursor remains stated in character offsets so spans, recovery and the
+scannerless escape hatch keep their existing coordinate system.
 
-### The id space is global; the candidate set is local (settled)
+The measured seven-token failure in §10 rejects only **mode-free maximal munch with
+every terminal active everywhere**. Fifteen construct-local long-run regexes swallowed
+a 123 KB document outside the contexts where they mean anything. The correction is to
+activate terminals by lexical configuration, not to accept 32–44% token coverage or
+ban comprehensive tokenization.
 
-These are two different things and **must be kept separable**:
+### Global identities, position-local recognition (settled)
 
 | | scope | why |
 | --- | --- | --- |
-| **token id space** | **may be global** — one integer per terminal across the whole composed grammar | ids must survive `compose()` override resolution and be comparable across rules; a dense global numbering is what makes `table[tokenId]` an index rather than a hash |
-| **candidate set consulted at a choice** | **local** — only the terminals that choice can actually accept | a decision point asks "which of *my* arms matches here", never "what token is this, globally" |
+| **token id space** | **global** — one integer per terminal across the composed grammar | ids survive `compose()` resolution and let parser pieces fork on integers |
+| **lexical context** | supplied by the current parser site; may be a named mode, candidate-set id, or a compiled combination | the same bytes can denote different terminals in different grammar contexts |
+| **pending token** | current cursor position plus the site/context that requested it | the choice and its selected branch share one token result; no arm rescans |
 
-**Conflating these is what produced the 7-token result in §10.** Handing a scanner the
-whole 118-member alphabet and asking it to tokenize a document is not this design; it
-is the whole-document tokenizer this design explicitly is not. The global numbering is
-a naming scheme. It is not a licence to match against every name at every position.
+Candidate sets are one representation of lexical context, not an eligibility filter
+that admits only already-disjoint arms. The analysis must resolve wrapper and rule
+leads far enough to present the scanner with the terminals the current decision can
+recognize. Genuine same-token ambiguity may leave more than one parser branch, but it
+does not make the position untokenizable.
 
 ### It composes with first-set gating; it does not replace it
 
-First-set gating already scans **one character** at a choice to reject arms. This
-design scans **one token** at the same choice. Same shape of work, same place in the
-control flow, strictly more discriminating: a token distinguishes `~=` from `~`, and
-`url(` from `u`, where a single character cannot.
+First-set gating already scans **one character** to reject work. At tokenized decision
+sites, the parser instead forks on the result of `tokenize(currentPosition, context)`.
+A token distinguishes `~=` from `~`, and `url(` from `u`, where a character cannot.
+Outside decisions, a sound one-character loop guard may remain cheaper than asking
+for a token solely to learn that an optional iteration has ended.
 
 The intended relationship is *upgrade in place*: the gate stays where it is and its
 key gets wider. Existing gating machinery, diagnostics, and the poisoned-first-set
@@ -195,12 +207,11 @@ character-path work.
 
 The durable shape is layered:
 
-1. **Reject on the cheapest sound fact first.** EOF and finite first-character
-   exclusions stay ahead of token classification. A repeat-item guard that can stop
-   on one character should not build a token merely to rediscover the same answer.
-2. **Classify only where a wider key can avoid more work.** Eligibility and the local
-   candidate set are encode-time facts; assembly selects either a token-aware piece or
-   the ordinary raw-input piece for that site. Ineligible sites keep the current path.
+1. **Choose on the token at parser decisions.** Do not retain an independent
+   character gate that decides the same choice first; tokenization owns that fork.
+2. **Keep cheap non-choice guards.** EOF and finite first-character exclusions may
+   still stop optional loops before any child or token work. Scannerless sites are
+   explicit exceptions, not the conservative default.
 3. **Pass the classified result forward.** The selected terminal must consume a
    pending result containing at least the position, terminal identity and end. A gate
    that scans and then lets the leaf scan again is not token-cursor integration; it is
@@ -217,28 +228,31 @@ composite win when it remains useful in front of, behind, or outside token-aware
 sites. Defer only a shape that would duplicate recognition or make a pending token
 impossible to consume. Token cursors constrain the seam; they do not reset the work.
 
-**Current evidence, not a ceiling.** The preserved static probe finds distinct lead
-terminals at roughly 32–44% of choice nodes, with Less the least eligible. A previous
-conservative wiring admitted one choice per dialect, added 1.7–2.8 KB, and slowed
-Less 3.77%. That rejects that wiring, not this layered design. Frequency-weighted
-coverage and result reuse on the canonical closure engine are required before a new
-speed claim.
+**Current evidence.** The preserved static probe's 32–44% is only the reach of a
+walker that stops at wrappers/refs and requires distinct lead terminals; it is not
+tokenizability. Frequency-weighted nested-lead analysis on the canonical closure
+artifacts finds that position-token choice can remove **10.1% of actual arm entries
+on benchmark.less and 12.3% on generated Less**, concentrated in one `Value` choice
+with zero observed winner mismatches. The same classifier removes only **0.5%** on
+CSS. A global longest-match rule is not yet safe at every site (303/1,552 Less winner
+mismatches), so each lexical context needs a proof or fallback. The next gate is a
+pending-result implementation at the proven `Value` site; timing remains unclaimed.
 
 ---
 
-## 3. One token per position (settled) [FOUNDATION]
+## 3. One token result per cursor decision (settled) [FOUNDATION]
 
-> **A token at a position is scanned once. Every arm of that choice reads the same
-> value. Nothing rescans.**
+> **The choice scans at its current position once. The chosen branch consumes that
+> same token result. No arm rescans.**
 
 This is the load-bearing invariant, and it is where the cost model changes:
 
 - **Today:** cost of a choice scales with *arms tried* and with *backtracking* —
   each arm re-examines the characters at the same position, and a failed arm that
   backtracks hands the next arm the same bytes to re-read.
-- **Under this design:** cost is bounded by **positions visited**. Arms are integer
-  comparisons against an already-computed id. Backtracking to an already-scanned
-  position costs nothing to re-tokenize.
+- **Under this design:** a decision pays for one tokenization at its cursor position.
+  Parser branches are integer comparisons against the result, and the selected branch
+  receives its id, value and end offset rather than matching the bytes again.
 
 This is the intended cost model, not a universal speed guarantee. Classification
 has a cost; at a low-frequency site or a site already decided by one character, it
@@ -288,10 +302,9 @@ Precedent exists: `scanSkip` is already declared **per composed grammar**
 seed). Making the skip behaviour a scan-loop parameter is an extension of a knob the
 compiler already turns, not a new axis.
 
-Note the deliberate asymmetry with §2: modes are dissolved *for the parser* because
-scanning is on demand, but whitespace significance is a property of the **scan
-loop's skip set**, and that one flag remains. It is one bit of context, supplied by
-the calling rule, not a mode the scanner must infer.
+The current parser site supplies this lexical context to the position cursor. The
+scanner does not infer selector mode from bytes; it applies the context while
+classifying the token on which the parser will choose.
 
 ---
 
@@ -817,7 +830,7 @@ free if taken.
 
 **Standalone prototype. Not wired into `codegen.ts`.**
 
-### 10.1 Global maximal munch is definitively wrong
+### 10.1 Mode-free global maximal munch is wrong; comprehensive cursor tokenization is not
 
 Handing the scanner the **whole 118-member css alphabet** and running it over a
 **123 KB file** produced **7 tokens**.
@@ -827,10 +840,10 @@ prelude runs — are legitimate terminals *at the decision points that use them*
 catastrophic anywhere else. Under global maximal munch they simply swallow the
 document.
 
-> This is the **decisive evidence for per-decision-point candidate sets** (§2, "the id
-> space is global; the candidate set is local"). It is not a tuning problem and no
-> ordering heuristic fixes it. A terminal like `[^()]+` is *meaningful only relative
-> to the choice that offers it*.
+> This is decisive evidence that the **current cursor's lexical context must select
+> the active terminals**. It is not evidence against comprehensive tokenization. A
+> terminal like `[^()]+` is meaningful only in the parser contexts that offer it;
+> there it remains an ordinary token candidate.
 
 It also **falsifies "maximal munch is uniform over the alphabet"**, which the first
 revision listed as a prototype invariant. The corrected invariant is in §12.
@@ -1015,15 +1028,13 @@ it is.**
 
 ## 12. Invariants a prototype must hold
 
-1. **One scan per position.** Two arms at the same choice never both scan. Violating
-   this reintroduces the cost model it exists to remove.
-2. **No whole-document pass.** Tokenization is reachable only from a decision point.
-   Any code path that tokenizes ahead of the parser is out of scope by construction.
-3. **Maximal munch is uniform *within a candidate set*, never across the alphabet.**
-   One munch rule, applied to the terminals a given decision offers. Applying it to
-   the whole alphabet is **measured wrong** — it produced 7 tokens for a 123 KB file
-   (§10.1). This supersedes the first revision's "one rule, applied to the whole
-   alphabet".
+1. **One scan per cursor decision.** The choice tokenizes once and the selected arm
+   consumes that result. Two arms at the same choice never both scan.
+2. **Tokenization decides the branch.** Do not require character-disjoint arms before
+   tokenizing; shared-leading composite families are the high-value population.
+3. **The current parser context selects active terminals.** Mode-free maximal munch
+   over every terminal is measured wrong — it produced 7 tokens for a 123 KB file
+   (§10.1). This does not limit token coverage inside the correct context.
 4. **Adjacency is produced, never re-derived.** The bit comes from the scan loop.
    Consumers do not compare positions except through the documented escape hatch.
 5. **Authors are unaffected.** No combinator gains a required token argument; no
@@ -1043,9 +1054,9 @@ it is.**
 11. **No scan-then-rescan.** A selected terminal consumes the classified result. If
     it recognizes the same bytes again, the cursor has failed its integration
     contract even when the parse is correct.
-12. **Cheap rejection stays first.** A sound EOF or first-character exclusion runs
-    before classification. The cursor is paid for only when the wider token key can
-    avoid additional work.
+12. **Cheap non-choice rejection survives.** Optional-loop EOF/first-character guards
+    may stop work before a token is requested. At a tokenized choice, however, the
+    token id owns branch selection.
 13. **One recognition contract.** Scanner kernels and raw terminal pieces share the
     same maximal-munch, prefix, case-fold, boundary, span and capture semantics; a
     second independently drifting recognizer is forbidden.
@@ -1742,13 +1753,12 @@ this floor.
 
 In rough order of likelihood:
 
-1. **Tokenizing against the global alphabet instead of a local candidate set.** This
-   is no longer a hypothetical failure mode — it is **measured** (§10.1), and it
-   degrades to 7 tokens for a 123 KB file. Any code path that asks "what token is
-   here?" without a candidate set has already broken the design.
-2. **Letting a whole-document pass creep in** as an "optimisation" — it is the one
-   thing that reintroduces the mode problem this design dissolves, and it will look
-   like a straightforward buffering win.
+1. **Activating every terminal without the current parser context.** This is measured
+   (§10.1): mode-free maximal munch degraded to 7 tokens for a 123 KB file. Global
+   token ids are correct; globally active recognition is not.
+2. **Using conservative lead distinctness as token eligibility.** It selects choices
+   the character gate already decides and excludes the shared-leading families for
+   which full-token choice has leverage.
 3. **Per-site adjacency predicates surviving.** If `noTrivia`, keyword boundaries, and
    `nthNameBoundary` continue to exist alongside the scanner bit, the correctness
    argument of §7 is not collected — three spellings become four.
@@ -1846,9 +1856,9 @@ In rough order of likelihood:
 
 | Claim | Status |
 | --- | --- |
-| Scanning on demand dissolves the mode problem | **settled** |
-| Token id space may be global; candidate set is local | **settled — and §10.1 is why** |
-| One token per position; cost bounded by positions visited | **settled** |
+| Tokenize at the current cursor, then choose by token id | **settled (§2)** |
+| Token ids are global; the current parser context selects active terminals | **settled — and §10.1 is why** |
+| One token result per cursor decision; selected branch consumes it | **settled (§3)** |
 | Adjacency as a scan-time bit | **settled** |
 | Selector context as a mode flag | **settled** |
 | `dispatch` on token id; `routed()` produces a token | **settled — and now LANDED (§9.1)** |
@@ -1858,7 +1868,7 @@ In rough order of likelihood:
 | **Byte-identical tree vs a toggled baseline is the gate, not the suites** | **settled methodological invariant (§16.3)** |
 | **Parse-time claims come from interleaved rounds in one process** | **settled methodological invariant (§16.4)** |
 | Token cursor is an assembly-selected layer over fixed pieces, not a replacement lowering | **settled integration rule (§2)** |
-| Cheap char rejection remains ahead of classification; selected leaves consume the pending result | **settled integration rule (§2, §12)** |
+| Cheap non-choice loop rejection survives; token id owns tokenized choice selection | **settled integration rule (§2, §12)** |
 
 ### Hypothesis, untried, or nonexistent
 

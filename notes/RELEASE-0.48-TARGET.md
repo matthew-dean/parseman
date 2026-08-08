@@ -241,11 +241,12 @@ it has not resolved §8, and this note makes no speed or memory claim for it.
 
 **0.48 integration ruling.** Token cursor work does not put the rest of the
 performance queue on hold and does not reset a landed piece design. It must enter
-through the canonical `TableProgram` assembler as a per-site selected path. Cheap
-sound character rejection stays in front of it; fixed terminal pieces supply the
-recognition semantics and raw-input fallback; and the selected leaf or composite
-must consume the classified result rather than rescan. Sequence/repeat/node/
-rollback/materialisation wins remain valid where they precede classification,
+through the canonical `TableProgram` assembler as a per-site selected path. A
+tokenized choice scans at its current position and chooses on the token id; cheap
+non-choice guards such as optional-repeat first-character exits remain valid. Fixed
+terminal pieces supply the recognition semantics and raw-input fallback, and the
+selected leaf or composite must consume the classified result rather than rescan.
+Sequence/repeat/node/rollback/materialisation wins remain valid where they precede classification,
 consume its result, or operate outside eligible token sites. Evaluate new work for
 that composability, then prioritize by measured production impact.
 
