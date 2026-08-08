@@ -483,6 +483,16 @@ class Encoder {
     return i
   }
 
+  /** Bind a guard only when its class is already part of the program. Repeat
+   * gating must not grow the compact artifact merely to avoid a failed call. */
+  private existingCharClass(fs: FirstSet): number {
+    if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
+    const hit = this.ccIndex.get(encodeClassSpec(fs.ranges))
+    // This reuses the recovery row's existing `-1` slot. Keep its decimal width
+    // at two bytes or less so a speed hint cannot grow a compact artifact.
+    return hit !== undefined && hit < 100 ? hit : -1
+  }
+
   /**
    * Wrap one choice arm in its `autoNot` checks (`OP_REJECT`).
    *
@@ -875,6 +885,7 @@ class Encoder {
           // covered on a parse where the choice picked somebody else.
           return this.covWrap(gated, armCovIds?.[src], 1)
         })
+        const rr = this.refResolver()
         // O(1) first-char dispatch is only SOUND when the arms are disjoint.
         // With overlapping first sets, "the first arm whose class contains this
         // char" is not "the first arm that matches": a `Keyword` arm whose first
@@ -904,7 +915,6 @@ class Encoder {
         // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
-        const rr = this.refResolver()
         const classes = arms.map(a => matchesEmpty(a, new Set(), rr) ? -1 : this.charClass(firstSetOf(a, new Set(), rr)))
         const dispIdx = this.disp.length
         this.disp.push(classes)
@@ -932,6 +942,10 @@ class Encoder {
       case 'many':
       case 'oneOrMore': {
         const child = this.node(d.parser).ip
+        const rr = this.refResolver()
+        const itemClass = matchesEmpty(d.parser, new Set(), rr)
+          ? -1
+          : this.existingCharClass(firstSetOf(d.parser, new Set(), rr))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
@@ -940,7 +954,7 @@ class Encoder {
         // set — `deriveExpected(combinator)` in repeat.ts:170, and
         // `deriveExpectedArr([def.parser])` in codegen's emitMany.
         return this.rec
-          ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), -1)
+          ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), itemClass)
           : this.emit(op, child, min, d.max ?? -1, -1, 0)
       }
       case 'sepBy': {

@@ -1112,6 +1112,11 @@ function makeDriver(
         const mySync = REC ? ctx._sync : undefined
         const recFx = REC ? fx[code[ip + 6]!] as string[] : undefined
         const sepSent = REC ? sentinelFor(code[ip + 7]!) : undefined
+        const itemClassIndex = sep < 0 ? code[ip + 7]! : -1
+        const itemClass = REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined
+        // `completionsAt` observes failures swallowed by an optional iteration;
+        // tolerant recovery does too. Both keep the ordinary child path.
+        const gateItems = itemClass !== undefined && ctx._tolerant !== true && ctx._probe === undefined
         let cur = pos
         let count = 0
         for (;;) {
@@ -1124,6 +1129,8 @@ function makeDriver(
           // must attempt the separator so its failure sets the expected set, which
           // is the only thing an under-`min` list has to report.
           if (sep >= 0 && count > 0 && count >= min && cur >= input.length) break
+          if (count >= min && sep < 0 && !hasTrivia
+            && gateItems && !classHas(itemClass!, lead(input, cur))) break
           // One mark pair for the whole loop when a rollback is even possible,
           // refreshed per iteration rather than reallocated.
           // SCALAR MARKS. This loop took TWO allocations per item (a CST mark and
@@ -1192,6 +1199,11 @@ function makeDriver(
             // `trailing: 'allow'` (`a,b,`), and this early-out ran before the
             // item was ever attempted — so handling it only on the item-failure
             // path left the separator unconsumed.
+            if (trailingAllowed && sepEnd >= 0) cur = sepEnd
+            break
+          }
+          if (count >= min && gateItems && !classHas(itemClass!, lead(input, itemStart))) {
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
           }
