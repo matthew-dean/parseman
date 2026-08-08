@@ -22,7 +22,7 @@ static-factory artifact bloat are outside the design space.
 | ID | Priority | Hypothesis / mechanism | Required evidence | Owner lane | Status |
 | --- | --- | --- | --- | --- | --- |
 | T01 | P0 | Specialize linked sequence/choice pieces by child shape so literal, regex, rule, and node children do not all cross the same opaque call boundary. | CSS/Less/generated-Less vs 0.46 and clean 0.48; JSON medium/large; macro size; full parity. | `perf/0.48-child-shape` | RUNNING |
-| T02 | P0 | Recover the deleted 0.46 literal/regex/trivia scan-run analyses as compact table metadata and shared pieces, not as restored codegen. | Same production A/B; opcode/grammar eligibility census; artifact delta; size guard. | `perf/0.48-recover-fast-paths` | RUNNING |
+| T02 | P0 | Select fixed shared pieces for dominant regex families (identifier runs, numeric runs, quoted strings, and single-class runs). Do not interpret the recursive `ScanShape` IR per match. | Same production A/B; direct regex-position oracle; opcode/grammar eligibility census; artifact delta; size guard. | unassigned | QUEUED |
 | T03 | P0 | Profile the shipped compact closure path and identify the actual V8 inlining, IC, allocation, scope, sequence, capture, and rollback costs before choosing the next structural cut. | CPU/allocation/optimization evidence on all three production fixtures plus quiet same-source controls. | `perf/0.48-profile-hotpath` | RUNNING |
 | T04 | P0 | Prove arm effects at encode time and omit rollback marks/calls where an arm cannot mutate CST buffers, trivia, fields, errors, or live captures. | Effect proof tests; adversarial rollback parity; production A/B; no new per-parse branch. | unassigned | QUEUED |
 | T05 | P0 | Fuse common sequence/scope/sentinel transitions into smaller reusable pieces that stay inside V8's inlining budget. | `--trace-turbo-inlining` or equivalent evidence; production A/B; piece-count and size deltas. | unassigned | QUEUED |
@@ -31,6 +31,8 @@ static-factory artifact bloat are outside the design space.
 | T08 | P1 | Hoist `when(matches(...))` RegExp construction to table construction and reuse stable non-`g`/non-`y` regexes. | Dispatch matcher parity; matcher-heavy benchmark; prove relevance before production claim. | unassigned | QUEUED |
 | T09 | P1 | Expand token-stream eligibility enough to amortize scanner setup and remove repeated terminal entry, using the preserved static token groundwork. | Eligibility census, boundary/language overlap proofs, production A/B, memory and artifact deltas. | unassigned | QUEUED |
 | T10 | P2 | Specialize site-local trivia/range/lead scans without generic runtime option branches. | Track-lines/trivia/host/recovery matrix; production A/B; size guard. | unassigned | QUEUED |
+| T11 | P0 | Reject impossible speculative arms from first-set/table metadata before node, repeat, attempt, rollback, and sequence setup. Less currently spends 46.0% of encoded work inside failed ungated arms; generated Less spends 42.7%. | Map hot arms to source/table sites; preserve diagnostics/commit/recovery identity; failure-heavy gate; production A/B and size. | `perf/0.48-early-reject` | RUNNING |
+| T12 | P1 | Encode a bounded set of reducer/callback shapes as compact operands handled by shared pieces, recovering useful 0.46 callback fusion without embedding arbitrary source. | Reducer-shape census; closure-capture refusal; GraphQL and production A/B; artifact size and callback parity. | unassigned | QUEUED |
 
 ## Other performance and package ideas
 
@@ -51,7 +53,7 @@ preserved.
 
 | ID | Commit / patch | Result | Decision |
 | --- | --- | --- | --- |
-| — | — | No 0.48 experiments completed yet. | — |
+| T02a | Reverted prototype; no commit | A shared recursive `ScanShape` interpreter preserved JSON identity/full consumption but moved the pinned-0.46 gap from +93.1% median / +94.8% min to +432.1% / +460.7%. The existing oracle still lowers 45/59 workload regexes with zero mismatches over 2,764,636 position checks. | REJECTED. Recognition alone is insufficient; use a small fixed family of straight-line pieces. |
 
 ## Updating this ledger
 
