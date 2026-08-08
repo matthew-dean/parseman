@@ -140,6 +140,35 @@ still one virtual token with one id, start, and end. Parser-level multi-token ad
 starts after that atomic range; it must not reconstruct lexical tokens from adjacency
 flags.
 
+An authored `token(parser)` wrapper is an explicit lexical-atom boundary. Its child
+literals, regexes, optionals, and sequences are recognition machinery and are not
+exposed as separate cursor tokens at a site consuming the wrapper. A single wrapper
+may define a statically derivable token family: for example, the existing
+`identOrFunction` wrapper recognizes one contiguous range and its dispatch classifies
+that range as `IDENT`, `FUNCTION_OPEN`, or a more specific proven function subtype.
+Those outcomes receive token ids/views over the same atomic range; the optional `(`
+inside the wrapper never receives a parser-visible token id for that decision.
+
+Therefore the derived alphabet is not limited to primitive `literal`, `keywords`, and
+`regex` rows. It includes explicit compound lexical atoms and their statically proven
+dispatch classifications. Primitive children remain independently tokenizable only in
+contexts that actually consume them outside the compound wrapper.
+
+Readable token grammar must not carry a parse-time tax. Within an effect-free,
+contiguous `token()` body, the compiler normalizes literal, regex, choice, sequence,
+optional, and bounded/repetition structure into canonical lexical IR. For example,
+`sequence(identifier, optional(literal('(')))` and an equivalent regex optional
+character/run must select the same class of straight-line recognizer. The combinator
+form must not add child parser calls, child token ids, CST leaves, copied ranges, or
+temporary values. Canonically equivalent lexical shapes should share recognition
+machinery/specs when their matching semantics agree.
+
+This normalization is deliberately bounded and proven. A token body with state gates,
+semantic callbacks, recovery, commitment, externally visible internal capture, dynamic
+context, or an unsupported regex equivalence declines to the ordinary correct path. A
+refusal is preferable to silently changing the token language, but author syntax alone
+is never a valid reason to decline a shape the compiler can prove equivalent.
+
 The concrete storage may be a structure of packed integer arrays, an interleaved
 integer array, or V8-fast Smi arrays. That is a measured representation choice, not a
 reason to expose token objects. Artifact tables and runtime cursor buffers are reported

@@ -25,8 +25,10 @@ assembler.
 2. The current reusable unit is a bounded closure/piece family selected while
    assembling a TableProgram, not a per-rule source body or a new row in a
    retired bytecode driver.
-3. `token()` is already an unrelated lexical-boundary combinator; do not reuse
-   the name for derived classification.
+3. `token()` is already the authored lexical-boundary combinator. Derived
+   classification must honor that wrapper as one compound lexical atom; do not
+   reuse the public name for a separate cursor API or expose its children as
+   independent tokens at a wrapper-consuming site.
 4. The largest deleted scan optimization is already restored:
    `src/table/scan-shapes.ts` (1,578 lines) came from
    `scannable-run.ts` (1,627 lines) and supplies straight-line scans to the
