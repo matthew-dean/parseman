@@ -63,6 +63,7 @@ describe('JSON parser', () => {
   it('throws on invalid input', () => {
     expect(() => parseJSON('{bad}')).toThrow()
     expect(() => parseJSON('')).toThrow()
+    expect(() => parseJSON('{} trailing')).toThrow()
   })
 })
 

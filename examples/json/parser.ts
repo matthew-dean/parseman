@@ -110,10 +110,17 @@ export const { jsonValue } = rules<{ jsonValue: Combinator<JSONValue> }>(g => {
 export const jsonDoc = parser({ trivia: ws }, jsonValue)
 
 export function parseJSON(input: string): JSONValue {
-  const result = jsonDoc.parse(input.trim())
-  if (!result.ok) {
+  // This convenience API promises one JSON document, while the underlying
+  // combinator parser intentionally permits callers to inspect a prefix.
+  // Preserve the example's historical trim behaviour, then require that the
+  // document owns every remaining non-whitespace character.
+  const source = input.trim()
+  const result = jsonDoc.parse(source)
+  if (!result.ok || result.span.end !== source.length) {
+    const offset = result.ok ? result.span.end : result.span.start
+    const expected = result.ok ? 'end of input' : result.expected.join(' or ')
     throw new SyntaxError(
-      `JSON parse error at offset ${result.span.start}: expected ${result.expected.join(' or ')}`
+      `JSON parse error at offset ${offset}: expected ${expected}`
     )
   }
   return result.value
