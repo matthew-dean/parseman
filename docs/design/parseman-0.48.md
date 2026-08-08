@@ -169,6 +169,16 @@ context, or an unsupported regex equivalence declines to the ordinary correct pa
 refusal is preferable to silently changing the token language, but author syntax alone
 is never a valid reason to decline a shape the compiler can prove equivalent.
 
+Surface similarity is not an equivalence proof. JavaScript regex quantifiers may
+backtrack into later regex terms, while Parseman's ordered PEG sequence does not rewind a
+successful `optional()` or repetition merely because a following term fails. For example,
+`/a?a/` accepts `"a"`, whereas `sequence(optional(literal('a')), literal('a'))`
+fails after the optional consumes the only `a`. Those shapes must not share a recognizer.
+The compiler may normalize a regex optional run with a readable combinator form only when
+it proves that backtracking cannot change acceptance or the final token range—for example,
+the production identifier recognizer followed by a terminal optional `(`. Every expanded
+equivalence class requires a semantic RED counterexample/oracle, not just matching IR text.
+
 The concrete storage may be a structure of packed integer arrays, an interleaved
 integer array, or V8-fast Smi arrays. That is a measured representation choice, not a
 reason to expose token objects. Artifact tables and runtime cursor buffers are reported
@@ -194,6 +204,14 @@ Recognition publishes none of the following:
 
 The consuming terminal/composite piece owns those effects. This makes the pending
 result safe to reuse after ordinary PEG rollback.
+
+Recognizer identity and diagnostic identity are separate. Two authored token bodies
+may share a pure success recognizer while retaining different failure checkpoints and
+expected sets. For example, `token(sequence(literal('a'), literal('b')))` can fail on
+`"ax"` after the first child and report `"b"`, while `token(regex(/ab/))` fails the
+single regex at the starting position. A replacement consumer therefore needs a
+spelling-specific diagnostic plan (including probe/commit behavior where applicable);
+an `end | -1` recognizer result alone is not enough to bypass the authored child path.
 
 ### 3.4 Raw, seeded, and pending are one kernel
 
