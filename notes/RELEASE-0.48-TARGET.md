@@ -154,6 +154,21 @@ during 0.47 (`expect()` not clearing the ctx-global commit bit;
 `caseInsensitive` dropped from dispatch matcher arms), plus the §10 defects now
 marked `LANDED`, were fixed in 0.47 rather than shelved.
 
+### Package layout: deduplicate ESM entry graphs
+
+0.47 keeps its published ESM and CJS surface unchanged. Its package is materially
+smaller than 0.46, but the remaining payload repeats most of the runtime graph in
+nine independent ESM bundles and again in CJS. A reversible 0.48 build experiment
+enabled esbuild `splitting: true` for ESM only: the tarball fell from **3,075,840 B
+to 2,256,121 B** (-26.7%) and unpacked size from **13,076,481 B to 9,418,952 B**
+(-28.0%). All eight ESM exports, compiled parsing, the plugin transform and CLI
+smoke tests passed; CJS bytes and behavior were unchanged.
+
+Do not delete `src/` independently: the shipped JS maps deliberately use
+`sourcesContent: false` and resolve their sources there. Dropping CJS entirely is
+a separate pre-1.0 package-surface decision now that Jess/Less run on ESM-capable
+Node; answer it from consumer compatibility evidence, not as a 0.47 size shortcut.
+
 ---
 
 ## 1. `_grammarTrace` parity for the table

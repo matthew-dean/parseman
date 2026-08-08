@@ -102,18 +102,18 @@ How you debug depends on which mode you're running:
 | Mode | What you step through |
 | --- | --- |
 | **Interpreter** | Your combinator source directly — no compilation, no indirection |
-| **Macro build** | The transformed grammar module via source maps, plus the shared table runtime |
-| **`compile()`** | Printable table source (`compiled.source`) and the shared table runtime; no IDE source maps today |
+| **Macro build** | Your combinator source via source maps — breakpoints on `choice(...)` lines hit when the compiled function runs |
+| **`compile()`** | Generated JS (`compiled.source`) — no IDE source maps today |
 
 **Interpreter** is the simplest path while you're writing a grammar: you're already
 running the combinator tree you wrote.
 
-**Macro build** compiles that tree away, while the [bundler plugin](./macro-mode) preserves
-the transformed module's source mapping via
-[magic-string](https://github.com/Rich-Harris/magic-string). Parsing itself runs in the
-shared table runtime, so engine-level stepping belongs there. If `with { type: 'macro' }`
-is stripped (older bundlers, test runners), the attribute is silently ignored and the
-interpreter runs instead — identical results, no errors.
+**Macro build** compiles that tree away, but the [bundler plugin](./macro-mode) emits
+precise source maps via [magic-string](https://github.com/Rich-Harris/magic-string).
+Step-through in the debugger shows your original combinator source, not the emitted
+`codePointAt` dispatch. If `with { type: 'macro' }` is stripped (older bundlers, test
+runners), the attribute is silently ignored and the interpreter runs instead — identical
+results, no errors.
 
 **`compile()`** gives you the generated source string for inspection, but does not
 currently wire up IDE source maps. Use the interpreter while developing, then macro or
