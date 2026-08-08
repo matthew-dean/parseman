@@ -6,7 +6,10 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt, saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
+import {
+  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
+  rollbackTriviaAt, saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
+} from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
@@ -786,18 +789,19 @@ function makeDriver(
             // SCALAR MARKS — `saveTriviaMark` allocated TWICE per term (its own
             // seven-field object plus the five-field CST mark it delegates to).
             const need = rollbackNeeded(ctx)
-            const mRaw = need ? cstRawLen(ctx) : 0
             const mTl = need ? cstTlLen(ctx) : 0
-            const mLv = need ? cstLeavesLen(ctx) : 0
-            const mFl = need ? ctx._fields?.length ?? 0 : 0
-            const mEr = need ? ctx._errors?.length ?? 0 : 0
             const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             const scanEnd = skipTrivia(input, cur, ctx)
+            const scanTl = need ? cstTlLen(ctx) : 0
+            const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             const v = exec(child, input, scanEnd, ctx)
             if (v === FAIL) { if (REC) ctx._sync = inheritedSync; return FAIL }
             if (EC.e > scanEnd) cur = EC.e
-            else if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            else if (need) rollbackScannedTriviaAt(
+              ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot,
+            )
             if (values !== undefined) values.push(v)
             continue
           }

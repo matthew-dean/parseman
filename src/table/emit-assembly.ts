@@ -94,7 +94,7 @@ export class Unemittable extends Error {
 export const EMITTED_PARAMS = [
   'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
-  'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'failAt',
+  'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'rollbackScannedTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
   'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
   'scanTrivia', 'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
@@ -311,19 +311,24 @@ function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, s: Sinks): string {
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
   if (l.tri === TRI_NONE) return fast
-  const scanned = `${emitMark(t, l.buf, s)}
+  const scanned = `const ${t}tl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+const ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+const ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const ${t}s=${skip}(input,cur,ctx)
+const ${t}stl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+const ${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+const ${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const ${t}v=${callee}(input,${t}s,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(EC.e>${t}s)cur=EC.e
-else{${emitRollback(t, l.buf, s)}}`
+else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt)}`
   if (l.tri !== TRI_UNKNOWN) return scanned
   return `if(ctx.trivia===undefined){
 ${fast}
@@ -1228,7 +1233,7 @@ return v
           const vn = `v${i}`
           parts.push(`let ${vn}`)
           if (REC) parts.push(pub(i))
-          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L), sinks))
+          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
           names.push(vn)
         }
         parts.push('EC.e=cur')
