@@ -1,4 +1,32 @@
-# 0.48 target — what 0.47 deliberately shelved
+# 0.48 release target — recover performance on the canonical table
+
+Working experiment queue: `TABLE-PERF-EXPERIMENTS-0.48.md`. Use that compact
+ledger for active status and decisions; this longer file preserves the evidence
+and historical reasoning behind the queue.
+
+## Active release boundary
+
+0.47.0 shipped on 2026-08-07 through PR #124 at
+`67365b6a9aa71aa51057a7ce0c8b1e9c3b3b380c`. Development now proceeds on
+`release/0.48.0`; 0.47's verification record is archived in
+`RELEASE-0.47-VERIFICATION.md`.
+
+0.48 starts from 0.47's canonical compact `TableProgram` architecture and owns
+the performance debt that 0.47 accepted. The release must recover the
+production-shaped Jess/Less/CSS regressions and remove the named workload and
+grammar shelves as their rows recover, without splitting runtime compilation
+from macro artifacts, moving baselines downward, restoring runtime code
+construction, or giving back correctness and package-size gains. External-parser
+medium/large competitiveness, full-consumption parity, supported-Node coverage,
+V8-shape invariants, and artifact-size gates remain hard constraints.
+
+**Primary 0.48 exit criterion: parse performance must return to at least 0.46
+levels on the production-shaped CSS, Less, and generated-Less release fixtures.**
+This is the release's number-one goal, not an aspirational follow-up. The 0.47
+shelves may bound work in progress, but they are not an acceptable 0.48 shipping
+state. A claimed recovery must use the pinned 0.46 build, full-consumption and
+result-identity checks, paired A/B runs, and same-source controls; toy grammars
+or external-parser wins cannot substitute for this criterion.
 
 ---
 
@@ -63,8 +91,8 @@ withdrawn · §8b `QUEUED` for the child-kind axis, `REFERENCE` for the owner's
 specification restatement; **the five mechanisms proposed for the gap during 0.47
 are all `REJECTED`** and the file says "Do not re-propose them" — runtime
 `compose()`, per-parse assembly, per-rule assembly, startup cost, interpreter
-fallback · §9 `QUEUED` (= U-53) · §9b `QUEUED` · §10.1–§10.4 `LANDED` on the
-current unreleased 0.47 branch · §10.5 `REJECTED` as a defect after the owner
+fallback · §9 `QUEUED` (= U-53) · §9b `QUEUED` · §10.1–§10.4 `LANDED` in the
+shipped 0.47 release · §10.5 `REJECTED` as a defect after the owner
 ruling established that `forCtx` is G5's required run-start selection, not a
 run-path option branch ·
 `## Standing hazard` **`UNCLASSIFIABLE`** — a measurement-hygiene rule that
@@ -618,10 +646,11 @@ were wrong. A control proves the box was quiet. It does not prove the two sides
 are different builds. **Check what a harness builds before quoting what it
 prints.**
 
-### 0.47 release-audit handoff — final candidate and measured attempts
+### 0.47 shipped baseline and measured attempts
 
-The final production source (`a28404c`, still byte-identical under `src/` at the
-`4e1cce5` release candidate) re-ran the two-graph comparison on Node 25.9.0:
+The shipped 0.47 source at `67365b6` is byte-identical under `src/` to the final
+measured production source (`a28404c`) used for the two-graph comparison on Node
+25.9.0:
 CSS was 14.88 / 5.44 ms (**2.736×** slower), `benchmark.less` 39.39 /
 17.07 ms (**2.308×**), and `gen-workload.less` 108.44 / 42.39 ms
 (**2.558×**). Every leg consumed in full; same-source controls were 0.975× /
@@ -854,7 +883,7 @@ independent of an engine that reproduced it accidentally.
 
 None of this was fixed at `90aa867`. The descriptions are retained because they
 govern measurements taken at that checkout; all five findings have since been
-closed on the current unreleased 0.47 branch or ruled by design.
+closed before 0.47 shipped or ruled by design.
 
 1. **LANDED (`8683433`): the `*-lines` grammar variants could not parse
    anything.** `ast-lines` and
