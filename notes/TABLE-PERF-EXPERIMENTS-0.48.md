@@ -17,11 +17,11 @@ The implementation must retain one `TableProgram` architecture for runtime
 shape mutation, `WeakMap` metadata, a second recognizer, downward baselines, and
 static-factory artifact bloat are outside the design space.
 
-## Open correctness blocker
+## Correctness blocker
 
 | ID | Defect | Handoff | Status |
 | --- | --- | --- | --- |
-| C01 | A successful nullable sequence term can produce a zero-width node, field, error, or trivia entry without advancing `EC.e`. All four sequence twins currently treat that as “matched nothing” and roll every sink back to the pre-trivia mark, deleting the child's legitimate effects. | `/private/tmp/parseman-048-early-reject`, branch `perf/0.48-early-reject`; untracked red-test draft `test/parity/nullable-node-trivia-rollback.test.ts`. Reproduce/fix interpreter sequence, table exec, closure assembly, and emitted diagnostic assembly together. | OPEN — blocks performance integration |
+| C01 | A successful nullable sequence term can produce a zero-width node, field, error, or trivia entry without advancing `EC.e`. The sequence must remove only ambient-scan trivia while preserving the child's nodes, raw children, fields, errors, and later trivia. | Fixed all four twins with pre/post trivia-sink marks and allocation-free in-place range compaction. `test/parity/nullable-node-trivia-rollback.test.ts` proves interpreter, reference exec, runtime compile, actual compact macro, emitted diagnostic assembly, real preceding trivia, recovery errors, and child-added trivia. Feature commit `9a5d52d`; merged into `release/0.48.0` as `b938fa4`. | LANDED — full suite 3,869 passed / 3 skipped / 22 todo; typecheck, lint, invariants, size guard, macro/emission parity, and CSS/Jess-facing tests pass |
 
 ## Active experiments
 
@@ -69,7 +69,7 @@ preserved.
 
 | Worktree | Branch / base | Preserved state | Next action |
 | --- | --- | --- | --- |
-| `/private/tmp/parseman-048-early-reject` | `perf/0.48-early-reject` at `0aa41b6` | One untracked C01 parity-test draft; no source edits. | Validate the red test, implement the four-twin correctness fix, and commit only after full parity/size/invariant checks. |
+| `/private/tmp/parseman-048-early-reject` | `perf/0.48-early-reject` at `9a5d52d` | Clean committed C01 fix and regression matrix; integrated into `release/0.48.0` by merge `b938fa4`. | Preserve as the reviewed correctness lane; performance work may now integrate independently. |
 | `/private/tmp/parseman-048-sequence-fusion` | `perf/0.48-sequence-fusion` at `ac1bf7b` | Modified `src/table/assemble.ts` plus untracked `bench/jess/sequence-fusion-one.ts`; measured-null prototype. | Read the diff/evidence, then revert this exact prototype and remove the temporary probe unless deliberately running the narrower follow-up. |
 | `/private/tmp/parseman-048-ungated-map` | `perf/0.48-ungated-map` at `0aa41b6` | Diagnostic-only `src/table/exec.ts` diff (39 insertions/2 deletions), `git diff --check` clean. | Add the captured-macro harness, run per-IP counts, map top choices to Jess rules, then classify open/overlap/under-inferred causes. |
 
