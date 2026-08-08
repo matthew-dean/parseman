@@ -177,6 +177,46 @@ uses the same position result without rescanning characters.
 Unique id-to-arm mappings can jump directly by integer. This is an optimization of
 tokenized PEG, not a semantic conversion to LL(1).
 
+### 3.6 Leading Less target: structural triage from token prefixes
+
+The first production target is not limited to the leaf-heavy `Value` choice. Less
+repeatedly has to distinguish grammar families that share the same character prefix:
+
+```text
+.name(...) { ... }    # mixin declaration
+.name(...);           # mixin call/reference
+.name { ... }         # ordinary ruleset
+```
+
+The exact language has guards, namespaces, interpolation, selector combinations, and
+optional argument forms, so this is not a promise that three tokens always select one
+production. It is the reason the cursor must retain a **compatible token-prefix view**
+rather than only one longest token.
+
+At the relevant statement/selector context, recognition should derive and cache the
+shared opener tokens once—for example class/id sigil, identifier/interpolation, opening
+parenthesis, brace, semicolon, colon, or other distinguishing punctuation. A compiled
+arm-signature table then removes only arms whose token prefix is impossible:
+
+```text
+tokens at current position -> compatible arm mask
+compatible arm mask        -> existing PEG arms in source order
+selected arm               -> consumes the cached token ends/values
+```
+
+This may inspect more than one token, but it remains tokenized PEG rather than LL(k)
+production selection. If declaration and call remain compatible through an argument
+list, both remain eligible in source order. Their common token sequence is still scanned
+once and consumed from the cursor; the parser continues trial at the first grammar point
+that has not been classified. A later arm is never selected merely because a predictor
+can see farther than an earlier prefix match.
+
+The implementation census must map the authored mixin-declaration, mixin-call/reference,
+and ordinary-ruleset choices to their TableProgram sites and report dynamic calls,
+failed arms, nested row work, rollback work, token-prefix lengths, compatible-mask sizes,
+and pending-result consumption on both `benchmark.less` and generated Less. The first
+landing target is chosen by nested work removed, not by terminal-call count alone.
+
 ## 4. Recognition kernels, in implementation order
 
 The rejected prototype established that looping over native sticky regexes to build
