@@ -66,18 +66,6 @@ export function evalMacroExports(code: string, bindings: Record<string, unknown>
 }
 
 /**
- * Rewrite the shared-driver specifier to this checkout's source, for the few
- * harnesses that must genuinely LOAD the emitted module (a temp file, a data URL)
- * rather than evaluate it. `parseman/table` is a published subpath that nothing
- * outside an installed package can resolve.
- */
-const TABLE_RUNTIME_SOURCE = new URL('../../src/table/index.ts', import.meta.url).href
-
-export function resolveTableRuntime(code: string): string {
-  return code.replace(/(\bfrom\s*)(['"])parseman\/table\2/g, (_m, from: string) => `${from}${JSON.stringify(TABLE_RUNTIME_SOURCE)}`)
-}
-
-/**
  * True when the macro actually compiled the grammar away.
  *
  * The old proxy for this — "no `import` line survives" — is no longer valid:
