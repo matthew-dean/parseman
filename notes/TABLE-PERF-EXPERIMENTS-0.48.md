@@ -80,31 +80,35 @@ preserved.
 
 ## Current 0.46 shelf audit
 
-Current landed head `282c978` was measured against the pinned 0.46 reference on
-Node 25.9 with the repository's paired, order-alternated production gate. Each row
-used five independently recompiled passes and 60 total A/B pairs. Load average moved
-11.01→4.31; the worst per-workload reference/reference control median was only
-+3.2%. Every candidate row lost 60/60 pairs, so the remaining gap is not a load
-artifact. The table leads with the median across independent passes, then retains
-the complete pass range. These are release-audit figures, not new baselines or shelf
-ceilings. Density and toy rows below remain the last `5901774` audit and are labelled
-accordingly.
+Current landed head `60610fc` was measured against the pinned 0.46 reference with
+the repository's paired, order-alternated production gate. Each row used five
+independently recompiled passes and 60 total A/B pairs. Both sides compiled the
+shipping workload grammars from byte-identical inputs and passed full parse/result/
+EOF identity before timing. Load average moved 6.13→5.55; the worst per-workload
+reference/reference control median was +4.0%, and null win rates stayed 41.7–61.7%.
+Every candidate row again lost 60/60 pairs. The table leads with the median across
+independent passes, then retains the complete pass range. These are release-audit
+figures, not new baselines or shelf ceilings. Density and toy rows below remain the
+last `5901774` audit and are labelled accordingly.
 
 | Surface | Candidate result vs 0.46 | Disposition |
 | --- | --- | --- |
-| production `less/stylesheet` | center median +216.9%, min +221.9%; pass ranges +212.7%…+227.5% / +215.4%…+232.1% | Improved relative to the +332.3%/+348.5% shelf ceiling; shelf remains. |
-| production `less/mixins` | center median +226.5%, min +228.4%; pass ranges +225.1%…+229.1% / +224.1%…+237.0% | Improved relative to the +329.8%/+344.3% shelf ceiling; shelf remains. |
-| production `css/stylesheet` | center median +252.0%, min +288.1%; pass ranges +172.9%…+315.0% / +181.7%…+293.6% | Shelf remains; 2/5 passes exceeded the old median ceiling, so CSS is also a ceiling-excursion risk. |
-| production `graphql/document` | center median +103.4%, min +109.9%; pass ranges +81.4%…+106.0% / +87.1%…+114.0% | Improved relative to the +124.7%/+129.6% shelf ceiling; shelf remains. |
-| production `json/document` | center median +129.9%, min +130.6%; pass ranges +122.7%…+133.4% / +128.7%…+137.1% | Improved relative to the +145.8%/+146.9% shelf ceiling; shelf remains. |
+| production `less/stylesheet` | center median +213.2%, min +224.6%; pass ranges +168.9%…+235.5% / +219.0%…+240.5% | Prior center +216.9%/+221.9%; roughly 1.2% better by current/reference ratio, but all five passes breached and the shelf remains. |
+| production `less/mixins` | center median +221.9%, min +222.0%; pass ranges +217.3%…+231.5% / +220.7%…+234.0% | Prior center +226.5%/+228.4%; roughly 1.4% better by current/reference ratio, but all five passes breached and the shelf remains. |
+| production `css/stylesheet` | center median +289.6%, min +305.8%; pass ranges +275.5%…+309.0% / +302.2%…+314.6% | Prior center +252.0%/+288.1% had a very wide +172.9%…+315.0% median range. The new tighter endpoint does not confirm the isolated actual-Jess terminal-node win; CSS remains roughly 3.9× 0.46 and fully open. |
+| production `graphql/document` | center median +99.5%, min +107.5%; pass ranges +78.9%…+104.8% / +83.1%…+110.5% | Prior center +103.4%/+109.9%; modest improvement, but the shelf remains. |
+| production `json/document` | center median +125.1%, min +127.3%; pass ranges +117.6%…+136.3% / +125.3%…+139.2% | Prior center +129.9%/+130.6%; direction agrees with the bounded projection win, but the shelf remains. |
 | density rollback axis (`5901774` audit) | median +135.5%…+273.2%; min +144.4%…+293.6% | All four named rows remain strict regressions, inside their ceilings. |
 | density expected axis (`5901774` audit) | median +80.2%…+152.8%; min +105.1%…+157.2% | All three named rows remain strict regressions, inside their ceilings. `expected/wide` improved most from its 0.47 +373.2%…+424.5% envelope. |
 | toy CSS compiled bars (`5901774` audit) | `decls` +67.3%; `selector` +104.0% | Improved from 0.47's approximately +343%/+386%; both original-baseline shelves remain. |
 
 No one of the fourteen 0.47 shelf entries is eligible for removal yet. The
-shared-DAG change is retained because it has exact deterministic work reduction,
-correctness, raw-size, and material relative Less wins, not because it alone meets
-the release bar.
+shared-DAG/repeat, direct projection, and terminal-node changes are retained for
+their exact work reduction, correctness, bounded relative wins, and/or size effects,
+not because any one of them meets the absolute release bar. The standard five-row
+gate does not contain Jess `benchmark.less` or the separate generated-Jess fixture;
+those remain separately labelled actual-Jess mechanism evidence, never substitutes
+for the pinned production shelf audit.
 
 ## Handoff worktrees
 
