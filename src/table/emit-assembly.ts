@@ -61,6 +61,7 @@ import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
+import { scalarTerminalNodeChild } from './scalar-terminal.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -106,6 +107,9 @@ export const EMITTED_PARAMS = [
   // span, expected set and CST embedding are produced by the SAME code in every
   // engine and cannot drift.
   'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError',
+  // Pure scalar terminal recognizers, indexed by the terminal's existing const
+  // operand. Appended for compatibility with older precompiled factories.
+  'RECOG',
 ] as const
 
 /**
@@ -476,6 +480,17 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   const labels = computeSiteLabels(code, roots, hostCst)
+  // Eligibility is pooled by the terminal's existing constant operand, matching
+  // the closure recognizer pool: distinct terminal rows sharing one spec share
+  // both the recognizer and the ordinary-terminal lowering.
+  const scalarSpecs = new Set<number>()
+  if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
+    for (const ip of reachableSites(code, roots)) {
+      if (code[ip] !== OP_NODE) continue
+      const child = scalarTerminalNodeChild(code, ip)
+      if (child >= 0) scalarSpecs.add(code[child + 1]!)
+    }
+  }
 
   // THE SIDE-SINK CENSUS, over the same reachable set the labels are computed
   // from. `OP_FIELD` is the only ROW that writes `_fields` and `OP_EXPECT` the
@@ -548,6 +563,7 @@ export function emitAssemblySource(
   const kRef = (i: number): string => hoist('k', `K[${i}]`)
   const fxRef = (i: number): string => hoist('fx', `FX[${i}]`)
   const fnRef = (i: number): string => hoist('fn', `FNS[${i}]`)
+  const recognizerRef = (i: number): string => hoist('rec', `RECOG[${i}]`)
   /**
    * The sync sentinel for a char-class index, hoisted once per class.
    *
@@ -788,6 +804,19 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
         const s = k[code[ip + 1]!] as string
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_LIT_TRACK
+        if (!track && scalarSpecs.has(code[ip + 1]!)) {
+          const recognize = recognizerRef(code[ip + 1]!)
+          return `${head}
+const e=${recognize}(input,pos)
+if(e>=0){
+${captureLeaf(q(s))}
+EC.e=e
+return ${q(s)}
+}
+ctx._fe=pos;ctx._fx=${xf}
+return FAIL
+}`
+        }
         // LENGTH IS TABLE DATA, so the compare is chosen here — the emitted twin
         // of the closure engine's length-keyed literal bodies.
         const test = s.length === 1
@@ -862,6 +891,20 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       case OP_RX_TRACK: {
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_RX_TRACK
+        if (!track && scalarSpecs.has(code[ip + 1]!)) {
+          const recognize = recognizerRef(code[ip + 1]!)
+          return `${head}
+const e=${recognize}(input,pos)
+if(e>=0){
+const v=input.slice(pos,e)
+${captureLeaf('v')}
+EC.e=e
+return v
+}
+ctx._fe=pos;ctx._fx=${xf}
+return FAIL
+}`
+        }
         // THE MATCH ARRAY IS THE COST, not the matching. `re.exec` allocates one
         // per row — 6,005 rows per `json/document` parse, 12.9% of everything
         // executed — and every field of it but `[0]` is discarded here. A shape
@@ -1625,6 +1668,26 @@ return out
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
+        const scalarChild = scalarTerminalNodeChild(code, ip)
+        if (scalarChild >= 0 && scalarSpecs.has(code[scalarChild + 1]!)) {
+          const recognize = recognizerRef(code[scalarChild + 1]!)
+          const spec = code[scalarChild] === OP_RX ? null : k[code[scalarChild + 1]!] as string
+          const value = spec === null ? 'input.slice(pos,end)' : q(spec)
+          const xf = fxRef(code[scalarChild + 2]!)
+          const build = fnRef(code[ip + 1]!)
+          return `${head}
+const end=${recognize}(input,pos)
+if(end<0){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+const value=${value}
+const leaf={_tag:'leaf',value,span:{start:pos,end}}
+const kids=[leaf],rawKids=[leaf],span={start:pos,end}
+EC.e=end
+const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
+${L.buf ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))' : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
+EC.e=end
+return nd
+}`
+        }
         const child = link(code[ip + 2]!)
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!

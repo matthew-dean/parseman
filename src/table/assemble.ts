@@ -123,8 +123,12 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
+import { reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
+import {
+  makeScalarRecognizer, scalarTerminalNodeChild, type ScalarRecognizer,
+} from './scalar-terminal.ts'
 
 /**
  * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?
@@ -413,6 +417,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * share it. See `cell.ts`.
    */
   const EC = newEndCell()
+
+  // Indexed by the existing constant-pool operand: the same scalar recognizer
+  // serves an ordinary terminal piece and a direct terminal-node materializer.
+  // Value/CST/failure/cursor effects stay in those consumers.
+  const scalarRecognizers: Array<ScalarRecognizer | undefined> = []
+  function scalarFor(child: number): ScalarRecognizer | undefined {
+    const spec = code[child + 1]!
+    let recognize = scalarRecognizers[spec]
+    if (recognize === undefined) {
+      recognize = makeScalarRecognizer(code[child]!, k[spec])
+      scalarRecognizers[spec] = recognize
+    }
+    return recognize
+  }
 
   /**
    * The INSTALLED trivia scanner for the scope currently running.
@@ -759,6 +777,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const s = k[code[ip + 1]!] as string
         const len = s.length
         const xf = fx[code[ip + 2]!] as string[]
+        const shared = scalarRecognizers[code[ip + 1]!] !== undefined ? scalarFor(ip) : undefined
+        if (shared !== undefined) {
+          return (input, pos, ctx) => {
+            const e = shared(input, pos)
+            if (e >= 0) {
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
+              EC.e = e
+              return s
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
         // LENGTH IS TABLE DATA, so the COMPARE is chosen here rather than
         // delegated to a builtin that has to rediscover it. See `litBodyNote`.
         if (len === 1) {
@@ -884,6 +916,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_RX: {
         const re = k[code[ip + 1]!] as RegExp
         const xf = fx[code[ip + 2]!] as string[]
+        const shared = scalarRecognizers[code[ip + 1]!] !== undefined ? scalarFor(ip) : undefined
+        if (shared !== undefined) {
+          return (input, pos, ctx) => {
+            const e = shared(input, pos)
+            if (e >= 0) {
+              const v = input.slice(pos, e)
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
+              EC.e = e
+              return v
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
         return (input, pos, ctx) => {
           re.lastIndex = pos
           // `regex()` rows are sticky and expose only their whole match.  `exec()`
@@ -2419,6 +2466,39 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
+        const scalarChild = !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
+          ? scalarTerminalNodeChild(code, ip)
+          : -1
+        if (scalarChild >= 0) {
+          const recognize = scalarFor(scalarChild)!
+          const spec = k[code[scalarChild + 1]!]
+          const regexValue = code[scalarChild] === OP_RX
+          const xf = fx[code[scalarChild + 2]!] as string[]
+          const build = fns[code[ip + 1]!] as (
+            children: readonly unknown[], fields: undefined, span: { start: number; end: number },
+            rawChildren: readonly unknown[], triviaLog: readonly number[], state: undefined,
+          ) => unknown
+          return (input, pos, ctx) => {
+            const end = recognize(input, pos)
+            if (end < 0) {
+              ctx._fe = pos; ctx._fx = xf
+              if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+              return FAIL
+            }
+            const value = regexValue ? input.slice(pos, end) : spec as string
+            const leaf = { _tag: 'leaf', value, span: { start: pos, end } }
+            const kids = [leaf]
+            const rawKids = [leaf]
+            const span = { start: pos, end }
+            EC.e = end
+            const nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
+            if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
+              pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+            }
+            EC.e = end
+            return nd
+          }
+        }
         const child = link(code[ip + 2]!)
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
@@ -2634,6 +2714,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
     }
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
+    if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
+      const roots = [...Object.values(prog.rules), ...extraIps]
+      for (const ip of reachableSites(code, roots)) {
+        if (code[ip] !== OP_NODE) continue
+        const child = scalarTerminalNodeChild(code, ip)
+        if (child >= 0) scalarFor(child)
+      }
+    }
     /**
      * THE BUILD'S OWN ANSWER, TRIED BEFORE THE CONSTRUCTOR.
      *
@@ -2669,6 +2757,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
+        scalarRecognizers,
       )
       emitReached = new Set(pre.reached)
     }
@@ -2749,6 +2838,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
+        scalarRecognizers,
       )
       emitReached = em.reached
     } catch (e) {
