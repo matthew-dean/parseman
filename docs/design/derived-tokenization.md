@@ -1459,15 +1459,14 @@ cutoff from the measured size distribution, interpret below it, compare artifact
 bytes and parse time on the hot benchmarks (which should be unaffected by
 construction — verify that).
 
-*Status correction (this entry described work that has since started).* A table
-lowering was prototyped and measured — `src/table/` on `pm-g5-driver`, written up in
-`notes/G5-TABLE-DRIVER.md`. It is **additive and not wired into the macro, `compile()`
-or `compose()`**, and **codegen remains the shipping lowering**, so nothing below
-should be read as a description of what parseman emits today. What it measured, on its
-own benches: **113 B/rule marginal against codegen's 4,932 B (43.7×, `bench/g5-size.ts`)**
-and **~2.65× codegen's parse time** in steady state (`bench/g5-scaling.ts`, after the
-SEQX fuse + `OP_RULE` collapse). It also folds `trackLines` × `hostMode` into one
-driver: **8,418 B for four variants, zero option reads in `exec.ts`**.
+*Historical status correction.* A reference-bytecode table prototype was measured
+and is written up in `notes/TABLE-DRIVER.md`. The table/assembly direction now
+ships as the closure-based TableProgram assembler; the old bytecode prototype is
+not the shipping driver. Its own benches measured **113 B/rule marginal against
+source codegen's 4,932 B (43.7×)** and **~2.65× source codegen's parse time** after
+SEQX fusion and `OP_RULE` collapse. It also measured **8,418 B for four
+`trackLines` × `hostMode` variants, zero option reads in `exec.ts`**. Read the
+engine-name correction in that note before reusing those figures.
 
 The **hot/cold split this entry actually proposes is still untried** — the prototype
 interprets *every* rule rather than only the cold tail, so the "hot benchmarks
