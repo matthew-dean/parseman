@@ -103,6 +103,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **PARSE TIME REGRESSED 2.3×-2.9× AGAINST 0.46, and this release ships with it.**
   Stated first because two earlier drafts of this record said otherwise.
 
+  `PERF-PEAK-WAIVER bench/workloads/config.json median +290.3% min +295.0% — CI load 1.10 → 1.12; 0.47 buys the canonical compact table architecture, correctness, and materially smaller artifacts, while 0.48 owns restoring parse time without moving the peak.`
+
   `bench/jess/ab.ts`, HEAD against `a5dc9bd` (v0.46.0, the anchor in
   `bench/jess/ab-config.json`), jess's shipping dialect grammars,
   `--two-graph`, Node 25.9.0, self checks 0.980-1.027:
