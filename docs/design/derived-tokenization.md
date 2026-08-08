@@ -1,5 +1,10 @@
 # Derived tokenization
 
+> **Current 0.48 specification:**
+> [`parseman-0.48.md`](./parseman-0.48.md) is the canonical implementation order,
+> runtime shape, and release contract. This document is the detailed design and
+> historical evidence register.
+
 **Current status:** the derived scanner is **not wired into the canonical engine**.
 The 0.46 source-codegen token-keyed `dispatch` experiment (§9.1, commits `caa3d14` /
 `e8612eb`) is historical: `codegen.ts` was deleted in 0.47. The shipping path is one

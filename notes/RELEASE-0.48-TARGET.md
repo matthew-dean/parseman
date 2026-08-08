@@ -1,5 +1,9 @@
 # 0.48 release target — recover performance on the canonical table
 
+Canonical 0.48 architecture and implementation order:
+[`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md). This file
+preserves the longer release evidence and historical decisions.
+
 Working experiment queue: `TABLE-PERF-EXPERIMENTS-0.48.md`. Use that compact
 ledger for active status and decisions; this longer file preserves the evidence
 and historical reasoning behind the queue.
