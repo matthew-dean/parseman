@@ -306,13 +306,23 @@ impossible to consume. Token cursors constrain the seam; they do not reset the w
 
 **Current evidence.** The preserved static probe's 32–44% is only the reach of a
 walker that stops at wrappers/refs and requires distinct lead terminals; it is not
-tokenizability. Frequency-weighted nested-lead analysis on the canonical closure
-artifacts finds that position-token choice can remove **10.1% of actual arm entries
-on benchmark.less and 12.3% on generated Less**, concentrated in one `Value` choice
-with zero observed winner mismatches. The same classifier removes only **0.5%** on
-CSS. A global longest-match rule is not yet safe at every site (303/1,552 Less winner
-mismatches), so each lexical context needs a proof or fallback. The next gate is a
-pending-result implementation at the proven `Value` site; timing remains unclaimed.
+tokenizability. A semantics-correct compatible-view oracle on the canonical closure
+artifacts preserves every matching prefix/same-token arm in PEG order with zero winner
+mismatches. Its absolute eliminable prior failures are **140/4,167 on CSS (0.5% of
+actual entries), 8,170/23,856 on benchmark.less (9.4%), and 27,137/65,059 on generated
+Less (11.0%)**. Almost all the Less payoff is one `Value` choice: **7,734/7,927
+(97.6%)** and **27,119/30,430 (89.1%)** prior retries.
+
+That leverage is not yet a speed win. A bounded canonical-closure prototype scanned
+once, cached every compatible row/end without per-match objects, kept `TableProgram`
+words unchanged, and reduced the `Value` retries to **193 / 3,311**. It still regressed
+benchmark.less **+2.5% paired / +4.4% solo** and generated Less **+1.9% paired / +0.4%
+solo** because producing the compatible set looped over the current native regex
+recognizers. A deliberate longest-only plant changed `a | ab` consumption from one
+character to two and broke probe, proving the overlap oracle RED before it returned
+green. The implementation is rejected; the architecture is not. The next gate is a
+frequency-weighted fixed/trie/seeded-kernel census that can produce compatible views
+without a row of native regex calls.
 
 ### 2.1 Parsing semantics over tokens: three different designs
 

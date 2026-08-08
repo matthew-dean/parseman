@@ -236,8 +236,12 @@ carry `DEBT` entries in
 preserved rather than mistaken for dead code or a completed feature. See
 `notes/TOKEN-STREAM-GROUNDWORK.md` for the static probe, the scanner correctness
 hole, the stale dispatch half, the reusable packing/folding utilities, and the
-first independently landable wiring step. An experiment is ongoing separately;
-it has not resolved §8, and this note makes no speed or memory claim for it.
+first independently landable wiring step. The first semantics-correct compatible-view
+prototype removed most retries at the hot Less `Value` choice but regressed production
+timing because it looped over native regex recognizers; that implementation is
+rejected. The active follow-up is a fixed/trie/seeded-kernel census, not a revival of
+longest-match or the conservative distinct-lead walker. Token streaming has not
+resolved §8, and this note makes no production speed or memory claim for it.
 
 **0.48 integration ruling.** Token cursor work does not put the rest of the
 performance queue on hold and does not reset a landed piece design. It must enter
