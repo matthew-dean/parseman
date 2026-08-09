@@ -1527,9 +1527,28 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const fused = op === OP_SEQX
         const base = fused ? ip + 3 : ip + 2
         const n = code[fused ? ip + 2 : ip + 1]!
+        let hasAdj = false
+        for (let i = 1; i < n; i++) if (code[code[base + i]!] === OP_ADJ) { hasAdj = true; break }
+
+        // One bounded closure shape: strict, nontracking ordinary SEQ/SEQV owns
+        // direct OP_OPT terms. Cold/effect-sensitive assemblies and adjacency or
+        // fused sequences retain the independent OP_OPT Piece verbatim.
+        const ownDirectOptionals = !fused && !REC && !hasAdj && !hostCst
+          && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
+        let directOptional: boolean[] | undefined
+        if (ownDirectOptionals) {
+          for (let i = 0; i < n; i++) {
+            if (code[code[base + i]!] !== OP_OPT) continue
+            directOptional ??= Array.from({ length: n }, () => false)
+            directOptional[i] = true
+          }
+        }
         // Children bound as a plain array of DIRECT references, laid out once.
         const kids: Piece[] = new Array<Piece>(n)
-        for (let i = 0; i < n; i++) kids[i] = link(code[base + i]!)
+        for (let i = 0; i < n; i++) {
+          const childIp = code[base + i]!
+          kids[i] = link(directOptional?.[i] === true ? code[childIp + 1]! : childIp)
+        }
         const wantValues = op !== OP_SEQV
         const reducer = fused ? code[ip + 1]! : -1
         const projection = reducer < 0 ? ~reducer : -1
@@ -1674,8 +1693,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
         }
 
-        let hasAdj = false
-        for (let i = 1; i < n; i++) if (code[code[base + i]!] === OP_ADJ) { hasAdj = true; break }
         if (hasAdj) {
           const runners: TermRunner[] = new Array<TermRunner>(n)
           for (let i = 1; i < n; i++) {
@@ -1735,6 +1752,177 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           return (input, pos, ctx) => {
             const cur = runAdjTerms(input, pos, ctx, undefined)
             if (cur < 0) return FAIL
+            EC.e = cur
+            return undefined
+          }
+        }
+
+        if (directOptional !== undefined) {
+          const flags = directOptional
+          const optionalFirst = (child: Piece): Piece => (input, pos, ctx) => {
+            const need = markCst(ctx)
+            const mRaw = MRAW
+            const mTl = MTL
+            const mLv = MLV
+            const mFl = need ? ctx._fields?.length ?? 0 : 0
+            const mEr = need ? ctx._errors?.length ?? 0 : 0
+            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            ctx._fc = false
+            const v = child(input, pos, ctx)
+            if (v !== FAIL) return v
+            if (committed(ctx)) return FAIL
+            if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            EC.e = pos
+            return null
+          }
+          const optionalNext = (child: Piece): TermRunner => (input, cur, ctx) => {
+            if (ctx.trivia === undefined) {
+              const need = markCst(ctx)
+              const mRaw = MRAW
+              const mTl = MTL
+              const mLv = MLV
+              const mFl = need ? ctx._fields?.length ?? 0 : 0
+              const mEr = need ? ctx._errors?.length ?? 0 : 0
+              const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+              const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+              ctx._fc = false
+              const v = child(input, cur, ctx)
+              if (v === FAIL) {
+                if (committed(ctx)) return -1
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                EC.e = cur
+                TERMV = null
+                return cur
+              }
+              // Publish only after the child returns: a synchronous nested parse
+              // may use and restore this assembly's TERMV frame meanwhile.
+              TERMV = v
+              return EC.e
+            }
+
+            const need = markCst(ctx)
+            const mRaw = MRAW
+            const mTl = MTL
+            const mLv = MLV
+            const mFl = need ? ctx._fields?.length ?? 0 : 0
+            const mEr = need ? ctx._errors?.length ?? 0 : 0
+            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            const scanEnd = skipTrivia(input, cur, ctx)
+            const scanTl = need ? cstTlLen(ctx) : 0
+            const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            ctx._fc = false
+            const v = child(input, scanEnd, ctx)
+            if (v === FAIL) {
+              if (committed(ctx)) return -1
+              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              EC.e = scanEnd
+              TERMV = null
+              return cur
+            }
+            TERMV = v
+            if (EC.e > scanEnd) return EC.e
+            if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
+            return cur
+          }
+          const k0 = flags[0] ? optionalFirst(kids[0]!) : kids[0]!
+          const runners = Array.from({ length: n }, () => undefined as unknown as TermRunner)
+          for (let i = 1; i < n; i++) {
+            const kid = kids[i]!
+            runners[i] = flags[i]
+              ? optionalNext(kid)
+              : (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
+          }
+
+          if (n === 1) {
+            if (wantValues) {
+              return (input, pos, ctx) => {
+                const v = k0(input, pos, ctx)
+                if (v === FAIL) return FAIL
+                return [v]
+              }
+            }
+            return (input, pos, ctx) => {
+              const v = k0(input, pos, ctx)
+              if (v === FAIL) return FAIL
+              return undefined
+            }
+          }
+
+          if (n === 2) {
+            const r1 = runners[1]!
+            if (wantValues) {
+              return (input, pos, ctx) => {
+                const v0 = k0(input, pos, ctx)
+                if (v0 === FAIL) return FAIL
+                const cur = r1(input, EC.e, ctx)
+                if (cur < 0) return FAIL
+                EC.e = cur
+                return [v0, TERMV]
+              }
+            }
+            return (input, pos, ctx) => {
+              const v0 = k0(input, pos, ctx)
+              if (v0 === FAIL) return FAIL
+              const cur = r1(input, EC.e, ctx)
+              if (cur < 0) return FAIL
+              EC.e = cur
+              return undefined
+            }
+          }
+
+          if (n === 3) {
+            const r1 = runners[1]!, r2 = runners[2]!
+            if (wantValues) {
+              return (input, pos, ctx) => {
+                const v0 = k0(input, pos, ctx)
+                if (v0 === FAIL) return FAIL
+                let cur = r1(input, EC.e, ctx)
+                if (cur < 0) return FAIL
+                const v1 = TERMV
+                cur = r2(input, cur, ctx)
+                if (cur < 0) return FAIL
+                EC.e = cur
+                return [v0, v1, TERMV]
+              }
+            }
+            return (input, pos, ctx) => {
+              const v0 = k0(input, pos, ctx)
+              if (v0 === FAIL) return FAIL
+              let cur = r1(input, EC.e, ctx)
+              if (cur < 0) return FAIL
+              cur = r2(input, cur, ctx)
+              if (cur < 0) return FAIL
+              EC.e = cur
+              return undefined
+            }
+          }
+
+          if (wantValues) {
+            return (input, pos, ctx) => {
+              const v0 = k0(input, pos, ctx)
+              if (v0 === FAIL) return FAIL
+              const values: unknown[] = [v0]
+              let cur = EC.e
+              for (let i = 1; i < n; i++) {
+                cur = runners[i]!(input, cur, ctx)
+                if (cur < 0) return FAIL
+                values.push(TERMV)
+              }
+              EC.e = cur
+              return values
+            }
+          }
+          return (input, pos, ctx) => {
+            const v0 = k0(input, pos, ctx)
+            if (v0 === FAIL) return FAIL
+            let cur = EC.e
+            for (let i = 1; i < n; i++) {
+              cur = runners[i]!(input, cur, ctx)
+              if (cur < 0) return FAIL
+            }
             EC.e = cur
             return undefined
           }
