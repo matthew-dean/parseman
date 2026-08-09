@@ -33,6 +33,7 @@
 import type { Combinator, ParserDef } from '../types.ts'
 import { matchesEmpty } from '../combinators/first-set.ts'
 import { branchUsesRouted } from '../combinators/dispatch.ts'
+import { runtimeRangeOutcomeKind } from '../table/token-outcome.ts'
 
 /** A terminal in the derived alphabet, with its globally assigned id. */
 export type TokenTerminal =
@@ -790,8 +791,13 @@ export function serializeLexicalPlan(
   const sites: number[] = []
   const routes: number[] = []
   const accepted: number[] = []
+  const outcomeById = new Map(alphabet.outcomes.map(outcome => [outcome.id, outcome]))
   for (const { dsp, classifier } of [...dispatchSites]
-    .filter(site => !site.classifier.selectorEffects)
+    .filter(site => !site.classifier.selectorEffects && site.classifier.routes.every(route =>
+      route.acceptedIds.every(id => {
+        const outcome = outcomeById.get(id)
+        return outcome !== undefined && runtimeRangeOutcomeKind(outcome.match) !== undefined
+      })))
     .sort((a, b) => a.dsp - b.dsp)) {
     const routeOffset = routes.length
     for (const route of classifier.routes) {
