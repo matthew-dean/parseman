@@ -1425,7 +1425,6 @@ return FAIL
         const arms: string[] = []
         for (let i = 0; i < n; i++) arms.push(link(code[armBase + i]!))
         const bk = hoist('bk', `DSP[${di}].byKey`)
-        const rt = hoist('rt', `DSP[${di}].routed`)
         const dx = hoist('dx', `DSP[${di}].expected`)
         // THE MATCHER ARMS, AS SOURCE. `exec.ts`'s `linkMatcher` mints one
         // closure per arm from four literals it already has in hand; the four
@@ -1452,6 +1451,13 @@ return FAIL
           : ''
         const m1 = tmp()
         const m2 = tmp()
+        const routedSelection = spec.routed.every(v => v === 1)
+          ? 'ur=true'
+          : spec.routed.every(v => v === 0)
+            ? 'ur=false'
+            : `switch(arm){
+${spec.routed.map((v, i) => `case ${i}:ur=${v === 1};break`).join('\n')}
+}`
         // THE SELECTOR RUNS ONCE and the key it returns picks the arm — that is
         // what `dispatch()` buys over a choice of arms that each re-parse the
         // opener. A routed arm rewinds the selector's trivia capture and gets
@@ -1466,7 +1472,7 @@ let arm=${bk}.get(key)
 ${fold}${chain}let ur
 if(arm===undefined){
 ${other === undefined ? `ctx._fe=selEnd;ctx._fx=${dx};return FAIL` : `ur=${String(otherRouted)}`}
-}else ur=${rt}[arm]===1
+}else ${routedSelection}
 const savedRouted=ctx._routed
 ${emitMark(m2, L.buf, sinks)}
 if(ur){
@@ -1476,11 +1482,10 @@ ctx._routed={value:key,span:{start:pos,end:selEnd}}
 }
 const at=ur?pos:selEnd
 let v
-switch(arm){
+try{switch(arm){
 ${arms.map((a, i) => `case ${i}:v=${a}(input,at,ctx);break`).join('\n')}
 ${other === undefined ? '' : `default:v=${other}(input,at,ctx)`}
-}
-if(ur)ctx._routed=savedRouted
+}}finally{if(ur)ctx._routed=savedRouted}
 if(v===FAIL){
 ${emitRollback(m2, L.buf, sinks)}
 ctx._fc=true

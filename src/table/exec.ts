@@ -620,8 +620,12 @@ function makeDriver(
           mark = saveTriviaMark(ctx)
           ctx._routed = { value: key, span: { start: pos, end: selEnd } }
         }
-        const v = exec(target, input, usesRouted ? pos : selEnd, ctx)
-        if (usesRouted) ctx._routed = savedRouted
+        let v: unknown
+        try {
+          v = exec(target, input, usesRouted ? pos : selEnd, ctx)
+        } finally {
+          if (usesRouted) ctx._routed = savedRouted
+        }
         if (v === FAIL) {
           rollbackTrivia(ctx, mark)
           // The interpreter marks a failed dispatch branch COMMITTED: the

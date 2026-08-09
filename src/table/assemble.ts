@@ -217,6 +217,16 @@ type GeneralChoiceBlock = (
   acc: string[] | undefined, prev: number,
 ) => unknown
 type ExclusiveChoiceBlock = (arm: number, input: string, pos: number, ctx: ParseContext) => unknown
+type DispatchMatcher = (key: string) => boolean
+type DispatchMatcherBlock = (key: string) => number | undefined
+type DispatchBranch = (
+  input: string, pos: number, selEnd: number, key: string,
+  selectorMark: ReturnType<typeof saveTriviaMark>, ctx: ParseContext,
+) => unknown
+type DispatchArmBlock = (
+  arm: number, input: string, pos: number, selEnd: number, key: string,
+  selectorMark: ReturnType<typeof saveTriviaMark>, ctx: ParseContext,
+) => unknown
 
 /**
  * ONE NON-FIRST SEQUENCE TERM, in a sequence that carries an adjacency
@@ -888,6 +898,67 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (arm === start + 2) return a2(input, pos, ctx)
       if (arm === start + 3) return a3(input, pos, ctx)
       return next === undefined ? FAIL : next(arm, input, pos, ctx)
+    }
+  }
+
+  function dispatchMatcherBlock(
+    m0: DispatchMatcher, a0: number, m1: DispatchMatcher, a1: number,
+    m2: DispatchMatcher, a2: number, m3: DispatchMatcher, a3: number,
+    next: DispatchMatcherBlock | undefined,
+  ): DispatchMatcherBlock {
+    return key => {
+      if (m0(key)) return a0
+      if (m1(key)) return a1
+      if (m2(key)) return a2
+      if (m3(key)) return a3
+      return next?.(key)
+    }
+  }
+
+  function dispatchBranch(child: Piece, usesRouted: boolean): DispatchBranch {
+    if (!usesRouted) {
+      return (input, _pos, selEnd, key, _selectorMark, ctx) => {
+        const mark = saveTriviaMark(ctx)
+        const v = child(input, selEnd, ctx)
+        if (v === FAIL) {
+          rollbackTrivia(ctx, mark)
+          ctx._fc = true
+          return FAIL
+        }
+        return [key, v]
+      }
+    }
+    return (input, pos, selEnd, key, selectorMark, ctx) => {
+      const savedRouted = ctx._routed
+      rollbackTrivia(ctx, selectorMark)
+      const mark = saveTriviaMark(ctx)
+      ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+      let v: unknown
+      try {
+        v = child(input, pos, ctx)
+      } finally {
+        ctx._routed = savedRouted
+      }
+      if (v === FAIL) {
+        rollbackTrivia(ctx, mark)
+        ctx._fc = true
+        return FAIL
+      }
+      return [key, v]
+    }
+  }
+
+  function dispatchArmBlock(
+    start: number,
+    a0: DispatchBranch, a1: DispatchBranch, a2: DispatchBranch, a3: DispatchBranch,
+    next: DispatchArmBlock | undefined,
+  ): DispatchArmBlock {
+    return (arm, input, pos, selEnd, key, selectorMark, ctx) => {
+      if (arm === start) return a0(input, pos, selEnd, key, selectorMark, ctx)
+      if (arm === start + 1) return a1(input, pos, selEnd, key, selectorMark, ctx)
+      if (arm === start + 2) return a2(input, pos, selEnd, key, selectorMark, ctx)
+      if (arm === start + 3) return a3(input, pos, selEnd, key, selectorMark, ctx)
+      return next === undefined ? FAIL : next(arm, input, pos, selEnd, key, selectorMark, ctx)
     }
   }
 
@@ -2698,18 +2769,51 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const otherRouted = code[ip + 4]! === 1
         const n = code[ip + 5]!
         const armBase = ip + 6
-        const arms: Piece[] = new Array<Piece>(n)
-        for (let i = 0; i < n; i++) arms[i] = link(code[armBase + i]!)
         const byKey = spec.byKey
         const byFold = spec.byFold
         const hasFold = spec.byFold.size > 0
         const match = spec.match
         const matchN = match.length
-        const matchFn: Array<(key: string) => boolean> = new Array<(key: string) => boolean>(matchN)
-        const matchArm: number[] = new Array<number>(matchN)
-        for (let i = 0; i < matchN; i++) { matchFn[i] = linkMatcher(match[i]!); matchArm[i] = match[i]![3] }
         const routed = spec.routed
         const expected = spec.expected as string[]
+
+        const validArm = (arm: number): boolean => Number.isInteger(arm) && arm >= 0 && arm < n
+        if (routed.length !== n) throw new TypeError('table assembler: malformed dispatch routed arity')
+        for (const arm of byKey.values()) if (!validArm(arm)) throw new TypeError('table assembler: malformed dispatch exact arm')
+        for (const arm of byFold.values()) if (!validArm(arm)) throw new TypeError('table assembler: malformed dispatch folded arm')
+        for (const m of match) if (!validArm(m[3])) throw new TypeError('table assembler: malformed dispatch matcher arm')
+
+        const neverMatch: DispatchMatcher = () => false
+        const bindMatchers = (start: number): DispatchMatcherBlock => {
+          const pred = (i: number): DispatchMatcher => i < matchN ? linkMatcher(match[i]!) : neverMatch
+          const arm = (i: number): number => i < matchN ? match[i]![3] : -1
+          const next = start + 4 < matchN ? bindMatchers(start + 4) : undefined
+          return dispatchMatcherBlock(
+            pred(start), arm(start), pred(start + 1), arm(start + 1),
+            pred(start + 2), arm(start + 2), pred(start + 3), arm(start + 3), next,
+          )
+        }
+        const matchBlock = matchN === 0 ? undefined : bindMatchers(0)
+        const classify: (key: string) => number | undefined = hasFold
+          ? matchBlock === undefined
+            ? key => byKey.get(key) ?? byFold.get(asciiFoldKey(key))
+            : key => byKey.get(key) ?? byFold.get(asciiFoldKey(key)) ?? matchBlock(key)
+          : matchBlock === undefined
+            ? key => byKey.get(key)
+            : key => byKey.get(key) ?? matchBlock(key)
+
+        const neverBranch: DispatchBranch = () => FAIL
+        const bindArms = (start: number): DispatchArmBlock => {
+          const branch = (i: number): DispatchBranch => i < n
+            ? dispatchBranch(link(code[armBase + i]!), routed[i] === 1)
+            : neverBranch
+          const next = start + 4 < n ? bindArms(start + 4) : undefined
+          return dispatchArmBlock(
+            start, branch(start), branch(start + 1), branch(start + 2), branch(start + 3), next,
+          )
+        }
+        const runArm = n === 0 ? undefined : bindArms(0)
+        const runOther = other === undefined ? undefined : dispatchBranch(other, otherRouted)
 
         return (input, pos, ctx) => {
           const selectorMark = saveTriviaMark(ctx)
@@ -2717,50 +2821,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (selVal === FAIL) return FAIL
           const selEnd = EC.e
           const key = selVal as string
-
-          let arm = byKey.get(key)
-          if (arm === undefined && hasFold) arm = byFold.get(asciiFoldKey(key))
+          const arm = classify(key)
           if (arm === undefined) {
-            for (let i = 0; i < matchN; i++) {
-              if (matchFn[i]!(key)) {
-                arm = matchArm[i]!
-                break
-              }
-            }
-          }
-
-          let target: Piece
-          let usesRouted: boolean
-          if (arm === undefined) {
-            if (other === undefined) {
+            if (runOther === undefined) {
               // No branch and no fallback: fail AT THE SELECTOR'S END.
               ctx._fe = selEnd
               ctx._fx = expected
               return FAIL
             }
-            target = other
-            usesRouted = otherRouted
-          } else {
-            target = arms[arm]!
-            usesRouted = routed[arm] === 1
+            return runOther(input, pos, selEnd, key, selectorMark, ctx)
           }
-
-          const savedRouted = ctx._routed
-          let mark = saveTriviaMark(ctx)
-          if (usesRouted) {
-            rollbackTrivia(ctx, selectorMark)
-            mark = saveTriviaMark(ctx)
-            ctx._routed = { value: key, span: { start: pos, end: selEnd } }
-          }
-          const v = target(input, usesRouted ? pos : selEnd, ctx)
-          if (usesRouted) ctx._routed = savedRouted
-          if (v === FAIL) {
-            rollbackTrivia(ctx, mark)
-            // A failed dispatch branch is COMMITTED: the selector already matched.
-            ctx._fc = true
-            return FAIL
-          }
-          return [key, v]
+          return runArm!(arm, input, pos, selEnd, key, selectorMark, ctx)
         }
       }
 
