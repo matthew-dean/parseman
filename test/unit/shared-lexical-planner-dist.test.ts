@@ -24,6 +24,30 @@ const compileEntries = [
   'dist/cli/index',
 ] as const
 
+const treeShakenEntries = [
+  'dist/spec/index',
+  'dist/language-service/index',
+] as const
+
+function staticDependencies(path: string): string[] {
+  const source = readFileSync(path, 'utf8')
+  const refs = new Set<string>()
+  const pattern = /(?:\bfrom\s*|\bimport\s*|\brequire\s*\()\s*["'](\.[^"']+)["']/g
+  for (const match of source.matchAll(pattern)) refs.add(resolve(dirname(path), match[1]!))
+  return [...refs]
+}
+
+function staticLoadGraph(entry: string): Set<string> {
+  const seen = new Set<string>()
+  const visit = (path: string): void => {
+    if (seen.has(path)) return
+    seen.add(path)
+    for (const dependency of staticDependencies(path)) visit(dependency)
+  }
+  visit(entry)
+  return seen
+}
+
 describe('built lexical planner topology', () => {
   beforeAll(() => {
     for (const path of [esmPlanner, cjsPlanner]) {
@@ -46,6 +70,24 @@ describe('built lexical planner topology', () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as { exports: Record<string, unknown> }
     expect(Object.keys(pkg.exports)).not.toContain('./compiler/token-alphabet')
     expect(Object.keys(pkg.exports)).not.toContain('./internal/token-alphabet')
+  })
+
+  it('keeps the planner out of spec and language-service ESM/CJS load graphs', () => {
+    for (const extension of ['.js', '.cjs']) {
+      const planner = extension === '.js' ? esmPlanner : cjsPlanner
+      for (const entry of compileEntries) {
+        const graph = staticLoadGraph(resolve(ROOT, `${entry}${extension}`))
+        expect(graph, `${entry}${extension}`).toEqual(new Set([
+          resolve(ROOT, `${entry}${extension}`),
+          planner,
+        ]))
+      }
+      for (const entry of treeShakenEntries) {
+        const path = resolve(ROOT, `${entry}${extension}`)
+        expect(staticLoadGraph(path), `${entry}${extension}`).toEqual(new Set([path]))
+        expect(readFileSync(path, 'utf8')).not.toMatch(/compiler\/token-alphabet\.(?:js|cjs)/)
+      }
+    }
   })
 
   it('contains no dynamic-code or Node-only dependency in the shared planner', () => {

@@ -36,6 +36,14 @@ const entryPoints = [
   'src/cli/index.ts',
 ]
 
+const compileEntries = new Set([
+  'src/index.ts',
+  'src/plugin/index.ts',
+  'src/table/index.ts',
+  'src/analysis/diagnostics.ts',
+  'src/cli/index.ts',
+])
+
 const shared = {
   // `src/cli/index.ts` is the diagnostics bin and `src/analysis/diagnostics.ts` its
   // library twin. Both reach the COMPILER (the `--fix` loop recompiles to verify), and
@@ -91,7 +99,10 @@ async function buildPublicEntry(entry, format) {
     outdir: 'dist',
     outbase: 'src',
     outExtension: { '.js': format === 'esm' ? '.js' : '.cjs' },
-    plugins: [externalLexicalPlanner(entry, format)],
+    // External imports survive esbuild tree-shaking. Only the entries that
+    // actually compile grammars may reference the private planner; otherwise a
+    // spec or language-service import loads 36–37 KB it never calls.
+    plugins: compileEntries.has(entry) ? [externalLexicalPlanner(entry, format)] : [],
   })
 }
 
