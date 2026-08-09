@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { choice, dispatch, literal, otherwise, regex, routed, sequence, token, transform, when } from '../../src/index.ts'
+import { choice, dispatch, literal, matches, optional, otherwise, regex, routed, sequence, token, transform, when } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
 import {
@@ -15,6 +15,7 @@ import { run } from '../../src/functional/run.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
+import { FAIL } from '../../src/table/cell.ts'
 import type { ParseContext } from '../../src/types.ts'
 
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
@@ -149,7 +150,238 @@ function earlierChoicePlan(): { readonly prog: TableProgram; readonly calls: () 
   return { prog: ownTableProgram({ ...raw, k: constants }), calls: () => calls }
 }
 
+function fixedChoicePlan(base: RegExp = /(?:[a-z]|\\.)+/i): {
+  readonly parser: ReturnType<typeof choice>
+  readonly prog: TableProgram
+  readonly calls: () => number
+  readonly stacks: () => readonly string[]
+} {
+  const opener = (): ReturnType<typeof token> => token(sequence(
+    regex(base),
+    optional(literal('(')),
+  ))
+  const selector = opener()
+  const classified = dispatch(
+    selector,
+    when('each(', sequence(routed(), literal('!')), { caseInsensitive: true }),
+    when(matches(/^(?!(?:url|calc)\($).+\($/i), sequence(routed(), literal('?'))),
+  )
+  const parser = choice(transform(classified, value => value), opener(), literal('!'))
+  const raw = encodeTable({ Entry: parser, Dispatch: classified })
+  expect(raw.tokenPlan?.choiceSites).toHaveLength(3)
+  let calls = 0
+  const stacks: string[] = []
+  const constants = raw.k.map(value => {
+    if (!(value instanceof RegExp) || value.source !== base.source) return value
+    const copy = new RegExp(value.source, `${value.flags.replace(/[gy]/g, '')}y`)
+    const exec = copy.exec
+    copy.exec = function (input: string) {
+      calls++
+      stacks.push(new Error().stack ?? '')
+      return exec.call(this, input)
+    }
+    return copy
+  })
+  return { parser, prog: ownTableProgram({ ...raw, k: constants }), calls: () => calls, stacks: () => stacks }
+}
+
+function fixedFailurePlan(): {
+  readonly parser: ReturnType<typeof choice>
+  readonly prog: TableProgram
+} {
+  const opener = (): ReturnType<typeof token> => token(sequence(
+    regex(/(?:[a-z]|\\.)+/i),
+    optional(literal('(')),
+  ))
+  const classified = dispatch(
+    opener(),
+    when('each(', sequence(routed(), literal('!')), { caseInsensitive: true }),
+    when(matches(/^(?!(?:url|calc)\($).+\($/i), sequence(routed(), literal('?'))),
+  )
+  const parser = choice(
+    transform(classified, value => value),
+    sequence(opener(), literal('#')),
+  )
+  return { parser, prog: encodeTable({ Entry: parser }) }
+}
+
+function staleFixedPlan(): {
+  readonly parser: ReturnType<typeof choice>
+  readonly prog: TableProgram
+  readonly calls: () => number
+} {
+  const base = /(?:[a-z]|\\.)+/i
+  const opener = (): ReturnType<typeof token> => token(sequence(regex(base), optional(literal('('))))
+  const classifier = (exact: string, exactTerm: string, genericTerm: string): ReturnType<typeof dispatch> => dispatch(
+    opener(),
+    when(exact, sequence(routed(), literal(exactTerm)), { caseInsensitive: true }),
+    when(matches(/^(?!(?:url|calc)\($).+\($/i), sequence(routed(), literal(genericTerm))),
+  )
+  const first = classifier('each(', '?', '!')
+  const second = classifier('foo(', '!', '#')
+  const parser = choice(sequence(first, literal('$')), second)
+  const raw = encodeTable({
+    Entry: parser,
+    AnchorFirst: choice(transform(first, value => value), opener()),
+    AnchorSecond: choice(transform(second, value => value), opener()),
+  })
+  expect(raw.tokenPlan?.choiceSites).toHaveLength(6)
+  let calls = 0
+  const constants = raw.k.map(value => {
+    if (!(value instanceof RegExp) || value.source !== base.source) return value
+    const copy = new RegExp(value.source, `${value.flags.replace(/[gy]/g, '')}y`)
+    const exec = copy.exec
+    copy.exec = function (input: string) { calls++; return exec.call(this, input) }
+    return copy
+  })
+  return { parser, prog: ownTableProgram({ ...raw, k: constants }), calls: () => calls }
+}
+
+function emittedFunction(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`)
+  if (start < 0) return ''
+  const open = source.indexOf('{', start)
+  let depth = 0
+  for (let i = open; i < source.length; i++) {
+    const c = source.charCodeAt(i)
+    if (c === 123) depth++
+    else if (c === 125 && --depth === 0) return source.slice(start, i + 1)
+  }
+  return ''
+}
+
 describe('table token stream runtime', () => {
+  it('fuses the fixed opener and two outcomes into one cached site decision', async () => {
+    for (const mode of ['closure', 'emitted', 'precompiled'] as const) {
+      for (const input of ['EaCh(!', 'ordinary(?', 'url(', 'calc(', 'bare', 'escaped\\(']) {
+        const counted = fixedChoicePlan()
+        const prog = mode === 'closure' ? { ...counted.prog, asm: [] }
+          : mode === 'precompiled' ? precompiled(counted.prog) : counted.prog
+        const actual = run(tableRules(prog).Entry!, input)
+        const expected = run(counted.parser, input)
+        expect(actual, `${mode} ${input}`).toMatchObject({
+          ok: expected.ok, value: expected.value, expected: expected.expected, unconsumedFrom: expected.unconsumedFrom,
+        })
+        expect(counted.calls(), `${mode} ${input} base scans`).toBe(input === '!' ? 0 : 1)
+        if (counted.stacks().length > 0) {
+          const genericFrame = mode === 'closure' ? 'recognizeToken' : '_tokRecognize'
+          expect(counted.stacks().join('\n'), `fixed ${mode} bypasses the generic recognizer call`)
+            .not.toContain(genericFrame)
+        }
+      }
+    }
+
+    const structural = fixedChoicePlan().prog
+    const emitted = emitAssemblySource(resolveTable(structural), structural, STRICT).source
+    const fixed = emittedFunction(emitted, '_tc0')
+    expect(fixed).toContain('let end=_rec')
+    expect(fixed).toContain('_pfTokOutcome=')
+    expect(fixed).not.toContain('_tokRecognize')
+    expect(fixed).not.toContain('_td')
+
+    const generic = countedChoicePlan().prog
+    const genericSource = emittedFunction(emitAssemblySource(resolveTable(generic), generic, STRICT).source, '_tc0')
+    expect(genericSource).toContain('_tokRecognize')
+    expect(genericSource).toContain('_td')
+
+    const loaded = await moduleRules(structural)
+    const loadedEntry = loaded.Entry! as Parameters<typeof run>[0]
+    const originalExec = RegExp.prototype.exec
+    RegExp.prototype.exec = function (input: string): RegExpExecArray | null {
+      if ((new Error().stack ?? '').includes('_tokRecognize')) {
+        throw new Error('module entered generic token recognition')
+      }
+      return originalExec.call(this, input)
+    }
+    try {
+      for (const input of ['EaCh(!', 'ordinary(?', 'url(', 'bare', 'escaped\\(']) {
+        expect(run(loadedEntry, input)).toMatchObject(run(fixedChoicePlan().parser, input))
+      }
+    } finally {
+      RegExp.prototype.exec = originalExec
+    }
+  })
+
+  it('keeps bounded-dot line terminator semantics and fixed cursor reentry exact', async () => {
+    const lineBase = /(?:[a-z\r\n\u2028\u2029]|\\.)+/i
+    const inputs = ['a\n(', 'a\r(', 'a\u2028(', 'a\u2029(']
+    const structural = fixedChoicePlan(lineBase)
+    const loaded = await moduleRules(structural.prog)
+    const loadedEntry = loaded.Entry! as Parameters<typeof run>[0]
+    for (const mode of ['closure', 'emitted', 'precompiled'] as const) {
+      for (const input of inputs) {
+        const counted = fixedChoicePlan(lineBase)
+        const prog = mode === 'closure' ? { ...counted.prog, asm: [] }
+          : mode === 'precompiled' ? precompiled(counted.prog) : counted.prog
+        expect(run(tableRules(prog).Entry!, input), `${mode} ${JSON.stringify(input)}`)
+          .toMatchObject(run(counted.parser, input))
+        expect(counted.calls()).toBe(1)
+      }
+    }
+    for (const input of inputs) expect(run(loadedEntry, input)).toMatchObject(run(structural.parser, input))
+
+    const counted = fixedChoicePlan()
+    const prog = { ...counted.prog, asm: [] }
+    const asm = assemble(resolveTable(prog), prog, STRICT)
+    const outer = createParseContext(), inner = createParseContext()
+    asm.begin(outer)
+    expect(asm.pieces.Entry!('bare', 0, outer)).not.toBe(false)
+    expect(counted.calls()).toBe(1)
+    asm.begin(inner)
+    expect(asm.pieces.Entry!('ordinary(?', 0, inner)).not.toBe(false)
+    expect(counted.calls()).toBe(2)
+    asm.finish()
+    expect(asm.pieces.Dispatch!('bare', 0, outer)).toBe(FAIL)
+    expect(counted.calls(), 'restored outer no-route decision was reused').toBe(2)
+    asm.finish()
+    asm.begin(outer)
+    expect(asm.pieces.Entry!('bare', 0, outer)).not.toBe(false)
+    expect(counted.calls(), 'outer finish released the fixed cursor').toBe(3)
+    asm.finish()
+  })
+
+  it('preserves deferred no-route expectations and selected-route commitment', async () => {
+    const fixture = fixedFailurePlan()
+    expect(fixture.prog.tokenPlan?.choiceSites).toHaveLength(3)
+    const loaded = await moduleRules(fixture.prog)
+    const engines = [
+      tableRules({ ...fixture.prog, asm: [] }).Entry!,
+      tableRules(fixture.prog).Entry!,
+      tableRules(precompiled(fixture.prog)).Entry!,
+      loaded.Entry!,
+    ]
+    for (const input of ['bare', 'url(', 'calc(', 'ordinary(!', 'each(?']) {
+      const source = fixture.parser.parse(input, 0, createParseContext())
+      if (source.ok) throw new Error(`source unexpectedly accepted ${input}`)
+      for (const entry of engines) {
+        const ctx = createParseContext()
+        const actual = entry(input, 0, ctx) as typeof source
+        expect(actual, input).toEqual(source)
+        expect({ expected: ctx._fx, start: ctx._fe, committed: ctx._fc }, input).toEqual({
+          expected: source.expected,
+          start: source.span.start,
+          committed: source.committed ?? false,
+        })
+      }
+    }
+  })
+
+  it('reclassifies a shared family range for a different site without rescanning', async () => {
+    for (const mode of ['closure', 'emitted', 'precompiled'] as const) {
+      const fixture = staleFixedPlan()
+      const prog = mode === 'closure' ? { ...fixture.prog, asm: [] }
+        : mode === 'precompiled' ? precompiled(fixture.prog) : fixture.prog
+      const actual = run(tableRules(prog).Entry!, 'foo(!')
+      expect(actual, mode).toMatchObject(run(fixture.parser, 'foo(!'))
+      expect(actual.ok, mode).toBe(true)
+      expect(fixture.calls(), `${mode} shared base scans`).toBe(1)
+    }
+    const fixture = staleFixedPlan()
+    const loaded = await moduleRules(fixture.prog)
+    expect(run(loaded.Entry! as Parameters<typeof run>[0], 'foo(!'))
+      .toMatchObject(run(fixture.parser, 'foo(!'))
+  })
+
   it('routes one atomic range and preserves canonical miss diagnostics', () => {
     const { parser, prog } = manualPlan()
     const closure = tableRules({ ...prog, asm: [] }).Dispatch!

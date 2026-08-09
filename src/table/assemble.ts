@@ -129,7 +129,7 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
 import {
   makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
-import { runtimeChoiceAnchorsSite, runtimeRangeOutcomeKind } from './token-outcome.ts'
+import { runtimeChoiceAnchorsSite, runtimeFixedChoiceDecision, runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /**
  * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?
@@ -783,6 +783,90 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     choiceCursor!.routeFlags = flags
     return selected
   }
+  /**
+   * The one production token-stream choice shape, linked into one local call.
+   *
+   * The generic recognizer/classifier remain the correctness fallback for every
+   * other wire shape. This proof admits only the canonical atomic opener used by
+   * the anchored stream: a regex base followed by one optional, case-sensitive
+   * one-code-unit suffix, then two ordered singleton routes (exact, followed by
+   * the bounded function-open predicate). Keeping the proof here makes the hot
+   * closure parser-free and avoids reinterpreting the recognizer TLV per call.
+   */
+  function specializedChoiceDecision(plan: TokenSitePlan): ((input: string, pos: number) => boolean) | undefined {
+    const shape = runtimeFixedChoiceDecision(wire, k, plan)
+    if (shape === undefined) return undefined
+    const baseIndex = k.indexOf(shape.base)
+    if (baseIndex < 0) return undefined
+    let recognizeBase = scalarRecognizers[baseIndex]
+    if (recognizeBase === undefined) {
+      // Token IR accepts authored regex constants, while the ordinary scalar
+      // terminal pool expects a sticky recognizer. Use the same normalization
+      // as compileLexAt so a manually serialized non-sticky plan stays exact.
+      const base = shape.base.sticky
+        ? shape.base
+        : new RegExp(shape.base.source, `${shape.base.flags.replace(/[gy]/g, '')}y`)
+      recognizeBase = makeScalarRecognizer(OP_RX, base)
+      if (recognizeBase === undefined) return undefined
+      scalarRecognizers[baseIndex] = recognizeBase
+    }
+    return (input, pos) => {
+      let packed: number
+      let fresh = false
+      if (cursor.input === input && cursor.start === pos && cursor.context === 0
+        && cursor.family === plan.family && cursor.recognizer === plan.recognizer) packed = cursor.packed
+      else {
+        let end = recognizeBase(input, pos)
+        if (end >= 0 && input.charCodeAt(end) === 40) end++
+        packed = end < 0 ? -1 : 2 * end
+        fresh = true
+        cursor.input = input
+        cursor.start = pos
+        cursor.context = 0
+        cursor.family = plan.family
+        cursor.recognizer = plan.recognizer
+        cursor.packed = packed
+      }
+      if (packed < 0) {
+        if (fresh) {
+          cursor.outcome = -1
+          choiceCursor!.site = -1
+          choiceCursor!.route = -2
+          choiceCursor!.routeFlags = 0
+        }
+        return false
+      }
+      if (!fresh && choiceCursor!.site === plan.dispatch) return choiceCursor!.route === -2
+      const end = packed / 2
+      let outcome = -1, route = -2, routeFlags = 0
+      if (tokenRangeEquals(input, pos, end, shape.exact, shape.exactFold)) {
+        outcome = shape.exactOutcome
+        route = shape.exactArm
+        routeFlags = shape.exactFlags
+      }
+      else if (end > pos + 1 && input.charCodeAt(end - 1) === 40
+        && !tokenRangeHasLineTerminator(input, pos, end)
+        && !tokenRangeEquals(input, pos, end, 'url(', true)
+        && !tokenRangeEquals(input, pos, end, 'calc(', true)) {
+        outcome = shape.genericOutcome
+        route = shape.genericArm
+        routeFlags = shape.genericFlags
+      }
+      cursor.outcome = outcome
+      choiceCursor!.site = plan.dispatch
+      choiceCursor!.route = route
+      choiceCursor!.routeFlags = routeFlags
+      return route === -2
+    }
+  }
+  const choiceDecisions = new Map<number, (input: string, pos: number) => boolean>()
+  if (choices !== undefined) {
+    for (const relation of choices.values()) {
+      if (choiceDecisions.has(relation.token.dispatch)) continue
+      const decision = specializedChoiceDecision(relation.token)
+      if (decision !== undefined) choiceDecisions.set(relation.token.dispatch, decision)
+    }
+  }
   function resetCursor(): void {
     cursor.input = undefined
     cursor.start = cursor.context = cursor.family = cursor.recognizer = cursor.packed = cursor.outcome = -1
@@ -796,6 +880,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     wire: tokenWire, sites: tokenSites, producers: tokenProducers, matchers: tokenMatchers,
     choices, choiceDispatches,
     cursor, choiceCursor, recognize: recognizeToken, classify: classifyToken,
+    choiceDecision(plan: TokenSitePlan): ((input: string, pos: number) => boolean) | undefined {
+      return choiceDecisions.get(plan.dispatch)
+    },
     begin(nested: boolean): void {
       if (nested) frames.push([
         cursor.input, cursor.start, cursor.context, cursor.family, cursor.recognizer, cursor.packed, cursor.outcome,
@@ -2310,11 +2397,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const armFx: (string[])[] = new Array<string[]>(n)
         for (let i = 0; i < n; i++) armFx[i] = fx[code[base + n + i]!] as string[]
         const tokenChoice = tokenChoices?.get(ip)
-        const tokenSkip = tokenChoice === undefined ? undefined : (input: string, pos: number): boolean => {
+        const specializedTokenSkip = tokenChoice === undefined ? undefined : tokenRuntime!.choiceDecision(tokenChoice.token)
+        const tokenSkip = specializedTokenSkip ?? (tokenChoice === undefined ? undefined : (input: string, pos: number): boolean => {
           const packed = tokenRuntime!.recognize(input, pos, tokenChoice.token)
-          return packed >= 0
-            && tokenRuntime!.classify(input, pos, packed / 2, tokenChoice.token) === -2
-        }
+          return packed >= 0 && tokenRuntime!.classify(input, pos, packed / 2, tokenChoice.token) === -2
+        })
 
         // THE TWO CHOICE SHAPES ARE TWO PIECES. `exec.ts` tested `table.exclusive`
         // on every choice execution; it is table data, so it selects here.

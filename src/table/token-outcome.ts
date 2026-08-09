@@ -6,6 +6,35 @@ export type RuntimeRangeOutcomeKind =
   | 'ascii-prefix'
   | 'function-open-excluding-url-calc'
 
+type RuntimeFixedChoiceWire = {
+  readonly recognizerOffsets: readonly number[]
+  readonly recognizerData: readonly number[]
+  readonly outcomeOffsets: readonly number[]
+  readonly outcomeData: readonly number[]
+  readonly routes: readonly number[]
+  readonly accepted: readonly number[]
+}
+
+type RuntimeFixedChoicePlan = {
+  readonly recognizer: number
+  readonly family: number
+  readonly routeStart: number
+  readonly routeCount: number
+}
+
+/** Assembly-time projection of the one bounded choice decision we inline. */
+export type RuntimeFixedChoiceDecision = {
+  readonly base: RegExp
+  readonly exact: string
+  readonly exactFold: boolean
+  readonly exactOutcome: number
+  readonly exactArm: number
+  readonly exactFlags: number
+  readonly genericOutcome: number
+  readonly genericArm: number
+  readonly genericFlags: number
+}
+
 type RuntimeChoiceWire = {
   readonly sites: readonly number[]
   readonly choiceSites?: readonly number[]
@@ -89,4 +118,68 @@ export function runtimeRangeOutcomeKind(
       || code >= 48 && code <= 57 || code === 95 || code === 45)) return undefined
   }
   return 'ascii-prefix'
+}
+
+/**
+ * Prove and project the bounded atomic-opener decision shared by closure and
+ * emitted assembly. Anything outside this exact shape stays on the generic
+ * recognizer/classifier path.
+ */
+export function runtimeFixedChoiceDecision(
+  wire: RuntimeFixedChoiceWire,
+  constants: readonly unknown[],
+  plan: RuntimeFixedChoicePlan,
+): RuntimeFixedChoiceDecision | undefined {
+  const at = wire.recognizerOffsets[plan.recognizer]
+  if (at === undefined || at < 0 || wire.recognizerData[at] !== 3 || wire.recognizerData[at + 2] !== 2) return undefined
+  const lexEnd = at + wire.recognizerData[at + 1]!
+  const baseAt = at + 3
+  if (wire.recognizerData[baseAt] !== 2 || wire.recognizerData[baseAt + 1] !== 3) return undefined
+  const base = constants[wire.recognizerData[baseAt + 2]!]
+  const repeatAt = baseAt + 3
+  if (!(base instanceof RegExp) || wire.recognizerData[repeatAt] !== 5
+    || wire.recognizerData[repeatAt + 2] !== 0 || wire.recognizerData[repeatAt + 3] !== 1
+    || wire.recognizerData[repeatAt + 4] !== 1 || wire.recognizerData[repeatAt + 5] !== 0) return undefined
+  const suffixAt = repeatAt + 6
+  if (wire.recognizerData[suffixAt] !== 0 || wire.recognizerData[suffixAt + 1] !== 4
+    || wire.recognizerData[suffixAt + 3] !== 0 || suffixAt + 4 !== lexEnd
+    || constants[wire.recognizerData[suffixAt + 2]!] !== '(' || plan.routeCount !== 2) return undefined
+
+  const route = (index: number): { arm: number; flags: number; outcome: number } | undefined => {
+    const ri = plan.routeStart + index * 4
+    const arm = wire.routes[ri], flags = wire.routes[ri + 1]
+    const acceptedAt = wire.routes[ri + 2], acceptedCount = wire.routes[ri + 3]
+    const outcome = acceptedAt === undefined ? undefined : wire.accepted[acceptedAt]
+    if (!Number.isInteger(arm) || arm! < 0 || !Number.isInteger(flags)
+      || !Number.isInteger(acceptedAt) || acceptedAt! < 0 || acceptedCount !== 1
+      || !Number.isInteger(outcome) || outcome! < 0) return undefined
+    return { arm: arm!, flags: flags!, outcome: outcome! }
+  }
+  const exactRoute = route(0), genericRoute = route(1)
+  if (exactRoute === undefined || genericRoute === undefined
+    || (exactRoute.flags & 3) !== 0 || (genericRoute.flags & 3) !== 1) return undefined
+  const outcomeAt = (id: number): number => {
+    for (const offset of wire.outcomeOffsets) if (wire.outcomeData[offset] === id) return offset
+    return -1
+  }
+  const exactAt = outcomeAt(exactRoute.outcome), matcherAt = outcomeAt(genericRoute.outcome)
+  if (exactAt < 0 || matcherAt < 0 || exactRoute.outcome === genericRoute.outcome
+    || wire.outcomeData[exactAt + 1] !== plan.family || wire.outcomeData[matcherAt + 1] !== plan.family
+    || wire.outcomeData[exactAt + 2] !== 0 || wire.outcomeData[matcherAt + 2] !== 3) return undefined
+  const exact = constants[wire.outcomeData[exactAt + 3]!]
+  const matcher = constants[wire.outcomeData[matcherAt + 3]!]
+  const exactFold = wire.outcomeData[exactAt + 4]
+  if (typeof exact !== 'string' || !(matcher instanceof RegExp) || exactFold !== 0 && exactFold !== 1
+    || runtimeRangeOutcomeKind('matches', matcher.source, matcher.flags) !== 'function-open-excluding-url-calc') return undefined
+  return {
+    base,
+    exact,
+    exactFold: exactFold === 1,
+    exactOutcome: exactRoute.outcome,
+    exactArm: exactRoute.arm,
+    exactFlags: exactRoute.flags,
+    genericOutcome: genericRoute.outcome,
+    genericArm: genericRoute.arm,
+    genericFlags: genericRoute.flags,
+  }
 }
