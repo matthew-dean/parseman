@@ -10,7 +10,7 @@ import {
   ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram,
 } from '../../src/table/program.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_CHOICE } from '../../src/table/ops.ts'
+import { OP_CHOICE, OP_DISPATCH, OP_XFORM } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -306,6 +306,24 @@ describe('table token stream runtime', () => {
     })
     expect(() => run(tableRules({ ...malformed, asm: [] }).Entry!, 'foo!')).toThrow('invalid token or family')
     expect(() => run(tableRules(malformed).Entry!, 'foo!')).toThrow()
+
+    const activeRecognizer = plan.sites[1]! - 3
+    const at = plan.recognizerOffsets[activeRecognizer]!
+    const holeOffsets = [...plan.recognizerOffsets]
+    holeOffsets[activeRecognizer] = -1
+    const outOfRangeOffsets = [...plan.recognizerOffsets]
+    outOfRangeOffsets[activeRecognizer] = plan.recognizerData.length + 1
+    const malformedWires = [
+      { ...plan, recognizerOffsets: holeOffsets },
+      { ...plan, recognizerOffsets: outOfRangeOffsets },
+      { ...plan, recognizerData: [...plan.recognizerData, 0] },
+    ]
+    expect(at).toBeGreaterThanOrEqual(0)
+    for (const tokenPlan of malformedWires) {
+      const direct = ownTableProgram({ ...prog, tokenPlan })
+      expect(() => emitAssemblySource(resolveTable(direct), direct, STRICT))
+        .toThrow('malformed token-plan recognizer')
+    }
   })
 
   it('keeps inactive closure assemblies on the exact legacy allocation and boundary shape', () => {
@@ -447,14 +465,66 @@ describe('table token stream runtime', () => {
     const resolved = resolveTable(raw)
     const choiceIp = [...reachableIps(raw)].find(ip => raw.code[ip] === OP_CHOICE
       && resolved.disp[raw.code[ip + 1]!]!.exclusive)!
+    const validChoice = raw.tokenPlan!.choiceSites![0]!
+    const validArm = raw.tokenPlan!.choiceSites![1]!
+    const wrongSites = [...raw.tokenPlan!.sites]
+    wrongSites[0] = wrongSites[0]! + 1
+    const malformedPlans = [
+      { ...raw.tokenPlan!, choiceSites: [choiceIp, 0, 0] },
+      { ...raw.tokenPlan!, choiceSites: [validChoice, validArm + 1, 0] },
+      { ...raw.tokenPlan!, sites: wrongSites },
+    ]
+    const { tokenPlan: _plan, ...legacyData } = raw
+    const legacy = ownTableProgram(legacyData)
+    for (const tokenPlan of malformedPlans) {
+      const planted = ownTableProgram({ ...raw, tokenPlan })
+      expect(assemblyShape(planted)).toEqual(assemblyShape(legacy))
+      for (const entry of [tableRules({ ...planted, asm: [] }).Entry!, tableRules(planted).Entry!]) {
+        expect(run(entry, 'ff!')).toMatchObject({ ok: true, unconsumedFrom: null })
+      }
+      const source = emitAssemblySource(resolveTable(planted), planted, STRICT).source
+      expect(source).not.toContain('function _tc')
+      expect(source).not.toContain('_pfTokInput')
+      expect(source).not.toContain('_tokRecognize')
+    }
+  })
+
+  it('defensively declines two token relations owned by one choice', () => {
+    const first = token(regex(/[a-z]+/))
+    const second = token(regex(/[a-z]+/))
+    const firstDispatch = dispatch(first, when('aa', literal('!')))
+    const secondDispatch = dispatch(second, when('bb', literal('?')))
+    const ambiguous = choice(
+      transform(firstDispatch, value => value),
+      transform(secondDispatch, value => value),
+      first,
+    )
+    const raw = encodeTable({
+      Entry: ambiguous,
+      FirstAnchor: choice(transform(firstDispatch, value => value), first),
+      SecondAnchor: choice(transform(secondDispatch, value => value), second),
+    })
+    const plan = raw.tokenPlan!
+    expect(plan.sites).toHaveLength(8)
+    const ambiguousIp = [...reachableIps(raw)].find(ip => {
+      if (raw.code[ip] !== OP_CHOICE || raw.code[ip + 2]! < 2) return false
+      for (const arm of [0, 1]) {
+        const xf = raw.code[ip + 4 + arm]!
+        if (raw.code[xf] !== OP_XFORM || raw.code[raw.code[xf + 2]!] !== OP_DISPATCH) return false
+      }
+      return true
+    })!
     const planted = ownTableProgram({
       ...raw,
-      tokenPlan: { ...raw.tokenPlan!, choiceSites: [choiceIp, 0, 0] },
+      tokenPlan: { ...plan, choiceSites: [ambiguousIp, 0, 0, ambiguousIp, 1, 1] },
     })
-    for (const entry of [tableRules({ ...planted, asm: [] }).Entry!, tableRules(planted).Entry!]) {
-      expect(run(entry, 'ff!')).toMatchObject({ ok: true, unconsumedFrom: null })
-    }
-    expect(emitAssemblySource(resolveTable(planted), planted, STRICT).source).not.toContain('function _tc')
+    const { tokenPlan: _plan, ...legacyData } = raw
+    const legacy = ownTableProgram(legacyData)
+
+    expect(assemblyShape(planted)).toEqual(assemblyShape(legacy))
+    const source = emitAssemblySource(resolveTable(planted), planted, STRICT).source
+    expect(source).not.toContain('_pfTokInput')
+    expect(source).not.toContain('_tokRecognize')
   })
 
   it('keeps no-choice and unrelated dispatch closures on the direct route body', () => {

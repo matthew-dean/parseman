@@ -187,11 +187,13 @@ describe('compact lexical token plan wire', () => {
 
   it('omits the whole token plan when no outer arm has the proven shape', () => {
     const head = token(regex(/[a-z]+/))
-    const direct = dispatch(head, otherwise(literal('x')))
+    const plannerOnly = '__planner_only_prefix__'
+    const direct = dispatch(head, when(startsWith(plannerOnly), literal('x')), otherwise(literal('y')))
     const nested = transform(sequence(literal(':'), direct), value => value)
     const prog = encodeTable({ Root: choice(direct, nested) })
 
     expect(prog.tokenPlan).toBeUndefined()
+    expect(prog.k).not.toContain(plannerOnly)
     const module = emitTableModule(prog, { fnSources: prog.fns.map(fn => String(fn)) })
     expect(module).not.toContain('choiceSites:')
     expect(module).not.toContain('q:{')

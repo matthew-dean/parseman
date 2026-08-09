@@ -129,7 +129,7 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
 import {
   makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
-import { runtimeRangeOutcomeKind } from './token-outcome.ts'
+import { runtimeChoiceAnchorsSite, runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /**
  * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?
@@ -370,20 +370,16 @@ function tokenOutcomeWireSupported(wire: TokenPlanWire, id: number, k: readonly 
   return false
 }
 
-function tokenChoiceAnchorsSite(wire: TokenPlanWire, siteIndex: number): boolean {
-  const choices = wire.choiceSites
-  if (choices === undefined || choices.length % 3 !== 0) return false
-  for (let i = 0; i < choices.length; i += 3) {
-    if (choices[i + 2] === siteIndex) return true
-  }
-  return false
-}
-
 /** Allocation-free preflight: an entirely refused plan keeps the legacy assembly shape. */
-function tokenPlanHasSupportedSite(wire: TokenPlanWire, k: readonly unknown[]): boolean {
+function tokenPlanHasSupportedSite(
+  wire: TokenPlanWire,
+  k: readonly unknown[],
+  code: ArrayLike<number>,
+  dispatches: ResolvedTable['disp'],
+): boolean {
   if (wire.sites.length === 0) return false
   for (let i = 0; i < wire.sites.length; i += 4) {
-    if (!tokenChoiceAnchorsSite(wire, i / 4)) continue
+    if (!runtimeChoiceAnchorsSite(wire, i / 4, code, dispatches)) continue
     const routeStart = wire.sites[i + 2]!, routeCount = wire.sites[i + 3]!
     let siteSupported = true
     for (let route = 0; route < routeCount && siteSupported; route++) {
@@ -496,7 +492,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const configuredTokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
     ? prog.tokenPlan
     : undefined
-  const tokenWire = configuredTokenWire !== undefined && tokenPlanHasSupportedSite(configuredTokenWire, k)
+  const tokenWire = configuredTokenWire !== undefined && tokenPlanHasSupportedSite(configuredTokenWire, k, code, disp)
     ? configuredTokenWire
     : undefined
   const tokenRuntime = tokenWire === undefined ? undefined : (() => {
@@ -681,7 +677,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       tokenProducers.set(ip, { dispatch: -1, selectorIp: ip, recognizer, family: familyId, routeStart: 0, routeCount: 0 })
     }
     for (let i = 0; i < tokenWire.sites.length; i += 4) {
-      if (!tokenChoiceAnchorsSite(tokenWire, i / 4)) continue
+      if (!runtimeChoiceAnchorsSite(tokenWire, i / 4, code, disp)) continue
       const di: number = tokenWire.sites[i]!
       const familyId: number = tokenWire.sites[i + 1]!
       let producer: TokenSitePlan | undefined

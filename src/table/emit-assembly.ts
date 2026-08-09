@@ -62,7 +62,7 @@ import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
-import { runtimeRangeOutcomeKind } from './token-outcome.ts'
+import { runtimeChoiceAnchorsSite, runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -505,6 +505,21 @@ export function emitAssemblySource(
     if (!(re instanceof RegExp)) return false
     return runtimeRangeOutcomeKind('matches', re.source, re.flags) !== undefined
   }
+  const tokenRecognizerSupported = (recognizer: number): boolean => {
+    if (!Number.isInteger(recognizer) || recognizer < 0 || recognizer >= (tokenWire?.recognizerOffsets.length ?? 0)) {
+      return false
+    }
+    const at = tokenWire!.recognizerOffsets[recognizer]!
+    if (!Number.isInteger(at) || at < 0 || at + 1 >= tokenWire!.recognizerData.length) return false
+    const size = tokenWire!.recognizerData[at + 1]!
+    if (!Number.isInteger(size) || size < 3 || at + size > tokenWire!.recognizerData.length) return false
+    let next = tokenWire!.recognizerData.length
+    for (let i = recognizer + 1; i < tokenWire!.recognizerOffsets.length; i++) {
+      const candidate = tokenWire!.recognizerOffsets[i]!
+      if (candidate >= 0) { next = candidate; break }
+    }
+    return at + size === next
+  }
   if (tokenWire !== undefined) {
     for (let i = 0; i < tokenWire.tokenSites.length; i += 2) {
       const selectorIp = tokenWire.tokenSites[i]!, family = tokenWire.tokenSites[i + 1]!
@@ -517,16 +532,8 @@ export function emitAssemblySource(
       outcomeById.set(id, [tokenWire.outcomeData[at + 2]!, tokenWire.outcomeData[at + 3] ?? -1, tokenWire.outcomeData[at + 4] ?? 0])
     }
     const reachable = reachableSites(code, roots)
-    const choiceWire = tokenWire.choiceSites
-    const choiceAnchorsSite = (siteIndex: number): boolean => {
-      if (choiceWire === undefined || choiceWire.length % 3 !== 0) return false
-      for (let i = 0; i < choiceWire.length; i += 3) {
-        if (choiceWire[i + 2] === siteIndex) return true
-      }
-      return false
-    }
     for (let i = 0; i < tokenWire.sites.length; i += 4) {
-      if (!choiceAnchorsSite(i / 4)) continue
+      if (!runtimeChoiceAnchorsSite(tokenWire, i / 4, code, disp)) continue
       const di = tokenWire.sites[i]!, family = tokenWire.sites[i + 1]!
       let producer: TokenSitePlan | undefined
       for (const siteIp of reachable) {
@@ -535,6 +542,9 @@ export function emitAssemblySource(
         if (candidate?.family === family) { producer = candidate; break }
       }
       if (producer === undefined) throw new Unemittable('a malformed token-plan dispatch site')
+      if (!tokenRecognizerSupported(producer.recognizer)) {
+        throw new Unemittable('a malformed token-plan recognizer')
+      }
       const routeStart = tokenWire.sites[i + 2]!, routeCount = tokenWire.sites[i + 3]!
       let supported = true
       for (let route = 0; route < routeCount && supported; route++) {
