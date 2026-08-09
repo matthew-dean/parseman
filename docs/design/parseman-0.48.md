@@ -59,21 +59,23 @@ grammar combinators
 compact TableProgram
         |
         v
-assembly-selected shared pieces
+assembly-linked shared or site-specialized pieces
         |
         v
 interpreter / runtime compile / macro / compose / rule map / folded variants
 ```
 
-The variants may select fixed piece bodies at assembly time. They may not become
-parallel parser engines or carry different parsing semantics.
+The compiler decides which body shape each final site uses. Assembly resolves that
+body's fixed children, predicates and routes into direct references; emitted artifacts
+may give the selected site a static local name. The variants may not become parallel
+parser engines or carry different parsing semantics.
 
 The following remain prohibited:
 
 - runtime `new Function` or equivalent source construction;
 - `Object.defineProperty` fast-path metadata;
 - `WeakMap` side metadata;
-- static factory or per-rule source bloat;
+- whole-program static factories or indiscriminate per-rule source duplication;
 - parent-closure multiplication by child category;
 - a second token parser beside the character parser;
 - downward performance baselines or broader release shelves;
@@ -81,6 +83,47 @@ The following remain prohibited:
 
 `TableProgram` remains compact data. Runtime behavior is linked from a bounded
 library of deterministic V8-friendly pieces. CSP safety is unchanged.
+
+### 2.1 Selective static binding, not an all-or-nothing emitter
+
+The earlier static-factory size result rejected emitting a complete duplicate parser
+factory for every rule and assembly. It did **not** show that every combinator should
+remain a generic array-indexed runtime operation. Those are separate questions.
+
+For every final site, the compiler MUST choose the cheapest complete binding shape:
+
+1. a shared generic piece, when its indirection is cheaper than specialization;
+2. an assembly-bound piece with its child pieces, predicates, constants and routes
+   captured directly; or
+3. a statically named emitted body when eliminating the remaining lookup/dispatch is
+   worth that site's source and package cost.
+
+This decision is per site and may produce a mixed artifact. A hot site whose opcode,
+children and route are final must not pay a parse-time opcode switch, `pieces[ip]`
+lookup, optional-plan branch, or array walk merely because colder sites use the shared
+representation. Conversely, a cold or structurally irregular site must not be copied
+into source merely because another site benefits from a named body.
+
+Static naming is therefore a local lowering tool, not a second engine and not a build
+mode. `_pf<site>`-style names may be emitted only for selected sites; other sites keep
+shared pieces. Closure assembly must achieve the equivalent result with direct captured
+references where that is cheaper, without runtime source construction. The compact
+`TableProgram` remains the authority, and all variants preserve one semantic body per
+site.
+
+The cost model compares the whole representation: parse-time calls, branches, indexed
+loads and allocations; one-time assembly work; emitted bytes; package duplication; and
+loaded-module cost. It may not turn the old whole-program factory blow-up into evidence
+against a bounded static site, nor treat the existence of a shared implementation as
+evidence that its indirection is free.
+
+Permanent structural teeth MUST include a mixed grammar where:
+
+- one selected hot site has a direct/named body containing no opcode dispatch,
+  `pieces[ip]` lookup, or unused strategy branch;
+- one cold site remains shared and is not duplicated into emitted source; and
+- changing either site's cost decision makes the tooth RED without changing parse
+  semantics.
 
 ## 3. Leading implementation: tokenized PEG
 
@@ -120,6 +163,11 @@ macro. A parse call never asks whether a token plan is present, never switches b
 token and character recognition, and never runs both. Mixed grammars use different
 statically linked bodies at different sites; they do not use a universal body with a
 parse-time mode branch.
+
+After CHARACTER versus TOKEN is fixed, §2.1's independent binding decision chooses
+whether that selected body is shared, directly captured, or statically named. Neither
+axis permits a parse-time fork, and the rejection of a whole-program static factory
+does not force a selected token or character body back through generic table lookup.
 
 Strategy selection is a strict two-phase compiler operation:
 

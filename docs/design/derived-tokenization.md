@@ -24,6 +24,14 @@ status labels identify which is which.
 > Historical “layer”, “fallback”, and broad-coverage wording in this evidence
 > register does not override that normative rule.
 >
+> Replacement is also **not** an all-or-nothing choice between a compact table and a
+> giant source-generated parser. After the compiler selects CHARACTER or TOKEN, it
+> separately selects the cheapest binding for that site: shared piece, direct captured
+> piece, or statically named emitted body. The historical 38–42× whole-factory growth
+> rejects indiscriminate duplication only. It does not justify an opcode switch,
+> `pieces[ip]` lookup, route-array walk, or unused strategy branch at a final hot site.
+> See [`parseman-0.48.md` §2.1](./parseman-0.48.md#21-selective-static-binding-not-an-all-or-nothing-emitter).
+>
 > Capability is closed **before** cost selection across the entire reachable final
 > composed grammar and every supported assembly variant. Every semantically valid token
 > candidate is built independently of whether the compiler expects to choose it.
