@@ -369,6 +369,13 @@ green. The implementation is rejected; the architecture is not. The next gate is
 frequency-weighted fixed/trie/seeded-kernel census that can produce compatible views
 without a row of native regex calls.
 
+A later exact f478/Jess93 reconciliation separated that ceiling from existing gates.
+On successful `Value` calls, current character gates already avoid 15,452 / 69,428
+earlier-arm entries; a complete direct `.`/`#` proof can remove another 5,083 / 17,629;
+TOKEN compatibility alone can remove the remaining disjoint 2,651 / 9,490. Residual
+compatible retries are 193 / 3,311 for TOKEN versus 2,844 / 12,801 for the completed
+CHARACTER candidate. This is the required executable comparison, not a token verdict.
+
 ### 2.1 Parsing semantics over tokens: three different designs
 
 Moving recognition from characters to tokens creates an LL-style prediction seam,

@@ -356,6 +356,18 @@ ambiguous `MixinArguments` site occurs only five times in `benchmark.less` and z
 times in generated Less. It remains part of capability closure, but coverage is not a
 reason to select it.
 
+The exact `Value` retry partition explains why both candidates must be real. Existing
+character gates already avoid 15,452 / 69,428 earlier-arm entries. A complete direct
+`.`/`#` proof for `attempt(MixinReference)` can remove another 5,083 / 17,629 successful
+retries without token recognition. The compatible TOKEN result removes a disjoint
+additional 2,651 / 9,490 retries and retains every accepting prefix, leaving 193 / 3,311
+compatible PEG retries versus 2,844 / 12,801 for the complete CHARACTER candidate.
+Those are work counters, not timing: the cheaper character gate may still beat the
+larger reduction. The TOKEN candidate must reuse the lead as a seed, share its
+identifier/escape/interpolation, literal/sigil, color/keyword and numeric/dimension
+kernels, and pass cached ends into selected and rollback-later consumers without a
+native-regex candidate loop.
+
 This census is the selection baseline, not timing evidence. Its RED plant removed all
 events and failed the pinned count; the clean source/reference/closure runs retained
 full identity and consumption on CSS (123,029 bytes), `benchmark.less` (106,802), and
