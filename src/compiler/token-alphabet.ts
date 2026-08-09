@@ -790,7 +790,9 @@ export function serializeLexicalPlan(
   const sites: number[] = []
   const routes: number[] = []
   const accepted: number[] = []
-  for (const { dsp, classifier } of [...dispatchSites].sort((a, b) => a.dsp - b.dsp)) {
+  for (const { dsp, classifier } of [...dispatchSites]
+    .filter(site => !site.classifier.selectorEffects)
+    .sort((a, b) => a.dsp - b.dsp)) {
     const routeOffset = routes.length
     for (const route of classifier.routes) {
       const acceptedOffset = accepted.length

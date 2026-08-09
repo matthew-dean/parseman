@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { expandCompact, foldPrograms, type CompactProgram } from '../../src/table/program.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { run } from '../../src/functional/run.ts'
+import { OP_DISPATCH } from '../../src/table/ops.ts'
 import {
   collectLexicalAlphabet, canonicalLexicalOutcomeKey, compatibleLexicalOutcomes, selectedLexicalOutcome,
 } from '../../src/compiler/token-alphabet.ts'
 import {
   dispatch, endsWith, field, literal, makeWhen, otherwise, optional, regex,
-  sequence, startsWith, token, when,
+  ref, sequence, startsWith, token, when,
 } from '../../src/index.ts'
 
 describe('compact lexical token plan wire', () => {
@@ -95,6 +98,48 @@ describe('compact lexical token plan wire', () => {
       recognizers: [], outcomes: [], classifiers: [],
       sites: [{ refusal: 'field is effectful' }],
     })
+  })
+
+  it('keeps a selector reached through an effect-bearing wrapper on legacy dispatch', () => {
+    const head = token(sequence(regex(/[a-z]+/), optional(literal('('))))
+    const selector = ref<string>()
+    selector.define(head)
+    const parser = dispatch(selector, when(endsWith('('), literal('call')), otherwise(literal('ident')))
+    const prog = encodeTable({ Root: parser })
+
+    // The family/token row remains useful to direct consumers, but this
+    // dispatch may not bypass the lazy wrapper whose effects the collector
+    // explicitly records.
+    expect(prog.tokenPlan?.tokenSites).toHaveLength(2)
+    expect(prog.tokenPlan?.sites).toEqual([])
+    const table = execRules(prog).Root!
+    for (const input of ['fooident', 'foo(call', 'foo?']) {
+      expect(run(table, input)).toEqual(run(parser, input))
+    }
+  })
+
+  it('keeps family/outcome namespaces stable with an earlier independent token and root relocation', () => {
+    const simple = token(literal('!'))
+    const head = token(sequence(regex(/[a-z]+/), optional(literal('('))))
+    const routed = dispatch(head, when(endsWith('('), literal('call')), otherwise(literal('ident')))
+    const a = encodeTable({ Simple: simple, Routed: routed }).tokenPlan!
+    const b = encodeTable({ Routed: routed, Simple: simple }).tokenPlan!
+
+    expect(a.recognizerOffsets).toHaveLength(2)
+    expect(a.sites[1]).toBeGreaterThanOrEqual(3)
+    expect(a.outcomeOffsets.map(offset => a.outcomeData[offset])).toEqual(
+      b.outcomeOffsets.map(offset => b.outcomeData[offset]),
+    )
+    expect(a.sites[1]).toBe(b.sites[1])
+    // Site relocation is by the encoded dsp operand, never by authored/root
+    // order or a hard-coded instruction pointer.
+    for (const [prog, plan] of [
+      [encodeTable({ Simple: simple, Routed: routed }), a],
+      [encodeTable({ Routed: routed, Simple: simple }), b],
+    ] as const) {
+      const dsp = plan.sites[0]!
+      expect(prog.code.some((word, ip) => word === OP_DISPATCH && prog.code[ip + 2] === dsp)).toBe(true)
+    }
   })
 
   it('round-trips compact and folded programs without changing the numeric plan', () => {
