@@ -43,7 +43,7 @@ Candidates are rejected for noise, regression, semantic risk, or disproportionat
 not merely for lacking a 5% headline.
 
 The primary orchestrator owns the Jess integration base and agent handoff. The
-currently approved remote base is `origin/dev` at `43cda8b1a1281aa1d98c982b8fd2ffae1aa8b5e9`.
+currently approved remote base is `origin/dev` at `93c67d0ae7be0360a6db35f0cfa055043bca8025`.
 Before delegating Jess-dependent work or accepting a timing run, the primary fetches
 that remote, pushes independently approved Jess-native fixes to it, and requires every
 agent to branch an isolated worktree from the recorded head. Preserved older checkouts
