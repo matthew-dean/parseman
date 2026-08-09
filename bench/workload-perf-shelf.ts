@@ -9,6 +9,8 @@
 import type { Verdict } from './ab-harness.ts'
 
 export type WorkloadShelf = {
+  /** Historical reducer that produced this ceiling. */
+  scoreMethod: 'aggregate-v1'
   /** Largest accepted positive delta in any measured pass. */
   medianPct: number
   /** Largest accepted positive delta in any measured pass. */
@@ -18,11 +20,11 @@ export type WorkloadShelf = {
 }
 
 export const SHELVED_WORKLOADS: Readonly<Record<string, WorkloadShelf>> = {
-  'less/stylesheet': { medianPct: 332.3, minPct: 348.5, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
-  'less/mixins': { medianPct: 329.8, minPct: 344.3, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
-  'css/stylesheet': { medianPct: 309.6, minPct: 333.2, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
-  'graphql/document': { medianPct: 124.7, minPct: 129.6, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
-  'json/document': { medianPct: 145.8, minPct: 146.9, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+  'less/stylesheet': { scoreMethod: 'aggregate-v1', medianPct: 332.3, minPct: 348.5, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+  'less/mixins': { scoreMethod: 'aggregate-v1', medianPct: 329.8, minPct: 344.3, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+  'css/stylesheet': { scoreMethod: 'aggregate-v1', medianPct: 309.6, minPct: 333.2, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+  'graphql/document': { scoreMethod: 'aggregate-v1', medianPct: 124.7, minPct: 129.6, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+  'json/document': { scoreMethod: 'aggregate-v1', medianPct: 145.8, minPct: 146.9, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
 }
 
 export type ShelfRow = {
@@ -74,10 +76,10 @@ export function classifyWorkloadShelves(
       unmeasured.push({ id, shelf })
       continue
     }
-    const worstMedian = Math.max(...row.passes.map(pass => pass.dMedian))
-    const worstMin = Math.max(...row.passes.map(pass => pass.dMin))
+    const worstMedian = Math.max(...row.passes.map(pass => pass.dMedianAggregateV1))
+    const worstMin = Math.max(...row.passes.map(pass => pass.dMinAggregateV1))
     const overCeilingPasses = row.passes.filter(
-      pass => pass.dMedian > shelf.medianPct || pass.dMin > shelf.minPct,
+      pass => pass.dMedianAggregateV1 > shelf.medianPct || pass.dMinAggregateV1 > shelf.minPct,
     ).length
     const checked = { id, shelf, worstMedian, worstMin, overCeilingPasses, totalPasses: row.passes.length }
     if (overCeilingPasses * 2 > row.passes.length) worsened.push(checked)

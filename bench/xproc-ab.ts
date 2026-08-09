@@ -296,9 +296,9 @@ for (const c of cases) {
 
   console.log(
     `  ${suspect ? 'SUSPECT' : 'neutral'}`
-    + `   median-of-rounds ${median(refMed).toFixed(4)} → ${median(headMed).toFixed(4)} ms (${sign(dMed)})`
-    + `   mean ${refMean.toFixed(4)} → ${headMean.toFixed(4)} ms (${sign(dMean)})`
-    + `   best min ${Math.min(...refMin).toFixed(4)} → ${Math.min(...headMin).toFixed(4)} ms (${sign(dMin)} paired)`
+    + `   aggregate medians ${median(refMed).toFixed(4)} → ${median(headMed).toFixed(4)} ms`
+    + `   aggregate means ${refMean.toFixed(4)} → ${headMean.toFixed(4)} ms`
+    + `   paired centers median ${sign(dMed)} mean ${sign(dMean)} floor ${sign(dMin)}`
     + `   head won ${wins}/${ROUNDS} rounds\n`,
   )
 }

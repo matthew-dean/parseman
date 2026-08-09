@@ -42,6 +42,12 @@ export type Measurement = {
   runs: number
 }
 
+/**
+ * The reducer contract for every percentage emitted by this harness. Historical
+ * aggregate-v1 shelf values are not interchangeable with this method.
+ */
+export const SCORE_METHOD = 'paired-ratio-v2' as const
+
 export type Thresholds = {
   medianPct: number
   minPct: number
@@ -356,6 +362,13 @@ function emptySamples(cases: readonly Case[]): Samples {
   return samples
 }
 
+/** Preserve the minima sidecar; `new Map(samples)` alone is not a valid clone. */
+export function copySamples(source: Samples): Samples {
+  const out = new Map([...source].map(([key, values]) => [key, [...values]])) as Samples
+  out.mins = new Map([...source.mins].map(([key, values]) => [key, [...values]]))
+  return out
+}
+
 /** Median of aligned HEAD/REF ratios. Aggregating each side first discards pairing. */
 export function pairedMedianRatio(ref: readonly number[], head: readonly number[]): number {
   if (ref.length !== head.length) {
@@ -369,6 +382,15 @@ export function pairedMedianRatio(ref: readonly number[], head: readonly number[
     ratios.push(b / a)
   }
   return median(ratios)
+}
+
+/** Median aligned HEAD−REF difference. Difference-of-aggregate medians is unpaired. */
+export function pairedMedianDelta(ref: readonly number[], head: readonly number[]): number {
+  if (ref.length !== head.length) {
+    throw new Error(`paired sample lengths differ: ref=${ref.length}, head=${head.length}`)
+  }
+  if (ref.length === 0) throw new Error('paired samples must not be empty')
+  return median(head.map((value, index) => value - ref[index]!))
 }
 
 export function pairedWins(ref: readonly number[], head: readonly number[]): number {
@@ -588,13 +610,18 @@ export function measurePasses(
 }
 
 export type Row = {
+  scorer: typeof SCORE_METHOD
   id: string
   refMedian: number
   headMedian: number
-  refMin: number
-  headMin: number
+  /** Median of aligned sample-median ratios, as a percentage delta. */
   dMedian: number
+  /** Retired ratio-of-medians, retained only for historical shelf comparison. */
+  dMedianAggregateV1: number
+  /** Median of aligned within-sample-minimum ratios, as a percentage delta. */
   dMin: number
+  /** Retired aggregate-v1 floor, retained only for historical shelf comparison. */
+  dMinAggregateV1: number
   wins: number
   pairs: number
   breach: boolean
@@ -611,7 +638,9 @@ export function score(
     const b = samples.get(`head|${id}`)!
     const k = calibration.get(id)!
     const dMedian = (pairedMedianRatio(a, b) - 1) * 100
+    const dMedianAggregateV1 = (median(b) / median(a) - 1) * 100
     const dMin = (pairedMinRatio(samples, `ref|${id}`, `head|${id}`) - 1) * 100
+    const dMinAggregateV1 = (Math.min(...b) / Math.min(...a) - 1) * 100
     const wins = pairedWins(a, b)
     const winRate = wins / b.length
     const large = (dMedian > t.medianPct || dMin > t.minPct) && winRate <= k.ceiling
@@ -619,13 +648,14 @@ export function score(
       && dMedian > t.signTest.medianPct
       && dMin > t.signTest.minPct
     return {
+      scorer: SCORE_METHOD,
       id,
       refMedian: median(a),
       headMedian: median(b),
-      refMin: Math.min(...samples.mins.get(`ref|${id}`)!),
-      headMin: Math.min(...samples.mins.get(`head|${id}`)!),
       dMedian,
+      dMedianAggregateV1,
       dMin,
+      dMinAggregateV1,
       wins,
       pairs: b.length,
       breach: large || small,
