@@ -2845,7 +2845,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         const tokenPlan = tokenSites?.get(di)
         if (tokenPlan !== undefined && tokenWire !== undefined) {
-          return (input, pos, ctx) => {
+          const sharedDecision = tokenChoiceDispatches?.has(di) === true
+          if (sharedDecision) return (input, pos, ctx) => {
             const selectorMark = saveTriviaMark(ctx)
             const packed = tokenRuntime!.recognize(input, pos, tokenPlan)
             if (packed < 0) {
@@ -2863,32 +2864,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (cstCaptureActive(ctx)) pushLeaf(ctx, key, pos, selEnd)
             EC.e = selEnd
             let arm: number | undefined
-            let routeFlags = 0
-            if (tokenChoiceDispatches?.has(di)) {
-              const selected = tokenRuntime!.classify(input, pos, selEnd, tokenPlan)
-              if (selected !== -2) arm = selected
-              routeFlags = tokenRuntime!.choiceCursor!.routeFlags
-            } else {
-              const outcome = tokenRuntime!.cursor.outcome
-              for (let i = 0; i < tokenPlan.routeCount; i++) {
-                const ri = tokenPlan.routeStart + i * 4
-                const acceptedStart = tokenWire.routes[ri + 2]!, acceptedCount = tokenWire.routes[ri + 3]!
-                let accepted = false
-                for (let j = 0; j < acceptedCount; j++) {
-                  const id = tokenWire.accepted[acceptedStart + j]!
-                  if (id === outcome || tokenMatchers!.get(id)!(input, pos, selEnd)) {
-                    accepted = true
-                    tokenRuntime!.cursor.outcome = id
-                    break
-                  }
-                }
-                if (accepted) {
-                  routeFlags = tokenWire.routes[ri + 1]!
-                  arm = (routeFlags & 3) === 2 ? -1 : tokenWire.routes[ri]!
-                  break
-                }
-              }
-            }
+            const selected = tokenRuntime!.classify(input, pos, selEnd, tokenPlan)
+            if (selected !== -2) arm = selected
+            const routeFlags = tokenRuntime!.choiceCursor!.routeFlags
             if (arm === undefined) {
               ctx._fe = selEnd
               ctx._fx = expected
@@ -2910,6 +2888,78 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               usesRouted = (routeFlags & 4) !== 0
             }
 
+            const savedRouted = ctx._routed
+            let mark = saveTriviaMark(ctx)
+            if (usesRouted) {
+              rollbackTrivia(ctx, selectorMark)
+              mark = saveTriviaMark(ctx)
+              ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+            }
+            let v: unknown
+            try {
+              v = target(input, usesRouted ? pos : selEnd, ctx)
+            } finally {
+              if (usesRouted) ctx._routed = savedRouted
+            }
+            if (v === FAIL) {
+              rollbackTrivia(ctx, mark)
+              ctx._fc = true
+              return FAIL
+            }
+            return [key, v]
+          }
+          return (input, pos, ctx) => {
+            const selectorMark = saveTriviaMark(ctx)
+            const packed = tokenRuntime!.recognize(input, pos, tokenPlan)
+            if (packed < 0) {
+              const legacy = selector(input, pos, ctx)
+              if (legacy === FAIL) return FAIL
+              throw new Error('table token stream recognizer disagrees with its selector')
+            }
+            const selEnd = packed / 2
+            const key = input.slice(pos, selEnd)
+            if (cstCaptureActive(ctx)) pushLeaf(ctx, key, pos, selEnd)
+            EC.e = selEnd
+            const outcome = tokenRuntime!.cursor.outcome
+            let arm: number | undefined
+            let routeFlags = 0
+            for (let i = 0; i < tokenPlan.routeCount; i++) {
+              const ri = tokenPlan.routeStart + i * 4
+              const acceptedStart = tokenWire.routes[ri + 2]!, acceptedCount = tokenWire.routes[ri + 3]!
+              let accepted = false
+              for (let j = 0; j < acceptedCount; j++) {
+                const id = tokenWire.accepted[acceptedStart + j]!
+                if (id === outcome || tokenMatchers!.get(id)!(input, pos, selEnd)) {
+                  accepted = true
+                  tokenRuntime!.cursor.outcome = id
+                  break
+                }
+              }
+              if (accepted) {
+                routeFlags = tokenWire.routes[ri + 1]!
+                arm = (routeFlags & 3) === 2 ? -1 : tokenWire.routes[ri]!
+                break
+              }
+            }
+            if (arm === undefined) {
+              ctx._fe = selEnd
+              ctx._fx = expected
+              return FAIL
+            }
+            let target: Piece
+            let usesRouted: boolean
+            if (arm < 0) {
+              if (other === undefined) {
+                ctx._fe = selEnd
+                ctx._fx = expected
+                return FAIL
+              }
+              target = other
+              usesRouted = (routeFlags & 4) !== 0
+            } else {
+              target = arms[arm]!
+              usesRouted = (routeFlags & 4) !== 0
+            }
             const savedRouted = ctx._routed
             let mark = saveTriviaMark(ctx)
             if (usesRouted) {

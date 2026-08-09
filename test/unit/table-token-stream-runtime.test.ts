@@ -444,6 +444,41 @@ describe('table token stream runtime', () => {
     expect(emitAssemblySource(resolveTable(planted), planted, STRICT).source).not.toContain('function _tc')
   })
 
+  it('keeps no-choice and unrelated dispatch closures on the direct route body', () => {
+    const noChoice = manualPlan().prog
+    const noChoiceClosure = { ...noChoice, asm: [] }
+    const directSource = String(assemble(resolveTable(noChoiceClosure), noChoiceClosure, STRICT).pieces.Entry!)
+    expect(directSource).not.toContain('sharedDecision')
+    expect(directSource).not.toContain('classify')
+
+    const relatedSelector = token(regex(/([a-z])\1+/))
+    const unrelatedSelector = token(regex(/[A-Z]+/))
+    const relatedDispatch = dispatch(relatedSelector, when('ff', literal('!')))
+    const grammar = {
+      Related: choice(
+        transform(relatedDispatch, value => value),
+        token(regex(/([a-z])\1+/)),
+      ),
+      RelatedDispatch: relatedDispatch,
+      Unrelated: dispatch(unrelatedSelector, when('ABC', literal('!')), otherwise(literal('?'))),
+    }
+    const prog = encodeTable(grammar)
+    expect(prog.tokenPlan?.choiceSites).toHaveLength(3)
+    const closureProg = { ...prog, asm: [] }
+    const asm = assemble(resolveTable(closureProg), closureProg, STRICT)
+    const unrelatedSource = String(asm.pieces.Unrelated!)
+    const relatedSource = String(asm.pieces.RelatedDispatch!)
+    // RED provenance: restoring the 5064 shared-decision branch to every hot
+    // dispatch puts `sharedDecision`/`classify` in `unrelatedSource`; removing
+    // the related body makes the positive assertion fail.
+    expect(unrelatedSource).not.toContain('sharedDecision')
+    expect(unrelatedSource).not.toContain('classify')
+    expect(relatedSource).toContain('classify')
+    const map = tableRules(closureProg)
+    expect(run(map.Unrelated!, 'ABC!')).toMatchObject({ ok: true, unconsumedFrom: null })
+    expect(run(map.Related!, 'bb')).toMatchObject({ ok: true, unconsumedFrom: null })
+  })
+
   it('restores routed state on a throwing hot route in closure, emitted, precompiled, and module engines', async () => {
     const parser = dispatch(
       token(regex(/[a-z]+/)),
