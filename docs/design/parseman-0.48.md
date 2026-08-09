@@ -1,9 +1,9 @@
 # Parseman 0.48 architecture and release specification
 
-**Status:** active implementation specification  
-**Release branch:** `release/0.48.0`  
-**Primary performance architecture:** tokenized PEG over the canonical compact
-`TableProgram`  
+- **Status:** active implementation specification
+- **Release branch:** `release/0.48.0`
+- **Primary performance architecture:** tokenized PEG over the canonical compact
+  `TableProgram`
 **Detailed evidence registers:**
 [`derived-tokenization.md`](./derived-tokenization.md),
 [`RELEASE-0.48-TARGET.md`](../../notes/RELEASE-0.48-TARGET.md), and
