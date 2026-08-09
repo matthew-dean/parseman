@@ -9,16 +9,11 @@
  *
  * ## Why text, and not a rearrangement of `assemble.ts`
  *
- * V8 attaches inline-cache feedback per FUNCTION LITERAL, not per closure. The
- * second closure minted from a `CreateClosure` site moves its `FeedbackCell` to
- * `kManyClosures`, and the vector is shared from then on. `assemble.ts` mints 18
- * arity-2 `SEQV` closures for `less/stylesheet` from ONE literal, so the two
- * child call sites inside that literal see 18 unrelated callees and go
- * megamorphic — a hash lookup in the megamorphic stub cache, no inlining, no
- * type feedback for the callee body. No rearrangement of a file that MINTS
- * closures can produce a distinct literal per site. Emitting one
- * `function _pf<N>` per site can: inside `_pf12` the call `_pf7(…)` names ONE
- * binding and stays monomorphic.
+ * Emission makes each fixed grammar edge a direct generated identifier and is
+ * also the form a build can serialise as an ordinary function literal for CSP.
+ * The closure assembler can bind the same topology directly through scalar
+ * captures; emission's distinct job is to print that binding, not to assert a
+ * V8 property that the semantic design depends on.
  *
  * ## What may be shared, and what must be emitted
  *
@@ -374,7 +369,11 @@ export type PoolPlan = {
   readonly classes: readonly (readonly number[])[]
   /** Per `AFX` row: the `fx` index of each arm's expected set. */
   readonly armExpected: readonly (readonly number[])[]
-  /** Per `MASK` row: the `CLS` index the mask is computed from. */
+  /**
+   * Per `MASK` row: a non-negative legacy `CLS` row index, or `~dispIndex` for
+   * a directly bound choice. The negative form names the EXISTING resolved
+   * dispatch row rather than serialising a second copy of its arm classes.
+   */
   readonly masks: readonly number[]
 }
 
@@ -412,13 +411,18 @@ function maskForClassRow(gates: readonly (ResolvedClass | null)[]): Uint32Array 
 export function rebuildPools(
   cc: readonly ResolvedClass[],
   fx: readonly (readonly string[])[],
+  disp: ResolvedTable['disp'],
   plan: PoolPlan,
 ): { masks: Uint32Array[]; classes: (ResolvedClass | null)[][]; armExpected: (readonly string[])[][] } {
   const classes = plan.classes.map(row => row.map(i => (i < 0 ? null : cc[i] ?? null)))
   return {
     classes,
     armExpected: plan.armExpected.map(row => row.map(i => fx[i] ?? [])),
-    masks: plan.masks.map(ci => maskForClassRow(classes[ci]!)),
+    masks: plan.masks.map(source => {
+      const row = source >= 0 ? classes[source] : disp[~source]?.armCls
+      if (row === undefined) throw new TypeError(`table emitter: invalid MASK plan source ${source}`)
+      return maskForClassRow(row)
+    }),
   }
 }
 
@@ -535,6 +539,7 @@ export function emitAssemblySource(
   const reached = new Set<number>()
   const prelude: string[] = []
   const skipDefs: string[] = []
+  const choiceDefs: string[] = []
   const skipPool = new Map<string, string>()
   const pool = new Map<string, string>()
   const masks: Uint32Array[] = []
@@ -1310,11 +1315,6 @@ return v
         const base = ip + 4
         const arms: string[] = []
         for (let i = 0; i < n; i++) arms.push(link(code[base + i]!))
-        const axi = armExpected.push(
-          Array.from({ length: n }, (_, i) => t.fx[code[base + n + i]!] as readonly string[]),
-        ) - 1
-        armExpectedPlan.push(Array.from({ length: n }, (_, i) => code[base + n + i]!))
-        const afx = hoist('afx', `AFX[${axi}]`)
 
         if (table.exclusive) {
           // NO OPEN ARMS EXIST under `exclusive` — `resolveDispatch` clears the
@@ -1348,52 +1348,51 @@ return FAIL
 }`
         }
 
-        // THE PER-ARM GATE. `assemble.ts` precomputes a candidate bitmask so one
-        // `Uint32Array` load replaces `n` class tests, then walks the set bits
-        // through `arms[i]`. The mask survives here; the indexed CALL does not.
-        const ci = classes.push(Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)) - 1
-        // `resolveDispatch` builds `armCls[a]` as `cc[disp[di][a]]`, or null when
-        // that index is negative (program.ts:419-423), so the arm's CLASS INDEX
-        // is the dispatch row itself. Nothing is re-derived here.
-        classPlan.push(Array.from({ length: n }, (_, i) => prog.disp[code[ip + 1]!]![i] ?? -1))
-        const gates = classes[ci]!
-        const gRef = hoist('g', `CLS[${ci}]`)
-        const maskable = n <= 32
-        let maskName = ''
-        if (maskable) {
-          maskName = hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
-          // The mask is a pure function of `gates`, i.e. of `CLS[ci]`, so the
-          // plan records the class-pool index rather than 129 words per site.
-          maskPlan.push(ci)
-        }
-        const p = tmp()
-        // THE SKIPPED ARMS' SETS STAY LAZY. `prev` and the catch-up loop are the
-        // closure engine's, kept verbatim: they run only on a FAILURE path, and
-        // an arm that MATCHES returns without paying for any of it. Unrolling
-        // them would put an `_accSet` — and its `slice()` — on the success path.
-        const maskArms = arms.map((a, i) => `
-if((bits&${1 << i})!==0){
+        {
+          // Direct topology for every fixed arity. The emitted body names every
+          // child, gate and expected set; no AFX/CLS row survives merely to feed
+          // an indexed winner back into one call site.
+          const di = code[ip + 1]!
+          const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
+          const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
+          const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
+          const maskable = n <= 32
+          const maskName = maskable
+            ? hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
+            : ''
+          // `~di` points back to the authoritative dispatch row. A precompiled
+          // module reconstructs only the input-indexed mask from that row; it
+          // cannot carry a second mutable answer for the arms' classes.
+          if (maskable) maskPlan.push(~di)
+          const p = tmp()
+          const catchName = maskable ? `_cx${uid++}_` : ''
+          if (maskable) {
+            const catchCases = expected.map((e, i) =>
+              `case ${i}:if(target<=${i})return acc;acc=_accSet(${e},acc)`).join('\n')
+            choiceDefs.push(`function ${catchName}(target,prev,acc){switch(prev){\n${catchCases}\n}return acc}`)
+          }
+          const maskArms = maskable ? arms.map((arm, i) => {
+            return `if((bits&${1 << i})!==0){
 ctx._fc=false
-{const v=${a}(input,pos,ctx)
+{const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
-for(let j=prev;j<${i};j++)if((bits&(1<<j))===0)acc=_accSet(${afx}[j],acc)
+acc=${catchName}(${i},prev,acc)
 prev=${i + 1}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
-}`).join('')
-
-        const generalArms = arms.map((a, i) => `
-if(${gRef}[${i}]===null||classHas(${gRef}[${i}],c)){
+}`
+          }).join('\n') : ''
+          const generalArms = arms.map((arm, i) => `if(${gateRefs[i]}===null||classHas(${gateRefs[i]},c)){
 ctx._fc=false
-{const v=${a}(input,pos,ctx)
+{const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
-}else acc=_accSet(${afx}[${i}],acc)`).join('')
+}else acc=_accSet(${expected[i]},acc)`).join('\n')
 
-        return `${head}
+          return `${head}
 const c=lead(input,pos)
 ${emitMark(p, L.buf, sinks)}
 let acc
@@ -1401,14 +1400,17 @@ ${maskable ? `if(c<128){
 const bits=${maskName}[c<0?128:c]
 let prev=0
 ${maskArms}
-for(let j=prev;j<${n};j++)if((bits&(1<<j))===0)acc=_accSet(${afx}[j],acc)
+acc=${catchName}(${n},prev,acc)
 ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL
 }
-` : ''}${generalArms}
+` : ''}
+${generalArms}
 ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL
 }`
+        }
+
       }
 
       case OP_DISPATCH: {
@@ -1832,6 +1834,7 @@ return nd
   const source = `${RUNTIME_PRELUDE}
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}
+${choiceDefs.join('\n')}
 ${bodies.join('\n')}
 function _begin(ctx){
 const host=ctx.build
