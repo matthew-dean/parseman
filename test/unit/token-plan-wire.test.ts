@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
+import { emitTableModule } from '../../src/table/emit.ts'
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
-import { expandCompact, foldPrograms, type CompactProgram } from '../../src/table/program.ts'
+import { expandCompact, foldPrograms, resolveTable, type CompactProgram } from '../../src/table/program.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
-import { OP_DISPATCH } from '../../src/table/ops.ts'
+import { OP_CHOICE, OP_DISPATCH, OP_XFORM } from '../../src/table/ops.ts'
 import { runtimeRangeOutcomeKind } from '../../src/table/token-outcome.ts'
 import {
   collectLexicalAlphabet, canonicalLexicalOutcomeKey, compatibleLexicalOutcomes, selectedLexicalOutcome,
 } from '../../src/compiler/token-alphabet.ts'
 import {
-  dispatch, endsWith, field, literal, makeWhen, matches, otherwise, optional, regex,
-  ref, sequence, startsWith, token, when,
+  choice, dispatch, endsWith, field, literal, makeWhen, matches, otherwise, optional, regex,
+  ref, sequence, startsWith, token, transform, when,
 } from '../../src/index.ts'
 
 describe('compact lexical token plan wire', () => {
@@ -152,6 +153,81 @@ describe('compact lexical token plan wire', () => {
     expect(plan.sites).toHaveLength(parsers.length * 4)
     expect(String(runtimeRangeOutcomeKind)).not.toContain('RegExp')
     expect(String(runtimeRangeOutcomeKind)).not.toContain('.test(')
+  })
+
+  it('serializes only direct same-position XFORM to planned DISPATCH choice arms', () => {
+    const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const classified = dispatch(head, when('each(', literal('each')), when(endsWith('('), literal('call')))
+    const functionStatement = transform(classified, value => value)
+    const direct = dispatch(head, otherwise(literal('direct')))
+    const nested = transform(sequence(literal(':'), classified), value => value)
+    const root = choice(literal('@'), functionStatement, direct, nested)
+    const prog = encodeTable({ Root: root })
+    const plan = prog.tokenPlan!
+
+    expect(plan.choiceSites).toHaveLength(3)
+    const choiceIp = plan.choiceSites![0]!, armIndex = plan.choiceSites![1]!, siteIndex = plan.choiceSites![2]!
+    expect(prog.code[choiceIp]).toBe(OP_CHOICE)
+    expect(armIndex).toBe(1)
+    const xf = prog.code[choiceIp + 4 + armIndex]!
+    expect(prog.code[xf]).toBe(OP_XFORM)
+    const dispatchIp = prog.code[xf + 2]!
+    expect(prog.code[dispatchIp]).toBe(OP_DISPATCH)
+    expect(prog.code[dispatchIp + 2]).toBe(plan.sites[4 * siteIndex])
+    const choiceDispatch = resolveTable(prog).disp[prog.code[choiceIp + 1]!]!
+    expect(choiceDispatch.armCls[armIndex]?.ascii['@'.charCodeAt(0)]).toBe(0)
+
+    const compact: CompactProgram = {
+      c: prog.code, k: prog.k, x: prog.cc, e: prog.fx, d: prog.disp,
+      r: prog.rules, f: prog.fns, q: plan,
+    }
+    expect(expandCompact(compact).tokenPlan?.choiceSites).toEqual(plan.choiceSites)
+    expect(foldPrograms({ base: prog, twin: encodeTable({ Root: root }) }, 'base').base.tokenPlan?.choiceSites)
+      .toEqual(plan.choiceSites)
+    expect(emitTableModule(prog, { fnSources: prog.fns.map(fn => String(fn)) })).toContain('choiceSites:[')
+  })
+
+  it('omits choiceSites entirely when no outer arm has the proven shape', () => {
+    const head = token(regex(/[a-z]+/))
+    const direct = dispatch(head, otherwise(literal('x')))
+    const nested = transform(sequence(literal(':'), direct), value => value)
+    const prog = encodeTable({ Root: choice(direct, nested) })
+
+    expect(prog.tokenPlan?.sites.length).toBeGreaterThan(0)
+    expect(prog.tokenPlan).not.toHaveProperty('choiceSites')
+    expect(emitTableModule(prog, { fnSources: prog.fns.map(fn => String(fn)) })).not.toContain('choiceSites:')
+  })
+
+  it('refuses an ambiguous choice with two qualifying transformed dispatch arms', () => {
+    const head = token(regex(/[a-z]+/))
+    const one = transform(dispatch(head, when('one', literal('1'))), value => value)
+    const two = transform(dispatch(head, when('two', literal('2'))), value => value)
+    const prog = encodeTable({ Root: choice(one, two) })
+
+    expect(prog.tokenPlan?.sites).toHaveLength(8)
+    expect(prog.tokenPlan).not.toHaveProperty('choiceSites')
+  })
+
+  it('refuses a qualifying arm when the outer choice is already exclusive', () => {
+    const head = token(regex(/[a-z]+/))
+    const classified = transform(dispatch(head, when('one', literal('1'))), value => value)
+    const prog = encodeTable({ Root: choice(classified, literal('@')) })
+
+    expect(resolveTable(prog).disp.some(d => d.exclusive)).toBe(true)
+    expect(prog.tokenPlan?.sites).toHaveLength(4)
+    expect(prog.tokenPlan).not.toHaveProperty('choiceSites')
+  })
+
+  it('keeps equal route shapes on different token families at distinct dsp sites', () => {
+    const words = token(regex(/[a-z]+/))
+    const numbers = token(regex(/[0-9]+/))
+    const wordDispatch = dispatch(words, when('same', literal('w')), otherwise(literal('x')))
+    const numberDispatch = dispatch(numbers, when('same', literal('n')), otherwise(literal('x')))
+    const plan = encodeTable({ Words: wordDispatch, Numbers: numberDispatch }).tokenPlan!
+
+    expect(plan.sites).toHaveLength(8)
+    expect(plan.sites[0]).not.toBe(plan.sites[4])
+    expect(plan.sites[1]).not.toBe(plan.sites[5])
   })
 
   it('keeps family/outcome namespaces stable with an earlier independent token and root relocation', () => {

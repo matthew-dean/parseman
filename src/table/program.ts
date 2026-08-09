@@ -346,6 +346,8 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
  * - `routes` is repeated `[armIndex,flags,acceptedOffset,acceptedCount]` in PEG
  *   source order. Grouped exact values share this route, never one outcome id.
  * - `accepted` is the route slices' global outcome ids.
+ * - optional `choiceSites` is repeated `[OP_CHOICE ip,armIndex,siteIndex]`.
+ *   `siteIndex` is a four-word `sites` record ordinal, not a word offset.
  */
 export type TokenPlanWire = NumericLexicalPlan
 
@@ -553,7 +555,10 @@ export function classHas(cls: ResolvedClass, code: number): boolean {
   return false
 }
 
-function resolveDispatch(arms: readonly number[], cc: readonly ResolvedClass[]): ResolvedDispatch {
+/** Internal shared resolver: the encoder reuses its `exclusive` decision when
+ * deciding whether sparse token admission would duplicate the O(1) choice path.
+ * It is intentionally not re-exported from `parseman/table`. */
+export function resolveDispatch(arms: readonly number[], cc: readonly ResolvedClass[]): ResolvedDispatch {
   const ascii = new Uint8Array(128)
   const hi: number[] = []
   const open: number[] = []

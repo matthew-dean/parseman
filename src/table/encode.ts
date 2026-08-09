@@ -20,7 +20,7 @@ import { missingInferredType } from '../combinators/node.ts'
 import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
-import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
+import { covKindCode, encodeClassSpec, ownTableProgram, resolveClass, resolveDispatch } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
@@ -217,6 +217,7 @@ class Encoder {
   private readonly lexicalClassifier = new Map<Combinator<unknown>, LexicalTokenClassifier>()
   private readonly lexicalTokenSites: number[] = []
   private readonly lexicalDispatchSites: Array<{ dsp: number; classifier: LexicalTokenClassifier }> = []
+  private readonly lexicalChoiceCandidates: Array<{ choice: number; arm: number; dsp: number }> = []
 
   /**
    * A trivia combinator as DATA where its shape allows.
@@ -1491,6 +1492,38 @@ class Encoder {
       ...(s.sentinel === undefined ? {} : { sentinel: res(s.sentinel) }),
     }))
     this.scanSkipSets = this.scanSkipSets.map(set => set.map(res))
+
+    const resolvedClasses = this.cc.map(resolveClass)
+    // Sparse outer admission is deliberately the exact same-position shape
+    // proven by the runtime contract: an ordered choice arm directly enters a
+    // value-only transform whose child is one planned dispatch. Any scope,
+    // field, sequence, coverage, trivia, context or nullable wrapper leaves a
+    // different opcode at either edge and therefore stays on authored PEG.
+    for (const ip of seen) {
+      if (this.code[ip] !== OP_CHOICE) continue
+      // An exclusive choice already selects one arm in O(1). The runtime
+      // deliberately refuses a sparse relation there, both because admission
+      // cannot remove ordered retries and because installing it would turn a
+      // valid compiler-produced plan into a load-time error. Reuse the exact
+      // resolver that sets ResolvedDispatch.exclusive; do not approximate its
+      // ASCII/high-range/open-arm rules in the planner.
+      const choiceDispatch = this.disp[this.code[ip + 1]!]!
+      if (resolveDispatch(choiceDispatch, resolvedClasses).exclusive) continue
+      const count = this.code[ip + 2]!
+      let candidate: { choice: number; arm: number; dsp: number } | undefined
+      let ambiguous = false
+      for (let arm = 0; arm < count; arm++) {
+        const xf = this.code[ip + 4 + arm]!
+        if (this.code[xf] !== OP_XFORM) continue
+        const dispatch = this.code[xf + 2]!
+        if (this.code[dispatch] !== OP_DISPATCH) continue
+        if (candidate !== undefined) { ambiguous = true; break }
+        candidate = { choice: ip, arm, dsp: this.code[dispatch + 2]! }
+      }
+      // The first runtime cut owns one scalar predecision per choice, so a
+      // choice with two structurally eligible arms stays wholly on authored PEG.
+      if (!ambiguous && candidate !== undefined) this.lexicalChoiceCandidates.push(candidate)
+    }
   }
 
   finish(): TableProgram {
@@ -1501,6 +1534,7 @@ class Encoder {
       value => this.constant(value),
       this.lexicalTokenSites,
       this.lexicalDispatchSites,
+      this.lexicalChoiceCandidates,
     )
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,

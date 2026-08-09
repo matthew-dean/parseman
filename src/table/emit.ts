@@ -123,12 +123,14 @@ function emitDispatchSpec(d: import('./program.ts').DispatchSpec): string {
 }
 
 function emitTokenPlan(plan: import('./program.ts').TokenPlanWire): string {
-  const field = (name: keyof import('./program.ts').TokenPlanWire): string =>
-    `${name}:[${plan[name].join(',')}]`
-  return `{${([
+  const fields = [
     'recognizerOffsets', 'recognizerData', 'outcomeOffsets', 'outcomeData',
     'tokenSites', 'sites', 'routes', 'accepted',
-  ] as const).map(field).join(',')}}`
+  ] as const
+  const field = (name: (typeof fields)[number]): string => `${name}:[${plan[name].join(',')}]`
+  return `{${fields.map(field).join(',')}${plan.choiceSites === undefined
+    ? ''
+    : `,choiceSites:[${plan.choiceSites.join(',')}]`}}`
 }
 
 /**

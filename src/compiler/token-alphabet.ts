@@ -165,6 +165,8 @@ export type NumericLexicalPlan = {
   readonly sites: readonly number[]
   readonly routes: readonly number[]
   readonly accepted: readonly number[]
+  /** Sparse `[OP_CHOICE ip,armIndex,dispatchSiteIndex]` outer admissions. */
+  readonly choiceSites?: readonly number[]
 }
 
 /** Lexical-family ids occupy their own published namespace. */
@@ -750,6 +752,7 @@ export function serializeLexicalPlan(
   constant: (value: unknown) => number,
   tokenSites: readonly number[],
   dispatchSites: ReadonlyArray<{ readonly dsp: number; readonly classifier: LexicalTokenClassifier }>,
+  choiceCandidates: ReadonlyArray<{ readonly choice: number; readonly arm: number; readonly dsp: number }>,
 ): NumericLexicalPlan | undefined {
   if (tokenSites.length === 0) return undefined
   const recognizerOffsets: number[] = []
@@ -791,6 +794,11 @@ export function serializeLexicalPlan(
   const sites: number[] = []
   const routes: number[] = []
   const accepted: number[] = []
+  // `dsp` is a SITE identity, not an interned route-shape identity: encode.ts
+  // appends one DispatchSpec at the same moment it emits each memoized
+  // OP_DISPATCH. Equal route data in two different selectors therefore gets two
+  // indices, while a shared dispatch combinator has one row and one family.
+  const dispatchSiteIndex = new Map<number, number>()
   const outcomeById = new Map(alphabet.outcomes.map(outcome => [outcome.id, outcome]))
   for (const { dsp, classifier } of [...dispatchSites]
     .filter(site => !site.classifier.selectorEffects && site.classifier.routes.every(route =>
@@ -806,6 +814,7 @@ export function serializeLexicalPlan(
         ) !== undefined
       })))
     .sort((a, b) => a.dsp - b.dsp)) {
+    dispatchSiteIndex.set(dsp, sites.length / 4)
     const routeOffset = routes.length
     for (const route of classifier.routes) {
       const acceptedOffset = accepted.length
@@ -815,6 +824,11 @@ export function serializeLexicalPlan(
     }
     sites.push(dsp, classifier.familyId, routeOffset, classifier.routes.length)
   }
+  const choiceSites: number[] = []
+  for (const candidate of [...choiceCandidates].sort((a, b) => a.choice - b.choice || a.arm - b.arm)) {
+    const site = dispatchSiteIndex.get(candidate.dsp)
+    if (site !== undefined) choiceSites.push(candidate.choice, candidate.arm, site)
+  }
   for (let i = 0; i < tokenSites.length; i += 2) {
     if (tokenSites[i + 1]! < FIRST_LEXICAL_FAMILY_ID) {
       throw new Error('parseman: lexical token site used a primitive-terminal id')
@@ -823,6 +837,7 @@ export function serializeLexicalPlan(
   return {
     recognizerOffsets, recognizerData, outcomeOffsets, outcomeData,
     tokenSites: [...tokenSites], sites, routes, accepted,
+    ...(choiceSites.length === 0 ? {} : { choiceSites }),
   }
 }
 
