@@ -377,14 +377,31 @@ describe('direct-bound dispatch topology', () => {
     const wrongRoute = tableRules(precompiled(baseProg, () => wrongRouteSource)).Entry! as Entry
     expect(projection(wrongRoute, 'exact!')).not.toEqual(projection(base as Entry, 'exact!'))
 
-    const malformed = ownTableProgram({
-      ...baseProg,
-      dsp: baseProg.dsp.map((d, i) => i === baseProg.code[ip + 2]
-        ? { ...raw, key: ['exact'], keyArm: [99] }
-        : d),
-      asm: [],
-    })
-    const malformedEntry = tableRules(malformed).Entry! as Entry
-    expect(() => projection(malformedEntry, 'exact!')).toThrow(/malformed dispatch exact arm/)
+    const malformedCases: readonly [string, typeof raw][] = [
+      ['exact arm', { ...raw, key: ['exact'], keyArm: [99] }],
+      ['folded arm', { ...raw, fold: ['fold'], foldArm: [99] }],
+      ['matcher arm', {
+        ...raw,
+        match: raw.match.map((m, i) => i === 0 ? [m[0], m[1], m[2], 99] : m),
+      }],
+      ['routed arity', { ...raw, routed: raw.routed.slice(1) }],
+    ]
+    for (const [kind, planted] of malformedCases) {
+      const malformed = ownTableProgram({
+        ...baseProg,
+        dsp: baseProg.dsp.map((d, i) => i === baseProg.code[ip + 2] ? planted : d),
+        asm: [],
+      })
+      expect(
+        () => projection(tableRules(malformed).Entry! as Entry, 'exact!'),
+        `closure ${kind}`,
+      ).toThrow(/malformed dispatch/)
+      expect(
+        () => emitAssemblySource(resolveTable(malformed), malformed, STRICT),
+        `emitted ${kind}`,
+      ).toThrow(/malformed dispatch/)
+      expect(() => precompiled(malformed), `precompiled ${kind}`)
+        .toThrow(/malformed dispatch/)
+    }
   })
 })

@@ -119,6 +119,7 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  */
 import {
   classHas, decodeClassSpec, expandCompact, resolveTable,
+  validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
@@ -2777,11 +2778,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const routed = spec.routed
         const expected = spec.expected as string[]
 
-        const validArm = (arm: number): boolean => Number.isInteger(arm) && arm >= 0 && arm < n
-        if (routed.length !== n) throw new TypeError('table assembler: malformed dispatch routed arity')
-        for (const arm of byKey.values()) if (!validArm(arm)) throw new TypeError('table assembler: malformed dispatch exact arm')
-        for (const arm of byFold.values()) if (!validArm(arm)) throw new TypeError('table assembler: malformed dispatch folded arm')
-        for (const m of match) if (!validArm(m[3])) throw new TypeError('table assembler: malformed dispatch matcher arm')
+        validateDispatchSpec(spec, n)
 
         const neverMatch: DispatchMatcher = () => false
         const bindMatchers = (start: number): DispatchMatcherBlock => {

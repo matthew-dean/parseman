@@ -51,7 +51,7 @@ import {
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
-import type { ResolvedClass, ResolvedTable, TableProgram } from './program.ts'
+import { validateDispatchSpec, type ResolvedClass, type ResolvedTable, type TableProgram } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
@@ -1421,6 +1421,7 @@ return FAIL
         const other = otherIp >= 0 ? link(otherIp) : undefined
         const otherRouted = code[ip + 4]! === 1
         const n = code[ip + 5]!
+        validateDispatchSpec(spec, n)
         const armBase = ip + 6
         const arms: string[] = []
         for (let i = 0; i < n; i++) arms.push(link(code[armBase + i]!))
