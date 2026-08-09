@@ -313,10 +313,18 @@ required above:
 | independently reachable primitive terminal atoms | 113 | 177 |
 | authored compound token atoms | 16 | 25 |
 | final source `choice` / `dispatch` boundaries | 86 / 7 | 172 / 9 |
+| final occurrence rows: terminal / token / choice / dispatch | 638 / 39 / 143 / 11 | 1,170 / 62 / 417 / 29 |
+| distinct effective lexical contexts | 9 | 11 |
 
 The ownership walk treats a compound token as one atomic candidate and suppresses its
 internal children, while retaining any primitive that is also independently reachable.
 This prevents double-counting a token's implementation terms as separate public atoms.
+The first four rows above count canonical language shapes; the occurrence rows are the
+capability authority used for binding and cost. They retain every final composed path
+and effective trivia, scan-skip, tracking, capture, root and dynamic-state context rather
+than collapsing two sites merely because their recognizer language is equal. An
+independent raw-`ParserDef` oracle pins those occurrence identities and catches a planted
+post-compose winner omission.
 Every primitive and compound atom in this graph is semantically tokenizable. None is
 excluded by a Jess state gate or `withCtx` dependency. The existing normalizer still
 has fourteen implementation gaps: nine CSS balanced/scan-transform atoms and five
