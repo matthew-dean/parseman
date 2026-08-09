@@ -26,7 +26,7 @@
  * order-alternated, with baseline-vs-baseline as the control.
  */
 import os from 'node:os'
-import { interleave, median, type Case, type Contest, type Measurement, type Samples, sign } from './ab-harness.ts'
+import { interleave, median, pairedMinRatio, type Case, type Contest, type Measurement, type Samples, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { execRules } from '../src/table/exec.ts'
@@ -151,8 +151,7 @@ function main(): void {
     const s = out.get(k.label)!
     const parts: string[] = []
     for (const [id] of INPUTS) {
-      const a = s.get(`ref|${id}`)!, b = s.get(`head|${id}`)!
-      parts.push(`${(id.split('/')[1] ?? id).padEnd(6)} min ${sign((Math.min(...b) / Math.min(...a) - 1) * 100).padStart(8)}`)
+      parts.push(`${(id.split('/')[1] ?? id).padEnd(6)} paired min ${sign((pairedMinRatio(s, `ref|${id}`, `head|${id}`) - 1) * 100).padStart(8)}`)
     }
     console.log(`  ${k.label.padEnd(32)} ${parts.join('  ')}`)
   }
@@ -161,8 +160,7 @@ function main(): void {
     const s = denseOut.get(k.label)!
     const parts: string[] = []
     for (const [id] of dense) {
-      const a = s.get(`ref|${id}`)!, b = s.get(`head|${id}`)!
-      parts.push(`${(id.split('/')[1] ?? id).padEnd(12)} min ${sign((Math.min(...b) / Math.min(...a) - 1) * 100).padStart(8)}`)
+      parts.push(`${(id.split('/')[1] ?? id).padEnd(12)} paired min ${sign((pairedMinRatio(s, `ref|${id}`, `head|${id}`) - 1) * 100).padStart(8)}`)
     }
     console.log(`  ${k.label.padEnd(44)} ${parts.join('  ')}`)
   }

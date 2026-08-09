@@ -226,7 +226,7 @@ async function main(): Promise<void> {
     // have lost their captured scope), and this phase needs a working parser.
     const { run } = await import('../../src/functional/run.ts')
     const { execRules } = await import('../../src/table/exec.ts')
-    const { interleave } = await import('../ab-harness.ts')
+    const { interleave, pairedMedianDelta, pairedMedianRatio } = await import('../ab-harness.ts')
     const { rules } = await loadGrammar(dialect, 'ast')
     const input = readFileSync(resolvePath(JESS_ROOT, RATE_FIXTURE[dialect]), 'utf8')
     type E = Parameters<typeof run>[0]
@@ -244,11 +244,15 @@ async function main(): Promise<void> {
       { targetSampleMs: 0, warmup: 3, timed: 5, rounds: 6, runs: 2 },
     )
     const s = out.get('p')!
+    const assembled = s.get(`ref|${dialect}`)!
+    const exec = s.get(`head|${dialect}`)!
     const bytes = Buffer.byteLength(input)
     process.stdout.write(JSON.stringify({
       dialect, phase, lazy, jsBytes: bytes, file: RATE_FIXTURE[dialect],
-      assembledMs: median(s.get(`ref|${dialect}`)!),
-      execMs: median(s.get(`head|${dialect}`)!),
+      assembledMs: median(assembled),
+      execMs: median(exec),
+      parseDeltaMs: pairedMedianDelta(assembled, exec),
+      parseRatio: pairedMedianRatio(assembled, exec),
       parseman: pm.version,
     }) + '\n')
     return

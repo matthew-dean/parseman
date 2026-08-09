@@ -28,7 +28,7 @@ import { stampRuleMap } from '../../src/table/stamp.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { assertParseman, corpus, ENTRY, JESS_ROOT, loadGrammar } from './grammars.ts'
-import { interleave, median, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { interleave, median, pairedMedianRatio, pairedWins, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 import type { TableProgram, TableRule } from '../../src/table/program.ts'
 
 type Entry = Parameters<typeof run>[0]
@@ -163,9 +163,8 @@ for (const f of FIXTURES) {
   for (const label of contests.map(c => c.label)) {
     const s = out.get(label)!
     const ref = s.get(`ref|${id}`)!, head = s.get(`head|${id}`)!
-    const d = (median(head) / median(ref) - 1) * 100
-    let wins = 0
-    for (let n = 0; n < head.length; n++) if (head[n]! < ref[n]!) wins++
+    const d = (pairedMedianRatio(ref, head) - 1) * 100
+    const wins = pairedWins(ref, head)
     console.log(
       `    ${label.padEnd(34)} ref ${perParse(ref, id).toFixed(2).padStart(6)} ms  `
       + `head ${perParse(head, id).toFixed(2).padStart(6)} ms  `

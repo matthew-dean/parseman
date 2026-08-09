@@ -95,6 +95,43 @@ export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): voi
   if (ctx._rootTriviaLog && ctx._rootTriviaLog.length !== mark.rootLog) ctx._rootTriviaLog.length = mark.rootLog
 }
 
+function removeNumberRange(values: number[] | undefined, start: number, end: number): void {
+  if (values === undefined || end <= start) return
+  if (values.length > end) values.copyWithin(start, end)
+  values.length -= end - start
+}
+
+/**
+ * Remove only the trivia rows appended by an ambient scan, preserving rows a
+ * successful zero-width child appended after that scan.
+ *
+ * A sequence cannot use `rollbackTriviaAt` for this case: its pre-scan mark also
+ * precedes the child, so truncating to it erases the child's nodes, fields,
+ * recovery errors, and trivia. The scan's contribution is instead the half-open
+ * range between the pre-scan and post-scan lengths. Compact that range in place;
+ * this is the cold zero-width-success path and allocates no replacement arrays.
+ */
+export function rollbackScannedTriviaAt(
+  ctx: ParseContext,
+  tlogStart: number,
+  tlogEnd: number,
+  logStart: number,
+  logEnd: number,
+  rootLogStart: number,
+  rootLogEnd: number,
+): void {
+  const b = ctx._cstBuf
+  if (b !== undefined) {
+    const tlog = b.tl
+    removeNumberRange(tlog, tlogStart, tlogEnd)
+    if (tlog !== undefined && tlog.length === 0) b.tl = undefined
+  } else {
+    removeNumberRange(ctx._cstTriviaLog, tlogStart, tlogEnd)
+  }
+  removeNumberRange(ctx._triviaLog, logStart, logEnd)
+  removeNumberRange(ctx._rootTriviaLog, rootLogStart, rootLogEnd)
+}
+
 function parseTriviaNoCapture(
   triviaP: Combinator<unknown>,
   input: string,

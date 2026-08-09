@@ -6,7 +6,10 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt, saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
+import {
+  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
+  rollbackTriviaAt, saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
+} from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
@@ -14,7 +17,7 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
@@ -44,6 +47,7 @@ import {
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
+import { scalarTerminalNotChild } from './scalar-terminal.ts'
 
 /**
  * THE SHARED DRIVER.
@@ -609,15 +613,23 @@ function makeDriver(
           usesRouted = spec.routed[arm] === 1
         }
 
-        const savedRouted = ctx._routed
         let mark = saveTriviaMark(ctx)
+        let v: unknown
         if (usesRouted) {
+          const savedRouted = ctx._routed
           rollbackTrivia(ctx, selectorMark)
           mark = saveTriviaMark(ctx)
           ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+          try {
+            v = exec(target, input, pos, ctx)
+          } finally {
+            ctx._routed = savedRouted
+          }
+        } else {
+          // The reference engine mirrors dispatch.parse(): plain arms do not
+          // install routed state and stay outside the exception guard.
+          v = exec(target, input, selEnd, ctx)
         }
-        const v = exec(target, input, usesRouted ? pos : selEnd, ctx)
-        if (usesRouted) ctx._routed = savedRouted
         if (v === FAIL) {
           rollbackTrivia(ctx, mark)
           // The interpreter marks a failed dispatch branch COMMITTED: the
@@ -706,7 +718,8 @@ function makeDriver(
       }
 
       case OP_SCOPE:
-      case OP_SCOPE_CAP: {
+      case OP_SCOPE_CAP:
+      case OP_SCOPE_PLAIN: {
         const ki = code[ip + 1]!
         const saved = ctx.trivia
         const savedLabels = ctx.triviaKindLabels
@@ -735,7 +748,7 @@ function makeDriver(
         // (`grammar.ts:141`), and the flag is restored here because the table
         // shares one ctx where `parser()` copies it. Bit 2 = the unclassified-scope
         // refusal `grammar.ts:98` raises.
-        const policy = code[ip + 3]!
+        const policy = code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
         if ((policy & 2) !== 0) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
         const savedRootCap = ctx._rootTriviaCapture
         if ((policy & 1) !== 0) ctx._rootTriviaCapture = false
@@ -786,18 +799,19 @@ function makeDriver(
             // SCALAR MARKS — `saveTriviaMark` allocated TWICE per term (its own
             // seven-field object plus the five-field CST mark it delegates to).
             const need = rollbackNeeded(ctx)
-            const mRaw = need ? cstRawLen(ctx) : 0
             const mTl = need ? cstTlLen(ctx) : 0
-            const mLv = need ? cstLeavesLen(ctx) : 0
-            const mFl = need ? ctx._fields?.length ?? 0 : 0
-            const mEr = need ? ctx._errors?.length ?? 0 : 0
             const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             const scanEnd = skipTrivia(input, cur, ctx)
+            const scanTl = need ? cstTlLen(ctx) : 0
+            const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             const v = exec(child, input, scanEnd, ctx)
             if (v === FAIL) { if (REC) ctx._sync = inheritedSync; return FAIL }
             if (EC.e > scanEnd) cur = EC.e
-            else if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            else if (need) rollbackScannedTriviaAt(
+              ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot,
+            )
             if (values !== undefined) values.push(v)
             continue
           }
@@ -846,7 +860,9 @@ function makeDriver(
         if (REC) ctx._sync = inheritedSync
         EC.e = cur
         if (fused) {
-          const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+          const reducer = code[ip + 1]!
+          if (reducer < 0) return values![~reducer]
+          const fn = fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           if (COUNT) siteFn('SEQX fn()', fn)
           return fn(values, { start: pos, end: cur })
         }
@@ -1108,6 +1124,11 @@ function makeDriver(
         const mySync = REC ? ctx._sync : undefined
         const recFx = REC ? fx[code[ip + 6]!] as string[] : undefined
         const sepSent = REC ? sentinelFor(code[ip + 7]!) : undefined
+        const itemClassIndex = sep < 0 ? code[ip + 7]! : -1
+        const itemClass = REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined
+        // `completionsAt` observes failures swallowed by an optional iteration;
+        // tolerant recovery does too. Both keep the ordinary child path.
+        const gateItems = itemClass !== undefined && ctx._tolerant !== true && ctx._probe === undefined
         let cur = pos
         let count = 0
         for (;;) {
@@ -1120,6 +1141,8 @@ function makeDriver(
           // must attempt the separator so its failure sets the expected set, which
           // is the only thing an under-`min` list has to report.
           if (sep >= 0 && count > 0 && count >= min && cur >= input.length) break
+          if (count >= min && sep < 0 && !hasTrivia
+            && gateItems && !classHas(itemClass!, lead(input, cur))) break
           // One mark pair for the whole loop when a rollback is even possible,
           // refreshed per iteration rather than reallocated.
           // SCALAR MARKS. This loop took TWO allocations per item (a CST mark and
@@ -1188,6 +1211,11 @@ function makeDriver(
             // `trailing: 'allow'` (`a,b,`), and this early-out ran before the
             // item was ever attempted — so handling it only on the item-failure
             // path left the separator unconsumed.
+            if (trailingAllowed && sepEnd >= 0) cur = sepEnd
+            break
+          }
+          if (count >= min && gateItems && !classHas(itemClass!, lead(input, itemStart))) {
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
           }
@@ -1446,6 +1474,15 @@ function makeDriver(
       }
 
       case OP_NOT: {
+        // The shipping generic closure/emitted NOT bodies predate pure-global
+        // lookahead rollback. Keep the reference driver aligned with them for
+        // every generic child; only the direct-terminal shape this lane replaces
+        // needs the reference oracle to hide the terminal's diagnostic writes.
+        const scalarChild = scalarTerminalNotChild(code, ip) >= 0
+        const savedFc = scalarChild ? ctx._fc : false
+        const savedFe = scalarChild ? ctx._fe : -1
+        const savedFx = scalarChild ? ctx._fx : undefined
+        const savedProbe = scalarChild ? ctx._probe?.best : undefined
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -1456,6 +1493,12 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (scalarChild) {
+          ctx._fc = savedFc
+          ctx._fe = savedFe
+          ctx._fx = savedFx
+          if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
+        }
         if (v === FAIL) { EC.e = pos; return null }
         // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
         ctx._fe = pos

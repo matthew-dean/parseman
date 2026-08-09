@@ -1,408 +1,265 @@
-# Token streaming — the groundwork, and where the runway ends
+# Token cursor groundwork: static evidence and shipping gaps
 
-Branch `lane/tokenstream`, cut from `release/0.47.0` (`90e115c`). No `src/` change.
-The deliverables are this note and `bench/jess/token-axis-one.ts`, a static probe.
+> **Authority/status (2026-08-08): evidence companion, not design authority.**
+> This note records the static probe made on `lane/tokenstream` from
+> `release/0.47.0` (`90e115c`) and the defects found in the unused token modules.
+> The canonical architecture, implementation order, and token/piece integration
+> rules are [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md).
+> [`derived-tokenization.md`](../docs/design/derived-tokenization.md) and
+> [`DESIGN-piece-library.md`](./DESIGN-piece-library.md) retain detailed and
+> historical reasoning; the 0.48 experiment ledger owns live dispositions. The
+> shipping engine is the closure-based TableProgram assembler in
+> `src/table/assemble.ts`; this note does not claim that comprehensive token
+> cursor plumbing is already in production.
 
-Everything numeric here was produced on this branch, in this worktree, by the
-command printed beside it. **No figure is inherited.** §2 of
-`notes/RELEASE-0.48-TARGET.md` and the *Standing hazard* section at its foot say
-why: the published token-scanning bound was measured against the bytecode
-interpreter, and every `PM_TABLE_COUNT` row describes `src/table/exec.ts`, which
-is not the engine that ships.
+Every number below was produced on that branch with
+`bench/jess/token-axis-one.ts`. These are counts and static analysis, **not timing
+measurements**. They must not be combined with old `PM_TABLE_COUNT` numbers,
+which instrumented reference bytecode `src/table/exec.ts`, not the shipping
+assembler.
 
-**Nothing here is a timing measurement.** Three lanes were measuring while this
-was written. Counting and static analysis only.
+## Corrections to the original framing
 
----
+1. `SiteLabel.tri` was never a boolean needing an enum extension. It is
+   `TRI_UNKNOWN (-2)`, `TRI_NONE (-1)`, or a non-negative trivia slot index.
+2. The current reusable unit is a bounded closure/piece family selected while
+   assembling a TableProgram, not a per-rule source body or a new row in a
+   retired bytecode driver.
+3. `token()` is already the authored lexical-boundary combinator. Derived
+   classification must honor that wrapper as one compound lexical atom; do not
+   reuse the public name for a separate cursor API or expose its children as
+   independent tokens at a wrapper-consuming site.
+4. The largest deleted scan optimization is already restored:
+   `src/table/scan-shapes.ts` (1,578 lines) came from
+   `scannable-run.ts` (1,627 lines) and supplies straight-line scans to the
+   current lowering where it can.
 
-## 0. Four things in the framing that are wrong when checked
+## Unused modules: what survives and what must change
 
-Stated first, because two of them would have been built.
+The three token modules totalled 880 lines and were still INV-3 `DEBT` with
+`docs/design/derived-tokenization.md` as their owner. A bench-only import did
+not make them production-reachable.
 
-1. **"The 0.48 notes record the cheap prep: make the per-site trivia label an
-   enum with room for a third value rather than a boolean."**
-   `notes/RELEASE-0.48-TARGET.md` contains no such entry — the words *enum*,
-   *third value* and *room for* do not occur in it, nor anywhere under `notes/`
-   or `docs/`. And the label is not a boolean: `SiteLabel.tri`
-   (`src/table/site-labels.ts:83`) is `TRI_UNKNOWN (-2)`, `TRI_NONE (-1)`, or a
-   non-negative **trivia slot index**. That is a lattice with an unbounded third
-   arm, already stronger than the proposed prep. See §4 — the prep is
-   deliberately not done, because it is already done.
+### `token-alphabet.ts` (209 lines)
 
-2. **"A char-consuming literal piece and a token-consuming one are two members of
-   one piece library."**
-   There is no piece library in the shipping engine. `emit-assembly.ts`'s
-   `lower(ip, fname)` *writes a body per site* — a `switch` over `code[ip]` that
-   emits text. The arity-unrolled *library* the owner quote describes is
-   `src/table/assemble.ts`, the **closure** engine, which is the fallback.
-   "A new row in the library" is the wrong unit for the engine that runs; the
-   right unit is a new branch in `lower`, pooled the way `skipFor` already pools.
+The graph walk and integer id per distinct `literal`, `keywords`, or `regex`
+remain applicable because both it and table encoding start from the combinator
+graph. CSS moved only from the design document's 118 terminals
+(31 literals / 30 keyword sets / 57 regexes) to **120**
+(31 / 32 / 57).
 
-3. **"`token()` is where token streaming goes."**
-   It is not. `OP_TOKEN` is an existing, unrelated combinator — a lexical
-   boundary that clears every capture sink and `ctx.trivia`
-   (`site-labels.ts:235-238`). Any lane brief that reaches for the name will
-   collide with it.
+Its hand-written `tokenChildren` duplicates `src/analysis/gating.ts`'s
+`childrenOf`. Production wiring must share `childSlots`/the canonical graph walk
+rather than add a third edge table.
 
-4. **"§9's deleted fast paths are for 0.48 to recover when token streaming
-   lands."**
-   The largest of them is already back. `src/table/scan-shapes.ts` is 1,578
-   lines and its own header says *"Restored from
-   `archive/codegen-fastpaths:src/compiler/scannable-run.ts` and re-aimed at
-   `emit-assembly.ts`"* — against `scannable-run.ts`'s 1,627. It is live on the
-   shipping path: `emit-assembly.ts:565`'s `emitScan` consults it for every
-   `OP_RX` row and only falls back to `RegExp.test` when the shape refuses. §9's
-   instruction is partly discharged, and the part that is discharged is the part
-   token streaming would otherwise have been asked to justify.
+### `token-scanner.ts` (318 lines)
 
----
+Its emitted-source shape can be adapted to the assembler, but the implementation
+is not production-correct:
 
-## 1. What is in-tree, and what of it is stale
-
-Three modules, 880 lines, `DEBT` in `scripts/invariant-allowlist.mjs` with `ref:
-docs/design/derived-tokenization.md`. The gate still reports all three as
-outstanding on this branch (`pnpm check:invariants`, 110 modules, **0
-findings**) — a `bench/` import does not discharge INV-3, so the probe added
-here leaves the debt exactly where it was.
-
-### `token-alphabet.ts` (209 lines) — APPLIES, and is the most valuable of the three
-
-Walks the **combinator graph** and assigns one integer id per distinct
-`literal` / `keywords` / `regex`. It depends on `Combinator` / `ParserDef` from
-`src/types.ts` — the authoring API, which `encodeTable` also consumes — and on
-nothing from any retired engine. It runs unmodified against all four shipping
-grammars today.
-
-Its numbers have barely moved in the architecture changes. `derived-tokenization.md`
-§1 records css as 118 members (31 literals / 30 keyword sets / 57 regexes),
-walked from the live combinator graph. Re-walked on this branch: **120**
-(31 / 32 / 57). The alphabet is stable; the doc's §1 is not stale.
-
-The three unmeasured dialects in §1 are now measured — see §3.
-
-**One stale internal:** the `tokenChildren` edge list is hand-written and
-duplicates `src/analysis/gating.ts`'s `childrenOf`, which is the deduplicated
-one (two INV-4 allowlist entries left when that dedup happened). Wiring must not
-add a third edge table; `site-labels.ts:113`'s own header names this drift as
-its reason for sharing `childSlots`.
-
-### `token-scanner.ts` (318 lines) — APPLIES STRUCTURALLY, and has a correctness hole
-
-It **emits source strings**, which is exactly the shape the shipping engine
-wants — it was written for codegen and survives the move to `emit-assembly.ts`
-unchanged in kind. It compiles and runs: driven through `new Function` on this
-branch it correctly returns the regex terminal for `@supports`, the numeric
-terminal for `123`, the literal terminal for `{`, and sets `tight` to 0 after
-leading whitespace.
-
-Three findings:
-
-- **HOLE — a case-SENSITIVE literal containing an ASCII letter is silently
-  unrecognisable.** `buildTrie` skips it (`token-scanner.ts:108`, `:115`) and
-  the header says it is "left to the regex path" — but the regex path only
-  consults terminals of kind `regex`. Verified directly: `literal('@media', {
-  caseInsensitive: true })` scans to its own id, end 6; the same literal
-  case-sensitive scans to `TOK_UNKNOWN`, end 0. Population, counted on the four
-  grammars:
+- **Case-sensitive ASCII-letter hole.** `buildTrie` skips these literals while
+  the fallback checks only regex terminals. A case-insensitive `@media` returned
+  its token id at end 6; the same case-sensitive literal returned `TOK_UNKNOWN`
+  at end 0. Population:
 
   | dialect | literals dropped | keyword sets dropped | examples |
   |---|---:|---:|---|
   | css | 0 | 0 | — |
-  | less | 2 | 4 | `!important`, `extend`, `{when…}`, `{not…}`, `{and…}`, `{or…}` |
+  | less | 2 | 4 | `!important`, `extend`, `when`, `not`, `and`, `or` forms |
   | scss | 2 | 0 | `!default`, `!global` |
-  | jess | 0 | 7 | `{when…}`, `{to…}`, `{as…}`, `{@-compose,@-export,@-import…}` |
+  | jess | 0 | 7 | `when`, `to`, `as`, `@-compose`, `@-export`, `@-import` forms |
 
-  These are the discriminating tokens the design exists to serve. It is an
-  unfinished implementation, not a design defect — a second, unfolded trie fixes
-  it — but a wiring lane that does not fix it first will produce a scanner that
-  is *wrong* on less and jess rather than slow.
+- **Wrong trivia ownership.** The scanner hardcodes ASCII whitespace and
+  `/*…*/`, but trivia is grammar- and scope-supplied. The current term boundary
+  already skips trivia. Classification must consume the post-skip position or
+  share `skipFor`; it must not scan trivia a second time.
+- **Wrong memo lifetime.** Its single module-state memo spans parses. Current
+  mutable parse state is reset by `_begin`; a derived result must be parse-local
+  or explicitly passed as a pending classified result. The existing memo test is
+  only a source assertion because production never calls the scanner.
 
-- **STALE — the scanner skips its own trivia, hardcoded.** `token-scanner.ts:245`
-  skips ASCII whitespace and `/* … */`. In this architecture trivia is
-  grammar-supplied: `ctx.trivia`, swapped mid-parse by `OP_SCOPE`, lowered per
-  slot through `TRIVIASCAN[ki]`, and labelled per kind. Worse, it is *redundant*:
-  `emitTerm` (`emit-assembly.ts:309`) already skips trivia at the sequence term
-  **before** calling the child, so a scan invoked at a choice would be scanning
-  an already-skipped position. Both the skip loop and the `tight` bit it computes
-  have to be re-sited onto `skipFor`, not ported.
+### `token-dispatch.ts` (353 lines)
 
-- **STALE — the memo is single-slot module state** keyed on
-  `(input identity, pos, mode, set)`. The emitted assembly's own mutable module
-  state is `_pfEnd` / `_pfScan` / `_pfHost`, all reset per parse by `_begin`. A
-  memo that survives across parses is a fourth kind of state with a different
-  lifetime, and `test/unit/token-scanner-memo.test.ts` exists only because a
-  wrong-token-from-a-warm-cache defect already shipped into it once. It is also
-  a *source* assertion — the test says so in its header — because nothing parses
-  through the scanner.
+The `emitDispatchId` strategy family (`trie`, `lenswitch`, `firstchar`, `phash`,
+and `PARSEMAN_DISPATCH`) belonged only to deleted source codegen. Its measured
+whole-configuration spread was **2.4%**, so that bake-off is closed for the
+current engine.
 
-### `token-dispatch.ts` (353 lines) — SPLIT: the utilities apply, the thread is closed
+Roughly 230 of the original 353 lines belonged to that closed strategy family.
+The shared integer/folding utilities are not dead:
+`packInts`, `PACK_MAX`, `foldCode`, `foldExpr`, and
+`sharedHelperDecl('unpack')`. They fixed a silent 12-bit overflow and the
+incorrect `c | 32` mapping of `@` to a backtick. Re-home them if the dead
+strategy family is removed.
 
-Two halves with different fates:
+## Where the cursor composes with TableProgram pieces
 
-- **The `emitDispatchId` strategy family** (`trie` / `lenswitch` / `firstchar` /
-  `phash`, the `PARSEMAN_DISPATCH` env switch, the measured table in its header)
-  is **dead**. Its only consumer was `codegen.ts`, deleted at 0.47
-  (CHANGELOG:1423 — *"codegen imports `token-dispatch.ts` and nothing else from
-  that group"*). `derived-tokenization.md` §9.2 had already closed the thread as
-  LEGACY on its own evidence: the whole spread across every dispatch
-  configuration was 2.4%. The emitted engine's `OP_DISPATCH`
-  (`emit-assembly.ts:1262`) does not use any of it. Re-measuring these four
-  strategies against the emitted engine is the kind of borrowed-question work
-  this note exists to prevent.
+The current design is a position cursor: at a parser decision, recognize
+`(input, currentPosition, lexicalContext)` once, use that result for ordered PEG
+trial, and let the selected child consume it. A unique token-to-arm mapping can
+integer-fork directly; same-token or prefix-compatible arms stay in source order
+and reuse compact compatible views across rollback. Positions, spans, `_pfEnd`,
+recovery, slicing, CST leaves, and diagnostics remain character offsets. A future
+buffering layer would need its own context/invalidation proof; the seven-token
+experiment did not test or reject one.
 
-- **`packInts` / `PACK_MAX` / `foldCode` / `foldExpr` / `sharedHelperDecl('unpack')`
-  apply and are load-bearing.** `token-scanner.ts` imports exactly these. Two
-  defects were fixed by making them single-sourced — a 12-bit encoding that
-  wrapped silently, and a `c | 32` fold that maps `@`→`` ` `` — and both fixes
-  live here. `scripts/check-invariants.mjs:494` cites the first by name. If the
-  dead half is deleted, these five exports move; they are not deleted with it.
+Lexical context is a grammar-site fact, not a caller option, so it does **not**
+belong in `RunCfg` or `cfgKey`. It belongs beside encode-time site labels and
+resolved dispatch data. A shared-leading tokenized choice recognizes once and
+filters incompatible arms; compatible arms retain ordered PEG semantics. A
+scannerless fallback is an explicit site decision, not the default conclusion of
+the old distinct-lead walker.
 
----
+The missing plumbing identified by the probe was:
 
-## 2. Do the selection axes accommodate an input-representation axis?
+- preserve each choice's lexical-context/candidate-set identity through encoding
+  and resolution instead of discarding the combinator;
+- hoist or bind the classifier through the fixed-piece library;
+- leave trivia with the existing skip piece;
+- pass the classified `(kind, end, value/span as needed)` result or compatible
+  prefix view forward so every tried arm reuses it and the selected child consumes
+  it without scanning the same bytes again;
+- share terminal recognition semantics between standalone raw pieces and the
+  classifier.
 
-**Yes — but not as an axis on the thing the framing names, and the reason
-matters.**
+This complements composite/piece fusion. It neither requires nor justifies
+undoing direct literal/regex pieces, scan shapes, non-choice early-rejection
+guards, or parent/child boundary elimination. A disjoint character choice may keep
+its cheaper fork and seed later recognition; a shared-leading choice discriminates
+from the token result while compatible overlaps retain ordered trial. Consume each
+position result once.
 
-### It does not belong in `RunCfg`
+### Seeded recognition and the three cost shapes
 
-`RunCfg` (`assemble.ts:205-278`) admits a fact only when it is *fixed for the
-lifetime of a parse and supplied by the caller* — `hostCst`, `trackLines`,
-`tolerant`, `coverage`, `probe`. `cfgKey` is five bits, one per option, at most
-32 assemblies. Whether a given site can be decided by a derived token is a
-property of the **grammar**, not of the parse, and it differs *between sites in
-one assembly*. Putting it in `cfgKey` would double the assembly cache to select
-between two bodies that differ at 40% of their sites and are identical at the
-rest. The 0.47 notes already record the shape of that mistake twice:
-`cstCaptureActive` and `_cstBuf` were proposed for `RunCfg` and would have been
-*incorrect*, not merely redundant.
+A character gate that has already selected an arm passes its work into the same
+recognition kernel: post-trivia cursor position, already-read lead/class, known
+prefix length, lexical context, and trivia/adjacency state. The seeded kernel
+continues at `position + prefixLength`; it never restarts full terminal recognition.
+Its immutable parse-local result caches at least id/value/end for downstream pieces
+or rollback-compatible arms. Recognition itself publishes no CST, field, error,
+trivia, or commitment effect; consumption does.
 
-### It belongs where the site labels already are
+Performance work must keep three shapes separate:
 
-`site-labels.ts` is the precedent, exactly: a fact computed at **encode time
-from program structure, before any option set exists**, that selects a body.
-`skipFor(l)` (`emit-assembly.ts:500`) is the mechanism — it keys a pool on
-`` `${ki}|${hasScan}|${buf}|${cap}` ``, mints the arm that survives once per
-distinct key, and every site with that key calls it by name. A token axis is one
-more component of that key.
+1. eager token recognition before a shared-leading choice;
+2. disjoint character gate followed by seeded token completion;
+3. character gate followed by the current raw terminal.
 
-`emitScan` (`emit-assembly.ts:565`) is the precedent for *refusal*: it tries
-`scanShapeFromRegex`, and where the shape does not lower it returns `undefined`
-and the caller emits the general `RegExp.test` body. Per-site, no parse-path
-branch either way, and the fallback is the current code. **That is the same
-contract a token-consuming piece needs**, and it already exists twice.
+Measure calls, known-prefix rereads, pending-result hits, parse time, and artifact
+bytes. A win in one shape does not establish either of the others.
 
-### And the calling convention does not have to change
+### Parser semantics are a separate architecture decision
 
-This is the load-bearing structural finding, and it is what makes the answer
-"yes" instead of "yes, after a redesign".
+The 0.48 path is **tokenized PEG**: one current-position recognition filters
+impossible arms; compatible arms remain in source order and use existing
+attempt/commit/gate/probe/recovery semantics. Static LL(k)/LL(*) prediction and
+ALL(*)-style adaptive prediction are separate future layers because they can change
+PEG prefix commitment. The minimal discriminator is `a | ab` versus `ab | a`.
 
-`derived-tokenization.md` §2 is emphatic that the design is a token **cursor**,
-not a token **stream**: *"At a choice, scan just far enough to pick the arm."*
-There is no buffered token array. So the position handed between pieces stays a
-**character offset**, and every piece keeps the signature
-`(input: string, pos: number, ctx) => unknown` with its end in `_pfEnd`. A
-token-consuming piece and a char-consuming piece are interchangeable at every
-call site with no adapter.
+Adaptive prediction is not a free upgrade. The documented Chevrotain ALL(*) shape
+uses strings containing alternative/state/call-stack data and concatenated string
+keys for DFA identity; on large paths prediction construction can itself become the
+workload. Any Parseman experiment therefore needs compact integer/table identities,
+hard per-decision state and byte ceilings, fallback to tokenized PEG, and separate
+cold-construction, warm-parse, live-configuration, cache, and artifact measurements.
+Canonical semantics are in `docs/design/parseman-0.48.md` §§3–7; detailed source
+history remains in `docs/design/derived-tokenization.md` §2.1.
 
-Had the design been a real *stream* — pieces indexed by token number — the
-answer would be the opposite: `_pfEnd`, `ctx._fe`, every span, every
-`input.slice(pos, e)`, `spanLines`, `recoverScan` and the whole CST leaf
-protocol are stated over character offsets, and the axis would be a rewrite. The
-brief's word *streaming* and the design's word *cursor* are not the same
-proposal, and only one of them fits.
+## Historical conservative static probe
 
-### The one joint that actually moves
+One separate historical probe must be stated narrowly: mode-free maximal munch
+against every terminal in the 118-member CSS alphabet produced **7 tokens for a
+123 KB file**. It falsified that exact configuration. It did not test or rule out
+global ids combined with parser/context modes, local candidate sets, near-complete
+tokenization, or mode-aware buffering.
 
-`emit-assembly.ts:1155`'s `OP_CHOICE` opens with
+Command used:
 
-```js
-const c = lead(input, pos)
-```
-
-and then indexes `MASK[c]`, one bit per arm. That is the entire char-keyed gate,
-in one expression, at one site, over a table built at emit time. §2 of the design
-doc calls the intended relationship *"upgrade in place: the gate stays where it
-is and its key gets wider"* — and it is literally one expression wide. The
-`exclusive` form above it (`DISP[di].ascii[c]`, arm-per-`case`) is the same joint
-with a denser table.
-
-**So: the axes accommodate it, with no redesign, provided the cursor form is
-kept.** What must change that is not currently there:
-
-- an encode-time record of each choice's **candidate set index**, alongside
-  `armCls` in `ResolvedDispatch` — `token-alphabet.ts`'s `candidateSet` computes
-  it from combinators, but `resolveDispatch` (`program.ts:410`) is where it has
-  to be *stored*, and today `encode.ts` discards the combinator;
-- the scanner's decls hoisted into `emit-assembly.ts`'s `prelude`, which is a
-  flat `const` list inside the `new Function` body — `emitScanner(alphabet, ns)`
-  already takes the namespace parameter for precisely this;
-- the trivia skip taken *out* of the scanner and left to `skipFor`.
-
-None of those is an axis change. All three are plumbing.
-
----
-
-## 3. What the token gate would have to beat — measured, this branch
-
-`bench/jess/token-axis-one.ts`, one dialect per process. Two independent
-populations, deliberately not joined: the encoded table's `OP_CHOICE` sites, and
-the combinator graph's `choice()` nodes. The encoder rewrites choices, and a
-one-to-one map between the two is not available without inventing one.
-
-```
+```sh
 node --experimental-strip-types --import ./bench/jess/register.mjs \
   bench/jess/token-axis-one.ts <css|less|scss|jess>
 ```
 
-### (a) The speculation the char gate leaves
+### Character-gate speculation (historical control)
 
-Arms *entered* at a position is `popcount(MASK[c])`. Averaged over the ASCII
-lead chars a site can see, then over sites:
+`popcount(MASK[c])` estimates arms entered for an ASCII lead character. The
+probe weighted eligible lead characters equally, not by production frequency:
 
-| dialect | choice sites | arms | exclusive (1 arm) | ungated | mean arms entered per lead char | worst site |
-|---|---:|---:|---:|---:|---:|---|
+| dialect | choice sites | arms | exclusive | ungated | mean arms entered | worst site |
+|---|---:|---:|---:|---:|---:|---:|
 | css | 75 | 248 | 19 (25.3%) | 0 | **1.705** | 8.00 of 8 |
 | less | 166 | 540 | 41 (24.7%) | 0 | **1.582** | 11.00 of 11 |
 | scss | 104 | 381 | 28 (26.9%) | 0 | **1.648** | 8.00 of 8 |
 | jess | 98 | 355 | 36 (36.7%) | 0 | **1.522** | 8.00 of 8 |
 
-Read three things off it:
+All sites already had character dispatch: 0/75, 0/166, 0/104, and 0/98 were
+ungated. CSS had 3 masked sites at 4+ arms and 25 at 2–4; Less had 8 and 36.
+This explains why choosing already-distinct sites was a weak prototype target; it
+does not bound tokenization of shared-leading wrapper/rule families.
 
-- **Zero ungated sites in any dialect.** `bench/jess/table-gating-one.ts`'s
-  question — how many choices fall to the linear arm loop — answers 0/75, 0/166,
-  0/104, 0/98 on this branch. Every choice is dispatched. Whatever the 2.2×–2.6×
-  regression of §8 is, it is not ungated choices.
-- **The headroom is real but small: ~1.5×–1.7× arm entries, and the ideal is
-  1.0.** A quarter to a third of sites are already `exclusive` and have
-  literally nothing to gain.
-- **The tail is where it lives.** css has 3 masked sites at 4+ arms entered and
-  25 in 2–4; less has 8 and 36. A handful of sites at 8–11 arms is a much better
-  target than a global mechanism.
+### Distinct-lead walker reach (not token eligibility)
 
-**This is a static bound, and it is an upper bound only.** It weights every lead
-char equally rather than by how often a parse lands on it. A site whose mean is
-4.0 but which is entered twice per document is worth nothing. Converting it to a
-frequency-weighted count needs an execution counter on the **emitted** engine,
-which does not exist — `PM_TABLE_COUNT` instruments `exec.ts` and would answer a
-different question. Building that counter is the honest next measurement and it
-is not built here.
-
-### (b) Whether a derived token could decide the site at all
-
-`collectAlphabet` + `candidateSet`, run on the combinator graph for the first
-time:
-
-| dialect | terminals | literals | keyword sets (words) | regexes | `choice()` nodes | every arm has a lead terminal | …and leads DISTINCT | must stay scannerless |
+| dialect | terminals | literals | keyword sets (words) | regexes | choices | all arms lead with a terminal | leads distinct | walker stopped |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| css | 120 | 31 | 32 (80) | 57 | 96 | 47 (49.0%) | 42 (43.8%) | 49 (51.0%) |
-| less | 188 | 43 | 51 (262) | 94 | 176 | 61 (34.7%) | 56 (31.8%) | 115 (65.3%) |
-| scss | 139 | 33 | 24 (87) | 82 | 111 | 52 (46.8%) | 44 (39.6%) | 59 (53.2%) |
-| jess | 150 | 37 | 35 (83) | 78 | 103 | 47 (45.6%) | 44 (42.7%) | 56 (54.4%) |
+| css | 120 | 31 | 32 (80) | 57 | 96 | 47 (49.0%) | **42 (43.8%)** | 49 (51.0%) |
+| less | 188 | 43 | 51 (262) | 94 | 176 | 61 (34.7%) | **56 (31.8%)** | 115 (65.3%) |
+| scss | 139 | 33 | 24 (87) | 82 | 111 | 52 (46.8%) | **44 (39.6%)** | 59 (53.2%) |
+| jess | 150 | 37 | 35 (83) | 78 | 103 | 47 (45.6%) | **44 (42.7%)** | 56 (54.4%) |
 
-The alphabets are scanner-sized, as §1 claimed. But **the decidable fraction is
-32%–44%, not the 43%–93% §1 left open** — and less, the dialect the shipping
-regression is measured on, is the worst of the four.
+The old note called **32–44%** “eligible”. That label is withdrawn: it is only the
+reach of a walker that stops at nullable/many prefixes, wrappers, and unresolved
+references and requires distinct leads the character gate often decides already.
+It is not tokenizability. The table remains useful as exact alphabet/probe evidence.
+Regexes dominate every alphabet (57/94/82/78), and the prototype's sticky regex
+loop can be worse than current straight-line `charCodeAt` scan shapes.
 
-Two caveats that cut opposite ways and are stated rather than resolved:
+## Experiment interpretation and next decisive test
 
-- `leadTerminal` **bails** at a nullable or `many` prefix (`token-alphabet.ts:163`)
-  and at any unresolved `lazy`. Some of the 51%–65% is walker limitation, which
-  is §1's own "the 46 are places the static walker stopped". Resolving them is
-  analysis work.
-- Regexes outnumber literals in every dialect (57, 94, 82, 78). A regex terminal
-  in the scanner is a **sticky `exec` behind a first-char bitset gate**, while
-  the same row through `emitScan`/`scan-shapes.ts` today is *straight-line
-  `charCodeAt` with the ranges folded into the source and no match array*.
-  For those, the derived scanner as written is a **downgrade**.
+The old static model predicted moving masked-site arm entries from 1.52–1.71
+toward 1.0 on its 32–44% distinct-lead population—roughly 15–25% fewer arm
+entries at gated choices, concentrated in 3–8 worst sites per dialect. That was
+a bound on the conservative model, **not a token-coverage or speed prediction**.
 
----
+A later conservative one-choice-per-dialect implementation measured **+3.77%**
+on Less (a regression). It chose sites the character gate already decided and
+falsified that implementation, not the cursor architecture.
+Likewise, standalone terminal recognition is only a prerequisite/control: a
+correct standalone JSON-number `charCodeAt` scanner was flat
+(`-1.1%` to `+1.5%`). The performance hypothesis is elimination of duplicated
+gate/child recognition and opaque boundaries, not recognition alone.
 
-## 4. The prep — deliberately not done
+Later frequency-weighted nested-lead analysis on the shipping closure artifacts
+found the production target the conservative probe missed. A singular global
+longest-match rule had **303/1,552 Less winner mismatches**; the
+semantics-correct compatible-view oracle instead preserved PEG order with **zero
+winner mismatches**. Its overall eliminable failed entries were CSS
+**140/4,167 (0.5%)**, benchmark Less **8,170/23,856 (9.4%)**, and generated Less
+**27,137/65,059 (11.0%)**. The dominant Less `Value` site alone accounted for
+**7,734/7,927** and **27,119/30,430** prior entries.
 
-The named prep (§0.1) does not exist in the notes and the label it names is
-already three-valued and open-ended. Doing it would mean *narrowing* `tri` to an
-enum to then widen it. Not done, and the reason is that it is already done.
+The first canonical closure prototype left TableProgram word count unchanged and
+reduced remaining retries to **193/3,311**, but its native-RegExp compatible-set
+scan regressed benchmark Less **+2.5% paired** (**+4.4% solo**) and generated Less
+**+1.9% paired** (**+0.4% solo**). That rejects the scanner implementation, not
+tokenized PEG. Its deliberate RED plant changed `a | ab` consumption from 1 to 2
+and broke probe behavior, proving the semantic differential can catch accidental
+longest-match prediction.
 
-The prep that would actually be cheap and is **also not done**, because it needs
-an owner ruling first:
+Before broad wiring:
 
-- **Store the candidate-set index on `ResolvedDispatch`.** `armCls` is already
-  there; a parallel `armLead: readonly (number | null)[]` costs one array per
-  dispatch and nothing at parse time, and it is the one fact the encoder throws
-  away that the wiring step cannot recompute (the combinator is gone by then).
-  It is not free, though — it means `encode.ts` calling into
-  `token-alphabet.ts`, which turns three DEBT-listed modules into live compiler
-  dependencies. That is a directional commitment, not a prep, and it belongs to
-  whoever owns the 0.48 framing.
+1. Start with the proven Less `Value` site; do not select by distinct first leads.
+2. Fix the case-sensitive literal hole and use grammar trivia ownership.
+3. Bind its lexical context through the fixed-piece interface, use one recognition
+   for every compatible ordered arm trial, and let the selected child consume the
+   pending result.
+4. Compare the complete `RunResult`, including `expected`, spans, recovery,
+   trivia, and CST shape; an older digest omitted `expected` and hid six
+   divergences.
+5. Interleave performance against an A/A control and inspect artifact/package
+   cost. Reject the prototype if classifier cost exceeds the boundaries and
+   rescans it removes.
 
-Also not done, and named so it is not rediscovered: the case-sensitive-literal
-hole (§1). That is a bug fix, not prep, and it must land before any wiring or
-less and jess will scan wrong.
-
----
-
-## 5. The first real wiring step
-
-Not "emit a scanner". This:
-
-> **Add a token-keyed alternative to the `OP_CHOICE` gate at
-> `emit-assembly.ts:1155`, selected per site at emit time, refusing exactly the
-> way `emitScan` refuses, and gated by the existing byte-identity sweep.**
-
-In order, each step independently landable and independently reversible:
-
-1. **Fix the case-sensitive-literal hole** in `buildTrie`. Behavioural test, not
-   a source assertion — `test/unit/token-scanner-memo.test.ts`'s header already
-   asks for this the moment anything parses through the scanner.
-2. **Strip the trivia loop and the `tight` bit out of `token-scanner.ts`.**
-   The position handed to the scanner is already post-trivia. `tight` is
-   `noTrivia` adjacency and belongs on `skipFor`'s output, not the scanner's.
-3. **Delete the `emitDispatchId` half of `token-dispatch.ts`**, re-homing
-   `packInts` / `PACK_MAX` / `foldCode` / `foldExpr` / the `unpack` helper. That
-   is ~230 of 353 lines of measured-and-closed thread, and it removes the
-   temptation to re-run a bake-off whose own evidence was 2.4%.
-4. **Carry the candidate-set index through `encode.ts` → `ResolvedDispatch`**,
-   behind the owner ruling in §4.
-5. **One site, not a sweep.** Pick the worst masked choice in `less` (11 arms,
-   all 11 entered) and emit the token gate for that site alone, everything else
-   unchanged. `bench/table-lowering-identity.ts` gates it — and compare
-   `RunResult.expected` directly, because it is **not** in the digest (the
-   standing hazard at the foot of the 0.48 notes; six divergences hid there
-   during 0.47).
-6. **Only then** ask whether it is faster, with a frequency-weighted arm-entry
-   counter on the **emitted** engine — which does not exist and has to be built
-   before the question is answerable at all.
-
-### The prediction, and what falsifies it
-
-**Mechanism.** At a masked choice the gate is one `Uint32Array` load and a
-popcount's worth of taken branches; the arms it admits beyond the right one each
-cost a call, a failure, an `_accSet`, and a rollback. A token id would make the
-admitted set exactly 1 wherever the arms' lead terminals are distinct. The win
-is *arm entries avoided*, not *characters scanned*.
-
-**Predicted.** A reduction of arm entries at masked choice sites toward 1.0 from
-the 1.52–1.71 static mean, on the ~32%–44% of sites whose leads are distinct —
-so on the order of **15%–25% of arm entries at gated choices**, concentrated in
-the 3–8 worst sites per dialect. Nothing at `exclusive` sites, nothing at the
-51%–65% that must stay scannerless.
-
-**Falsified if** any of these:
-- the frequency-weighted arm-entry count at masked sites is already near 1.0 —
-  i.e. real documents land on the decided lead chars and the static mean is an
-  artifact of weighting every ASCII char equally. *This is the single most
-  likely outcome and it should be measured before step 4, not after step 5.*
-- the scanner's per-position cost exceeds the arm entries it removes. It walks a
-  trie *and* loops the candidate set against every regex terminal
-  (`token-scanner.ts:279-290`, O(candidates × regexes)) where `lead()` is one
-  `charCodeAt`. At a 2-arm site this loses outright.
-- a token gate at a site forces the position past trivia earlier than the arm
-  that wins would have, changing `expected` or a span. Caught by comparing
-  `RunResult.expected`, not by the digest.
-
-**What would make the whole thing not worth doing:** if §8's 2.2×–2.6×
-regression is located and it is not choice speculation. Token streaming is a
-~1.5×-arm-entry problem at best. A 2.6× regression is somewhere else, and
-finding it is not this lane's work but it is strictly higher value than this
-lane's work.
+Do not infer a global answer from the old 2.2–2.6× bytecode gap: that comparison
+used a non-shipping engine. Current CSS/Less priority must be based on production
+profiles and dynamic coverage, while keeping the token cursor and fixed pieces
+on one convergent interface.

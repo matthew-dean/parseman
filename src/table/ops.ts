@@ -37,8 +37,11 @@ export const OP_SEQV = 4
  */
 export const OP_CHOICE = 5
 /**
- * `REP c min max sep flags` — `sep` is a child offset or −1; `max` −1 = ∞.
- * `flags` bit 0 = trailing separator allowed, bit 1 = `keepSeparators`.
+ * `REP c min max sep flags fx sepClass` — `sep` is a child offset or −1; `max`
+ * −1 = ∞. `fx` is recovery metadata. The last class is the separator sentinel
+ * for a separated list, otherwise the finite/non-nullable optional-item class
+ * (or −1). `flags` bit 0 = trailing separator allowed, bit 1 =
+ * `keepSeparators`, bit 2 = item expected reporting.
  */
 export const OP_REP = 6
 /** `REPV …` — `REP` with `valueUnused`. */
@@ -104,12 +107,18 @@ export const OP_LIT_TRACK = 17
 export const OP_RX_TRACK = 18
 export const OP_NODE_TRACK = 19
 /**
- * `SCOPE k c` — a `parser({ trivia })` / `rules({ trivia })` scope.
+ * `SCOPE k c policy` — a policy-bearing `parser({ trivia })` scope.
  *
  * `k` is the scope's trivia COMBINATOR in the const pool. The driver installs it
  * on `ctx.trivia` for the duration and restores the outer one after, which is
  * how the runtime's own `advanceTrivia` fast scanner gets reached — the same
  * shared machinery the interpreter uses, not a second copy of it.
+ *
+ * `policy` bit 0 suppresses selected root capture for an opaque scope; bit 1
+ * refuses an unclassified local scope while selected root capture is active.
+ * Synthetic rule-entry and cross-rule restoration scopes have no policy and use
+ * the three-word `OP_SCOPE_PLAIN` row below. Keeping the opcodes distinct means
+ * a zero policy costs no extra program word without changing this opcode's ABI.
  */
 export const OP_SCOPE = 20
 /**
@@ -119,6 +128,11 @@ export const OP_SCOPE = 20
 export const OP_EXPECT = 21
 /**
  * `SEQX f n c1 … cn` — a `transform()` whose child is a `sequence()`.
+ *
+ * `f >= 0` indexes the reducer in `prog.fns`. `f < 0` is the descriptor
+ * `~childIndex`: the transform is the exact direct projection
+ * `([…, value, …]) => value`, so the row returns that already-parsed child and
+ * carries no reducer.  Both forms have the same row width.
  *
  * That pair is the dominant shape in every grammar here (json is nine of them),
  * and running it as two rows costs two switch dispatches and two JS call frames
@@ -426,6 +440,19 @@ export const OP_LABEL = 39
  */
 export const OP_COV = 40
 /**
+ * `SCOPE_PLAIN k c` — a synthetic zero-policy ambient-trivia scope.
+ *
+ * This is the same scanner/context swap as `OP_SCOPE`, with policy fixed to
+ * zero at assembly. `encodeRule()` uses it for a rule entry and `scopedRef()`
+ * for the lexical-trivia restoration around a reference reached from
+ * `noTrivia()`. Neither row represents an authored `parser()` scope, so neither
+ * can be opaque or require the unclassified-scope refusal.
+ *
+ * A separate opcode is load-bearing: treating a three-word synthetic row as the
+ * four-word `OP_SCOPE` makes the following row's opcode become the policy bits.
+ */
+export const OP_SCOPE_PLAIN = 41
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -456,4 +483,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_ADJ]: 'ADJ',
   [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
   [OP_LIVE]: 'LIVE', [OP_ATTEMPT]: 'ATTEMPT', [OP_LABEL]: 'LABEL', [OP_COV]: 'COV',
+  [OP_SCOPE_PLAIN]: 'SCOPE_PLAIN',
 }
