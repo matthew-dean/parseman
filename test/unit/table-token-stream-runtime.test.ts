@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { choice, dispatch, literal, matches, otherwise, regex, routed, sequence, token, transform, when } from '../../src/index.ts'
+import { choice, dispatch, literal, otherwise, regex, routed, sequence, token, transform, when } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
 import {
-  ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram, type TokenPlanWire,
+  ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram,
 } from '../../src/table/program.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_CHOICE, OP_DISPATCH, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
+import { OP_CHOICE } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -69,28 +69,13 @@ function manualPlan(native = false): { readonly parser: ReturnType<typeof dispat
   const selector = token(native ? regex(/([a-z])\1+/) : regex(/[a-z]+/))
   const exact = native ? 'ff' : 'foo'
   const parser = dispatch(selector, when(exact, literal('!')), otherwise(literal('?')))
-  const raw = encodeTable({ Entry: parser })
-  const sites = [...reachableIps(raw)]
-  const dispatchIp = sites.find(ip => raw.code[ip] === OP_DISPATCH)!
-  const tokenIp = raw.code[dispatchIp + 1]!
-  const childIp = raw.code[tokenIp + 1]!
-  expect(raw.code[tokenIp]).toBe(OP_TOKEN)
-  expect(raw.code[childIp]).toBe(OP_RX)
-  const regexK = raw.code[childIp + 1]!
-  const exactK = raw.k.length
-  const family = 3
-  const exactId = 4, fallbackId = 5
-  const plan: TokenPlanWire = {
-    recognizerOffsets: [0],
-    recognizerData: [2, 3, regexK],
-    outcomeOffsets: [0, 5],
-    outcomeData: [exactId, family, 0, exactK, 0, fallbackId, family, 4],
-    tokenSites: [tokenIp, family],
-    sites: [raw.code[dispatchIp + 2]!, family, 0, 2],
-    routes: [0, 0, 0, 1, -1, 2, 1, 1],
-    accepted: [exactId, fallbackId],
-  }
-  return { parser, prog: ownTableProgram({ ...raw, k: [...raw.k, exact], tokenPlan: plan }) }
+  const later = token(native ? regex(/([a-z])\1+/) : regex(/[a-z]+/))
+  const prog = encodeTable({
+    Entry: choice(transform(parser, value => value), later),
+    Dispatch: parser,
+  })
+  expect(prog.tokenPlan?.choiceSites).toHaveLength(3)
+  return { parser, prog }
 }
 
 function unsupportedPlan(): {
@@ -98,31 +83,23 @@ function unsupportedPlan(): {
   readonly planned: TableProgram
   readonly injected: TableProgram
 } {
-  const parser = dispatch(
-    token(regex(/[a-z]+/)),
-    when(matches(/^a.+z$/), literal('!')),
-    otherwise(literal('?')),
-  )
-  const planned = encodeTable({ Entry: parser })
-  const base = planned.tokenPlan!
-  expect(base.sites).toEqual([])
-  const dispatchIp = [...reachableIps(planned)].find(ip => planned.code[ip] === OP_DISPATCH)!
-  const family = base.tokenSites[1]!
-  let unsupportedId = -1, fallbackId = -1
-  for (const at of base.outcomeOffsets) {
-    const kind = base.outcomeData[at + 2]!
-    if (kind === 3) unsupportedId = base.outcomeData[at]!
-    if (kind === 4) fallbackId = base.outcomeData[at]!
+  const active = manualPlan()
+  const base = active.prog.tokenPlan!
+  const outcomeData = [...base.outcomeData]
+  const exactAt = base.outcomeOffsets.find(at => base.outcomeData[at + 2] === 0)!
+  const unsupportedK = active.prog.k.length
+  outcomeData[exactAt + 2] = 3
+  outcomeData[exactAt + 3] = unsupportedK
+  const { tokenPlan: _plan, ...legacy } = active.prog
+  return {
+    parser: active.parser,
+    planned: ownTableProgram(legacy),
+    injected: ownTableProgram({
+      ...active.prog,
+      k: [...active.prog.k, /^a.+z$/],
+      tokenPlan: { ...base, outcomeData },
+    }),
   }
-  expect(unsupportedId).toBeGreaterThan(0)
-  expect(fallbackId).toBeGreaterThan(0)
-  const tokenPlan: TokenPlanWire = {
-    ...base,
-    sites: [planned.code[dispatchIp + 2]!, family, 0, 2],
-    routes: [0, 1, 0, 1, -1, 2, 1, 1],
-    accepted: [unsupportedId, fallbackId],
-  }
-  return { parser, planned, injected: ownTableProgram({ ...planned, tokenPlan }) }
 }
 
 function countedChoicePlan(): {
@@ -139,14 +116,8 @@ function countedChoicePlan(): {
   )
   const raw = encodeTable({ Entry: parser })
   const choiceIp = [...reachableIps(raw)].find(ip => raw.code[ip] === OP_CHOICE)!
-  const xformIp = raw.code[choiceIp + 4]!
-  const dispatchIp = raw.code[xformIp + 2]!
-  const dspIndex = raw.code[dispatchIp + 2]!
-  const plan = raw.tokenPlan!
-  let siteIndex = -1
-  for (let i = 0; i < plan.sites.length; i += 4) if (plan.sites[i] === dspIndex) siteIndex = i / 4
-  expect(siteIndex).toBeGreaterThanOrEqual(0)
-  const tokenPlan = { ...plan, choiceSites: [choiceIp, 0, siteIndex] }
+  const tokenPlan = raw.tokenPlan!
+  expect(tokenPlan.choiceSites).toEqual([choiceIp, 0, 0])
   let calls = 0
   const constants = raw.k.map(value => {
     if (!(value instanceof RegExp)) return value
@@ -181,8 +152,8 @@ function earlierChoicePlan(): { readonly prog: TableProgram; readonly calls: () 
 describe('table token stream runtime', () => {
   it('routes one atomic range and preserves canonical miss diagnostics', () => {
     const { parser, prog } = manualPlan()
-    const closure = tableRules({ ...prog, asm: [] }).Entry!
-    const emitted = tableRules(prog).Entry!
+    const closure = tableRules({ ...prog, asm: [] }).Dispatch!
+    const emitted = tableRules(prog).Dispatch!
     for (const input of ['foo!', 'bar?', '1']) {
       const source = run(parser, input)
       for (const actual of [run(closure, input), run(emitted, input)]) {
@@ -201,12 +172,22 @@ describe('table token stream runtime', () => {
 
   it('recognizes once on success, twice on miss, and releases the source at finish', () => {
     for (const mode of ['closure', 'emitted'] as const) {
-      const { prog } = manualPlan(true)
-      const re = prog.k.find(value => value instanceof RegExp && value.sticky) as RegExp
-      const original = re.exec
+      const { prog: raw } = manualPlan(true)
+      const plan = raw.tokenPlan!
+      const recognizer = plan.sites[1]! - 3
+      const recognizerAt = plan.recognizerOffsets[recognizer]!
+      const recognizerK = plan.recognizerData[recognizerAt + 2]!
+      const originalRe = raw.k[recognizerK] as RegExp
       let calls = 0
-      re.exec = function (input: string) { calls++; return original.call(this, input) }
-      const entry = tableRules(mode === 'closure' ? { ...prog, asm: [] } : prog).Entry!
+      const constants = raw.k.map(value => {
+        if (!(value instanceof RegExp) || value.source !== originalRe.source) return value
+        const re = new RegExp(value.source, `${value.flags.replace(/[gy]/g, '')}y`)
+        const original = re.exec
+        re.exec = function (input: string) { calls++; return original.call(this, input) }
+        return re
+      })
+      const prog = ownTableProgram({ ...raw, k: constants })
+      const entry = tableRules(mode === 'closure' ? { ...prog, asm: [] } : prog).Dispatch!
 
       expect(run(entry, 'ff!').ok, mode).toBe(true)
       expect(calls, `${mode} success scans`).toBe(1)
@@ -224,16 +205,18 @@ describe('table token stream runtime', () => {
     const planted = ownTableProgram({ ...prog, tokenPlan: { ...prog.tokenPlan!, routes } })
     const authority = run(parser, 'foo!')
     expect(authority.ok).toBe(true)
-    for (const entry of [tableRules({ ...planted, asm: [] }).Entry!, tableRules(planted).Entry!]) {
+    for (const entry of [tableRules({ ...planted, asm: [] }).Dispatch!, tableRules(planted).Dispatch!]) {
       expect(run(entry, 'foo!').ok).toBe(false)
     }
   })
 
   it('restores a pending range across reentry and releases it after outer finish', () => {
     const selector = token(regex(/([a-z])\1+/))
+    const classified = dispatch(selector, when('ff', literal('!')), otherwise(literal('?')))
     const grammar = {
+      Entry: choice(transform(classified, value => value), selector),
       Selector: selector,
-      Dispatch: dispatch(selector, when('ff', literal('!')), otherwise(literal('?'))),
+      Dispatch: classified,
     }
     const raw = encodeTable(grammar)
     const tokenIp = raw.tokenPlan!.tokenSites[0]!
@@ -275,7 +258,10 @@ describe('table token stream runtime', () => {
   it('publishes selector end and CST leaf before a hot no-route failure', () => {
     const selector = token(regex(/[a-z]+/))
     const parser = dispatch(selector, when('foo', literal('!')))
-    const prog = encodeTable({ Entry: parser })
+    const prog = encodeTable({
+      Entry: parser,
+      Anchor: choice(transform(parser, value => value), selector),
+    })
     const sourceCtx = createParseContext()
     sourceCtx._cstLeaves = []
     const source = parser.parse('bar', 0, sourceCtx)
@@ -293,8 +279,7 @@ describe('table token stream runtime', () => {
 
   it('declines an unsupported outcome site without cursor source or behavior', () => {
     const { parser, planned, injected } = unsupportedPlan()
-    expect(planned.tokenPlan?.routes).toEqual([])
-    expect(planned.tokenPlan?.accepted).toEqual([])
+    expect(planned.tokenPlan).toBeUndefined()
     const emitted = emitAssemblySource(resolveTable(injected), injected, {
       hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false,
     }).source
@@ -308,6 +293,19 @@ describe('table token stream runtime', () => {
         })
       }
     }
+  })
+
+  it('rejects a sparse wire whose active family points at a recognizer hole', () => {
+    const { prog } = manualPlan()
+    const plan = prog.tokenPlan!
+    const recognizerOffsets = [...plan.recognizerOffsets]
+    recognizerOffsets[plan.sites[1]! - 3] = -1
+    const malformed = ownTableProgram({
+      ...prog,
+      tokenPlan: { ...plan, recognizerOffsets },
+    })
+    expect(() => run(tableRules({ ...malformed, asm: [] }).Entry!, 'foo!')).toThrow('invalid token or family')
+    expect(() => run(tableRules(malformed).Entry!, 'foo!')).toThrow()
   })
 
   it('keeps inactive closure assemblies on the exact legacy allocation and boundary shape', () => {
@@ -335,6 +333,23 @@ describe('table token stream runtime', () => {
     ]) expect(assemblyShape(active, cold)).toEqual(assemblyShape(activeNoPlan, cold))
   })
 
+  it('defensively leaves an unanchored serialized dispatch on exact legacy shape', () => {
+    const active = manualPlan().prog
+    const plan = active.tokenPlan!
+    const { choiceSites: _choices, ...unanchoredPlan } = plan
+    const unanchored = ownTableProgram({ ...active, tokenPlan: unanchoredPlan })
+    const { tokenPlan: _plan, ...legacyData } = active
+    const legacy = ownTableProgram(legacyData)
+
+    expect(assemblyShape(unanchored)).toEqual(assemblyShape(legacy))
+    const source = emitAssemblySource(resolveTable(unanchored), unanchored, STRICT).source
+    expect(source).not.toContain('_pfTokInput')
+    expect(source).not.toContain('_tokRecognize')
+    for (const input of ['foo!', 'bar?', '1']) {
+      expect(run(tableRules(unanchored).Dispatch!, input)).toEqual(run(tableRules(legacy).Dispatch!, input))
+    }
+  })
+
   it('does not suspend a token frame before a throwing build getter completes', () => {
     const { prog } = manualPlan()
     const closureProg = { ...prog, asm: [] }
@@ -360,7 +375,8 @@ describe('table token stream runtime', () => {
     function counted(equalFamily: boolean): { readonly prog: TableProgram; readonly calls: () => number } {
       const first = token(regex(/([a-z])\1+/))
       const later = equalFamily ? token(regex(/([a-z])\1+/)) : token(regex(/(?:[a-z]){2,}/))
-      const raw = encodeTable({ Entry: choice(dispatch(first, when('ff', literal('!'))), later) })
+      const classified = dispatch(first, when('ff', literal('!')))
+      const raw = encodeTable({ Entry: choice(transform(classified, value => value), later) })
       let calls = 0
       const constants = raw.k.map(value => {
         if (!(value instanceof RegExp)) return value
@@ -420,23 +436,20 @@ describe('table token stream runtime', () => {
 
   it('defensively ignores an exclusive outer-choice relation', () => {
     const selector = token(regex(/([a-z])\1+/))
+    const classified = dispatch(selector, when('ff', literal('!')))
     const parser = choice(
-      transform(dispatch(selector, when('ff', literal('!'))), value => value),
+      transform(classified, value => value),
       literal('!'),
     )
-    const raw = encodeTable({ Entry: parser })
-    expect(raw.tokenPlan?.choiceSites).toBeUndefined()
-    const choiceIp = [...reachableIps(raw)].find(ip => raw.code[ip] === OP_CHOICE)!
-    const dispatchIp = raw.code[raw.code[choiceIp + 4]! + 2]!
-    const dspIndex = raw.code[dispatchIp + 2]!
-    let siteIndex = -1
-    for (let i = 0; i < raw.tokenPlan!.sites.length; i += 4) {
-      if (raw.tokenPlan!.sites[i] === dspIndex) siteIndex = i / 4
-    }
-    expect(siteIndex).toBeGreaterThanOrEqual(0)
+    const active = choice(transform(classified, value => value), selector)
+    const raw = encodeTable({ Entry: parser, Active: active })
+    expect(raw.tokenPlan?.choiceSites).toHaveLength(3)
+    const resolved = resolveTable(raw)
+    const choiceIp = [...reachableIps(raw)].find(ip => raw.code[ip] === OP_CHOICE
+      && resolved.disp[raw.code[ip + 1]!]!.exclusive)!
     const planted = ownTableProgram({
       ...raw,
-      tokenPlan: { ...raw.tokenPlan!, choiceSites: [choiceIp, 0, siteIndex] },
+      tokenPlan: { ...raw.tokenPlan!, choiceSites: [choiceIp, 0, 0] },
     })
     for (const entry of [tableRules({ ...planted, asm: [] }).Entry!, tableRules(planted).Entry!]) {
       expect(run(entry, 'ff!')).toMatchObject({ ok: true, unconsumedFrom: null })
@@ -445,7 +458,11 @@ describe('table token stream runtime', () => {
   })
 
   it('keeps no-choice and unrelated dispatch closures on the direct route body', () => {
-    const noChoice = manualPlan().prog
+    const noChoiceSelector = token(regex(/[a-z]+/))
+    const noChoice = encodeTable({
+      Entry: dispatch(noChoiceSelector, when('foo', literal('!')), otherwise(literal('?'))),
+    })
+    expect(noChoice.tokenPlan).toBeUndefined()
     const noChoiceClosure = { ...noChoice, asm: [] }
     const directSource = String(assemble(resolveTable(noChoiceClosure), noChoiceClosure, STRICT).pieces.Entry!)
     expect(directSource).not.toContain('sharedDecision')
@@ -480,14 +497,18 @@ describe('table token stream runtime', () => {
   })
 
   it('restores routed state on a throwing hot route in closure, emitted, precompiled, and module engines', async () => {
+    const selector = token(regex(/[a-z]+/))
     const parser = dispatch(
-      token(regex(/[a-z]+/)),
+      selector,
       when('foo', sequence(
         routed(),
         transform(literal('!'), () => { throw new Error('boom') }),
       )),
     )
-    const prog = encodeTable({ Entry: parser })
+    const prog = encodeTable({
+      Entry: parser,
+      Anchor: choice(transform(parser, value => value), selector),
+    })
     expect(prog.tokenPlan?.sites.length).toBeGreaterThan(0)
     const loaded = await moduleRules(prog)
     const entries: Array<readonly [string, (input: string, pos: number, ctx: ParseContext) => unknown]> = [

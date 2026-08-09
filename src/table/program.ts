@@ -336,8 +336,9 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
  * token cursor. Recognizer and outcome IDs are global; sites and routes are
  * local to the already-encoded table.
  *
- * - `recognizerOffsets[id]` indexes `recognizerData`, a prefix TLV lexical IR.
- *   Family id is `FIRST_LEXICAL_FAMILY_ID + id`.
+ * - `recognizerOffsets[id]` indexes `recognizerData`, a prefix TLV lexical IR;
+ *   `-1` is an inactive global recognizer retained only to preserve ids. Family
+ *   id is `FIRST_LEXICAL_FAMILY_ID + id`.
  * - `outcomeOffsets[]` indexes `outcomeData`; every outcome record starts with
  *   its global `[outcomeId,familyId,kind]` and is atomic.
  * - `tokenSites` is repeated `[OP_TOKEN ip,familyId]`. The ordinary child row

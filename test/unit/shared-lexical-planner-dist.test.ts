@@ -68,11 +68,12 @@ describe('built lexical planner topology', () => {
         lib.regex(/[A-Za-z]+/),
         lib.optional(lib.literal('(')),
       )))
-      return lib.dispatch(
+      const classified = lib.dispatch(
         selector,
         lib.when(lib.endsWith('('), lib.literal(')')),
         lib.otherwise(lib.literal(':')),
       )
+      return lib.choice(lib.transform(classified, value => value), selector)
     }
     const a = esmTable.encodeTable({ Entry: make(esm) })
     const b = cjsTable.encodeTable({ Entry: make(cjs) })

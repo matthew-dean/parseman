@@ -517,7 +517,16 @@ export function emitAssemblySource(
       outcomeById.set(id, [tokenWire.outcomeData[at + 2]!, tokenWire.outcomeData[at + 3] ?? -1, tokenWire.outcomeData[at + 4] ?? 0])
     }
     const reachable = reachableSites(code, roots)
+    const choiceWire = tokenWire.choiceSites
+    const choiceAnchorsSite = (siteIndex: number): boolean => {
+      if (choiceWire === undefined || choiceWire.length % 3 !== 0) return false
+      for (let i = 0; i < choiceWire.length; i += 3) {
+        if (choiceWire[i + 2] === siteIndex) return true
+      }
+      return false
+    }
     for (let i = 0; i < tokenWire.sites.length; i += 4) {
+      if (!choiceAnchorsSite(i / 4)) continue
       const di = tokenWire.sites[i]!, family = tokenWire.sites[i + 1]!
       let producer: TokenSitePlan | undefined
       for (const siteIp of reachable) {

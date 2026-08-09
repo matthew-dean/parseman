@@ -370,10 +370,20 @@ function tokenOutcomeWireSupported(wire: TokenPlanWire, id: number, k: readonly 
   return false
 }
 
+function tokenChoiceAnchorsSite(wire: TokenPlanWire, siteIndex: number): boolean {
+  const choices = wire.choiceSites
+  if (choices === undefined || choices.length % 3 !== 0) return false
+  for (let i = 0; i < choices.length; i += 3) {
+    if (choices[i + 2] === siteIndex) return true
+  }
+  return false
+}
+
 /** Allocation-free preflight: an entirely refused plan keeps the legacy assembly shape. */
 function tokenPlanHasSupportedSite(wire: TokenPlanWire, k: readonly unknown[]): boolean {
   if (wire.sites.length === 0) return false
   for (let i = 0; i < wire.sites.length; i += 4) {
+    if (!tokenChoiceAnchorsSite(wire, i / 4)) continue
     const routeStart = wire.sites[i + 2]!, routeCount = wire.sites[i + 3]!
     let siteSupported = true
     for (let route = 0; route < routeCount && siteSupported; route++) {
@@ -631,11 +641,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (tokenWire.tokenSites.length % 2 !== 0 || tokenWire.sites.length % 4 !== 0
       || tokenWire.routes.length % 4 !== 0) throw new TypeError('table token plan arrays are malformed')
     for (let i = 0; i < tokenWire.recognizerOffsets.length; i++) {
-      const [recognize, next] = compileLexAt(tokenWire.recognizerData, tokenWire.recognizerOffsets[i]!)
-      const expectedNext = i + 1 < tokenWire.recognizerOffsets.length
-        ? tokenWire.recognizerOffsets[i + 1]! : tokenWire.recognizerData.length
+      const at = tokenWire.recognizerOffsets[i]!
+      if (at < 0) continue
+      const [recognize, next] = compileLexAt(tokenWire.recognizerData, at)
+      let expectedNext = tokenWire.recognizerData.length
+      for (let j = i + 1; j < tokenWire.recognizerOffsets.length; j++) {
+        const candidate = tokenWire.recognizerOffsets[j]!
+        if (candidate >= 0) { expectedNext = candidate; break }
+      }
       if (next !== expectedNext) throw new TypeError('table token recognizer offset does not span one TLV')
-      lexicalRecognizers.push(recognize)
+      lexicalRecognizers[i] = recognize
       scalarRecognizers[k.length + i] = recognize
     }
     for (let i = 0; i < tokenWire.outcomeOffsets.length; i++) {
@@ -666,6 +681,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       tokenProducers.set(ip, { dispatch: -1, selectorIp: ip, recognizer, family: familyId, routeStart: 0, routeCount: 0 })
     }
     for (let i = 0; i < tokenWire.sites.length; i += 4) {
+      if (!tokenChoiceAnchorsSite(tokenWire, i / 4)) continue
       const di: number = tokenWire.sites[i]!
       const familyId: number = tokenWire.sites[i + 1]!
       let producer: TokenSitePlan | undefined
