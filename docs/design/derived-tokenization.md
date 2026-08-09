@@ -26,8 +26,11 @@ status labels identify which is which.
 >
 > Replacement is also **not** an all-or-nothing choice between a compact table and a
 > giant source-generated parser. After the compiler selects CHARACTER or TOKEN, it
-> separately selects the cheapest binding for that site: shared piece, direct captured
-> piece, or statically named emitted body. The historical 38–42× whole-factory growth
+> separately makes every applicable binding available and selects the cheapest one for
+> that site: shared piece, direct captured piece, or statically named emitted body.
+> “Hot” and “cold” are cost inputs, not eligibility classes; missing static-binding
+> support is a compiler gap, never proof that the shared form is cheaper. The historical
+> 38–42× whole-factory growth
 > rejects indiscriminate duplication only. It does not justify an opcode switch,
 > `pieces[ip]` lookup, route-array walk, or unused strategy branch at a final hot site.
 > See [`parseman-0.48.md` §2.1](./parseman-0.48.md#21-selective-static-binding-not-an-all-or-nothing-emitter).

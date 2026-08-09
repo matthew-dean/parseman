@@ -90,7 +90,8 @@ The earlier static-factory size result rejected emitting a complete duplicate pa
 factory for every rule and assembly. It did **not** show that every combinator should
 remain a generic array-indexed runtime operation. Those are separate questions.
 
-For every final site, the compiler MUST choose the cheapest complete binding shape:
+For every final site, the compiler MUST first make every semantically valid binding
+shape available, then choose the cheapest complete one:
 
 1. a shared generic piece, when its indirection is cheaper than specialization;
 2. an assembly-bound piece with its child pieces, predicates, constants and routes
@@ -98,11 +99,21 @@ For every final site, the compiler MUST choose the cheapest complete binding sha
 3. a statically named emitted body when eliminating the remaining lookup/dispatch is
    worth that site's source and package cost.
 
-This decision is per site and may produce a mixed artifact. A hot site whose opcode,
-children and route are final must not pay a parse-time opcode switch, `pieces[ip]`
-lookup, optional-plan branch, or array walk merely because colder sites use the shared
-representation. Conversely, a cold or structurally irregular site must not be copied
-into source merely because another site benefits from a named body.
+This decision is per site and may produce a mixed artifact. “Hot” and “cold” are cost
+inputs, not admission classes. A site whose opcode, children and route are final must
+not pay a parse-time opcode switch, `pieces[ip]` lookup, optional-plan branch, or array
+walk merely because its direct binding has not been implemented or because other sites
+use the shared representation. Conversely, a site must not be copied into source merely
+because another site benefits from a named body. A cold site may bind directly when that
+is cheapest; a hot site may remain shared only when the complete cost comparison says
+sharing is cheaper.
+
+Binding capability therefore follows the same non-circular rule as token capability:
+the compiler constructs every applicable shared, captured and named candidate before it
+prices them. Missing specialization support is a compiler `GAP`, not evidence that the
+generic representation won. The program may retain the generic correctness baseline
+while a binding gap exists, but it may not claim cheapest-representation closure for that
+site or use the incomplete result as release-performance evidence.
 
 Static naming is therefore a local lowering tool, not a second engine and not a build
 mode. `_pf<site>`-style names may be emitted only for selected sites; other sites keep
@@ -119,11 +130,14 @@ evidence that its indirection is free.
 
 Permanent structural teeth MUST include a mixed grammar where:
 
-- one selected hot site has a direct/named body containing no opcode dispatch,
+- one selected site has a direct/named body containing no opcode dispatch,
   `pieces[ip]` lookup, or unused strategy branch;
-- one cold site remains shared and is not duplicated into emitted source; and
+- one independently priced site remains shared and is not duplicated into emitted
+  source;
 - changing either site's cost decision makes the tooth RED without changing parse
-  semantics.
+  semantics; and
+- omitting an applicable captured or named candidate is reported as a binding `GAP`
+  rather than silently turning the shared baseline into a cost winner.
 
 ## 3. Leading implementation: tokenized PEG
 
