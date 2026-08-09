@@ -233,7 +233,10 @@ describe('real-Jess token stream: authored source is the semantic authority', ()
     expect(original.match).toHaveLength(1)
     const plantedSpec = { ...original, foldArm: [...original.foldArm] }
     plantedSpec.foldArm[eachAt] = original.match[0]![3]
-    const planted = { ...prog, asm: [], dsp: prog.dsp.map((spec, i) => i === index ? plantedSpec : spec) }
+    // This plant targets the independent legacy dispatcher. Remove the token
+    // plan so its intentionally authoritative route cannot mask the dsp defect.
+    const { tokenPlan: _tokenPlan, ...legacy } = prog
+    const planted = { ...legacy, asm: [], dsp: prog.dsp.map((spec, i) => i === index ? plantedSpec : spec) }
     const authority = coreDigest(direct(grammar.FunctionStatement!, 'each(:e'))
     expect(coreDigest(direct(tableRules(planted).FunctionStatement! as Entry, 'each(:e'))).not.toBe(authority)
   })

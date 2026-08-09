@@ -450,6 +450,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     ? undefined
     : new Map<number, (input: string, start: number, end: number) => boolean>()
   const lexicalRecognizers: LexRecognizer[] = []
+  const unsupportedTokenOutcomes = new Set<number>()
 
   function tokenRangeEquals(input: string, start: number, end: number, value: string, fold: boolean): boolean {
     if (end - start !== value.length) return false
@@ -463,8 +464,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
     return true
   }
-
-  const asciiFold = (c: number): number => c >= 65 && c <= 90 ? c + 32 : c
 
   function tokenRangeStartsOrEnds(
     input: string, start: number, end: number, value: string, fold: boolean, atEnd: boolean,
@@ -508,8 +507,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       return [recognize, endAt]
     }
     if (kind === 2) {
-      const recognize = makeScalarRecognizer(OP_RX, k[data[at + 2]!])
-      if (recognize === undefined || at + 3 !== endAt) throw new TypeError('table token regex TLV is malformed')
+      const raw = k[data[at + 2]!]
+      if (!(raw instanceof RegExp) || at + 3 !== endAt) throw new TypeError('table token regex TLV is malformed')
+      const re = raw.sticky ? raw : new RegExp(raw.source, `${raw.flags.replace(/[gy]/g, '')}y`)
+      const recognize: LexRecognizer = (input, pos) => {
+        re.lastIndex = pos
+        return re.test(input) ? re.lastIndex : -1
+      }
       return [recognize, endAt]
     }
     if (kind === 3 || kind === 4) {
@@ -570,6 +574,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         && !tokenRangeEquals(input, start, end, 'url(', true)
         && !tokenRangeEquals(input, start, end, 'calc(', true)
     }
+    const prefix = /^\^([A-Za-z0-9_-]+)$/.exec(re.source)
+    if (prefix !== null && (re.flags === '' || re.flags === 'i')) {
+      return (input, start, end) => tokenRangeStartsOrEnds(input, start, end, prefix[1]!, re.ignoreCase, false)
+    }
     return undefined
   }
 
@@ -597,8 +605,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       } else if (kind === 3) {
         const re = k[tokenWire.outcomeData[at + 3]!]
         const matcher = re instanceof RegExp ? boundedMatcher(re) : undefined
-        if (matcher === undefined) throw new TypeError('table token outcome regex is not range-lowerable')
-        tokenMatchers!.set(id, matcher)
+        if (matcher === undefined) unsupportedTokenOutcomes.add(id)
+        else tokenMatchers!.set(id, matcher)
       } else if (kind === 4) tokenMatchers!.set(id, () => true)
       else throw new TypeError(`table token outcome kind ${kind} is unknown`)
     }
@@ -626,7 +634,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         selectorIp: producer.selectorIp, recognizer: producer.recognizer, family: familyId,
         routeStart: tokenWire.sites[i + 2]!, routeCount: tokenWire.sites[i + 3]!,
       }
+      let supported = true
+      for (let route = 0; route < plan.routeCount && supported; route++) {
+        const rw = plan.routeStart + route * 4
+        const acceptedStart = tokenWire.routes[rw + 2]!, acceptedCount = tokenWire.routes[rw + 3]!
+        for (let j = 0; j < acceptedCount; j++) {
+          if (unsupportedTokenOutcomes.has(tokenWire.accepted[acceptedStart + j]!)) { supported = false; break }
+        }
+      }
+      if (!supported) continue
       tokenSites!.set(di, plan)
+    }
+    for (const [ip, producer] of tokenProducers!) {
+      if (![...tokenSites!.values()].some(site => site.selectorIp === producer.selectorIp)) tokenProducers!.delete(ip)
     }
   }
 
@@ -2675,6 +2695,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               throw new Error('table token stream recognizer disagrees with its selector')
             }
             const selEnd = packed / 2
+            // The selector succeeded before routing, so its public token value,
+            // leaf and end-cell effects happen even when no route accepts it.
+            const key = input.slice(pos, selEnd)
+            if (cstCaptureActive(ctx)) pushLeaf(ctx, key, pos, selEnd)
+            EC.e = selEnd
             const outcome = TOK_OUTCOME
             let arm: number | undefined
             let routeFlags = 0
@@ -2692,8 +2717,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 }
               }
               if (accepted) {
-                arm = tokenWire.routes[ri]!
                 routeFlags = tokenWire.routes[ri + 1]!
+                arm = (routeFlags & 3) === 2 ? -1 : tokenWire.routes[ri]!
                 break
               }
             }
@@ -2703,9 +2728,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
 
-            const key = input.slice(pos, selEnd)
-            if (cstCaptureActive(ctx)) pushLeaf(ctx, key, pos, selEnd)
-            EC.e = selEnd
             let target: Piece
             let usesRouted: boolean
             if (arm < 0) {

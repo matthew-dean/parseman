@@ -492,6 +492,15 @@ export function emitAssemblySource(
   const tokenProducers = new Map<number, TokenSitePlan>()
   const tokenSites = new Map<number, TokenSitePlan>()
   const outcomeById = new Map<number, readonly [kind: number, a: number, b: number]>()
+  const tokenOutcomeSupported = (id: number): boolean => {
+    const outcome = outcomeById.get(id)
+    if (outcome === undefined) return false
+    if (outcome[0] !== 3) return outcome[0] >= 0 && outcome[0] <= 4
+    const re = k[outcome[1]]
+    if (!(re instanceof RegExp)) return false
+    return (re.source === '^(?!(?:url|calc)\\($).+\\($' && re.flags === 'i')
+      || (/^\^([A-Za-z0-9_-]+)$/.test(re.source) && (re.flags === '' || re.flags === 'i'))
+  }
   if (tokenWire !== undefined) {
     for (let i = 0; i < tokenWire.tokenSites.length; i += 2) {
       const selectorIp = tokenWire.tokenSites[i]!, family = tokenWire.tokenSites[i + 1]!
@@ -511,9 +520,22 @@ export function emitAssemblySource(
         if (candidate?.family === family) { producer = candidate; break }
       }
       if (producer === undefined) throw new Unemittable('a malformed token-plan dispatch site')
+      const routeStart = tokenWire.sites[i + 2]!, routeCount = tokenWire.sites[i + 3]!
+      let supported = true
+      for (let route = 0; route < routeCount && supported; route++) {
+        const rw = routeStart + route * 4
+        const acceptedStart = tokenWire.routes[rw + 2]!, acceptedCount = tokenWire.routes[rw + 3]!
+        for (let j = 0; j < acceptedCount; j++) {
+          if (!tokenOutcomeSupported(tokenWire.accepted[acceptedStart + j]!)) { supported = false; break }
+        }
+      }
+      if (!supported) continue
       tokenSites.set(di, {
-        ...producer, routeStart: tokenWire.sites[i + 2]!, routeCount: tokenWire.sites[i + 3]!,
+        ...producer, routeStart, routeCount,
       })
+    }
+    for (const [ip, producer] of tokenProducers) {
+      if (![...tokenSites.values()].some(site => site.selectorIp === producer.selectorIp)) tokenProducers.delete(ip)
     }
   }
   const labels = computeSiteLabels(code, roots, hostCst)
@@ -610,21 +632,20 @@ export function emitAssemblySource(
     if (kind === 2) return `_tokEnds(input,${start},${end},${kRef(a)},${b})`
     if (kind === 3) {
       const re = k[a]
-      if (!(re instanceof RegExp) || re.source !== '^(?!(?:url|calc)\\($).+\\($' || re.flags !== 'i') {
-        throw new Unemittable('a token outcome regex without a bounded range lowering')
+      if (re instanceof RegExp && re.source === '^(?!(?:url|calc)\\($).+\\($' && re.flags === 'i') {
+        return `${end}>${start}+1&&input.charCodeAt(${end}-1)===40&&!_tokLine(input,${start},${end})`
+          + `&&!_tokEq(input,${start},${end},"url(",1)&&!_tokEq(input,${start},${end},"calc(",1)`
       }
-      return `${end}>${start}+1&&input.charCodeAt(${end}-1)===40&&!_tokLine(input,${start},${end})`
-        + `&&!_tokEq(input,${start},${end},"url(",1)&&!_tokEq(input,${start},${end},"calc(",1)`
+      if (re instanceof RegExp) {
+        const prefix = /^\^([A-Za-z0-9_-]+)$/.exec(re.source)
+        if (prefix !== null && (re.flags === '' || re.flags === 'i')) {
+          return `_tokStarts(input,${start},${end},${q(prefix[1]!)},${re.ignoreCase ? 1 : 0})`
+        }
+      }
+      throw new Unemittable('a token outcome regex without a bounded range lowering')
     }
     if (kind === 4) return 'true'
     throw new Unemittable('a token outcome regex without a bounded range lowering')
-  }
-  const tokenRouteExpr = (routeWord: number, start: string, end: string): string => {
-    if (tokenWire === undefined) throw new Unemittable('a token route without token wire')
-    const acceptedStart = tokenWire.routes[routeWord + 2]!
-    const acceptedCount = tokenWire.routes[routeWord + 3]!
-    return Array.from({ length: acceptedCount }, (_, i) =>
-      tokenOutcomeExpr(tokenWire.accepted[acceptedStart + i]!, start, end)).join('||') || 'false'
   }
   /**
    * The sync sentinel for a char-class index, hoisted once per class.
@@ -1527,7 +1548,8 @@ return FAIL
             const acceptedCount = tokenWire.routes[rw + 3]!
             const accepted = Array.from({ length: acceptedCount }, (_, j) => {
               const id = tokenWire.accepted[acceptedStart + j]!
-              return `if(${tokenOutcomeExpr(id, 'pos', 'selEnd')}){_pfTokOutcome=${id};arm=${arm};ur=${(flags & 4) !== 0};matched=true}`
+              const target = (flags & 3) === 2 ? -1 : arm
+              return `if(${tokenOutcomeExpr(id, 'pos', 'selEnd')}){_pfTokOutcome=${id};arm=${target};ur=${(flags & 4) !== 0};matched=true}`
             }).join('\nif(!matched)')
             routeTests.push(`if(!matched){${accepted}}`)
           }
@@ -1536,12 +1558,12 @@ ${emitMark(m1, L.buf, sinks)}
 const packed=_tokRecognize(input,pos,0,${tokenPlan.family},${tokenPlan.recognizer},${recognizerRef(k.length + tokenPlan.recognizer)})
 if(packed<0){const sv=${selector}(input,pos,ctx);if(sv===FAIL)return FAIL;throw new Error('table token stream recognizer disagrees with its selector')}
 const selEnd=packed/2
-let arm,ur=false,matched=false
-${routeTests.join('\n')}
-if(!matched){ctx._fe=selEnd;ctx._fx=${dx};return FAIL}
 const key=input.slice(pos,selEnd)
 ${L.buf ? '_pushLeafBuf(ctx,key,pos,selEnd)' : 'if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)_pushLeaf(ctx,key,pos,selEnd)'}
 EC.e=selEnd
+let arm,ur=false,matched=false
+${routeTests.join('\n')}
+if(!matched){ctx._fe=selEnd;ctx._fx=${dx};return FAIL}
 const savedRouted=ctx._routed
 ${emitMark(m2, L.buf, sinks)}
 if(ur){

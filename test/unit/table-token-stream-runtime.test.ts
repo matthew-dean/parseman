@@ -7,9 +7,10 @@ import { reachableIps } from '../../src/table/inspect.ts'
 import { OP_DISPATCH, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 
-function manualPlan(): { readonly parser: ReturnType<typeof dispatch>; readonly prog: TableProgram } {
-  const selector = token(regex(/[a-z]+/))
-  const parser = dispatch(selector, when('foo', literal('!')), otherwise(literal('?')))
+function manualPlan(native = false): { readonly parser: ReturnType<typeof dispatch>; readonly prog: TableProgram } {
+  const selector = token(native ? regex(/([a-z])\1+/) : regex(/[a-z]+/))
+  const exact = native ? 'ff' : 'foo'
+  const parser = dispatch(selector, when(exact, literal('!')), otherwise(literal('?')))
   const raw = encodeTable({ Entry: parser })
   const sites = [...reachableIps(raw)]
   const dispatchIp = sites.find(ip => raw.code[ip] === OP_DISPATCH)!
@@ -31,7 +32,7 @@ function manualPlan(): { readonly parser: ReturnType<typeof dispatch>; readonly 
     routes: [0, 0, 0, 1, -1, 2, 1, 1],
     accepted: [exactId, fallbackId],
   }
-  return { parser, prog: ownTableProgram({ ...raw, k: [...raw.k, 'foo'], tokenPlan: plan }) }
+  return { parser, prog: ownTableProgram({ ...raw, k: [...raw.k, exact], tokenPlan: plan }) }
 }
 
 describe('table token stream runtime', () => {
@@ -53,5 +54,35 @@ describe('table token stream runtime', () => {
     }
     expect(run(closure, 'foo!')).toMatchObject({ ok: true, unconsumedFrom: null })
     expect(run(closure, 'bar?')).toMatchObject({ ok: true, unconsumedFrom: null })
+  })
+
+  it('recognizes once on success, twice on miss, and releases the source at finish', () => {
+    for (const mode of ['closure', 'emitted'] as const) {
+      const { prog } = manualPlan(true)
+      const re = prog.k.find(value => value instanceof RegExp && value.sticky) as RegExp
+      const original = re.exec
+      let calls = 0
+      re.exec = function (input: string) { calls++; return original.call(this, input) }
+      const entry = tableRules(mode === 'closure' ? { ...prog, asm: [] } : prog).Entry!
+
+      expect(run(entry, 'ff!').ok, mode).toBe(true)
+      expect(calls, `${mode} success scans`).toBe(1)
+      expect(run(entry, '1').ok, mode).toBe(false)
+      expect(calls, `${mode} miss scans`).toBe(3)
+      expect(run(entry, 'ff!').ok, mode).toBe(true)
+      expect(calls, `${mode} fresh begin rescans`).toBe(4)
+    }
+  })
+
+  it('has a behavior-bearing route-wire RED plant', () => {
+    const { parser, prog } = manualPlan()
+    const routes = [...prog.tokenPlan!.routes]
+    routes[0] = -1
+    const planted = ownTableProgram({ ...prog, tokenPlan: { ...prog.tokenPlan!, routes } })
+    const authority = run(parser, 'foo!')
+    expect(authority.ok).toBe(true)
+    for (const entry of [tableRules({ ...planted, asm: [] }).Entry!, tableRules(planted).Entry!]) {
+      expect(run(entry, 'foo!').ok).toBe(false)
+    }
   })
 })
