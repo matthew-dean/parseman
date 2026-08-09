@@ -353,6 +353,31 @@ export type ResolvedDispatchSpec = {
   readonly expected: readonly string[]
 }
 
+/**
+ * Refuse malformed fixed arm references before closure or emitted linking.
+ *
+ * This is deliberately an assembly-time trust boundary. `execRules()` stays an
+ * independent semantic oracle and never pays artifact validation per parse.
+ */
+export function validateDispatchSpec(
+  spec: ResolvedDispatchSpec | undefined,
+  arity: number,
+  fallbackRouted: number,
+): asserts spec is ResolvedDispatchSpec {
+  const invalid = (arms: Iterable<number>): boolean => {
+    for (const arm of arms) if (!Number.isInteger(arm) || arm < 0 || arm >= arity) return true
+    return false
+  }
+  if (spec === undefined || !Number.isInteger(arity) || arity < 0
+    || (fallbackRouted !== 0 && fallbackRouted !== 1)
+    || spec.routed.length !== arity
+    || spec.routed.some(value => value !== 0 && value !== 1)
+    || invalid(spec.byKey.values()) || invalid(spec.byFold.values())
+    || spec.match.some(matcher => invalid([matcher[3]]))) {
+    throw new TypeError('table: malformed dispatch')
+  }
+}
+
 /** A char class expanded for execution: O(1) for ASCII, ranges above it. */
 export type ResolvedClass = {
   readonly ascii: Uint8Array

@@ -119,6 +119,7 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  */
 import {
   classHas, decodeClassSpec, expandCompact, resolveTable,
+  validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
@@ -2459,15 +2460,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             usesRouted = routed[arm] === 1
           }
 
-          const savedRouted = ctx._routed
           let mark = saveTriviaMark(ctx)
+          let v: unknown
           if (usesRouted) {
+            const savedRouted = ctx._routed
             rollbackTrivia(ctx, selectorMark)
             mark = saveTriviaMark(ctx)
             ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+            try {
+              v = target(input, pos, ctx)
+            } finally {
+              ctx._routed = savedRouted
+            }
+          } else {
+            // Keep the ordinary dispatch arm on its direct call path. Only a
+            // branch that installed `_routed` needs exception cleanup.
+            v = target(input, selEnd, ctx)
           }
-          const v = target(input, usesRouted ? pos : selEnd, ctx)
-          if (usesRouted) ctx._routed = savedRouted
           if (v === FAIL) {
             rollbackTrivia(ctx, mark)
             // A failed dispatch branch is COMMITTED: the selector already matched.
@@ -2733,6 +2742,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
     const roots = [...Object.values(prog.rules), ...extraIps]
     for (const ip of reachableSites(code, roots)) {
+      if (code[ip] === OP_DISPATCH) {
+        const spec = dsp[code[ip + 2]!]
+        validateDispatchSpec(spec, code[ip + 5]!, code[ip + 4]!)
+      }
       if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
         if (code[ip] === OP_NODE) {
           const child = scalarTerminalNodeChild(code, ip)

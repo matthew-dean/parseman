@@ -613,15 +613,23 @@ function makeDriver(
           usesRouted = spec.routed[arm] === 1
         }
 
-        const savedRouted = ctx._routed
         let mark = saveTriviaMark(ctx)
+        let v: unknown
         if (usesRouted) {
+          const savedRouted = ctx._routed
           rollbackTrivia(ctx, selectorMark)
           mark = saveTriviaMark(ctx)
           ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+          try {
+            v = exec(target, input, pos, ctx)
+          } finally {
+            ctx._routed = savedRouted
+          }
+        } else {
+          // The reference engine mirrors dispatch.parse(): plain arms do not
+          // install routed state and stay outside the exception guard.
+          v = exec(target, input, selEnd, ctx)
         }
-        const v = exec(target, input, usesRouted ? pos : selEnd, ctx)
-        if (usesRouted) ctx._routed = savedRouted
         if (v === FAIL) {
           rollbackTrivia(ctx, mark)
           // The interpreter marks a failed dispatch branch COMMITTED: the
