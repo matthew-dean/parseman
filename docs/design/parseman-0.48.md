@@ -130,6 +130,15 @@ assembly-time constructor or arity template which produces those direct bindings
 does not mean one universal parse-time body that accepts an IP or loops over a child
 array.
 
+Direct binding is a topology requirement, not a requirement that every site own a
+distinct JavaScript function literal or inline-cache identity. A shared arity
+constructor may return many closures whose fixed children are distinct scalar captures.
+Whether a site-unique emitted function is faster than that captured form is a cost
+question which requires production-shaped evidence; shared literal provenance alone is
+not evidence that the captured form lost. Conversely, scalar captures do not excuse a
+later `arms[id]` or `kids[i]` lookup: both candidate expressions must still contain only
+direct fixed references before they can be compared.
+
 After that mandatory direct binding, the compiler may choose the cheapest expression of
 the already-static body:
 

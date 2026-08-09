@@ -39,6 +39,10 @@ status labels identify which is which.
 > rejects indiscriminate duplication only. It does not justify an opcode switch,
 > `pieces[ip]` lookup, route-array walk, or unused strategy branch at a final site.
 > See [`parseman-0.48.md` §2.1](./parseman-0.48.md#21-static-topology-binding-not-an-all-or-nothing-emitter).
+> Direct binding does not by itself require a unique JavaScript function literal for
+> every site. Shared arity constructors with distinct scalar captures satisfy the
+> topology contract; site-unique inline-cache identity is a separate, measured cost
+> hypothesis. Neither form may recover fixed children through an indexed array.
 >
 > Capability is closed **before** cost selection across the entire reachable final
 > composed grammar and every supported assembly variant. Every semantically valid token
