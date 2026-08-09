@@ -17,8 +17,9 @@ import { execRules } from '../../src/table/exec.ts'
 import { foldPrograms, resolveTable, unfoldVariant, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
 import {
   JESS_TOKEN_CASES, JESS_TOKEN_FAMILIES, JESS_TOKEN_OUTCOMES, JESS_TOKEN_SITES,
-  compatibleOutcomeIds, jessTokenContractGrammar, outcomeById, predicateMatches, selectedRoute,
-  type TokenSiteContract,
+  JESS_FUNCTION_STATEMENT_PREDECISIONS, compatibleOutcomeIds, jessTokenContractGrammar,
+  outcomeById, predecideTokenChoice, predicateMatches, selectedRoute,
+  type TokenPredecisionContract, type TokenSiteContract,
 } from '../helpers/token-stream-jess-contract.ts'
 
 type Entry = Combinator<unknown> | ((input: string, pos: number, ctx: ParseContext) => ParseResult<unknown>)
@@ -180,6 +181,74 @@ describe('real-Jess token stream: global identity and site-local routes', () => 
   })
 })
 
+describe('real-Jess token stream: sparse outer-choice predecision', () => {
+  const statement = JESS_TOKEN_SITES.find(site => site.id === 'less.FunctionStatement')!
+
+  it('pins the four corrected-Jess sites without a universal choice structure', () => {
+    expect(JESS_FUNCTION_STATEMENT_PREDECISIONS).toEqual([
+      { choice: 'less.blockItem', armIndex: 2, dispatchSite: statement.id, noRouteExpected: ['"each("'] },
+      { choice: 'less.BodyStatement', armIndex: 4, dispatchSite: statement.id, noRouteExpected: ['"each("'] },
+      { choice: 'less.KeyframeBlock.item', armIndex: 1, dispatchSite: statement.id, noRouteExpected: ['"each("'] },
+      { choice: 'less.Stylesheet.item', armIndex: 2, dispatchSite: statement.id, noRouteExpected: ['"each("'] },
+    ])
+    expect(new Set(JESS_FUNCTION_STATEMENT_PREDECISIONS.map(row => row.dispatchSite))).toEqual(new Set([statement.id]))
+  })
+
+  it('enters compatible routes, skips proven no-route ranges, and defers recognizer misses', () => {
+    const relation = JESS_FUNCTION_STATEMENT_PREDECISIONS[0]!
+    const input = {}
+    const decide = (value: string) => predecideTokenChoice(
+      relation, statement, { input, start: 17, end: 17 + value.length, value },
+    )
+
+    const each = decide('EaCh(')
+    expect(each).toMatchObject({ kind: 'enter', route: { index: 0, continuation: 'EachFunctionStatement' } })
+    if (each.kind !== 'enter') throw new Error('each must enter')
+    expect(each.pending).toMatchObject({ input, start: 17, end: 22, family: statement.family })
+    expect(each.pending.compatible).toEqual(['less:each-open', 'less:statement-function-open'])
+
+    expect(decide('ordinary(')).toMatchObject({
+      kind: 'enter', route: { index: 1, continuation: 'GenericFunctionStatement' },
+    })
+    for (const value of ['url(', 'calc(', 'bare']) {
+      expect(decide(value), value).toMatchObject({
+        kind: 'skip', expected: ['"each("'],
+        pending: { input, start: 17, end: 17 + value.length, family: statement.family },
+      })
+    }
+    expect(predecideTokenChoice(relation, statement, undefined)).toEqual({ kind: 'defer' })
+  })
+
+  it('keeps the no-route expectation at the skipped arm position and the range reusable', () => {
+    const input = {}
+    const relation = JESS_FUNCTION_STATEMENT_PREDECISIONS[1]!
+    const result = predecideTokenChoice(relation, statement, {
+      input, start: 4, end: 8, value: 'url(',
+    })
+    expect(result.kind).toBe('skip')
+    if (result.kind !== 'skip') throw new Error('url( must be a no-route range')
+
+    const expectedByPegOrder = ['"@"', ...result.expected, 'ruleset', 'declaration', '";"']
+    expect(expectedByPegOrder).toEqual(['"@"', '"each("', 'ruleset', 'declaration', '";"'])
+    expect(result.pending).toMatchObject({ input, start: 4, end: 8, family: statement.family })
+    const valueSite = JESS_TOKEN_SITES.find(site => site.id === 'less.Value')!
+    expect(valueSite.family).toBe(result.pending.family)
+    expect(selectedRoute(valueSite, 'url(')?.continuation).toBe('URL')
+  })
+
+  it('has RED teeth for an arm/site relation mutation', () => {
+    const relation = JESS_FUNCTION_STATEMENT_PREDECISIONS[0]!
+    const wrongSite: TokenPredecisionContract = { ...relation, dispatchSite: 'less.Value' }
+    expect(() => predecideTokenChoice(wrongSite, statement, {
+      input: {}, start: 0, end: 5, value: 'each(',
+    })).toThrow('predecision dispatch-site mismatch')
+
+    const planted = JESS_FUNCTION_STATEMENT_PREDECISIONS.map((row, index) =>
+      index === 0 ? { ...row, armIndex: row.armIndex + 1 } : row)
+    expect(planted).not.toEqual(JESS_FUNCTION_STATEMENT_PREDECISIONS)
+  })
+})
+
 describe('real-Jess token stream: authored source is the semantic authority', () => {
   it('matches direct .parse in reference, closure, emitted and precompiled assemblies', () => {
     const grammar = jessTokenContractGrammar() as Record<string, Combinator<unknown>>
@@ -208,6 +277,27 @@ describe('real-Jess token stream: authored source is the semantic authority', ()
       expect(direct(grammarMap.ReusedParserRoutes!, 'alpha:d')).toMatchObject({ ok: true })
       expect(direct(grammarMap.ReusedParserRoutes!, 'beta:d')).toMatchObject({ ok: true })
     }
+  })
+
+  it('preserves no-route end/CST rollback before a later same-family consumer', async () => {
+    const grammar = jessTokenContractGrammar('cst') as Record<string, Combinator<unknown>>
+    const prog = program(grammar, { hostMode: 'cst' })
+    const all = maps(grammar, prog)
+    all.module = await emittedModule(prog, 'no-route')
+    const opts = { build: cstBuildHost({ tags: true }) }
+
+    const source = fullDigest(grammar.StatementOrValue!, 'url(:u', opts)
+    for (const [engine, map] of Object.entries(all)) {
+      expect(fullDigest(map.StatementOrValue!, 'url(:u', opts), engine).toBe(source)
+    }
+
+    const failed = direct(grammar.FunctionStatement!, 'url(')
+    expect(failed).toMatchObject({ ok: false, span: { start: 4, end: 4 }, expected: ['"each("'] })
+    expect(failed).not.toHaveProperty('committed', true)
+
+    const parsed = run(grammar.StatementOrValue!, 'url(:u', opts)
+    expect(parsed).toMatchObject({ ok: true, span: { start: 0, end: 6 }, unconsumedFrom: null })
+    expect(JSON.stringify(parsed.value).match(/url\(/g)).toHaveLength(1)
   })
 
   it('preserves numeric maximal range boundaries and refuses trivia inside a range', () => {

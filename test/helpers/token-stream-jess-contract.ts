@@ -48,6 +48,32 @@ export type TokenFamilyContract = {
   readonly refusesSharingWith: readonly string[]
 }
 
+/**
+ * A sparse outer-choice relation. The implementation wire may store the three
+ * numeric identities directly: the dispatch site already owns the family,
+ * ordered routes and compatible outcome IDs.
+ */
+export type TokenPredecisionContract = {
+  readonly choice: string
+  readonly armIndex: number
+  readonly dispatchSite: string
+  /** The dispatch's authored exact expectations on selector success/no route. */
+  readonly noRouteExpected: readonly string[]
+}
+
+export type PendingTokenContract = {
+  readonly input: object
+  readonly start: number
+  readonly end: number
+  readonly family: string
+  readonly compatible: readonly string[]
+}
+
+export type TokenPredecisionResult =
+  | { readonly kind: 'defer' }
+  | { readonly kind: 'enter'; readonly pending: PendingTokenContract; readonly route: TokenRouteContract }
+  | { readonly kind: 'skip'; readonly pending: PendingTokenContract; readonly expected: readonly string[] }
+
 const family = (
   id: string, language: string, refusesSharingWith: readonly string[] = [],
 ): TokenFamilyContract => ({ id, language, atomicRange: true, refusesSharingWith })
@@ -337,6 +363,18 @@ export const JESS_TOKEN_SITES = Object.freeze([
   },
 ] satisfies readonly TokenSiteContract[])
 
+/**
+ * Exact Jess 93c source relations. Numeric TableProgram IPs are deliberately a
+ * census artifact, not semantic identity; the generic wire is the compact
+ * `[choiceIp, armIndex, dispatchSiteIndex]` projection of these four rows.
+ */
+export const JESS_FUNCTION_STATEMENT_PREDECISIONS = Object.freeze([
+  { choice: 'less.blockItem', armIndex: 2, dispatchSite: 'less.FunctionStatement', noRouteExpected: ['"each("'] },
+  { choice: 'less.BodyStatement', armIndex: 4, dispatchSite: 'less.FunctionStatement', noRouteExpected: ['"each("'] },
+  { choice: 'less.KeyframeBlock.item', armIndex: 1, dispatchSite: 'less.FunctionStatement', noRouteExpected: ['"each("'] },
+  { choice: 'less.Stylesheet.item', armIndex: 2, dispatchSite: 'less.FunctionStatement', noRouteExpected: ['"each("'] },
+] satisfies readonly TokenPredecisionContract[])
+
 export function outcomeById(id: string): TokenOutcomeContract {
   const found = JESS_TOKEN_OUTCOMES.find(entry => entry.id === id)
   if (found === undefined) throw new Error(`unknown token outcome ${JSON.stringify(id)}`)
@@ -361,6 +399,29 @@ export function compatibleOutcomeIds(site: TokenSiteContract, value: string): st
 export function selectedRoute(site: TokenSiteContract, value: string): TokenRouteContract | undefined {
   const compatible = new Set(compatibleOutcomeIds(site, value))
   return site.routes.find(candidate => candidate.accepted.some(id => compatible.has(id)))
+}
+
+/**
+ * Pure contract oracle for the outer-choice optimization. Recognition failure
+ * is intentionally not modelled as a direct failure: the authored arm must run
+ * so its child diagnostics/probe behavior remains authoritative.
+ */
+export function predecideTokenChoice(
+  relation: TokenPredecisionContract,
+  site: TokenSiteContract,
+  recognized: { readonly input: object; readonly start: number; readonly end: number; readonly value: string } | undefined,
+): TokenPredecisionResult {
+  if (recognized === undefined) return { kind: 'defer' }
+  if (site.id !== relation.dispatchSite) throw new Error('predecision dispatch-site mismatch')
+  const compatible = compatibleOutcomeIds(site, recognized.value)
+  const pending: PendingTokenContract = {
+    input: recognized.input, start: recognized.start, end: recognized.end,
+    family: site.family, compatible,
+  }
+  const selected = site.routes.find(candidate => candidate.accepted.some(id => compatible.includes(id)))
+  return selected === undefined
+    ? { kind: 'skip', pending, expected: relation.noRouteExpected }
+    : { kind: 'enter', pending, route: selected }
 }
 
 /* ── Jess-shaped source-authority fixture ─────────────────────────────── */
@@ -394,6 +455,19 @@ export function jessTokenContractGrammar(hostMode: 'ast' | 'cst' = 'ast') {
     blockComment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
   })
 
+  const lessValue = dispatch(
+    lessIdentOrFunction,
+    ci('url(', routedTail(':u')),
+    ci('calc(', routedTail(':c')),
+    when(endsWith('('), routedTail(':f')),
+    otherwise(routedTail(':i')),
+  )
+  const functionStatement = dispatch(
+    lessIdentOrFunction,
+    ci('each(', eachStatement),
+    when(matches(/^(?!(?:url|calc)\($).+\($/i), genericStatement),
+  )
+
   return rules({ hostMode, trivia }, () => ({
     CssValue: valueDispatch(cssIdentOrFunction),
     CssHeader: dispatch(
@@ -402,18 +476,9 @@ export function jessTokenContractGrammar(hostMode: 'ast' | 'cst' = 'ast') {
       when(endsWith('('), routedTail(':h')),
       otherwise(routedTail(':n')),
     ),
-    LessValue: dispatch(
-      lessIdentOrFunction,
-      ci('url(', routedTail(':u')),
-      ci('calc(', routedTail(':c')),
-      when(endsWith('('), routedTail(':f')),
-      otherwise(routedTail(':i')),
-    ),
-    FunctionStatement: dispatch(
-      lessIdentOrFunction,
-      ci('each(', eachStatement),
-      when(matches(/^(?!(?:url|calc)\($).+\($/i), genericStatement),
-    ),
+    LessValue: lessValue,
+    FunctionStatement: functionStatement,
+    StatementOrValue: node('StatementOrValue', choice(functionStatement, lessValue)),
     DuplicateRoutes: dispatch(
       lessIdentOrFunction,
       when(endsWith('('), duplicateBranch),
@@ -444,6 +509,7 @@ export const JESS_TOKEN_CASES = Object.freeze({
   CssHeader: ['url(:u', 'ordinary(:h', 'name:n', 'calc(:h', 'url(:h'],
   LessValue: ['url(:u', 'calc(:c', 'ordinary(:f', 'each(:f', 'name:i', '@{x}(:f'],
   FunctionStatement: ['each(:e', 'EaCh(:e', 'ordinary(:s', 'url(:s', 'calc(:s', 'bare', 'each(:s', 'ordinary:x'],
+  StatementOrValue: ['each(:e', 'ordinary(:s', 'url(:u', 'calc(:c', 'bare:i', 'bare'],
   DuplicateRoutes: ['ordinary(:d', 'ordinary(:z', 'bare'],
   ReusedParserRoutes: ['alpha:d', 'beta:d', 'charlie:d'],
   CssPercentage: ['10%', '-.5%', '10 %', 'x'],
