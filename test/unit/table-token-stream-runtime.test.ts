@@ -3,14 +3,18 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { choice, dispatch, literal, otherwise, regex, routed, sequence, token, transform, when } from '../../src/index.ts'
+import {
+  attempt, choice, dispatch, endsWith, keywords, literal, makeWhen, optional, otherwise, regex, routed,
+  sequence, token, transform, when,
+} from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
+import { execRules } from '../../src/table/exec.ts'
 import {
-  ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram,
+  ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram, type TableRule,
 } from '../../src/table/program.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_CHOICE, OP_DISPATCH, OP_XFORM } from '../../src/table/ops.ts'
+import { OP_CHOICE, OP_DISPATCH, OP_GATE, OP_LIVE, OP_XFORM } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -147,6 +151,63 @@ function earlierChoicePlan(): { readonly prog: TableProgram; readonly calls: () 
     return copy
   })
   return { prog: ownTableProgram({ ...raw, k: constants }), calls: () => calls }
+}
+
+function maskedChoicePlan(): {
+  readonly parser: ReturnType<typeof choice>
+  readonly prog: TableProgram
+  readonly choice: number
+} {
+  const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+  const named = sequence(
+    keywords(['red', 'blue'], { caseInsensitive: true, boundary: '-A-Za-z0-9_(' }),
+    literal('~'),
+  )
+  const classified = dispatch(
+    head,
+    when(endsWith('('), literal('!')),
+    otherwise(literal('?')),
+  )
+  // Contribute an overlapping exact view. `each(` must set both its exact bit
+  // and the generic endsWith bit; a choice mask is a compatibility set, not a
+  // selected dispatch route.
+  const subtype = dispatch(head, makeWhen({ caseInsensitive: true })('each(', literal('#')))
+  const parser = choice(attempt(literal('@')), named, classified)
+  const prog = encodeTable({ Entry: parser, Subtype: subtype })
+  const masks = prog.tokenPlan?.choiceMasks
+  expect(masks).toBeDefined()
+  expect(masks![0]).toBe(masks!.length)
+  return { parser, prog, choice: masks![1]! }
+}
+
+function countedMaskedChoice(): {
+  readonly parser: ReturnType<typeof choice>
+  readonly prog: TableProgram
+  readonly calls: () => number
+} {
+  const made = maskedChoicePlan()
+  const code = [...made.prog.code]
+  const fns = [...made.prog.fns]
+  const arm = code[made.choice + 4]!
+  expect(code[arm]).toBe(OP_GATE) // the attempt's existing internal gate
+  const original = literal('@')
+  let calls = 0
+  const live = {
+    ...original,
+    parse(input: string, pos: number, ctx: ParseContext) {
+      calls++
+      return original.parse(input, pos, ctx)
+    },
+  }
+  const liveIp = code.length
+  code.push(OP_LIVE, fns.length)
+  fns.push(live)
+  code[made.choice + 4] = liveIp
+  return {
+    parser: made.parser,
+    prog: ownTableProgram({ ...made.prog, code, fns, asm: [] }),
+    calls: () => calls,
+  }
 }
 
 describe('table token stream runtime', () => {
@@ -450,6 +511,166 @@ describe('table token stream runtime', () => {
       expect(run(tableRules(prog).Entry!, 'bb')).toMatchObject({ ok: true, unconsumedFrom: null })
       expect(counted.calls(), `${mode} scans`).toBe(0)
     }
+  })
+
+  it('intersects compatible lexical outcomes with the existing choice gate', async () => {
+    const { parser, prog } = maskedChoicePlan()
+    const loaded = await moduleRules(prog)
+    const reference = execRules(prog).Entry!
+    const entries = [
+      ['closure', tableRules({ ...prog, asm: [] }).Entry!],
+      ['emitted', tableRules(prog).Entry!],
+      ['precompiled', tableRules(precompiled(prog)).Entry!],
+      ['module', loaded.Entry!],
+    ] as const
+    for (const input of ['red~', 'foo?', 'foo!', 'red(?', 'foo(!', 'each(!', 'URL(!', '-foo?']) {
+      const source = run(parser, input)
+      const expected = run(reference, input)
+      expect(expected).toMatchObject({
+        ok: source.ok, value: source.value, span: source.span, unconsumedFrom: source.unconsumedFrom,
+      })
+      for (const [name, entry] of entries) {
+        expect(run(entry as TableRule, input), `${name} ${input}`).toMatchObject({
+          ok: expected.ok,
+          value: expected.value,
+          span: expected.span,
+          expected: expected.expected,
+          unconsumedFrom: expected.unconsumedFrom,
+        })
+      }
+    }
+
+    // Make the classified arm accept ONLY the exact `each(` local bit. The
+    // generic endsWith view appears first in the family, so a runtime that picks
+    // one outcome instead of ORing every compatible view rejects this input.
+    const plan = prog.tokenPlan!
+    const words = [...plan.choiceMasks!]
+    const outcomeCount = words[4]!, armCount = words[5]!
+    let exact = -1
+    for (let i = 0; i < outcomeCount; i++) {
+      const id = words[6 + i]!
+      for (const at of plan.outcomeOffsets) {
+        if (plan.outcomeData[at] !== id || plan.outcomeData[at + 2] !== 0) continue
+        const value = prog.k[plan.outcomeData[at + 3]!]
+        if (typeof value === 'string' && value.toLowerCase() === 'each(') exact = i
+      }
+    }
+    expect(exact).toBeGreaterThanOrEqual(0)
+    words[6 + outcomeCount + armCount - 1] = 2 << exact
+    const exactOnly = ownTableProgram({ ...prog, tokenPlan: { ...plan, choiceMasks: words }, asm: [] })
+    expect(run(tableRules(exactOnly).Entry!, 'each(!')).toMatchObject({ ok: true, unconsumedFrom: null })
+  })
+
+  it('RED-proves skip-only masking, cold refusal, and existing expected catch-up', () => {
+    const counted = countedMaskedChoice()
+    const hot = tableRules(counted.prog).Entry!
+    const actual = run(hot, 'foo?')
+    expect(counted.calls(), 'the disjoint attempted arm is not entered').toBe(0)
+    const authority = run(execRules(counted.prog).Entry!, 'foo?')
+    expect(actual).toMatchObject({
+      ok: authority.ok,
+      expected: authority.expected,
+      unconsumedFrom: authority.unconsumedFrom,
+    })
+    expect(counted.calls(), 'the reference entered the authored arm').toBe(1)
+
+    const { choiceMasks: _masks, ...withoutMasks } = counted.prog.tokenPlan!
+    const planted = ownTableProgram({ ...counted.prog, tokenPlan: withoutMasks, asm: [] })
+    expect(run(tableRules(planted).Entry!, 'foo?')).toMatchObject({
+      ok: authority.ok,
+      expected: authority.expected,
+      unconsumedFrom: authority.unconsumedFrom,
+    })
+    expect(counted.calls(), 'removing the wire restores the authored arm entry').toBe(2)
+
+    for (const cfg of [
+      { ...STRICT, probe: true },
+      { ...STRICT, coverage: true },
+      { ...STRICT, tolerant: true },
+      { ...STRICT, trackLines: true },
+    ]) {
+      const asm = assemble(resolveTable(counted.prog), counted.prog, cfg)
+      const ctx = createParseContext()
+      asm.begin(ctx)
+      asm.pieces.Entry!('foo?', 0, ctx)
+      asm.finish()
+    }
+    expect(counted.calls(), 'every cold assembly retained the legacy attempted arm').toBe(6)
+  })
+
+  it('reuses the outer mask recognition in the later dispatch selector', () => {
+    const { prog: raw } = maskedChoicePlan()
+    const plan = raw.tokenPlan!
+    const family = plan.sites[1]!
+    const recognizer = family - 3
+    const at = plan.recognizerOffsets[recognizer]!
+    expect(plan.recognizerData.slice(at, at + 6)).toEqual([3, expect.any(Number), 2, 2, 3, expect.any(Number)])
+    const reK = plan.recognizerData[at + 5]!
+    const original = raw.k[reK] as RegExp
+    let calls = 0
+    const counted = new RegExp(original.source, `${original.flags.replace(/[gy]/g, '')}y`)
+    const exec = counted.exec
+    counted.exec = function (input: string) { calls++; return exec.call(this, input) }
+    const constants = [...raw.k]
+    constants[reK] = counted
+    const prog = ownTableProgram({ ...raw, k: constants, asm: [] })
+
+    expect(run(tableRules(prog).Entry!, 'foo?')).toMatchObject({ ok: true, unconsumedFrom: null })
+    expect(calls, 'outer mask and inner dispatch share one recognized range').toBe(1)
+  })
+
+  it('intersects the outcome mask with the existing character candidates', () => {
+    const made = maskedChoicePlan()
+    const code = [...made.prog.code]
+    const fns = [...made.prog.fns]
+    let calls = 0
+    const never = literal('never')
+    const live = {
+      ...never,
+      parse(input: string, pos: number, ctx: ParseContext) {
+        calls++
+        return never.parse(input, pos, ctx)
+      },
+    }
+    const liveIp = code.length
+    code.push(OP_LIVE, fns.length)
+    fns.push(live)
+    code[made.choice + 5] = liveIp // replace the keyword arm, retaining its table class
+    const planted = ownTableProgram({ ...made.prog, code, fns, asm: [] })
+    expect(run(tableRules(planted).Entry!, 'foo?')).toMatchObject({ ok: true, unconsumedFrom: null })
+    expect(calls, 'the otherwise outcome cannot override the keyword first-char gate').toBe(0)
+
+    const dispIndex = code[made.choice + 1]!
+    const dispatches = made.prog.disp.map((classes, i) => i === dispIndex
+      ? classes.map((cls, arm) => arm === 1 ? -1 : cls)
+      : classes)
+    const gatePlant = ownTableProgram({ ...planted, disp: dispatches })
+    expect(run(tableRules(gatePlant).Entry!, 'foo?')).toMatchObject({ ok: true, unconsumedFrom: null })
+    expect(calls, 'opening the character gate makes the same outcome admit the arm').toBe(1)
+  })
+
+  it('declines malformed mask records without activating token closure state', () => {
+    const { prog } = maskedChoicePlan()
+    const plan = prog.tokenPlan!
+    const { tokenPlan: _plan, ...legacyData } = prog
+    const legacy = ownTableProgram({ ...legacyData, asm: [] })
+    const words = plan.choiceMasks!
+    const outcomeCount = words[4]!
+    const malformed = [
+      [words[0]!, words[1]!, words[2]!, 0, ...words.slice(4)], // not strict
+      [words[0]!, words[1]!, 99, ...words.slice(3)], // missing site
+      [...words.slice(0, 7), words[6]!, ...words.slice(8)], // duplicate outcome id
+      [...words.slice(0, 6 + outcomeCount - 1), ...words.slice(6 + outcomeCount)], // short record
+    ]
+    for (const choiceMasks of malformed) {
+      const planted = ownTableProgram({ ...prog, tokenPlan: { ...plan, choiceMasks }, asm: [] })
+      expect(assemblyShape(planted)).toEqual(assemblyShape(legacy))
+      expect(run(tableRules(planted).Entry!, 'foo?')).toMatchObject({ ok: true, unconsumedFrom: null })
+    }
+    // This cut is closure-only. Even a valid mask must not perturb the emitted
+    // source graph or install a token prelude there.
+    expect(emitAssemblySource(resolveTable(prog), prog, STRICT).source)
+      .toBe(emitAssemblySource(resolveTable(legacy), legacy, STRICT).source)
   })
 
   it('defensively ignores an exclusive outer-choice relation', () => {

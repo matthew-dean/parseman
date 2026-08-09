@@ -155,6 +155,6 @@ describe('invariant gate', () => {
     const { code, out } = runGate([])
     expect(code).toBe(0)
     expect(out).toMatch(/\d+ outstanding DEBT entr(y|ies) — these are owed, not accepted:/)
-    expect(out).toContain('INV-3:src/compiler/token-alphabet.ts  →  docs/design/derived-tokenization.md')
+    expect(out).toContain('INV-3:src/compiler/token-scanner.ts  →  docs/design/derived-tokenization.md')
   })
 })

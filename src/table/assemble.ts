@@ -370,6 +370,104 @@ function tokenOutcomeWireSupported(wire: TokenPlanWire, id: number, k: readonly 
   return false
 }
 
+const TOKEN_CHOICE_MASK_STRICT = 1
+
+/**
+ * Return the unique, structurally valid choice-mask record anchoring `siteIndex`.
+ *
+ * This is deliberately a scalar preflight. A stale/manual mask must not be
+ * enough to activate the token runtime: the named choice must still be the
+ * non-exclusive choice in this table, have the recorded arm count, and own one
+ * direct dispatch arm for the named site. The compiler proves the semantic
+ * FIRST relation; this reader proves that the numeric relation survived every
+ * table transform unchanged.
+ */
+function tokenChoiceMaskRecordForSite(
+  wire: TokenPlanWire,
+  siteIndex: number,
+  code: ArrayLike<number>,
+  dispatches: ResolvedTable['disp'],
+): number {
+  const records = wire.choiceMasks
+  const siteAt = siteIndex * 4
+  if (records === undefined || records.length === 0
+    || !Number.isInteger(siteIndex) || siteIndex < 0 || siteAt + 3 >= wire.sites.length) return -1
+  const siteDispatch = wire.sites[siteAt]
+  if (!Number.isInteger(siteDispatch) || siteDispatch! < 0) return -1
+  let found = -1
+  for (let at = 0; at < records.length;) {
+    const words: number = records[at]!
+    const choice: number = records[at + 1]!
+    const recordSite: number = records[at + 2]!
+    const flags: number = records[at + 3]!
+    const outcomeCount: number = records[at + 4]!
+    const armCount: number = records[at + 5]!
+    if (!Number.isInteger(words) || words < 7 || at + words > records.length
+      || words !== 6 + outcomeCount + armCount
+      || flags !== TOKEN_CHOICE_MASK_STRICT
+      || !Number.isInteger(outcomeCount) || outcomeCount < 1 || outcomeCount > 29
+      || !Number.isInteger(armCount) || armCount < 1 || armCount > 32) return -1
+    if (recordSite === siteIndex) {
+      if (found >= 0 || !Number.isInteger(choice) || choice < 0 || code[choice] !== OP_CHOICE
+        || code[choice + 2] !== armCount) return -1
+      const table = dispatches[code[choice + 1]!]
+      if (table === undefined || table.exclusive) return -1
+      // One choice owns at most one token decision. A second choiceSites owner
+      // or a second direct dispatch arm makes the relation ambiguous and leaves
+      // the whole site on the legacy path.
+      const old = wire.choiceSites
+      if (old !== undefined) {
+        for (let i = 0; i + 2 < old.length; i += 3) if (old[i] === choice) return -1
+      }
+      let owners = 0
+      for (let scan = 0; scan < records.length;) {
+        const scanWords = records[scan]!
+        if (!Number.isInteger(scanWords) || scanWords < 7 || scan + scanWords > records.length) return -1
+        if (records[scan + 1] === choice && ++owners > 1) return -1
+        scan += scanWords
+      }
+      let dispatchOwners = 0
+      for (let arm = 0; arm < armCount; arm++) {
+        const armIp = code[choice + 4 + arm]!
+        if (code[armIp] === OP_DISPATCH && code[armIp + 2] === siteDispatch) dispatchOwners++
+      }
+      if (dispatchOwners !== 1) return -1
+      const limit = 2 ** (outcomeCount + 1)
+      for (let i = 0; i < armCount; i++) {
+        const mask = records[at + 6 + outcomeCount + i]!
+        if (!Number.isInteger(mask) || mask < 0 || mask >= limit) return -1
+      }
+      found = at
+    }
+    at += words
+  }
+  return found
+}
+
+function tokenChoiceMaskRecordSupported(
+  wire: TokenPlanWire,
+  at: number,
+  k: readonly unknown[],
+): boolean {
+  if (at < 0) return false
+  const outcomeCount = wire.choiceMasks![at + 4]!
+  const site = wire.choiceMasks![at + 2]!
+  const family = wire.sites[site * 4 + 1]!
+  let otherwise = 0
+  for (let i = 0; i < outcomeCount; i++) {
+    const id = wire.choiceMasks![at + 6 + i]!
+    for (let j = 0; j < i; j++) if (wire.choiceMasks![at + 6 + j] === id) return false
+    let record = -1, owners = 0
+    for (const offset of wire.outcomeOffsets) {
+      if (wire.outcomeData[offset] === id) { record = offset; owners++ }
+    }
+    if (owners !== 1 || wire.outcomeData[record + 1] !== family
+      || !tokenOutcomeWireSupported(wire, id, k)) return false
+    if (wire.outcomeData[record + 2] === 4) otherwise++
+  }
+  return otherwise === 1
+}
+
 /** Allocation-free preflight: an entirely refused plan keeps the legacy assembly shape. */
 function tokenPlanHasSupportedSite(
   wire: TokenPlanWire,
@@ -379,7 +477,10 @@ function tokenPlanHasSupportedSite(
 ): boolean {
   if (wire.sites.length === 0) return false
   for (let i = 0; i < wire.sites.length; i += 4) {
-    if (!runtimeChoiceAnchorsSite(wire, i / 4, code, dispatches)) continue
+    const siteIndex = i / 4
+    const choiceAnchored = runtimeChoiceAnchorsSite(wire, siteIndex, code, dispatches)
+    const maskAt = tokenChoiceMaskRecordForSite(wire, siteIndex, code, dispatches)
+    if (!choiceAnchored && !tokenChoiceMaskRecordSupported(wire, maskAt, k)) continue
     const routeStart = wire.sites[i + 2]!, routeCount = wire.sites[i + 3]!
     let siteSupported = true
     for (let route = 0; route < routeCount && siteSupported; route++) {
@@ -487,6 +588,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     readonly arm: number
     readonly token: TokenSitePlan
     readonly expected: readonly string[]
+  }
+  type TokenMaskPlan = {
+    readonly choice: number
+    readonly token: TokenSitePlan
+    readonly outcomeIds: readonly number[]
+    readonly outcomeArms: Uint32Array
+    readonly otherwise: number
+    readonly unrestricted: number
+    readonly restricted: number
   }
   type LexRecognizer = (input: string, pos: number) => number
   const configuredTokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
@@ -664,7 +774,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const matcher = re instanceof RegExp ? boundedMatcher(re) : undefined
         if (matcher === undefined) unsupportedTokenOutcomes.add(id)
         else tokenMatchers.set(id, matcher)
-      } else if (kind === 4) tokenMatchers.set(id, () => true)
+      } else if (kind === 4) {
+        tokenMatchers.set(id, () => true)
+      }
       else unsupportedTokenOutcomes.add(id)
     }
     for (let i = 0; i < tokenWire.tokenSites.length; i += 2) {
@@ -677,7 +789,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       tokenProducers.set(ip, { dispatch: -1, selectorIp: ip, recognizer, family: familyId, routeStart: 0, routeCount: 0 })
     }
     for (let i = 0; i < tokenWire.sites.length; i += 4) {
-      if (!runtimeChoiceAnchorsSite(tokenWire, i / 4, code, disp)) continue
+      const siteIndex = i / 4
+      const choiceAnchored = runtimeChoiceAnchorsSite(tokenWire, siteIndex, code, disp)
+      const maskAt = tokenChoiceMaskRecordForSite(tokenWire, siteIndex, code, disp)
+      if (!choiceAnchored && !tokenChoiceMaskRecordSupported(tokenWire, maskAt, k)) continue
       const di: number = tokenWire.sites[i]!
       const familyId: number = tokenWire.sites[i + 1]!
       let producer: TokenSitePlan | undefined
@@ -698,6 +813,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const acceptedStart = tokenWire.routes[rw + 2]!, acceptedCount = tokenWire.routes[rw + 3]!
         for (let j = 0; j < acceptedCount; j++) {
           if (unsupportedTokenOutcomes.has(tokenWire.accepted[acceptedStart + j]!)) { supported = false; break }
+        }
+      }
+      if (supported && maskAt >= 0) {
+        const outcomeCount = tokenWire.choiceMasks![maskAt + 4]!
+        for (let j = 0; j < outcomeCount; j++) {
+          if (unsupportedTokenOutcomes.has(tokenWire.choiceMasks![maskAt + 6 + j]!)) {
+            supported = false
+            break
+          }
         }
       }
       if (!supported) continue
@@ -733,6 +857,48 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     ? new Set(Array.from(choices.values(), relation => relation.token.dispatch))
     : undefined
 
+  const maskWire = wire.choiceMasks
+  const masks = maskWire === undefined ? undefined : new Map<number, TokenMaskPlan>()
+  if (maskWire !== undefined) {
+    for (let at = 0; at < maskWire.length;) {
+      const words = maskWire[at]!, choice = maskWire[at + 1]!, siteIndex = maskWire[at + 2]!
+      const outcomeCount = maskWire[at + 4]!, armCount = maskWire[at + 5]!
+      if (!Number.isInteger(words) || words < 7 || at + words > maskWire.length) break
+      if (tokenChoiceMaskRecordForSite(wire, siteIndex, code, disp) === at
+        && tokenChoiceMaskRecordSupported(wire, at, k)) {
+        const dispatch = wire.sites[siteIndex * 4]!
+        const token = tokenSites.get(dispatch)
+        if (token !== undefined) {
+          const outcomeIds = maskWire.slice(at + 6, at + 6 + outcomeCount)
+          const outcomeArms = new Uint32Array(outcomeCount)
+          let unrestricted = 0, restricted = 0, otherwise = -1
+          for (let outcome = 0; outcome < outcomeCount; outcome++) {
+            const id = outcomeIds[outcome]!
+            for (const offset of wire.outcomeOffsets) {
+              if (wire.outcomeData[offset] === id && wire.outcomeData[offset + 2] === 4) otherwise = outcome
+            }
+          }
+          for (let arm = 0; arm < armCount; arm++) {
+            const bit = 1 << arm
+            const accepted = maskWire[at + 6 + outcomeCount + arm]!
+            if ((accepted & 1) !== 0) unrestricted |= bit
+            else restricted |= bit
+            for (let outcome = 0; outcome < outcomeCount; outcome++) {
+              if ((accepted & (2 << outcome)) !== 0) outcomeArms[outcome]! |= bit
+            }
+          }
+          // A complete otherwise view is the only bounded proof that a
+          // recognized range can never fall between serialized outcome views.
+          // Manual wires without one fail open by declining the mask relation.
+          if (otherwise >= 0) masks!.set(choice, {
+            choice, token, outcomeIds, outcomeArms, otherwise, unrestricted, restricted,
+          })
+        }
+      }
+      at += words
+    }
+  }
+
   const cursor = {
     input: undefined as string | undefined,
     start: -1, context: -1, family: -1, recognizer: -1, packed: -1, outcome: -1,
@@ -742,6 +908,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     ? { site: -1, route: -2, routeFlags: 0 }
     : undefined
   const choiceFrames: Array<readonly [number, number, number]> | undefined = choiceCursor === undefined ? undefined : []
+  const maskCursor = masks !== undefined && masks.size > 0 ? { choice: -1, outcomes: -1 } : undefined
+  const maskFrames: Array<readonly [number, number]> | undefined = maskCursor === undefined ? undefined : []
 
   function recognizeToken(input: string, start: number, plan: TokenSitePlan): number {
     if (cursor.input === input && cursor.start === start && cursor.context === 0
@@ -760,6 +928,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       choiceCursor.route = -2
       choiceCursor.routeFlags = 0
     }
+    if (maskCursor !== undefined) { maskCursor.choice = -1; maskCursor.outcomes = -1 }
     return packed
   }
   function classifyToken(input: string, start: number, end: number, plan: TokenSitePlan): number {
@@ -783,6 +952,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     choiceCursor!.routeFlags = flags
     return selected
   }
+  function classifyMask(input: string, start: number, end: number, plan: TokenMaskPlan): number {
+    if (maskCursor!.choice === plan.choice) return maskCursor!.outcomes
+    let outcomes = 0, first = -1
+    for (let i = 0; i < plan.outcomeIds.length; i++) {
+      if (i === plan.otherwise) continue
+      const id = plan.outcomeIds[i]!
+      if (!tokenMatchers.get(id)!(input, start, end)) continue
+      outcomes |= 1 << i
+      if (first < 0) first = id
+    }
+    if (outcomes === 0) {
+      outcomes = 1 << plan.otherwise
+      first = plan.outcomeIds[plan.otherwise]!
+    }
+    cursor.outcome = first
+    maskCursor!.choice = plan.choice
+    maskCursor!.outcomes = outcomes
+    return outcomes
+  }
   function resetCursor(): void {
     cursor.input = undefined
     cursor.start = cursor.context = cursor.family = cursor.recognizer = cursor.packed = cursor.outcome = -1
@@ -791,11 +979,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       choiceCursor.route = -2
       choiceCursor.routeFlags = 0
     }
+    if (maskCursor !== undefined) { maskCursor.choice = -1; maskCursor.outcomes = -1 }
   }
   return {
     wire: tokenWire, sites: tokenSites, producers: tokenProducers, matchers: tokenMatchers,
-    choices, choiceDispatches,
-    cursor, choiceCursor, recognize: recognizeToken, classify: classifyToken,
+    choices, choiceDispatches, masks,
+    cursor, choiceCursor, recognize: recognizeToken, classify: classifyToken, classifyMask,
     begin(nested: boolean): void {
       if (nested) frames.push([
         cursor.input, cursor.start, cursor.context, cursor.family, cursor.recognizer, cursor.packed, cursor.outcome,
@@ -803,6 +992,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (nested && choiceCursor !== undefined) choiceFrames!.push([
         choiceCursor.site, choiceCursor.route, choiceCursor.routeFlags,
       ])
+      if (nested && maskCursor !== undefined) maskFrames!.push([maskCursor.choice, maskCursor.outcomes])
       resetCursor()
     },
     finish(nested: boolean): void {
@@ -821,6 +1011,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         choiceCursor.route = choicePrior[1]
         choiceCursor.routeFlags = choicePrior[2]
       }
+      if (maskCursor !== undefined) {
+        const maskPrior = maskFrames!.pop()!
+        maskCursor.choice = maskPrior[0]
+        maskCursor.outcomes = maskPrior[1]
+      }
     },
   }
   })()
@@ -828,6 +1023,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const tokenProducers = tokenRuntime?.producers
   const tokenMatchers = tokenRuntime?.matchers
   const tokenChoices = tokenRuntime?.choices
+  const tokenMasks = tokenRuntime?.masks
   const tokenChoiceDispatches = tokenRuntime?.choiceDispatches
 
   /**
@@ -2310,6 +2506,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const armFx: (string[])[] = new Array<string[]>(n)
         for (let i = 0; i < n; i++) armFx[i] = fx[code[base + n + i]!] as string[]
         const tokenChoice = tokenChoices?.get(ip)
+        const tokenMask = tokenMasks?.get(ip)
         const tokenSkip = tokenChoice === undefined ? undefined : (input: string, pos: number): boolean => {
           const packed = tokenRuntime!.recognize(input, pos, tokenChoice.token)
           return packed >= 0
@@ -2401,6 +2598,185 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) m[c]! |= bit
           }
           cand = m
+        }
+
+        if (cand !== undefined && tokenMask !== undefined) {
+          const mask = cand
+          const restricted = tokenMask.restricted
+          const unrestricted = tokenMask.unrestricted
+          const outcomeArms = tokenMask.outcomeArms
+          const maskMarkers: unknown[] = new Array(n)
+          const markerFx: string[][] = new Array(n)
+          for (let i = 0; i < n; i++) if ((restricted & (1 << i)) !== 0) {
+            const marker = {}
+            maskMarkers[i] = marker
+            markerFx[i] = [marker as string]
+          }
+          // Static arm expectations are exact for a character-gate miss, but an
+          // outcome mask can decline an arm whose opener DID match the lead. Its
+          // authored failure may therefore have advanced to a dynamic expected
+          // set (keywords are the production example). Mark those positions in
+          // the existing accumulator and replay only the skipped arms if the
+          // whole choice fails. Successful choices pay no diagnostic replay.
+          const replayMasked = (
+            input: string, pos: number, ctx: ParseContext, acc: string[] | undefined, skipped0: number,
+            need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mLog: number, mRoot: number,
+          ): unknown => {
+            let skipped = skipped0
+            while (skipped !== 0) {
+              const bit = skipped & -skipped
+              const i = 31 - Math.clz32(bit)
+              skipped &= skipped - 1
+              ctx._fc = false
+              const v = arms[i]!(input, pos, ctx)
+              if (v !== FAIL) return v // defensive fail-open if compiler proof drifted
+              const marker = maskMarkers[i] as string
+              const at = acc?.indexOf(marker) ?? -1
+              if (at < 0) throw new Error('table token choice diagnostic marker is missing')
+              const dynamic = ctx._fx ?? EMPTY_FX
+              if (committed(ctx)) {
+                acc!.length = at
+                for (const expected of dynamic) acc!.push(expected)
+                ctx._fx = acc
+                return FAIL
+              }
+              acc!.splice(at, 1, ...dynamic)
+              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            }
+            return FAIL
+          }
+          return (input, pos, ctx) => {
+            const c = lead(input, pos)
+            const need = markCst(ctx)
+            const mRaw = MRAW
+            const mTl = MTL
+            const mLv = MLV
+            const mFl = need ? ctx._fields?.length ?? 0 : 0
+            const mEr = need ? ctx._errors?.length ?? 0 : 0
+            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            let acc: string[] | undefined
+            let filtered = false, allowed = -1, maskSkipped = 0
+            if (c < 128) {
+              const bits0 = mask[c < 0 ? 128 : c]!
+              let eligible = bits0, bits = bits0
+              let prev = 0
+              while (bits !== 0) {
+                const bit = bits & -bits
+                const i = 31 - Math.clz32(bit)
+                // Classify only when PEG reaches the first arm whose mask can
+                // exclude it. Earlier unrestricted arms retain their exact old
+                // path and can succeed without recognizing this family at all.
+                if (!filtered && (restricted & bit) !== 0) {
+                  filtered = true
+                  const packed = tokenRuntime!.recognize(input, pos, tokenMask.token)
+                  if (packed >= 0) {
+                    let outcomeBits = tokenRuntime!.classifyMask(input, pos, packed / 2, tokenMask)
+                    allowed = unrestricted
+                    while (outcomeBits !== 0) {
+                      const outcome = 31 - Math.clz32(outcomeBits & -outcomeBits)
+                      outcomeBits &= outcomeBits - 1
+                      allowed |= outcomeArms[outcome]!
+                    }
+                    eligible = bits0 & allowed
+                    maskSkipped = bits0 & ~eligible
+                    bits &= allowed
+                    continue
+                  }
+                }
+                bits &= bits - 1
+                if (tokenSkip !== undefined && i === tokenChoice!.arm && tokenSkip(input, pos)) {
+                  for (let j = prev; j < i; j++) if ((eligible & (1 << j)) === 0) {
+                    acc = accSet((maskSkipped & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
+                  }
+                  prev = i + 1
+                  acc = accSet(tokenChoice!.expected, acc)
+                  continue
+                }
+                ctx._fc = false
+                const v = arms[i]!(input, pos, ctx)
+                if (v !== FAIL) return v
+                for (let j = prev; j < i; j++) if ((eligible & (1 << j)) === 0) {
+                  acc = accSet((maskSkipped & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
+                }
+                prev = i + 1
+                acc = accSet(ctx._fx, acc)
+                if (committed(ctx)) {
+                  const committedAt = ctx._fe
+                  if (maskSkipped !== 0) {
+                    const replay = replayMasked(input, pos, ctx, acc, maskSkipped, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                    if (replay !== FAIL) return replay
+                    if (committed(ctx)) return FAIL
+                    ctx._fc = true
+                    ctx._fe = committedAt
+                  }
+                  if (acc !== undefined) ctx._fx = acc
+                  return FAIL
+                }
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              }
+              for (let j = prev; j < n; j++) if ((eligible & (1 << j)) === 0) {
+                acc = accSet((maskSkipped & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
+              }
+              if (maskSkipped !== 0) {
+                const replay = replayMasked(input, pos, ctx, acc, maskSkipped, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (replay !== FAIL) return replay
+                if (committed(ctx)) return FAIL
+              }
+              ctx._fe = pos; ctx._fx = acc ?? choiceFx
+              return FAIL
+            }
+            for (let i = 0; i < n; i++) {
+              const cls = gates[i]!
+              if (cls !== null && !classHas(cls, c)) { acc = accSet(armFx[i]!, acc); continue }
+              const bit = 1 << i
+              if (!filtered && (restricted & bit) !== 0) {
+                filtered = true
+                const packed = tokenRuntime!.recognize(input, pos, tokenMask.token)
+                if (packed >= 0) {
+                  let outcomeBits = tokenRuntime!.classifyMask(input, pos, packed / 2, tokenMask)
+                  allowed = unrestricted
+                  while (outcomeBits !== 0) {
+                    const outcome = 31 - Math.clz32(outcomeBits & -outcomeBits)
+                    outcomeBits &= outcomeBits - 1
+                    allowed |= outcomeArms[outcome]!
+                  }
+                }
+              }
+              if (allowed >= 0 && (allowed & bit) === 0) {
+                maskSkipped |= bit
+                acc = accSet(markerFx[i]!, acc)
+                continue
+              }
+              if (tokenSkip !== undefined && i === tokenChoice!.arm && tokenSkip(input, pos)) {
+                acc = accSet(tokenChoice!.expected, acc); continue
+              }
+              ctx._fc = false
+              const v = arms[i]!(input, pos, ctx)
+              if (v !== FAIL) return v
+              acc = accSet(ctx._fx, acc)
+              if (committed(ctx)) {
+                const committedAt = ctx._fe
+                if (maskSkipped !== 0) {
+                  const replay = replayMasked(input, pos, ctx, acc, maskSkipped, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                  if (replay !== FAIL) return replay
+                  if (committed(ctx)) return FAIL
+                  ctx._fc = true
+                  ctx._fe = committedAt
+                }
+                if (acc !== undefined) ctx._fx = acc
+                return FAIL
+              }
+              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            }
+            if (maskSkipped !== 0) {
+              const replay = replayMasked(input, pos, ctx, acc, maskSkipped, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (replay !== FAIL) return replay
+              if (committed(ctx)) return FAIL
+            }
+            ctx._fe = pos; ctx._fx = acc ?? choiceFx
+            return FAIL
+          }
         }
 
         if (cand !== undefined) {
