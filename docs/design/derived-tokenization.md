@@ -51,6 +51,13 @@ status labels identify which is which.
 > baseline; it is never converted into “character is cheaper,” never hidden by narrowing
 > capability scope, and never authorizes a parse-time fork. Only two fully available
 > candidates may be compared as representations of one site.
+>
+> Capability does not require a static proof that every pair of arbitrary regex
+> languages has equal ends or a finite inclusion relation. An exact TOKEN candidate may
+> own the authored recognizers and retain every actual successful end/view in PEG order;
+> it will usually lose cost selection and be discarded. Fixed/trie/seeded kernels and
+> static incompatibility proofs lower that candidate's cost. Sampling isolated strings
+> is neither capability nor proof, and an unproved relation stays compatible.
 
 > ## Read these first — two results that invert earlier expectations
 >

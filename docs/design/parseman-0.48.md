@@ -585,8 +585,16 @@ landing target is chosen by nested work removed, not by terminal-call count alon
 ## 4. Recognition kernels, in implementation order
 
 The rejected prototype established that looping over native sticky regexes to build
-a compatible set costs more than the wrappers it removes. The next implementation
-must not repeat that shape.
+a compatible set costs more than the wrappers it removes **when that representation is
+selected**. It remains a valid exact capability form: an irregular TOKEN candidate may
+own the authored recognizers, retain every actual successful end/view in PEG order, and
+contain no character-piece replay. That complete candidate must exist even when the
+compiler is expected to discard it as more expensive. Static regex-language inclusion,
+equal-end, or boundary proofs are cost-lowering optimizations, not prerequisites for
+token availability; an unproved relation stays dynamically compatible rather than being
+guessed from sample strings or mislabeled semantically impossible.
+
+The production-selected hot path must not repeat the expensive candidate-loop shape.
 
 Frequency-weighted kernels land in this order:
 
@@ -595,9 +603,10 @@ Frequency-weighted kernels land in this order:
 3. numeric runs and their boundary/follow facts;
 4. keyword/identifier shared scans with integer lookup;
 5. quoted strings and other proven straight-line scan shapes;
-6. an opaque native-regex token kernel, selected as that site's sole recognizer only
-   when the fixed/shared kernels cannot represent the language and the measured
-   replacement still wins. It is not a fallback to the character parser.
+6. an opaque native-regex token kernel, present as that site's exact sole TOKEN
+   recognizer when fixed/shared kernels cannot represent the language, and selected
+   only when the measured replacement still wins. It is not a fallback to the
+   character parser.
 
 The existing first-set analysis, literal constants, scalar recognizers, scan shapes,
 and table class pools are inputs to one implementation. Token metadata must not
