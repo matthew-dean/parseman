@@ -12,6 +12,26 @@ compact `TableProgram` linked to closure pieces by `assemble.ts`. Sections below
 current design, historical measurements, and rejected source-codegen forms; the
 status labels identify which is which.
 
+> ## Current replacement rule — controls every historical design below
+>
+> The canonical 0.48 contract now requires the compiler to select the cheapest
+> representation **per final site**. A token-selected body replaces the character
+> recognizer/selector end to end; it may not run beside it, fall back to it, or replay
+> it for diagnostics. A character-selected body contains no token branch or state.
+> Capability alone and token-coverage percentage are not cost-selection evidence;
+> complete capability closure is a prerequisite. See
+> [`parseman-0.48.md` §3.0](./parseman-0.48.md#30-the-cheapest-replacement-lowering).
+> Historical “layer”, “fallback”, and broad-coverage wording in this evidence
+> register does not override that normative rule.
+>
+> Capability is closed **before** cost selection across the entire reachable final
+> composed grammar and every supported assembly variant. Every semantically valid token
+> candidate is built independently of whether the compiler expects to choose it.
+> Missing implementation is reported as a gap and keeps that program on the all-character
+> baseline; it is never converted into “character is cheaper,” never hidden by narrowing
+> capability scope, and never authorizes a parse-time fork. Only two fully available
+> candidates may be compared as representations of one site.
+
 > ## Read these first — two results that invert earlier expectations
 >
 > 1. **The entire parse-time spread across every dispatch configuration is 2.4%**
@@ -278,11 +298,11 @@ recognition wins at disjoint sites, and vice versa.
 The current shipping architecture adds a second integration constraint that the
 original source-codegen design did not have. `compile()` and macro artifacts carry
 one compact `TableProgram`, then `assemble.ts` links that program to shared closure
-pieces. A token cursor is therefore an **assembly-selected acceleration of those
-pieces**, not a second lexer/parser engine and not a reason to discard useful
-character-path work.
+pieces. A token cursor is therefore a **site-selected replacement body within that
+one lowering**, not a second lexer/parser engine and not a parallel layer over an
+already-running character selector.
 
-The durable shape is layered:
+The durable shape is statically selected per site:
 
 1. **Use the cheapest sound discriminator and pass its work forward.** A disjoint
    first-character gate may select directly and seed later token recognition with the
@@ -297,9 +317,9 @@ The durable shape is layered:
    terminal consumes, a pending result containing at least the position, terminal
    identity and end (or a compatible prefix view). A gate that scans and then lets an
    arm scan again is not token-cursor integration; it is added work.
-4. **Share recognition semantics.** Fixed literal/regex recognizers are both the
-   scanner's kernels and the raw-input fallback. Do not create an unrelated scanner
-   implementation beside unrelated terminal pieces.
+4. **Share recognition semantics.** Fixed literal/regex proofs may build either a
+   token kernel or a direct character body, but an admitted site contains exactly one
+   of them. Do not create an unrelated scanner beside retained terminal recognition.
 5. **Keep composite improvements.** Sequence, node, repeat, rollback, capture and
    reducer costs outside terminal recognition remain real. Token-aware pieces may
    remove a leading-terminal call, but they do not make those costs disappear.
@@ -2047,7 +2067,7 @@ In rough order of likelihood:
 | Hybrid: table for cold dispatches, trie-to-id for hot, per-site from profile | **settled (§6.3)** |
 | **Byte-identical tree vs a toggled baseline is the gate, not the suites** | **settled methodological invariant (§16.3)** |
 | **Parse-time claims come from interleaved rounds in one process** | **settled methodological invariant (§16.4)** |
-| Token cursor is an assembly-selected layer over fixed pieces, not a replacement lowering | **settled integration rule (§2)** |
+| Token recognition is a site-selected replacement body inside the one compact lowering; character sites remain token-free | **settled integration rule (§2; canonical contract in `parseman-0.48.md` §3.0)** |
 | Cheap character gates survive where they already decide; shared-leading choices discriminate from tokens; compatible overlap retains ordered trial | **settled integration rule (§2, §12)** |
 
 ### Hypothesis, untried, or nonexistent

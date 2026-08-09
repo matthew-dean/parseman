@@ -99,6 +99,102 @@ Recognition filters impossible arms and supplies reusable terminal results.
 It does **not** replace ordered PEG trial. An earlier compatible arm still wins
 according to today's PEG prefix-commitment semantics.
 
+### 3.0 The cheapest replacement lowering
+
+Tokenization is a representation choice, not a coverage goal. The compiler MUST
+select exactly one recognition strategy for every final decision site:
+
+```text
+final decision site
+        |
+        +-- CHARACTER: direct class/charCodeAt/literal/keyword/native-regex body
+        |
+        `-- TOKEN:     one recognizer -> token id/range/facts -> consuming decision
+```
+
+The choice is completed over final winner-resolved compiler IR before `TableProgram`
+serialization. `TableProgram` records only the selected lowering. Assembly merely
+links that recorded body; it never selects a strategy or tests whether a token plan is
+available. The choice is therefore already fixed in the assembled closure and emitted
+macro. A parse call never asks whether a token plan is present, never switches between
+token and character recognition, and never runs both. Mixed grammars use different
+statically linked bodies at different sites; they do not use a universal body with a
+parse-time mode branch.
+
+Strategy selection is a strict two-phase compiler operation:
+
+1. **Capability closure.** Before cost is considered, derive and build every
+   semantically valid representation for the entire reachable final composed grammar:
+   the complete
+   character body and the complete token body, including recognition, diagnostics,
+   pending consumption, lexical context, and all supported run modes. Token
+   capability is computed from the authored language, not from which kernels happen
+   to be convenient or already implemented.
+2. **Cost selection.** Only after both complete candidates exist may the compiler
+   compare their work and select one body for the site.
+
+Both candidates exist only as compiler analysis/IR during this comparison. The
+losing candidate is discarded before `TableProgram` serialization and assembly; the
+runtime and package never carry both implementations merely because the compiler
+considered both.
+
+Capability scope cannot be narrowed to hot sites, supported kernels, current planner
+candidates, or the sites the cost model is expected to choose. It includes every
+reachable terminal/compound lexical atom and every supported assembly variant in the
+final program. This is what prevents selection from defining away inconvenient token
+candidates.
+
+This ordering is fail-closed. “The token kernel is not implemented here” is an
+implementation gap (`GAP`), not evidence that the character representation is cheapest. If
+any reachable semantically tokenizable site remains in that state, token cost selection
+is disabled for the whole program. The program may still compile using the established
+all-character baseline while the architecture is incomplete, but it contains no
+partially selected token sites and makes no cheapest-representation claim. A site is
+exempt from token capability only when a semantic proof shows that no exact token
+representation exists under the required context/modes. Semantic impossibility is
+narrow: input recognition depends on arbitrary state, callbacks, or observable effects
+that cannot be represented by the pure `(input, position, lexicalContext)` recognition
+contract. The refusal records the exact proof category.
+
+Capability analysis and cost selection therefore have separate data and separate
+tests. The selector cannot query “did token lowering succeed?” as its cost model, and
+the token builder cannot query which strategy the selector prefers. Hiding or deleting
+a valid token candidate must make the capability-completeness gate RED rather than
+silently selecting the character body.
+
+`TOKEN` is admitted only when all of the following are proven:
+
+1. The token kernel recognizes the complete authored selector language for that site,
+   including its lexical context, escapes, case, boundaries, interpolation rules,
+   trivia position, and every supported run mode.
+2. The token result replaces work. It is consumed by the decision and continuation,
+   or reused by more than one compatible PEG trial. Producing an integer that is used
+   once before the old selector runs is not token lowering.
+3. The token body contains no reachable legacy selector, recognizer, substring/fold,
+   or diagnostic replay of that selector. A recognition miss resolves directly under
+   the token body's compiled success/failure plan. If correctness would require
+   falling back to or replaying the character body, the token candidate is `GAP` and
+   whole-program token selection remains disabled until it is complete.
+4. The selected shape is locally cheaper than the character body it replaces. The
+   proof accounts for prefix reads, kernel calls, cursor/cache checks, saved parser
+   pieces, avoided rescans, value materialization, and artifact bytes. “More
+   tokenized” and “more clever” are not benefits.
+5. Closure, emitted/macro, runtime compile, compose/linkable, folded, precompiled,
+   probe, recovery, CST, coverage, and tracked variants consume the same selected
+   strategy. If a cold/run mode cannot use the exact token body, the candidate is
+   `GAP`; a token fast path with a character cold-mode fallback is not admitted.
+
+`CHARACTER` is a first-class final lowering, not a tokenization failure. A site stays
+character-based when one lead code unit already decides it, when recognition is used
+once, when a recorded semantic-impossibility proof excludes a pure token candidate, or
+when token bookkeeping costs more than the work it would remove. A character-selected
+site instantiates no token cursor, cache, plan lookup, helper, or branch and should
+remain byte-identical to the legacy body when no other change applies.
+
+The optimization target is therefore minimum total work, not maximum token coverage.
+Integer comparison is useful only after the compiler has eliminated enough recognition
+and parser work to pay for producing the integer.
+
 ### 3.1 Global identities, local contexts
 
 - Token ids are compact non-negative integers in one global id space for the
@@ -107,9 +203,12 @@ according to today's PEG prefix-commitment semantics.
   mode, candidate set, or compiled combination of active terminals.
 - Recognition is position-local. The cursor remains a character offset so spans,
   errors, recovery, CST data, and incremental parsing keep one coordinate system.
-- Nearly every statically enumerable terminal should be tokenizable. A scannerless
-  escape is explicit for genuinely dynamic/context-dependent constructs; it is not
-  the default conclusion when a shallow lead walker stops at a wrapper.
+- The compiler must inventory every statically enumerable terminal/compound lexical
+  atom it can reach and either build its exact token language or record a semantic
+  impossibility/missing implementation category. That capability does not admit token
+  lowering at every use site. A dynamic/context-dependent or cheaper direct site
+  remains explicitly `CHARACTER`; a shallow lead walker stopping at a wrapper is an
+  analysis gap to close, not permission to install a dual path.
 
 The rejected seven-token CSS experiment tested mode-free global maximal munch with
 every terminal active everywhere. It did not test this design.
@@ -223,7 +322,8 @@ an `end | -1` recognizer result alone is not enough to bypass the authored child
 
 ### 3.4 Raw, seeded, and pending are one kernel
 
-Every tokenizable terminal family exposes one recognition contract with three entries:
+Every terminal family selected for token replacement exposes one recognition contract
+with three entries:
 
 1. `recognizeRaw(input, position, context)`;
 2. `recognizeSeeded(input, position, context, lead, prefixLength)`;
@@ -309,8 +409,9 @@ Frequency-weighted kernels land in this order:
 3. numeric runs and their boundary/follow facts;
 4. keyword/identifier shared scans with integer lookup;
 5. quoted strings and other proven straight-line scan shapes;
-6. opaque native regex fallback, gated by a sound first set and called only when a
-   fixed/shared kernel cannot represent the terminal.
+6. an opaque native-regex token kernel, selected as that site's sole recognizer only
+   when the fixed/shared kernels cannot represent the language and the measured
+   replacement still wins. It is not a fallback to the character parser.
 
 The existing first-set analysis, literal constants, scalar recognizers, scan shapes,
 and table class pools are inputs to one implementation. Token metadata must not
@@ -318,7 +419,8 @@ duplicate a second graph walk or second regex-analysis lattice.
 
 ## 5. Parser-piece integration
 
-The token cursor binds through the shared piece library.
+At token-selected sites, the token cursor binds through the shared piece library.
+Character-selected sites link their original bodies with no token branch or state.
 
 ### Choice
 
@@ -326,6 +428,9 @@ The token cursor binds through the shared piece library.
 - A shared-leading choice requests one position result.
 - Incompatible arms reject by integer/mask without entering their parser pieces.
 - Compatible arms stay in source order and see the same result.
+- These are distinct linked choice bodies. A token-selected choice cannot call the
+  original arm selector on miss or after routing; a character-selected choice cannot
+  consult token state.
 
 ### Terminal
 
@@ -380,18 +485,28 @@ costs the production cursor must remove.
 
 1. **Restore correctness first.** Synthetic scope rows must have an unambiguous
    layout, and actual Jess CSS/Less selected-root-trivia parses must fully consume.
-2. **Install the position-result frame.** Parse-local reset, reentrant save/restore,
-   compact integer arrays, emitted/closure/precompiled parity, and no per-match objects.
-3. **Give terminals the raw/seeded/pending contract.** Existing scalar node and NOT
+2. **Close token capability.** Derive/build every semantically valid token candidate
+   across the entire reachable final grammar independently of cost; record proven
+   dynamic impossibilities separately from missing implementation. Any missing
+   implementation keeps the whole program on the token-free character baseline. A
+   planted candidate omission must fail.
+3. **Freeze the site strategy.** Compute `CHARACTER` versus `TOKEN` from the final
+   composed program, link distinct bodies, and prove no runtime strategy branch,
+   selector replay, or inactive token allocation.
+4. **Install the position-result frame only for token-selected sites.** Parse-local
+   reset, reentrant save/restore, compact integer arrays, emitted/closure/precompiled
+   parity, and no per-match objects. No-token programs remain byte-identical.
+5. **Give selected terminals the raw/seeded/pending contract.** Existing scalar node and NOT
    consumers become the first production users.
-4. **Wire shared-leading choices.** Begin with the measured Less `Value` site, but
+6. **Wire shared-leading choices as replacements.** Begin with the measured Less `Value` site, but
    implement context and compatible-view machinery as reusable assembly infrastructure,
-   not an IP-specific branch.
-5. **Replace the native candidate loop with fixed/trie kernels.** Expand by measured
+   not an IP-specific branch. The old selector must be unreachable at an admitted site.
+7. **Replace the native candidate loop with fixed/trie kernels.** Expand by measured
    frequency across standard CSS, benchmark Less, and generated Less.
-6. **Expand coverage toward the complete terminal graph.** Resolve wrapper/rule leads
-   and compiled lexical contexts; keep explicit scannerless exceptions small and named.
-7. **Only then evaluate buffering and prediction.** On-demand position recognition is
+8. **Expand only where replacement cost wins.** Resolve wrapper/rule leads and compiled
+   lexical contexts, but retain direct character bodies wherever they are cheaper.
+   Token-coverage percentage is not a milestone.
+9. **Only then evaluate buffering and prediction.** On-demand position recognition is
    the first production cursor. Buffered mode-aware chunks are an optional layer after
    correctness and reuse are proven.
 
@@ -430,6 +545,35 @@ Semantic teeth include:
 - reentrant parse and multiple parser instances over equal/different input strings;
 - interpreter, reference, closure, emitted, macro, and precompiled identity.
 
+Replacement-structure teeth are blocking:
+
+- an admitted token site's linked/reached graph and emitted source contain the token
+  kernel and contain no legacy selector/recognizer/replay path;
+- counters observe one token scan per `(input, position, lexicalContext)` result and
+  zero legacy recognitions across compatible rollback, routed continuation, and final
+  consumption;
+- planting a reached legacy selector replay makes that one-scan/zero-legacy
+  differential RED;
+- a wholly no-token program has byte-identical `TableProgram`, compact/fold output,
+  emitted module, and linked closure-piece source to the character baseline;
+- a refused/direct site contains no token symbol, cursor allocation, plan lookup, or
+  parse-time strategy branch;
+- a mixed grammar proves that token and character sites receive separate statically
+  linked bodies rather than one conditional body, and that the legacy piece itself
+  contains no token symbols;
+- every run mode uses the same site strategy; inability to preserve probe/recovery/CST
+  semantics refuses token admission instead of selecting a cold fallback.
+- capability enumeration is independent of cost selection; a plant that removes a
+  known valid token candidate after compose/root relocation fails the completeness
+  gate instead of selecting character;
+- capability scope is the entire reachable final composed grammar and all supported
+  assembly variants; a plant that narrows it to hot/supported/planned sites fails;
+- any `token-capable but not implemented` site keeps token selection disabled for the
+  whole program, so partially supported tokenization cannot become the shipped shape;
+- reports distinguish `token-capable but not implemented`, `semantically impossible`,
+  and `both candidates built; character selected by cost`. Only the last is evidence
+  that character is cheapest.
+
 Performance reports include:
 
 - classifier calls and fixed/native kernel counts;
@@ -439,6 +583,8 @@ Performance reports include:
 - A/A controls, dispersion, and independent process/graph replication;
 - TableProgram words, runtime bundle size, packed/unpacked package size;
 - complete input consumption and complete `RunResult` identity before timing.
+- token production cost versus character work removed at each admitted site; token
+  coverage without removed work is reported as zero benefit.
 
 Near-flat results use the hardened high-sample mode; routine gates remain short. No
 timing is promoted when load exceeds the harness ceiling or engine/source realpaths are
