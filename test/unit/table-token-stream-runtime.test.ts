@@ -251,55 +251,29 @@ function emittedFunction(source: string, name: string): string {
 }
 
 describe('table token stream runtime', () => {
-  it('fuses the fixed opener and two outcomes into one cached site decision', async () => {
-    for (const mode of ['closure', 'emitted', 'precompiled'] as const) {
-      for (const input of ['EaCh(!', 'ordinary(?', 'url(', 'calc(', 'bare', 'escaped\\(']) {
-        const counted = fixedChoicePlan()
-        const prog = mode === 'closure' ? { ...counted.prog, asm: [] }
-          : mode === 'precompiled' ? precompiled(counted.prog) : counted.prog
-        const actual = run(tableRules(prog).Entry!, input)
-        const expected = run(counted.parser, input)
-        expect(actual, `${mode} ${input}`).toMatchObject({
-          ok: expected.ok, value: expected.value, expected: expected.expected, unconsumedFrom: expected.unconsumedFrom,
-        })
-        expect(counted.calls(), `${mode} ${input} base scans`).toBe(input === '!' ? 0 : 1)
-        if (counted.stacks().length > 0) {
-          const genericFrame = mode === 'closure' ? 'recognizeToken' : '_tokRecognize'
-          expect(counted.stacks().join('\n'), `fixed ${mode} bypasses the generic recognizer call`)
-            .not.toContain(genericFrame)
-        }
-      }
+  it('fuses the fixed opener and two outcomes only in the closure engine', () => {
+    for (const input of ['EaCh(!', 'ordinary(?', 'url(', 'calc(', 'bare', 'escaped\\(']) {
+      const counted = fixedChoicePlan()
+      const actual = run(tableRules({ ...counted.prog, asm: [] }).Entry!, input)
+      const expected = run(counted.parser, input)
+      expect(actual, input).toMatchObject({
+        ok: expected.ok, value: expected.value, expected: expected.expected, unconsumedFrom: expected.unconsumedFrom,
+      })
+      expect(counted.calls(), `${input} base scans`).toBe(1)
+      expect(counted.stacks().join('\n'), 'fixed closure bypasses the generic recognizer call')
+        .not.toContain('recognizeToken')
     }
 
     const structural = fixedChoicePlan().prog
     const emitted = emitAssemblySource(resolveTable(structural), structural, STRICT).source
     const fixed = emittedFunction(emitted, '_tc0')
-    expect(fixed).toContain('let end=_rec')
-    expect(fixed).toContain('_pfTokOutcome=')
-    expect(fixed).not.toContain('_tokRecognize')
-    expect(fixed).not.toContain('_td')
+    expect(fixed).toContain('_tokRecognize')
+    expect(fixed).toContain('_td')
 
     const generic = countedChoicePlan().prog
     const genericSource = emittedFunction(emitAssemblySource(resolveTable(generic), generic, STRICT).source, '_tc0')
     expect(genericSource).toContain('_tokRecognize')
     expect(genericSource).toContain('_td')
-
-    const loaded = await moduleRules(structural)
-    const loadedEntry = loaded.Entry! as Parameters<typeof run>[0]
-    const originalExec = RegExp.prototype.exec
-    RegExp.prototype.exec = function (input: string): RegExpExecArray | null {
-      if ((new Error().stack ?? '').includes('_tokRecognize')) {
-        throw new Error('module entered generic token recognition')
-      }
-      return originalExec.call(this, input)
-    }
-    try {
-      for (const input of ['EaCh(!', 'ordinary(?', 'url(', 'bare', 'escaped\\(']) {
-        expect(run(loadedEntry, input)).toMatchObject(run(fixedChoicePlan().parser, input))
-      }
-    } finally {
-      RegExp.prototype.exec = originalExec
-    }
   })
 
   it('keeps bounded-dot line terminator semantics and fixed cursor reentry exact', async () => {

@@ -129,7 +129,7 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
 import {
   makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
-import { runtimeChoiceAnchorsSite, runtimeFixedChoiceDecision, runtimeRangeOutcomeKind } from './token-outcome.ts'
+import { runtimeChoiceAnchorsSite, runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /**
  * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?
@@ -793,8 +793,72 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * the bounded function-open predicate). Keeping the proof here makes the hot
    * closure parser-free and avoids reinterpreting the recognizer TLV per call.
    */
+  function fixedChoiceShape(plan: TokenSitePlan): {
+    readonly base: RegExp
+    readonly exact: string
+    readonly exactFold: boolean
+    readonly exactOutcome: number
+    readonly exactArm: number
+    readonly exactFlags: number
+    readonly genericOutcome: number
+    readonly genericArm: number
+    readonly genericFlags: number
+  } | undefined {
+    const at = wire.recognizerOffsets[plan.recognizer]
+    if (at === undefined || at < 0 || wire.recognizerData[at] !== 3 || wire.recognizerData[at + 2] !== 2) return undefined
+    const lexEnd = at + wire.recognizerData[at + 1]!
+    const baseAt = at + 3
+    if (wire.recognizerData[baseAt] !== 2 || wire.recognizerData[baseAt + 1] !== 3) return undefined
+    const base = k[wire.recognizerData[baseAt + 2]!]
+    const repeatAt = baseAt + 3
+    if (!(base instanceof RegExp) || wire.recognizerData[repeatAt] !== 5
+      || wire.recognizerData[repeatAt + 2] !== 0 || wire.recognizerData[repeatAt + 3] !== 1
+      || wire.recognizerData[repeatAt + 4] !== 1 || wire.recognizerData[repeatAt + 5] !== 0) return undefined
+    const suffixAt = repeatAt + 6
+    if (wire.recognizerData[suffixAt] !== 0 || wire.recognizerData[suffixAt + 1] !== 4
+      || wire.recognizerData[suffixAt + 3] !== 0 || suffixAt + 4 !== lexEnd
+      || k[wire.recognizerData[suffixAt + 2]!] !== '(' || plan.routeCount !== 2) return undefined
+
+    const route = (index: number): { arm: number; flags: number; outcome: number } | undefined => {
+      const ri = plan.routeStart + index * 4
+      const arm = wire.routes[ri], flags = wire.routes[ri + 1]
+      const acceptedAt = wire.routes[ri + 2], acceptedCount = wire.routes[ri + 3]
+      const outcome = acceptedAt === undefined ? undefined : wire.accepted[acceptedAt]
+      if (!Number.isInteger(arm) || arm! < 0 || !Number.isInteger(flags)
+        || !Number.isInteger(acceptedAt) || acceptedAt! < 0 || acceptedCount !== 1
+        || !Number.isInteger(outcome) || outcome! < 0) return undefined
+      return { arm: arm!, flags: flags!, outcome: outcome! }
+    }
+    const exactRoute = route(0), genericRoute = route(1)
+    if (exactRoute === undefined || genericRoute === undefined
+      || (exactRoute.flags & 3) !== 0 || (genericRoute.flags & 3) !== 1) return undefined
+    const outcomeAt = (id: number): number => {
+      for (const offset of wire.outcomeOffsets) if (wire.outcomeData[offset] === id) return offset
+      return -1
+    }
+    const exactAt = outcomeAt(exactRoute.outcome), matcherAt = outcomeAt(genericRoute.outcome)
+    if (exactAt < 0 || matcherAt < 0 || exactRoute.outcome === genericRoute.outcome
+      || wire.outcomeData[exactAt + 1] !== plan.family || wire.outcomeData[matcherAt + 1] !== plan.family
+      || wire.outcomeData[exactAt + 2] !== 0 || wire.outcomeData[matcherAt + 2] !== 3) return undefined
+    const exact = k[wire.outcomeData[exactAt + 3]!]
+    const matcher = k[wire.outcomeData[matcherAt + 3]!]
+    const exactFold = wire.outcomeData[exactAt + 4]
+    if (typeof exact !== 'string' || !(matcher instanceof RegExp) || exactFold !== 0 && exactFold !== 1
+      || runtimeRangeOutcomeKind('matches', matcher.source, matcher.flags) !== 'function-open-excluding-url-calc') return undefined
+    return {
+      base,
+      exact,
+      exactFold: exactFold === 1,
+      exactOutcome: exactRoute.outcome,
+      exactArm: exactRoute.arm,
+      exactFlags: exactRoute.flags,
+      genericOutcome: genericRoute.outcome,
+      genericArm: genericRoute.arm,
+      genericFlags: genericRoute.flags,
+    }
+  }
   function specializedChoiceDecision(plan: TokenSitePlan): ((input: string, pos: number) => boolean) | undefined {
-    const shape = runtimeFixedChoiceDecision(wire, k, plan)
+    const shape = fixedChoiceShape(plan)
     if (shape === undefined) return undefined
     const baseIndex = k.indexOf(shape.base)
     if (baseIndex < 0) return undefined
@@ -859,12 +923,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       return route === -2
     }
   }
-  const choiceDecisions = new Map<number, (input: string, pos: number) => boolean>()
+  let choiceDecisions: Map<number, (input: string, pos: number) => boolean> | undefined
   if (choices !== undefined) {
     for (const relation of choices.values()) {
-      if (choiceDecisions.has(relation.token.dispatch)) continue
+      if (choiceDecisions?.has(relation.token.dispatch) === true) continue
       const decision = specializedChoiceDecision(relation.token)
-      if (decision !== undefined) choiceDecisions.set(relation.token.dispatch, decision)
+      if (decision !== undefined) (choiceDecisions ??= new Map()).set(relation.token.dispatch, decision)
     }
   }
   function resetCursor(): void {
@@ -881,7 +945,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     choices, choiceDispatches,
     cursor, choiceCursor, recognize: recognizeToken, classify: classifyToken,
     choiceDecision(plan: TokenSitePlan): ((input: string, pos: number) => boolean) | undefined {
-      return choiceDecisions.get(plan.dispatch)
+      return choiceDecisions?.get(plan.dispatch)
     },
     begin(nested: boolean): void {
       if (nested) frames.push([

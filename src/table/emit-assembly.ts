@@ -62,7 +62,7 @@ import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
-import { runtimeChoiceAnchorsSite, runtimeFixedChoiceDecision, runtimeRangeOutcomeKind } from './token-outcome.ts'
+import { runtimeChoiceAnchorsSite, runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -730,34 +730,6 @@ return -2
     if (hit !== undefined) return hit
     const name = `_tc${tokenChoiceDecisionNames.size}`
     tokenChoiceDecisionNames.set(plan.dispatch, name)
-    const fixed = runtimeFixedChoiceDecision(tokenWire!, k, plan)
-    if (fixed !== undefined) {
-      const baseIndex = k.indexOf(fixed.base)
-      if (baseIndex < 0) throw new Unemittable('a fixed token choice base outside the constant pool')
-      const rec = recognizerRef(baseIndex)
-      const exact = tokenOutcomeExpr(fixed.exactOutcome, 'pos', 'end')
-      const generic = tokenOutcomeExpr(fixed.genericOutcome, 'pos', 'end')
-      prelude.push(`function ${name}(input,pos){
-let packed,fresh=false
-if(_pfTokInput===input&&_pfTokStart===pos&&_pfTokContext===0&&_pfTokFamily===${plan.family}&&_pfTokRecognizer===${plan.recognizer})packed=_pfTokPacked
-else{
-let end=${rec}(input,pos)
-if(end>=0&&input.charCodeAt(end)===40)end++
-packed=end<0?-1:2*end
-fresh=true
-_pfTokInput=input;_pfTokStart=pos;_pfTokContext=0;_pfTokFamily=${plan.family};_pfTokRecognizer=${plan.recognizer};_pfTokPacked=packed
-}
-if(packed<0){if(fresh){_pfTokOutcome=-1;_pfTokSite=-1;_pfTokRoute=-2;_pfTokRouteFlags=0}return false}
-if(!fresh&&_pfTokSite===${plan.dispatch})return _pfTokRoute===-2
-const end=packed/2
-let outcome=-1,route=-2,flags=0
-if(${exact}){outcome=${fixed.exactOutcome};route=${fixed.exactArm};flags=${fixed.exactFlags}}
-else if(${generic}){outcome=${fixed.genericOutcome};route=${fixed.genericArm};flags=${fixed.genericFlags}}
-_pfTokOutcome=outcome;_pfTokSite=${plan.dispatch};_pfTokRoute=route;_pfTokRouteFlags=flags
-return route===-2
-}`)
-      return name
-    }
     const decide = tokenDecisionRef(plan)
     prelude.push(`function ${name}(input,pos){
 const packed=_tokRecognize(input,pos,0,${plan.family},${plan.recognizer},${recognizerRef(k.length + plan.recognizer)})
