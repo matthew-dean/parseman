@@ -19,6 +19,17 @@ The implementation must retain one `TableProgram` architecture for runtime
 shape mutation, `WeakMap` metadata, a second recognizer, downward baselines, and
 static-factory artifact bloat are outside the design space.
 
+## External Jess base and delegation
+
+The primary orchestrator is responsible for keeping Jess `origin/dev` current and for
+the base used by delegated work. The approved head is presently
+`bc45be7484d8a9f737448078f63e9aaf0fedee73`. Agents must create or refresh isolated Jess
+worktrees from that exact remote head; a stale preserved worktree may support historical
+analysis but may not support a new production claim. Every external census or timing
+banner must print the Jess remote SHA, dirty state, root and source realpaths, and the
+Parseman SHA/realpath. Moving `origin/dev` invalidates dependent performance evidence
+until external build, macro/compose, full-consumption, and result-identity gates rerun.
+
 ## Correctness blocker
 
 | ID | Defect | Handoff | Status |

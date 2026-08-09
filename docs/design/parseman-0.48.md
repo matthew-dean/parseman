@@ -497,3 +497,12 @@ This split is intentional:
 - this file answers **what 0.48 is building and what must be true to ship**;
 - the experiment ledger answers **what was tried and what happened**;
 - the long-form design answers **why earlier alternatives were accepted or rejected**.
+
+The primary 0.48 orchestrator owns the external Jess integration base. Before Jess
+work is delegated or measured, the primary fetches `origin/dev`, pushes any
+independently approved Jess-native prerequisite to `origin/dev`, records the exact
+remote SHA, and requires every dependent agent to create or refresh an isolated
+worktree from that SHA. Stale, dirty, or privately diverged Jess checkouts are evidence
+archives, not production measurement bases. After `origin/dev` moves, the primary
+reruns the external build, macro/compose, full-consumption, and semantic identity gates
+before promoting performance evidence.
