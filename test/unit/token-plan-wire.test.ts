@@ -11,11 +11,157 @@ import {
   collectLexicalAlphabet, canonicalLexicalOutcomeKey, compatibleLexicalOutcomes, selectedLexicalOutcome,
 } from '../../src/compiler/token-alphabet.ts'
 import {
-  choice, dispatch, endsWith, field, literal, makeWhen, matches, otherwise, optional, regex,
-  ref, sequence, startsWith, token, transform, when,
+  attempt, choice, dispatch, endsWith, field, keywords, literal, makeWhen, matches, otherwise, optional, regex,
+  ref, sequence, startsWith, token, transform, when, withCtx,
 } from '../../src/index.ts'
 
+function choiceMaskRecords(words: readonly number[]): Array<{
+  choice: number
+  site: number
+  flags: number
+  outcomes: number[]
+  arms: number[]
+}> {
+  const records = []
+  for (let at = 0; at < words.length;) {
+    const size = words[at]!, outcomeCount = words[at + 4]!, armCount = words[at + 5]!
+    records.push({
+      choice: words[at + 1]!, site: words[at + 2]!, flags: words[at + 3]!,
+      outcomes: words.slice(at + 6, at + 6 + outcomeCount),
+      arms: words.slice(at + 6 + outcomeCount, at + 6 + outcomeCount + armCount),
+    })
+    at += size
+  }
+  return records
+}
+
 describe('compact lexical token plan wire', () => {
+  it('serializes strict-only compatible outcome masks without widening OP_CHOICE', () => {
+    const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const named = keywords(['red', 'blue'], { caseInsensitive: true, boundary: '-A-Za-z0-9_(' })
+    const classified = dispatch(
+      head,
+      when(endsWith('('), literal('call')),
+      otherwise(literal('ident')),
+    )
+    // A second classifier contributes an exact compatible view. The Value-like
+    // choice does not route it directly, but its endsWith route still accepts
+    // that range; the compiler must put both local outcome bits on arm 2.
+    const subtype = dispatch(head, makeWhen({ caseInsensitive: true })('each(', literal('each')))
+    const root = choice(attempt(literal('@')), named, classified)
+    const prog = encodeTable({ Root: root, Subtype: subtype })
+    const plan = prog.tokenPlan!
+    const [record] = choiceMaskRecords(plan.choiceMasks!)
+
+    expect(record).toBeDefined()
+    expect(record!.flags).toBe(1) // strict-only
+    expect(record!.arms).toHaveLength(3)
+    expect(record!.arms[0]).toBe(0)
+    expect(record!.arms[1]).toBeGreaterThan(1)
+    expect(record!.arms[2]).toBe((1 << (record!.outcomes.length + 1)) - 2)
+    expect(plan.choiceSites).toBeUndefined()
+    expect(prog.code[record!.choice]).toBe(OP_CHOICE)
+    const armCount = prog.code[record!.choice + 2]!
+    expect(armCount).toBe(3)
+    // Existing row ABI: header + arms + expected-set operands. No mask operand.
+    expect(prog.code[record!.choice + 4 + 2 * armCount]).not.toBe(record!.site)
+
+    const alphabet = collectLexicalAlphabet([root, subtype])
+    const family = alphabet.classifiers.find(c => c.dispatch === classified)!.familyId
+    const classifiers = alphabet.classifiers.filter(c => c.familyId === family)
+    const allowed = (input: string): number[] => {
+      let outcomeMask = 0
+      for (const classifier of classifiers) {
+        for (const id of compatibleLexicalOutcomes(classifier, input, 0, input.length)) {
+          const bit = record!.outcomes.indexOf(id)
+          if (bit >= 0) outcomeMask |= 1 << (bit + 1)
+        }
+      }
+      const gate = resolveTable(prog).disp[prog.code[record!.choice + 1]!]!
+      return record!.arms.flatMap((mask, arm) => {
+        const cls = gate.armCls[arm]
+        const charAllowed = cls === null || cls === undefined || cls.ascii[input.charCodeAt(0)] === 1
+        return charAllowed && (mask === 1 || (mask & outcomeMask) !== 0) ? [arm] : []
+      })
+    }
+    expect(allowed('red')).toEqual([1, 2])
+    // The IDENT outcome admits the keyword VIEW, but the current `f` lead does
+    // not admit that arm's exact FIRST class. Outcome masks never replace the
+    // existing char gate.
+    expect(allowed('foo')).toEqual([2])
+    expect(allowed('foo(')).toEqual([2])
+
+    const compact: CompactProgram = {
+      c: prog.code, k: prog.k, x: prog.cc, e: prog.fx, d: prog.disp,
+      r: prog.rules, f: prog.fns, q: plan,
+    }
+    expect(expandCompact(compact).tokenPlan?.choiceMasks).toEqual(plan.choiceMasks)
+    expect(foldPrograms({ base: prog, twin: encodeTable({ Root: root, Subtype: subtype }) }, 'base')
+      .base.tokenPlan?.choiceMasks).toEqual(plan.choiceMasks)
+    expect(emitTableModule(prog, { fnSources: prog.fns.map(fn => String(fn)) })).toContain('choiceMasks:[')
+  })
+
+  it('keeps uncertain/effectful and cyclic arms unrestricted while exact FIRST skips disjoint attempt refs', () => {
+    const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const classified = dispatch(head, when(endsWith('('), literal('call')), otherwise(literal('ident')))
+    const cycle = ref<string>()
+    cycle.define(choice(literal('!'), cycle))
+    const root = choice(
+      attempt(literal('#')),
+      withCtx({ active: true }, keywords(['red'], { boundary: '-A-Za-z0-9_(' })),
+      cycle,
+      keywords(['red'], { boundary: '-A-Za-z0-9_(' }),
+      classified,
+    )
+    const [record] = choiceMaskRecords(encodeTable({ Root: root }).tokenPlan!.choiceMasks!)
+
+    expect(record!.arms[0]).toBe(0)
+    expect(record!.arms[1]).toBe(1)
+    expect(record!.arms[2]).toBe(1)
+    expect(record!.arms[3]).toBeGreaterThan(1)
+  })
+
+  it('refuses more than 29 family outcomes and never gives one choice both ownership forms', () => {
+    const head = token(regex(/[a-z0-9]+/))
+    const exact = Array.from({ length: 30 }, (_, i) => when(`k${i}`, literal(String(i))))
+    const classified = dispatch(head, ...exact, otherwise(literal('other')))
+    expect(encodeTable({ Root: choice(literal('@'), classified) }).tokenPlan).toBeUndefined()
+
+    const bounded = dispatch(head, when('one', literal('one')), otherwise(literal('other')))
+    const transformed = choice(transform(bounded, value => value), head)
+    const plan = encodeTable({ Root: transformed }).tokenPlan!
+    expect(plan.choiceSites).toHaveLength(3)
+    expect(plan.choiceMasks).toBeUndefined()
+  })
+
+  it('declines unsupported outcome predicates and keeps CI keyword/CS outcome ambiguity unrestricted', () => {
+    const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const named = keywords(['red'], { caseInsensitive: true, boundary: '-A-Za-z0-9_(' })
+    const unsupported = dispatch(head, when(matches(/^foo.*bar$/), literal('x')), otherwise(literal('y')))
+    expect(encodeTable({ Root: choice(attempt(literal('@')), named, unsupported) }).tokenPlan).toBeUndefined()
+
+    const unstable = dispatch(head, when('red', literal('red')), otherwise(literal('other')))
+    expect(encodeTable({
+      Root: choice(attempt(literal('@')), named, unstable),
+    }).tokenPlan).toBeUndefined()
+  })
+
+  it('relocates each mask through its exact encoded dispatch site', () => {
+    const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const named = keywords(['red'], { boundary: '-A-Za-z0-9_(' })
+    const one = dispatch(head, when(endsWith('('), literal('one')), otherwise(literal('ident')))
+    const two = dispatch(head, when(endsWith('('), literal('two')), otherwise(literal('ident')))
+    const a = choice(attempt(literal('@')), named, one)
+    const b = choice(attempt(literal('#')), named, two)
+    const prog = encodeTable({ A: a, B: b })
+    const records = choiceMaskRecords(prog.tokenPlan!.choiceMasks!)
+    expect(records).toHaveLength(2)
+    for (const record of records) {
+      const dispatchIp = prog.code[record.choice + 4 + 2]!
+      expect(prog.code[dispatchIp]).toBe(OP_DISPATCH)
+      expect(prog.code[dispatchIp + 2]).toBe(prog.tokenPlan!.sites[4 * record.site])
+    }
+  })
   it('serializes atomic family-qualified outcomes and keeps grouping on ordered routes', () => {
     const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
     const ci = makeWhen({ caseInsensitive: true })

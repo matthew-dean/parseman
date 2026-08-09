@@ -218,6 +218,12 @@ class Encoder {
   private readonly lexicalTokenSites: number[] = []
   private readonly lexicalDispatchSites: Array<{ dsp: number; classifier: LexicalTokenClassifier }> = []
   private readonly lexicalChoiceCandidates: Array<{ choice: number; arm: number; dsp: number }> = []
+  private readonly lexicalChoiceMaskCandidates: Array<{
+    choice: number
+    dsp: number
+    arms: readonly Combinator<unknown>[]
+    classes: readonly number[]
+  }> = []
 
   /**
    * A trivia combinator as DATA where its shape allows.
@@ -928,7 +934,10 @@ class Encoder {
         // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
-        const classes = arms.map(a => matchesEmpty(a, new Set(), rr) ? -1 : this.charClass(firstSetOf(a, new Set(), rr)))
+        const armFirst = arms.map(a => matchesEmpty(a, new Set(), rr)
+          ? undefined
+          : firstSetOf(a, new Set(), rr))
+        const classes = armFirst.map(fs => fs === undefined ? -1 : this.charClass(fs))
         const dispIdx = this.disp.length
         this.disp.push(classes)
         // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. The ordered
@@ -949,6 +958,24 @@ class Encoder {
         for (let i = 0; i < kids.length; i++) {
           this.code[head + 4 + i] = kids[i]!
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
+        }
+        if (d.strategy.tag === 'firstMatch'
+          && d.gates.every(gate => gate === null)
+          && d.autoNot.every(checks => checks === null || checks.length === 0)) {
+          let direct = -1
+          for (let i = 0; i < arms.length; i++) {
+            if (!this.lexicalClassifier.has(arms[i]!)) continue
+            if (direct >= 0) { direct = -2; break }
+            direct = i
+          }
+          if (direct >= 0) {
+            const dispatchIp = kids[direct]!
+            if (this.code[dispatchIp] === OP_DISPATCH) {
+              this.lexicalChoiceMaskCandidates.push({
+                choice: head, dsp: this.code[dispatchIp + 2]!, arms, classes,
+              })
+            }
+          }
         }
         return head
       }
@@ -1499,6 +1526,7 @@ class Encoder {
     // value-only transform whose child is one planned dispatch. Any scope,
     // field, sequence, coverage, trivia, context or nullable wrapper leaves a
     // different opcode at either edge and therefore stays on authored PEG.
+    const nonexclusiveChoices = new Set<number>()
     for (const ip of seen) {
       if (this.code[ip] !== OP_CHOICE) continue
       // An exclusive choice already selects one arm in O(1). The runtime
@@ -1509,6 +1537,7 @@ class Encoder {
       // ASCII/high-range/open-arm rules in the planner.
       const choiceDispatch = this.disp[this.code[ip + 1]!]!
       if (resolveDispatch(choiceDispatch, resolvedClasses).exclusive) continue
+      nonexclusiveChoices.add(ip)
       const count = this.code[ip + 2]!
       let candidate: { choice: number; arm: number; dsp: number } | undefined
       let ambiguous = false
@@ -1524,6 +1553,11 @@ class Encoder {
       // choice with two structurally eligible arms stays wholly on authored PEG.
       if (!ambiguous && candidate !== undefined) this.lexicalChoiceCandidates.push(candidate)
     }
+    for (let i = this.lexicalChoiceMaskCandidates.length - 1; i >= 0; i--) {
+      if (!nonexclusiveChoices.has(this.lexicalChoiceMaskCandidates[i]!.choice)) {
+        this.lexicalChoiceMaskCandidates.splice(i, 1)
+      }
+    }
   }
 
   finish(): TableProgram {
@@ -1535,6 +1569,8 @@ class Encoder {
       this.lexicalTokenSites,
       this.lexicalDispatchSites,
       this.lexicalChoiceCandidates,
+      this.lexicalChoiceMaskCandidates,
+      this.refResolver(),
     )
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,

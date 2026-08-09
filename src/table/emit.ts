@@ -128,9 +128,11 @@ function emitTokenPlan(plan: import('./program.ts').TokenPlanWire): string {
     'tokenSites', 'sites', 'routes', 'accepted',
   ] as const
   const field = (name: (typeof fields)[number]): string => `${name}:[${plan[name].join(',')}]`
-  return `{${fields.map(field).join(',')}${plan.choiceSites === undefined
-    ? ''
-    : `,choiceSites:[${plan.choiceSites.join(',')}]`}}`
+  const optional = [
+    plan.choiceSites === undefined ? '' : `,choiceSites:[${plan.choiceSites.join(',')}]`,
+    plan.choiceMasks === undefined ? '' : `,choiceMasks:[${plan.choiceMasks.join(',')}]`,
+  ].join('')
+  return `{${fields.map(field).join(',')}${optional}}`
 }
 
 /**

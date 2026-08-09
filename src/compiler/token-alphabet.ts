@@ -31,7 +31,7 @@
  * module only decides WHAT the tokens are and WHICH ones each site may see.
  */
 import type { Combinator, ParserDef } from '../types.ts'
-import { matchesEmpty } from '../combinators/first-set.ts'
+import { firstSetOf, intersects, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
 import { branchUsesRouted } from '../combinators/dispatch.ts'
 import { runtimeRangeOutcomeKind } from '../table/token-outcome.ts'
 
@@ -167,6 +167,25 @@ export type NumericLexicalPlan = {
   readonly accepted: readonly number[]
   /** Sparse `[OP_CHOICE ip,armIndex,dispatchSiteIndex]` outer admissions. */
   readonly choiceSites?: readonly number[]
+  /**
+   * Strict-only outcome masks for ordered choices. Records are self-sized:
+   * `[words,choiceIp,dispatchSiteIndex,flags,outcomeCount,armCount,
+   *   ...globalOutcomeIds,...armOutcomeMasks]`.
+   *
+   * Bit 0 of an arm mask means unrestricted/legacy. Bits 1..29 correspond to
+   * the record's outcome ids. A runtime classifier ORs every compatible bit;
+   * no authored route or outcome is selected by this metadata.
+   */
+  readonly choiceMasks?: readonly number[]
+}
+
+/** Compiler-only source relation. No combinator crosses the numeric wire. */
+export type LexicalChoiceMaskCandidate = {
+  readonly choice: number
+  readonly dsp: number
+  readonly arms: readonly Combinator<unknown>[]
+  /** Existing resolved OP_CHOICE classes (`-1` = open). */
+  readonly classes: readonly number[]
 }
 
 /** Lexical-family ids occupy their own published namespace. */
@@ -742,6 +761,152 @@ function serializeLexicalIr(ir: LexicalIr, out: number[], constant: (value: unkn
   out[start + 1] = out.length - start
 }
 
+const CHOICE_MASK_STRICT = 1
+const MAX_CHOICE_MASK_OUTCOMES = 29
+
+type ChoiceMaskAnalysis = {
+  readonly choice: number
+  readonly dsp: number
+  readonly outcomeIds: readonly number[]
+  readonly armMasks: readonly number[]
+}
+
+function optionalSuffixRegex(ir: LexicalIr): { source: string; flags: string; suffix: string } | undefined {
+  if (ir.kind !== 'sequence' || ir.parts.length !== 2) return undefined
+  const [base, tail] = ir.parts
+  if (base?.kind !== 'regex' || tail?.kind !== 'repeat'
+    || tail.min !== 0 || tail.max !== 1 || tail.mode !== 'possessive'
+    || tail.body.kind !== 'literal' || tail.body.value.length !== 1) return undefined
+  return { source: base.source, flags: base.flags, suffix: tail.body.value }
+}
+
+function leadingKeywords(
+  parser: Combinator<unknown>,
+  resolve: RefResolver | undefined,
+  seen = new Set<Combinator<unknown>>(),
+): Extract<ParserDef, { tag: 'keywords' }> | undefined {
+  if (seen.has(parser)) return undefined
+  seen.add(parser)
+  try {
+    const d = parser._def
+    switch (d.tag) {
+      case 'keywords': return d
+      case 'lazy': {
+        let target: Combinator<unknown> | undefined
+        try { target = d.thunk() } catch {
+          const name = (parser as unknown as { _ruleName?: string })._ruleName
+          target = name === undefined ? undefined : resolve?.(name)
+        }
+        return target === undefined ? undefined : leadingKeywords(target, resolve, seen)
+      }
+      case 'attempt': case 'transform': case 'label': case 'token': case 'leaf': case 'node':
+        return leadingKeywords(d.parser, resolve, seen)
+      case 'grammar': return d.triviaParser === undefined
+        ? leadingKeywords(d.parser, resolve, seen) : undefined
+      case 'sequence': return d.parsers.length > 0 && !matchesEmpty(d.parsers[0]!, new Set(), resolve)
+        ? leadingKeywords(d.parsers[0]!, resolve, seen) : undefined
+      default: return undefined
+    }
+  } finally {
+    seen.delete(parser)
+  }
+}
+
+function keywordOtherwiseId(
+  parser: Combinator<unknown>,
+  recognizer: LexicalRecognizer,
+  outcomes: readonly LexicalOutcomeSpec[],
+  resolve: RefResolver | undefined,
+): number | undefined {
+  const keyword = leadingKeywords(parser, resolve)
+  const shape = optionalSuffixRegex(recognizer.ir)
+  if (keyword === undefined || shape === undefined || keyword.boundary === undefined) return undefined
+  let excludesSuffix = false
+  try { excludesSuffix = new RegExp(`[${keyword.boundary}]`).test(shape.suffix) } catch { return undefined }
+  const baseFlags = shape.flags.replace(/[gy]/g, '')
+  if (!excludesSuffix || !keyword.words.every(word => {
+    try {
+      const base = new RegExp(`^(?:${shape.source})$`, baseFlags)
+      return base.test(word) && (!keyword.caseInsensitive || base.test(word.toUpperCase()))
+    } catch { return false }
+  })) return undefined
+  const otherwise = outcomes.filter((outcome): outcome is LexicalOutcomeSpec & {
+    match: Extract<LexicalOutcomeMatch, { kind: 'otherwise' }>
+  } => outcome.match.kind === 'otherwise')
+  const direct = outcomes.filter((outcome): outcome is LexicalOutcomeSpec & {
+    match: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>
+  } => outcome.match.kind !== 'otherwise')
+  if (otherwise.length !== 1 || !direct.every(({ match }) => {
+    if (match.kind === 'matches') return match.caseInsensitive || match.flags.includes('i')
+    const values = match.kind === 'exact' ? match.values : [match.value]
+    return match.caseInsensitive || values.every(value => !/[A-Za-z]/.test(value))
+  })) return undefined
+  const exclusions = otherwise[0]!.match.excluding
+  if (!exclusions.every(excluded => direct.some(outcome =>
+    canonicalLexicalOutcomeKey(outcome.match) === canonicalLexicalOutcomeKey(excluded)))
+    || !direct.every(({ match }) => exclusions.some(excluded =>
+      canonicalLexicalOutcomeKey(match) === canonicalLexicalOutcomeKey(excluded)
+      || match.kind === 'exact' && match.values.every(value =>
+        lexicalOutcomeMatches(excluded, value, 0, value.length))
+      || match.kind === 'matches' && excluded.kind === 'endsWith' && excluded.value === '('
+        && runtimeRangeOutcomeKind(match.kind, match.value, match.flags, match.caseInsensitive)
+          === 'function-open-excluding-url-calc'))) return undefined
+  return keyword.words.every(word => direct.every(outcome =>
+    !lexicalOutcomeMatches(outcome.match, word, 0, word.length))) ? otherwise[0]!.id : undefined
+}
+
+function analyzeChoiceMask(
+  alphabet: LexicalAlphabet,
+  candidate: LexicalChoiceMaskCandidate,
+  supportedByDsp: ReadonlyMap<number, LexicalTokenClassifier>,
+  resolve: RefResolver | undefined,
+): ChoiceMaskAnalysis | undefined {
+  const classifier = supportedByDsp.get(candidate.dsp)
+  if (classifier === undefined || classifier.selectorEffects
+    || candidate.classes.length !== candidate.arms.length) return undefined
+  const dispatchArm = candidate.arms.findIndex(arm => arm === classifier.dispatch)
+  if (dispatchArm < 0 || !classifier.routes.some(route => route.kind === 'otherwise')) return undefined
+  const outcomes = alphabet.outcomes.filter(outcome => outcome.familyId === classifier!.familyId)
+  if (outcomes.length === 0 || outcomes.length > MAX_CHOICE_MASK_OUTCOMES || outcomes.some(outcome => {
+    const match = outcome.match
+    return runtimeRangeOutcomeKind(
+      match.kind,
+      match.kind === 'matches' ? match.value : '',
+      match.kind === 'matches' ? match.flags : '',
+      match.kind === 'matches' && match.caseInsensitive,
+    ) === undefined
+  })) return undefined
+  const recognizer = alphabet.recognizers[classifier.familyId - FIRST_LEXICAL_FAMILY_ID]
+  const familyBody = alphabet.sites.find(site => site.familyId === classifier.familyId)?.body
+  if (recognizer === undefined || familyBody === undefined || matchesEmpty(familyBody, new Set(), resolve)) return undefined
+  const familyFirst = firstSetOf(familyBody, new Set(), resolve)
+  if (familyFirst.kind !== 'ranges') return undefined
+  const overlaps = candidate.arms.map((arm, i) => {
+    const fs = firstSetOf(arm, new Set(), resolve)
+    if (candidate.classes[i]! >= 0 && fs.kind === 'ranges') return intersects(fs, familyFirst)
+    const d = arm._def
+    if (candidate.classes[i]! < 0 && d.tag === 'attempt'
+      && !matchesEmpty(d.parser, new Set(), resolve)) {
+      const child = firstSetOf(d.parser, new Set(), resolve)
+      if (child.kind === 'ranges') return intersects(child, familyFirst)
+    }
+    return true
+  })
+  if (!overlaps.some((overlap, i) => !overlap && candidate.classes[i]! < 0)) return undefined
+
+  const allOutcomes = ((1 << (outcomes.length + 1)) - 2) >>> 0
+  const armMasks = candidate.arms.map((arm, index) => {
+    if (index === dispatchArm) return allOutcomes
+    const keywordId = keywordOtherwiseId(arm, recognizer, outcomes, resolve)
+    if (keywordId !== undefined) return (1 << (outcomes.findIndex(outcome => outcome.id === keywordId) + 1)) >>> 0
+    return overlaps[index] ? 1 : 0
+  })
+  // Publish only a real selective site: at least one impossible arm and at
+  // least one outcome-restricted compatible arm besides the dispatch itself.
+  if (!armMasks.includes(0) || !armMasks.some((mask, arm) => arm !== dispatchArm && mask > 1)) return undefined
+  return { choice: candidate.choice, dsp: candidate.dsp, outcomeIds: outcomes.map(outcome => outcome.id), armMasks }
+}
+
 /**
  * Project the compiler graph into compact numeric pools. The caller supplies
  * only already-relocated table-site numbers and its existing const-pool intern;
@@ -753,6 +918,8 @@ export function serializeLexicalPlan(
   tokenSites: readonly number[],
   dispatchSites: ReadonlyArray<{ readonly dsp: number; readonly classifier: LexicalTokenClassifier }>,
   choiceCandidates: ReadonlyArray<{ readonly choice: number; readonly arm: number; readonly dsp: number }>,
+  choiceMaskCandidates: readonly LexicalChoiceMaskCandidate[] = [],
+  resolve?: RefResolver,
 ): NumericLexicalPlan | undefined {
   if (tokenSites.length === 0) return undefined
 
@@ -776,12 +943,19 @@ export function serializeLexicalPlan(
   const activeCandidates = [...choiceCandidates]
     .filter(candidate => supportedDispatchSites.has(candidate.dsp))
     .sort((a, b) => a.choice - b.choice || a.arm - b.arm)
+  const choiceOwned = new Set(activeCandidates.map(candidate => candidate.choice))
+  const maskAnalyses = choiceMaskCandidates
+    .filter(candidate => !choiceOwned.has(candidate.choice))
+    .map(candidate => analyzeChoiceMask(alphabet, candidate, supportedDispatchSites, resolve))
+    .filter((analysis): analysis is ChoiceMaskAnalysis => analysis !== undefined)
+    .sort((a, b) => a.choice - b.choice)
   // Token streaming is activated by an outer ordered decision that can reuse
   // the range after rollback. A stand-alone dispatch already parses its
   // selector once, so serialising its whole lexical universe only adds artifact
   // and runtime shape without removing a boundary.
-  if (activeCandidates.length === 0) return undefined
+  if (activeCandidates.length === 0 && maskAnalyses.length === 0) return undefined
   const activeDsp = new Set(activeCandidates.map(candidate => candidate.dsp))
+  for (const analysis of maskAnalyses) activeDsp.add(analysis.dsp)
   const activeFamilies = new Set<number>()
   const activeOutcomeIds = new Set<number>()
   for (const dsp of activeDsp) {
@@ -789,6 +963,7 @@ export function serializeLexicalPlan(
     activeFamilies.add(classifier.familyId)
     for (const route of classifier.routes) for (const id of route.acceptedIds) activeOutcomeIds.add(id)
   }
+  for (const analysis of maskAnalyses) for (const id of analysis.outcomeIds) activeOutcomeIds.add(id)
 
   const recognizerOffsets: number[] = []
   const recognizerData: number[] = []
@@ -859,6 +1034,17 @@ export function serializeLexicalPlan(
     const site = dispatchSiteIndex.get(candidate.dsp)
     if (site !== undefined) choiceSites.push(candidate.choice, candidate.arm, site)
   }
+  const choiceMasks: number[] = []
+  for (const analysis of maskAnalyses) {
+    const site = dispatchSiteIndex.get(analysis.dsp)
+    if (site === undefined) continue
+    const words = 6 + analysis.outcomeIds.length + analysis.armMasks.length
+    choiceMasks.push(
+      words, analysis.choice, site, CHOICE_MASK_STRICT,
+      analysis.outcomeIds.length, analysis.armMasks.length,
+      ...analysis.outcomeIds, ...analysis.armMasks,
+    )
+  }
   const activeTokenSites: number[] = []
   for (let i = 0; i < tokenSites.length; i += 2) {
     const family = tokenSites[i + 1]!
@@ -871,6 +1057,7 @@ export function serializeLexicalPlan(
     recognizerOffsets, recognizerData, outcomeOffsets, outcomeData,
     tokenSites: activeTokenSites, sites, routes, accepted,
     ...(choiceSites.length === 0 ? {} : { choiceSites }),
+    ...(choiceMasks.length === 0 ? {} : { choiceMasks }),
   }
 }
 
