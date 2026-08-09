@@ -340,7 +340,55 @@ export function assertSameParse(
   }
 }
 
-export type Samples = Map<string, number[]>
+/**
+ * Adjacent paired sample medians, plus the minimum timed repetition from each
+ * sample. The Map itself intentionally remains the median series so descriptive
+ * benchmark scripts keep their absolute-throughput view; verdicts must reduce
+ * ALIGNED ratios, and the `mins` sidecar preserves the corresponding best-case
+ * observation without comparing unrelated global minima.
+ */
+export type Samples = Map<string, number[]> & { mins: Map<string, number[]> }
+
+function emptySamples(cases: readonly Case[]): Samples {
+  const entries = cases.flatMap(c => [[`ref|${c.id}`, [] as number[]], [`head|${c.id}`, [] as number[]]] as const)
+  const samples = new Map(entries) as Samples
+  samples.mins = new Map(entries.map(([key]) => [key, []]))
+  return samples
+}
+
+/** Median of aligned HEAD/REF ratios. Aggregating each side first discards pairing. */
+export function pairedMedianRatio(ref: readonly number[], head: readonly number[]): number {
+  if (ref.length !== head.length) {
+    throw new Error(`paired sample lengths differ: ref=${ref.length}, head=${head.length}`)
+  }
+  if (ref.length === 0) throw new Error('paired samples must not be empty')
+  const ratios: number[] = []
+  for (let i = 0; i < ref.length; i++) {
+    const a = ref[i]!, b = head[i]!
+    if (!(a > 0) || !(b >= 0)) throw new Error(`invalid paired sample at index ${i}: ref=${a}, head=${b}`)
+    ratios.push(b / a)
+  }
+  return median(ratios)
+}
+
+export function pairedWins(ref: readonly number[], head: readonly number[]): number {
+  if (ref.length !== head.length) {
+    throw new Error(`paired sample lengths differ: ref=${ref.length}, head=${head.length}`)
+  }
+  let wins = 0
+  for (let i = 0; i < ref.length; i++) if (head[i]! < ref[i]!) wins++
+  return wins
+}
+
+/** Median ratio of aligned within-sample minima retained by {@link interleave}. */
+export function pairedMinRatio(samples: Samples, refKey: string, headKey: string): number {
+  const ref = samples.mins.get(refKey)
+  const head = samples.mins.get(headKey)
+  if (ref === undefined || head === undefined) {
+    throw new Error(`missing paired minimum series: ref=${refKey}, head=${headKey}`)
+  }
+  return pairedMedianRatio(ref, head)
+}
 
 /**
  * Interleave both sides in one process.
@@ -368,11 +416,11 @@ export function interleave(
   const out = new Map<string, Samples>(
     contests.map(k => [
       k.label,
-      new Map(k.a.flatMap(c => [[`ref|${c.id}`, [] as number[]], [`head|${c.id}`, [] as number[]]])),
+      emptySamples(k.a),
     ]),
   )
 
-  const sample = (c: Case): number => {
+  const sample = (c: Case): { median: number; min: number } => {
     const r = reps.get(c.id)!
     const ts: number[] = []
     for (let k = 0; k < m.timed; k++) {
@@ -380,7 +428,7 @@ export function interleave(
       c.run(r)
       ts.push(performance.now() - t0)
     }
-    return median(ts)
+    return { median: median(ts), min: Math.min(...ts) }
   }
 
   for (const k of contests) {
@@ -411,8 +459,12 @@ export function interleave(
           const t1 = sample(first)
           const t2 = sample(second)
           const s = out.get(k.label)!
-          s.get(`ref|${id}`)!.push(refFirst ? t1 : t2)
-          s.get(`head|${id}`)!.push(refFirst ? t2 : t1)
+          const ref = refFirst ? t1 : t2
+          const head = refFirst ? t2 : t1
+          s.get(`ref|${id}`)!.push(ref.median)
+          s.get(`head|${id}`)!.push(head.median)
+          s.mins.get(`ref|${id}`)!.push(ref.min)
+          s.mins.get(`head|${id}`)!.push(head.min)
         }
       }
     }
@@ -518,9 +570,9 @@ export function measurePasses(
     for (const s of nullSamples) {
       const a = s.get(`ref|${id}`)!
       const b = s.get(`head|${id}`)!
-      for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
+      wins += pairedWins(a, b)
       pairs += b.length
-      worstNullMedian = Math.max(worstNullMedian, (median(b) / median(a) - 1) * 100)
+      worstNullMedian = Math.max(worstNullMedian, (pairedMedianRatio(a, b) - 1) * 100)
     }
     const nullRate = wins / pairs
     calibration.set(id, {
@@ -558,10 +610,9 @@ export function score(
     const a = samples.get(`ref|${id}`)!
     const b = samples.get(`head|${id}`)!
     const k = calibration.get(id)!
-    const dMedian = (median(b) / median(a) - 1) * 100
-    const dMin = (Math.min(...b) / Math.min(...a) - 1) * 100
-    let wins = 0
-    for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
+    const dMedian = (pairedMedianRatio(a, b) - 1) * 100
+    const dMin = (pairedMinRatio(samples, `ref|${id}`, `head|${id}`) - 1) * 100
+    const wins = pairedWins(a, b)
     const winRate = wins / b.length
     const large = (dMedian > t.medianPct || dMin > t.minPct) && winRate <= k.ceiling
     const small = winRate <= k.signCeiling
@@ -571,8 +622,8 @@ export function score(
       id,
       refMedian: median(a),
       headMedian: median(b),
-      refMin: Math.min(...a),
-      headMin: Math.min(...b),
+      refMin: Math.min(...samples.mins.get(`ref|${id}`)!),
+      headMin: Math.min(...samples.mins.get(`head|${id}`)!),
       dMedian,
       dMin,
       wins,

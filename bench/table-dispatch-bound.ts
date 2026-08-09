@@ -23,7 +23,7 @@
  * Usage: `node --import tsx/esm bench/table-dispatch-bound.ts`
  */
 import os from 'node:os'
-import { interleave, median, type Case, type Contest, type Measurement } from './ab-harness.ts'
+import { interleave, median, pairedMedianRatio, pairedMinRatio, pairedWins, type Case, type Contest, type Measurement } from './ab-harness.ts'
 
 const M: Measurement = { targetSampleMs: 40, warmup: 3, timed: 5, rounds: 8, runs: 2 }
 
@@ -281,10 +281,9 @@ const out = interleave(contests, reps, M)
 for (const k of contests) {
   const s = out.get(k.label)!
   const a = s.get('ref|tree')!, b = s.get('head|tree')!
-  const dMed = (median(b) / median(a) - 1) * 100
-  const dMin = (Math.min(...b) / Math.min(...a) - 1) * 100
-  let wins = 0
-  for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
+  const dMed = (pairedMedianRatio(a, b) - 1) * 100
+  const dMin = (pairedMinRatio(s, 'ref|tree', 'head|tree') - 1) * 100
+  const wins = pairedWins(a, b)
   console.log(
     `  ${k.label.padEnd(30)} median ${(dMed >= 0 ? '+' : '') + dMed.toFixed(1)}%   min ${(dMin >= 0 ? '+' : '') + dMin.toFixed(1)}%`
     + `   B-wins ${wins}/${b.length}   (${median(a).toFixed(2)} -> ${median(b).toFixed(2)} ms per ${reps.get('tree')} walks)`,

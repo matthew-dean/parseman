@@ -122,7 +122,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { interleave, materialise, median, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { interleave, materialise, median, pairedMedianRatio, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 import { run } from '../../src/functional/run.ts'
 import {
   DIALECTS, ENTRY, JESS_ROOT, LOAD_CEILING, VARIANT_SETTINGS,
@@ -742,6 +742,7 @@ async function measureDialect(
     const headSamples = g.get(`head|${rel}`)!
     const rm = median(refSamples)
     const hm = median(headSamples)
+    const ratio = pairedMedianRatio(refSamples, headSamples)
     const dispersion = pairedRoundDispersion(refSamples, headSamples, M.runs)
     console.log('')
     console.log(`    ONE PARSE, median of ${M.rounds * M.runs} samples:`)
@@ -750,7 +751,7 @@ async function measureDialect(
     const ms = (v: number): string => (v >= 1 ? v.toFixed(2) : v.toFixed(4)).padStart(8)
     console.log(`      HEAD    ${headEngine.padEnd(11)} ${ms(hm)} ms   ${(bytes / hm / 1000).toFixed(2)} MB/s`)
     console.log(`      ${REF} ${refEngine.padEnd(11)} ${ms(rm)} ms   ${(bytes / rm / 1000).toFixed(2)} MB/s`)
-    console.log(`      ratio HEAD/${REF}   ${(hm / rm).toFixed(3)}x   (${sign((hm / rm - 1) * 100)} — negative is HEAD faster)`)
+    console.log(`      ratio HEAD/${REF}   ${ratio.toFixed(3)}x   (${sign((ratio - 1) * 100)} — paired; negative is HEAD faster)`)
     console.log(`      paired rounds HEAD/${REF}  p10 ${dispersion.p10.toFixed(3)}x  median ${dispersion.median.toFixed(3)}x  p90 ${dispersion.p90.toFixed(3)}x`)
     console.log(`        range ${dispersion.min.toFixed(3)}x..${dispersion.max.toFixed(3)}x; HEAD faster in ${dispersion.headWins}/${dispersion.ratios.length} rounds (${M.runs} adjacent pairs/round)`)
     if (!bothParsed) console.log('      ^ VOID — see the acceptance lines above. This is not a like-for-like ratio.')
@@ -763,11 +764,11 @@ async function measureDialect(
     // printing a floor it did not measure.
     let ctl = 0
     if (c !== undefined && ch !== undefined) {
-      const ctlA = median(c.get(`ref|${rel}`)!), ctlB = median(c.get(`head|${rel}`)!)
-      const ctlHA = median(ch.get(`ref|${rel}`)!), ctlHB = median(ch.get(`head|${rel}`)!)
-      ctl = Math.max(Math.abs(ctlB / ctlA - 1), Math.abs(ctlHB / ctlHA - 1))
-      console.log(`      CONTROL ref/ref     ${sign((ctlB / ctlA - 1) * 100)}   — ${REF}-side noise floor`)
-      console.log(`      CONTROL head/head   ${sign((ctlHB / ctlHA - 1) * 100)}   — HEAD-side noise floor`)
+      const ctlRef = pairedMedianRatio(c.get(`ref|${rel}`)!, c.get(`head|${rel}`)!)
+      const ctlHead = pairedMedianRatio(ch.get(`ref|${rel}`)!, ch.get(`head|${rel}`)!)
+      ctl = Math.max(Math.abs(ctlRef - 1), Math.abs(ctlHead - 1))
+      console.log(`      CONTROL ref/ref     ${sign((ctlRef - 1) * 100)}   — paired ${REF}-side noise floor`)
+      console.log(`      CONTROL head/head   ${sign((ctlHead - 1) * 100)}   — paired HEAD-side noise floor`)
       console.log('      ^ NOTE both controls are taken in a SEVEN-GRAPH process, and graphs realised')
       console.log('        beyond the first couple run ~18-20% slower. A flat control here does NOT')
       console.log('        clear the gate ratio; only --two-graph does. See TWO_GRAPH in this file.')
@@ -775,7 +776,7 @@ async function measureDialect(
       console.log('      CONTROL             none in-process — --two-graph deliberately has no third')
       console.log('        graph. Take the floor from a separate `--self --two-graph` run of this shape.')
     }
-    if (ctl > 0 && Math.abs(hm / rm - 1) <= ctl) {
+    if (ctl > 0 && Math.abs(ratio - 1) <= ctl) {
       console.log('      ^ the gap is INSIDE the control. That is not a result in either direction.')
     }
 

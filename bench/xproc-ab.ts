@@ -39,6 +39,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, mkdirSync, copyFileSync, symlinkSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { pairedMedianRatio } from './ab-harness.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -283,9 +284,10 @@ for (const c of cases) {
 
   const refMean = refMed.reduce((s, n) => s + n, 0) / refMed.length
   const headMean = headMed.reduce((s, n) => s + n, 0) / headMed.length
-  const dMed = (median(headMed) / median(refMed) - 1) * 100
-  const dMin = (Math.min(...headMin) / Math.min(...refMin) - 1) * 100
-  const dMean = (headMean / refMean - 1) * 100
+  const ratios = headMed.map((n, i) => n / refMed[i]!)
+  const dMed = (pairedMedianRatio(refMed, headMed) - 1) * 100
+  const dMin = (pairedMedianRatio(refMin, headMin) - 1) * 100
+  const dMean = (ratios.reduce((s, n) => s + n, 0) / ratios.length - 1) * 100
   // Not a gate: a cross-process reading carries a between-launch term the
   // interleaved gate does not have. Flagged, so the caller has something to
   // read, but the win rate is the part that means anything.
@@ -296,7 +298,7 @@ for (const c of cases) {
     `  ${suspect ? 'SUSPECT' : 'neutral'}`
     + `   median-of-rounds ${median(refMed).toFixed(4)} → ${median(headMed).toFixed(4)} ms (${sign(dMed)})`
     + `   mean ${refMean.toFixed(4)} → ${headMean.toFixed(4)} ms (${sign(dMean)})`
-    + `   best min ${Math.min(...refMin).toFixed(4)} → ${Math.min(...headMin).toFixed(4)} ms (${sign(dMin)})`
+    + `   best min ${Math.min(...refMin).toFixed(4)} → ${Math.min(...headMin).toFixed(4)} ms (${sign(dMin)} paired)`
     + `   head won ${wins}/${ROUNDS} rounds\n`,
   )
 }

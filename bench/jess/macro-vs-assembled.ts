@@ -35,7 +35,7 @@ import { tableRules } from '../../src/table/assemble.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { ENTRY, JESS_ROOT, assertParseman, exportName, loadGrammar } from './grammars.ts'
-import { interleave, median, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { interleave, median, pairedMedianRatio, pairedWins, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 
 type Entry = Parameters<typeof run>[0]
 
@@ -133,15 +133,15 @@ const cm = out.get('CONTROL: macro     -> macro')!
 const asmMs = per(q.get(`ref|${ID}`)!)
 const macMs = per(q.get(`head|${ID}`)!)
 const a1 = q.get(`ref|${ID}`)!, b1 = q.get(`head|${ID}`)!
-let wins = 0
-for (let n = 0; n < b1.length; n++) if (b1[n]! < a1[n]!) wins++
+const wins = pairedWins(a1, b1)
+const qRatio = pairedMedianRatio(a1, b1)
 
 console.log('')
 console.log(`MILLISECONDS PER PARSE  (${reps.get(ID)} parses per sample, THIS process only)`)
 console.log(`  assembled (interpreted fuse)  ${asmMs.toFixed(2).padStart(7)} ms`)
-console.log(`  macro artifact (SHIPPED)      ${macMs.toFixed(2).padStart(7)} ms   ${((macMs / asmMs - 1) * 100).toFixed(1)}%, macro wins ${wins}/${b1.length}`)
-console.log(`  ratio  macro / assembled      ${(macMs / asmMs).toFixed(3)}x`)
+console.log(`  macro artifact (SHIPPED)      ${macMs.toFixed(2).padStart(7)} ms   ${((qRatio - 1) * 100).toFixed(1)}% paired, macro wins ${wins}/${b1.length}`)
+console.log(`  ratio  macro / assembled      ${qRatio.toFixed(3)}x paired`)
 console.log('')
-console.log(`  CONTROL assembled/assembled ${((median(ca.get(`head|${ID}`)!) / median(ca.get(`ref|${ID}`)!) - 1) * 100).toFixed(1)}%`)
-console.log(`  CONTROL macro/macro         ${((median(cm.get(`head|${ID}`)!) / median(cm.get(`ref|${ID}`)!) - 1) * 100).toFixed(1)}%${macB === macA ? '   (degenerate — same instance both sides)' : ''}`)
+console.log(`  CONTROL assembled/assembled ${((pairedMedianRatio(ca.get(`ref|${ID}`)!, ca.get(`head|${ID}`)!) - 1) * 100).toFixed(1)}% paired`)
+console.log(`  CONTROL macro/macro         ${((pairedMedianRatio(cm.get(`ref|${ID}`)!, cm.get(`head|${ID}`)!) - 1) * 100).toFixed(1)}% paired${macB === macA ? '   (degenerate — same instance both sides)' : ''}`)
 console.log(`  loadavg at end   ${os.loadavg().map(n => n.toFixed(2)).join(' ')}`)

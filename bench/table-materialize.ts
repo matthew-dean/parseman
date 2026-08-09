@@ -58,7 +58,7 @@ import {
 import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
-import { interleave, median, sign, type Case, type Contest, type Measurement } from './ab-harness.ts'
+import { interleave, median, pairedMedianRatio, pairedMinRatio, pairedWins, sign, type Case, type Contest, type Measurement } from './ab-harness.ts'
 
 const FAIL: unique symbol = Symbol('pm.fail')
 const EMPTY_FX: string[] = []
@@ -590,10 +590,9 @@ function main(): void {
     for (const [id] of INPUTS) {
       const a = s.get(`ref|${id}`)!
       const b = s.get(`head|${id}`)!
-      const dMed = (median(b) / median(a) - 1) * 100
-      const dMin = (Math.min(...b) / Math.min(...a) - 1) * 100
-      let wins = 0
-      for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
+      const dMed = (pairedMedianRatio(a, b) - 1) * 100
+      const dMin = (pairedMinRatio(s, `ref|${id}`, `head|${id}`) - 1) * 100
+      const wins = pairedWins(a, b)
       console.log(`  ${id.padEnd(12)} median ${sign(dMed).padStart(8)}   min ${sign(dMin).padStart(8)}   B-wins ${wins}/${b.length}`)
     }
   }

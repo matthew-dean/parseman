@@ -49,7 +49,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { assertParseman, corpus, ENTRY, JESS_ROOT, loadGrammar } from './grammars.ts'
-import { interleave, median, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { interleave, median, pairedMedianRatio, pairedWins, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 
 type Entry = Parameters<typeof run>[0]
 
@@ -166,16 +166,16 @@ for (const f of FIXTURES) {
   const newMs = perParse(swap.get(`head|${id}`)!, id)
   const tableMs = perParse(gate.get(`head|${id}`)!, id)
   const interpMs = perParse(ref.get(`head|${id}`)!, id)
-  const ctlDelta = (median(control.get(`head|${id}`)!) / median(control.get(`ref|${id}`)!) - 1) * 100
-  let wins = 0
+  const ctlDelta = (pairedMedianRatio(control.get(`ref|${id}`)!, control.get(`head|${id}`)!) - 1) * 100
   const a = swap.get(`ref|${id}`)!, b = swap.get(`head|${id}`)!
-  for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
+  const wins = pairedWins(a, b)
+  const swapDelta = (pairedMedianRatio(a, b) - 1) * 100
 
   console.log('')
   console.log(`  ${id}  (${f.input.length} B, ${reps.get(id)} parses per sample)`)
   console.log(`    interp          ${interpMs.toFixed(2).padStart(7)} ms`)
   console.log(`    exec-  (before) ${oldMs.toFixed(2).padStart(7)} ms`)
-  console.log(`    exec   (after)  ${newMs.toFixed(2).padStart(7)} ms    <- the swap: ${(newMs - oldMs).toFixed(2)} ms, ${((newMs / oldMs - 1) * 100).toFixed(1)}%, ${wins}/${b.length} wins`)
+  console.log(`    exec   (after)  ${newMs.toFixed(2).padStart(7)} ms    <- the swap: ${(newMs - oldMs).toFixed(2)} ms, ${swapDelta.toFixed(1)}% paired, ${wins}/${b.length} wins`)
   console.log(`    exec   (gate)   ${tableMs.toFixed(2).padStart(7)} ms    (same leg, second contest — agreement is the sanity check)`)
   console.log(`    assembled       ${compiledMs.toFixed(2).padStart(7)} ms`)
   console.log(`    REMAINING GAP   ${(newMs - compiledMs).toFixed(2).padStart(7)} ms   (${(newMs / compiledMs).toFixed(2)}x)   control ${ctlDelta >= 0 ? '+' : ''}${ctlDelta.toFixed(1)}%`)
