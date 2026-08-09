@@ -110,7 +110,7 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * it is a promise, and this is what it looks like when the promise is kept: the
  * entry does not get to survive the fix.
  */
-export const ALLOW_COUNT = 24
+export const ALLOW_COUNT = 23
 
 /**
  * finding key -> { category, why, ref? }
@@ -180,13 +180,9 @@ export const ALLOW = new Map([
   ['INV-1:src/compiler/linker.ts:composeLeaf',
     { category: 'BY-DESIGN', why: 'per-compose lazy fuse, not per parse; argued at the site' }],
 
-  // INV-3 x2. The derived-tokenization lane landed its alphabet and scanner
-  // before the consumer that reads them. This is precisely the "87 KB of
-  // analysis nothing imports" shape, caught this time — the SIXTH instance of
-  // it in this project. The entries go when the lane wires them into the
-  // compiler or deletes them; a design lane owns which.
-  ['INV-3:src/compiler/token-alphabet.ts',
-    { category: 'DEBT', why: 'derived-tokenization lane — wire into the compiler or delete', ref: 'docs/design/derived-tokenization.md' }],
+  // INV-3 x2. The planner now reaches token-alphabet from the table encoder;
+  // scanner/dispatch remain historical groundwork until the runtime consumer
+  // wires them or deletes them.
   ['INV-3:src/compiler/token-scanner.ts',
     { category: 'DEBT', why: 'derived-tokenization lane — wire into the compiler or delete', ref: 'docs/design/derived-tokenization.md' }],
   // `token-dispatch.ts` is the third module of that same lane. It became visible to
