@@ -12,6 +12,53 @@ compact `TableProgram` linked to closure pieces by `assemble.ts`. Sections below
 current design, historical measurements, and rejected source-codegen forms; the
 status labels identify which is which.
 
+> ## Current replacement rule — controls every historical design below
+>
+> The canonical 0.48 contract now requires the compiler to select the cheapest
+> representation **per final site**. A token-selected body replaces the character
+> recognizer/selector end to end; it may not run beside it, fall back to it, or replay
+> it for diagnostics. A character-selected body contains no token branch or state.
+> Capability alone and token-coverage percentage are not cost-selection evidence;
+> complete capability closure is a prerequisite. See
+> [`parseman-0.48.md` §3.0](./parseman-0.48.md#30-the-cheapest-replacement-lowering).
+> Historical “layer”, “fallback”, and broad-coverage wording in this evidence
+> register does not override that normative rule.
+>
+> Replacement is also **not** an all-or-nothing choice between a compact table and a
+> giant source-generated parser. The table is serialization/linking data: once assembly
+> knows a combinator's fixed arity and children, its parse body calls direct captured or
+> statically named child references. It may not traverse `kids[i]`, look up `pieces[ip]`,
+> switch on an opcode to rediscover fixed grammar topology, or rebox linked children into
+> a fixed-membership array. Input-indexed classifier/transition tables remain valid,
+> but an arm number they produce must select a direct captured or named arm through a
+> fixed switch/chain/tree, never a second `arms[arm]` lookup. This direct binding is
+> required for every final site, not only profiled hot sites. After the compiler selects
+> CHARACTER or TOKEN, it separately chooses the cheapest expression of that direct body:
+> an arity/shape closure template or a statically named emitted body. The historical
+> 38–42× whole-factory growth
+> rejects indiscriminate duplication only. It does not justify an opcode switch,
+> `pieces[ip]` lookup, route-array walk, or unused strategy branch at a final site.
+> See [`parseman-0.48.md` §2.1](./parseman-0.48.md#21-static-topology-binding-not-an-all-or-nothing-emitter).
+> Direct binding does not by itself require a unique JavaScript function literal for
+> every site. Shared arity constructors with distinct scalar captures satisfy the
+> topology contract; site-unique inline-cache identity is a separate, measured cost
+> hypothesis. Neither form may recover fixed children through an indexed array.
+>
+> Capability is closed **before** cost selection across the entire reachable final
+> composed grammar and every supported assembly variant. Every semantically valid token
+> candidate is built independently of whether the compiler expects to choose it.
+> Missing implementation is reported as a gap and keeps that program on the all-character
+> baseline; it is never converted into “character is cheaper,” never hidden by narrowing
+> capability scope, and never authorizes a parse-time fork. Only two fully available
+> candidates may be compared as representations of one site.
+>
+> Capability does not require a static proof that every pair of arbitrary regex
+> languages has equal ends or a finite inclusion relation. An exact TOKEN candidate may
+> own the authored recognizers and retain every actual successful end/view in PEG order;
+> it will usually lose cost selection and be discarded. Fixed/trie/seeded kernels and
+> static incompatibility proofs lower that candidate's cost. Sampling isolated strings
+> is neither capability nor proof, and an unproved relation stays compatible.
+
 > ## Read these first — two results that invert earlier expectations
 >
 > 1. **The entire parse-time spread across every dispatch configuration is 2.4%**
@@ -278,11 +325,11 @@ recognition wins at disjoint sites, and vice versa.
 The current shipping architecture adds a second integration constraint that the
 original source-codegen design did not have. `compile()` and macro artifacts carry
 one compact `TableProgram`, then `assemble.ts` links that program to shared closure
-pieces. A token cursor is therefore an **assembly-selected acceleration of those
-pieces**, not a second lexer/parser engine and not a reason to discard useful
-character-path work.
+pieces. A token cursor is therefore a **site-selected replacement body within that
+one lowering**, not a second lexer/parser engine and not a parallel layer over an
+already-running character selector.
 
-The durable shape is layered:
+The durable shape is statically selected per site:
 
 1. **Use the cheapest sound discriminator and pass its work forward.** A disjoint
    first-character gate may select directly and seed later token recognition with the
@@ -297,9 +344,9 @@ The durable shape is layered:
    terminal consumes, a pending result containing at least the position, terminal
    identity and end (or a compatible prefix view). A gate that scans and then lets an
    arm scan again is not token-cursor integration; it is added work.
-4. **Share recognition semantics.** Fixed literal/regex recognizers are both the
-   scanner's kernels and the raw-input fallback. Do not create an unrelated scanner
-   implementation beside unrelated terminal pieces.
+4. **Share recognition semantics.** Fixed literal/regex proofs may build either a
+   token kernel or a direct character body, but an admitted site contains exactly one
+   of them. Do not create an unrelated scanner beside retained terminal recognition.
 5. **Keep composite improvements.** Sequence, node, repeat, rollback, capture and
    reducer costs outside terminal recognition remain real. Token-aware pieces may
    remove a leading-terminal call, but they do not make those costs disappear.
@@ -328,6 +375,13 @@ character to two and broke probe, proving the overlap oracle RED before it retur
 green. The implementation is rejected; the architecture is not. The next gate is a
 frequency-weighted fixed/trie/seeded-kernel census that can produce compatible views
 without a row of native regex calls.
+
+A later exact f478/Jess93 reconciliation separated that ceiling from existing gates.
+On successful `Value` calls, current character gates already avoid 15,452 / 69,428
+earlier-arm entries; a complete direct `.`/`#` proof can remove another 5,083 / 17,629;
+TOKEN compatibility alone can remove the remaining disjoint 2,651 / 9,490. Residual
+compatible retries are 193 / 3,311 for TOKEN versus 2,844 / 12,801 for the completed
+CHARACTER candidate. This is the required executable comparison, not a token verdict.
 
 ### 2.1 Parsing semantics over tokens: three different designs
 
@@ -2047,7 +2101,7 @@ In rough order of likelihood:
 | Hybrid: table for cold dispatches, trie-to-id for hot, per-site from profile | **settled (§6.3)** |
 | **Byte-identical tree vs a toggled baseline is the gate, not the suites** | **settled methodological invariant (§16.3)** |
 | **Parse-time claims come from interleaved rounds in one process** | **settled methodological invariant (§16.4)** |
-| Token cursor is an assembly-selected layer over fixed pieces, not a replacement lowering | **settled integration rule (§2)** |
+| Token recognition is a site-selected replacement body inside the one compact lowering; character sites remain token-free | **settled integration rule (§2; canonical contract in `parseman-0.48.md` §3.0)** |
 | Cheap character gates survive where they already decide; shared-leading choices discriminate from tokens; compatible overlap retains ordered trial | **settled integration rule (§2, §12)** |
 
 ### Hypothesis, untried, or nonexistent

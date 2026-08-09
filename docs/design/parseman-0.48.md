@@ -15,6 +15,21 @@ reasoning. When an older note conflicts with this file, this file controls the
 0.48 implementation direction. Measurements still come from the evidence ledger;
 this specification does not turn a historical result into a baseline.
 
+### Agent reading contract
+
+Implementation agents MUST read this canonical file before changing the 0.48
+architecture. They MUST NOT load every linked evidence register merely because it is
+linked here. Read only the anchored section needed for the active mechanism or quoted
+measurement, and record that anchor in the resulting review. The registers are an
+evidence archive, not cumulative instructions and not required prompt context.
+
+The release objective is the acceptance envelope. This file supplies the implementation
+constraints that the short objective deliberately does not repeat: complete capability
+before cost selection, replacement-only token lowering, universal direct binding of
+fixed grammar tuples, one semantic implementation across all variants, and fail-closed
+gaps. An agent may not interpret omission of those details from a short task summary as
+permission to weaken them.
+
 ## 1. Release objective
 
 0.48 must recover production-shaped parse performance to at least 0.46 on CSS,
@@ -56,24 +71,43 @@ semantic-identity graph. Neither checkpoint lowers the 0.46 baseline.
 grammar combinators
         |
         v
-compact TableProgram
+compact TableProgram (serialization only)
         |
         v
-assembly-selected shared pieces
+assembly resolves fixed topology to direct child references
         |
         v
 interpreter / runtime compile / macro / compose / rule map / folded variants
 ```
 
-The variants may select fixed piece bodies at assembly time. They may not become
-parallel parser engines or carry different parsing semantics.
+The compiler decides which body shape each final site uses. Assembly resolves that
+body's fixed children, predicates and routes into direct references; emitted artifacts
+may give each combinator a static local name. The variants may not become parallel
+parser engines or carry different parsing semantics.
+
+The table is a compact transport and linking format, not a parse-time description to
+reinterpret. Once linked, a combinator whose final arity is three calls its three bound
+children directly. It does not rediscover that topology with `kids[i]`, `pieces[ip]`, an
+opcode switch, or a route-array walk. Arrays remain valid for genuinely dynamic parse
+data such as repeated results or a token record stream, and for input-indexed
+classification/transition tables whose index is produced by the input. A classifier
+may return an arm number, but that number must select a direct captured or named arm
+through a fixed switch/chain/tree; it may not feed a second `arms[arm]` lookup. Dynamic
+tables are not the runtime representation of a fixed grammar edge.
+
+Linking may read serialized arrays, but it must not rebox a fixed tuple into another
+runtime array. `makeSeq3(link(a), link(b), link(c))` captures three distinct references;
+it does not construct `kids = [link(a), link(b), link(c)]` for the parse body to index.
+Emitted artifacts use hygienic generated identifiers for the same references.
+Less-common larger arities may use predeclared arity templates or a linked
+direct-reference chain/tree, not a fixed-membership child array.
 
 The following remain prohibited:
 
 - runtime `new Function` or equivalent source construction;
 - `Object.defineProperty` fast-path metadata;
 - `WeakMap` side metadata;
-- static factory or per-rule source bloat;
+- whole-program static factories or indiscriminate per-rule source duplication;
 - parent-closure multiplication by child category;
 - a second token parser beside the character parser;
 - downward performance baselines or broader release shelves;
@@ -81,6 +115,73 @@ The following remain prohibited:
 
 `TableProgram` remains compact data. Runtime behavior is linked from a bounded
 library of deterministic V8-friendly pieces. CSP safety is unchanged.
+
+### 2.1 Static topology binding, not an all-or-nothing emitter
+
+The earlier static-factory size result rejected emitting a complete duplicate parser
+factory for every rule and assembly. It did **not** show that fixed combinator topology
+should remain a generic array-indexed runtime operation. Those are separate questions.
+
+Direct topology binding is the baseline, not a profile-selected optimization. Every
+final combinator has a compile-time-known opcode, arity and child identity. Assembly may
+read table arrays to discover those facts once, but the returned parse body MUST hold
+direct references to the resolved children. A shared implementation means a shared
+assembly-time constructor or arity template which produces those direct bindings; it
+does not mean one universal parse-time body that accepts an IP or loops over a child
+array.
+
+Direct binding is a topology requirement, not a requirement that every site own a
+distinct JavaScript function literal or inline-cache identity. A shared arity
+constructor may return many closures whose fixed children are distinct scalar captures.
+Whether a site-unique emitted function is faster than that captured form is a cost
+question which requires production-shaped evidence; shared literal provenance alone is
+not evidence that the captured form lost. Conversely, scalar captures do not excuse a
+later `arms[id]` or `kids[i]` lookup: both candidate expressions must still contain only
+direct fixed references before they can be compared.
+
+After that mandatory direct binding, the compiler may choose the cheapest expression of
+the already-static body:
+
+1. an arity/shape-specific shared constructor returning a closure whose child pieces,
+   predicates, constants and routes are captured directly; or
+2. a statically named emitted body containing the same direct calls when that expression
+   is cheaper than the closure form.
+
+This expression decision is per site and may produce a mixed artifact. “Hot” and “cold”
+are cost inputs, not admission classes. They may decide closure versus emitted spelling;
+they may not decide whether fixed children are direct. No site whose opcode, arity,
+children or routes are final may pay a parse-time opcode switch, `pieces[ip]` lookup,
+optional-plan branch, or structural array walk merely because its direct linker has not
+been implemented.
+
+Binding capability therefore follows the same non-circular rule as token capability.
+Missing a direct linker for any fixed row is a compiler `GAP`, not evidence that indexed
+interpretation won. Once direct linking exists, the compiler constructs every applicable
+closure and named candidate before pricing their expression costs.
+
+Static naming is therefore a local lowering tool, not a second engine and not a build
+mode. `_pf<site>`-style names may be emitted where they are the cheapest spelling;
+closure assembly achieves the equivalent topology with direct captured references,
+without runtime source construction. The compact `TableProgram` remains the authority,
+and all variants preserve one semantic body per site.
+
+The cost model compares the whole representation: parse-time calls, branches, indexed
+loads and allocations; one-time assembly work; emitted bytes; package duplication; and
+loaded-module cost. It may not turn the old whole-program factory blow-up into evidence
+against a bounded static site, nor treat the existence of a shared implementation as
+evidence that its indirection is free.
+
+Permanent structural teeth MUST include a mixed grammar where:
+
+- sequence, choice and dispatch sites of several known arities link to bodies containing
+  no opcode dispatch, `pieces[ip]` lookup, `kids[i]` access, structural child loop, or
+  unused strategy branch;
+- one site uses a captured arity template and another uses a named emitted body, while
+  both call fixed children directly;
+- changing either site's cost decision makes the tooth RED without changing parse
+  semantics; and
+- deleting a direct linker or replacing a direct child with an indexed lookup is reported
+  as a binding `GAP` or makes the structural tooth RED.
 
 ## 3. Leading implementation: tokenized PEG
 
@@ -99,6 +200,187 @@ Recognition filters impossible arms and supplies reusable terminal results.
 It does **not** replace ordered PEG trial. An earlier compatible arm still wins
 according to today's PEG prefix-commitment semantics.
 
+### 3.0 The cheapest replacement lowering
+
+Tokenization is a representation choice, not a coverage goal. The compiler MUST
+select exactly one recognition strategy for every final decision site:
+
+```text
+final decision site
+        |
+        +-- CHARACTER: direct class/charCodeAt/literal/keyword/native-regex body
+        |
+        `-- TOKEN:     one recognizer -> token id/range/facts -> consuming decision
+```
+
+The choice is completed over final winner-resolved compiler IR before `TableProgram`
+serialization. `TableProgram` records only the selected lowering. Assembly merely
+links that recorded body; it never selects a strategy or tests whether a token plan is
+available. The choice is therefore already fixed in the assembled closure and emitted
+macro. A parse call never asks whether a token plan is present, never switches between
+token and character recognition, and never runs both. Mixed grammars use different
+statically linked bodies at different sites; they do not use a universal body with a
+parse-time mode branch.
+
+After CHARACTER versus TOKEN is fixed, §2.1's independent binding decision chooses
+whether that selected body is shared, directly captured, or statically named. Neither
+axis permits a parse-time fork, and the rejection of a whole-program static factory
+does not force a selected token or character body back through generic table lookup.
+
+Strategy selection is a strict two-phase compiler operation:
+
+1. **Capability closure.** Before cost is considered, derive and build every
+   semantically valid representation for the entire reachable final composed grammar:
+   the complete
+   character body and the complete token body, including recognition, diagnostics,
+   pending consumption, lexical context, and all supported run modes. Token
+   capability is computed from the authored language, not from which kernels happen
+   to be convenient or already implemented.
+2. **Cost selection.** Only after both complete candidates exist may the compiler
+   compare their work and select one body for the site.
+
+Both candidates exist only as compiler analysis/IR during this comparison. The
+losing candidate is discarded before `TableProgram` serialization and assembly; the
+runtime and package never carry both implementations merely because the compiler
+considered both.
+
+Capability scope cannot be narrowed to hot sites, supported kernels, current planner
+candidates, or the sites the cost model is expected to choose. It includes every
+reachable terminal/compound lexical atom and every supported assembly variant in the
+final program. This is what prevents selection from defining away inconvenient token
+candidates.
+
+This ordering is fail-closed. “The token kernel is not implemented here” is an
+implementation gap (`GAP`), not evidence that the character representation is cheapest. If
+any reachable semantically tokenizable site remains in that state, token cost selection
+is disabled for the whole program. The program may still compile using the established
+all-character baseline while the architecture is incomplete, but it contains no
+partially selected token sites and makes no cheapest-representation claim. A site is
+exempt from token capability only when a semantic proof shows that no exact token
+representation exists under the required context/modes. Semantic impossibility is
+narrow: input recognition depends on arbitrary state, callbacks, or observable effects
+that cannot be represented by the pure `(input, position, lexicalContext)` recognition
+contract. The refusal records the exact proof category.
+
+Capability analysis and cost selection therefore have separate data and separate
+tests. The selector cannot query “did token lowering succeed?” as its cost model, and
+the token builder cannot query which strategy the selector prefers. Hiding or deleting
+a valid token candidate must make the capability-completeness gate RED rather than
+silently selecting the character body.
+
+`TOKEN` is admitted only when all of the following are proven:
+
+1. The token kernel recognizes the complete authored selector language for that site,
+   including its lexical context, escapes, case, boundaries, interpolation rules,
+   trivia position, and every supported run mode.
+2. The token result replaces work. It is consumed by the decision and continuation,
+   or reused by more than one compatible PEG trial. Producing an integer that is used
+   once before the old selector runs is not token lowering.
+3. The token body contains no reachable legacy selector, recognizer, substring/fold,
+   or diagnostic replay of that selector. A recognition miss resolves directly under
+   the token body's compiled success/failure plan. If correctness would require
+   falling back to or replaying the character body, the token candidate is `GAP` and
+   whole-program token selection remains disabled until it is complete.
+4. The selected shape is locally cheaper than the character body it replaces. The
+   proof accounts for prefix reads, kernel calls, cursor/cache checks, saved parser
+   pieces, avoided rescans, value materialization, and artifact bytes. “More
+   tokenized” and “more clever” are not benefits.
+5. Closure, emitted/macro, runtime compile, compose/linkable, folded, precompiled,
+   probe, recovery, CST, coverage, and tracked variants consume the same selected
+   strategy. If a cold/run mode cannot use the exact token body, the candidate is
+   `GAP`; a token fast path with a character cold-mode fallback is not admitted.
+
+`CHARACTER` is a first-class final lowering, not a tokenization failure. A site stays
+character-based when one lead code unit already decides it, when recognition is used
+once, when a recorded semantic-impossibility proof excludes a pure token candidate, or
+when token bookkeeping costs more than the work it would remove. A character-selected
+site instantiates no token cursor, cache, plan lookup, helper, or branch and should
+remain byte-identical to the legacy body when no other change applies.
+
+The optimization target is therefore minimum total work, not maximum token coverage.
+Integer comparison is useful only after the compiler has eliminated enough recognition
+and parser work to pay for producing the integer.
+
+#### Current Jess 93c capability and cost baseline
+
+The exact compiler-only census against Jess
+`93c67d0ae7be0360a6db35f0cfa055043bca8025` separates capability from cost as
+required above:
+
+| | CSS | Less |
+| --- | ---: | ---: |
+| reachable rules / combinator nodes | 198 / 1,268 | 278 / 2,144 |
+| independently reachable primitive terminal atoms | 113 | 177 |
+| authored compound token atoms | 16 | 25 |
+| final source `choice` / `dispatch` boundaries | 86 / 7 | 172 / 9 |
+| final occurrence rows: terminal / token / choice / dispatch | 638 / 39 / 143 / 11 | 1,170 / 62 / 417 / 29 |
+| distinct effective lexical contexts | 9 | 11 |
+
+The ownership walk treats a compound token as one atomic candidate and suppresses its
+internal children, while retaining any primitive that is also independently reachable.
+This prevents double-counting a token's implementation terms as separate public atoms.
+The first four rows above count canonical language shapes; the occurrence rows are the
+capability authority used for binding and cost. They retain every final composed path
+and effective trivia, scan-skip, tracking, capture, root and dynamic-state context rather
+than collapsing two sites merely because their recognizer language is equal. An
+independent raw-`ParserDef` oracle pins those occurrence identities and catches a planted
+post-compose winner omission.
+Every primitive and compound atom in this graph is semantically tokenizable. None is
+excluded by a Jess state gate or `withCtx` dependency. The existing normalizer still
+has fourteen implementation gaps: nine CSS balanced/scan-transform atoms and five
+Less balanced or trivia-scoped atoms. Complete TOKEN diagnostics, pending consumption,
+CST, probe, recovery, coverage and tracked-mode bodies also do not yet exist for the
+whole inventory. Consequently the canonical completeness gate is currently open and
+TOKEN selection MUST remain disabled for these programs. These are `GAP` results, not
+CHARACTER cost wins and not semantic impossibilities.
+
+Because complete token candidates do not yet exist, the compiler has made **no**
+TOKEN-versus-CHARACTER cost selection for these sites. The evidence ranks which complete
+comparisons to build first; it does not predeclare winners:
+
+1. **First comparison — Less `Value`.** The compatible-view oracle can eliminate
+   7,734/7,927 prior retries in `benchmark.less` and 27,119/30,430 in generated Less.
+   The rejected native-regex loop and duplicated site-local trie prove that merely
+   producing token ids is too expensive, not that CHARACTER won. The competing
+   character candidate has a very cheap fact—`MixinReference` starts only with `.` or
+   `#`—which the token candidate must reuse as a seed rather than reread. Build the
+   complete shared fixed/trie/seeded TOKEN body and the complete direct CHARACTER body,
+   then price them. Until both exist, this site has no cost verdict.
+2. **Second comparison — Less identifier-led statements.** The final `blockItem`,
+   `Body` and stylesheet decisions repeatedly enter and fail `FunctionStatement` and
+   then a ruleset path. An atomic identifier/function result plus declaration/selector
+   continuation facts has a conservative ceiling of 6,373 eliminated entries in
+   `benchmark.less` and 13,654 in generated Less. Its binding comparison is a direct
+   captured closure versus three named emitted sites—not a whole-parser factory.
+3. **Low-priority comparison — CSS.** The benchmark has only 442 repeated exact lexical
+   calls and no compound-token same-position reuse. That makes the direct character
+   candidate the strong prior, but it is not a compiler selection until the exact token
+   candidate is available and priced. No incomplete token kernel may be used as evidence
+   for keeping CSS token-free.
+
+The previously suspected Less comma/semicolon mixin separator is not a leading target:
+the measured hot separator/trailing probes belong to `CallArgumentFunction`; the
+ambiguous `MixinArguments` site occurs only five times in `benchmark.less` and zero
+times in generated Less. It remains part of capability closure, but coverage is not a
+reason to select it.
+
+The exact `Value` retry partition explains why both candidates must be real. Existing
+character gates already avoid 15,452 / 69,428 earlier-arm entries. A complete direct
+`.`/`#` proof for `attempt(MixinReference)` can remove another 5,083 / 17,629 successful
+retries without token recognition. The compatible TOKEN result removes a disjoint
+additional 2,651 / 9,490 retries and retains every accepting prefix, leaving 193 / 3,311
+compatible PEG retries versus 2,844 / 12,801 for the complete CHARACTER candidate.
+Those are work counters, not timing: the cheaper character gate may still beat the
+larger reduction. The TOKEN candidate must reuse the lead as a seed, share its
+identifier/escape/interpolation, literal/sigil, color/keyword and numeric/dimension
+kernels, and pass cached ends into selected and rollback-later consumers without a
+native-regex candidate loop.
+
+This census is the selection baseline, not timing evidence. Its RED plant removed all
+events and failed the pinned count; the clean source/reference/closure runs retained
+full identity and consumption on CSS (123,029 bytes), `benchmark.less` (106,802), and
+generated Less (275,211).
+
 ### 3.1 Global identities, local contexts
 
 - Token ids are compact non-negative integers in one global id space for the
@@ -107,9 +389,12 @@ according to today's PEG prefix-commitment semantics.
   mode, candidate set, or compiled combination of active terminals.
 - Recognition is position-local. The cursor remains a character offset so spans,
   errors, recovery, CST data, and incremental parsing keep one coordinate system.
-- Nearly every statically enumerable terminal should be tokenizable. A scannerless
-  escape is explicit for genuinely dynamic/context-dependent constructs; it is not
-  the default conclusion when a shallow lead walker stops at a wrapper.
+- The compiler must inventory every statically enumerable terminal/compound lexical
+  atom it can reach and either build its exact token language or record a semantic
+  impossibility/missing implementation category. That capability does not admit token
+  lowering at every use site. A dynamic/context-dependent or cheaper direct site
+  remains explicitly `CHARACTER`; a shallow lead walker stopping at a wrapper is an
+  analysis gap to close, not permission to install a dual path.
 
 The rejected seven-token CSS experiment tested mode-free global maximal munch with
 every terminal active everywhere. It did not test this design.
@@ -223,7 +508,8 @@ an `end | -1` recognizer result alone is not enough to bypass the authored child
 
 ### 3.4 Raw, seeded, and pending are one kernel
 
-Every tokenizable terminal family exposes one recognition contract with three entries:
+Every terminal family selected for token replacement exposes one recognition contract
+with three entries:
 
 1. `recognizeRaw(input, position, context)`;
 2. `recognizeSeeded(input, position, context, lead, prefixLength)`;
@@ -299,8 +585,16 @@ landing target is chosen by nested work removed, not by terminal-call count alon
 ## 4. Recognition kernels, in implementation order
 
 The rejected prototype established that looping over native sticky regexes to build
-a compatible set costs more than the wrappers it removes. The next implementation
-must not repeat that shape.
+a compatible set costs more than the wrappers it removes **when that representation is
+selected**. It remains a valid exact capability form: an irregular TOKEN candidate may
+own the authored recognizers, retain every actual successful end/view in PEG order, and
+contain no character-piece replay. That complete candidate must exist even when the
+compiler is expected to discard it as more expensive. Static regex-language inclusion,
+equal-end, or boundary proofs are cost-lowering optimizations, not prerequisites for
+token availability; an unproved relation stays dynamically compatible rather than being
+guessed from sample strings or mislabeled semantically impossible.
+
+The production-selected hot path must not repeat the expensive candidate-loop shape.
 
 Frequency-weighted kernels land in this order:
 
@@ -309,8 +603,10 @@ Frequency-weighted kernels land in this order:
 3. numeric runs and their boundary/follow facts;
 4. keyword/identifier shared scans with integer lookup;
 5. quoted strings and other proven straight-line scan shapes;
-6. opaque native regex fallback, gated by a sound first set and called only when a
-   fixed/shared kernel cannot represent the terminal.
+6. an opaque native-regex token kernel, present as that site's exact sole TOKEN
+   recognizer when fixed/shared kernels cannot represent the language, and selected
+   only when the measured replacement still wins. It is not a fallback to the
+   character parser.
 
 The existing first-set analysis, literal constants, scalar recognizers, scan shapes,
 and table class pools are inputs to one implementation. Token metadata must not
@@ -318,7 +614,8 @@ duplicate a second graph walk or second regex-analysis lattice.
 
 ## 5. Parser-piece integration
 
-The token cursor binds through the shared piece library.
+At token-selected sites, the token cursor binds through the shared piece library.
+Character-selected sites link their original bodies with no token branch or state.
 
 ### Choice
 
@@ -326,6 +623,9 @@ The token cursor binds through the shared piece library.
 - A shared-leading choice requests one position result.
 - Incompatible arms reject by integer/mask without entering their parser pieces.
 - Compatible arms stay in source order and see the same result.
+- These are distinct linked choice bodies. A token-selected choice cannot call the
+  original arm selector on miss or after routing; a character-selected choice cannot
+  consult token state.
 
 ### Terminal
 
@@ -380,18 +680,28 @@ costs the production cursor must remove.
 
 1. **Restore correctness first.** Synthetic scope rows must have an unambiguous
    layout, and actual Jess CSS/Less selected-root-trivia parses must fully consume.
-2. **Install the position-result frame.** Parse-local reset, reentrant save/restore,
-   compact integer arrays, emitted/closure/precompiled parity, and no per-match objects.
-3. **Give terminals the raw/seeded/pending contract.** Existing scalar node and NOT
+2. **Close token capability.** Derive/build every semantically valid token candidate
+   across the entire reachable final grammar independently of cost; record proven
+   dynamic impossibilities separately from missing implementation. Any missing
+   implementation keeps the whole program on the token-free character baseline. A
+   planted candidate omission must fail.
+3. **Freeze the site strategy.** Compute `CHARACTER` versus `TOKEN` from the final
+   composed program, link distinct bodies, and prove no runtime strategy branch,
+   selector replay, or inactive token allocation.
+4. **Install the position-result frame only for token-selected sites.** Parse-local
+   reset, reentrant save/restore, compact integer arrays, emitted/closure/precompiled
+   parity, and no per-match objects. No-token programs remain byte-identical.
+5. **Give selected terminals the raw/seeded/pending contract.** Existing scalar node and NOT
    consumers become the first production users.
-4. **Wire shared-leading choices.** Begin with the measured Less `Value` site, but
+6. **Wire shared-leading choices as replacements.** Begin with the measured Less `Value` site, but
    implement context and compatible-view machinery as reusable assembly infrastructure,
-   not an IP-specific branch.
-5. **Replace the native candidate loop with fixed/trie kernels.** Expand by measured
+   not an IP-specific branch. The old selector must be unreachable at an admitted site.
+7. **Replace the native candidate loop with fixed/trie kernels.** Expand by measured
    frequency across standard CSS, benchmark Less, and generated Less.
-6. **Expand coverage toward the complete terminal graph.** Resolve wrapper/rule leads
-   and compiled lexical contexts; keep explicit scannerless exceptions small and named.
-7. **Only then evaluate buffering and prediction.** On-demand position recognition is
+8. **Expand only where replacement cost wins.** Resolve wrapper/rule leads and compiled
+   lexical contexts, but retain direct character bodies wherever they are cheaper.
+   Token-coverage percentage is not a milestone.
+9. **Only then evaluate buffering and prediction.** On-demand position recognition is
    the first production cursor. Buffered mode-aware chunks are an optional layer after
    correctness and reuse are proven.
 
@@ -430,6 +740,35 @@ Semantic teeth include:
 - reentrant parse and multiple parser instances over equal/different input strings;
 - interpreter, reference, closure, emitted, macro, and precompiled identity.
 
+Replacement-structure teeth are blocking:
+
+- an admitted token site's linked/reached graph and emitted source contain the token
+  kernel and contain no legacy selector/recognizer/replay path;
+- counters observe one token scan per `(input, position, lexicalContext)` result and
+  zero legacy recognitions across compatible rollback, routed continuation, and final
+  consumption;
+- planting a reached legacy selector replay makes that one-scan/zero-legacy
+  differential RED;
+- a wholly no-token program has byte-identical `TableProgram`, compact/fold output,
+  emitted module, and linked closure-piece source to the character baseline;
+- a refused/direct site contains no token symbol, cursor allocation, plan lookup, or
+  parse-time strategy branch;
+- a mixed grammar proves that token and character sites receive separate statically
+  linked bodies rather than one conditional body, and that the legacy piece itself
+  contains no token symbols;
+- every run mode uses the same site strategy; inability to preserve probe/recovery/CST
+  semantics refuses token admission instead of selecting a cold fallback.
+- capability enumeration is independent of cost selection; a plant that removes a
+  known valid token candidate after compose/root relocation fails the completeness
+  gate instead of selecting character;
+- capability scope is the entire reachable final composed grammar and all supported
+  assembly variants; a plant that narrows it to hot/supported/planned sites fails;
+- any `token-capable but not implemented` site keeps token selection disabled for the
+  whole program, so partially supported tokenization cannot become the shipped shape;
+- reports distinguish `token-capable but not implemented`, `semantically impossible`,
+  and `both candidates built; character selected by cost`. Only the last is evidence
+  that character is cheapest.
+
 Performance reports include:
 
 - classifier calls and fixed/native kernel counts;
@@ -439,6 +778,8 @@ Performance reports include:
 - A/A controls, dispersion, and independent process/graph replication;
 - TableProgram words, runtime bundle size, packed/unpacked package size;
 - complete input consumption and complete `RunResult` identity before timing.
+- token production cost versus character work removed at each admitted site; token
+  coverage without removed work is reported as zero benefit.
 
 Near-flat results use the hardened high-sample mode; routine gates remain short. No
 timing is promoted when load exceeds the harness ceiling or engine/source realpaths are
