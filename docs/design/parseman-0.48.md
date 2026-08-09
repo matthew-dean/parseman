@@ -80,9 +80,9 @@ representation of a fixed grammar edge.
 Linking may read serialized arrays, but it must not rebox a fixed tuple into another
 runtime array. `makeSeq3(link(a), link(b), link(c))` captures three distinct references;
 it does not construct `kids = [link(a), link(b), link(c)]` for the parse body to index.
-Emitted artifacts use generated identifiers for the same references. Less-common larger
-arities may use predeclared arity templates or a linked direct-reference chain/tree, not
-a fixed-membership child array.
+Emitted artifacts use hygienic generated identifiers for the same references.
+Less-common larger arities may use predeclared arity templates or a linked
+direct-reference chain/tree, not a fixed-membership child array.
 
 The following remain prohibited:
 

@@ -35,7 +35,7 @@ status labels identify which is which.
 > an arity/shape closure template or a statically named emitted body. The historical
 > 38–42× whole-factory growth
 > rejects indiscriminate duplication only. It does not justify an opcode switch,
-> `pieces[ip]` lookup, route-array walk, or unused strategy branch at a final hot site.
+> `pieces[ip]` lookup, route-array walk, or unused strategy branch at a final site.
 > See [`parseman-0.48.md` §2.1](./parseman-0.48.md#21-static-topology-binding-not-an-all-or-nothing-emitter).
 >
 > Capability is closed **before** cost selection across the entire reachable final
