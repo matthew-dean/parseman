@@ -129,6 +129,7 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
 import {
   makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
+import { runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /**
  * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?
@@ -364,8 +365,7 @@ function tokenOutcomeWireSupported(wire: TokenPlanWire, id: number, k: readonly 
     if (kind !== 3) return false
     const re = k[wire.outcomeData[at + 3]!]
     if (!(re instanceof RegExp)) return false
-    return re.source === '^(?!(?:url|calc)\\($).+\\($' && re.flags === 'i'
-      || /^\^([A-Za-z0-9_-]+)$/.test(re.source) && (re.flags === '' || re.flags === 'i')
+    return runtimeRangeOutcomeKind('matches', re.source, re.flags) !== undefined
   }
   return false
 }
@@ -605,16 +605,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   function boundedMatcher(re: RegExp): ((input: string, start: number, end: number) => boolean) | undefined {
-    if (re.source === '^(?!(?:url|calc)\\($).+\\($' && re.flags === 'i') {
+    const shape = runtimeRangeOutcomeKind('matches', re.source, re.flags)
+    if (shape === 'function-open-excluding-url-calc') {
       return (input, start, end) => end > start + 1
         && input.charCodeAt(end - 1) === 40
         && !tokenRangeHasLineTerminator(input, start, end)
         && !tokenRangeEquals(input, start, end, 'url(', true)
         && !tokenRangeEquals(input, start, end, 'calc(', true)
     }
-    const prefix = /^\^([A-Za-z0-9_-]+)$/.exec(re.source)
-    if (prefix !== null && (re.flags === '' || re.flags === 'i')) {
-      return (input, start, end) => tokenRangeStartsOrEnds(input, start, end, prefix[1]!, re.ignoreCase, false)
+    if (shape === 'ascii-prefix') {
+      const prefix = re.source.slice(1)
+      return (input, start, end) => tokenRangeStartsOrEnds(input, start, end, prefix, re.ignoreCase, false)
     }
     return undefined
   }

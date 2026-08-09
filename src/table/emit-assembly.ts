@@ -62,6 +62,7 @@ import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
+import { runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -501,8 +502,7 @@ export function emitAssemblySource(
     if (outcome[0] !== 3) return outcome[0] >= 0 && outcome[0] <= 4
     const re = k[outcome[1]]
     if (!(re instanceof RegExp)) return false
-    return (re.source === '^(?!(?:url|calc)\\($).+\\($' && re.flags === 'i')
-      || (/^\^([A-Za-z0-9_-]+)$/.test(re.source) && (re.flags === '' || re.flags === 'i'))
+    return runtimeRangeOutcomeKind('matches', re.source, re.flags) !== undefined
   }
   if (tokenWire !== undefined) {
     for (let i = 0; i < tokenWire.tokenSites.length; i += 2) {
@@ -637,15 +637,13 @@ export function emitAssemblySource(
     if (kind === 2) return `_tokEnds(input,${start},${end},${kRef(a)},${b})`
     if (kind === 3) {
       const re = k[a]
-      if (re instanceof RegExp && re.source === '^(?!(?:url|calc)\\($).+\\($' && re.flags === 'i') {
+      const shape = re instanceof RegExp ? runtimeRangeOutcomeKind('matches', re.source, re.flags) : undefined
+      if (shape === 'function-open-excluding-url-calc') {
         return `${end}>${start}+1&&input.charCodeAt(${end}-1)===40&&!_tokLine(input,${start},${end})`
           + `&&!_tokEq(input,${start},${end},"url(",1)&&!_tokEq(input,${start},${end},"calc(",1)`
       }
-      if (re instanceof RegExp) {
-        const prefix = /^\^([A-Za-z0-9_-]+)$/.exec(re.source)
-        if (prefix !== null && (re.flags === '' || re.flags === 'i')) {
-          return `_tokStarts(input,${start},${end},${q(prefix[1]!)},${re.ignoreCase ? 1 : 0})`
-        }
+      if (re instanceof RegExp && shape === 'ascii-prefix') {
+        return `_tokStarts(input,${start},${end},${q(re.source.slice(1))},${re.ignoreCase ? 1 : 0})`
       }
       throw new Unemittable('a token outcome regex without a bounded range lowering')
     }

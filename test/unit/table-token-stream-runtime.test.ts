@@ -93,6 +93,38 @@ function manualPlan(native = false): { readonly parser: ReturnType<typeof dispat
   return { parser, prog: ownTableProgram({ ...raw, k: [...raw.k, exact], tokenPlan: plan }) }
 }
 
+function unsupportedPlan(): {
+  readonly parser: ReturnType<typeof dispatch>
+  readonly planned: TableProgram
+  readonly injected: TableProgram
+} {
+  const parser = dispatch(
+    token(regex(/[a-z]+/)),
+    when(matches(/^a.+z$/), literal('!')),
+    otherwise(literal('?')),
+  )
+  const planned = encodeTable({ Entry: parser })
+  const base = planned.tokenPlan!
+  expect(base.sites).toEqual([])
+  const dispatchIp = [...reachableIps(planned)].find(ip => planned.code[ip] === OP_DISPATCH)!
+  const family = base.tokenSites[1]!
+  let unsupportedId = -1, fallbackId = -1
+  for (const at of base.outcomeOffsets) {
+    const kind = base.outcomeData[at + 2]!
+    if (kind === 3) unsupportedId = base.outcomeData[at]!
+    if (kind === 4) fallbackId = base.outcomeData[at]!
+  }
+  expect(unsupportedId).toBeGreaterThan(0)
+  expect(fallbackId).toBeGreaterThan(0)
+  const tokenPlan: TokenPlanWire = {
+    ...base,
+    sites: [planned.code[dispatchIp + 2]!, family, 0, 2],
+    routes: [0, 1, 0, 1, -1, 2, 1, 1],
+    accepted: [unsupportedId, fallbackId],
+  }
+  return { parser, planned, injected: ownTableProgram({ ...planned, tokenPlan }) }
+}
+
 describe('table token stream runtime', () => {
   it('routes one atomic range and preserves canonical miss diagnostics', () => {
     const { parser, prog } = manualPlan()
@@ -207,21 +239,17 @@ describe('table token stream runtime', () => {
   })
 
   it('declines an unsupported outcome site without cursor source or behavior', () => {
-    const parser = dispatch(
-      token(regex(/[a-z]+/)),
-      when(matches(/^a.+z$/), literal('!')),
-      otherwise(literal('?')),
-    )
-    const prog = encodeTable({ Entry: parser })
-    expect(prog.tokenPlan?.sites.length).toBeGreaterThan(0)
-    const emitted = emitAssemblySource(resolveTable(prog), prog, {
+    const { parser, planned, injected } = unsupportedPlan()
+    expect(planned.tokenPlan?.routes).toEqual([])
+    expect(planned.tokenPlan?.accepted).toEqual([])
+    const emitted = emitAssemblySource(resolveTable(injected), injected, {
       hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false,
     }).source
     expect(emitted).not.toContain('_pfTokInput')
     expect(emitted).not.toContain('_tokRecognize')
     for (const input of ['abz!', 'abc?']) {
       const source = run(parser, input)
-      for (const entry of [tableRules({ ...prog, asm: [] }).Entry!, tableRules(prog).Entry!]) {
+      for (const entry of [tableRules({ ...injected, asm: [] }).Entry!, tableRules(injected).Entry!]) {
         expect(run(entry, input)).toMatchObject({
           ok: source.ok, value: source.value, expected: source.expected, unconsumedFrom: source.unconsumedFrom,
         })
@@ -230,12 +258,7 @@ describe('table token stream runtime', () => {
   })
 
   it('keeps inactive closure assemblies on the exact legacy allocation and boundary shape', () => {
-    const unsupportedParser = dispatch(
-      token(regex(/[a-z]+/)),
-      when(matches(/^a.+z$/), literal('!')),
-      otherwise(literal('?')),
-    )
-    const unsupported = encodeTable({ Entry: unsupportedParser })
+    const unsupported = unsupportedPlan().injected
     const { tokenPlan: _unsupportedPlan, ...unsupportedNoPlanData } = unsupported
     const unsupportedNoPlan = ownTableProgram(unsupportedNoPlanData)
     const active = manualPlan().prog

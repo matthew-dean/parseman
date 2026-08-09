@@ -796,7 +796,14 @@ export function serializeLexicalPlan(
     .filter(site => !site.classifier.selectorEffects && site.classifier.routes.every(route =>
       route.acceptedIds.every(id => {
         const outcome = outcomeById.get(id)
-        return outcome !== undefined && runtimeRangeOutcomeKind(outcome.match) !== undefined
+        if (outcome === undefined) return false
+        const match = outcome.match
+        return runtimeRangeOutcomeKind(
+          match.kind,
+          match.kind === 'matches' ? match.value : '',
+          match.kind === 'matches' ? match.flags : '',
+          match.kind === 'matches' && match.caseInsensitive,
+        ) !== undefined
       })))
     .sort((a, b) => a.dsp - b.dsp)) {
     const routeOffset = routes.length
