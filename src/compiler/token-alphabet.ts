@@ -154,8 +154,69 @@ export type LexicalAlphabet = {
   readonly familyIdOf: ReadonlyMap<Combinator<unknown>, number>
 }
 
+/** Numeric-only artifact projection; `TableProgram` aliases this contract. */
+export type NumericLexicalPlan = {
+  readonly recognizerOffsets: readonly number[]
+  readonly recognizerData: readonly number[]
+  readonly outcomeOffsets: readonly number[]
+  readonly outcomeData: readonly number[]
+  readonly tokenSites: readonly number[]
+  readonly sites: readonly number[]
+  readonly routes: readonly number[]
+  readonly accepted: readonly number[]
+}
+
 /** Lexical-family ids occupy their own published namespace. */
 export const FIRST_LEXICAL_FAMILY_ID = 3
+
+const foldAscii = (value: string): string => value.replace(/[A-Z]/g, c => c.toLowerCase())
+
+/** Canonical, parser-free identity for one range predicate. */
+export function canonicalLexicalOutcomeKey(match: LexicalOutcomeMatch): string {
+  if (match.kind === 'exact') {
+    const values = [...new Set(match.values
+      .map(value => match.caseInsensitive ? foldAscii(value) : value))].sort()
+    return JSON.stringify({ kind: match.kind, values, caseInsensitive: match.caseInsensitive })
+  }
+  if (match.kind === 'startsWith' || match.kind === 'endsWith') {
+    return JSON.stringify({
+      kind: match.kind,
+      value: match.caseInsensitive ? foldAscii(match.value) : match.value,
+      caseInsensitive: match.caseInsensitive,
+    })
+  }
+  if (match.kind === 'matches') {
+    const rawFlags = match.caseInsensitive && !match.flags.includes('i') ? `${match.flags}i` : match.flags
+    const flags = new RegExp('', rawFlags.replace(/g/g, '')).flags
+    return JSON.stringify({ kind: match.kind, value: match.value, flags })
+  }
+  if (match.kind !== 'otherwise') throw new Error('parseman: unknown lexical outcome predicate')
+  const excluding = match.excluding
+  const fixed = excluding.filter((entry): entry is Extract<LexicalOutcomeMatch, { kind: 'startsWith' | 'endsWith' }> =>
+    entry.kind === 'startsWith' || entry.kind === 'endsWith')
+  const fixedContainsExact = (
+    exact: Extract<LexicalOutcomeMatch, { kind: 'exact' }>,
+    candidate: Extract<LexicalOutcomeMatch, { kind: 'startsWith' | 'endsWith' }>,
+  ): boolean => {
+    if (exact.caseInsensitive && !candidate.caseInsensitive && /[A-Za-z]/.test(candidate.value)) return false
+    const needle = candidate.caseInsensitive ? foldAscii(candidate.value) : candidate.value
+    return exact.values.every(raw => {
+      const value = candidate.caseInsensitive ? foldAscii(raw) : raw
+      return candidate.kind === 'startsWith' ? value.startsWith(needle) : value.endsWith(needle)
+    })
+  }
+  const reduced: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>[] = []
+  for (const entry of excluding) {
+    if (entry.kind !== 'exact') { reduced.push(entry); continue }
+    const values = entry.values.filter(value => !fixed.some(candidate =>
+      fixedContainsExact({ ...entry, values: [value] }, candidate)))
+    if (values.length > 0) reduced.push({ ...entry, values })
+  }
+  return JSON.stringify({
+    kind: match.kind,
+    excluding: [...new Set(reduced.map(canonicalLexicalOutcomeKey))].sort(),
+  })
+}
 
 function keyOf(def: ParserDef): string | undefined {
   switch (def.tag) {
@@ -496,63 +557,11 @@ export function collectLexicalAlphabet(
   let nextOutcomeId = FIRST_LEXICAL_FAMILY_ID + families.length
   const outcomes: LexicalOutcomeSpec[] = []
   const outcomeIdByKey = new Map<string, number>()
-  const foldAscii = (value: string): string => value.replace(/[A-Z]/g, c => c.toLowerCase())
-  const fixedContainsExact = (
-    exact: Extract<LexicalOutcomeMatch, { kind: 'exact' }>,
-    fixed: Extract<LexicalOutcomeMatch, { kind: 'startsWith' | 'endsWith' }>,
-  ): boolean => {
-    // A CI exact predicate admits case variants. A case-sensitive fixed
-    // predicate containing letters cannot be proven to contain all of them.
-    if (exact.caseInsensitive && !fixed.caseInsensitive && /[A-Za-z]/.test(fixed.value)) return false
-    const needle = fixed.caseInsensitive ? foldAscii(fixed.value) : fixed.value
-    return exact.values.every(raw => {
-      const value = fixed.caseInsensitive ? foldAscii(raw) : raw
-      return fixed.kind === 'startsWith' ? value.startsWith(needle) : value.endsWith(needle)
-    })
-  }
-  const outcomeKey = (match: LexicalOutcomeMatch): string => {
-    if (match.kind === 'exact') {
-      const values = [...new Set(match.values
-        .map(value => match.caseInsensitive ? foldAscii(value) : value))].sort()
-      return JSON.stringify({ kind: match.kind, values, caseInsensitive: match.caseInsensitive })
-    }
-    if (match.kind === 'startsWith' || match.kind === 'endsWith') {
-      return JSON.stringify({
-        kind: match.kind,
-        value: match.caseInsensitive ? foldAscii(match.value) : match.value,
-        caseInsensitive: match.caseInsensitive,
-      })
-    }
-    if (match.kind === 'matches') {
-      const rawFlags = match.caseInsensitive && !match.flags.includes('i') ? `${match.flags}i` : match.flags
-      // Dispatch builds a fresh RegExp for each test. `g` therefore has no
-      // observable lastIndex history and is redundant; sticky `y` is semantic
-      // (`/x/y` fails on "ax", `/x/` succeeds) and MUST remain.
-      const flags = new RegExp('', rawFlags.replace(/g/g, '')).flags
-      return JSON.stringify({ kind: match.kind, value: match.value, flags })
-    }
-    if (match.kind === 'otherwise') {
-      const fixed = match.excluding.filter((entry): entry is Extract<LexicalOutcomeMatch, { kind: 'startsWith' | 'endsWith' }> =>
-        entry.kind === 'startsWith' || entry.kind === 'endsWith')
-      const reduced: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>[] = []
-      for (const entry of match.excluding) {
-        if (entry.kind !== 'exact') { reduced.push(entry); continue }
-        const values = entry.values.filter(value => !fixed.some(candidate =>
-          fixedContainsExact({ ...entry, values: [value] }, candidate)))
-        if (values.length > 0) reduced.push({ ...entry, values })
-      }
-      return JSON.stringify({
-        kind: match.kind,
-        excluding: [...new Set(reduced.map(outcomeKey))].sort(),
-      })
-    }
-    throw new Error('parseman: unknown lexical outcome predicate')
-  }
   const internOutcome = (familyId: number, match: LexicalOutcomeMatch): number => {
     if (match.kind === 'exact' && match.values.length !== 1) {
       throw new Error('parseman: global exact lexical outcomes must be atomic')
     }
-    const key = `${familyId}\u0000${outcomeKey(match)}`
+    const key = `${familyId}\u0000${canonicalLexicalOutcomeKey(match)}`
     const prior = outcomeIdByKey.get(key)
     if (prior !== undefined) return prior
     const id = nextOutcomeId++
@@ -624,11 +633,182 @@ export function collectLexicalAlphabet(
     })
   }
 
+  /*
+   * IDs ARE CONTENT-ORDERED, not discovery-ordered. The collector walks the
+   * final winner graph once, but compose(), a rule-map literal, and the macro
+   * evaluator are allowed to present equal roots in different insertion order.
+   * Sorting the already-canonical recognizer keys and family-qualified outcome
+   * keys makes those routes agree without publishing a hash or an authored
+   * token-instance identity in the artifact.
+   */
+  const recognizerOrder = [...recognizers].sort((a, b) =>
+    a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+  const recognizerId = new Map(recognizerOrder.map((entry, index) => [entry.id, index]))
+  const stableRecognizers = recognizerOrder.map((entry, id) => ({ ...entry, id }))
+  const stableFamilies = stableRecognizers.map(entry => ({
+    id: FIRST_LEXICAL_FAMILY_ID + entry.id,
+    recognizerId: entry.id,
+  }))
+  const stableFamilyId = (oldFamilyId: number): number => {
+    const oldRecognizerId = oldFamilyId - FIRST_LEXICAL_FAMILY_ID
+    const id = recognizerId.get(oldRecognizerId)
+    if (id === undefined) throw new Error('parseman: lexical family has no recognizer')
+    return FIRST_LEXICAL_FAMILY_ID + id
+  }
+  const stableFamilyIdOf = new Map<Combinator<unknown>, number>()
+  for (const [parser, familyId] of familyIdOf) stableFamilyIdOf.set(parser, stableFamilyId(familyId))
+  const stableSites = sites.map(site => site.familyId === undefined ? site : ({
+    ...site,
+    familyId: stableFamilyId(site.familyId),
+    recognizerId: recognizerId.get(site.recognizerId!)!,
+  }))
+
+  const orderedOutcomes = [...outcomes].sort((a, b) => {
+    const ak = `${stableFamilyId(a.familyId)}\u0000${canonicalLexicalOutcomeKey(a.match)}`
+    const bk = `${stableFamilyId(b.familyId)}\u0000${canonicalLexicalOutcomeKey(b.match)}`
+    return ak < bk ? -1 : ak > bk ? 1 : 0
+  })
+  const oldOutcomeToStable = new Map<number, number>()
+  const firstOutcomeId = FIRST_LEXICAL_FAMILY_ID + stableFamilies.length
+  const stableOutcomes = orderedOutcomes.map((entry, index) => {
+    const id = firstOutcomeId + index
+    oldOutcomeToStable.set(entry.id, id)
+    return { ...entry, id, familyId: stableFamilyId(entry.familyId) }
+  })
+  const stableClassifiers = classifiers.map(classifier => ({
+    ...classifier,
+    familyId: stableFamilyId(classifier.familyId),
+    outcomes: classifier.outcomes.map(outcome => ({
+      ...outcome,
+      id: oldOutcomeToStable.get(outcome.id)!,
+    })),
+    routes: classifier.routes.map(route => ({
+      ...route,
+      acceptedIds: route.acceptedIds.map(id => oldOutcomeToStable.get(id)!),
+    })),
+  }))
+
   // Deliberately do not return `primitiveKernels`: collectAlphabet() remains a
   // separate historical/kernel API, while this is the only family/site seam.
   // A choice-admission consumer therefore cannot accidentally publish a child
   // literal/regex id by reading a field from LexicalAlphabet.
-  return { recognizers, diagnostics, families, sites, outcomes, classifiers, familyIdOf }
+  return {
+    recognizers: stableRecognizers,
+    diagnostics,
+    families: stableFamilies,
+    sites: stableSites,
+    outcomes: stableOutcomes,
+    classifiers: stableClassifiers,
+    familyIdOf: stableFamilyIdOf,
+  }
+}
+
+function serializeLexicalIr(ir: LexicalIr, out: number[], constant: (value: unknown) => number): void {
+  const start = out.length
+  const begin = (kind: number): void => { out.push(kind, 0) }
+  switch (ir.kind) {
+    case 'literal':
+      begin(0); out.push(constant(ir.value), ir.caseInsensitive ? 1 : 0)
+      break
+    case 'keywords':
+      begin(1)
+      out.push(ir.caseInsensitive ? 1 : 0, ir.boundary === undefined ? -1 : constant(ir.boundary), ir.words.length)
+      for (const word of ir.words) out.push(constant(word))
+      break
+    case 'regex':
+      begin(2); out.push(constant(new RegExp(ir.source, ir.flags)))
+      break
+    case 'sequence':
+      begin(3); out.push(ir.parts.length)
+      for (const part of ir.parts) serializeLexicalIr(part, out, constant)
+      break
+    case 'choice':
+      begin(4); out.push(ir.arms.length)
+      for (const arm of ir.arms) serializeLexicalIr(arm, out, constant)
+      break
+    case 'repeat':
+      begin(5)
+      out.push(ir.min, ir.max ?? -1, ir.greedy ? 1 : 0, ir.mode === 'possessive' ? 0 : 1)
+      serializeLexicalIr(ir.body, out, constant)
+      break
+    case 'assert':
+      begin(6); out.push(ir.positive ? 1 : 0)
+      serializeLexicalIr(ir.body, out, constant)
+      break
+  }
+  out[start + 1] = out.length - start
+}
+
+/**
+ * Project the compiler graph into compact numeric pools. The caller supplies
+ * only already-relocated table-site numbers and its existing const-pool intern;
+ * no combinator or identity map crosses this boundary.
+ */
+export function serializeLexicalPlan(
+  alphabet: LexicalAlphabet,
+  constant: (value: unknown) => number,
+  tokenSites: readonly number[],
+  dispatchSites: ReadonlyArray<{ readonly dsp: number; readonly classifier: LexicalTokenClassifier }>,
+): NumericLexicalPlan | undefined {
+  if (tokenSites.length === 0) return undefined
+  const recognizerOffsets: number[] = []
+  const recognizerData: number[] = []
+  for (const recognizer of alphabet.recognizers) {
+    if (recognizer.id !== recognizerOffsets.length) throw new Error('parseman: lexical recognizer ids are not dense')
+    recognizerOffsets.push(recognizerData.length)
+    serializeLexicalIr(recognizer.ir, recognizerData, constant)
+  }
+
+  const outcomeOffsets: number[] = []
+  const outcomeData: number[] = []
+  for (const outcome of alphabet.outcomes) {
+    outcomeOffsets.push(outcomeData.length)
+    const match = outcome.match
+    switch (match.kind) {
+      case 'exact':
+        if (match.values.length !== 1) throw new Error('parseman: lexical exact outcome is not atomic')
+        outcomeData.push(outcome.id, outcome.familyId, 0, constant(match.values[0]!), match.caseInsensitive ? 1 : 0)
+        break
+      case 'startsWith':
+        outcomeData.push(outcome.id, outcome.familyId, 1, constant(match.value), match.caseInsensitive ? 1 : 0)
+        break
+      case 'endsWith':
+        outcomeData.push(outcome.id, outcome.familyId, 2, constant(match.value), match.caseInsensitive ? 1 : 0)
+        break
+      case 'matches': {
+        const rawFlags = match.caseInsensitive && !match.flags.includes('i') ? `${match.flags}i` : match.flags
+        const flags = new RegExp('', rawFlags.replace(/g/g, '')).flags
+        outcomeData.push(outcome.id, outcome.familyId, 3, constant(new RegExp(match.value, flags)))
+        break
+      }
+      case 'otherwise':
+        outcomeData.push(outcome.id, outcome.familyId, 4)
+        break
+    }
+  }
+
+  const sites: number[] = []
+  const routes: number[] = []
+  const accepted: number[] = []
+  for (const { dsp, classifier } of [...dispatchSites].sort((a, b) => a.dsp - b.dsp)) {
+    const routeOffset = routes.length
+    for (const route of classifier.routes) {
+      const acceptedOffset = accepted.length
+      accepted.push(...route.acceptedIds)
+      const kind = route.kind === 'exact' ? 0 : route.kind === 'matcher' ? 1 : 2
+      routes.push(route.index, kind | (route.usesRouted ? 4 : 0), acceptedOffset, route.acceptedIds.length)
+    }
+    sites.push(dsp, classifier.familyId, routeOffset, classifier.routes.length)
+  }
+  for (let i = 0; i < tokenSites.length; i += 2) {
+    if (tokenSites[i + 1]! < FIRST_LEXICAL_FAMILY_ID) {
+      throw new Error('parseman: lexical token site used a primitive-terminal id')
+    }
+  }
+  return {
+    recognizerOffsets, recognizerData, outcomeOffsets, outcomeData,
+    tokenSites: [...tokenSites], sites, routes, accepted,
+  }
 }
 
 function foldAsciiCode(code: number): number {

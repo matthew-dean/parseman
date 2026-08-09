@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const esmPlanner = resolve(ROOT, 'dist/compiler/lexical-identity.js')
-const cjsPlanner = resolve(ROOT, 'dist/compiler/lexical-identity.cjs')
+const esmPlanner = resolve(ROOT, 'dist/compiler/token-alphabet.js')
+const cjsPlanner = resolve(ROOT, 'dist/compiler/token-alphabet.cjs')
 const implementationMarker = 'recursive token body'
 
 const compileEntries = [
@@ -38,14 +38,14 @@ describe('built lexical planner topology', () => {
     for (const entry of compileEntries) {
       for (const extension of ['.js', '.cjs']) {
         const source = readFileSync(resolve(ROOT, `${entry}${extension}`), 'utf8')
-        expect(source, `${entry}${extension} imports the planner`).toMatch(/compiler\/lexical-identity\.(?:js|cjs)/)
+        expect(source, `${entry}${extension} imports the planner`).toMatch(/compiler\/token-alphabet\.(?:js|cjs)/)
         expect(source, `${entry}${extension} does not embed the planner`).not.toContain(implementationMarker)
       }
     }
 
     const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as { exports: Record<string, unknown> }
-    expect(Object.keys(pkg.exports)).not.toContain('./compiler/lexical-identity')
-    expect(Object.keys(pkg.exports)).not.toContain('./internal/lexical-identity')
+    expect(Object.keys(pkg.exports)).not.toContain('./compiler/token-alphabet')
+    expect(Object.keys(pkg.exports)).not.toContain('./internal/token-alphabet')
   })
 
   it('contains no dynamic-code or Node-only dependency in the shared planner', () => {
@@ -77,9 +77,8 @@ describe('built lexical planner topology', () => {
     const a = esmTable.encodeTable({ Entry: make(esm) })
     const b = cjsTable.encodeTable({ Entry: make(cjs) })
     expect(a.code).toEqual(b.code)
-    expect(a.lex).toEqual(b.lex)
-    expect(a.tokenDispatch).toEqual(b.tokenDispatch)
-    expect(a.tokenDispatch).toBeDefined()
+    expect(a.tokenPlan).toEqual(b.tokenPlan)
+    expect(a.tokenPlan).toBeDefined()
   })
 
   it('bundles the public ESM entries for a browser with one planner implementation', async () => {

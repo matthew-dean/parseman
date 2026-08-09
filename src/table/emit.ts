@@ -122,11 +122,13 @@ function emitDispatchSpec(d: import('./program.ts').DispatchSpec): string {
     + '}'
 }
 
-function emitTokenPlan(w: import('./program.ts').TokenPlanWire): string {
-  return `{recognizerOffsets:[${w.recognizerOffsets.join(',')}],recognizerData:[${w.recognizerData.join(',')}],`
-    + `outcomeOffsets:[${w.outcomeOffsets.join(',')}],outcomeData:[${w.outcomeData.join(',')}],`
-    + `tokenSites:[${w.tokenSites.join(',')}],sites:[${w.sites.join(',')}],`
-    + `routes:[${w.routes.join(',')}],accepted:[${w.accepted.join(',')}]}`
+function emitTokenPlan(plan: import('./program.ts').TokenPlanWire): string {
+  const field = (name: keyof import('./program.ts').TokenPlanWire): string =>
+    `${name}:[${plan[name].join(',')}]`
+  return `{${([
+    'recognizerOffsets', 'recognizerData', 'outcomeOffsets', 'outcomeData',
+    'tokenSites', 'sites', 'routes', 'accepted',
+  ] as const).map(field).join(',')}}`
 }
 
 /**

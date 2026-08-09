@@ -5,6 +5,7 @@ import { regex } from '../combinators/regex.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
+import type { NumericLexicalPlan } from '../compiler/token-alphabet.ts'
 
 /**
  * One assembly the BUILD already compiled, so the run does not have to.
@@ -57,7 +58,11 @@ export type TableProgram = {
    * at `resolveTable`, exactly like the char-class ASCII lookups.
    */
   readonly dsp: readonly DispatchSpec[]
-  /** Optional compiler-planned zero-copy lexical stream. */
+  /**
+   * Compiler-produced lexical token plan. Every member is a numeric pool; live
+   * combinators, authored token objects, diagnostic plans, and hashes are
+   * deliberately absent. See `TokenPlanWire` for record layouts.
+   */
   readonly tokenPlan?: TokenPlanWire
   /** Rule name → entry offset in `code`. */
   readonly rules: Readonly<Record<string, number>>
@@ -326,6 +331,24 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   })
 }
 
+/**
+ * Compact numeric contract between the final-grammar planner and a future
+ * token cursor. Recognizer and outcome IDs are global; sites and routes are
+ * local to the already-encoded table.
+ *
+ * - `recognizerOffsets[id]` indexes `recognizerData`, a prefix TLV lexical IR.
+ *   Family id is `FIRST_LEXICAL_FAMILY_ID + id`.
+ * - `outcomeOffsets[]` indexes `outcomeData`; every outcome record starts with
+ *   its global `[outcomeId,familyId,kind]` and is atomic.
+ * - `tokenSites` is repeated `[OP_TOKEN ip,familyId]`. The ordinary child row
+ *   remains the spelling-specific diagnostic/fallback implementation.
+ * - `sites` is repeated `[dspIndex,familyId,routeWordOffset,routeCount]`.
+ * - `routes` is repeated `[armIndex,flags,acceptedOffset,acceptedCount]` in PEG
+ *   source order. Grouped exact values share this route, never one outcome id.
+ * - `accepted` is the route slices' global outcome ids.
+ */
+export type TokenPlanWire = NumericLexicalPlan
+
 /** One `dispatch()`'s routing tables, in serialisable form. */
 export type DispatchSpec = {
   /** Exact keys, parallel to `keyArm`. */
@@ -347,30 +370,6 @@ export type DispatchSpec = {
   readonly routed: readonly number[]
   /** Expected set when nothing matches — every case key, JSON-quoted. */
   readonly expected: readonly string[]
-}
-
-/**
- * Compiler-planned parser-free global token outcomes plus site-local routes.
- *
- * All payloads are integer arrays. Numeric ABI:
- * Recognizers are prefix-TLV lexical IR in `recognizerData`, addressed through
- * `recognizerOffsets`; family id is `3 + recognizerId`. Outcomes are variable
- * records addressed the same way. `tokenSites` is `[OP_TOKEN ip,familyId]`,
- * `sites` is `[dispatchSpec,familyId,routeWordOffset,routeCount]`, and `routes`
- * is `[armIndex,flags,acceptedOffset,acceptedCount]` in authored PEG order.
- *
- * Outcome identity never owns a parser. Route identity is local, ordered, and
- * is the sole owner of the dispatch cut.
- */
-export type TokenPlanWire = {
-  readonly recognizerOffsets: readonly number[]
-  readonly recognizerData: readonly number[]
-  readonly outcomeOffsets: readonly number[]
-  readonly outcomeData: readonly number[]
-  readonly tokenSites: readonly number[]
-  readonly sites: readonly number[]
-  readonly routes: readonly number[]
-  readonly accepted: readonly number[]
 }
 
 export type ResolvedDispatchSpec = {
