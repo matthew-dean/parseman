@@ -24,7 +24,7 @@
  */
 import os from 'node:os'
 import { choice, literal, regex, rules, sequence, transform, type Combinator } from '../src/index.ts'
-import { interleave, median, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
+import { interleave, median, pairedMinRatio, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
 import { run } from '../src/functional/run.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 import type { ParserDef } from '../src/types.ts'
@@ -153,8 +153,7 @@ function main(): void {
     const s = out.get(k.label)!
     const parts: string[] = []
     for (const [id] of INPUTS) {
-      const a = s.get(`ref|${id}`)!, b = s.get(`head|${id}`)!
-      parts.push(`${id.padEnd(10)} min ${sign((Math.min(...b) / Math.min(...a) - 1) * 100).padStart(8)}`)
+      parts.push(`${id.padEnd(10)} paired min ${sign((pairedMinRatio(s, `ref|${id}`, `head|${id}`) - 1) * 100).padStart(8)}`)
     }
     console.log(`  ${k.label.padEnd(36)} ${parts.join('  ')}`)
   }

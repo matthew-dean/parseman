@@ -351,6 +351,17 @@ same lottery with the sign flipped.
 
 `medianPct: 6`, `minPct: 6`, `winRateCeiling: 0.25`, `signTest: 3`, `passes: 5`.
 
+The scorer has a versioned reduction contract. `paired-ratio-v2` takes the median
+of aligned HEAD/REF sample ratios and, for the floor signal, the median of aligned
+within-sample-minimum ratios. Ratio-of-aggregate medians/minima is the retired
+`aggregate-v1` method: it discards the adjacency the harness measured and can report
+a 60% regression for a pair series whose aligned median is exactly flat. Changing
+the scorer invalidates percentage noise calibration. Both perf configs therefore
+name their scorer and fail closed for normal gates until a RED-proven `--self` A/A
+run revalidates the thresholds. Historical 0.47 shelf median and minimum ceilings stay
+explicitly tagged `aggregate-v1` and use the retained v1 fields; they are never compared
+to the v2 paired statistics.
+
 `winRateCeiling` is the ceiling **for a null of 0.5**; the ceiling actually
 applied is that number shifted onto the case's measured null, per the section
 above.

@@ -104,7 +104,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD,
   type Case, type Thresholds,
 } from './ab-harness.ts'
 import { classifyCandidateShelf, type CandidateCeiling } from './grammar-perf-shelf.ts'
@@ -118,6 +118,7 @@ const CONFIG_PATH = path.join(HERE, 'grammar-density', 'config.json')
 type GateMeasurement = import('./ab-harness.ts').Measurement & { passes: number }
 
 type Config = {
+  scoreMethod: string
   referenceSha: string
   input: { rules: number }
   measurement: GateMeasurement
@@ -125,6 +126,11 @@ type Config = {
 }
 
 const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
+
+const SELF = process.argv.includes('--self')
+if (!SELF && CONFIG.scoreMethod !== SCORE_METHOD) {
+  fail(GATE, `scorer changed from ${CONFIG.scoreMethod} to ${SCORE_METHOD}; run --self to revalidate thresholds, then update ${CONFIG_PATH}`)
+}
 
 /**
  * 0.47's explicitly accepted table-architecture debt, measured in three exact
@@ -137,17 +143,16 @@ const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
  * new strict regression without a named entry remains a hard failure.
  */
 const SHELVED_047_CANDIDATES = new Map<string, CandidateCeiling>([
-  ['rollback/none', { medianPct: 200, minPct: 200, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
-  ['rollback/sparse', { medianPct: 200, minPct: 210, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
-  ['rollback/medium', { medianPct: 270, minPct: 280, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
-  ['rollback/dense', { medianPct: 370, minPct: 380, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
-  ['expected/none', { medianPct: 185, minPct: 180, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
-  ['expected/narrow', { medianPct: 195, minPct: 190, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
-  ['expected/wide', { medianPct: 440, minPct: 460, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['rollback/none', { scoreMethod: 'aggregate-v1', medianPct: 200, minPct: 200, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['rollback/sparse', { scoreMethod: 'aggregate-v1', medianPct: 200, minPct: 210, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['rollback/medium', { scoreMethod: 'aggregate-v1', medianPct: 270, minPct: 280, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['rollback/dense', { scoreMethod: 'aggregate-v1', medianPct: 370, minPct: 380, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['expected/none', { scoreMethod: 'aggregate-v1', medianPct: 185, minPct: 180, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['expected/narrow', { scoreMethod: 'aggregate-v1', medianPct: 195, minPct: 190, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
+  ['expected/wide', { scoreMethod: 'aggregate-v1', medianPct: 440, minPct: 460, tracking: 'notes/RELEASE-0.48-TARGET.md §8 — 0.47 grammar-density shelf' }],
 ])
 
 const QUICK = process.argv.includes('--quick')
-const SELF = process.argv.includes('--self')
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
 const REF_ARG = argValue('--ref')
@@ -239,7 +244,7 @@ const reps = calibrate(toCases(ref), M)
 console.log(
   `  ${(ref.input(ref.cases[0]!, CONFIG.input.rules).length / 1024).toFixed(1)} KB input`
   + `   ${M.passes} passes x ${M.rounds} rounds x ${M.runs} runs, ${M.warmup} warmup + ${M.timed} timed samples,`
-  + ` sides paired and order-alternated`
+  + ` sides paired and order-alternated, scorer ${SCORE_METHOD}`
   + `${QUICK ? '  [--quick: TRIAGE ONLY, not a gate]' : ''}`,
 )
 console.log(`  repetitions per sample: ${refCases.map(c => `${c.id.split('/')[1]} ${reps.get(c.id)}`).join(', ')}`)
@@ -324,13 +329,14 @@ if (QUICK) {
 const failures = rows.filter(v => v.failed)
 if (SHELF_ACTIVE) {
   const shelf = classifyCandidateShelf(rows, SHELVED_047_CANDIDATES)
-  console.log('\n  0.47 CANDIDATE SHELF (default 0.46 reference only; strict identity check still required):')
+  console.log('\n  0.47 CANDIDATE SHELF (aggregate-v1 historical reducer; default 0.46 reference only; strict identity check still required):')
   for (const disposition of shelf.dispositions) {
     if (disposition.kind === 'ordinary') continue
     if (disposition.kind === 'shelved') {
       const { id, passes } = disposition.row
       console.log(
-        `    SHELVED ${id}: median ${passes.map(p => sign(p.dMedian)).join(' ')}`
+        `    SHELVED ${id}: aggregate-v1 median ${passes.map(p => sign(p.dMedianAggregateV1)).join(' ')}`
+        + `; min ${passes.map(p => sign(p.dMinAggregateV1)).join(' ')}`
         + `; ceiling median ${disposition.ceiling.medianPct}% / min ${disposition.ceiling.minPct}%`
         + `; over ceiling ${disposition.overCeiling}/${passes.length}`
         + `\n      → ${disposition.ceiling.tracking}`,

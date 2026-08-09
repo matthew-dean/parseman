@@ -63,7 +63,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
 import { classifyWorkloadShelves, SHELVED_WORKLOADS, usesPinned047WorkloadShelf } from './workload-perf-shelf.ts'
@@ -80,6 +80,7 @@ const CONFIG_PATH = path.join(HERE, 'workloads', 'config.json')
 type GateMeasurement = import('./ab-harness.ts').Measurement & { passes: number }
 
 type Config = {
+  scoreMethod: string
   referenceSha: string
   peak: Peak
   measurement: GateMeasurement
@@ -90,6 +91,9 @@ const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
 
 const QUICK = process.argv.includes('--quick')
 const SELF = process.argv.includes('--self')
+if (!SELF && CONFIG.scoreMethod !== SCORE_METHOD) {
+  fail(GATE, `scorer changed from ${CONFIG.scoreMethod} to ${SCORE_METHOD}; run --self to revalidate thresholds, then update ${CONFIG_PATH}`)
+}
 /**
  * The PEAK clause: compare against the fastest release on record rather than the
  * previous one, and fail on a drawdown beyond the measured noise floor. This is
@@ -191,7 +195,7 @@ const detail = new Map(refCases.map(c => [c.id, c.detail]))
 // side-dependent asymmetry in the one direction a gate must not have one.
 const reps = calibrate(toCases(refWorkloads, 'reference calibration'), M)
 console.log(
-  `  ${refCases.length} workloads`
+  `  scorer ${SCORE_METHOD}   ${refCases.length} workloads`
   + `   ${M.passes} passes x ${M.rounds} rounds x ${M.runs} runs, ${M.warmup} warmup + ${M.timed} timed samples, sides paired and order-alternated`
   + `${QUICK ? '  [--quick: TRIAGE ONLY, not a gate]' : ''}`,
 )
@@ -249,7 +253,7 @@ for (const v of rows) {
   )
 }
 if (shelf !== null) {
-  console.log('\n  SHELVED 0.47 REGRESSIONS (bounded, tracked, never silent):')
+  console.log('\n  SHELVED 0.47 REGRESSIONS (aggregate-v1 historical reducer; bounded, tracked, never silent):')
   for (const row of shelf.shelved) {
     console.log(
       `    SHELVED ${row.id}: worst median ${sign(row.worstMedian)} / min ${sign(row.worstMin)}`
