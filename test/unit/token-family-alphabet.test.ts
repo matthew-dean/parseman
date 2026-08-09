@@ -191,6 +191,9 @@ describe('derived lexical-token families', () => {
       capabilities: alphabet.capabilities.slice(1),
       capabilityLanguages: alphabet.capabilityLanguages,
       bindingEdges: alphabet.bindingEdges,
+      decisionFamilies: alphabet.decisionFamilies,
+      decisionOutcomes: alphabet.decisionOutcomes,
+      decisions: alphabet.decisions,
     })).toThrow('lexical capability census is incomplete')
 
     // RED provenance: before standalone primitives were enumerated, inserting
@@ -212,6 +215,9 @@ describe('derived lexical-token families', () => {
       capabilities: changed,
       capabilityLanguages: alphabet.capabilityLanguages,
       bindingEdges: alphabet.bindingEdges,
+      decisionFamilies: alphabet.decisionFamilies,
+      decisionOutcomes: alphabet.decisionOutcomes,
+      decisions: alphabet.decisions,
     }))
       .toThrow('lexical capability census is incomplete')
     // RED provenance: before obligation records were part of the stable
@@ -470,6 +476,327 @@ describe('derived lexical-token families', () => {
     expect(alphabet.capabilityComplete).toBe(false)
   })
 
+  it('keeps equal and shorter prefix views compatible without changing PEG arm order', () => {
+    const full = token(literal('ab'))
+    const routed = dispatch(
+      full,
+      when('ab', literal('!')),
+      otherwise(literal('?')),
+    )
+    const root = choice(literal('a'), routed, literal('z'))
+    const alphabet = collectLexicalAlphabet([root])
+    const site = alphabet.decisions.find(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === root)!
+    const family = alphabet.decisionFamilies.find(entry =>
+      entry.ir.kind === 'literal' && entry.ir.value === 'ab')!
+    const plan = site.families.find(entry => entry.familyId === family.id)!
+    expect(plan.arms.map(arm => arm.armId)).toEqual([0, 1, 2])
+    const prefixAcceptance = plan.arms[0]!.acceptance
+    expect(prefixAcceptance.kind).toBe('outcomes')
+    if (prefixAcceptance.kind !== 'outcomes') throw new Error('test setup: prefix arm')
+    const prefix = alphabet.decisionOutcomes.find(outcome =>
+      outcome.id === prefixAcceptance.outcomeIds[0])!
+    expect(prefix.view).toMatchObject({
+      kind: 'language', relation: 'prefix', ir: { kind: 'literal', value: 'a' },
+    })
+    expect(plan.arms[1]!.acceptance).toEqual({ kind: 'unrestricted' })
+    expect(plan.arms[2]!.acceptance).toEqual({ kind: 'impossible' })
+
+    expect(() => assertLexicalCapabilityClosure([root], {
+      capabilities: alphabet.capabilities,
+      capabilityLanguages: alphabet.capabilityLanguages,
+      bindingEdges: alphabet.bindingEdges,
+      decisionFamilies: alphabet.decisionFamilies,
+      decisionOutcomes: alphabet.decisionOutcomes.filter(outcome => outcome.id !== prefix.id),
+      decisions: alphabet.decisions,
+    })).toThrow('lexical capability census is incomplete')
+    // RED provenance: dropping the `a` prefix view made the family appear to
+    // have only the longest `ab` end, which reverses this ordered choice on `ab`.
+  })
+
+  it('keeps a shorter arm as a prefix of a longest-first keyword family', () => {
+    const selector = token(keywords(['a', 'ab']))
+    const routed = dispatch(selector, otherwise(literal('!')))
+    const root = choice(literal('a'), routed)
+    const alphabet = collectLexicalAlphabet([root])
+    const site = alphabet.decisions.find(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === root)!
+    const family = alphabet.decisionFamilies.find(entry =>
+      entry.ir.kind === 'keywords' && entry.ir.words.includes('ab'))!
+    const plan = site.families.find(entry => entry.familyId === family.id)!
+    const acceptance = plan.arms[0]!.acceptance
+    expect(acceptance.kind).toBe('outcomes')
+    if (acceptance.kind !== 'outcomes') throw new Error('test setup: keyword prefix')
+    expect(alphabet.decisionOutcomes.find(outcome =>
+      outcome.id === acceptance.outcomeIds[0])!.view).toMatchObject({ relation: 'prefix' })
+    // RED provenance: treating every boundary-free keyword family as fixed-end
+    // publishes equality, even though its longest-first recognizer consumes ab.
+  })
+
+  it('uses the authored sticky regex end for exact decision-language inclusion', () => {
+    const assertUnrestricted = (
+      selector: Combinator<string>,
+      value: string,
+      familyPredicate: (entry: { ir: unknown }) => boolean,
+    ): void => {
+      const routed = dispatch(selector, otherwise(literal('!')))
+      const root = choice(literal(value), routed)
+      const alphabet = collectLexicalAlphabet([root])
+      const site = alphabet.decisions.find(decision =>
+        alphabet.capabilities[decision.siteId]!.parser === root)!
+      const family = alphabet.decisionFamilies.find(familyPredicate)!
+      const plan = site.families.find(entry => entry.familyId === family.id)!
+      expect(plan.arms[0]!.acceptance).toEqual({ kind: 'unrestricted' })
+    }
+    const regexFamily = (source: string) => (entry: { ir: unknown }): boolean => {
+      const ir = entry.ir as { kind?: string; source?: string }
+      return ir.kind === 'regex' && ir.source === source
+    }
+    assertUnrestricted(token(regex(/a|ab/)), 'ab', regexFamily('a|ab'))
+    assertUnrestricted(token(regex(/a$/m)), 'a\n', regexFamily('a$'))
+    assertUnrestricted(token(regex(/[a-z]+/)), 'red', regexFamily('[a-z]+'))
+    assertUnrestricted(token(regex(/foo$/)), 'foo', regexFamily('foo$'))
+    assertUnrestricted(
+      token(keywords(['foo'], { boundary: 'A-Za-z' })),
+      'foo',
+      entry => (entry.ir as { kind?: string; boundary?: string }).kind === 'keywords'
+        && (entry.ir as { boundary?: string }).boundary === 'A-Za-z',
+    )
+    // RED provenance: wrapping either regex in `^(?:...)$` lets the engine
+    // backtrack/stop at a multiline end. Isolated exact samples also miss that
+    // a family can extend (`redx`) or reject on following input (`fooX`).
+  })
+
+  it('requires total ASCII case inclusion before publishing an equal view', () => {
+    for (const folded of [
+      literal('a', { caseInsensitive: true }),
+      keywords(['red'], { caseInsensitive: true }),
+    ]) {
+      const spelling = folded._def.tag === 'literal' ? 'a' : 'red'
+      const selector = token(regex(new RegExp(spelling)))
+      const routed = dispatch(selector, otherwise(literal('!')))
+      const root = choice(folded, routed)
+      const alphabet = collectLexicalAlphabet([root])
+      const site = alphabet.decisions.find(decision =>
+        alphabet.capabilities[decision.siteId]!.parser === root)!
+      const family = alphabet.decisionFamilies.find(entry =>
+        entry.ir.kind === 'regex' && entry.ir.source === spelling)!
+      const plan = site.families.find(entry => entry.familyId === family.id)!
+      expect(plan.arms[0]!.acceptance).toEqual({ kind: 'unrestricted' })
+    }
+    for (const familyRegex of [/\x61/, /[\u0061]/]) {
+      const folded = keywords(['a'], { caseInsensitive: true })
+      const selector = token(regex(familyRegex))
+      const root = choice(folded, dispatch(selector, otherwise(literal('!'))))
+      const alphabet = collectLexicalAlphabet([root])
+      const site = alphabet.decisions.find(decision =>
+        alphabet.capabilities[decision.siteId]!.parser === root)!
+      const family = alphabet.decisionFamilies.find(entry =>
+        entry.ir.kind === 'regex' && entry.ir.source === familyRegex.source)!
+      const plan = site.families.find(entry => entry.familyId === family.id)!
+      expect(plan.arms[0]!.acceptance).toEqual({ kind: 'unrestricted' })
+    }
+    {
+      const folded = keywords(['ä'], { caseInsensitive: true })
+      const selector = token(regex(/ä/))
+      const root = choice(folded, dispatch(selector, otherwise(literal('!'))))
+      const alphabet = collectLexicalAlphabet([root])
+      const site = alphabet.decisions.find(decision =>
+        alphabet.capabilities[decision.siteId]!.parser === root)!
+      const family = alphabet.decisionFamilies.find(entry =>
+        entry.ir.kind === 'regex' && entry.ir.source === 'ä')!
+      const plan = site.families.find(entry => entry.familyId === family.id)!
+      expect(plan.arms[0]!.acceptance).toEqual({ kind: 'unrestricted' })
+    }
+    {
+      const folded = keywords(['ä'], { caseInsensitive: true, boundary: 'äÄ' })
+      const selector = token(regex(/[äÄ]+/))
+      const routed = dispatch(selector, when('ä', literal('!')), otherwise(literal('?')))
+      const root = choice(folded, routed)
+      const alphabet = collectLexicalAlphabet([root])
+      const site = alphabet.decisions.find(decision =>
+        alphabet.capabilities[decision.siteId]!.parser === root)!
+      const family = alphabet.decisionFamilies.find(entry =>
+        entry.ir.kind === 'regex' && entry.ir.source === '[äÄ]+')!
+      const plan = site.families.find(entry => entry.familyId === family.id)!
+      expect(plan.arms[0]!.acceptance).toEqual({ kind: 'unrestricted' })
+    }
+    // RED provenance: testing only canonical lowercase maps `a`/`red` to a
+    // case-sensitive family even though `A`/`RED` still enter the CI arm;
+    // escaped ASCII spellings must be decoded before proving case stability.
+    // Non-ASCII `/i` has larger fold classes (ä/Ä, sigma/final-sigma), so this
+    // bounded ASCII proof deliberately declines those arms and partitions.
+  })
+
+  it('declines continuation proofs that require astral Unicode code points', () => {
+    const astral = '\u{10000}'
+    const arm = keywords([astral], { boundary: 'A-Za-z' })
+    const selector = token(regex(/[\u{10000}]+/u))
+    const root = choice(arm, dispatch(selector, otherwise(literal('!'))))
+    const alphabet = collectLexicalAlphabet([root])
+    const site = alphabet.decisions.find(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === root)!
+    const family = alphabet.decisionFamilies.find(entry =>
+      entry.ir.kind === 'regex' && entry.ir.source === '[\\u{10000}]+')!
+    const plan = site.families.find(entry => entry.familyId === family.id)!
+    expect(plan.arms[0]!.acceptance).toEqual({ kind: 'unrestricted' })
+    // RED provenance: a BMP-only continuation loop sees no matching code unit
+    // and falsely treats a boundary that omits U+10000 as a total cover.
+  })
+
+  it('declines continuation proofs with position-sensitive prefix assertions', () => {
+    const arm = keywords(['red'], { boundary: 'A-Za-z' })
+    const selector = token(regex(/\b[a-z]+/))
+    const decision = choice(arm, dispatch(selector, otherwise(literal('!'))))
+    const root = sequence(literal('x'), decision)
+    const alphabet = collectLexicalAlphabet([root])
+    const site = alphabet.decisions.find(entry =>
+      alphabet.capabilities[entry.siteId]!.parser === decision)!
+    const family = alphabet.decisionFamilies.find(entry =>
+      entry.ir.kind === 'regex' && entry.ir.source === '\\b[a-z]+')!
+    const plan = site.families.find(entry => entry.familyId === family.id)!
+    expect(plan.arms[0]!.acceptance).toEqual({ kind: 'unrestricted' })
+    // RED provenance: after the leading `x`, \b rejects while the authored
+    // keyword still matches; a trailing-class-only proof skips the valid arm.
+  })
+
+  it('keeps grouped, overlapping and otherwise dispatch routes source ordered', () => {
+    const selector = token(regex(/[a-z]+/))
+    const root = dispatch(
+      selector,
+      when(['a', 'ab'], literal('!')),
+      when(startsWith('a'), literal('?')),
+      when(startsWith('a'), literal(':')),
+      otherwise(literal('.')),
+    )
+    const alphabet = collectLexicalAlphabet([root])
+    const site = alphabet.decisions.find(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === root)!
+    expect(site.gaps).toEqual([])
+    expect(site.families).toHaveLength(1)
+    const arms = site.families[0]!.arms
+    expect(arms.map(arm => arm.armId)).toEqual([0, 1, 2, 3])
+    expect(arms[0]!.acceptance).toMatchObject({ kind: 'outcomes', outcomeIds: expect.any(Array) })
+    if (arms[0]!.acceptance.kind !== 'outcomes') throw new Error('test setup: exact arm')
+    expect(arms[0]!.acceptance.outcomeIds).toHaveLength(2)
+    if (arms[1]!.acceptance.kind !== 'outcomes') throw new Error('test setup: matcher arm')
+    expect(alphabet.decisionOutcomes.find(outcome =>
+      outcome.id === (arms[1]!.acceptance.kind === 'outcomes'
+        ? arms[1]!.acceptance.outcomeIds[0] : -1))!.view)
+      .toMatchObject({ kind: 'predicate', match: { kind: 'startsWith', value: 'a' } })
+    expect(arms[2]!.acceptance).toEqual(arms[1]!.acceptance)
+    expect(arms[3]!.acceptance).toEqual({
+      kind: 'otherwise',
+      excludingOutcomeIds: [...new Set([
+        ...arms[0]!.acceptance.outcomeIds,
+        ...arms[1]!.acceptance.outcomeIds,
+        ...(arms[2]!.acceptance.kind === 'outcomes' ? arms[2]!.acceptance.outcomeIds : []),
+      ])].sort((a, b) => a - b),
+    })
+    // Duplicate predicates share one atomic outcome identity, while armId 1/2
+    // remain distinct ordered routes. RED provenance: route dedup drops arm 2.
+  })
+
+  it('does not collapse case-folded arm languages into a case-sensitive outcome partition', () => {
+    const selector = token(regex(/[A-Za-z]+/))
+    const routed = dispatch(
+      selector,
+      when('red', literal('!')),
+      otherwise(literal('?')),
+    )
+    const folded = keywords(['red'], { caseInsensitive: true, boundary: 'A-Za-z' })
+    const root = choice(folded, routed)
+    const alphabet = collectLexicalAlphabet([root])
+    const site = alphabet.decisions.find(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === root)!
+    const family = alphabet.decisionFamilies.find(entry =>
+      entry.ir.kind === 'regex' && entry.ir.source === '[A-Za-z]+')!
+    const plan = site.families.find(entry => entry.familyId === family.id)!
+    const foldedAcceptance = plan.arms[0]!.acceptance
+    expect(foldedAcceptance.kind).toBe('outcomes')
+    if (foldedAcceptance.kind !== 'outcomes') throw new Error('test setup: folded arm')
+    expect(alphabet.decisionOutcomes.find(outcome =>
+      outcome.id === foldedAcceptance.outcomeIds[0])!.view)
+      .toMatchObject({ kind: 'language', relation: 'equal' })
+    // `red` selects the exact route while `RED` selects otherwise. Mapping one
+    // canonical spelling to either outcome would incorrectly skip this CI arm.
+    // RED provenance: removing predicatePartitionStableFor maps the arm to the
+    // CS exact-predicate outcome instead of this independent CI language view.
+  })
+
+  it('keeps otherwise complements local when two dispatches share a family', () => {
+    const selector = token(regex(/[a-z]+/))
+    const left = dispatch(selector, when('a', literal('!')), otherwise(literal('?')))
+    const right = dispatch(selector, when('b', literal(':')), otherwise(literal('.')))
+    const root = choice(left, right)
+    const alphabet = collectLexicalAlphabet([root])
+    const site = alphabet.decisions.find(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === root)!
+    expect(site.gaps).toContainEqual(expect.stringContaining('distinct site-local outcome partitions'))
+    expect(site.families).toHaveLength(1)
+    expect(site.families[0]!.arms.map(arm => arm.acceptance)).toEqual([
+      { kind: 'unrestricted' }, { kind: 'unrestricted' },
+    ])
+    // RED provenance: unioning both classifiers' exclusions turns neither
+    // authored otherwise route into its true site-local complement.
+  })
+
+  it('keeps reused decision occurrences context-local and gaps incomplete algebra', () => {
+    const shared = choice(choice(literal('a'), literal('b')), token(literal('c')))
+    const trivia = regex(/ +/)
+    const root = choice(
+      parser({ trivia }, shared),
+      parser({ trivia: null }, shared),
+    )
+    const alphabet = collectLexicalAlphabet([root])
+    const occurrences = alphabet.decisions.filter(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === shared)
+    expect(occurrences).toHaveLength(2)
+    expect(new Set(occurrences.map(entry => entry.contextKey)).size).toBe(2)
+    expect(occurrences.every(entry => entry.gaps.some(reason =>
+      reason.includes('nested leading choice')))).toBe(true)
+    expect(alphabet.capabilities.filter(site => site.parser === shared)
+      .every(site => site.obligations.recognition.kind === 'gap')).toBe(true)
+    // RED provenance: deduplicating by parser/language alone collapses these two
+    // outer lexical contexts; treating an unsupported nested union as
+    // unrestricted silently marks the outcome algebra complete.
+  })
+
+  it('fails closed when a final composed decision arm is omitted from the outcome IR', () => {
+    const base = rules(g => ({
+      Entry: sequence(g.Word, literal('!')),
+      Word: choice(literal('old'), token(literal('older'))),
+    }))
+    const delta = rules(() => ({
+      Word: choice(literal('a'), token(literal('ab'))),
+    }))
+    const composed = compose([base, delta]) as unknown as Record<string, unknown>
+    const winners = composedCoverageRules(composed)!
+    const names = Object.keys(winners).sort()
+    const roots = names.map(name => winners[name]!)
+    const resolve = (name: string): Combinator<unknown> | undefined => winners[name]
+    const alphabet = collectLexicalAlphabet(roots, resolve)
+    const finalWord = alphabet.decisions.find(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === winners.Word)!
+    expect(finalWord.families.some(family => family.arms.length === 2)).toBe(true)
+    const planted = alphabet.decisions.map(decision => decision !== finalWord ? decision : ({
+      ...decision,
+      families: decision.families.map((family, index) => index === 0
+        ? { ...family, arms: family.arms.slice(1) }
+        : family),
+    }))
+    expect(() => assertLexicalCapabilityClosure(roots, {
+      capabilities: alphabet.capabilities,
+      capabilityLanguages: alphabet.capabilityLanguages,
+      bindingEdges: alphabet.bindingEdges,
+      decisionFamilies: alphabet.decisionFamilies,
+      decisionOutcomes: alphabet.decisionOutcomes,
+      decisions: planted,
+    }, resolve)).toThrow('lexical capability census is incomplete')
+    // RED provenance: an outcome walk over pre-compose or filtered arms can
+    // retain the old decision while the final grammar executes the replacement.
+  })
+
   it('catalogues token() as one range and keeps its child terminals private', () => {
     const identifier = regex(/[a-z-]+/i)
     const open = literal('(')
@@ -505,10 +832,19 @@ describe('derived lexical-token families', () => {
       primitiveKernels.byKey.get('L\u0000(\u0000')!,
     )).toBe(true)
     expect(alphabet.recognizers).toHaveLength(1)
+    const canonicalFamily = alphabet.decisionFamilies.find(family =>
+      family.semanticKey === JSON.stringify(alphabet.recognizers[0]!.ir))!
+    expect(canonicalFamily.id).toBeGreaterThanOrEqual(3)
+    expect(alphabet.recognizers[0]!.capabilityFamilyId).toBe(canonicalFamily.id)
+    expect(alphabet.decisionOutcomes.every(outcome =>
+      outcome.id >= 3 + alphabet.decisionFamilies.length)).toBe(true)
     expect(alphabet.families[0]!.recognizerId).toBe(alphabet.recognizers[0]!.id)
     expect(alphabet.sites).not.toContainEqual(expect.objectContaining({ parser: identifier }))
     expect(alphabet.sites).not.toContainEqual(expect.objectContaining({ parser: open }))
     expect(Object.keys(alphabet)).not.toContain('primitiveKernels')
+
+    // RED provenance: assigning decision families from a separate zero-based
+    // site walk makes this same IR acquire two unrelated family identities.
 
     expect(alphabet.classifiers).toHaveLength(1)
     const classifier = alphabet.classifiers[0]!

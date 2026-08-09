@@ -31,7 +31,7 @@
  * module only decides WHAT the tokens are and WHICH ones each site may see.
  */
 import type { Combinator, ParserDef } from '../types.ts'
-import { matchesEmpty } from '../combinators/first-set.ts'
+import { firstSetOf, intersects, matchesEmpty } from '../combinators/first-set.ts'
 import { branchUsesRouted } from '../combinators/dispatch.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 
@@ -79,6 +79,8 @@ export type LexicalRecognizer = {
   readonly id: number
   readonly key: string
   readonly ir: LexicalIr
+  /** Crosswalk into the compiler-wide canonical recognition-family interner. */
+  readonly capabilityFamilyId: number
 }
 
 /**
@@ -160,6 +162,72 @@ export type LexicalCapabilityLanguage = {
   readonly semanticKey: string
 }
 
+/**
+ * One compiler-wide canonical source-range language. IDs use the lexical
+ * family namespace even while phase B is disabled; decision plans and the
+ * legacy token collector cross-reference this one IR interner.
+ */
+export type LexicalDecisionFamily = {
+  readonly id: number
+  readonly semanticKey: string
+  readonly ir: LexicalIr
+}
+
+/**
+ * A compatible view of one family range. `prefix` owns its own shorter end;
+ * consumers must never substitute the full family end (the `a | ab` rule).
+ */
+export type LexicalDecisionOutcomeView =
+  | { readonly kind: 'whole'; readonly relation: 'equal' }
+  | {
+    readonly kind: 'predicate'
+    readonly relation: 'equal'
+    readonly match: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>
+  }
+  | {
+    readonly kind: 'language'
+    readonly relation: 'equal' | 'prefix'
+    readonly ir: LexicalIr
+  }
+
+/** Global, family-qualified atomic outcome/view identity. */
+export type LexicalDecisionOutcome = {
+  readonly id: number
+  readonly familyId: number
+  readonly semanticKey: string
+  readonly view: LexicalDecisionOutcomeView
+}
+
+export type LexicalDecisionAcceptance =
+  | { readonly kind: 'outcomes'; readonly outcomeIds: readonly number[] }
+  | { readonly kind: 'otherwise'; readonly excludingOutcomeIds: readonly number[] }
+  | { readonly kind: 'unrestricted' }
+  | { readonly kind: 'impossible' }
+  | { readonly kind: 'gap'; readonly reason: string }
+
+/** One source-ordered arm/route for one candidate family at one occurrence. */
+export type LexicalDecisionArm = {
+  readonly armId: number
+  readonly acceptance: LexicalDecisionAcceptance
+  readonly usesRouted: boolean
+  readonly dynamicGate: boolean
+}
+
+export type LexicalDecisionFamilyPlan = {
+  readonly familyId: number
+  readonly arms: readonly LexicalDecisionArm[]
+}
+
+/** Occurrence-local ordered decision proof; never serialized in this tranche. */
+export type LexicalDecisionSite = {
+  readonly siteId: number
+  readonly atom: 'choice' | 'dispatch'
+  readonly path: string
+  readonly contextKey: string
+  readonly families: readonly LexicalDecisionFamilyPlan[]
+  readonly gaps: readonly string[]
+}
+
 /** One fixed incoming/root edge whose direct linked-body candidates remain owed. */
 export type LexicalBindingEdge = {
   readonly id: number
@@ -230,13 +298,18 @@ export type LexicalAlphabet = {
   readonly capabilityLanguages: readonly LexicalCapabilityLanguage[]
   /** Every distinct fixed parent/root edge, independently GAP until linked. */
   readonly bindingEdges: readonly LexicalBindingEdge[]
+  /** Phase-A compatible range/arm algebra; compiler-only and occurrence-local. */
+  readonly decisionFamilies: readonly LexicalDecisionFamily[]
+  readonly decisionOutcomes: readonly LexicalDecisionOutcome[]
+  readonly decisions: readonly LexicalDecisionSite[]
   /** False means phase B is forbidden for the entire program. */
   readonly capabilityComplete: boolean
 }
 
 export type LexicalCapabilityInventory = Pick<
   LexicalAlphabet,
-  'capabilities' | 'capabilityLanguages' | 'bindingEdges' | 'capabilityComplete'
+  'capabilities' | 'capabilityLanguages' | 'bindingEdges'
+  | 'decisionFamilies' | 'decisionOutcomes' | 'decisions' | 'capabilityComplete'
 >
 
 /** Numeric-only artifact projection; `TableProgram` aliases this contract. */
@@ -667,8 +740,478 @@ function terminalObligations(): LexicalCapabilityObligations {
   }
 }
 
-function decisionObligations(): LexicalCapabilityObligations {
-  return tokenObligations(gap('token outcome recognition for this ordered decision is not implemented'))
+function decisionObligations(recognition: LexicalCapabilityStatus): LexicalCapabilityObligations {
+  return tokenObligations(recognition)
+}
+
+type DecisionLead = {
+  readonly parser: Combinator<unknown>
+  readonly ir: LexicalIr
+  readonly key: string
+  readonly dispatch?: Extract<ParserDef, { tag: 'dispatch' }>
+}
+
+type DecisionLeadResult = { readonly lead: DecisionLead } | { readonly gap: string }
+
+/**
+ * Find the one atomic range whose recognition starts this arm. This is only a
+ * language proof: wrappers still owe diagnostics/effects and remain in the
+ * eventual replacement body. Nullable prefixes and context-changing wrappers
+ * are deliberately GAP rather than guessed through.
+ */
+function decisionLead(
+  parser: Combinator<unknown>,
+  context: CapabilityContext,
+  resolve: ((name: string) => Combinator<unknown> | undefined) | undefined,
+  seen = new Set<Combinator<unknown>>(),
+): DecisionLeadResult {
+  if (seen.has(parser)) return { gap: 'recursive leading decision language' }
+  seen.add(parser)
+  const finish = (result: DecisionLeadResult): DecisionLeadResult => { seen.delete(parser); return result }
+  const def = parser._def
+  if (keyOf(def) !== undefined || def.tag === 'token' || (parser as BalancedSpec)._balancedSpec !== undefined) {
+    const normalized = normalizeBalancedLexical(parser, resolve, context.scanSkip)
+      ?? normalizeLexical(def.tag === 'token' ? def.parser : parser, resolve, new Set())
+    if ('refusal' in normalized) return finish({ gap: `leading recognizer: ${normalized.refusal}` })
+    return finish({ lead: {
+      parser,
+      ir: normalized.ir,
+      key: JSON.stringify(normalized.ir),
+    } })
+  }
+  switch (def.tag) {
+    case 'dispatch': {
+      const selected = decisionLead(def.selector, context, resolve, seen)
+      if ('gap' in selected) return finish(selected)
+      return finish({ lead: { ...selected.lead, dispatch: def } })
+    }
+    case 'lazy': {
+      const target = resolvedLazyTarget(parser, resolve)
+      return finish(target === undefined
+        ? { gap: 'unresolved leading rule reference' }
+        : decisionLead(target, context, resolve, seen))
+    }
+    case 'sequence':
+      if (def.parsers.length === 0) return finish({ gap: 'empty leading sequence' })
+      if (matchesEmpty(def.parsers[0]!, new Set(), resolve)) {
+        return finish({ gap: 'nullable leading sequence needs a total same-position union proof' })
+      }
+      return finish(decisionLead(def.parsers[0]!, context, resolve, seen))
+    case 'attempt': case 'transform': case 'leaf': case 'node': case 'field': case 'label': case 'expect':
+    case 'trivia':
+      return finish(decisionLead(def.parser, context, resolve, seen))
+    case 'grammar':
+      if (def.triviaParser !== undefined || def.clearTrivia === true || def.trackLines
+        || def.captureTrivia === true || def.rootCapture !== undefined) {
+        return finish({ gap: 'leading grammar wrapper changes lexical context' })
+      }
+      return finish(decisionLead(def.parser, context, resolve, seen))
+    case 'choice': return finish({ gap: 'nested leading choice needs a compatible range union proof' })
+    case 'optional': case 'many': case 'oneOrMore': case 'sepBy':
+      return finish({ gap: 'repeated or nullable leading language needs a range-partition proof' })
+    case 'peek': return finish({ gap: 'positive lookahead needs an exact effect-free compatible view' })
+    case 'not': return finish({ gap: 'negative lookahead needs a decidable complement' })
+    case 'withCtx': case 'guard': case 'adjacency': case 'recover': case 'scanTo': case 'routed': case 'unknown':
+      return finish({ gap: `leading ${def.tag} language is not represented` })
+    case 'literal': case 'keywords': case 'regex':
+      throw new Error('parseman: decision lead terminal escaped its direct case')
+  }
+}
+
+function finiteLexicalValues(ir: LexicalIr): readonly string[] | undefined {
+  if (ir.kind === 'literal') return [ir.value]
+  if (ir.kind === 'keywords') return ir.words
+  return undefined
+}
+
+function lexicalIrEnd(ir: LexicalIr, input: string, start = 0): number | undefined {
+  switch (ir.kind) {
+    case 'literal': {
+      const actual = input.slice(start, start + ir.value.length)
+      return (ir.caseInsensitive ? foldAscii(actual) === foldAscii(ir.value) : actual === ir.value)
+        ? start + ir.value.length : undefined
+    }
+    case 'keywords': {
+      for (const word of ir.words) {
+        const actual = input.slice(start, start + word.length)
+        if (ir.caseInsensitive ? foldAscii(actual) === foldAscii(word) : actual === word) {
+          const next = input[start + word.length]
+          if (next === undefined || ir.boundary === undefined) return start + word.length
+          try {
+            if (!new RegExp(`[${ir.boundary}]`).test(next)) return start + word.length
+          } catch { return undefined }
+        }
+      }
+      return undefined
+    }
+    case 'regex': {
+      try {
+        // regex() performs one authored sticky match. Anchoring the source in a
+        // wrapper changes both alternation backtracking (`a|ab`) and multiline
+        // `$` semantics, so proof must inspect the actual chosen end.
+        const matcher = new RegExp(ir.source, `${regexFlags(ir.flags)}y`)
+        matcher.lastIndex = start
+        const match = matcher.exec(input)
+        return match === null ? undefined : matcher.lastIndex
+      } catch { return undefined }
+    }
+    case 'choice': {
+      for (const arm of ir.arms) {
+        const end = lexicalIrEnd(arm, input, start)
+        if (end !== undefined) return end
+      }
+      return undefined
+    }
+    case 'sequence': {
+      let end = start
+      for (const part of ir.parts) {
+        const next = lexicalIrEnd(part, input, end)
+        if (next === undefined) return undefined
+        end = next
+      }
+      return end
+    }
+    case 'repeat': {
+      let end = start
+      let count = 0
+      while (ir.max === null || count < ir.max) {
+        const next = lexicalIrEnd(ir.body, input, end)
+        if (next === undefined || next === end) break
+        end = next
+        count++
+      }
+      return count >= ir.min ? end : undefined
+    }
+    case 'assert': {
+      const matched = lexicalIrEnd(ir.body, input, start) !== undefined
+      return matched === ir.positive ? start : undefined
+    }
+    case 'balanced': return undefined
+  }
+}
+
+function lexicalIrAcceptsExact(ir: LexicalIr, value: string): boolean {
+  return lexicalIrEnd(ir, value) === value.length
+}
+
+function asciiCaseVariants(value: string, caseInsensitive: boolean): readonly string[] | undefined {
+  if (caseInsensitive && /[^\x00-\x7f]/.test(value)) return undefined
+  if (!caseInsensitive || !/[A-Za-z]/.test(value)) return [value]
+  let variants = ['']
+  for (const char of value) {
+    const lower = char >= 'A' && char <= 'Z' ? char.toLowerCase() : char
+    const upper = char >= 'a' && char <= 'z' ? char.toUpperCase() : char
+    if (lower !== upper && variants.length > 2048) return undefined
+    variants = lower === upper
+      ? variants.map(prefix => prefix + char)
+      : variants.flatMap(prefix => [prefix + lower, prefix + upper])
+  }
+  return variants
+}
+
+function regexAsciiCaseStable(source: string): boolean {
+  let index = 0
+  while (index < source.length) {
+    const char = source[index]!
+    if (char === '\\') {
+      const kind = source[index + 1]
+      if (kind === 'x') {
+        const value = Number.parseInt(source.slice(index + 2, index + 4), 16)
+        if (Number.isFinite(value) && /[A-Za-z]/.test(String.fromCharCode(value))) return false
+        index += 4
+        continue
+      }
+      if (kind === 'u') {
+        const brace = source[index + 2] === '{'
+        const end = brace ? source.indexOf('}', index + 3) : index + 6
+        const digits = brace ? source.slice(index + 3, end) : source.slice(index + 2, end)
+        const value = Number.parseInt(digits, 16)
+        if (Number.isFinite(value) && value <= 0xffff
+          && /[A-Za-z]/.test(String.fromCharCode(value))) return false
+        index = brace ? (end + 1 || source.length) : end
+        continue
+      }
+      if (kind !== undefined && 'dDsSwWpP'.includes(kind)) { index += 2; continue }
+      if (kind !== undefined && /[A-Za-z]/.test(kind)) return false
+      index += 2
+      continue
+    }
+    if (char === '[') {
+      let end = index + 1
+      for (; end < source.length; end++) {
+        if (source[end] === '\\') { end++; continue }
+        if (source[end] === ']') break
+      }
+      if (end >= source.length) return false
+      const body = source.slice(index + 1, end)
+      const lowerRange = body.includes('a-z')
+      const upperRange = body.includes('A-Z')
+      if (lowerRange !== upperRange) return false
+      const withoutRanges = body.replace(/a-z|A-Z/g, '')
+      const literals = new Set<string>()
+      for (let at = 0; at < withoutRanges.length; at++) {
+        if (withoutRanges[at] === '\\') {
+          const kind = withoutRanges[++at]
+          if (kind === 'x') {
+            const value = Number.parseInt(withoutRanges.slice(at + 1, at + 3), 16)
+            if (Number.isFinite(value) && /[A-Za-z]/.test(String.fromCharCode(value))) {
+              literals.add(String.fromCharCode(value))
+            }
+            at += 2
+          }
+          else if (kind === 'u') {
+            let digits: string
+            if (withoutRanges[at + 1] === '{') {
+              const end = withoutRanges.indexOf('}', at + 2)
+              if (end < 0) return false
+              digits = withoutRanges.slice(at + 2, end)
+              at = end
+            } else {
+              digits = withoutRanges.slice(at + 1, at + 5)
+              at += 4
+            }
+            const value = Number.parseInt(digits, 16)
+            if (Number.isFinite(value) && value <= 0xffff
+              && /[A-Za-z]/.test(String.fromCharCode(value))) {
+              literals.add(String.fromCharCode(value))
+            }
+          } else if (kind !== undefined && /[A-Za-z]/.test(kind)
+            && !'dDsSwWpP'.includes(kind)) return false
+          continue
+        }
+        if (/[A-Za-z]/.test(withoutRanges[at]!)) literals.add(withoutRanges[at]!)
+      }
+      for (const letter of literals) {
+        const peer = letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase()
+        if (!literals.has(peer)) return false
+      }
+      index = end + 1
+      continue
+    }
+    if (/[A-Za-z]/.test(char)) return false
+    index++
+  }
+  return true
+}
+
+function lexicalIrAsciiCaseStable(ir: LexicalIr): boolean {
+  switch (ir.kind) {
+    case 'literal': return ir.caseInsensitive || !/[A-Za-z]/.test(ir.value)
+    case 'keywords': return ir.caseInsensitive
+      || ir.words.every(word => !/[A-Za-z]/.test(word))
+    case 'regex': return ir.flags.includes('i') || regexAsciiCaseStable(ir.source)
+    case 'sequence': return ir.parts.every(lexicalIrAsciiCaseStable)
+    case 'choice': return ir.arms.every(lexicalIrAsciiCaseStable)
+    case 'repeat': case 'assert': return lexicalIrAsciiCaseStable(ir.body)
+    case 'balanced': return !/[A-Za-z]/.test(ir.open + ir.close)
+      && ir.skip.every(lexicalIrAsciiCaseStable)
+  }
+}
+
+type ContinuationClass = { readonly source: string; readonly flags: string }
+
+function lexicalContinuationClasses(ir: LexicalIr): readonly ContinuationClass[] | undefined {
+  if (ir.kind === 'regex') {
+    const classesRemoved = ir.source.replace(/\[(?:\\.|[^\]\\])*\]/g, '[]')
+    if (/[|()$^]/.test(classesRemoved) || /\\[bB]/.test(classesRemoved)) return undefined
+    const tail = /(\[(?:\\.|[^\]\\])+\])(?:\*|\+)$/.exec(ir.source)
+    if (tail === null || /[uv]/.test(ir.flags) || /\\[pP]|\\u\{/.test(tail[1]!)) return undefined
+    return [{ source: tail[1]!, flags: ir.flags }]
+  }
+  if (ir.kind === 'sequence' && ir.parts.length === 2) {
+    const [head, tail] = ir.parts
+    if (tail?.kind !== 'repeat' || tail.min !== 0 || tail.max !== 1
+      || tail.body.kind !== 'literal' || [...tail.body.value].length !== 1) return undefined
+    const headClasses = lexicalContinuationClasses(head!)
+    if (headClasses === undefined) return undefined
+    const escaped = tail.body.value.replace(/[\\\]\-^]/g, '\\$&')
+    return [...headClasses, {
+      source: `[${escaped}]`, flags: tail.body.caseInsensitive ? 'i' : '',
+    }]
+  }
+  return undefined
+}
+
+function boundaryCoversContinuation(family: LexicalIr, boundary: string): boolean {
+  const classes = lexicalContinuationClasses(family)
+  if (classes === undefined) return false
+  let boundaryMatcher: RegExp
+  const matchers: RegExp[] = []
+  try {
+    boundaryMatcher = new RegExp(`^[${boundary}]$`)
+    for (const entry of classes) {
+      matchers.push(new RegExp(`^${entry.source}$`, regexFlags(entry.flags)))
+    }
+  } catch { return false }
+  for (let code = 0; code <= 0xffff; code++) {
+    const char = String.fromCharCode(code)
+    if (matchers.some(matcher => matcher.test(char)) && !boundaryMatcher.test(char)) return false
+  }
+  return true
+}
+
+function fixedRegexLiteral(source: string): string | undefined {
+  let value = ''
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index]!
+    if (char !== '\\') {
+      if (/[.[\]{}()*+?|^$]/.test(char)) return undefined
+      value += char
+      continue
+    }
+    const kind = source[++index]
+    if (kind === undefined || 'dDsSwWpPbB'.includes(kind)) return undefined
+    if (kind === 'x') {
+      const code = Number.parseInt(source.slice(index + 1, index + 3), 16)
+      if (!Number.isFinite(code)) return undefined
+      value += String.fromCharCode(code)
+      index += 2
+      continue
+    }
+    if (kind === 'u') {
+      if (source[index + 1] === '{') return undefined
+      const code = Number.parseInt(source.slice(index + 1, index + 5), 16)
+      if (!Number.isFinite(code)) return undefined
+      value += String.fromCharCode(code)
+      index += 4
+      continue
+    }
+    value += kind
+  }
+  return value
+}
+
+function familyHasContextFreeFiniteEnd(
+  ir: LexicalIr,
+  spellings: readonly string[],
+): boolean {
+  if (ir.kind === 'literal') return true
+  if (ir.kind === 'regex') return fixedRegexLiteral(ir.source) !== undefined
+  if (ir.kind !== 'keywords' || ir.boundary !== undefined) return false
+  return spellings.every(spelling => !ir.words.some(word => {
+    const actual = ir.caseInsensitive ? foldAscii(spelling) : spelling
+    const candidate = ir.caseInsensitive ? foldAscii(word) : word
+    return candidate.length > actual.length && candidate.startsWith(actual)
+  }))
+}
+
+function compatibleLanguageViews(
+  arm: LexicalIr,
+  family: LexicalIr,
+): ReadonlyArray<{ readonly ir: LexicalIr; readonly relation: 'equal' | 'prefix' }> | undefined {
+  if (JSON.stringify(arm) === JSON.stringify(family)) return [{ ir: arm, relation: 'equal' }]
+  const values = finiteLexicalValues(arm)
+  if (values === undefined || values.length === 0) return undefined
+  const familyValues = finiteLexicalValues(family)
+  const foldedArm = arm.kind === 'literal' ? arm.caseInsensitive : arm.kind === 'keywords' && arm.caseInsensitive
+  const foldedFamily = family.kind === 'literal'
+    ? family.caseInsensitive : family.kind === 'keywords' && family.caseInsensitive
+  const armBoundary = arm.kind === 'keywords' ? arm.boundary : undefined
+  const views: Array<{ ir: LexicalIr; relation: 'equal' | 'prefix' }> = []
+  for (const value of values) {
+    let relation: 'equal' | 'prefix' | undefined
+    const armCaseInsensitive = arm.kind === 'literal'
+      ? arm.caseInsensitive : arm.kind === 'keywords' && arm.caseInsensitive
+    const spellings = armCaseInsensitive && !/[^\x00-\x7f]/.test(value)
+      && lexicalIrAsciiCaseStable(family)
+      ? [value] : asciiCaseVariants(value, armCaseInsensitive)
+    const endIsTotal = spellings !== undefined
+      && (familyHasContextFreeFiniteEnd(family, spellings)
+        || armBoundary !== undefined && boundaryCoversContinuation(family, armBoundary))
+    if (endIsTotal && spellings !== undefined
+      && spellings.every(spelling => lexicalIrAcceptsExact(family, spelling))) {
+      relation = 'equal'
+    }
+    else if (familyValues !== undefined
+      && (family.kind === 'literal' || family.kind === 'keywords' && family.boundary === undefined)
+      && foldedArm === foldedFamily && familyValues.some(full => {
+      const a = foldedArm ? foldAscii(value) : value
+      const f = foldedFamily ? foldAscii(full) : full
+      if (!f.startsWith(a) || f.length === a.length) return false
+      if (arm.kind !== 'keywords' || arm.boundary === undefined) return true
+      try { return !new RegExp(`[${arm.boundary}]`).test(full[a.length]!) } catch { return false }
+    })) relation = 'prefix'
+    if (relation === undefined) return undefined
+    const ir: LexicalIr = arm.kind === 'keywords'
+      ? { ...arm, words: [value] }
+      : arm.kind === 'literal'
+        ? { ...arm, value }
+        : (() => { throw new Error('parseman: finite decision view lost its language') })()
+    views.push({ ir, relation })
+  }
+  return views
+}
+
+type PendingDecisionView = {
+  readonly familyKey: string
+  readonly key: string
+  readonly view: LexicalDecisionOutcomeView
+}
+
+type PendingAcceptance =
+  | { readonly kind: 'outcomes'; readonly keys: readonly string[] }
+  | { readonly kind: 'otherwise'; readonly excludingKeys: readonly string[] }
+  | Exclude<LexicalDecisionAcceptance, { kind: 'outcomes' | 'otherwise' }>
+
+type PendingDecisionSite = {
+  readonly siteId: number
+  readonly atom: 'choice' | 'dispatch'
+  readonly path: string
+  readonly contextKey: string
+  readonly families: ReadonlyArray<{
+    readonly familyKey: string
+    readonly arms: ReadonlyArray<Omit<LexicalDecisionArm, 'acceptance'> & { readonly acceptance: PendingAcceptance }>
+  }>
+  readonly gaps: readonly string[]
+}
+
+function predicateViews(def: Extract<ParserDef, { tag: 'dispatch' }>): Array<{
+  readonly match: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>
+  readonly armId: number
+  readonly parser: Combinator<unknown>
+  readonly usesRouted: boolean
+}> {
+  const out: Array<{
+    match: Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>
+    armId: number
+    parser: Combinator<unknown>
+    usesRouted: boolean
+  }> = []
+  let armId = 0
+  for (const entry of def.cases) {
+    for (const value of entry.keys) out.push({
+      match: { kind: 'exact', values: [value], caseInsensitive: entry.caseInsensitive },
+      armId, parser: entry.parser, usesRouted: branchUsesRouted(entry),
+    })
+    armId++
+  }
+  for (const entry of def.matchers ?? []) {
+    out.push({
+      match: entry.kind === 'matches'
+        ? { kind: 'matches', value: entry.value, flags: entry.flags ?? '', caseInsensitive: entry.caseInsensitive }
+        : { kind: entry.kind, value: entry.value, caseInsensitive: entry.caseInsensitive },
+      armId, parser: entry.parser, usesRouted: branchUsesRouted(entry),
+    })
+    armId++
+  }
+  return out
+}
+
+function predicatePartitionStableFor(
+  ir: LexicalIr,
+  predicates: readonly Exclude<LexicalOutcomeMatch, { kind: 'otherwise' }>[],
+): boolean {
+  const folded = ir.kind === 'literal' ? ir.caseInsensitive : ir.kind === 'keywords' && ir.caseInsensitive
+  const values = finiteLexicalValues(ir) ?? []
+  if (!folded) return true
+  if (values.some(value => /[^\x00-\x7f]/.test(value))) return false
+  if (!values.some(value => /[A-Za-z]/.test(value))) return true
+  return predicates.every(match => {
+    if (match.kind === 'matches') return match.caseInsensitive || match.flags.includes('i')
+    if (match.kind === 'exact') return match.caseInsensitive
+      || match.values.every(value => !/[A-Za-z]/.test(value))
+    return match.caseInsensitive || !/[A-Za-z]/.test(match.value)
+  })
 }
 
 type CapabilityCandidate = {
@@ -799,6 +1342,249 @@ function lexicalCapabilityCandidates(
   }
 }
 
+function decisionViewKey(view: LexicalDecisionOutcomeView): string {
+  if (view.kind === 'whole') return 'whole'
+  if (view.kind === 'predicate') return `predicate\u0000${canonicalLexicalOutcomeKey(view.match)}`
+  return `language\u0000${view.relation}\u0000${JSON.stringify(view.ir)}`
+}
+
+function lexicalDecisionInventory(
+  candidates: readonly CapabilityCandidate[],
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): {
+  families: LexicalDecisionFamily[]
+  outcomes: LexicalDecisionOutcome[]
+  decisions: LexicalDecisionSite[]
+  recognitionBySite: ReadonlyMap<number, LexicalCapabilityStatus>
+} {
+  const familyIrByKey = new Map<string, LexicalIr>()
+  const viewsByKey = new Map<string, PendingDecisionView>()
+  const pending: PendingDecisionSite[] = []
+  const addFamily = (lead: DecisionLead): string => {
+    if (!familyIrByKey.has(lead.key)) familyIrByKey.set(lead.key, lead.ir)
+    return lead.key
+  }
+  const addView = (familyKey: string, view: LexicalDecisionOutcomeView): string => {
+    const key = `${familyKey}\u0000${decisionViewKey(view)}`
+    if (!viewsByKey.has(key)) viewsByKey.set(key, { familyKey, key, view })
+    return key
+  }
+
+  // The interner is grammar-wide, not derived from whichever decisions happen
+  // to consume a language. This keeps family identity independent of cost/site
+  // selection and gives the legacy token inventory an explicit relocation.
+  for (const candidate of candidates) {
+    const def = candidate.parser._def
+    if (candidate.atom !== 'terminal' && candidate.atom !== 'token') continue
+    const normalized = normalizeBalancedLexical(candidate.parser, resolve, candidate.context.scanSkip)
+      ?? normalizeLexical(def.tag === 'token' ? def.parser : candidate.parser, resolve, new Set())
+    if (!('refusal' in normalized)) familyIrByKey.set(JSON.stringify(normalized.ir), normalized.ir)
+  }
+
+  for (let siteId = 0; siteId < candidates.length; siteId++) {
+    const candidate = candidates[siteId]!
+    if (candidate.atom !== 'choice' && candidate.atom !== 'dispatch') continue
+    const def = candidate.parser._def
+    const gaps: string[] = []
+    if (candidate.atom === 'dispatch') {
+      if (def.tag !== 'dispatch') throw new Error('parseman: decision occurrence lost its dispatch')
+      const result = decisionLead(def.selector, candidate.context, resolve)
+      if ('gap' in result) {
+        gaps.push(`selector: ${result.gap}`)
+        pending.push({
+          siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
+          families: [], gaps,
+        })
+        continue
+      }
+      const familyKey = addFamily(result.lead)
+      const predicates = predicateViews(def)
+      const predicateKeys = predicates.map(({ match }) => addView(familyKey, {
+        kind: 'predicate', relation: 'equal', match,
+      }))
+      const arms: Array<Omit<LexicalDecisionArm, 'acceptance'> & { acceptance: PendingAcceptance }> = []
+      let offset = 0
+      for (let armId = 0; armId < def.cases.length; armId++) {
+        const entry = def.cases[armId]!
+        const keys = predicateKeys.slice(offset, offset + entry.keys.length)
+        offset += entry.keys.length
+        arms.push({
+          armId, acceptance: { kind: 'outcomes', keys },
+          usesRouted: branchUsesRouted(entry), dynamicGate: false,
+        })
+      }
+      for (let i = 0; i < (def.matchers?.length ?? 0); i++) {
+        const entry = def.matchers![i]!
+        arms.push({
+          armId: arms.length, acceptance: { kind: 'outcomes', keys: [predicateKeys[offset++]!] },
+          usesRouted: branchUsesRouted(entry), dynamicGate: false,
+        })
+      }
+      if (def.otherwise !== undefined) arms.push({
+        armId: arms.length,
+        acceptance: { kind: 'otherwise', excludingKeys: predicateKeys },
+        usesRouted: branchUsesRouted({ parser: def.otherwise, usesRouted: def.otherwiseUsesRouted }),
+        dynamicGate: false,
+      })
+      pending.push({
+        siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
+        families: [{ familyKey, arms }], gaps,
+      })
+      continue
+    }
+
+    if (def.tag !== 'choice') throw new Error('parseman: decision occurrence lost its choice')
+    const leads = def.parsers.map((arm, armId) => {
+      const result = decisionLead(arm, candidate.context, resolve)
+      if ('gap' in result) gaps.push(`arm ${armId}: ${result.gap}`)
+      return result
+    })
+    const familyKeys = [...new Set(leads.flatMap(result => 'lead' in result
+      ? [addFamily(result.lead)] : []))].sort()
+    if (familyKeys.length === 0 && gaps.length === 0) gaps.push('choice has no completed leading range family')
+    const families = familyKeys.map(familyKey => {
+      const familyIr = familyIrByKey.get(familyKey)!
+      const wholeKey = addView(familyKey, { kind: 'whole', relation: 'equal' })
+      const familyDispatches = [...new Set(leads.flatMap(result =>
+        'lead' in result && result.lead.key === familyKey && result.lead.dispatch !== undefined
+          ? [result.lead.dispatch] : []))]
+      const ambiguousPartition = familyDispatches.length > 1
+      if (ambiguousPartition) gaps.push(
+        `family ${familyKey}: multiple dispatches need distinct site-local outcome partitions`)
+      const familyPredicates = ambiguousPartition ? []
+        : familyDispatches.flatMap(dispatch => predicateViews(dispatch).map(entry => entry.match))
+      const predicateKeys = familyPredicates.map(match => addView(familyKey, {
+        kind: 'predicate', relation: 'equal', match,
+      }))
+      const arms = def.parsers.map((arm, armId): Omit<LexicalDecisionArm, 'acceptance'> & {
+        acceptance: PendingAcceptance
+      } => {
+        const dynamicGate = def.gates[armId] !== null || def.autoNot[armId] !== null
+        const result = leads[armId]!
+        if ('gap' in result) return {
+          armId, acceptance: { kind: 'unrestricted' }, usesRouted: false, dynamicGate,
+        }
+        const lead = result.lead
+        if (lead.key === familyKey) {
+          if (ambiguousPartition) return {
+            armId, acceptance: { kind: 'unrestricted' }, usesRouted: false, dynamicGate,
+          }
+          if (lead.dispatch !== undefined) {
+            const predicates = predicateViews(lead.dispatch)
+            const keys = predicates.map(({ match }) => addView(familyKey, {
+              kind: 'predicate', relation: 'equal', match,
+            }))
+            return {
+              armId,
+              acceptance: lead.dispatch.otherwise === undefined
+                ? { kind: 'outcomes', keys }
+                : { kind: 'unrestricted' },
+              usesRouted: false,
+              dynamicGate,
+            }
+          }
+          return {
+            armId, acceptance: { kind: 'outcomes', keys: [wholeKey] },
+            usesRouted: false, dynamicGate,
+          }
+        }
+        const familyLead = leads.find((entry): entry is { lead: DecisionLead } =>
+          'lead' in entry && entry.lead.key === familyKey)!.lead
+        const armFirst = firstSetOf(arm, new Set(), resolve)
+        const familyFirst = firstSetOf(familyLead.parser, new Set(), resolve)
+        if (armFirst.kind === 'ranges' && familyFirst.kind === 'ranges'
+          && !intersects(armFirst, familyFirst)) {
+          return { armId, acceptance: { kind: 'impossible' }, usesRouted: false, dynamicGate }
+        }
+        const compatible = compatibleLanguageViews(lead.ir, familyIr)
+        if (compatible !== undefined) {
+          if (compatible.every(view => view.relation === 'equal')
+            && familyPredicates.length > 0
+            && predicatePartitionStableFor(lead.ir, familyPredicates)) {
+            const values = finiteLexicalValues(lead.ir)!
+            const accepted = new Set<string>()
+            let hasOtherwise = false
+            for (const value of values) {
+              const matching = familyPredicates.flatMap((match, index) =>
+                lexicalOutcomeMatches(match, value, 0, value.length) ? [predicateKeys[index]!] : [])
+              if (matching.length === 0) hasOtherwise = true
+              else for (const key of matching) accepted.add(key)
+            }
+            if (hasOtherwise && accepted.size === 0) return {
+              armId,
+              acceptance: { kind: 'otherwise', excludingKeys: predicateKeys },
+              usesRouted: false,
+              dynamicGate,
+            }
+            if (!hasOtherwise && accepted.size > 0) return {
+              armId,
+              acceptance: { kind: 'outcomes', keys: [...accepted] },
+              usesRouted: false,
+              dynamicGate,
+            }
+            // A finite arm split across direct predicates and the local
+            // complement is conservatively retained; neither half is dropped.
+            return { armId, acceptance: { kind: 'unrestricted' }, usesRouted: false, dynamicGate }
+          }
+          const keys = compatible.map(view => addView(familyKey, {
+            kind: 'language', relation: view.relation, ir: view.ir,
+          }))
+          return {
+            armId, acceptance: { kind: 'outcomes', keys },
+            usesRouted: false, dynamicGate,
+          }
+        }
+        return { armId, acceptance: { kind: 'unrestricted' }, usesRouted: false, dynamicGate }
+      })
+      return { familyKey, arms }
+    })
+    pending.push({
+      siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
+      families, gaps: [...new Set(gaps)].sort(),
+    })
+  }
+
+  const familyKeys = [...familyIrByKey.keys()].sort()
+  const familyIdByKey = new Map(familyKeys.map((key, index) => [key, FIRST_LEXICAL_FAMILY_ID + index]))
+  const families = familyKeys.map((semanticKey, index): LexicalDecisionFamily => ({
+    id: FIRST_LEXICAL_FAMILY_ID + index, semanticKey, ir: familyIrByKey.get(semanticKey)!,
+  }))
+  const viewKeys = [...viewsByKey.keys()].sort()
+  const firstOutcomeId = FIRST_LEXICAL_FAMILY_ID + familyKeys.length
+  const outcomeIdByKey = new Map(viewKeys.map((key, index) => [key, firstOutcomeId + index]))
+  const outcomes = viewKeys.map((key, index): LexicalDecisionOutcome => {
+    const pendingView = viewsByKey.get(key)!
+    return {
+      id: firstOutcomeId + index,
+      familyId: familyIdByKey.get(pendingView.familyKey)!,
+      semanticKey: decisionViewKey(pendingView.view),
+      view: pendingView.view,
+    }
+  })
+  const decisions = pending.map((site): LexicalDecisionSite => ({
+    siteId: site.siteId, atom: site.atom, path: site.path, contextKey: site.contextKey,
+    gaps: site.gaps,
+    families: site.families.map(family => ({
+      familyId: familyIdByKey.get(family.familyKey)!,
+      arms: family.arms.map(arm => ({
+        ...arm,
+        acceptance: arm.acceptance.kind === 'outcomes'
+          ? { kind: 'outcomes', outcomeIds: [...new Set(arm.acceptance.keys.map(key => outcomeIdByKey.get(key)!))].sort((a, b) => a - b) }
+          : arm.acceptance.kind === 'otherwise'
+            ? { kind: 'otherwise', excludingOutcomeIds: [...new Set(arm.acceptance.excludingKeys.map(key => outcomeIdByKey.get(key)!))].sort((a, b) => a - b) }
+            : arm.acceptance,
+      })),
+    })),
+  }))
+  const recognitionBySite = new Map<number, LexicalCapabilityStatus>(decisions.map(site => [
+    site.siteId,
+    site.gaps.length === 0 && site.families.length > 0
+      ? COMPLETE_CAPABILITY
+      : gap(site.gaps.join('; ') || 'decision has no completed range family'),
+  ]))
+  return { families, outcomes, decisions, recognitionBySite }
+}
+
 function lexicalCapabilityInventory(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
@@ -806,8 +1592,12 @@ function lexicalCapabilityInventory(
   capabilities: LexicalCapabilitySite[]
   languages: LexicalCapabilityLanguage[]
   bindingEdges: LexicalBindingEdge[]
+  decisionFamilies: LexicalDecisionFamily[]
+  decisionOutcomes: LexicalDecisionOutcome[]
+  decisions: LexicalDecisionSite[]
 } {
   const inventory = lexicalCapabilityCandidates(roots, resolve)
+  const decisionInventory = lexicalDecisionInventory(inventory.candidates, resolve)
   const pending = inventory.candidates.map((candidate, id) => {
     if (candidate.atom === 'terminal') {
       const key = keyOf(candidate.parser._def)
@@ -827,7 +1617,8 @@ function lexicalCapabilityInventory(
     const def = candidate.parser._def
     if (candidate.atom === 'choice') {
       if (def.tag !== 'choice') throw new Error('parseman: lexical choice capability lost its boundary')
-      const obligations = decisionObligations()
+      const obligations = decisionObligations(decisionInventory.recognitionBySite.get(id)
+        ?? gap('choice outcome recognition record is missing'))
       return {
         id, path: candidate.path,
         contextKey: candidate.contextKey,
@@ -841,7 +1632,8 @@ function lexicalCapabilityInventory(
     }
     if (candidate.atom === 'dispatch') {
       if (def.tag !== 'dispatch') throw new Error('parseman: lexical dispatch capability lost its boundary')
-      const obligations = decisionObligations()
+      const obligations = decisionObligations(decisionInventory.recognitionBySite.get(id)
+        ?? gap('dispatch outcome recognition record is missing'))
       return {
         id, path: candidate.path,
         contextKey: candidate.contextKey,
@@ -910,13 +1702,19 @@ function lexicalCapabilityInventory(
   const bindingEdges = inventory.bindingEdges.map((edge, id): LexicalBindingEdge => ({
     id, ...edge, status: gap(FIXED_TUPLE_BINDING_GAP),
   }))
-  return { capabilities, languages, bindingEdges }
+  return {
+    capabilities, languages, bindingEdges,
+    decisionFamilies: decisionInventory.families,
+    decisionOutcomes: decisionInventory.outcomes,
+    decisions: decisionInventory.decisions,
+  }
 }
 
 /** Re-enumerate the final graph so a dropped/filtered candidate fails closed. */
 export function assertLexicalCapabilityClosure(
   roots: ReadonlyArray<Combinator<unknown>>,
-  alphabet: Pick<LexicalCapabilityInventory, 'capabilities' | 'capabilityLanguages' | 'bindingEdges'>,
+  alphabet: Pick<LexicalCapabilityInventory,
+  'capabilities' | 'capabilityLanguages' | 'bindingEdges' | 'decisionFamilies' | 'decisionOutcomes' | 'decisions'>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): void {
   const actual = lexicalCapabilityInventory(roots, resolve)
@@ -932,12 +1730,29 @@ export function assertLexicalCapabilityClosure(
     `${edge.id}\u0000${edge.path}\u0000${edge.contextKey}\u0000${edge.parentTag}\u0000${edge.childTag}\u0000${JSON.stringify(edge.status)}`
   const expectedEdges = actual.bindingEdges.map(edgeSignature)
   const suppliedEdges = alphabet.bindingEdges.map(edgeSignature)
+  const familySignature = (family: LexicalDecisionFamily): string =>
+    `${family.id}\u0000${family.semanticKey}\u0000${JSON.stringify(family.ir)}`
+  const expectedFamilies = actual.decisionFamilies.map(familySignature)
+  const suppliedFamilies = alphabet.decisionFamilies.map(familySignature)
+  const outcomeSignature = (outcome: LexicalDecisionOutcome): string =>
+    `${outcome.id}\u0000${outcome.familyId}\u0000${outcome.semanticKey}\u0000${JSON.stringify(outcome.view)}`
+  const expectedOutcomes = actual.decisionOutcomes.map(outcomeSignature)
+  const suppliedOutcomes = alphabet.decisionOutcomes.map(outcomeSignature)
+  const decisionSignature = (decision: LexicalDecisionSite): string => JSON.stringify(decision)
+  const expectedDecisions = actual.decisions.map(decisionSignature)
+  const suppliedDecisions = alphabet.decisions.map(decisionSignature)
   if (expectedKeys.length !== suppliedKeys.length
     || expectedKeys.some((key, index) => key !== suppliedKeys[index])
     || expectedLanguages.length !== suppliedLanguages.length
     || expectedLanguages.some((key, index) => key !== suppliedLanguages[index])
     || expectedEdges.length !== suppliedEdges.length
-    || expectedEdges.some((key, index) => key !== suppliedEdges[index])) {
+    || expectedEdges.some((key, index) => key !== suppliedEdges[index])
+    || expectedFamilies.length !== suppliedFamilies.length
+    || expectedFamilies.some((key, index) => key !== suppliedFamilies[index])
+    || expectedOutcomes.length !== suppliedOutcomes.length
+    || expectedOutcomes.some((key, index) => key !== suppliedOutcomes[index])
+    || expectedDecisions.length !== suppliedDecisions.length
+    || expectedDecisions.some((key, index) => key !== suppliedDecisions[index])) {
     throw new Error('parseman: lexical capability census is incomplete after final grammar resolution')
   }
 }
@@ -952,6 +1767,9 @@ export function collectLexicalCapabilities(
     capabilities: inventory.capabilities,
     capabilityLanguages: inventory.languages,
     bindingEdges: inventory.bindingEdges,
+    decisionFamilies: inventory.decisionFamilies,
+    decisionOutcomes: inventory.decisionOutcomes,
+    decisions: inventory.decisions,
     capabilityComplete: inventory.capabilities.every(site => site.status.kind !== 'gap')
       && inventory.bindingEdges.every(edge => edge.status.kind !== 'gap'),
   }
@@ -989,6 +1807,22 @@ export function collectLexicalAlphabet(
 ): LexicalAlphabet {
   const capabilityInventory = collectLexicalCapabilities(roots, resolve)
   const { capabilities, bindingEdges } = capabilityInventory
+  const capabilityFamilyIdByKey = new Map(capabilityInventory.decisionFamilies.map(family =>
+    [family.semanticKey, family.id]))
+  const capabilityTokenFamilies = new Map<Combinator<unknown>, Map<number, LexicalDecisionFamily>>()
+  for (const site of capabilities) {
+    if (site.atom !== 'token' || site.obligations.recognition.kind !== 'complete') continue
+    const semanticKey = site.semanticKey.slice(2)
+    const familyId = capabilityFamilyIdByKey.get(semanticKey)
+    const family = familyId === undefined ? undefined
+      : capabilityInventory.decisionFamilies.find(entry => entry.id === familyId)
+    if (family === undefined) {
+      throw new Error('parseman: completed token occurrence has no canonical capability family')
+    }
+    let byId = capabilityTokenFamilies.get(site.parser)
+    if (byId === undefined) capabilityTokenFamilies.set(site.parser, byId = new Map())
+    byId.set(family.id, family)
+  }
   const tokenParsers: Combinator<unknown>[] = []
   const dispatchParsers: Combinator<unknown>[] = []
   const seenTop = new Set<Combinator<unknown>>()
@@ -1013,10 +1847,25 @@ export function collectLexicalAlphabet(
   for (const parser of tokenParsers) {
     const def = parser._def
     if (def.tag !== 'token') continue
-    const normalized = normalizeBalancedLexical(parser, resolve)
-      ?? normalizeLexical(def.parser, resolve, new Set())
-    if ('refusal' in normalized) {
-      sites.push({ parser, body: def.parser, refusal: normalized.refusal })
+    const candidateFamilies = capabilityTokenFamilies.get(parser)
+    if (candidateFamilies === undefined) {
+      const refused = normalizeBalancedLexical(parser, resolve)
+        ?? normalizeLexical(def.parser, resolve, new Set())
+      if ('refusal' in refused) {
+        sites.push({ parser, body: def.parser, refusal: refused.refusal })
+        continue
+      }
+      if (matchesEmpty(def.parser)) {
+        sites.push({ parser, body: def.parser, refusal: 'token body may match empty' })
+        continue
+      }
+      throw new Error('parseman: successful legacy recognizer has no canonical capability family')
+    }
+    if (candidateFamilies.size !== 1) {
+      sites.push({
+        parser, body: def.parser,
+        refusal: 'token parser is reused in incompatible lexical contexts',
+      })
       continue
     }
     if (matchesEmpty(def.parser)) {
@@ -1025,13 +1874,16 @@ export function collectLexicalAlphabet(
     }
     const diagnosticId = diagnostics.length
     diagnostics.push({ id: diagnosticId, body: def.parser })
-    const ir = normalized.ir
+    const canonicalFamily = [...candidateFamilies.values()][0]!
+    const ir = canonicalFamily.ir
     const key = JSON.stringify(ir)
     let recognizerId = recognizerByKey.get(key)
     if (recognizerId === undefined) {
       recognizerId = recognizers.length
       recognizerByKey.set(key, recognizerId)
-      recognizers.push({ id: recognizerId, key, ir })
+      recognizers.push({
+        id: recognizerId, key, ir, capabilityFamilyId: canonicalFamily.id,
+      })
     }
     const familyId = FIRST_LEXICAL_FAMILY_ID + recognizerId
     familyIdOf.set(parser, familyId)
@@ -1191,6 +2043,9 @@ export function collectLexicalAlphabet(
     capabilities,
     capabilityLanguages: capabilityInventory.capabilityLanguages,
     bindingEdges,
+    decisionFamilies: capabilityInventory.decisionFamilies,
+    decisionOutcomes: capabilityInventory.decisionOutcomes,
+    decisions: capabilityInventory.decisions,
     capabilityComplete: capabilityInventory.capabilityComplete,
   }
 }
