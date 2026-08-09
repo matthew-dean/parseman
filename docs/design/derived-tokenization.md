@@ -28,7 +28,8 @@ status labels identify which is which.
 > giant source-generated parser. The table is serialization/linking data: once assembly
 > knows a combinator's fixed arity and children, its parse body calls direct captured or
 > statically named child references. It may not traverse `kids[i]`, look up `pieces[ip]`,
-> or switch on an opcode to rediscover fixed grammar topology. This direct binding is
+> switch on an opcode to rediscover fixed grammar topology, or rebox linked children into
+> a fixed-membership array. This direct binding is
 > required for every final site, not only profiled hot sites. After the compiler selects
 > CHARACTER or TOKEN, it separately chooses the cheapest expression of that direct body:
 > an arity/shape closure template or a statically named emitted body. The historical
