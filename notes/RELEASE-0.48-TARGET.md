@@ -37,7 +37,7 @@ result-identity checks, paired A/B runs, and same-source controls; toy grammars
 or external-parser wins cannot substitute for this criterion.
 
 The primary orchestrator owns the Jess integration base and agent handoff. The
-currently approved remote base is `origin/dev` at `bc45be7484d8a9f737448078f63e9aaf0fedee73`.
+currently approved remote base is `origin/dev` at `f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002`.
 Before delegating Jess-dependent work or accepting a timing run, the primary fetches
 that remote, pushes independently approved Jess-native fixes to it, and requires every
 agent to branch an isolated worktree from the recorded head. Preserved older checkouts
