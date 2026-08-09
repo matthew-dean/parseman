@@ -326,22 +326,29 @@ whole inventory. Consequently the canonical completeness gate is currently open 
 TOKEN selection MUST remain disabled for these programs. These are `GAP` results, not
 CHARACTER cost wins and not semantic impossibilities.
 
-Once capability closes, the current cost ranking is:
+Because complete token candidates do not yet exist, the compiler has made **no**
+TOKEN-versus-CHARACTER cost selection for these sites. The evidence ranks which complete
+comparisons to build first; it does not predeclare winners:
 
-1. **TOKEN candidate — Less identifier-led statements.** The final `blockItem`,
+1. **First comparison — Less `Value`.** The compatible-view oracle can eliminate
+   7,734/7,927 prior retries in `benchmark.less` and 27,119/30,430 in generated Less.
+   The rejected native-regex loop and duplicated site-local trie prove that merely
+   producing token ids is too expensive, not that CHARACTER won. The competing
+   character candidate has a very cheap fact—`MixinReference` starts only with `.` or
+   `#`—which the token candidate must reuse as a seed rather than reread. Build the
+   complete shared fixed/trie/seeded TOKEN body and the complete direct CHARACTER body,
+   then price them. Until both exist, this site has no cost verdict.
+2. **Second comparison — Less identifier-led statements.** The final `blockItem`,
    `Body` and stylesheet decisions repeatedly enter and fail `FunctionStatement` and
    then a ruleset path. An atomic identifier/function result plus declaration/selector
    continuation facts has a conservative ceiling of 6,373 eliminated entries in
    `benchmark.less` and 13,654 in generated Less. Its binding comparison is a direct
    captured closure versus three named emitted sites—not a whole-parser factory.
-2. **CHARACTER candidate — Less `Value`/`MixinReference`.** Although this has the
-   largest raw failed-entry count, `MixinReference` can start only with `.` or `#`.
-   A corrected finite FIRST gate excludes about 7,963 / 24,459 entries more cheaply
-   than producing a general token. The remaining `.`/`#` cases have effectively no
-   token-reuse payoff.
-3. **CHARACTER by present evidence — CSS.** The benchmark has only 442 repeated exact
-   lexical calls and no compound-token same-position reuse. CSS remains token-free
-   unless a specific completed site proves a local cost win.
+3. **Low-priority comparison — CSS.** The benchmark has only 442 repeated exact lexical
+   calls and no compound-token same-position reuse. That makes the direct character
+   candidate the strong prior, but it is not a compiler selection until the exact token
+   candidate is available and priced. No incomplete token kernel may be used as evidence
+   for keeping CSS token-free.
 
 The previously suspected Less comma/semicolon mixin separator is not a leading target:
 the measured hot separator/trailing probes belong to `CallArgumentFunction`; the
