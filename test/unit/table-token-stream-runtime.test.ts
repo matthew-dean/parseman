@@ -4,8 +4,8 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, dispatch, endsWith, keywords, literal, makeWhen, optional, otherwise, regex, routed,
-  sequence, token, transform, when,
+  attempt, choice, dispatch, endsWith, field, keywords, literal, makeWhen, optional, otherwise,
+  regex, routed, sequence, token, transform, when,
 } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
@@ -601,14 +601,18 @@ describe('table token stream runtime', () => {
   it('replays diagnostics only before a committed PEG frontier and rolls back active sinks', async () => {
     const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
     const classified = dispatch(head, when(endsWith('('), literal('?')), otherwise(literal('~')))
+    const selected = field('selected', literal('f'))
     const parser = choice(
       attempt(literal('@')),
-      sequence(dispatch(literal('f'), when('f', literal('!')))),
+      sequence(dispatch(
+        selected,
+        when('f', literal('!')),
+      )),
       attempt(literal('#')),
       keywords(['red'], { caseInsensitive: true, boundary: '-A-Za-z0-9_(' }),
       classified,
     )
-    const prog = encodeTable({ Entry: parser })
+    const prog = encodeTable({ Entry: parser, Selected: selected })
     expect(prog.tokenPlan?.choiceMasks).toBeDefined()
     const loaded = await moduleRules(prog)
     const input = 'foo('
@@ -619,6 +623,7 @@ describe('table token stream runtime', () => {
       readonly raw: readonly unknown[]
       readonly trivia: readonly number[]
       readonly rootTrivia: readonly number[]
+      readonly fields: readonly unknown[]
       readonly errors: readonly unknown[]
     }
     const context = (): ParseContext => {
@@ -627,13 +632,23 @@ describe('table token stream runtime', () => {
       ctx._cstRawChildren = [{ sentinel: 'raw' }]
       ctx._triviaLog = [71]
       ctx._rootTriviaLog = [73]
+      ctx._fields = [{ name: 'sentinel', value: 'field', span: { start: 0, end: 0 } }]
       ctx._errors = [{ sentinel: 'error' }] as never[]
       return ctx
     }
     const sinks = (ctx: ParseContext): Omit<Snapshot, 'fail'> => ({
       leaves: ctx._cstLeaves!, raw: ctx._cstRawChildren!, trivia: ctx._triviaLog!,
-      rootTrivia: ctx._rootTriviaLog!, errors: ctx._errors!,
+      rootTrivia: ctx._rootTriviaLog!, fields: ctx._fields!, errors: ctx._errors!,
     })
+
+    // This is the branch effect the outer choice must transact: the selected
+    // field/terminal writes field, leaf and raw-child sinks before its routed
+    // continuation commits and fails.
+    const effectCtx = context()
+    expect(execRules(prog).Selected!('f', 0, effectCtx)).toMatchObject({ ok: true })
+    expect(effectCtx._fields).toHaveLength(2)
+    expect(effectCtx._cstLeaves).toHaveLength(2)
+    expect(effectCtx._cstRawChildren).toHaveLength(2)
 
     const sourceCtx = context()
     const source = parser.parse(input, 0, sourceCtx)
@@ -699,7 +714,8 @@ describe('table token stream runtime', () => {
   })
 
   it('restores a mask decision across nested assembly frames and releases it at outer finish', () => {
-    const { prog: raw } = maskedChoicePlan()
+    const made = maskedChoicePlan()
+    const raw = made.prog
     const plan = raw.tokenPlan!
     const family = plan.sites[1]!, recognizer = family - 3
     const at = plan.recognizerOffsets[recognizer]!, reK = plan.recognizerData[at + 5]!
@@ -710,23 +726,40 @@ describe('table token stream runtime', () => {
     counted.exec = function (input: string) { calls++; return exec.call(this, input) }
     const constants = [...raw.k]
     constants[reK] = counted
-    const prog = ownTableProgram({ ...raw, k: constants, asm: [] })
+    const code = [...raw.code], fns = [...raw.fns]
+    const classifiedIp = code[made.choice + 6]!
+    expect(code[classifiedIp]).toBe(OP_DISPATCH)
+    const fallback = literal('?')
+    let staleFallbackCalls = 0
+    const liveFallback = {
+      ...fallback,
+      parse(input: string, pos: number, ctx: ParseContext) {
+        staleFallbackCalls++
+        return fallback.parse(input, pos, ctx)
+      },
+    }
+    const liveFallbackIp = code.length
+    code.push(OP_LIVE, fns.length)
+    fns.push(liveFallback)
+    code[classifiedIp + 3] = liveFallbackIp
+    const prog = ownTableProgram({ ...raw, code, fns, k: constants, asm: [] })
     const asm = assemble(resolveTable(prog), prog, STRICT)
     const outer = createParseContext(), inner = createParseContext()
 
     asm.begin(outer)
-    expect(asm.pieces.Entry!('foo?', 0, outer)).not.toBe(false)
+    expect(asm.pieces.Entry!('red~', 0, outer)).not.toBe(false)
     expect(calls).toBe(1)
     asm.begin(inner)
-    expect(asm.pieces.Entry!('red~', 0, inner)).not.toBe(false)
+    expect(asm.pieces.Entry!('red(!', 0, inner)).not.toBe(false)
     expect(calls).toBe(2)
     asm.finish()
-    expect(asm.pieces.Entry!('foo?', 0, outer)).not.toBe(false)
-    expect(calls, 'the outer frame restored its packed decision').toBe(2)
+    expect(asm.pieces.Entry!('red~', 0, outer)).not.toBe(false)
+    expect(calls, 'the outer IDENT decision survived the nested FUNCTION_OPEN decision').toBe(2)
+    expect(staleFallbackCalls, 'restoring the IDENT decision avoids the generic fallback').toBe(0)
     asm.finish()
 
     asm.begin(outer)
-    expect(asm.pieces.Entry!('foo?', 0, outer)).not.toBe(false)
+    expect(asm.pieces.Entry!('red~', 0, outer)).not.toBe(false)
     expect(calls, 'outer finish released the source and decision').toBe(3)
     asm.finish()
   })
