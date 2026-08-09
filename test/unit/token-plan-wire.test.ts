@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { emitTableOnly } from '../../src/table/emit.ts'
 import { expandCompact, foldPrograms, type CompactProgram } from '../../src/table/program.ts'
 import {
   collectLexicalAlphabet, canonicalLexicalOutcomeKey, compatibleLexicalOutcomes, selectedLexicalOutcome,
@@ -11,7 +12,7 @@ import {
 } from '../../src/index.ts'
 
 describe('compact lexical token plan wire', () => {
-  it('serializes atomic family-qualified outcomes and keeps grouping on ordered routes', () => {
+  it('fails closed instead of serializing a partial token plan', () => {
     const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
     const ci = makeWhen({ caseInsensitive: true })
     const first = dispatch(
@@ -28,29 +29,11 @@ describe('compact lexical token plan wire', () => {
     )
 
     const prog = encodeTable({ Root: sequence(first, duplicate) })
-    const plan = prog.tokenPlan!
-    expect(plan).toBeDefined()
-    expect(Object.values(plan).every(value => Array.isArray(value)
-      && value.every(word => Number.isInteger(word)))).toBe(true)
-
-    // Recognizer ids are implicit array indices; family ids occupy their own
-    // namespace. Exact values are three atomic outcomes, grouped only by the
-    // first site route's accepted-id slice.
-    expect(plan.recognizerOffsets).toHaveLength(1)
-    expect(plan.tokenSites).toHaveLength(2)
-    expect(plan.sites).toHaveLength(8)
-    const firstRoute = plan.routes.slice(plan.sites[2]!, plan.sites[2]! + 4)
-    expect(firstRoute[3]).toBe(3)
-    expect(new Set(plan.accepted.slice(firstRoute[2]!, firstRoute[2]! + firstRoute[3]!)).size).toBe(3)
-
-    // Duplicate predicates remain two ordered route identities but reuse one
-    // atomic global outcome id.
-    const secondRouteOffset = plan.sites[6]!
-    const route0 = plan.routes.slice(secondRouteOffset, secondRouteOffset + 4)
-    const route1 = plan.routes.slice(secondRouteOffset + 4, secondRouteOffset + 8)
-    expect(route0[0]).toBe(0)
-    expect(route1[0]).toBe(1)
-    expect(plan.accepted[route0[2]!]).toBe(plan.accepted[route1[2]!])
+    const alphabet = collectLexicalAlphabet([sequence(first, duplicate)])
+    expect(alphabet.capabilityComplete).toBe(false)
+    expect(alphabet.capabilities.filter(site => site.status.kind === 'gap').map(site => site.atom))
+      .toEqual(['dispatch', 'token', 'dispatch'])
+    expect('tokenPlan' in prog).toBe(false)
   })
 
   it('assigns canonical ids independent of root order and keeps CI distinct from CS', () => {
@@ -90,26 +73,28 @@ describe('compact lexical token plan wire', () => {
   it('refuses effectful token spellings without allocating wire metadata', () => {
     const refused = token(field('name', regex(/[a-z]+/)))
     const prog = encodeTable({ Root: refused })
-    expect(prog.tokenPlan).toBeUndefined()
+    expect('tokenPlan' in prog).toBe(false)
     expect(collectLexicalAlphabet([refused])).toMatchObject({
       recognizers: [], outcomes: [], classifiers: [],
       sites: [{ refusal: 'field is effectful' }],
     })
   })
 
-  it('round-trips compact and folded programs without changing the numeric plan', () => {
+  it('keeps compact, folded, and macro artifacts free of a partial plan', () => {
     const head = token(sequence(regex(/[a-z]+/), optional(literal('('))))
     const root = dispatch(head, when(startsWith('x'), literal('x')), otherwise(literal('y')))
     const prog = encodeTable({ Root: root })
+    expect('tokenPlan' in prog).toBe(false)
     const compact: CompactProgram = {
       c: prog.code, k: prog.k, x: prog.cc, e: prog.fx, d: prog.disp,
-      r: prog.rules, f: prog.fns, q: prog.tokenPlan!,
+      r: prog.rules, f: prog.fns,
     }
-    expect(expandCompact(compact).tokenPlan).toEqual(prog.tokenPlan)
-    expect(foldPrograms({ base: prog, twin: encodeTable({ Root: root }) }, 'base').base.tokenPlan)
-      .toEqual(prog.tokenPlan)
+    expect('tokenPlan' in expandCompact(compact)).toBe(false)
+    expect('tokenPlan' in foldPrograms({ base: prog, twin: encodeTable({ Root: root }) }, 'base').base)
+      .toBe(false)
     const macroPath = compileRuleMap([['Root', root]])
-    expect(macroPath?.prog.tokenPlan).toEqual(prog.tokenPlan)
-    expect(macroPath?.replacement).toContain('q:{recognizerOffsets:[')
+    expect(macroPath == null ? true : !('tokenPlan' in macroPath.prog)).toBe(true)
+    expect(macroPath?.replacement).not.toContain('q:{recognizerOffsets:[')
+    expect(emitTableOnly(prog)).not.toMatch(/tokenPlan|_tok|recognizerOffsets/)
   })
 })

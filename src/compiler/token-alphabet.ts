@@ -98,6 +98,25 @@ export type LexicalTokenSite = {
   readonly refusal?: string
 }
 
+export type LexicalCapabilityStatus =
+  | { readonly kind: 'complete' }
+  | { readonly kind: 'gap'; readonly reason: string }
+  | { readonly kind: 'impossible'; readonly proof: string }
+
+/**
+ * Compiler-only phase-A census record. These ids are deliberately not family
+ * ids: two authored sites can share one future language while remaining two
+ * independently auditable capability obligations.
+ */
+export type LexicalCapabilitySite = {
+  readonly id: number
+  readonly path: string
+  readonly semanticKey: string
+  readonly atom: 'terminal' | 'token' | 'choice' | 'dispatch'
+  readonly parser: Combinator<unknown>
+  readonly status: LexicalCapabilityStatus
+}
+
 export type LexicalOutcomeMatch =
   | { readonly kind: 'exact'; readonly values: readonly string[]; readonly caseInsensitive: boolean }
   | { readonly kind: 'startsWith' | 'endsWith'; readonly value: string; readonly caseInsensitive: boolean }
@@ -152,6 +171,10 @@ export type LexicalAlphabet = {
   readonly outcomes: readonly LexicalOutcomeSpec[]
   readonly classifiers: readonly LexicalTokenClassifier[]
   readonly familyIdOf: ReadonlyMap<Combinator<unknown>, number>
+  /** Whole-final-grammar, ownership-aware phase-A capability census. */
+  readonly capabilities: readonly LexicalCapabilitySite[]
+  /** False means phase B is forbidden for the entire program. */
+  readonly capabilityComplete: boolean
 }
 
 /** Numeric-only artifact projection; `TableProgram` aliases this contract. */
@@ -467,6 +490,134 @@ function normalizeLexical(
   }
 }
 
+const CAPABILITY_VARIANT_GAP =
+  'total token replacement body is not implemented for every supported assembly variant'
+
+type CapabilityCandidate = {
+  readonly parser: Combinator<unknown>
+  readonly atom: 'terminal' | 'token' | 'choice' | 'dispatch'
+  readonly path: string
+}
+
+/**
+ * Enumerate atomic lexical ownership boundaries over the final graph. A token
+ * owns its interior, so its private terminals are not separate obligations;
+ * the same terminal reached independently outside that token remains one.
+ */
+function lexicalCapabilityCandidates(
+  roots: ReadonlyArray<Combinator<unknown>>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): CapabilityCandidate[] {
+  const topPath = new Map<Combinator<unknown>, string>()
+  const ownedPath = new Map<Combinator<unknown>, string>()
+  const compound = new Map<Combinator<unknown>, CapabilityCandidate>()
+  const terminals = new Map<string, CapabilityCandidate>()
+  const visit = (parser: Combinator<unknown>, path: string, owned: boolean): void => {
+    const seen = owned ? ownedPath : topPath
+    const prior = seen.get(parser)
+    if (prior !== undefined && prior <= path) return
+    seen.set(parser, path)
+
+    const def = parser._def
+    if (!owned && keyOf(def) !== undefined) {
+      const key = keyOf(def)!
+      const priorCandidate = terminals.get(key)
+      if (priorCandidate === undefined || path < priorCandidate.path) {
+        terminals.set(key, { parser, atom: 'terminal', path })
+      }
+    } else if (!owned && (def.tag === 'token' || def.tag === 'choice' || def.tag === 'dispatch')) {
+      const atom = def.tag
+      const priorCandidate = compound.get(parser)
+      if (priorCandidate === undefined || path < priorCandidate.path) {
+        compound.set(parser, { parser, atom, path })
+      }
+    }
+    const childOwned = owned || def.tag === 'token'
+    const children = tokenChildren(parser, resolve)
+    for (let i = 0; i < children.length; i++) {
+      visit(children[i]!, `${path}/${String(i).padStart(4, '0')}`, childOwned)
+    }
+  }
+  for (let i = 0; i < roots.length; i++) visit(roots[i]!, String(i).padStart(4, '0'), false)
+  return [...terminals.values(), ...compound.values()].sort((a, b) =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : a.atom < b.atom ? -1 : a.atom > b.atom ? 1 : 0)
+}
+
+function lexicalCapabilities(
+  roots: ReadonlyArray<Combinator<unknown>>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): LexicalCapabilitySite[] {
+  return lexicalCapabilityCandidates(roots, resolve).map((candidate, id) => {
+    if (candidate.atom === 'terminal') {
+      const key = keyOf(candidate.parser._def)
+      if (key === undefined) throw new Error('parseman: lexical terminal capability lost its semantic key')
+      return {
+        id, path: candidate.path, semanticKey: key, atom: candidate.atom,
+        parser: candidate.parser, status: { kind: 'complete' } as const,
+      }
+    }
+    const def = candidate.parser._def
+    if (candidate.atom === 'choice') {
+      if (def.tag !== 'choice') throw new Error('parseman: lexical choice capability lost its boundary')
+      return {
+        id, path: candidate.path,
+        semanticKey: `C\u0000${def.parsers.length}\u0000${def.strategy.tag}`,
+        atom: candidate.atom, parser: candidate.parser,
+        status: { kind: 'gap', reason: CAPABILITY_VARIANT_GAP } as const,
+      }
+    }
+    if (candidate.atom === 'dispatch') {
+      if (def.tag !== 'dispatch') throw new Error('parseman: lexical dispatch capability lost its boundary')
+      return {
+        id, path: candidate.path,
+        semanticKey: `D\u0000${def.cases.length}\u0000${def.matchers?.length ?? 0}\u0000${def.otherwise === undefined ? 0 : 1}`,
+        atom: candidate.atom, parser: candidate.parser,
+        status: { kind: 'gap', reason: CAPABILITY_VARIANT_GAP } as const,
+      }
+    }
+    if (def.tag !== 'token') throw new Error('parseman: lexical token capability lost its boundary')
+    const normalized = normalizeLexical(def.parser, resolve, new Set())
+    if ('refusal' in normalized) {
+      return {
+        id, path: candidate.path, semanticKey: `T\u0000GAP\u0000${normalized.refusal}`,
+        atom: candidate.atom, parser: candidate.parser,
+        status: { kind: 'gap', reason: `token normalization: ${normalized.refusal}` } as const,
+      }
+    }
+    const semanticKey = `T\u0000${JSON.stringify(normalized.ir)}`
+    if (matchesEmpty(def.parser)) {
+      return {
+        id, path: candidate.path, semanticKey, atom: candidate.atom, parser: candidate.parser,
+        status: {
+          kind: 'impossible',
+          proof: 'an atomic source token must consume positive width but this token body is nullable',
+        } as const,
+      }
+    }
+    return {
+      id, path: candidate.path, semanticKey, atom: candidate.atom, parser: candidate.parser,
+      status: { kind: 'gap', reason: CAPABILITY_VARIANT_GAP } as const,
+    }
+  })
+}
+
+/** Re-enumerate the final graph so a dropped/filtered candidate fails closed. */
+export function assertLexicalCapabilityClosure(
+  roots: ReadonlyArray<Combinator<unknown>>,
+  alphabet: Pick<LexicalAlphabet, 'capabilities'>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): void {
+  const actual = lexicalCapabilities(roots, resolve)
+  const signature = (site: LexicalCapabilitySite): string =>
+    `${site.id}\u0000${site.path}\u0000${site.atom}\u0000${site.semanticKey}`
+  const expectedKeys = actual.map(signature)
+  const suppliedKeys = alphabet.capabilities.map(signature)
+  if (expectedKeys.length !== suppliedKeys.length
+    || expectedKeys.some((key, index) => key !== suppliedKeys[index])) {
+    throw new Error('parseman: lexical capability census is incomplete after final grammar resolution')
+  }
+}
+
 function tokenBoundary(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
@@ -502,6 +653,7 @@ export function collectLexicalAlphabet(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): LexicalAlphabet {
+  const capabilities = lexicalCapabilities(roots, resolve)
   const tokenParsers: Combinator<unknown>[] = []
   const dispatchParsers: Combinator<unknown>[] = []
   const seenTop = new Set<Combinator<unknown>>()
@@ -700,6 +852,8 @@ export function collectLexicalAlphabet(
     outcomes: stableOutcomes,
     classifiers: stableClassifiers,
     familyIdOf: stableFamilyIdOf,
+    capabilities,
+    capabilityComplete: capabilities.every(site => site.status.kind !== 'gap'),
   }
 }
 
@@ -750,6 +904,10 @@ export function serializeLexicalPlan(
   tokenSites: readonly number[],
   dispatchSites: ReadonlyArray<{ readonly dsp: number; readonly classifier: LexicalTokenClassifier }>,
 ): NumericLexicalPlan | undefined {
+  // Phase B is globally disabled until phase A has a total replacement body
+  // for every reachable token-capable atom in every supported variant. A
+  // partially supported graph is never serialized as a cheaper token plan.
+  if (!alphabet.capabilityComplete) return undefined
   if (tokenSites.length === 0) return undefined
   const recognizerOffsets: number[] = []
   const recognizerData: number[] = []

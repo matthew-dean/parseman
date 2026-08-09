@@ -24,7 +24,7 @@ import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
-  collectLexicalAlphabet, serializeLexicalPlan,
+  assertLexicalCapabilityClosure, collectLexicalAlphabet,
   type LexicalAlphabet, type LexicalTokenClassifier,
 } from '../compiler/token-alphabet.ts'
 
@@ -1496,12 +1496,6 @@ class Encoder {
   finish(): TableProgram {
     if (this.code.length === 0) this.emit(OP_EMPTY)
     this.collapseIndirection()
-    const tokenPlan = serializeLexicalPlan(
-      this.lexical,
-      value => this.constant(value),
-      this.lexicalTokenSites,
-      this.lexicalDispatchSites,
-    )
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
@@ -1516,7 +1510,6 @@ class Encoder {
       ...(this.triviaSpecs.length === 0 ? {} : { triviaSpecs: this.triviaSpecs }),
       ...(this.rec ? { rec: 1 as const } : {}),
       ...(this.cov === undefined ? {} : { cov: this.cov }),
-      ...(tokenPlan === undefined ? {} : { tokenPlan }),
       lines: this.track ? 1 : 0,
     })
   }
@@ -1611,10 +1604,10 @@ export function encodeTableProgram(
   }
   // Collect once from the FINAL winner-resolved graph. Sorting affects only
   // content-id discovery; ordinary rule/code order remains the caller's order.
-  const lexical = collectLexicalAlphabet(
-    [...names].sort().map(name => ruleMap[name]!),
-    name => ruleMap[name],
-  )
+  const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
+  const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
+  const lexical = collectLexicalAlphabet(lexicalRoots, resolveLexical)
+  assertLexicalCapabilityClosure(lexicalRoots, lexical, resolveLexical)
   const enc = new Encoder(resolvedSettings, lexical)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)

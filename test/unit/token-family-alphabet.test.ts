@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  collectAlphabet, collectLexicalAlphabet, compatibleLexicalOutcomes, selectedLexicalOutcome,
+  assertLexicalCapabilityClosure, collectAlphabet, collectLexicalAlphabet,
+  compatibleLexicalOutcomes, selectedLexicalOutcome,
   type LexicalTokenClassifier,
 } from '../../src/compiler/token-alphabet.ts'
 import type { Combinator, ParserDef } from '../../src/types.ts'
@@ -15,6 +16,60 @@ function synthetic<T>(inner: Combinator<T>, def: ParserDef): Combinator<T> {
 }
 
 describe('derived lexical-token families', () => {
+  it('censuses atomic token ownership and independently reachable terminals', () => {
+    const shared = regex(/[a-z]+/)
+    const privateSuffix = literal('(')
+    const head = token(sequence(shared, optional(privateSuffix)))
+    const root = sequence(literal('!'), shared, head)
+
+    const alphabet = collectLexicalAlphabet([root])
+    expect(alphabet.capabilities.map(site => ({
+      id: site.id, atom: site.atom, key: site.semanticKey, status: site.status.kind,
+    }))).toEqual([
+      { id: 0, atom: 'terminal', key: 'L\u0000!\u0000', status: 'complete' },
+      { id: 1, atom: 'terminal', key: 'R\u0000[a-z]+\u0000', status: 'complete' },
+      {
+        id: 2,
+        atom: 'token',
+        key: expect.stringContaining('"kind":"sequence"'),
+        status: 'gap',
+      },
+    ])
+    expect(alphabet.capabilities).not.toContainEqual(expect.objectContaining({ parser: privateSuffix }))
+    expect(alphabet.capabilityComplete).toBe(false)
+  })
+
+  it('fails the final-graph census when a valid candidate is hidden', () => {
+    const root = sequence(literal('!'), token(regex(/[a-z]+/)))
+    const alphabet = collectLexicalAlphabet([root])
+    expect(() => assertLexicalCapabilityClosure([root], {
+      capabilities: alphabet.capabilities.slice(1),
+    })).toThrow('lexical capability census is incomplete')
+
+    // RED provenance: before standalone primitives were enumerated, inserting
+    // this leading literal did not change the token-only census or its ids.
+    const withoutPrefix = collectLexicalAlphabet([token(regex(/[a-z]+/))])
+    expect(withoutPrefix.capabilities.map(site => [site.id, site.atom]))
+      .toEqual([[0, 'token']])
+    expect(alphabet.capabilities.map(site => [site.id, site.atom]))
+      .toEqual([[0, 'terminal'], [1, 'token']])
+  })
+
+  it('includes final choice and dispatch decisions outside owned token bodies', () => {
+    const ownedChoice = choice(literal('a'), literal('b'))
+    const head = token(ownedChoice)
+    const routedChoice = choice(
+      dispatch(head, when('a', literal('x')), otherwise(literal('y'))),
+      literal('!'),
+    )
+    const alphabet = collectLexicalAlphabet([routedChoice])
+    expect(alphabet.capabilities.map(site => site.atom)).toEqual([
+      'choice', 'dispatch', 'token', 'terminal', 'terminal', 'terminal',
+    ])
+    expect(alphabet.capabilities.filter(site => site.parser === ownedChoice)).toHaveLength(0)
+    expect(alphabet.capabilityComplete).toBe(false)
+  })
+
   it('catalogues token() as one range and keeps its child terminals private', () => {
     const identifier = regex(/[a-z-]+/i)
     const open = literal('(')

@@ -5,7 +5,6 @@ import { regex } from '../combinators/regex.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
-import type { NumericLexicalPlan } from '../compiler/token-alphabet.ts'
 
 /**
  * One assembly the BUILD already compiled, so the run does not have to.
@@ -58,12 +57,6 @@ export type TableProgram = {
    * at `resolveTable`, exactly like the char-class ASCII lookups.
    */
   readonly dsp: readonly DispatchSpec[]
-  /**
-   * Compiler-produced lexical token plan. Every member is a numeric pool; live
-   * combinators, authored token objects, diagnostic plans, and hashes are
-   * deliberately absent. See `TokenPlanWire` for record layouts.
-   */
-  readonly tokenPlan?: TokenPlanWire
   /** Rule name → entry offset in `code`. */
   readonly rules: Readonly<Record<string, number>>
   /**
@@ -298,7 +291,6 @@ export type CompactProgram = {
   readonly f: readonly unknown[]
   readonly l?: 0 | 1
   readonly p?: readonly DispatchSpec[]
-  readonly q?: TokenPlanWire
   readonly lb?: readonly string[]
   readonly rc?: 0 | 1
   readonly h?: 'ast' | 'cst'
@@ -317,7 +309,6 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   return ownTableProgram({
     code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
-    ...(p.q === undefined ? {} : { tokenPlan: p.q }),
     ...(p.lb === undefined ? {} : { labels: p.lb }),
     ...(p.rc === undefined ? {} : { classified: p.rc }),
     ...(p.h === undefined ? {} : { hostMode: p.h }),
@@ -330,24 +321,6 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.a === undefined ? {} : { asm: p.a }),
   })
 }
-
-/**
- * Compact numeric contract between the final-grammar planner and a future
- * token cursor. Recognizer and outcome IDs are global; sites and routes are
- * local to the already-encoded table.
- *
- * - `recognizerOffsets[id]` indexes `recognizerData`, a prefix TLV lexical IR.
- *   Family id is `FIRST_LEXICAL_FAMILY_ID + id`.
- * - `outcomeOffsets[]` indexes `outcomeData`; every outcome record starts with
- *   its global `[outcomeId,familyId,kind]` and is atomic.
- * - `tokenSites` is repeated `[OP_TOKEN ip,familyId]`. The ordinary child row
- *   remains the spelling-specific diagnostic/fallback implementation.
- * - `sites` is repeated `[dspIndex,familyId,routeWordOffset,routeCount]`.
- * - `routes` is repeated `[armIndex,flags,acceptedOffset,acceptedCount]` in PEG
- *   source order. Grouped exact values share this route, never one outcome id.
- * - `accepted` is the route slices' global outcome ids.
- */
-export type TokenPlanWire = NumericLexicalPlan
 
 /** One `dispatch()`'s routing tables, in serialisable form. */
 export type DispatchSpec = {
@@ -695,7 +668,6 @@ export type CompactFolded = {
  */
 const SHARED_FIELDS = [
   'k', 'cc', 'fx', 'disp', 'dsp', 'rules', 'labels', 'classified',
-  'tokenPlan',
   'scanSkip', 'scanSkipOf', 'scans', 'triviaSpecs', 'runtimeOnly',
   // `rec` is a property of the GRAMMAR BUILD, not of the trackLines/hostMode
   // axis a fold varies — every variant of one export is encoded with the same
