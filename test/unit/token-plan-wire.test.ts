@@ -5,6 +5,7 @@ import { expandCompact, foldPrograms, type CompactProgram } from '../../src/tabl
 import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { OP_DISPATCH } from '../../src/table/ops.ts'
+import { runtimeRangeOutcomeKind } from '../../src/table/token-outcome.ts'
 import {
   collectLexicalAlphabet, canonicalLexicalOutcomeKey, compatibleLexicalOutcomes, selectedLexicalOutcome,
 } from '../../src/compiler/token-alphabet.ts'
@@ -149,6 +150,8 @@ describe('compact lexical token plan wire', () => {
     const plan = encodeTable(Object.fromEntries(parsers.map((parser, i) => [`Root${i}`, parser]))).tokenPlan!
 
     expect(plan.sites).toHaveLength(parsers.length * 4)
+    expect(String(runtimeRangeOutcomeKind)).not.toContain('RegExp')
+    expect(String(runtimeRangeOutcomeKind)).not.toContain('.test(')
   })
 
   it('keeps family/outcome namespaces stable with an earlier independent token and root relocation', () => {
