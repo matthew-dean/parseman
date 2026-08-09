@@ -57,6 +57,8 @@ export type TableProgram = {
    * at `resolveTable`, exactly like the char-class ASCII lookups.
    */
   readonly dsp: readonly DispatchSpec[]
+  /** Optional compiler-planned zero-copy lexical stream. */
+  readonly tokenPlan?: TokenPlanWire
   /** Rule name → entry offset in `code`. */
   readonly rules: Readonly<Record<string, number>>
   /**
@@ -291,6 +293,7 @@ export type CompactProgram = {
   readonly f: readonly unknown[]
   readonly l?: 0 | 1
   readonly p?: readonly DispatchSpec[]
+  readonly q?: TokenPlanWire
   readonly lb?: readonly string[]
   readonly rc?: 0 | 1
   readonly h?: 'ast' | 'cst'
@@ -309,6 +312,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   return ownTableProgram({
     code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
+    ...(p.q === undefined ? {} : { tokenPlan: p.q }),
     ...(p.lb === undefined ? {} : { labels: p.lb }),
     ...(p.rc === undefined ? {} : { classified: p.rc }),
     ...(p.h === undefined ? {} : { hostMode: p.h }),
@@ -343,6 +347,30 @@ export type DispatchSpec = {
   readonly routed: readonly number[]
   /** Expected set when nothing matches — every case key, JSON-quoted. */
   readonly expected: readonly string[]
+}
+
+/**
+ * Compiler-planned parser-free global token outcomes plus site-local routes.
+ *
+ * All payloads are integer arrays. Numeric ABI:
+ * Recognizers are prefix-TLV lexical IR in `recognizerData`, addressed through
+ * `recognizerOffsets`; family id is `3 + recognizerId`. Outcomes are variable
+ * records addressed the same way. `tokenSites` is `[OP_TOKEN ip,familyId]`,
+ * `sites` is `[dispatchSpec,familyId,routeWordOffset,routeCount]`, and `routes`
+ * is `[armIndex,flags,acceptedOffset,acceptedCount]` in authored PEG order.
+ *
+ * Outcome identity never owns a parser. Route identity is local, ordered, and
+ * is the sole owner of the dispatch cut.
+ */
+export type TokenPlanWire = {
+  readonly recognizerOffsets: readonly number[]
+  readonly recognizerData: readonly number[]
+  readonly outcomeOffsets: readonly number[]
+  readonly outcomeData: readonly number[]
+  readonly tokenSites: readonly number[]
+  readonly sites: readonly number[]
+  readonly routes: readonly number[]
+  readonly accepted: readonly number[]
 }
 
 export type ResolvedDispatchSpec = {
@@ -668,6 +696,7 @@ export type CompactFolded = {
  */
 const SHARED_FIELDS = [
   'k', 'cc', 'fx', 'disp', 'dsp', 'rules', 'labels', 'classified',
+  'tokenPlan',
   'scanSkip', 'scanSkipOf', 'scans', 'triviaSpecs', 'runtimeOnly',
   // `rec` is a property of the GRAMMAR BUILD, not of the trackLines/hostMode
   // axis a fold varies — every variant of one export is encoded with the same
