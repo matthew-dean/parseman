@@ -15,6 +15,21 @@ reasoning. When an older note conflicts with this file, this file controls the
 0.48 implementation direction. Measurements still come from the evidence ledger;
 this specification does not turn a historical result into a baseline.
 
+### Agent reading contract
+
+Implementation agents MUST read this canonical file before changing the 0.48
+architecture. They MUST NOT load every linked evidence register merely because it is
+linked here. Read only the anchored section needed for the active mechanism or quoted
+measurement, and record that anchor in the resulting review. The registers are an
+evidence archive, not cumulative instructions and not required prompt context.
+
+The release objective is the acceptance envelope. This file supplies the implementation
+constraints that the short objective deliberately does not repeat: complete capability
+before cost selection, replacement-only token lowering, universal direct binding of
+fixed grammar tuples, one semantic implementation across all variants, and fail-closed
+gaps. An agent may not interpret omission of those details from a short task summary as
+permission to weaken them.
+
 ## 1. Release objective
 
 0.48 must recover production-shaped parse performance to at least 0.46 on CSS,
