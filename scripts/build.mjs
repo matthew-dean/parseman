@@ -6,6 +6,7 @@ import { build } from 'esbuild'
 import { execSync } from 'child_process'
 import { chmodSync, readFileSync, rmSync } from 'fs'
 import { builtinModules } from 'module'
+import { dirname, relative, resolve, sep } from 'path'
 
 rmSync('dist', { recursive: true, force: true })
 
@@ -23,12 +24,23 @@ const external = [
   'tsx/esm/api',
 ]
 
+const entryPoints = [
+  'src/index.ts',
+  'src/run/index.ts',
+  'src/plugin/index.ts',
+  'src/spec/index.ts',
+  'src/language-service/index.ts',
+  'src/oracle/index.ts',
+  'src/table/index.ts',
+  'src/analysis/diagnostics.ts',
+  'src/cli/index.ts',
+]
+
 const shared = {
   // `src/cli/index.ts` is the diagnostics bin and `src/analysis/diagnostics.ts` its
   // library twin. Both reach the COMPILER (the `--fix` loop recompiles to verify), and
   // both are deliberately their own entry points: nothing a library consumer imports may
   // pull the compiler in on their account. Keep them out of `src/index.ts`.
-  entryPoints: ['src/index.ts', 'src/run/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts', 'src/language-service/index.ts', 'src/oracle/index.ts', 'src/table/index.ts', 'src/analysis/diagnostics.ts', 'src/cli/index.ts'],
   bundle: true,
   external,
   sourcemap: true,
@@ -40,9 +52,56 @@ const shared = {
   target: 'es2022',
 }
 
+const lexicalSource = resolve('src/compiler/lexical-identity.ts')
+
+/**
+ * The lexical normalizer is BUILD logic, but all five compile-capable public
+ * entries reach it through the table encoder. Bundling each entry independently
+ * copied the same implementation into root/plugin/table/diagnostics/cli in both
+ * module formats. Keep the synchronous API and identical lowering everywhere,
+ * while making that one module a static relative dependency of each bundle.
+ *
+ * This is deliberately not a package export and not a dynamic import. The
+ * generated bundles name a file inside their own `dist/` tree, so Node ESM,
+ * CommonJS, browsers/bundlers and CSP builds all execute the same implementation
+ * without exposing another public API or adding a runtime loader branch.
+ */
+function externalLexicalPlanner(entry, format) {
+  const extension = format === 'esm' ? '.js' : '.cjs'
+  const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, extension)}`
+  const lexicalOutput = `dist/compiler/lexical-identity${extension}`
+  let ref = relative(dirname(entryOutput), lexicalOutput).split(sep).join('/')
+  if (!ref.startsWith('.')) ref = `./${ref}`
+  return {
+    name: 'shared-lexical-planner',
+    setup(ctx) {
+      ctx.onResolve({ filter: /lexical-identity\.ts$/ }, args => {
+        if (resolve(args.resolveDir, args.path) !== lexicalSource) return undefined
+        return { path: ref, external: true }
+      })
+    },
+  }
+}
+
+async function buildPublicEntry(entry, format) {
+  return build({
+    ...shared,
+    entryPoints: [entry],
+    format,
+    outdir: 'dist',
+    outbase: 'src',
+    outExtension: { '.js': format === 'esm' ? '.js' : '.cjs' },
+    plugins: [externalLexicalPlanner(entry, format)],
+  })
+}
+
 await Promise.all([
-  build({ ...shared, format: 'esm', outdir: 'dist', outExtension: { '.js': '.js' }, banner: { js: '' } }),
-  build({ ...shared, format: 'cjs', outdir: 'dist', outExtension: { '.js': '.cjs' } }),
+  ...entryPoints.flatMap(entry => [
+    buildPublicEntry(entry, 'esm'),
+    buildPublicEntry(entry, 'cjs'),
+  ]),
+  build({ ...shared, entryPoints: [lexicalSource], format: 'esm', outfile: 'dist/compiler/lexical-identity.js' }),
+  build({ ...shared, entryPoints: [lexicalSource], format: 'cjs', outfile: 'dist/compiler/lexical-identity.cjs' }),
 ])
 
 // `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so
