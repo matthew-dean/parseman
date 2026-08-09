@@ -23,6 +23,9 @@ import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } fro
 import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
+import {
+  assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
+} from '../compiler/token-capability.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -39,37 +42,6 @@ function emittableConst(v: unknown): boolean {
     const proto = Object.getPrototypeOf(v)
     if (proto !== Object.prototype && proto !== null) return false
     return Object.values(v).every(x => scalar(x) || (Array.isArray(x) && x.every(scalar)))
-  }
-  return false
-}
-
-/**
- * Does the rule-map entry `winner` bottom out AT the reference `p`?
- *
- * The question `Encoder.winners` has to ask before resolving a `g.X` by name. A
- * map entry that IS the reference — directly, or under the scope wrappers that
- * `rules()` puts there — is not an override to resolve to; it is the reference's
- * own binding, and the only thing that reaches the rule's BODY from there is the
- * ref's thunk. Resolving by name instead hands back the row already in flight for
- * that entry, which is an alias cycle rather than a parser (see `winners`).
- *
- * ONLY WRAPPERS `rules()` ITSELF INTRODUCES are unwrapped — `parser()`/`noTrivia`
- * scopes (`grammar`) and `trivia()`. Both are single-child and both can encode to
- * NO ROW, which is what makes the cycle degenerate. Walking further, into a
- * `seq()` or a `choice()` arm, would answer a different question: a rule whose
- * body legitimately contains a reference to itself is ordinary recursion and must
- * keep resolving by name.
- */
-function wrapsRef(winner: Combinator<unknown>, p: Combinator<unknown>): boolean {
-  let cur = winner
-  // Bounded rather than `while (true)`: `_def.parser` is author-supplied and a
-  // hand-built cycle of scopes would otherwise hang the encoder. Nothing legal
-  // nests these more than a couple deep.
-  for (let n = 0; n < 16; n++) {
-    if (cur === p) return true
-    const d = cur._def as ParserDef
-    if (d.tag !== 'grammar' && d.tag !== 'trivia') return false
-    cur = d.parser
   }
   return false
 }
@@ -208,7 +180,6 @@ class Encoder {
   winners: Readonly<Record<string, Combinator<unknown>>> | undefined = undefined
   triviaSpecs: TriviaSpec[] = []
   private triviaIndex = new Map<Combinator<unknown>, number>()
-
   /**
    * A trivia combinator as DATA where its shape allows.
    *
@@ -1113,8 +1084,9 @@ class Encoder {
         const e = deriveExpected(d.parser)
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
-      case 'token':
+      case 'token': {
         return this.emit(OP_TOKEN, this.node(d.parser).ip)
+      }
       case 'routed':
         return this.emit(OP_ROUTED, d.fallback === undefined ? -1 : this.node(d.fallback).ip)
       case 'dispatch': {
@@ -1226,7 +1198,7 @@ class Encoder {
         // merged (composed) map, and why the identity guard is required.
         const refName = (p as unknown as { _ruleName?: string })._ruleName
         const winner = refName === undefined ? undefined : this.winners?.[refName]
-        if (winner !== undefined && !wrapsRef(winner, p)) return this.scopedRef(p, winner)
+        if (winner !== undefined && !winnerWrapsReference(winner, p)) return this.scopedRef(p, winner)
         let resolved: Combinator<unknown>
         try { resolved = d.thunk() }
         catch {
@@ -1583,6 +1555,12 @@ export function encodeTableProgram(
     ...(hostMode === undefined ? {} : { hostMode }),
     ...(track ? { trackLines: true } : {}),
   }
+  // Collect once from the FINAL winner-resolved graph. Sorting affects only
+  // content-id discovery; ordinary rule/code order remains the caller's order.
+  const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
+  const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
+  const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
+  assertLexicalCapabilityClosure(lexicalRoots, capabilities, resolveLexical)
   const enc = new Encoder(resolvedSettings)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
