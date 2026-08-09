@@ -31,7 +31,7 @@ describe('compact lexical token plan wire', () => {
     const prog = encodeTable({ Root: sequence(first, duplicate) })
     const alphabet = collectLexicalAlphabet([sequence(first, duplicate)])
     expect(alphabet.capabilityComplete).toBe(false)
-    expect(alphabet.capabilities.filter(site => site.status.kind === 'gap').map(site => site.atom))
+    expect(alphabet.capabilities.filter(site => site.atom !== 'terminal').map(site => site.atom))
       .toEqual(['dispatch', 'token', 'dispatch'])
     expect('tokenPlan' in prog).toBe(false)
   })

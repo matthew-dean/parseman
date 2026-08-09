@@ -6,7 +6,7 @@ import {
 } from '../../src/compiler/token-alphabet.ts'
 import type { Combinator, ParserDef } from '../../src/types.ts'
 import {
-  adjacent, attempt, choice, dispatch, endsWith, expect as expectCombinator, field, gate, label, leaf,
+  adjacent, attempt, balanced, choice, dispatch, endsWith, expect as expectCombinator, field, gate, label, leaf,
   keywords, literal, makeWhen, many, matches, node, otherwise, optional, parse, parser, ref, regex, routed, scanTo,
   sepBy, sequence, startsWith, token, transform, when, withCtx,
 } from '../../src/index.ts'
@@ -26,8 +26,8 @@ describe('derived lexical-token families', () => {
     expect(alphabet.capabilities.map(site => ({
       id: site.id, atom: site.atom, key: site.semanticKey, status: site.status.kind,
     }))).toEqual([
-      { id: 0, atom: 'terminal', key: 'L\u0000!\u0000', status: 'complete' },
-      { id: 1, atom: 'terminal', key: 'R\u0000[a-z]+\u0000', status: 'complete' },
+      { id: 0, atom: 'terminal', key: 'L\u0000!\u0000', status: 'gap' },
+      { id: 1, atom: 'terminal', key: 'R\u0000[a-z]+\u0000', status: 'gap' },
       {
         id: 2,
         atom: 'token',
@@ -36,6 +36,20 @@ describe('derived lexical-token families', () => {
       },
     ])
     expect(alphabet.capabilities).not.toContainEqual(expect.objectContaining({ parser: privateSuffix }))
+    expect(alphabet.capabilities[0]!.obligations).toMatchObject({
+      recognition: { kind: 'complete' },
+      diagnosticsAndEffects: { kind: 'complete' },
+      consumptionAndMaterialization: { kind: 'complete' },
+      supportedVariants: { kind: 'complete' },
+      bindingAndReachability: { kind: 'gap' },
+    })
+    expect(alphabet.capabilities[2]!.obligations).toMatchObject({
+      recognition: { kind: 'complete' },
+      diagnosticsAndEffects: { kind: 'gap' },
+      consumptionAndMaterialization: { kind: 'gap' },
+      supportedVariants: { kind: 'gap' },
+      bindingAndReachability: { kind: 'gap' },
+    })
     expect(alphabet.capabilityComplete).toBe(false)
   })
 
@@ -53,6 +67,59 @@ describe('derived lexical-token families', () => {
       .toEqual([[0, 'token']])
     expect(alphabet.capabilities.map(site => [site.id, site.atom]))
       .toEqual([[0, 'terminal'], [1, 'token']])
+
+    const changed = alphabet.capabilities.map((site, index) => index === 0 ? {
+      ...site,
+      obligations: {
+        ...site.obligations,
+        bindingAndReachability: { kind: 'complete' } as const,
+      },
+    } : site)
+    expect(() => assertLexicalCapabilityClosure([root], { capabilities: changed }))
+      .toThrow('lexical capability census is incomplete')
+    // RED provenance: before obligation records were part of the stable
+    // signature, changing one obligation silently passed the closure check.
+  })
+
+  it('inventories the final named winner instead of a stale lazy thunk', () => {
+    const stale = ref<string>()
+    stale.define(literal('a'))
+    Object.defineProperty(stale, '_ruleName', { value: 'Word' })
+    const winner = literal('b')
+    const wrapped = token(stale)
+    const resolve = (name: string): Combinator<unknown> | undefined => name === 'Word' ? winner : undefined
+
+    const direct = collectLexicalAlphabet([stale], resolve)
+    expect(direct.capabilities.map(site => site.semanticKey)).toEqual(['L\u0000b\u0000'])
+    const atomic = collectLexicalAlphabet([wrapped], resolve)
+    expect(atomic.recognizers[0]!.ir).toMatchObject({ kind: 'literal', value: 'b' })
+
+    // RED provenance: thunk-first resolution inventories `a` in both places,
+    // even though final compose resolution selected `b`.
+    expect(direct.capabilities).not.toContainEqual(expect.objectContaining({ semanticKey: 'L\u0000a\u0000' }))
+  })
+
+  it('uses the authoritative balanced constructor language instead of its eager recursive body', () => {
+    const group = balanced('(', ')', { skip: [regex(/"(?:\\.|[^"\\])*"/)] })
+    const alphabet = collectLexicalAlphabet([group])
+    expect(alphabet.sites).toHaveLength(1)
+    expect(alphabet.sites[0]).not.toHaveProperty('refusal')
+    expect(alphabet.recognizers[0]!.ir).toMatchObject({
+      kind: 'balanced', open: '(', close: ')', strict: false, raw: false,
+      skip: [{ kind: 'regex', source: '"(?:\\\\.|[^"\\\\])*"' }],
+    })
+    expect(alphabet.capabilities[0]!.obligations.recognition).toEqual({ kind: 'complete' })
+    expect(collectLexicalAlphabet([token(group)]).recognizers[0]!.ir)
+      .toMatchObject({ kind: 'balanced', open: '(', close: ')' })
+
+    // RED provenance: deleting the `_balancedSpec` path exposes the eager
+    // transform/recursive body and changes recognition back to GAP.
+    const unmarked = {
+      _tag: group._tag, _meta: group._meta, _def: group._def,
+      parse: group.parse.bind(group),
+    } as Combinator<string>
+    expect(collectLexicalAlphabet([unmarked]).capabilities[0]!.obligations.recognition)
+      .toMatchObject({ kind: 'gap', reason: expect.stringContaining('transform is effectful') })
   })
 
   it('includes final choice and dispatch decisions outside owned token bodies', () => {
@@ -588,5 +655,12 @@ describe('derived lexical-token families', () => {
       { parser: nullableToken, refusal: 'token body may match empty' },
       { parser: nullableRepeatBody, refusal: 'repeat body may not make progress' },
     ])
+    expect(alphabet.capabilities[0]).toMatchObject({
+      status: { kind: 'impossible', proof: expect.stringContaining('positive width') },
+      obligations: {
+        recognition: { kind: 'impossible', proof: expect.stringContaining('positive width') },
+        diagnosticsAndEffects: { kind: 'gap' },
+      },
+    })
   })
 })

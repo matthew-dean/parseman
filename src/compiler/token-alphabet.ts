@@ -33,6 +33,7 @@
 import type { Combinator, ParserDef } from '../types.ts'
 import { matchesEmpty } from '../combinators/first-set.ts'
 import { branchUsesRouted } from '../combinators/dispatch.ts'
+import type { BalancedSpec } from '../combinators/scanTo.ts'
 
 /** A terminal in the derived alphabet, with its globally assigned id. */
 export type TokenTerminal =
@@ -63,6 +64,15 @@ export type LexicalIr =
   | { readonly kind: 'choice'; readonly arms: readonly LexicalIr[] }
   | { readonly kind: 'repeat'; readonly body: LexicalIr; readonly min: number; readonly max: number | null; readonly greedy: boolean; readonly mode: 'possessive' | 'backtracking' }
   | { readonly kind: 'assert'; readonly positive: boolean; readonly body: LexicalIr }
+  | {
+    readonly kind: 'balanced'
+    readonly open: string
+    readonly close: string
+    readonly strict: boolean
+    readonly raw: boolean
+    /** Ordered explicit skippers; ambient trivia/scanSkip precede them unless raw. */
+    readonly skip: readonly LexicalIr[]
+  }
 
 /** One canonical recognizer spec, shared by every family with equal lexical IR. */
 export type LexicalRecognizer = {
@@ -103,6 +113,14 @@ export type LexicalCapabilityStatus =
   | { readonly kind: 'gap'; readonly reason: string }
   | { readonly kind: 'impossible'; readonly proof: string }
 
+export type LexicalCapabilityObligations = {
+  readonly recognition: LexicalCapabilityStatus
+  readonly diagnosticsAndEffects: LexicalCapabilityStatus
+  readonly consumptionAndMaterialization: LexicalCapabilityStatus
+  readonly supportedVariants: LexicalCapabilityStatus
+  readonly bindingAndReachability: LexicalCapabilityStatus
+}
+
 /**
  * Compiler-only phase-A census record. These ids are deliberately not family
  * ids: two authored sites can share one future language while remaining two
@@ -114,6 +132,8 @@ export type LexicalCapabilitySite = {
   readonly semanticKey: string
   readonly atom: 'terminal' | 'token' | 'choice' | 'dispatch'
   readonly parser: Combinator<unknown>
+  readonly obligations: LexicalCapabilityObligations
+  /** Derived from `obligations`; callers cannot independently set it. */
   readonly status: LexicalCapabilityStatus
 }
 
@@ -259,6 +279,25 @@ function terminalOf(def: ParserDef, id: number): TokenTerminal | undefined {
   }
 }
 
+/** Final winner resolution is authoritative; a stale construction thunk is fallback only. */
+function resolvedLazyTarget(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): Combinator<unknown> | undefined {
+  const def = parser._def
+  if (def.tag !== 'lazy') return undefined
+  const name = (parser as unknown as { _ruleName?: string })._ruleName
+  if (name !== undefined && resolve !== undefined) {
+    const winner = resolve(name)
+    // A named rule whose whole definition is itself a lazy alias is stamped
+    // with its OWN name. Resolving that name returns the same object, not the
+    // referenced winner; only a distinct winner supersedes the construction
+    // thunk.
+    if (winner !== undefined && winner !== parser) return winner
+  }
+  try { return def.thunk() } catch { return undefined }
+}
+
 /** Direct sub-parsers of a def, resolving a lazy through `resolve` when its own thunk is a hole. */
 export function tokenChildren(
   p: Combinator<unknown>,
@@ -277,13 +316,7 @@ export function tokenChildren(
   if (Array.isArray(rec.cases)) for (const c of rec.cases as Array<{ parser: Combinator<unknown> }>) push(c.parser)
   if (Array.isArray(rec.matchers)) for (const c of rec.matchers as Array<{ parser: Combinator<unknown> }>) push(c.parser)
   if (d.tag === 'lazy') {
-    let target: Combinator<unknown> | undefined
-    try { target = d.thunk() } catch { target = undefined }
-    if (target === undefined && resolve !== undefined) {
-      const name = (p as unknown as { _ruleName?: string })._ruleName
-      if (name !== undefined) target = resolve(name)
-    }
-    push(target)
+    push(resolvedLazyTarget(p, resolve))
   }
   return out
 }
@@ -454,12 +487,7 @@ function normalizeLexical(
       })
     }
     case 'lazy': {
-      let target: Combinator<unknown> | undefined
-      try { target = def.thunk() } catch { target = undefined }
-      if (target === undefined && resolve !== undefined) {
-        const name = (parser as unknown as { _ruleName?: string })._ruleName
-        if (name !== undefined) target = resolve(name)
-      }
+      const target = resolvedLazyTarget(parser, resolve)
       return done(target === undefined ? { refusal: 'unresolved lazy token body' } : child(target))
     }
     case 'token':
@@ -490,8 +518,85 @@ function normalizeLexical(
   }
 }
 
+/**
+ * `balanced()` deliberately overrides its eager structural `_def`; the
+ * constructor marker is the only authoritative recognition language. Model it
+ * directly instead of rediscovering a recursive transform/expect expansion.
+ */
+function normalizeBalancedLexical(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): Normalized | undefined {
+  // `token(balanced(...))` is legal and appears in Jess. The outer token owns
+  // the public leaf, while the inner balanced token owns the constructor marker.
+  let marked = parser
+  let spec = (marked as BalancedSpec)._balancedSpec
+  while (spec === undefined && marked._def.tag === 'token') {
+    marked = marked._def.parser
+    spec = (marked as BalancedSpec)._balancedSpec
+  }
+  if (spec === undefined) return undefined
+  const skip: LexicalIr[] = []
+  for (const entry of spec.ownSkip) {
+    const normalized = normalizeLexical(entry, resolve, new Set())
+    if ('refusal' in normalized) return {
+      refusal: `balanced skipper is not represented: ${normalized.refusal}`,
+    }
+    skip.push(normalized.ir)
+  }
+  return {
+    ir: {
+      kind: 'balanced', open: spec.open, close: spec.close,
+      strict: spec.strict, raw: spec.raw, skip,
+    },
+  }
+}
+
 const CAPABILITY_VARIANT_GAP =
   'total token replacement body is not implemented for every supported assembly variant'
+const COMPLETE_CAPABILITY = { kind: 'complete' } as const
+const gap = (reason: string): LexicalCapabilityStatus => ({ kind: 'gap', reason })
+
+function derivedCapabilityStatus(obligations: LexicalCapabilityObligations): LexicalCapabilityStatus {
+  const ordered = [
+    obligations.recognition,
+    obligations.diagnosticsAndEffects,
+    obligations.consumptionAndMaterialization,
+    obligations.supportedVariants,
+    obligations.bindingAndReachability,
+  ]
+  const impossible = ordered.find((entry): entry is Extract<LexicalCapabilityStatus, { kind: 'impossible' }> =>
+    entry.kind === 'impossible')
+  if (impossible !== undefined) return impossible
+  const gaps = ordered.filter((entry): entry is Extract<LexicalCapabilityStatus, { kind: 'gap' }> =>
+    entry.kind === 'gap')
+  if (gaps.length > 0) return gap([...new Set(gaps.map(entry => entry.reason))].join('; '))
+  return COMPLETE_CAPABILITY
+}
+
+function tokenObligations(recognition: LexicalCapabilityStatus): LexicalCapabilityObligations {
+  return {
+    recognition,
+    diagnosticsAndEffects: gap('token diagnostics and parser effects are not represented by a total replacement body'),
+    consumptionAndMaterialization: gap('token range consumption and semantic/CST materialization are not implemented'),
+    supportedVariants: gap(CAPABILITY_VARIANT_GAP),
+    bindingAndReachability: gap('shared, captured, and named token bodies have not all been built before pricing'),
+  }
+}
+
+function terminalObligations(): LexicalCapabilityObligations {
+  return {
+    recognition: COMPLETE_CAPABILITY,
+    diagnosticsAndEffects: COMPLETE_CAPABILITY,
+    consumptionAndMaterialization: COMPLETE_CAPABILITY,
+    supportedVariants: COMPLETE_CAPABILITY,
+    bindingAndReachability: gap('direct captured and statically named token bindings are not implemented for this terminal'),
+  }
+}
+
+function decisionObligations(): LexicalCapabilityObligations {
+  return tokenObligations(gap('token outcome recognition for this ordered decision is not implemented'))
+}
 
 type CapabilityCandidate = {
   readonly parser: Combinator<unknown>
@@ -551,52 +656,59 @@ function lexicalCapabilities(
     if (candidate.atom === 'terminal') {
       const key = keyOf(candidate.parser._def)
       if (key === undefined) throw new Error('parseman: lexical terminal capability lost its semantic key')
+      const obligations = terminalObligations()
       return {
         id, path: candidate.path, semanticKey: key, atom: candidate.atom,
-        parser: candidate.parser, status: { kind: 'complete' } as const,
+        parser: candidate.parser, obligations, status: derivedCapabilityStatus(obligations),
       }
     }
     const def = candidate.parser._def
     if (candidate.atom === 'choice') {
       if (def.tag !== 'choice') throw new Error('parseman: lexical choice capability lost its boundary')
+      const obligations = decisionObligations()
       return {
         id, path: candidate.path,
         semanticKey: `C\u0000${def.parsers.length}\u0000${def.strategy.tag}`,
-        atom: candidate.atom, parser: candidate.parser,
-        status: { kind: 'gap', reason: CAPABILITY_VARIANT_GAP } as const,
+        atom: candidate.atom, parser: candidate.parser, obligations,
+        status: derivedCapabilityStatus(obligations),
       }
     }
     if (candidate.atom === 'dispatch') {
       if (def.tag !== 'dispatch') throw new Error('parseman: lexical dispatch capability lost its boundary')
+      const obligations = decisionObligations()
       return {
         id, path: candidate.path,
         semanticKey: `D\u0000${def.cases.length}\u0000${def.matchers?.length ?? 0}\u0000${def.otherwise === undefined ? 0 : 1}`,
-        atom: candidate.atom, parser: candidate.parser,
-        status: { kind: 'gap', reason: CAPABILITY_VARIANT_GAP } as const,
+        atom: candidate.atom, parser: candidate.parser, obligations,
+        status: derivedCapabilityStatus(obligations),
       }
     }
     if (def.tag !== 'token') throw new Error('parseman: lexical token capability lost its boundary')
-    const normalized = normalizeLexical(def.parser, resolve, new Set())
+    const normalized = normalizeBalancedLexical(candidate.parser, resolve)
+      ?? normalizeLexical(def.parser, resolve, new Set())
     if ('refusal' in normalized) {
+      const obligations = tokenObligations(gap(`token normalization: ${normalized.refusal}`))
       return {
         id, path: candidate.path, semanticKey: `T\u0000GAP\u0000${normalized.refusal}`,
-        atom: candidate.atom, parser: candidate.parser,
-        status: { kind: 'gap', reason: `token normalization: ${normalized.refusal}` } as const,
+        atom: candidate.atom, parser: candidate.parser, obligations,
+        status: derivedCapabilityStatus(obligations),
       }
     }
     const semanticKey = `T\u0000${JSON.stringify(normalized.ir)}`
     if (matchesEmpty(def.parser)) {
+      const obligations = tokenObligations({
+        kind: 'impossible',
+        proof: 'an atomic source token must consume positive width but this token body is nullable',
+      })
       return {
         id, path: candidate.path, semanticKey, atom: candidate.atom, parser: candidate.parser,
-        status: {
-          kind: 'impossible',
-          proof: 'an atomic source token must consume positive width but this token body is nullable',
-        } as const,
+        obligations, status: derivedCapabilityStatus(obligations),
       }
     }
+    const obligations = tokenObligations(COMPLETE_CAPABILITY)
     return {
       id, path: candidate.path, semanticKey, atom: candidate.atom, parser: candidate.parser,
-      status: { kind: 'gap', reason: CAPABILITY_VARIANT_GAP } as const,
+      obligations, status: derivedCapabilityStatus(obligations),
     }
   })
 }
@@ -609,7 +721,7 @@ export function assertLexicalCapabilityClosure(
 ): void {
   const actual = lexicalCapabilities(roots, resolve)
   const signature = (site: LexicalCapabilitySite): string =>
-    `${site.id}\u0000${site.path}\u0000${site.atom}\u0000${site.semanticKey}`
+    `${site.id}\u0000${site.path}\u0000${site.atom}\u0000${site.semanticKey}\u0000${JSON.stringify(site.obligations)}`
   const expectedKeys = actual.map(signature)
   const suppliedKeys = alphabet.capabilities.map(signature)
   if (expectedKeys.length !== suppliedKeys.length
@@ -629,12 +741,7 @@ function tokenBoundary(
   const def = parser._def
   if (def.tag === 'token') return { token: parser, selectorEffects }
   if (def.tag === 'lazy') {
-    let target: Combinator<unknown> | undefined
-    try { target = def.thunk() } catch { target = undefined }
-    if (target === undefined && resolve !== undefined) {
-      const name = (parser as unknown as { _ruleName?: string })._ruleName
-      if (name !== undefined) target = resolve(name)
-    }
+    const target = resolvedLazyTarget(parser, resolve)
     return target === undefined ? undefined : tokenBoundary(target, resolve, seen, true)
   }
   // Value-preserving does NOT mean effect-free: label/field/expect/attempt and
@@ -678,7 +785,8 @@ export function collectLexicalAlphabet(
   for (const parser of tokenParsers) {
     const def = parser._def
     if (def.tag !== 'token') continue
-    const normalized = normalizeLexical(def.parser, resolve, new Set())
+    const normalized = normalizeBalancedLexical(parser, resolve)
+      ?? normalizeLexical(def.parser, resolve, new Set())
     if ('refusal' in normalized) {
       sites.push({ parser, body: def.parser, refusal: normalized.refusal })
       continue
@@ -888,6 +996,11 @@ function serializeLexicalIr(ir: LexicalIr, out: number[], constant: (value: unkn
     case 'assert':
       begin(6); out.push(ir.positive ? 1 : 0)
       serializeLexicalIr(ir.body, out, constant)
+      break
+    case 'balanced':
+      begin(7)
+      out.push(constant(ir.open), constant(ir.close), ir.strict ? 1 : 0, ir.raw ? 1 : 0, ir.skip.length)
+      for (const entry of ir.skip) serializeLexicalIr(entry, out, constant)
       break
   }
   out[start + 1] = out.length - start
