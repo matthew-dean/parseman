@@ -9,7 +9,7 @@ import {
   collectLexicalAlphabet, canonicalLexicalOutcomeKey, compatibleLexicalOutcomes, selectedLexicalOutcome,
 } from '../../src/compiler/token-alphabet.ts'
 import {
-  dispatch, endsWith, field, literal, makeWhen, otherwise, optional, regex,
+  dispatch, endsWith, field, literal, makeWhen, matches, otherwise, optional, regex,
   ref, sequence, startsWith, token, when,
 } from '../../src/index.ts'
 
@@ -116,6 +116,39 @@ describe('compact lexical token plan wire', () => {
     for (const input of ['fooident', 'foo(call', 'foo?']) {
       expect(run(table, input)).toEqual(run(parser, input))
     }
+  })
+
+  it('omits dispatch sites with unsupported range predicates but keeps their token family', () => {
+    const head = token(sequence(regex(/[a-z]+/), literal(':')))
+    const parser = dispatch(
+      head,
+      when(matches(/^[a-z]+:$/), literal('matched')),
+      otherwise(literal('other')),
+    )
+    const prog = encodeTable({ Root: parser })
+
+    expect(prog.tokenPlan).toMatchObject({
+      tokenSites: expect.any(Array),
+      sites: [], routes: [], accepted: [],
+    })
+    expect(prog.tokenPlan?.tokenSites).toHaveLength(2)
+    const source = run(parser, 'abc:matched')
+    expect(source.ok).toBe(true)
+    expect(run(execRules(prog).Root!, 'abc:matched')).toEqual(source)
+  })
+
+  it('keeps all bounded runtime range predicate forms', () => {
+    const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const parsers = [
+      dispatch(head, when('url(', literal('x')), otherwise(literal('o'))),
+      dispatch(head, when(startsWith('x'), literal('x')), otherwise(literal('o'))),
+      dispatch(head, when(endsWith('('), literal('x')), otherwise(literal('o'))),
+      dispatch(head, when(matches(/^foo/i), literal('x')), otherwise(literal('o'))),
+      dispatch(head, when(matches(/^(?!(?:url|calc)\($).+\($/i), literal('x')), otherwise(literal('o'))),
+    ]
+    const plan = encodeTable(Object.fromEntries(parsers.map((parser, i) => [`Root${i}`, parser]))).tokenPlan!
+
+    expect(plan.sites).toHaveLength(parsers.length * 4)
   })
 
   it('keeps family/outcome namespaces stable with an earlier independent token and root relocation', () => {
