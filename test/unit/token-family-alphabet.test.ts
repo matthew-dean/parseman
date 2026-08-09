@@ -1,18 +1,147 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertLexicalCapabilityClosure, collectAlphabet, collectLexicalAlphabet,
-  compatibleLexicalOutcomes, selectedLexicalOutcome,
+  compatibleLexicalOutcomes, selectedLexicalOutcome, winnerWrapsReference,
   type LexicalTokenClassifier,
 } from '../../src/compiler/token-alphabet.ts'
 import type { Combinator, ParserDef } from '../../src/types.ts'
+import { composedCoverageRules } from '../../src/compiler/linker.ts'
 import {
-  adjacent, attempt, balanced, choice, dispatch, endsWith, expect as expectCombinator, field, gate, label, leaf,
-  keywords, literal, makeWhen, many, matches, node, otherwise, optional, parse, parser, ref, regex, routed, scanTo,
-  sepBy, sequence, startsWith, token, transform, when, withCtx,
+  adjacent, attempt, balanced, choice, compose, dispatch, endsWith, expect as expectCombinator, field, gate, label, leaf,
+  keywords, literal, makeWhen, many, matches, node, not, otherwise, optional, parse, parser, ref, regex, routed, rules, scanTo,
+  run, sepBy, sequence, startsWith, token, transform, when, withCtx,
 } from '../../src/index.ts'
 
 function synthetic<T>(inner: Combinator<T>, def: ParserDef): Combinator<T> {
   return { ...inner, _def: def }
+}
+
+type OracleContext = {
+  trivia: Combinator<unknown> | undefined
+  scanSkip: readonly Combinator<unknown>[]
+  trackLines: boolean
+  captureTrivia: boolean
+  rootCapture: boolean
+  dynamicState: boolean
+}
+
+function sameOracleContext(a: OracleContext, b: OracleContext): boolean {
+  return a.trivia === b.trivia
+    && a.trackLines === b.trackLines
+    && a.captureTrivia === b.captureTrivia
+    && a.rootCapture === b.rootCapture
+    && a.dynamicState === b.dynamicState
+    && a.scanSkip.length === b.scanSkip.length
+    && a.scanSkip.every((entry, index) => entry === b.scanSkip[index])
+}
+
+const isCombinator = (value: unknown): value is Combinator<unknown> =>
+  value !== null && typeof value === 'object' && '_def' in value && 'parse' in value
+
+/** Independent raw-ParserDef reader: deliberately does not use tokenChildren(). */
+function rawDefEdges(parser: Combinator<unknown>): Array<{ label: string; parser: Combinator<unknown> }> {
+  const def = parser._def as unknown as Record<string, unknown>
+  const out: Array<{ label: string; parser: Combinator<unknown> }> = []
+  const read = (value: unknown, label: string, depth: number): void => {
+    if (isCombinator(value)) { out.push({ label, parser: value }); return }
+    if (depth >= 2 || value === null || typeof value !== 'object') return
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) read(value[i], `${label}[${i}]`, depth + 1)
+      return
+    }
+    for (const key of Object.keys(value).sort()) {
+      read((value as Record<string, unknown>)[key], `${label}.${key}`, depth + 1)
+    }
+  }
+  for (const key of Object.keys(def).filter(key => key !== 'tag').sort()) read(def[key], key, 0)
+  return out.sort((a, b) => a.label.localeCompare(b.label))
+}
+
+function independentCapabilityOracle(
+  roots: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  resolve: (name: string) => Combinator<unknown> | undefined,
+  omitWinner?: string,
+): {
+  rows: Array<{ atom: string; parser: Combinator<unknown>; context: OracleContext; contextKey: string; path: string }>
+  edges: number
+} {
+  const ids = new Map<Combinator<unknown>, number>()
+  const id = (parser: Combinator<unknown>): number => {
+    const prior = ids.get(parser)
+    if (prior !== undefined) return prior
+    const next = ids.size
+    ids.set(parser, next)
+    return next
+  }
+  const contextKey = (ctx: OracleContext): string =>
+    `${ctx.trivia === undefined ? -1 : id(ctx.trivia)}/${ctx.scanSkip.map(id).join(',')}`
+    + `/${ctx.trackLines ? 1 : 0}/${ctx.captureTrivia ? 1 : 0}/${ctx.rootCapture ? 1 : 0}`
+  const seen = new Set<string>()
+  const rows = new Map<string, {
+    atom: string
+    parser: Combinator<unknown>
+    context: OracleContext
+    contextKey: string
+    path: string
+  }>()
+  let edges = 0
+  const visit = (parser: Combinator<unknown>, context: OracleContext, path: string): void => {
+    const outer = contextKey(context)
+    const state = `${id(parser)}\u0000${outer}`
+    const tag = parser._def.tag
+    const atom = tag === 'literal' || tag === 'keywords' || tag === 'regex'
+      ? 'terminal'
+      : tag === 'token' || tag === 'choice' || tag === 'dispatch' ? tag : undefined
+    if (atom !== undefined) {
+      const key = `${id(parser)}\u0000${outer}`
+      const prior = rows.get(key)
+      if (prior === undefined) rows.set(key, { atom, parser, context, contextKey: outer, path })
+      else if (path < prior.path) prior.path = path
+      if (atom === 'token') return
+    }
+    if (seen.has(state)) return
+    seen.add(state)
+    let childContext = context
+    const def = parser._def
+    if (def.tag === 'grammar') childContext = {
+      ...context,
+      trivia: def.clearTrivia ? undefined : (def.triviaParser ?? context.trivia),
+      trackLines: context.trackLines || def.trackLines,
+      captureTrivia: context.captureTrivia || def.captureTrivia === true,
+      rootCapture: context.rootCapture || def.rootCapture === 'opaque',
+    }
+    else if (def.tag === 'withCtx') childContext = { ...context, dynamicState: true }
+    let children: Array<{ label: string; parser: Combinator<unknown> }>
+    if (def.tag === 'lazy') {
+      const name = (parser as Combinator<unknown> & { _ruleName?: string })._ruleName
+      let target = name === undefined ? undefined : resolve(name)
+      if (target !== undefined) {
+        let current = target
+        const seenWrappers = new Set<Combinator<unknown>>()
+        while (!seenWrappers.has(current)) {
+          if (current === parser) { target = undefined; break }
+          seenWrappers.add(current)
+          const currentDef = current._def
+          if (currentDef.tag !== 'grammar' && currentDef.tag !== 'trivia') break
+          current = currentDef.parser
+        }
+      }
+      if (target === undefined) {
+        try { target = def.thunk() } catch { target = undefined }
+      }
+      children = target === undefined || name === omitWinner ? [] : [{ label: `winner:${name ?? '?'}`, parser: target }]
+    } else children = rawDefEdges(parser)
+    for (const edge of children) { edges++; visit(edge.parser, childContext, `${path}/${edge.label}`) }
+  }
+  for (const [name, root] of [...roots].sort((a, b) => a[0].localeCompare(b[0]))) visit(root, {
+    trivia: root._meta.grammarTrivia,
+    scanSkip: root._meta.grammarScanSkip ?? [],
+    trackLines: root._meta.grammarTrackLines === true,
+    captureTrivia: false,
+    rootCapture: false,
+    dynamicState: false,
+  }, `rule:${name}`)
+  return { rows: [...rows.values()], edges }
 }
 
 describe('derived lexical-token families', () => {
@@ -43,6 +172,8 @@ describe('derived lexical-token families', () => {
       supportedVariants: { kind: 'complete' },
       bindingAndReachability: { kind: 'gap' },
     })
+    expect(alphabet.capabilities[0]!.obligations.bindingAndReachability)
+      .toMatchObject({ kind: 'gap', reason: expect.stringContaining('fixed-tuple') })
     expect(alphabet.capabilities[2]!.obligations).toMatchObject({
       recognition: { kind: 'complete' },
       diagnosticsAndEffects: { kind: 'gap' },
@@ -58,6 +189,8 @@ describe('derived lexical-token families', () => {
     const alphabet = collectLexicalAlphabet([root])
     expect(() => assertLexicalCapabilityClosure([root], {
       capabilities: alphabet.capabilities.slice(1),
+      capabilityLanguages: alphabet.capabilityLanguages,
+      bindingEdges: alphabet.bindingEdges,
     })).toThrow('lexical capability census is incomplete')
 
     // RED provenance: before standalone primitives were enumerated, inserting
@@ -75,10 +208,54 @@ describe('derived lexical-token families', () => {
         bindingAndReachability: { kind: 'complete' } as const,
       },
     } : site)
-    expect(() => assertLexicalCapabilityClosure([root], { capabilities: changed }))
+    expect(() => assertLexicalCapabilityClosure([root], {
+      capabilities: changed,
+      capabilityLanguages: alphabet.capabilityLanguages,
+      bindingEdges: alphabet.bindingEdges,
+    }))
       .toThrow('lexical capability census is incomplete')
     // RED provenance: before obligation records were part of the stable
     // signature, changing one obligation silently passed the closure check.
+  })
+
+  it('keeps context occurrences and fixed incoming binding edges independent', () => {
+    const shared = token(literal('x'))
+    const whitespace = regex(/ +/)
+    const root = choice(
+      parser({ trivia: whitespace }, shared),
+      parser({ trivia: null }, shared),
+    )
+    const alphabet = collectLexicalAlphabet([root])
+    const oracle = independentCapabilityOracle([['Root', root]], () => undefined)
+    expect(alphabet.capabilities).toHaveLength(oracle.rows.length)
+    for (const expected of oracle.rows) {
+      expect(alphabet.capabilities.filter(actual =>
+        actual.atom === expected.atom
+        && actual.parser === expected.parser
+        && sameOracleContext(expected.context, {
+          trivia: actual.context.trivia,
+          scanSkip: actual.context.scanSkip,
+          trackLines: actual.context.trackLines,
+          captureTrivia: actual.context.captureTrivia,
+          rootCapture: actual.context.opaqueRootCapture,
+          dynamicState: actual.context.dynamicState,
+        }))).toHaveLength(1)
+    }
+    const occurrences = alphabet.capabilities.filter(site => site.parser === shared)
+    expect(occurrences).toHaveLength(2)
+    expect(new Set(occurrences.map(site => site.contextKey)).size).toBe(2)
+    expect(new Set(occurrences.map(site => site.languageId)).size).toBe(1)
+    expect(alphabet.bindingEdges.filter(edge => edge.childTag === 'token')).toHaveLength(2)
+
+    const repeated = collectLexicalAlphabet([choice(shared, shared)])
+    expect(repeated.capabilities.filter(site => site.parser === shared)).toHaveLength(1)
+    expect(repeated.bindingEdges.filter(edge => edge.childTag === 'token')).toHaveLength(2)
+    expect(repeated.bindingEdges.every(edge => edge.status.kind === 'gap')).toBe(true)
+
+    // Independent topology oracle: the authored graph above has two grammar ->
+    // token edges in distinct contexts, while the repeated graph has two fixed
+    // parent slots feeding one recognition state. Parser/language dedup alone
+    // makes one of these assertions fail; edge dedup alone makes the other fail.
   })
 
   it('inventories the final named winner instead of a stale lazy thunk', () => {
@@ -97,6 +274,105 @@ describe('derived lexical-token families', () => {
     // RED provenance: thunk-first resolution inventories `a` in both places,
     // even though final compose resolution selected `b`.
     expect(direct.capabilities).not.toContainEqual(expect.objectContaining({ semanticKey: 'L\u0000a\u0000' }))
+  })
+
+  it('matches an explicit final-winner oracle after compose replaces a rule', () => {
+    const base = rules(g => ({
+      Entry: sequence(g.Word, literal('!')),
+      Word: literal('a'),
+    }))
+    const delta = rules(() => ({ Word: literal('b') }))
+    const composed = compose([base, delta]) as unknown as Record<string, unknown>
+    const winners = composedCoverageRules(composed)
+    expect(winners).toBeDefined()
+    const names = Object.keys(winners!).sort()
+    const namedRoots = names.map(name => [name, winners![name]!] as const)
+    const alphabet = collectLexicalAlphabet(namedRoots.map(([, parser]) => parser), name => winners![name])
+    const oracle = independentCapabilityOracle(namedRoots, name => winners![name])
+    expect(alphabet.capabilities).toHaveLength(oracle.rows.length)
+    for (const expected of oracle.rows) {
+      expect(alphabet.capabilities.some(actual =>
+        actual.atom === expected.atom
+        && actual.parser === expected.parser
+        && sameOracleContext(expected.context, {
+          trivia: actual.context.trivia,
+          scanSkip: actual.context.scanSkip,
+          trackLines: actual.context.trackLines,
+          captureTrivia: actual.context.captureTrivia,
+          rootCapture: actual.context.opaqueRootCapture,
+          dynamicState: actual.context.dynamicState,
+        }))).toBe(true)
+    }
+
+    // Independent post-compose oracle: the public composed parser accepts the
+    // replacement spelling and rejects the superseded one. The capability graph
+    // must contain that same final winner, regardless of its own walk order.
+    expect(run(composed.Entry as never, 'b!').ok).toBe(true)
+    expect(run(composed.Entry as never, 'a!').ok).toBe(false)
+    const terminalKeys = new Set(alphabet.capabilities
+      .filter(site => site.atom === 'terminal')
+      .map(site => site.semanticKey))
+    expect(terminalKeys).toContain('L\u0000b\u0000')
+    expect(terminalKeys).not.toContain('L\u0000a\u0000')
+
+    const isFinalWord = (row: { parser: Combinator<unknown>; atom: string; path: string }): boolean =>
+      row.atom === 'terminal'
+      && row.parser._def.tag === 'literal'
+      && row.parser._def.value === 'b'
+    expect(oracle.rows.some(row => row.path.startsWith('rule:Entry/') && isFinalWord(row))).toBe(true)
+    const planted = independentCapabilityOracle(namedRoots, name => winners![name], 'Word')
+    expect(planted.rows.some(row => row.path.startsWith('rule:Entry/') && isFinalWord(row))).toBe(false)
+
+    // RED provenance: a thunk-first or pre-compose walk reports the overridden
+    // `a` body even while the independently executed composed grammar parses `b`;
+    // the explicit omit-winner plant removes Entry's `b` occurrence and turns
+    // the independent assertion above RED.
+  })
+
+  it('follows a tracked final rule wrapper through to its recursive reference body', () => {
+    const grammar = rules({ trackLines: true }, g => ({
+      Nest: choice(sequence(literal('('), g.Nest, literal(')')), literal('x')),
+    }))
+    const alphabet = collectLexicalAlphabet([grammar.Nest], name => name === 'Nest' ? grammar.Nest : undefined)
+    expect(alphabet.capabilities.map(site => site.atom)).toEqual([
+      'choice', 'terminal', 'terminal', 'terminal',
+    ])
+    expect(alphabet.capabilities.map(site => site.semanticKey)).toEqual([
+      'C\u00002\u0000firstMatch',
+      'L\u0000(\u0000',
+      'L\u0000)\u0000',
+      'L\u0000x\u0000',
+    ])
+
+    // RED provenance: winner!==reference alone treats the rules()-installed
+    // tracking scope as an override, resolves back to the in-flight reference,
+    // and drops this entire recursive grammar from the census.
+  })
+
+  it('recognizes an unbounded final-wrapper chain that bottoms out at the same reference', () => {
+    const grammar = rules(g => ({
+      Nest: choice(sequence(literal('('), g.Nest, literal(')')), literal('x')),
+    }))
+    const pending: Combinator<unknown>[] = [grammar.Nest]
+    const seen = new Set<Combinator<unknown>>()
+    let reference: Combinator<unknown> | undefined
+    while (pending.length > 0 && reference === undefined) {
+      const current = pending.pop()!
+      if (seen.has(current)) continue
+      seen.add(current)
+      if (current._def.tag === 'lazy'
+        && (current as Combinator<unknown> & { _ruleName?: string })._ruleName === 'Nest') {
+        reference = current
+      } else pending.push(...rawDefEdges(current).map(edge => edge.parser))
+    }
+    expect(reference).toBeDefined()
+    let winner: Combinator<unknown> = reference!
+    for (let i = 0; i < 33; i++) winner = parser({ trackLines: true }, winner)
+    expect(winnerWrapsReference(winner, reference!)).toBe(true)
+
+    // RED provenance: the previous depth-16 cutoff returned false here and let
+    // final-winner resolution substitute a wrapper around the same reference as
+    // if it were an overriding rule body.
   })
 
   it('uses the authoritative balanced constructor language instead of its eager recursive body', () => {
@@ -120,6 +396,63 @@ describe('derived lexical-token families', () => {
     } as Combinator<string>
     expect(collectLexicalAlphabet([unmarked]).capabilities[0]!.obligations.recognition)
       .toMatchObject({ kind: 'gap', reason: expect.stringContaining('transform is effectful') })
+  })
+
+  it('folds ambient scanSkip before a non-raw balanced own skip and excludes it for raw', () => {
+    const ambient = regex(/"(?:\\.|[^"\\])*"/)
+    const own = regex(/'(?:\\.|[^'\\])*'/)
+    const scoped = rules({ scanSkip: [ambient] }, () => ({
+      Group: balanced('(', ')', { skip: [own] }),
+      RawGroup: balanced('(', ')', { skip: [own], raw: true }),
+    }))
+    const alphabet = collectLexicalAlphabet([scoped.Group, scoped.RawGroup])
+    const language = (parser: Combinator<unknown>) => {
+      const site = alphabet.capabilities.find(entry => entry.parser === parser)!
+      return JSON.parse(site.semanticKey.slice(2)) as { skip: Array<{ source: string }> }
+    }
+    expect(language(scoped.Group).skip.map(entry => entry.source)).toEqual([
+      '"(?:\\\\.|[^"\\\\])*"',
+      "'(?:\\\\.|[^'\\\\])*'",
+    ])
+    expect(language(scoped.RawGroup).skip.map(entry => entry.source)).toEqual([
+      "'(?:\\\\.|[^'\\\\])*'",
+    ])
+
+    // RED provenance: omitting the occurrence context makes both non-raw
+    // grammars share the own-skip-only language; folding ambient into raw makes
+    // RawGroup context-dependent contrary to balanced({ raw:true }).
+  })
+
+  it('elides only a trivia scope whose direct token child shadows its lexical context', () => {
+    const whitespace = regex(/ +/)
+    const shadowed = token(sequence(
+      literal(':'),
+      not(parser({ trivia: whitespace }, token(sequence(literal('extend'), literal('('))))),
+      regex(/[a-z]+/),
+    ))
+    const alphabet = collectLexicalAlphabet([shadowed])
+    expect(alphabet.capabilities[0]!.obligations.recognition).toEqual({ kind: 'complete' })
+    expect(alphabet.recognizers[0]!.ir).toMatchObject({
+      kind: 'sequence',
+      parts: [
+        { kind: 'literal', value: ':' },
+        { kind: 'assert', positive: false, body: { kind: 'sequence' } },
+        { kind: 'regex', source: '[a-z]+' },
+      ],
+    })
+
+    const contextBearing = token(sequence(
+      literal(':'),
+      not(parser({ trivia: whitespace }, sequence(literal('extend'), literal('(')))),
+      regex(/[a-z]+/),
+    ))
+    expect(collectLexicalAlphabet([contextBearing]).capabilities[0]!.obligations.recognition)
+      .toMatchObject({ kind: 'gap', reason: expect.stringContaining('trivia-bearing scope') })
+
+    // RED provenance: stripping every grammar wrapper makes the second token
+    // COMPLETE even though its scoped trivia changes the child sequence's
+    // language; refusing every scoped wrapper leaves the first token GAP even
+    // though the direct token child clears that context before recognition.
   })
 
   it('includes final choice and dispatch decisions outside owned token bodies', () => {

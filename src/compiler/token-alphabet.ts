@@ -121,6 +121,15 @@ export type LexicalCapabilityObligations = {
   readonly bindingAndReachability: LexicalCapabilityStatus
 }
 
+export type LexicalCapabilityContext = {
+  readonly trivia: Combinator<unknown> | undefined
+  readonly scanSkip: readonly Combinator<unknown>[]
+  readonly trackLines: boolean
+  readonly captureTrivia: boolean
+  readonly opaqueRootCapture: boolean
+  readonly dynamicState: boolean
+}
+
 /**
  * Compiler-only phase-A census record. These ids are deliberately not family
  * ids: two authored sites can share one future language while remaining two
@@ -128,12 +137,36 @@ export type LexicalCapabilityObligations = {
  */
 export type LexicalCapabilitySite = {
   readonly id: number
+  /** Interned recognition-language summary; never used as a completeness id. */
+  readonly languageId: number
   readonly path: string
+  /** Effective lexical scope at this occurrence; compiler-only, never a family id. */
+  readonly contextKey: string
+  /** Context seen by recognition after token() clears trivia/capture sinks. */
+  readonly recognitionContextKey: string
+  readonly context: LexicalCapabilityContext
+  readonly recognitionContext: LexicalCapabilityContext
   readonly semanticKey: string
   readonly atom: 'terminal' | 'token' | 'choice' | 'dispatch'
   readonly parser: Combinator<unknown>
   readonly obligations: LexicalCapabilityObligations
   /** Derived from `obligations`; callers cannot independently set it. */
+  readonly status: LexicalCapabilityStatus
+}
+
+export type LexicalCapabilityLanguage = {
+  readonly id: number
+  readonly atom: LexicalCapabilitySite['atom']
+  readonly semanticKey: string
+}
+
+/** One fixed incoming/root edge whose direct linked-body candidates remain owed. */
+export type LexicalBindingEdge = {
+  readonly id: number
+  readonly path: string
+  readonly contextKey: string
+  readonly parentTag: ParserDef['tag'] | 'root'
+  readonly childTag: ParserDef['tag']
   readonly status: LexicalCapabilityStatus
 }
 
@@ -193,6 +226,10 @@ export type LexicalAlphabet = {
   readonly familyIdOf: ReadonlyMap<Combinator<unknown>, number>
   /** Whole-final-grammar, ownership-aware phase-A capability census. */
   readonly capabilities: readonly LexicalCapabilitySite[]
+  /** Interned language view only; completeness is always occurrence-based. */
+  readonly capabilityLanguages: readonly LexicalCapabilityLanguage[]
+  /** Every distinct fixed parent/root edge, independently GAP until linked. */
+  readonly bindingEdges: readonly LexicalBindingEdge[]
   /** False means phase B is forbidden for the entire program. */
   readonly capabilityComplete: boolean
 }
@@ -279,6 +316,25 @@ function terminalOf(def: ParserDef, id: number): TokenTerminal | undefined {
   }
 }
 
+/** Does a final rule-map winner bottom out at the reference being resolved? */
+export function winnerWrapsReference(
+  winner: Combinator<unknown>,
+  reference: Combinator<unknown>,
+): boolean {
+  let current = winner
+  const seen = new Set<Combinator<unknown>>()
+  // Only wrappers introduced by rules()/parser() are transparent here. Walking
+  // into a sequence or choice would mistake ordinary recursive use for an alias.
+  while (!seen.has(current)) {
+    if (current === reference) return true
+    seen.add(current)
+    const def = current._def
+    if (def.tag !== 'grammar' && def.tag !== 'trivia') return false
+    current = def.parser
+  }
+  return false
+}
+
 /** Final winner resolution is authoritative; a stale construction thunk is fallback only. */
 function resolvedLazyTarget(
   parser: Combinator<unknown>,
@@ -293,7 +349,7 @@ function resolvedLazyTarget(
     // with its OWN name. Resolving that name returns the same object, not the
     // referenced winner; only a distinct winner supersedes the construction
     // thunk.
-    if (winner !== undefined && winner !== parser) return winner
+    if (winner !== undefined && !winnerWrapsReference(winner, parser)) return winner
   }
   try { return def.thunk() } catch { return undefined }
 }
@@ -494,6 +550,12 @@ function normalizeLexical(
     case 'trivia':
       return done(child(def.parser))
     case 'grammar':
+      // A direct token child installs its own contiguous lexical context before
+      // its body runs. The enclosing scope's trivia/capture/line policy is
+      // therefore recognition-inert (its observable effects remain a separate
+      // capability obligation). Keep every other trivia-bearing scope distinct:
+      // trivia between ordinary child terms changes the accepted language.
+      if (def.parser._def.tag === 'token') return done(child(def.parser))
       if (def.trackLines) return done({ refusal: 'token body has line-tracking effects' })
       if (def.triviaParser !== undefined || def.captureTrivia === true || def.rootCapture !== undefined) {
         return done({ refusal: 'token body has a trivia-bearing scope' })
@@ -526,6 +588,7 @@ function normalizeLexical(
 function normalizeBalancedLexical(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
+  ambientScanSkip: readonly Combinator<unknown>[] = [],
 ): Normalized | undefined {
   // `token(balanced(...))` is legal and appears in Jess. The outer token owns
   // the public leaf, while the inner balanced token owns the constructor marker.
@@ -537,7 +600,10 @@ function normalizeBalancedLexical(
   }
   if (spec === undefined) return undefined
   const skip: LexicalIr[] = []
-  for (const entry of spec.ownSkip) {
+  // balanced() intentionally ignores ambient trivia. Non-raw instances do
+  // consult grammar scanSkip before their own ordered skip list; raw instances
+  // exclude the ambient list entirely.
+  for (const entry of spec.raw ? spec.ownSkip : [...ambientScanSkip, ...spec.ownSkip]) {
     const normalized = normalizeLexical(entry, resolve, new Set())
     if ('refusal' in normalized) return {
       refusal: `balanced skipper is not represented: ${normalized.refusal}`,
@@ -554,6 +620,8 @@ function normalizeBalancedLexical(
 
 const CAPABILITY_VARIANT_GAP =
   'total token replacement body is not implemented for every supported assembly variant'
+const FIXED_TUPLE_BINDING_GAP =
+  'binding candidate set is incomplete: shared, direct captured, and statically named fixed-tuple bodies have not all been built before pricing; fixed children and routes may not be rediscovered from arrays'
 const COMPLETE_CAPABILITY = { kind: 'complete' } as const
 const gap = (reason: string): LexicalCapabilityStatus => ({ kind: 'gap', reason })
 
@@ -580,7 +648,7 @@ function tokenObligations(recognition: LexicalCapabilityStatus): LexicalCapabili
     diagnosticsAndEffects: gap('token diagnostics and parser effects are not represented by a total replacement body'),
     consumptionAndMaterialization: gap('token range consumption and semantic/CST materialization are not implemented'),
     supportedVariants: gap(CAPABILITY_VARIANT_GAP),
-    bindingAndReachability: gap('shared, captured, and named token bodies have not all been built before pricing'),
+    bindingAndReachability: gap(FIXED_TUPLE_BINDING_GAP),
   }
 }
 
@@ -590,7 +658,7 @@ function terminalObligations(): LexicalCapabilityObligations {
     diagnosticsAndEffects: COMPLETE_CAPABILITY,
     consumptionAndMaterialization: COMPLETE_CAPABILITY,
     supportedVariants: COMPLETE_CAPABILITY,
-    bindingAndReachability: gap('direct captured and statically named token bindings are not implemented for this terminal'),
+    bindingAndReachability: gap(FIXED_TUPLE_BINDING_GAP),
   }
 }
 
@@ -602,7 +670,14 @@ type CapabilityCandidate = {
   readonly parser: Combinator<unknown>
   readonly atom: 'terminal' | 'token' | 'choice' | 'dispatch'
   readonly path: string
+  readonly context: CapabilityContext
+  readonly contextKey: string
+  readonly recognitionContextKey: string
 }
+
+type BindingEdgeCandidate = Omit<LexicalBindingEdge, 'id' | 'status'>
+
+type CapabilityContext = LexicalCapabilityContext
 
 /**
  * Enumerate atomic lexical ownership boundaries over the final graph. A token
@@ -612,53 +687,135 @@ type CapabilityCandidate = {
 function lexicalCapabilityCandidates(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
-): CapabilityCandidate[] {
-  const topPath = new Map<Combinator<unknown>, string>()
-  const ownedPath = new Map<Combinator<unknown>, string>()
-  const compound = new Map<Combinator<unknown>, CapabilityCandidate>()
-  const terminals = new Map<string, CapabilityCandidate>()
-  const visit = (parser: Combinator<unknown>, path: string, owned: boolean): void => {
+): { candidates: CapabilityCandidate[]; bindingEdges: BindingEdgeCandidate[] } {
+  const parserIds = new Map<Combinator<unknown>, number>()
+  const parserId = (parser: Combinator<unknown>): number => {
+    const prior = parserIds.get(parser)
+    if (prior !== undefined) return prior
+    const id = parserIds.size
+    parserIds.set(parser, id)
+    return id
+  }
+  const contextKeyOf = (context: CapabilityContext): string =>
+    `t${context.trivia === undefined ? -1 : parserId(context.trivia)}`
+    + `/s${context.scanSkip.map(parserId).join(',')}`
+    + `/l${context.trackLines ? 1 : 0}`
+    + `/c${context.captureTrivia ? 1 : 0}`
+    + `/r${context.opaqueRootCapture ? 1 : 0}`
+    + `/d${context.dynamicState ? 1 : 0}`
+  const topPath = new Map<Combinator<unknown>, Map<string, string>>()
+  const ownedPath = new Map<Combinator<unknown>, Map<string, string>>()
+  const candidates = new Map<string, CapabilityCandidate>()
+  const bindingEdges = new Map<string, BindingEdgeCandidate>()
+  const visit = (parser: Combinator<unknown>, path: string, owned: boolean, context: CapabilityContext): void => {
+    const contextKey = contextKeyOf(context)
     const seen = owned ? ownedPath : topPath
-    const prior = seen.get(parser)
+    let paths = seen.get(parser)
+    if (paths === undefined) { paths = new Map(); seen.set(parser, paths) }
+    const prior = paths.get(contextKey)
     if (prior !== undefined && prior <= path) return
-    seen.set(parser, path)
+    paths.set(contextKey, path)
 
     const def = parser._def
+    const recognitionContext = def.tag === 'token'
+      ? { ...context, trivia: undefined, captureTrivia: false }
+      : context
+    const recognitionContextKey = contextKeyOf(recognitionContext)
     if (!owned && keyOf(def) !== undefined) {
-      const key = keyOf(def)!
-      const priorCandidate = terminals.get(key)
+      const key = `terminal\u0000${parserId(parser)}\u0000${contextKey}`
+      const priorCandidate = candidates.get(key)
       if (priorCandidate === undefined || path < priorCandidate.path) {
-        terminals.set(key, { parser, atom: 'terminal', path })
+        candidates.set(key, {
+          parser, atom: 'terminal', path, context, contextKey, recognitionContextKey,
+        })
       }
     } else if (!owned && (def.tag === 'token' || def.tag === 'choice' || def.tag === 'dispatch')) {
       const atom = def.tag
-      const priorCandidate = compound.get(parser)
+      const key = `${atom}\u0000${parserId(parser)}\u0000${contextKey}`
+      const priorCandidate = candidates.get(key)
       if (priorCandidate === undefined || path < priorCandidate.path) {
-        compound.set(parser, { parser, atom, path })
+        candidates.set(key, { parser, atom, path, context, contextKey, recognitionContextKey })
       }
     }
+    // Exact atomic ownership: the token's child is recognition machinery, not
+    // a separately linked parser site or fixed parent-edge obligation.
+    if (!owned && def.tag === 'token') return
     const childOwned = owned || def.tag === 'token'
     const children = tokenChildren(parser, resolve)
+    let childContext = context
+    if (def.tag === 'grammar') {
+      childContext = {
+        trivia: def.clearTrivia ? undefined : (def.triviaParser ?? context.trivia),
+        scanSkip: context.scanSkip,
+        trackLines: context.trackLines || def.trackLines,
+        captureTrivia: context.captureTrivia || def.captureTrivia === true,
+        opaqueRootCapture: context.opaqueRootCapture || def.rootCapture === 'opaque',
+        dynamicState: context.dynamicState,
+      }
+    } else if (def.tag === 'withCtx') {
+      childContext = { ...context, dynamicState: true }
+    } else if (def.tag === 'token') {
+      childContext = { ...context, trivia: undefined }
+    }
     for (let i = 0; i < children.length; i++) {
-      visit(children[i]!, `${path}/${String(i).padStart(4, '0')}`, childOwned)
+      const child = children[i]!
+      const childPath = `${path}/${String(i).padStart(4, '0')}`
+      const edgeKey = `${parserId(parser)}\u0000${i}\u0000${contextKey}`
+      if (!bindingEdges.has(edgeKey)) bindingEdges.set(edgeKey, {
+        path: childPath,
+        contextKey,
+        parentTag: def.tag,
+        childTag: child._def.tag,
+      })
+      visit(child, childPath, childOwned, childContext)
     }
   }
-  for (let i = 0; i < roots.length; i++) visit(roots[i]!, String(i).padStart(4, '0'), false)
-  return [...terminals.values(), ...compound.values()].sort((a, b) =>
-    a.path < b.path ? -1 : a.path > b.path ? 1 : a.atom < b.atom ? -1 : a.atom > b.atom ? 1 : 0)
+  for (let i = 0; i < roots.length; i++) {
+    const root = roots[i]!
+    const rootPath = String(i).padStart(4, '0')
+    const rootContext: CapabilityContext = {
+      trivia: root._meta.grammarTrivia,
+      scanSkip: root._meta.grammarScanSkip ?? [],
+      trackLines: root._meta.grammarTrackLines === true,
+      captureTrivia: false,
+      opaqueRootCapture: false,
+      dynamicState: false,
+    }
+    const contextKey = contextKeyOf(rootContext)
+    bindingEdges.set(`root\u0000${i}\u0000${contextKey}`, {
+      path: rootPath, contextKey, parentTag: 'root', childTag: root._def.tag,
+    })
+    visit(root, rootPath, false, rootContext)
+  }
+  return {
+    candidates: [...candidates.values()].sort((a, b) =>
+      a.path < b.path ? -1 : a.path > b.path ? 1 : a.atom < b.atom ? -1 : a.atom > b.atom ? 1 : 0),
+    bindingEdges: [...bindingEdges.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+  }
 }
 
-function lexicalCapabilities(
+function lexicalCapabilityInventory(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
-): LexicalCapabilitySite[] {
-  return lexicalCapabilityCandidates(roots, resolve).map((candidate, id) => {
+): {
+  capabilities: LexicalCapabilitySite[]
+  languages: LexicalCapabilityLanguage[]
+  bindingEdges: LexicalBindingEdge[]
+} {
+  const inventory = lexicalCapabilityCandidates(roots, resolve)
+  const pending = inventory.candidates.map((candidate, id) => {
     if (candidate.atom === 'terminal') {
       const key = keyOf(candidate.parser._def)
       if (key === undefined) throw new Error('parseman: lexical terminal capability lost its semantic key')
       const obligations = terminalObligations()
       return {
-        id, path: candidate.path, semanticKey: key, atom: candidate.atom,
+        id, path: candidate.path, contextKey: candidate.contextKey,
+        recognitionContextKey: candidate.recognitionContextKey,
+        context: candidate.context,
+        recognitionContext: candidate.parser._def.tag === 'token'
+          ? { ...candidate.context, trivia: undefined, captureTrivia: false }
+          : candidate.context,
+        semanticKey: key, atom: candidate.atom,
         parser: candidate.parser, obligations, status: derivedCapabilityStatus(obligations),
       }
     }
@@ -668,6 +825,10 @@ function lexicalCapabilities(
       const obligations = decisionObligations()
       return {
         id, path: candidate.path,
+        contextKey: candidate.contextKey,
+        recognitionContextKey: candidate.recognitionContextKey,
+        context: candidate.context,
+        recognitionContext: candidate.context,
         semanticKey: `C\u0000${def.parsers.length}\u0000${def.strategy.tag}`,
         atom: candidate.atom, parser: candidate.parser, obligations,
         status: derivedCapabilityStatus(obligations),
@@ -678,18 +839,26 @@ function lexicalCapabilities(
       const obligations = decisionObligations()
       return {
         id, path: candidate.path,
+        contextKey: candidate.contextKey,
+        recognitionContextKey: candidate.recognitionContextKey,
+        context: candidate.context,
+        recognitionContext: candidate.context,
         semanticKey: `D\u0000${def.cases.length}\u0000${def.matchers?.length ?? 0}\u0000${def.otherwise === undefined ? 0 : 1}`,
         atom: candidate.atom, parser: candidate.parser, obligations,
         status: derivedCapabilityStatus(obligations),
       }
     }
     if (def.tag !== 'token') throw new Error('parseman: lexical token capability lost its boundary')
-    const normalized = normalizeBalancedLexical(candidate.parser, resolve)
+    const normalized = normalizeBalancedLexical(candidate.parser, resolve, candidate.context.scanSkip)
       ?? normalizeLexical(def.parser, resolve, new Set())
     if ('refusal' in normalized) {
       const obligations = tokenObligations(gap(`token normalization: ${normalized.refusal}`))
       return {
-        id, path: candidate.path, semanticKey: `T\u0000GAP\u0000${normalized.refusal}`,
+        id, path: candidate.path, contextKey: candidate.contextKey,
+        recognitionContextKey: candidate.recognitionContextKey,
+        context: candidate.context,
+        recognitionContext: { ...candidate.context, trivia: undefined, captureTrivia: false },
+        semanticKey: `T\u0000GAP\u0000${normalized.refusal}`,
         atom: candidate.atom, parser: candidate.parser, obligations,
         status: derivedCapabilityStatus(obligations),
       }
@@ -701,31 +870,69 @@ function lexicalCapabilities(
         proof: 'an atomic source token must consume positive width but this token body is nullable',
       })
       return {
-        id, path: candidate.path, semanticKey, atom: candidate.atom, parser: candidate.parser,
+        id, path: candidate.path, contextKey: candidate.contextKey,
+        recognitionContextKey: candidate.recognitionContextKey,
+        context: candidate.context,
+        recognitionContext: { ...candidate.context, trivia: undefined, captureTrivia: false },
+        semanticKey, atom: candidate.atom, parser: candidate.parser,
         obligations, status: derivedCapabilityStatus(obligations),
       }
     }
     const obligations = tokenObligations(COMPLETE_CAPABILITY)
     return {
-      id, path: candidate.path, semanticKey, atom: candidate.atom, parser: candidate.parser,
+      id, path: candidate.path, contextKey: candidate.contextKey,
+      recognitionContextKey: candidate.recognitionContextKey,
+      context: candidate.context,
+      recognitionContext: { ...candidate.context, trivia: undefined, captureTrivia: false },
+      semanticKey, atom: candidate.atom, parser: candidate.parser,
       obligations, status: derivedCapabilityStatus(obligations),
     }
   })
+  const languageKeys = [...new Set(pending.map(site => `${site.atom}\u0000${site.semanticKey}`))].sort()
+  const languageIdByKey = new Map(languageKeys.map((key, id) => [key, id]))
+  const languages = languageKeys.map((key, id): LexicalCapabilityLanguage => {
+    const split = key.indexOf('\u0000')
+    return {
+      id,
+      atom: key.slice(0, split) as LexicalCapabilitySite['atom'],
+      semanticKey: key.slice(split + 1),
+    }
+  })
+  const capabilities = pending.map(site => ({
+    ...site,
+    languageId: languageIdByKey.get(`${site.atom}\u0000${site.semanticKey}`)!,
+  }))
+  const bindingEdges = inventory.bindingEdges.map((edge, id): LexicalBindingEdge => ({
+    id, ...edge, status: gap(FIXED_TUPLE_BINDING_GAP),
+  }))
+  return { capabilities, languages, bindingEdges }
 }
 
 /** Re-enumerate the final graph so a dropped/filtered candidate fails closed. */
 export function assertLexicalCapabilityClosure(
   roots: ReadonlyArray<Combinator<unknown>>,
-  alphabet: Pick<LexicalAlphabet, 'capabilities'>,
+  alphabet: Pick<LexicalAlphabet, 'capabilities' | 'capabilityLanguages' | 'bindingEdges'>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): void {
-  const actual = lexicalCapabilities(roots, resolve)
+  const actual = lexicalCapabilityInventory(roots, resolve)
   const signature = (site: LexicalCapabilitySite): string =>
-    `${site.id}\u0000${site.path}\u0000${site.atom}\u0000${site.semanticKey}\u0000${JSON.stringify(site.obligations)}`
-  const expectedKeys = actual.map(signature)
+    `${site.id}\u0000${site.languageId}\u0000${site.path}\u0000${site.contextKey}\u0000${site.recognitionContextKey}\u0000${site.atom}\u0000${site.semanticKey}\u0000${JSON.stringify(site.obligations)}`
+  const expectedKeys = actual.capabilities.map(signature)
   const suppliedKeys = alphabet.capabilities.map(signature)
+  const expectedLanguages = actual.languages.map(language =>
+    `${language.id}\u0000${language.atom}\u0000${language.semanticKey}`)
+  const suppliedLanguages = alphabet.capabilityLanguages.map(language =>
+    `${language.id}\u0000${language.atom}\u0000${language.semanticKey}`)
+  const edgeSignature = (edge: LexicalBindingEdge): string =>
+    `${edge.id}\u0000${edge.path}\u0000${edge.contextKey}\u0000${edge.parentTag}\u0000${edge.childTag}\u0000${JSON.stringify(edge.status)}`
+  const expectedEdges = actual.bindingEdges.map(edgeSignature)
+  const suppliedEdges = alphabet.bindingEdges.map(edgeSignature)
   if (expectedKeys.length !== suppliedKeys.length
-    || expectedKeys.some((key, index) => key !== suppliedKeys[index])) {
+    || expectedKeys.some((key, index) => key !== suppliedKeys[index])
+    || expectedLanguages.length !== suppliedLanguages.length
+    || expectedLanguages.some((key, index) => key !== suppliedLanguages[index])
+    || expectedEdges.length !== suppliedEdges.length
+    || expectedEdges.some((key, index) => key !== suppliedEdges[index])) {
     throw new Error('parseman: lexical capability census is incomplete after final grammar resolution')
   }
 }
@@ -760,7 +967,8 @@ export function collectLexicalAlphabet(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): LexicalAlphabet {
-  const capabilities = lexicalCapabilities(roots, resolve)
+  const capabilityInventory = lexicalCapabilityInventory(roots, resolve)
+  const { capabilities, bindingEdges } = capabilityInventory
   const tokenParsers: Combinator<unknown>[] = []
   const dispatchParsers: Combinator<unknown>[] = []
   const seenTop = new Set<Combinator<unknown>>()
@@ -961,7 +1169,10 @@ export function collectLexicalAlphabet(
     classifiers: stableClassifiers,
     familyIdOf: stableFamilyIdOf,
     capabilities,
-    capabilityComplete: capabilities.every(site => site.status.kind !== 'gap'),
+    capabilityLanguages: capabilityInventory.languages,
+    bindingEdges,
+    capabilityComplete: capabilities.every(site => site.status.kind !== 'gap')
+      && bindingEdges.every(edge => edge.status.kind !== 'gap'),
   }
 }
 
