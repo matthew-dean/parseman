@@ -1536,8 +1536,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const ownDirectOptionals = !fused && !REC && !hasAdj && !hostCst
           && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
         let directOptional: boolean[] | undefined
-        if (ownDirectOptionals) {
-          for (let i = 0; i < n; i++) {
+        // Keep the first cut on the two arities with established unrolled
+        // sequence bodies, and require a NON-FIRST optional. A first-only
+        // optional merely moves its one call into the parent (call-neutral),
+        // while a generic-arity runner array would add a wrapper call to every
+        // ordinary sibling and could spend the boundary we remove.
+        if (ownDirectOptionals && (n === 2 || n === 3)) {
+          for (let i = 1; i < n; i++) {
             if (code[code[base + i]!] !== OP_OPT) continue
             directOptional ??= Array.from({ length: n }, () => false)
             directOptional[i] = true
@@ -1759,23 +1764,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         if (directOptional !== undefined) {
           const flags = directOptional
-          const optionalFirst = (child: Piece): Piece => (input, pos, ctx) => {
-            const need = markCst(ctx)
-            const mRaw = MRAW
-            const mTl = MTL
-            const mLv = MLV
-            const mFl = need ? ctx._fields?.length ?? 0 : 0
-            const mEr = need ? ctx._errors?.length ?? 0 : 0
-            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
-            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
-            ctx._fc = false
-            const v = child(input, pos, ctx)
-            if (v !== FAIL) return v
-            if (committed(ctx)) return FAIL
-            if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-            EC.e = pos
-            return null
-          }
           const optionalNext = (child: Piece): TermRunner => (input, cur, ctx) => {
             if (ctx.trivia === undefined) {
               const need = markCst(ctx)
@@ -1827,32 +1815,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
             return cur
           }
-          const k0 = flags[0] ? optionalFirst(kids[0]!) : kids[0]!
-          const runners = Array.from({ length: n }, () => undefined as unknown as TermRunner)
-          for (let i = 1; i < n; i++) {
-            const kid = kids[i]!
-            runners[i] = flags[i]
-              ? optionalNext(kid)
-              : (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
-          }
-
-          if (n === 1) {
-            if (wantValues) {
-              return (input, pos, ctx) => {
-                const v = k0(input, pos, ctx)
-                if (v === FAIL) return FAIL
-                return [v]
-              }
-            }
-            return (input, pos, ctx) => {
-              const v = k0(input, pos, ctx)
-              if (v === FAIL) return FAIL
-              return undefined
-            }
-          }
+          // First-position OP_OPT remains its established Piece: owning it would
+          // only replace one monomorphic call with another. This cut removes a
+          // real boundary only at later terms, where nextTerm previously called
+          // the OP_OPT Piece and now calls the child transaction directly.
+          const k0 = kids[0]!
 
           if (n === 2) {
-            const r1 = runners[1]!
+            // The bounded admission above guarantees term 1 is optional.
+            const r1 = optionalNext(kids[1]!)
             if (wantValues) {
               return (input, pos, ctx) => {
                 const v0 = k0(input, pos, ctx)
@@ -1874,12 +1845,69 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
 
           if (n === 3) {
-            const r1 = runners[1]!, r2 = runners[2]!
-            if (wantValues) {
+            const k1 = kids[1]!, k2 = kids[2]!
+            if (flags[1]) {
+              const r1 = optionalNext(k1)
+              if (flags[2]) {
+                const r2 = optionalNext(k2)
+                if (wantValues) {
+                  return (input, pos, ctx) => {
+                    const v0 = k0(input, pos, ctx)
+                    if (v0 === FAIL) return FAIL
+                    let cur = r1(input, EC.e, ctx)
+                    if (cur < 0) return FAIL
+                    const v1 = TERMV
+                    cur = r2(input, cur, ctx)
+                    if (cur < 0) return FAIL
+                    EC.e = cur
+                    return [v0, v1, TERMV]
+                  }
+                }
+                return (input, pos, ctx) => {
+                  const v0 = k0(input, pos, ctx)
+                  if (v0 === FAIL) return FAIL
+                  let cur = r1(input, EC.e, ctx)
+                  if (cur < 0) return FAIL
+                  cur = r2(input, cur, ctx)
+                  if (cur < 0) return FAIL
+                  EC.e = cur
+                  return undefined
+                }
+              }
+              if (wantValues) {
+                return (input, pos, ctx) => {
+                  const v0 = k0(input, pos, ctx)
+                  if (v0 === FAIL) return FAIL
+                  let cur = r1(input, EC.e, ctx)
+                  if (cur < 0) return FAIL
+                  const v1 = TERMV
+                  cur = nextTerm(k2, input, cur, ctx)
+                  if (cur < 0) return FAIL
+                  EC.e = cur
+                  return [v0, v1, TERMV]
+                }
+              }
               return (input, pos, ctx) => {
                 const v0 = k0(input, pos, ctx)
                 if (v0 === FAIL) return FAIL
                 let cur = r1(input, EC.e, ctx)
+                if (cur < 0) return FAIL
+                cur = nextTerm(k2, input, cur, ctx)
+                if (cur < 0) return FAIL
+                EC.e = cur
+                return undefined
+              }
+            }
+
+            // Term 1 is ordinary and term 2 is optional. Preserve the existing
+            // direct nextTerm call for the ordinary sibling; only the optional
+            // slot receives a bound transaction runner.
+            const r2 = optionalNext(k2)
+            if (wantValues) {
+              return (input, pos, ctx) => {
+                const v0 = k0(input, pos, ctx)
+                if (v0 === FAIL) return FAIL
+                let cur = nextTerm(k1, input, EC.e, ctx)
                 if (cur < 0) return FAIL
                 const v1 = TERMV
                 cur = r2(input, cur, ctx)
@@ -1891,40 +1919,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              let cur = r1(input, EC.e, ctx)
+              let cur = nextTerm(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               cur = r2(input, cur, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
               return undefined
             }
-          }
-
-          if (wantValues) {
-            return (input, pos, ctx) => {
-              const v0 = k0(input, pos, ctx)
-              if (v0 === FAIL) return FAIL
-              const values: unknown[] = [v0]
-              let cur = EC.e
-              for (let i = 1; i < n; i++) {
-                cur = runners[i]!(input, cur, ctx)
-                if (cur < 0) return FAIL
-                values.push(TERMV)
-              }
-              EC.e = cur
-              return values
-            }
-          }
-          return (input, pos, ctx) => {
-            const v0 = k0(input, pos, ctx)
-            if (v0 === FAIL) return FAIL
-            let cur = EC.e
-            for (let i = 1; i < n; i++) {
-              cur = runners[i]!(input, cur, ctx)
-              if (cur < 0) return FAIL
-            }
-            EC.e = cur
-            return undefined
           }
         }
 
