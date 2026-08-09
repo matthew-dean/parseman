@@ -486,8 +486,11 @@ export function emitAssemblySource(
     readonly routeStart: number
     readonly routeCount: number
   }
-  const tokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
+  const configuredTokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
     ? prog.tokenPlan
+    : undefined
+  const tokenWire = configuredTokenWire !== undefined && configuredTokenWire.sites.length > 0
+    ? configuredTokenWire
     : undefined
   const tokenProducers = new Map<number, TokenSitePlan>()
   const tokenSites = new Map<number, TokenSitePlan>()
@@ -535,9 +538,11 @@ export function emitAssemblySource(
       })
     }
     for (const [ip, producer] of tokenProducers) {
-      if (![...tokenSites.values()].some(site => site.selectorIp === producer.selectorIp)) tokenProducers.delete(ip)
+      if (![...tokenSites.values()].some(site => site.family === producer.family
+        && site.recognizer === producer.recognizer)) tokenProducers.delete(ip)
     }
   }
+  const tokenActive = tokenSites.size > 0
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -1573,11 +1578,10 @@ ctx._routed={value:key,span:{start:pos,end:selEnd}}
 }
 const at=ur?pos:selEnd
 let v
-switch(arm){
+try{switch(arm){
 ${arms.map((a, i) => `case ${i}:v=${a}(input,at,ctx);break`).join('\n')}
 ${other === undefined ? '' : `default:v=${other}(input,at,ctx)`}
-}
-if(ur)ctx._routed=savedRouted
+}}finally{if(ur)ctx._routed=savedRouted}
 if(v===FAIL){
 ${emitRollback(m2, L.buf, sinks)}
 ctx._fc=true
@@ -1965,7 +1969,7 @@ return nd
   // are `function` declarations, so a body may call one that is textually below
   // it, but the `const _ts<N>` each one reads must be initialised before any
   // parse runs, not merely before the declaration is evaluated.
-  const tokenPrelude = tokenWire === undefined ? '' : `
+  const tokenPrelude = !tokenActive ? '' : `
 let _pfTokInput,_pfTokStart=-1,_pfTokContext=-1,_pfTokFamily=-1,_pfTokRecognizer=-1,_pfTokPacked=-1,_pfTokOutcome=-1
 function _tokRecognize(input,pos,context,family,recognizer,rec){
 if(_pfTokInput===input&&_pfTokStart===pos&&_pfTokContext===context&&_pfTokFamily===family&&_pfTokRecognizer===recognizer)return _pfTokPacked
@@ -1982,15 +1986,15 @@ function _tokStarts(input,start,end,value,fold){return start+value.length<=end&&
 function _tokEnds(input,start,end,value,fold){return end-value.length>=start&&_tokEq(input,end-value.length,end,value,fold)}
 function _tokLine(input,start,end){for(let i=start;i<end;i++){const c=input.charCodeAt(i);if(c===10||c===13||c===8232||c===8233)return true}return false}
 `
-  const frameSave = tokenWire === undefined
+  const frameSave = !tokenActive
     ? 'if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])'
     : 'if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e,_pfTokInput,_pfTokStart,_pfTokContext,_pfTokFamily,_pfTokRecognizer,_pfTokPacked,_pfTokOutcome])'
-  const tokenBegin = tokenWire === undefined ? '' : `
+  const tokenBegin = !tokenActive ? '' : `
 _pfTokInput=undefined;_pfTokStart=_pfTokContext=_pfTokFamily=_pfTokRecognizer=_pfTokPacked=_pfTokOutcome=-1`
-  const finishOuter = tokenWire === undefined ? 'if(_pfDepth===0)return' : `if(_pfDepth===0){
+  const finishOuter = !tokenActive ? 'if(_pfDepth===0)return' : `if(_pfDepth===0){
 _pfTokInput=undefined;_pfTokStart=_pfTokContext=_pfTokFamily=_pfTokRecognizer=_pfTokPacked=_pfTokOutcome=-1
 return}`
-  const tokenRestore = tokenWire === undefined ? '' : `
+  const tokenRestore = !tokenActive ? '' : `
 _pfTokInput=prior[3];_pfTokStart=prior[4];_pfTokContext=prior[5];_pfTokFamily=prior[6];_pfTokRecognizer=prior[7];_pfTokPacked=prior[8];_pfTokOutcome=prior[9]`
   const source = `${RUNTIME_PRELUDE}${tokenPrelude}
 ${prelude.join('\n')}
@@ -2001,8 +2005,7 @@ const host=ctx.build
 ${frameSave}
 _pfDepth++
 _pfScan=null
-_pfHost=host
-${tokenBegin}
+_pfHost=host${tokenBegin}
 }
 function _finish(){
 if(_pfDepth<=0)throw new Error('parseman emitted table assembly frame underflow')
@@ -2011,8 +2014,7 @@ ${finishOuter}
 const prior=_pfFrames.pop()
 _pfScan=prior[0]
 _pfHost=prior[1]
-EC.e=prior[2]
-${tokenRestore}
+EC.e=prior[2]${tokenRestore}
 }
 return{
 pieces:{${ruleEntries.join(',')}},

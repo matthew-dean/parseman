@@ -355,6 +355,42 @@ export type Assembly = {
  * ONE walk. Each site is lowered at most once and memoised by its code offset,
  * so a subtree shared by two parents is one piece with two references to it.
  */
+function tokenOutcomeWireSupported(wire: TokenPlanWire, id: number, k: readonly unknown[]): boolean {
+  for (let i = 0; i < wire.outcomeOffsets.length; i++) {
+    const at = wire.outcomeOffsets[i]!
+    if (wire.outcomeData[at] !== id) continue
+    const kind = wire.outcomeData[at + 2]!
+    if (kind >= 0 && kind <= 2 || kind === 4) return true
+    if (kind !== 3) return false
+    const re = k[wire.outcomeData[at + 3]!]
+    if (!(re instanceof RegExp)) return false
+    return re.source === '^(?!(?:url|calc)\\($).+\\($' && re.flags === 'i'
+      || /^\^([A-Za-z0-9_-]+)$/.test(re.source) && (re.flags === '' || re.flags === 'i')
+  }
+  return false
+}
+
+/** Allocation-free preflight: an entirely refused plan keeps the legacy assembly shape. */
+function tokenPlanHasSupportedSite(wire: TokenPlanWire, k: readonly unknown[]): boolean {
+  if (wire.sites.length === 0) return false
+  for (let i = 0; i < wire.sites.length; i += 4) {
+    const routeStart = wire.sites[i + 2]!, routeCount = wire.sites[i + 3]!
+    let siteSupported = true
+    for (let route = 0; route < routeCount && siteSupported; route++) {
+      const rw = routeStart + route * 4
+      const acceptedStart = wire.routes[rw + 2]!, acceptedCount = wire.routes[rw + 3]!
+      for (let j = 0; j < acceptedCount; j++) {
+        if (!tokenOutcomeWireSupported(wire, wire.accepted[acceptedStart + j]!, k)) {
+          siteSupported = false
+          break
+        }
+      }
+    }
+    if (siteSupported) return true
+  }
+  return false
+}
+
 export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Assembly {
   const { code, k, fns, cc, fx, disp, dsp, trivia, triviaLabelled } = t
   // The leaf swap is only legal when line tracking is off, and that is a property
@@ -441,14 +477,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     readonly routeCount: number
   }
   type LexRecognizer = (input: string, pos: number) => number
-  const tokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
+  const configuredTokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
     ? prog.tokenPlan
     : undefined
-  const tokenSites = tokenWire === undefined ? undefined : new Map<number, TokenSitePlan>()
-  const tokenProducers = tokenWire === undefined ? undefined : new Map<number, TokenSitePlan>()
-  const tokenMatchers = tokenWire === undefined
-    ? undefined
-    : new Map<number, (input: string, start: number, end: number) => boolean>()
+  const tokenWire = configuredTokenWire !== undefined && tokenPlanHasSupportedSite(configuredTokenWire, k)
+    ? configuredTokenWire
+    : undefined
+  const tokenRuntime = tokenWire === undefined ? undefined : (() => {
+  const tokenSites = new Map<number, TokenSitePlan>()
+  const tokenProducers = new Map<number, TokenSitePlan>()
+  const tokenMatchers = new Map<number, (input: string, start: number, end: number) => boolean>()
   const lexicalRecognizers: LexRecognizer[] = []
   const unsupportedTokenOutcomes = new Set<number>()
 
@@ -599,16 +637,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const value = k[tokenWire.outcomeData[at + 3]!]
         const fold = tokenWire.outcomeData[at + 4] === 1
         if (typeof value !== 'string') throw new TypeError('table token outcome value is not a string')
-        tokenMatchers!.set(id, kind === 0
+        tokenMatchers.set(id, kind === 0
           ? (input, start, end) => tokenRangeEquals(input, start, end, value, fold)
           : (input, start, end) => tokenRangeStartsOrEnds(input, start, end, value, fold, kind === 2))
       } else if (kind === 3) {
         const re = k[tokenWire.outcomeData[at + 3]!]
         const matcher = re instanceof RegExp ? boundedMatcher(re) : undefined
         if (matcher === undefined) unsupportedTokenOutcomes.add(id)
-        else tokenMatchers!.set(id, matcher)
-      } else if (kind === 4) tokenMatchers!.set(id, () => true)
-      else throw new TypeError(`table token outcome kind ${kind} is unknown`)
+        else tokenMatchers.set(id, matcher)
+      } else if (kind === 4) tokenMatchers.set(id, () => true)
+      else unsupportedTokenOutcomes.add(id)
     }
     for (let i = 0; i < tokenWire.tokenSites.length; i += 2) {
       const ip: number = tokenWire.tokenSites[i]!
@@ -617,13 +655,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (code[ip] !== OP_TOKEN || lexicalRecognizers[recognizer] === undefined) {
         throw new TypeError('table token site references an invalid token or family')
       }
-      tokenProducers!.set(ip, { selectorIp: ip, recognizer, family: familyId, routeStart: 0, routeCount: 0 })
+      tokenProducers.set(ip, { selectorIp: ip, recognizer, family: familyId, routeStart: 0, routeCount: 0 })
     }
     for (let i = 0; i < tokenWire.sites.length; i += 4) {
       const di: number = tokenWire.sites[i]!
       const familyId: number = tokenWire.sites[i + 1]!
       let producer: TokenSitePlan | undefined
-      for (const candidate of tokenProducers!.values()) {
+      for (const candidate of tokenProducers.values()) {
         for (const siteIp of reachableSites(code, Object.values(prog.rules))) {
           if (code[siteIp] === OP_DISPATCH && code[siteIp + 1] === candidate.selectorIp
             && code[siteIp + 2] === di && candidate.family === familyId) producer = candidate
@@ -643,35 +681,64 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
       if (!supported) continue
-      tokenSites!.set(di, plan)
+      tokenSites.set(di, plan)
     }
-    for (const [ip, producer] of tokenProducers!) {
-      if (![...tokenSites!.values()].some(site => site.selectorIp === producer.selectorIp)) tokenProducers!.delete(ip)
+    for (const [ip, producer] of tokenProducers) {
+      if (![...tokenSites.values()].some(site => site.family === producer.family
+        && site.recognizer === producer.recognizer)) tokenProducers.delete(ip)
     }
   }
+  if (tokenSites.size === 0) return undefined
 
-  let TOK_INPUT: string | undefined
-  let TOK_START = -1
-  let TOK_CONTEXT = -1
-  let TOK_FAMILY = -1
-  let TOK_RECOGNIZER = -1
-  let TOK_PACKED = -1
-  let TOK_OUTCOME = -1
+  const cursor = {
+    input: undefined as string | undefined,
+    start: -1, context: -1, family: -1, recognizer: -1, packed: -1, outcome: -1,
+  }
+  const frames: Array<readonly [string | undefined, number, number, number, number, number, number]> = []
 
   function recognizeToken(input: string, start: number, plan: TokenSitePlan): number {
-    if (TOK_INPUT === input && TOK_START === start && TOK_CONTEXT === 0
-      && TOK_FAMILY === plan.family && TOK_RECOGNIZER === plan.recognizer) return TOK_PACKED
+    if (cursor.input === input && cursor.start === start && cursor.context === 0
+      && cursor.family === plan.family && cursor.recognizer === plan.recognizer) return cursor.packed
     const end = lexicalRecognizers[plan.recognizer]!(input, start)
     const packed = end < 0 ? -1 : 2 * end
-    TOK_INPUT = input
-    TOK_START = start
-    TOK_CONTEXT = 0
-    TOK_FAMILY = plan.family
-    TOK_RECOGNIZER = plan.recognizer
-    TOK_PACKED = packed
-    TOK_OUTCOME = -1
+    cursor.input = input
+    cursor.start = start
+    cursor.context = 0
+    cursor.family = plan.family
+    cursor.recognizer = plan.recognizer
+    cursor.packed = packed
+    cursor.outcome = -1
     return packed
   }
+  function resetCursor(): void {
+    cursor.input = undefined
+    cursor.start = cursor.context = cursor.family = cursor.recognizer = cursor.packed = cursor.outcome = -1
+  }
+  return {
+    wire: tokenWire, sites: tokenSites, producers: tokenProducers, matchers: tokenMatchers,
+    cursor, recognize: recognizeToken,
+    begin(nested: boolean): void {
+      if (nested) frames.push([
+        cursor.input, cursor.start, cursor.context, cursor.family, cursor.recognizer, cursor.packed, cursor.outcome,
+      ])
+      resetCursor()
+    },
+    finish(nested: boolean): void {
+      if (!nested) { resetCursor(); return }
+      const prior = frames.pop()!
+      cursor.input = prior[0]
+      cursor.start = prior[1]
+      cursor.context = prior[2]
+      cursor.family = prior[3]
+      cursor.recognizer = prior[4]
+      cursor.packed = prior[5]
+      cursor.outcome = prior[6]
+    },
+  }
+  })()
+  const tokenSites = tokenRuntime?.sites
+  const tokenProducers = tokenRuntime?.producers
+  const tokenMatchers = tokenRuntime?.matchers
 
   /**
    * The INSTALLED trivia scanner for the scope currently running.
@@ -877,7 +944,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     coverage: (id: string) => void
     end: number
   }> = []
-  const tokenFrames: Array<readonly [string | undefined, number, number, number, number, number, number]> = []
   let depth = 0
 
   /**
@@ -1733,7 +1799,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return plan === undefined
           ? tokenBoundary(child)
           : tokenBoundary(child, (input, pos) => {
-              const packed = recognizeToken(input, pos, plan)
+              const packed = tokenRuntime!.recognize(input, pos, plan)
               return packed < 0 ? -1 : packed / 2
             })
       }
@@ -2685,7 +2751,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (tokenPlan !== undefined && tokenWire !== undefined) {
           return (input, pos, ctx) => {
             const selectorMark = saveTriviaMark(ctx)
-            const packed = recognizeToken(input, pos, tokenPlan)
+            const packed = tokenRuntime!.recognize(input, pos, tokenPlan)
             if (packed < 0) {
               // The cursor retains the known miss. The participating OP_TOKEN
               // reuses it and runs its spelling child once for canonical
@@ -2700,7 +2766,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const key = input.slice(pos, selEnd)
             if (cstCaptureActive(ctx)) pushLeaf(ctx, key, pos, selEnd)
             EC.e = selEnd
-            const outcome = TOK_OUTCOME
+            const outcome = tokenRuntime!.cursor.outcome
             let arm: number | undefined
             let routeFlags = 0
             for (let i = 0; i < tokenPlan.routeCount; i++) {
@@ -2712,7 +2778,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 const id = tokenWire.accepted[acceptedStart + j]!
                 if (id === outcome || tokenMatchers!.get(id)!(input, pos, selEnd)) {
                   accepted = true
-                  TOK_OUTCOME = id
+                  tokenRuntime!.cursor.outcome = id
                   break
                 }
               }
@@ -2750,8 +2816,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               mark = saveTriviaMark(ctx)
               ctx._routed = { value: key, span: { start: pos, end: selEnd } }
             }
-            const v = target(input, usesRouted ? pos : selEnd, ctx)
-            if (usesRouted) ctx._routed = savedRouted
+            let v: unknown
+            try {
+              v = target(input, usesRouted ? pos : selEnd, ctx)
+            } finally {
+              if (usesRouted) ctx._routed = savedRouted
+            }
             if (v === FAIL) {
               rollbackTrivia(ctx, mark)
               ctx._fc = true
@@ -3286,37 +3356,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     EC.e = prior.end
   }
 
-  function beginToken(ctx: ParseContext): void {
-    if (depth > 0) tokenFrames.push([
-      TOK_INPUT, TOK_START, TOK_CONTEXT, TOK_FAMILY, TOK_RECOGNIZER, TOK_PACKED, TOK_OUTCOME,
-    ])
+  const begin = tokenRuntime === undefined ? beginLegacy : (ctx: ParseContext): void => {
+    // The legacy boundary reads user-owned getters first. Only a successful
+    // begin may suspend/reset the token cursor; a throwing getter cannot leak
+    // an orphan token frame.
     beginLegacy(ctx)
-    TOK_INPUT = undefined
-    TOK_START = TOK_CONTEXT = TOK_FAMILY = TOK_RECOGNIZER = TOK_PACKED = TOK_OUTCOME = -1
+    tokenRuntime.begin(depth > 1)
   }
-
-  function finishToken(): void {
+  const finish = tokenRuntime === undefined ? finishLegacy : (): void => {
     const nested = depth > 1
     finishLegacy()
-    if (!nested) {
-      TOK_INPUT = undefined
-      TOK_START = TOK_CONTEXT = TOK_FAMILY = TOK_RECOGNIZER = TOK_PACKED = TOK_OUTCOME = -1
-      return
-    }
-    const prior = tokenFrames.pop()!
-    TOK_INPUT = prior[0]
-    TOK_START = prior[1]
-    TOK_CONTEXT = prior[2]
-    TOK_FAMILY = prior[3]
-    TOK_RECOGNIZER = prior[4]
-    TOK_PACKED = prior[5]
-    TOK_OUTCOME = prior[6]
+    tokenRuntime.finish(nested)
   }
 
   return {
     pieces, end: () => EC.e,
-    begin: tokenWire === undefined ? beginLegacy : beginToken,
-    finish: tokenWire === undefined ? finishLegacy : finishToken,
+    begin,
+    finish,
     scanSkip, reached, emitRefusal,
   }
 }
