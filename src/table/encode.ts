@@ -24,9 +24,8 @@ import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
-  assertLexicalCapabilityClosure, collectLexicalAlphabet,
-  winnerWrapsReference, type LexicalAlphabet, type LexicalTokenClassifier,
-} from '../compiler/token-alphabet.ts'
+  assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
+} from '../compiler/token-capability.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -181,12 +180,6 @@ class Encoder {
   winners: Readonly<Record<string, Combinator<unknown>>> | undefined = undefined
   triviaSpecs: TriviaSpec[] = []
   private triviaIndex = new Map<Combinator<unknown>, number>()
-  /** One compiler-only collection over the final winner graph. */
-  readonly lexical: LexicalAlphabet
-  private readonly lexicalClassifier = new Map<Combinator<unknown>, LexicalTokenClassifier>()
-  private readonly lexicalTokenSites: number[] = []
-  private readonly lexicalDispatchSites: Array<{ dsp: number; classifier: LexicalTokenClassifier }> = []
-
   /**
    * A trivia combinator as DATA where its shape allows.
    *
@@ -331,10 +324,8 @@ class Encoder {
    * row is stated.
    */
   readonly rec: boolean
-  constructor(settings: TableSettings, lexical: LexicalAlphabet) {
+  constructor(settings: TableSettings) {
     this.settings = settings
-    this.lexical = lexical
-    for (const classifier of lexical.classifiers) this.lexicalClassifier.set(classifier.dispatch, classifier)
     this.track = settings.trackLines === true
     this.rec = true
     this.plan = settings.coverage
@@ -1094,10 +1085,7 @@ class Encoder {
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
       case 'token': {
-        const ip = this.emit(OP_TOKEN, this.node(d.parser).ip)
-        const familyId = this.lexical.familyIdOf.get(p)
-        if (familyId !== undefined) this.lexicalTokenSites.push(ip, familyId)
-        return ip
+        return this.emit(OP_TOKEN, this.node(d.parser).ip)
       }
       case 'routed':
         return this.emit(OP_ROUTED, d.fallback === undefined ? -1 : this.node(d.fallback).ip)
@@ -1164,10 +1152,6 @@ class Encoder {
           : this.covWrap(this.node(d.otherwise).ip, dispCovIds?.[dispCov++], 1)
         const dspIdx = this.dsp.length
         this.dsp.push({ key, keyArm, fold, foldArm, match, routed, expected })
-        const lexicalClassifier = this.lexicalClassifier.get(p)
-        if (lexicalClassifier !== undefined) {
-          this.lexicalDispatchSites.push({ dsp: dspIdx, classifier: lexicalClassifier })
-        }
         const head = this.emitHead(OP_DISPATCH, 5 + arms.length)
         this.code[head + 1] = sel
         this.code[head + 2] = dspIdx
@@ -1575,9 +1559,9 @@ export function encodeTableProgram(
   // content-id discovery; ordinary rule/code order remains the caller's order.
   const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
   const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
-  const lexical = collectLexicalAlphabet(lexicalRoots, resolveLexical)
-  assertLexicalCapabilityClosure(lexicalRoots, lexical, resolveLexical)
-  const enc = new Encoder(resolvedSettings, lexical)
+  const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
+  assertLexicalCapabilityClosure(lexicalRoots, capabilities, resolveLexical)
+  const enc = new Encoder(resolvedSettings)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   const prog = enc.finish()

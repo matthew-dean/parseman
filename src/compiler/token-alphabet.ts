@@ -234,6 +234,11 @@ export type LexicalAlphabet = {
   readonly capabilityComplete: boolean
 }
 
+export type LexicalCapabilityInventory = Pick<
+  LexicalAlphabet,
+  'capabilities' | 'capabilityLanguages' | 'bindingEdges' | 'capabilityComplete'
+>
+
 /** Numeric-only artifact projection; `TableProgram` aliases this contract. */
 export type NumericLexicalPlan = {
   readonly recognizerOffsets: readonly number[]
@@ -911,7 +916,7 @@ function lexicalCapabilityInventory(
 /** Re-enumerate the final graph so a dropped/filtered candidate fails closed. */
 export function assertLexicalCapabilityClosure(
   roots: ReadonlyArray<Combinator<unknown>>,
-  alphabet: Pick<LexicalAlphabet, 'capabilities' | 'capabilityLanguages' | 'bindingEdges'>,
+  alphabet: Pick<LexicalCapabilityInventory, 'capabilities' | 'capabilityLanguages' | 'bindingEdges'>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): void {
   const actual = lexicalCapabilityInventory(roots, resolve)
@@ -934,6 +939,21 @@ export function assertLexicalCapabilityClosure(
     || expectedEdges.length !== suppliedEdges.length
     || expectedEdges.some((key, index) => key !== suppliedEdges[index])) {
     throw new Error('parseman: lexical capability census is incomplete after final grammar resolution')
+  }
+}
+
+/** Phase-A only: inventory obligations without constructing unused runtime families/sites. */
+export function collectLexicalCapabilities(
+  roots: ReadonlyArray<Combinator<unknown>>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): LexicalCapabilityInventory {
+  const inventory = lexicalCapabilityInventory(roots, resolve)
+  return {
+    capabilities: inventory.capabilities,
+    capabilityLanguages: inventory.languages,
+    bindingEdges: inventory.bindingEdges,
+    capabilityComplete: inventory.capabilities.every(site => site.status.kind !== 'gap')
+      && inventory.bindingEdges.every(edge => edge.status.kind !== 'gap'),
   }
 }
 
@@ -967,7 +987,7 @@ export function collectLexicalAlphabet(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): LexicalAlphabet {
-  const capabilityInventory = lexicalCapabilityInventory(roots, resolve)
+  const capabilityInventory = collectLexicalCapabilities(roots, resolve)
   const { capabilities, bindingEdges } = capabilityInventory
   const tokenParsers: Combinator<unknown>[] = []
   const dispatchParsers: Combinator<unknown>[] = []
@@ -1169,10 +1189,9 @@ export function collectLexicalAlphabet(
     classifiers: stableClassifiers,
     familyIdOf: stableFamilyIdOf,
     capabilities,
-    capabilityLanguages: capabilityInventory.languages,
+    capabilityLanguages: capabilityInventory.capabilityLanguages,
     bindingEdges,
-    capabilityComplete: capabilities.every(site => site.status.kind !== 'gap')
-      && bindingEdges.every(edge => edge.status.kind !== 'gap'),
+    capabilityComplete: capabilityInventory.capabilityComplete,
   }
 }
 
