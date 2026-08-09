@@ -56,10 +56,10 @@ semantic-identity graph. Neither checkpoint lowers the 0.46 baseline.
 grammar combinators
         |
         v
-compact TableProgram
+compact TableProgram (serialization only)
         |
         v
-assembly-linked shared or site-specialized pieces
+assembly resolves fixed topology to direct child references
         |
         v
 interpreter / runtime compile / macro / compose / rule map / folded variants
@@ -67,8 +67,15 @@ interpreter / runtime compile / macro / compose / rule map / folded variants
 
 The compiler decides which body shape each final site uses. Assembly resolves that
 body's fixed children, predicates and routes into direct references; emitted artifacts
-may give the selected site a static local name. The variants may not become parallel
+may give each combinator a static local name. The variants may not become parallel
 parser engines or carry different parsing semantics.
+
+The table is a compact transport and linking format, not a parse-time description to
+reinterpret. Once linked, a combinator whose final arity is three calls its three bound
+children directly. It does not rediscover that topology with `kids[i]`, `pieces[ip]`, an
+opcode switch, or a route-array walk. Arrays remain valid for genuinely dynamic parse
+data such as repeated results or a token record stream; they are not the runtime
+representation of a fixed grammar edge.
 
 The following remain prohibited:
 
@@ -84,43 +91,45 @@ The following remain prohibited:
 `TableProgram` remains compact data. Runtime behavior is linked from a bounded
 library of deterministic V8-friendly pieces. CSP safety is unchanged.
 
-### 2.1 Selective static binding, not an all-or-nothing emitter
+### 2.1 Static topology binding, not an all-or-nothing emitter
 
 The earlier static-factory size result rejected emitting a complete duplicate parser
-factory for every rule and assembly. It did **not** show that every combinator should
-remain a generic array-indexed runtime operation. Those are separate questions.
+factory for every rule and assembly. It did **not** show that fixed combinator topology
+should remain a generic array-indexed runtime operation. Those are separate questions.
 
-For every final site, the compiler MUST first make every semantically valid binding
-shape available, then choose the cheapest complete one:
+Direct topology binding is the baseline, not a profile-selected optimization. Every
+final combinator has a compile-time-known opcode, arity and child identity. Assembly may
+read table arrays to discover those facts once, but the returned parse body MUST hold
+direct references to the resolved children. A shared implementation means a shared
+assembly-time constructor or arity template which produces those direct bindings; it
+does not mean one universal parse-time body that accepts an IP or loops over a child
+array.
 
-1. a shared generic piece, when its indirection is cheaper than specialization;
-2. an assembly-bound piece with its child pieces, predicates, constants and routes
-   captured directly; or
-3. a statically named emitted body when eliminating the remaining lookup/dispatch is
-   worth that site's source and package cost.
+After that mandatory direct binding, the compiler may choose the cheapest expression of
+the already-static body:
 
-This decision is per site and may produce a mixed artifact. “Hot” and “cold” are cost
-inputs, not admission classes. A site whose opcode, children and route are final must
-not pay a parse-time opcode switch, `pieces[ip]` lookup, optional-plan branch, or array
-walk merely because its direct binding has not been implemented or because other sites
-use the shared representation. Conversely, a site must not be copied into source merely
-because another site benefits from a named body. A cold site may bind directly when that
-is cheapest; a hot site may remain shared only when the complete cost comparison says
-sharing is cheaper.
+1. an arity/shape-specific shared constructor returning a closure whose child pieces,
+   predicates, constants and routes are captured directly; or
+2. a statically named emitted body containing the same direct calls when that expression
+   is cheaper than the closure form.
 
-Binding capability therefore follows the same non-circular rule as token capability:
-the compiler constructs every applicable shared, captured and named candidate before it
-prices them. Missing specialization support is a compiler `GAP`, not evidence that the
-generic representation won. The program may retain the generic correctness baseline
-while a binding gap exists, but it may not claim cheapest-representation closure for that
-site or use the incomplete result as release-performance evidence.
+This expression decision is per site and may produce a mixed artifact. “Hot” and “cold”
+are cost inputs, not admission classes. They may decide closure versus emitted spelling;
+they may not decide whether fixed children are direct. No site whose opcode, arity,
+children or routes are final may pay a parse-time opcode switch, `pieces[ip]` lookup,
+optional-plan branch, or structural array walk merely because its direct linker has not
+been implemented.
+
+Binding capability therefore follows the same non-circular rule as token capability.
+Missing a direct linker for any fixed row is a compiler `GAP`, not evidence that indexed
+interpretation won. Once direct linking exists, the compiler constructs every applicable
+closure and named candidate before pricing their expression costs.
 
 Static naming is therefore a local lowering tool, not a second engine and not a build
-mode. `_pf<site>`-style names may be emitted only for selected sites; other sites keep
-shared pieces. Closure assembly must achieve the equivalent result with direct captured
-references where that is cheaper, without runtime source construction. The compact
-`TableProgram` remains the authority, and all variants preserve one semantic body per
-site.
+mode. `_pf<site>`-style names may be emitted where they are the cheapest spelling;
+closure assembly achieves the equivalent topology with direct captured references,
+without runtime source construction. The compact `TableProgram` remains the authority,
+and all variants preserve one semantic body per site.
 
 The cost model compares the whole representation: parse-time calls, branches, indexed
 loads and allocations; one-time assembly work; emitted bytes; package duplication; and
@@ -130,14 +139,15 @@ evidence that its indirection is free.
 
 Permanent structural teeth MUST include a mixed grammar where:
 
-- one selected site has a direct/named body containing no opcode dispatch,
-  `pieces[ip]` lookup, or unused strategy branch;
-- one independently priced site remains shared and is not duplicated into emitted
-  source;
+- sequence, choice and dispatch sites of several known arities link to bodies containing
+  no opcode dispatch, `pieces[ip]` lookup, `kids[i]` access, structural child loop, or
+  unused strategy branch;
+- one site uses a captured arity template and another uses a named emitted body, while
+  both call fixed children directly;
 - changing either site's cost decision makes the tooth RED without changing parse
   semantics; and
-- omitting an applicable captured or named candidate is reported as a binding `GAP`
-  rather than silently turning the shared baseline into a cost winner.
+- deleting a direct linker or replacing a direct child with an indexed lookup is reported
+  as a binding `GAP` or makes the structural tooth RED.
 
 ## 3. Leading implementation: tokenized PEG
 

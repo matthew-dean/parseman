@@ -25,15 +25,17 @@ status labels identify which is which.
 > register does not override that normative rule.
 >
 > Replacement is also **not** an all-or-nothing choice between a compact table and a
-> giant source-generated parser. After the compiler selects CHARACTER or TOKEN, it
-> separately makes every applicable binding available and selects the cheapest one for
-> that site: shared piece, direct captured piece, or statically named emitted body.
-> “Hot” and “cold” are cost inputs, not eligibility classes; missing static-binding
-> support is a compiler gap, never proof that the shared form is cheaper. The historical
+> giant source-generated parser. The table is serialization/linking data: once assembly
+> knows a combinator's fixed arity and children, its parse body calls direct captured or
+> statically named child references. It may not traverse `kids[i]`, look up `pieces[ip]`,
+> or switch on an opcode to rediscover fixed grammar topology. This direct binding is
+> required for every final site, not only profiled hot sites. After the compiler selects
+> CHARACTER or TOKEN, it separately chooses the cheapest expression of that direct body:
+> an arity/shape closure template or a statically named emitted body. The historical
 > 38–42× whole-factory growth
 > rejects indiscriminate duplication only. It does not justify an opcode switch,
 > `pieces[ip]` lookup, route-array walk, or unused strategy branch at a final hot site.
-> See [`parseman-0.48.md` §2.1](./parseman-0.48.md#21-selective-static-binding-not-an-all-or-nothing-emitter).
+> See [`parseman-0.48.md` §2.1](./parseman-0.48.md#21-static-topology-binding-not-an-all-or-nothing-emitter).
 >
 > Capability is closed **before** cost selection across the entire reachable final
 > composed grammar and every supported assembly variant. Every semantically valid token
