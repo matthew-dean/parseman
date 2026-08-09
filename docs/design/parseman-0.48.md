@@ -252,10 +252,13 @@ required above:
 | | CSS | Less |
 | --- | ---: | ---: |
 | reachable rules / combinator nodes | 198 / 1,268 | 278 / 2,144 |
-| distinct primitive terminal languages | 121 | 187 |
+| independently reachable primitive terminal atoms | 113 | 177 |
 | authored compound token atoms | 16 | 25 |
-| final `CHOICE` / `DISPATCH` rows | 75 / 7 | 168 / 9 |
+| final source `choice` / `dispatch` boundaries | 86 / 7 | 172 / 9 |
 
+The ownership walk treats a compound token as one atomic candidate and suppresses its
+internal children, while retaining any primitive that is also independently reachable.
+This prevents double-counting a token's implementation terms as separate public atoms.
 Every primitive and compound atom in this graph is semantically tokenizable. None is
 excluded by a Jess state gate or `withCtx` dependency. The existing normalizer still
 has fourteen implementation gaps: nine CSS balanced/scan-transform atoms and five
