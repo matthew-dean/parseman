@@ -204,8 +204,14 @@ type Piece = (input: string, pos: number, ctx: ParseContext) => unknown
 type ChoiceExpectedPrefix = (
   target: number, prev: number, acc: string[] | undefined,
 ) => string[] | undefined
-type OrderedChoiceBlock = (
-  input: string, pos: number, ctx: ParseContext, c: number, bits: number,
+type MaskedChoiceBlock = (
+  input: string, pos: number, ctx: ParseContext, bits: number,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number,
+  mEr: number, mLog: number, mRoot: number,
+  acc: string[] | undefined, prev: number,
+) => unknown
+type GeneralChoiceBlock = (
+  input: string, pos: number, ctx: ParseContext, c: number,
   need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number,
   mEr: number, mLog: number, mRoot: number,
   acc: string[] | undefined, prev: number,
@@ -759,100 +765,111 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
   }
 
-  /**
-   * One four-arm ordered-choice block. Its children, gates and diagnostics are
-   * scalar captures; only the genuinely dynamic candidate mask is indexed.
-   * Larger choices are a chain of these blocks, never an `arms[]` winner.
-   */
-  function orderedChoiceBlock(
+  /** One four-arm ASCII-mask block, selected once when the arity is maskable. */
+  function maskedChoiceBlock(
+    start: number,
+    a0: Piece, a1: Piece, a2: Piece, a3: Piece,
+    through: ChoiceExpectedPrefix,
+    next: MaskedChoiceBlock | undefined,
+    total: number,
+    choiceFx: string[],
+  ): MaskedChoiceBlock {
+    return (input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev) => {
+      if ((bits & (1 << start)) !== 0) {
+        ctx._fc = false
+        const v = a0(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start, prev, acc); prev = start + 1
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if ((bits & (1 << (start + 1))) !== 0) {
+        ctx._fc = false
+        const v = a1(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 1, prev, acc); prev = start + 2
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if ((bits & (1 << (start + 2))) !== 0) {
+        ctx._fc = false
+        const v = a2(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 2, prev, acc); prev = start + 3
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if ((bits & (1 << (start + 3))) !== 0) {
+        ctx._fc = false
+        const v = a3(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 3, prev, acc); prev = start + 4
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (next !== undefined) {
+        return next(input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev)
+      }
+      acc = through(total, prev, acc)
+      ctx._fe = pos; ctx._fx = acc ?? choiceFx
+      return FAIL
+    }
+  }
+
+  /** One four-arm non-ASCII/general block. No mask state exists in this shape. */
+  function generalChoiceBlock(
     start: number,
     a0: Piece, a1: Piece, a2: Piece, a3: Piece,
     g0: ResolvedClass | null, g1: ResolvedClass | null,
     g2: ResolvedClass | null, g3: ResolvedClass | null,
     through: ChoiceExpectedPrefix,
-    next: OrderedChoiceBlock | undefined,
+    next: GeneralChoiceBlock | undefined,
     total: number,
-    maskable: boolean,
     choiceFx: string[],
-  ): OrderedChoiceBlock {
-    return (input, pos, ctx, c, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev) => {
-      if (maskable && c < 128) {
-        if ((bits & (1 << start)) !== 0) {
-          ctx._fc = false
-          const v = a0(input, pos, ctx)
-          if (v !== FAIL) return v
-          acc = through(start, prev, acc); prev = start + 1
-          acc = accSet(ctx._fx, acc)
-          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        }
-        if ((bits & (1 << (start + 1))) !== 0) {
-          ctx._fc = false
-          const v = a1(input, pos, ctx)
-          if (v !== FAIL) return v
-          acc = through(start + 1, prev, acc); prev = start + 2
-          acc = accSet(ctx._fx, acc)
-          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        }
-        if ((bits & (1 << (start + 2))) !== 0) {
-          ctx._fc = false
-          const v = a2(input, pos, ctx)
-          if (v !== FAIL) return v
-          acc = through(start + 2, prev, acc); prev = start + 3
-          acc = accSet(ctx._fx, acc)
-          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        }
-        if ((bits & (1 << (start + 3))) !== 0) {
-          ctx._fc = false
-          const v = a3(input, pos, ctx)
-          if (v !== FAIL) return v
-          acc = through(start + 3, prev, acc); prev = start + 4
-          acc = accSet(ctx._fx, acc)
-          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        }
-      } else {
-        if (g0 === null || classHas(g0, c)) {
-          ctx._fc = false
-          const v = a0(input, pos, ctx)
-          if (v !== FAIL) return v
-          acc = through(start, prev, acc); prev = start + 1
-          acc = accSet(ctx._fx, acc)
-          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        }
-        if (g1 === null || classHas(g1, c)) {
-          ctx._fc = false
-          const v = a1(input, pos, ctx)
-          if (v !== FAIL) return v
-          acc = through(start + 1, prev, acc); prev = start + 2
-          acc = accSet(ctx._fx, acc)
-          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        }
-        if (g2 === null || classHas(g2, c)) {
-          ctx._fc = false
-          const v = a2(input, pos, ctx)
-          if (v !== FAIL) return v
-          acc = through(start + 2, prev, acc); prev = start + 3
-          acc = accSet(ctx._fx, acc)
-          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        }
-        if (g3 === null || classHas(g3, c)) {
-          ctx._fc = false
-          const v = a3(input, pos, ctx)
-          if (v !== FAIL) return v
-          acc = through(start + 3, prev, acc); prev = start + 4
-          acc = accSet(ctx._fx, acc)
-          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        }
+  ): GeneralChoiceBlock {
+    return (input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev) => {
+      if (g0 === null || classHas(g0, c)) {
+        ctx._fc = false
+        const v = a0(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start, prev, acc); prev = start + 1
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (g1 === null || classHas(g1, c)) {
+        ctx._fc = false
+        const v = a1(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 1, prev, acc); prev = start + 2
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (g2 === null || classHas(g2, c)) {
+        ctx._fc = false
+        const v = a2(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 2, prev, acc); prev = start + 3
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (g3 === null || classHas(g3, c)) {
+        ctx._fc = false
+        const v = a3(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 3, prev, acc); prev = start + 4
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
       if (next !== undefined) {
-        return next(input, pos, ctx, c, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev)
+        return next(input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev)
       }
       acc = through(total, prev, acc)
       ctx._fe = pos; ctx._fx = acc ?? choiceFx
@@ -2251,9 +2268,27 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
         }
 
-        const maskable = n <= 32
-        const mask = new Uint32Array(129)
-        if (maskable) {
+        const bindGeneral = (start: number, prior: ChoiceExpectedPrefix): GeneralChoiceBlock => {
+          const arm = (i: number): Piece => i < n ? link(code[base + i]!) : NEVER_PIECE
+          const expected = (i: number): readonly string[] => i < n
+            ? fx[code[base + n + i]!] as string[]
+            : EMPTY_FX
+          const gate = (i: number): ResolvedClass | null => i < n ? armCls[i] ?? null : NEVER_CLASS
+          const through = expectedBlock(
+            start, expected(start), expected(start + 1), expected(start + 2), expected(start + 3), prior,
+          )
+          const next = start + 4 < n ? bindGeneral(start + 4, through) : undefined
+          return generalChoiceBlock(
+            start,
+            arm(start), arm(start + 1), arm(start + 2), arm(start + 3),
+            gate(start), gate(start + 1), gate(start + 2), gate(start + 3),
+            through, next, n, choiceFx,
+          )
+        }
+        const general = bindGeneral(0, EMPTY_EXPECTED_PREFIX)
+
+        if (n <= 32) {
+          const mask = new Uint32Array(129)
           for (let i = 0; i < n; i++) {
             const cls = armCls[i] ?? null
             const bit = 1 << i
@@ -2263,26 +2298,44 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             }
             for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) mask[c]! |= bit
           }
+
+          const bindMasked = (start: number, prior: ChoiceExpectedPrefix): MaskedChoiceBlock => {
+            const arm = (i: number): Piece => i < n ? link(code[base + i]!) : NEVER_PIECE
+            const expected = (i: number): readonly string[] => i < n
+              ? fx[code[base + n + i]!] as string[]
+              : EMPTY_FX
+            const through = expectedBlock(
+              start, expected(start), expected(start + 1), expected(start + 2), expected(start + 3), prior,
+            )
+            const next = start + 4 < n ? bindMasked(start + 4, through) : undefined
+            return maskedChoiceBlock(
+              start, arm(start), arm(start + 1), arm(start + 2), arm(start + 3),
+              through, next, n, choiceFx,
+            )
+          }
+          const masked = bindMasked(0, EMPTY_EXPECTED_PREFIX)
+          return (input, pos, ctx) => {
+            const c = lead(input, pos)
+            const need = markCst(ctx)
+            const mRaw = MRAW
+            const mTl = MTL
+            const mLv = MLV
+            const mFl = need ? ctx._fields?.length ?? 0 : 0
+            const mEr = need ? ctx._errors?.length ?? 0 : 0
+            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            if (c < 128) {
+              return masked(
+                input, pos, ctx, mask[c < 0 ? 128 : c]!,
+                need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+              )
+            }
+            return general(
+              input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+            )
+          }
         }
 
-        const bindOrdered = (start: number, prior: ChoiceExpectedPrefix): OrderedChoiceBlock => {
-          const arm = (i: number): Piece => i < n ? link(code[base + i]!) : NEVER_PIECE
-          const expected = (i: number): readonly string[] => i < n
-            ? fx[code[base + n + i]!] as string[]
-            : EMPTY_FX
-          const gate = (i: number): ResolvedClass | null => i < n ? armCls[i] ?? null : NEVER_CLASS
-          const through = expectedBlock(
-            start, expected(start), expected(start + 1), expected(start + 2), expected(start + 3), prior,
-          )
-          const next = start + 4 < n ? bindOrdered(start + 4, through) : undefined
-          return orderedChoiceBlock(
-            start,
-            arm(start), arm(start + 1), arm(start + 2), arm(start + 3),
-            gate(start), gate(start + 1), gate(start + 2), gate(start + 3),
-            through, next, n, maskable, choiceFx,
-          )
-        }
-        const first = bindOrdered(0, EMPTY_EXPECTED_PREFIX)
         return (input, pos, ctx) => {
           const c = lead(input, pos)
           const need = markCst(ctx)
@@ -2293,9 +2346,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
-          const bits = maskable && c < 128 ? mask[c < 0 ? 128 : c]! : 0
-          return first(
-            input, pos, ctx, c, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+          return general(
+            input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
           )
         }
       }

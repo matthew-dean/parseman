@@ -180,18 +180,36 @@ describe('direct-bound choice topology', () => {
     const source = readFileSync(path.resolve(DIR, '../../src/table/assemble.ts'), 'utf8')
     const choiceCase = source.slice(source.indexOf('case OP_CHOICE:'), source.indexOf('/* ── greedyClassify'))
     expect(choiceCase).not.toMatch(/const arms:|const armFx:|const gates:/)
-    const orderedBlock = source.slice(
-      source.indexOf('function orderedChoiceBlock('), source.indexOf('function exclusiveChoiceBlock('),
+    const maskedBlock = source.slice(
+      source.indexOf('function maskedChoiceBlock('), source.indexOf('function generalChoiceBlock('),
     )
-    expect(orderedBlock).toMatch(/a0\(input, pos, ctx\)/)
-    expect(orderedBlock).toMatch(/a3\(input, pos, ctx\)/)
-    expect(orderedBlock).not.toMatch(/arms\[|armFx\[|gates\[/)
+    expect(maskedBlock).toMatch(/a0\(input, pos, ctx\)/)
+    expect(maskedBlock).toMatch(/a3\(input, pos, ctx\)/)
+    expect(maskedBlock).not.toMatch(/maskable|classHas|arms\[|armFx\[|gates\[/)
+    const generalBlock = source.slice(
+      source.indexOf('function generalChoiceBlock('), source.indexOf('function exclusiveChoiceBlock('),
+    )
+    expect(generalBlock).toMatch(/a0\(input, pos, ctx\)/)
+    expect(generalBlock).toMatch(/a3\(input, pos, ctx\)/)
+    expect(generalBlock).not.toMatch(/\bbits\b|maskable|arms\[|armFx\[|gates\[/)
     const exclusiveBlock = source.slice(
       source.indexOf('function exclusiveChoiceBlock('), source.indexOf('function trackLinesInto('),
     )
     expect(exclusiveBlock).toMatch(/a0\(input, pos, ctx\)/)
     expect(exclusiveBlock).toMatch(/a3\(input, pos, ctx\)/)
     expect(exclusiveBlock).not.toMatch(/arms\[|armFx\[|gates\[/)
+
+    // The signed-mask boundary is selected while the assembly is built. n32's
+    // public piece chooses between its already-bound ASCII-mask and general
+    // bodies using only the dynamic lead; n33 has no mask, bits or masked block
+    // in its parse closure at all.
+    const p32 = program(orderedMany(32))
+    const body32 = assemble(resolveTable(p32), { ...p32, asm: [] }, CLOSURE_CFG).pieces.Entry!.toString()
+    expect(body32).toContain('mask[c < 0 ? 128 : c]')
+    expect(body32).not.toContain('maskable')
+    const p33 = program(orderedMany(33))
+    const body33 = assemble(resolveTable(p33), { ...p33, asm: [] }, CLOSURE_CFG).pieces.Entry!.toString()
+    expect(body33).not.toMatch(/\b(?:mask|bits|masked|maskable)\b/)
   })
 
   it('preserves ordered skips, later success, all-fail diagnostics, EOF and non-ASCII in every engine', () => {
