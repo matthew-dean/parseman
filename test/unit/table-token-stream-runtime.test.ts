@@ -19,7 +19,7 @@ import { run } from '../../src/functional/run.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
-import type { ParseContext } from '../../src/types.ts'
+import type { ParseContext, ParseFail } from '../../src/types.ts'
 
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
 const DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -598,6 +598,85 @@ describe('table token stream runtime', () => {
     expect(counted.calls(), 'every cold assembly retained the legacy attempted arm').toBe(6)
   })
 
+  it('replays diagnostics only before a committed PEG frontier and rolls back active sinks', async () => {
+    const head = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const classified = dispatch(head, when(endsWith('('), literal('?')), otherwise(literal('~')))
+    const parser = choice(
+      attempt(literal('@')),
+      sequence(dispatch(literal('f'), when('f', literal('!')))),
+      attempt(literal('#')),
+      keywords(['red'], { caseInsensitive: true, boundary: '-A-Za-z0-9_(' }),
+      classified,
+    )
+    const prog = encodeTable({ Entry: parser })
+    expect(prog.tokenPlan?.choiceMasks).toBeDefined()
+    const loaded = await moduleRules(prog)
+    const input = 'foo('
+
+    type Snapshot = {
+      readonly fail: { readonly at: number; readonly expected: readonly string[]; readonly committed: boolean }
+      readonly leaves: readonly unknown[]
+      readonly raw: readonly unknown[]
+      readonly trivia: readonly number[]
+      readonly rootTrivia: readonly number[]
+      readonly errors: readonly unknown[]
+    }
+    const context = (): ParseContext => {
+      const ctx = createParseContext()
+      ctx._cstLeaves = [{ sentinel: 'leaf' }]
+      ctx._cstRawChildren = [{ sentinel: 'raw' }]
+      ctx._triviaLog = [71]
+      ctx._rootTriviaLog = [73]
+      ctx._errors = [{ sentinel: 'error' }] as never[]
+      return ctx
+    }
+    const sinks = (ctx: ParseContext): Omit<Snapshot, 'fail'> => ({
+      leaves: ctx._cstLeaves!, raw: ctx._cstRawChildren!, trivia: ctx._triviaLog!,
+      rootTrivia: ctx._rootTriviaLog!, errors: ctx._errors!,
+    })
+
+    const sourceCtx = context()
+    const source = parser.parse(input, 0, sourceCtx)
+    expect(source).toMatchObject({ ok: false, committed: true })
+    if (source.ok) throw new Error('source plant unexpectedly matched')
+    const sourceAuthority: Snapshot = {
+      ...sinks(sourceCtx),
+      fail: { at: source.span.start, expected: source.expected, committed: source.committed === true },
+    }
+    expect(sourceAuthority.fail.expected).toContain('"@"')
+    expect(sourceAuthority.fail.expected).toContain('"!"')
+    // The later keyword/masked-dispatch arms are behind the cut and contribute
+    // neither diagnostics nor sink mutations.
+    expect(sourceAuthority.fail.expected).not.toContain('keyword')
+
+    const entries = [
+      ['closure', tableRules({ ...prog, asm: [] }).Entry!],
+      ['emitted', tableRules(prog).Entry!],
+      ['precompiled', tableRules(precompiled(prog)).Entry!],
+      ['module', loaded.Entry!],
+    ] as const
+    const capture = (name: string, entry: (input: string, pos: number, ctx: ParseContext) => unknown): Snapshot => {
+      const ctx = context()
+      const result = entry(input, 0, ctx)
+      const fail = result === false
+        ? { at: ctx._fe!, expected: ctx._fx!, committed: ctx._fc === true }
+        : (() => {
+            expect(result, name).toMatchObject({ ok: false })
+            if (typeof result !== 'object' || result === null || !('ok' in result) || result.ok !== false) {
+              throw new Error(`${name} plant unexpectedly matched`)
+            }
+            const failed = result as ParseFail
+            return { at: failed.span.start, expected: failed.expected, committed: failed.committed === true }
+          })()
+      return { ...sinks(ctx), fail }
+    }
+    const authority = capture('reference', execRules(prog).Entry!)
+    expect(authority.fail).toEqual(sourceAuthority.fail)
+    for (const [name, entry] of entries) {
+      expect(capture(name, entry), name).toEqual(authority)
+    }
+  })
+
   it('reuses the outer mask recognition in the later dispatch selector', () => {
     const { prog: raw } = maskedChoicePlan()
     const plan = raw.tokenPlan!
@@ -617,6 +696,39 @@ describe('table token stream runtime', () => {
 
     expect(run(tableRules(prog).Entry!, 'foo?')).toMatchObject({ ok: true, unconsumedFrom: null })
     expect(calls, 'outer mask and inner dispatch share one recognized range').toBe(1)
+  })
+
+  it('restores a mask decision across nested assembly frames and releases it at outer finish', () => {
+    const { prog: raw } = maskedChoicePlan()
+    const plan = raw.tokenPlan!
+    const family = plan.sites[1]!, recognizer = family - 3
+    const at = plan.recognizerOffsets[recognizer]!, reK = plan.recognizerData[at + 5]!
+    const original = raw.k[reK] as RegExp
+    let calls = 0
+    const counted = new RegExp(original.source, `${original.flags.replace(/[gy]/g, '')}y`)
+    const exec = counted.exec
+    counted.exec = function (input: string) { calls++; return exec.call(this, input) }
+    const constants = [...raw.k]
+    constants[reK] = counted
+    const prog = ownTableProgram({ ...raw, k: constants, asm: [] })
+    const asm = assemble(resolveTable(prog), prog, STRICT)
+    const outer = createParseContext(), inner = createParseContext()
+
+    asm.begin(outer)
+    expect(asm.pieces.Entry!('foo?', 0, outer)).not.toBe(false)
+    expect(calls).toBe(1)
+    asm.begin(inner)
+    expect(asm.pieces.Entry!('red~', 0, inner)).not.toBe(false)
+    expect(calls).toBe(2)
+    asm.finish()
+    expect(asm.pieces.Entry!('foo?', 0, outer)).not.toBe(false)
+    expect(calls, 'the outer frame restored its packed decision').toBe(2)
+    asm.finish()
+
+    asm.begin(outer)
+    expect(asm.pieces.Entry!('foo?', 0, outer)).not.toBe(false)
+    expect(calls, 'outer finish released the source and decision').toBe(3)
+    asm.finish()
   })
 
   it('intersects the outcome mask with the existing character candidates', () => {

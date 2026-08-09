@@ -597,6 +597,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     readonly otherwise: number
     readonly unrestricted: number
     readonly restricted: number
+    readonly replayable: number
   }
   type LexRecognizer = (input: string, pos: number) => number
   const configuredTokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
@@ -871,7 +872,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (token !== undefined) {
           const outcomeIds = maskWire.slice(at + 6, at + 6 + outcomeCount)
           const outcomeArms = new Uint32Array(outcomeCount)
-          let unrestricted = 0, restricted = 0, otherwise = -1
+          let unrestricted = 0, restricted = 0, replayable = 0, otherwise = -1
           for (let outcome = 0; outcome < outcomeCount; outcome++) {
             const id = outcomeIds[outcome]!
             for (const offset of wire.outcomeOffsets) {
@@ -882,7 +883,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const bit = 1 << arm
             const accepted = maskWire[at + 6 + outcomeCount + arm]!
             if ((accepted & 1) !== 0) unrestricted |= bit
-            else restricted |= bit
+            else {
+              restricted |= bit
+              // A zero mask is statically FIRST-disjoint from the whole
+              // recognized family. Its existing armFx is therefore exact;
+              // only arms accepted by SOME outcomes need diagnostic replay.
+              if (accepted !== 0) replayable |= bit
+            }
             for (let outcome = 0; outcome < outcomeCount; outcome++) {
               if ((accepted & (2 << outcome)) !== 0) outcomeArms[outcome]! |= bit
             }
@@ -891,7 +898,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // recognized range can never fall between serialized outcome views.
           // Manual wires without one fail open by declining the mask relation.
           if (otherwise >= 0) masks!.set(choice, {
-            choice, token, outcomeIds, outcomeArms, otherwise, unrestricted, restricted,
+            choice, token, outcomeIds, outcomeArms, otherwise, unrestricted, restricted, replayable,
           })
         }
       }
@@ -2604,13 +2611,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mask = cand
           const restricted = tokenMask.restricted
           const unrestricted = tokenMask.unrestricted
+          const replayable = tokenMask.replayable
           const outcomeArms = tokenMask.outcomeArms
-          const maskMarkers: unknown[] = new Array(n)
           const markerFx: string[][] = new Array(n)
-          for (let i = 0; i < n; i++) if ((restricted & (1 << i)) !== 0) {
-            const marker = {}
-            maskMarkers[i] = marker
-            markerFx[i] = [marker as string]
+          for (let i = 0; i < n; i++) if ((replayable & (1 << i)) !== 0) {
+            // Expected values are strings, so a numeric sentinel cannot collide
+            // and avoids one marker-object allocation per replayable arm.
+            markerFx[i] = [i as unknown as string]
           }
           // Static arm expectations are exact for a character-gate miss, but an
           // outcome mask can decline an arm whose opener DID match the lead. Its
@@ -2630,7 +2637,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               ctx._fc = false
               const v = arms[i]!(input, pos, ctx)
               if (v !== FAIL) return v // defensive fail-open if compiler proof drifted
-              const marker = maskMarkers[i] as string
+              const marker = i as unknown as string
               const at = acc?.indexOf(marker) ?? -1
               if (at < 0) throw new Error('table token choice diagnostic marker is missing')
               const dynamic = ctx._fx ?? EMPTY_FX
@@ -2687,7 +2694,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 bits &= bits - 1
                 if (tokenSkip !== undefined && i === tokenChoice!.arm && tokenSkip(input, pos)) {
                   for (let j = prev; j < i; j++) if ((eligible & (1 << j)) === 0) {
-                    acc = accSet((maskSkipped & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
+                    acc = accSet((maskSkipped & replayable & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
                   }
                   prev = i + 1
                   acc = accSet(tokenChoice!.expected, acc)
@@ -2697,18 +2704,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 const v = arms[i]!(input, pos, ctx)
                 if (v !== FAIL) return v
                 for (let j = prev; j < i; j++) if ((eligible & (1 << j)) === 0) {
-                  acc = accSet((maskSkipped & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
+                  acc = accSet((maskSkipped & replayable & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
                 }
                 prev = i + 1
                 acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) {
                   const committedAt = ctx._fe
                   if (maskSkipped !== 0) {
-                    const replay = replayMasked(input, pos, ctx, acc, maskSkipped, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-                    if (replay !== FAIL) return replay
-                    if (committed(ctx)) return FAIL
-                    ctx._fc = true
-                    ctx._fe = committedAt
+                    // A cut at arm `i` prevents every later arm from entering.
+                    // The precomputed ASCII mask already contains those future
+                    // exclusions, but their diagnostic markers have not reached
+                    // the PEG accumulator and must not be replayed.
+                    const before = maskSkipped & replayable & ((1 << i) - 1)
+                    if (before !== 0) {
+                      const replay = replayMasked(input, pos, ctx, acc, before, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                      if (replay !== FAIL) return replay
+                      if (committed(ctx)) return FAIL
+                      ctx._fc = true
+                      ctx._fe = committedAt
+                    }
                   }
                   if (acc !== undefined) ctx._fx = acc
                   return FAIL
@@ -2716,10 +2730,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               }
               for (let j = prev; j < n; j++) if ((eligible & (1 << j)) === 0) {
-                acc = accSet((maskSkipped & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
+                acc = accSet((maskSkipped & replayable & (1 << j)) !== 0 ? markerFx[j]! : armFx[j]!, acc)
               }
-              if (maskSkipped !== 0) {
-                const replay = replayMasked(input, pos, ctx, acc, maskSkipped, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              const replayAll = maskSkipped & replayable
+              if (replayAll !== 0) {
+                const replay = replayMasked(input, pos, ctx, acc, replayAll, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
                 if (replay !== FAIL) return replay
                 if (committed(ctx)) return FAIL
               }
@@ -2745,7 +2760,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               }
               if (allowed >= 0 && (allowed & bit) === 0) {
                 maskSkipped |= bit
-                acc = accSet(markerFx[i]!, acc)
+                acc = accSet((replayable & bit) !== 0 ? markerFx[i]! : armFx[i]!, acc)
                 continue
               }
               if (tokenSkip !== undefined && i === tokenChoice!.arm && tokenSkip(input, pos)) {
@@ -2758,19 +2773,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (committed(ctx)) {
                 const committedAt = ctx._fe
                 if (maskSkipped !== 0) {
-                  const replay = replayMasked(input, pos, ctx, acc, maskSkipped, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-                  if (replay !== FAIL) return replay
-                  if (committed(ctx)) return FAIL
-                  ctx._fc = true
-                  ctx._fe = committedAt
+                  const before = maskSkipped & replayable & ((1 << i) - 1)
+                  if (before !== 0) {
+                    const replay = replayMasked(input, pos, ctx, acc, before, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                    if (replay !== FAIL) return replay
+                    if (committed(ctx)) return FAIL
+                    ctx._fc = true
+                    ctx._fe = committedAt
+                  }
                 }
                 if (acc !== undefined) ctx._fx = acc
                 return FAIL
               }
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             }
-            if (maskSkipped !== 0) {
-              const replay = replayMasked(input, pos, ctx, acc, maskSkipped, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            const replayAll = maskSkipped & replayable
+            if (replayAll !== 0) {
+              const replay = replayMasked(input, pos, ctx, acc, replayAll, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (replay !== FAIL) return replay
               if (committed(ctx)) return FAIL
             }
