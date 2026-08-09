@@ -52,7 +52,7 @@ const shared = {
   target: 'es2022',
 }
 
-const lexicalSource = resolve('src/compiler/lexical-identity.ts')
+const lexicalSource = resolve('src/compiler/token-alphabet.ts')
 
 /**
  * The lexical normalizer is BUILD logic, but all five compile-capable public
@@ -69,13 +69,13 @@ const lexicalSource = resolve('src/compiler/lexical-identity.ts')
 function externalLexicalPlanner(entry, format) {
   const extension = format === 'esm' ? '.js' : '.cjs'
   const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, extension)}`
-  const lexicalOutput = `dist/compiler/lexical-identity${extension}`
+  const lexicalOutput = `dist/compiler/token-alphabet${extension}`
   let ref = relative(dirname(entryOutput), lexicalOutput).split(sep).join('/')
   if (!ref.startsWith('.')) ref = `./${ref}`
   return {
     name: 'shared-lexical-planner',
     setup(ctx) {
-      ctx.onResolve({ filter: /lexical-identity\.ts$/ }, args => {
+      ctx.onResolve({ filter: /token-alphabet\.ts$/ }, args => {
         if (resolve(args.resolveDir, args.path) !== lexicalSource) return undefined
         return { path: ref, external: true }
       })
@@ -100,8 +100,8 @@ await Promise.all([
     buildPublicEntry(entry, 'esm'),
     buildPublicEntry(entry, 'cjs'),
   ]),
-  build({ ...shared, entryPoints: [lexicalSource], format: 'esm', outfile: 'dist/compiler/lexical-identity.js' }),
-  build({ ...shared, entryPoints: [lexicalSource], format: 'cjs', outfile: 'dist/compiler/lexical-identity.cjs' }),
+  build({ ...shared, entryPoints: [lexicalSource], format: 'esm', outfile: 'dist/compiler/token-alphabet.js' }),
+  build({ ...shared, entryPoints: [lexicalSource], format: 'cjs', outfile: 'dist/compiler/token-alphabet.cjs' }),
 ])
 
 // `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so
