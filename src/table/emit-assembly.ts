@@ -56,12 +56,13 @@ import {
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
-import type { ResolvedClass, ResolvedTable, TableProgram } from './program.ts'
+import type { ResolvedClass, ResolvedTable, TableProgram, TokenPlanWire } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
+import { runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -479,6 +480,69 @@ export function emitAssemblySource(
   // pool's `extraIps` — and each starts at `TOP`, because a caller outside the
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
+  type TokenSitePlan = {
+    readonly selectorIp: number
+    readonly recognizer: number
+    readonly family: number
+    readonly routeStart: number
+    readonly routeCount: number
+  }
+  const configuredTokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
+    ? prog.tokenPlan
+    : undefined
+  const tokenWire = configuredTokenWire !== undefined && configuredTokenWire.sites.length > 0
+    ? configuredTokenWire
+    : undefined
+  const tokenProducers = new Map<number, TokenSitePlan>()
+  const tokenSites = new Map<number, TokenSitePlan>()
+  const outcomeById = new Map<number, readonly [kind: number, a: number, b: number]>()
+  const tokenOutcomeSupported = (id: number): boolean => {
+    const outcome = outcomeById.get(id)
+    if (outcome === undefined) return false
+    if (outcome[0] !== 3) return outcome[0] >= 0 && outcome[0] <= 4
+    const re = k[outcome[1]]
+    if (!(re instanceof RegExp)) return false
+    return runtimeRangeOutcomeKind('matches', re.source, re.flags) !== undefined
+  }
+  if (tokenWire !== undefined) {
+    for (let i = 0; i < tokenWire.tokenSites.length; i += 2) {
+      const selectorIp = tokenWire.tokenSites[i]!, family = tokenWire.tokenSites[i + 1]!
+      tokenProducers.set(selectorIp, { selectorIp, recognizer: family - 3, family, routeStart: 0, routeCount: 0 })
+    }
+    for (let i = 0; i < tokenWire.outcomeOffsets.length; i++) {
+      const at = tokenWire.outcomeOffsets[i]!, id = tokenWire.outcomeData[at]!
+      outcomeById.set(id, [tokenWire.outcomeData[at + 2]!, tokenWire.outcomeData[at + 3] ?? -1, tokenWire.outcomeData[at + 4] ?? 0])
+    }
+    const reachable = reachableSites(code, roots)
+    for (let i = 0; i < tokenWire.sites.length; i += 4) {
+      const di = tokenWire.sites[i]!, family = tokenWire.sites[i + 1]!
+      let producer: TokenSitePlan | undefined
+      for (const siteIp of reachable) {
+        if (code[siteIp] !== OP_DISPATCH || code[siteIp + 2] !== di) continue
+        const candidate = tokenProducers.get(code[siteIp + 1]!)
+        if (candidate?.family === family) { producer = candidate; break }
+      }
+      if (producer === undefined) throw new Unemittable('a malformed token-plan dispatch site')
+      const routeStart = tokenWire.sites[i + 2]!, routeCount = tokenWire.sites[i + 3]!
+      let supported = true
+      for (let route = 0; route < routeCount && supported; route++) {
+        const rw = routeStart + route * 4
+        const acceptedStart = tokenWire.routes[rw + 2]!, acceptedCount = tokenWire.routes[rw + 3]!
+        for (let j = 0; j < acceptedCount; j++) {
+          if (!tokenOutcomeSupported(tokenWire.accepted[acceptedStart + j]!)) { supported = false; break }
+        }
+      }
+      if (!supported) continue
+      tokenSites.set(di, {
+        ...producer, routeStart, routeCount,
+      })
+    }
+    for (const [ip, producer] of tokenProducers) {
+      if (![...tokenSites.values()].some(site => site.family === producer.family
+        && site.recognizer === producer.recognizer)) tokenProducers.delete(ip)
+    }
+  }
+  const tokenActive = tokenSites.size > 0
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -564,6 +628,28 @@ export function emitAssemblySource(
   const fxRef = (i: number): string => hoist('fx', `FX[${i}]`)
   const fnRef = (i: number): string => hoist('fn', `FNS[${i}]`)
   const recognizerRef = (i: number): string => hoist('rec', `RECOG[${i}]`)
+  const tokenOutcomeExpr = (id: number, start: string, end: string): string => {
+    const outcome = outcomeById.get(id)
+    if (outcome === undefined) throw new Unemittable(`token outcome id ${id}`)
+    const [kind, a, b] = outcome
+    if (kind === 0) return `_tokEq(input,${start},${end},${kRef(a)},${b})`
+    if (kind === 1) return `_tokStarts(input,${start},${end},${kRef(a)},${b})`
+    if (kind === 2) return `_tokEnds(input,${start},${end},${kRef(a)},${b})`
+    if (kind === 3) {
+      const re = k[a]
+      const shape = re instanceof RegExp ? runtimeRangeOutcomeKind('matches', re.source, re.flags) : undefined
+      if (shape === 'function-open-excluding-url-calc') {
+        return `${end}>${start}+1&&input.charCodeAt(${end}-1)===40&&!_tokLine(input,${start},${end})`
+          + `&&!_tokEq(input,${start},${end},"url(",1)&&!_tokEq(input,${start},${end},"calc(",1)`
+      }
+      if (re instanceof RegExp && shape === 'ascii-prefix') {
+        return `_tokStarts(input,${start},${end},${q(re.source.slice(1))},${re.ignoreCase ? 1 : 0})`
+      }
+      throw new Unemittable('a token outcome regex without a bounded range lowering')
+    }
+    if (kind === 4) return 'true'
+    throw new Unemittable('a token outcome regex without a bounded range lowering')
+  }
   /**
    * The sync sentinel for a char-class index, hoisted once per class.
    *
@@ -1099,6 +1185,7 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
       case OP_TOKEN:
       case OP_LEAF: {
         const isToken = op === OP_TOKEN
+        const tokenProducer = isToken ? tokenProducers.get(ip) : undefined
         const fn = isToken ? undefined : fnRef(code[ip + 1]!)
         const child = link(isToken ? code[ip + 1]! : code[ip + 2]!)
         // `try`/`finally`, AS `assemble.ts` HAS IT. `OP_SCOPE` restores linearly
@@ -1131,7 +1218,11 @@ ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined
 ctx._triviaLog=undefined
 ${isToken ? 'ctx._rootTriviaLog=undefined\n' : ''}let v
-try{v=${child}(input,pos,ctx)}finally{
+${tokenProducer === undefined ? '' : 'let e=-1\n'}try{${tokenProducer === undefined
+  ? `v=${child}(input,pos,ctx)`
+  : `const packed=_tokRecognize(input,pos,0,${tokenProducer.family},${tokenProducer.recognizer},${recognizerRef(k.length + tokenProducer.recognizer)})
+if(packed<0)v=${child}(input,pos,ctx)
+else e=packed/2`} }finally{
 ${isToken ? `_pfScan=sScan
 ctx.trivia=sTri
 ctx.triviaKindLabels=sKinds
@@ -1143,8 +1234,7 @@ ctx._cstRawChildren=sRaw
 ctx._cstTriviaLog=sTl
 ctx._triviaLog=sOtl
 }
-if(v===FAIL)return FAIL
-const e=EC.e
+${tokenProducer === undefined ? 'if(v===FAIL)return FAIL\nconst e=EC.e' : 'if(e<0){if(v===FAIL)return FAIL\ne=EC.e}'}
 const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
 if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:out,span:{start:pos,end:e}})
 EC.e=e
@@ -1450,6 +1540,54 @@ return FAIL
           : ''
         const m1 = tmp()
         const m2 = tmp()
+        const tokenPlan = tokenSites.get(di)
+        if (tokenPlan !== undefined && tokenWire !== undefined) {
+          const routeTests: string[] = []
+          for (let i = 0; i < tokenPlan.routeCount; i++) {
+            const rw = tokenPlan.routeStart + i * 4
+            const arm = tokenWire.routes[rw]!
+            const flags = tokenWire.routes[rw + 1]!
+            const acceptedStart = tokenWire.routes[rw + 2]!
+            const acceptedCount = tokenWire.routes[rw + 3]!
+            const accepted = Array.from({ length: acceptedCount }, (_, j) => {
+              const id = tokenWire.accepted[acceptedStart + j]!
+              const target = (flags & 3) === 2 ? -1 : arm
+              return `if(${tokenOutcomeExpr(id, 'pos', 'selEnd')}){_pfTokOutcome=${id};arm=${target};ur=${(flags & 4) !== 0};matched=true}`
+            }).join('\nif(!matched)')
+            routeTests.push(`if(!matched){${accepted}}`)
+          }
+          return `${head}
+${emitMark(m1, L.buf, sinks)}
+const packed=_tokRecognize(input,pos,0,${tokenPlan.family},${tokenPlan.recognizer},${recognizerRef(k.length + tokenPlan.recognizer)})
+if(packed<0){const sv=${selector}(input,pos,ctx);if(sv===FAIL)return FAIL;throw new Error('table token stream recognizer disagrees with its selector')}
+const selEnd=packed/2
+const key=input.slice(pos,selEnd)
+${L.buf ? '_pushLeafBuf(ctx,key,pos,selEnd)' : 'if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)_pushLeaf(ctx,key,pos,selEnd)'}
+EC.e=selEnd
+let arm,ur=false,matched=false
+${routeTests.join('\n')}
+if(!matched){ctx._fe=selEnd;ctx._fx=${dx};return FAIL}
+const savedRouted=ctx._routed
+${emitMark(m2, L.buf, sinks)}
+if(ur){
+${emitRollback(m1, L.buf, sinks)}
+${emitMark(m2, L.buf, sinks, false)}
+ctx._routed={value:key,span:{start:pos,end:selEnd}}
+}
+const at=ur?pos:selEnd
+let v
+try{switch(arm){
+${arms.map((a, i) => `case ${i}:v=${a}(input,at,ctx);break`).join('\n')}
+${other === undefined ? '' : `default:v=${other}(input,at,ctx)`}
+}}finally{if(ur)ctx._routed=savedRouted}
+if(v===FAIL){
+${emitRollback(m2, L.buf, sinks)}
+ctx._fc=true
+return FAIL
+}
+return [key,v]
+}`
+        }
         // THE SELECTOR RUNS ONCE and the key it returns picks the arm — that is
         // what `dispatch()` buys over a choice of arms that each re-parse the
         // opener. A routed arm rewinds the selector's trivia capture and gets
@@ -1829,25 +1967,52 @@ return nd
   // are `function` declarations, so a body may call one that is textually below
   // it, but the `const _ts<N>` each one reads must be initialised before any
   // parse runs, not merely before the declaration is evaluated.
-  const source = `${RUNTIME_PRELUDE}
+  const tokenPrelude = !tokenActive ? '' : `
+let _pfTokInput,_pfTokStart=-1,_pfTokContext=-1,_pfTokFamily=-1,_pfTokRecognizer=-1,_pfTokPacked=-1,_pfTokOutcome=-1
+function _tokRecognize(input,pos,context,family,recognizer,rec){
+if(_pfTokInput===input&&_pfTokStart===pos&&_pfTokContext===context&&_pfTokFamily===family&&_pfTokRecognizer===recognizer)return _pfTokPacked
+const end=rec(input,pos)
+_pfTokInput=input;_pfTokStart=pos;_pfTokContext=context;_pfTokFamily=family;_pfTokRecognizer=recognizer;_pfTokPacked=end<0?-1:2*end;_pfTokOutcome=-1
+return _pfTokPacked
+}
+function _tokEq(input,start,end,value,fold){
+if(end-start!==value.length)return false
+for(let i=0;i<value.length;i++){let a=input.charCodeAt(start+i),b=value.charCodeAt(i);if(fold){if(a>=65&&a<=90)a+=32;if(b>=65&&b<=90)b+=32}if(a!==b)return false}
+return true
+}
+function _tokStarts(input,start,end,value,fold){return start+value.length<=end&&_tokEq(input,start,start+value.length,value,fold)}
+function _tokEnds(input,start,end,value,fold){return end-value.length>=start&&_tokEq(input,end-value.length,end,value,fold)}
+function _tokLine(input,start,end){for(let i=start;i<end;i++){const c=input.charCodeAt(i);if(c===10||c===13||c===8232||c===8233)return true}return false}
+`
+  const frameSave = !tokenActive
+    ? 'if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])'
+    : 'if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e,_pfTokInput,_pfTokStart,_pfTokContext,_pfTokFamily,_pfTokRecognizer,_pfTokPacked,_pfTokOutcome])'
+  const tokenBegin = !tokenActive ? '' : `
+_pfTokInput=undefined;_pfTokStart=_pfTokContext=_pfTokFamily=_pfTokRecognizer=_pfTokPacked=_pfTokOutcome=-1`
+  const finishOuter = !tokenActive ? 'if(_pfDepth===0)return' : `if(_pfDepth===0){
+_pfTokInput=undefined;_pfTokStart=_pfTokContext=_pfTokFamily=_pfTokRecognizer=_pfTokPacked=_pfTokOutcome=-1
+return}`
+  const tokenRestore = !tokenActive ? '' : `
+_pfTokInput=prior[3];_pfTokStart=prior[4];_pfTokContext=prior[5];_pfTokFamily=prior[6];_pfTokRecognizer=prior[7];_pfTokPacked=prior[8];_pfTokOutcome=prior[9]`
+  const source = `${RUNTIME_PRELUDE}${tokenPrelude}
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${bodies.join('\n')}
 function _begin(ctx){
 const host=ctx.build
-if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])
+${frameSave}
 _pfDepth++
 _pfScan=null
-_pfHost=host
+_pfHost=host${tokenBegin}
 }
 function _finish(){
 if(_pfDepth<=0)throw new Error('parseman emitted table assembly frame underflow')
 _pfDepth--
-if(_pfDepth===0)return
+${finishOuter}
 const prior=_pfFrames.pop()
 _pfScan=prior[0]
 _pfHost=prior[1]
-EC.e=prior[2]
+EC.e=prior[2]${tokenRestore}
 }
 return{
 pieces:{${ruleEntries.join(',')}},
