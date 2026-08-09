@@ -127,7 +127,7 @@ import { reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
-  makeScalarRecognizer, scalarTerminalNodeChild, type ScalarRecognizer,
+  makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
 /**
@@ -422,6 +422,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   // serves an ordinary terminal piece and a direct terminal-node materializer.
   // Value/CST/failure/cursor effects stay in those consumers.
   const scalarRecognizers: Array<ScalarRecognizer | undefined> = []
+  const rawScalarSpecs = new Set<number>()
   function scalarFor(child: number): ScalarRecognizer | undefined {
     const spec = code[child + 1]!
     let recognize = scalarRecognizers[spec]
@@ -777,7 +778,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const s = k[code[ip + 1]!] as string
         const len = s.length
         const xf = fx[code[ip + 2]!] as string[]
-        const shared = scalarRecognizers[code[ip + 1]!] !== undefined ? scalarFor(ip) : undefined
+        const shared = rawScalarSpecs.has(code[ip + 1]!) ? scalarFor(ip) : undefined
         if (shared !== undefined) {
           return (input, pos, ctx) => {
             const e = shared(input, pos)
@@ -916,7 +917,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_RX: {
         const re = k[code[ip + 1]!] as RegExp
         const xf = fx[code[ip + 2]!] as string[]
-        const shared = scalarRecognizers[code[ip + 1]!] !== undefined ? scalarFor(ip) : undefined
+        const shared = rawScalarSpecs.has(code[ip + 1]!) ? scalarFor(ip) : undefined
         if (shared !== undefined) {
           return (input, pos, ctx) => {
             const e = shared(input, pos)
@@ -1354,6 +1355,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       /* ── zero-width ──────────────────────────────────────────────────────── */
 
       case OP_NOT: {
+        const scalarChild = scalarTerminalNotChild(code, ip)
+        if (scalarChild >= 0) {
+          const recognize = scalarFor(scalarChild)!
+          const xf = fx[code[ip + 2]!] as string[]
+          return (input, pos, ctx) => {
+            if (recognize(input, pos) < 0) {
+              EC.e = pos
+              return null
+            }
+            ctx._fe = pos
+            ctx._fx = xf
+            EC.e = pos
+            return FAIL
+          }
+        }
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
         return (input, pos, ctx) => {
@@ -2715,13 +2731,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
     }
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
-    if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
-      const roots = [...Object.values(prog.rules), ...extraIps]
-      for (const ip of reachableSites(code, roots)) {
-        if (code[ip] !== OP_NODE) continue
-        const child = scalarTerminalNodeChild(code, ip)
-        if (child >= 0) scalarFor(child)
+    const roots = [...Object.values(prog.rules), ...extraIps]
+    for (const ip of reachableSites(code, roots)) {
+      if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
+        if (code[ip] === OP_NODE) {
+          const child = scalarTerminalNodeChild(code, ip)
+          if (child >= 0) {
+            rawScalarSpecs.add(code[child + 1]!)
+            scalarFor(child)
+          }
+        }
       }
+      const notChild = scalarTerminalNotChild(code, ip)
+      if (notChild >= 0) scalarFor(notChild)
     }
     /**
      * THE BUILD'S OWN ANSWER, TRIED BEFORE THE CONSTRUCTOR.

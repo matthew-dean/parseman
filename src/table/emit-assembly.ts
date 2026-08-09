@@ -61,7 +61,7 @@ import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
-import { scalarTerminalNodeChild } from './scalar-terminal.ts'
+import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -1169,6 +1169,18 @@ return FAIL
       }
 
       case OP_NOT: {
+        const scalarChild = scalarTerminalNotChild(code, ip)
+        if (scalarChild >= 0) {
+          const recognize = recognizerRef(code[scalarChild + 1]!)
+          const xf = fxRef(code[ip + 2]!)
+          return `${head}
+if(${recognize}(input,pos)<0){EC.e=pos;return null}
+ctx._fe=pos
+ctx._fx=${xf}
+EC.e=pos
+return FAIL
+}`
+        }
         const child = link(code[ip + 1]!)
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()

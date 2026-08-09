@@ -1,4 +1,4 @@
-import { OP_LIT, OP_RX } from './ops.ts'
+import { OP_LIT, OP_NOT, OP_RX } from './ops.ts'
 
 /** Pure recognition only. Consumption owns value, CST, line, failure and cursor effects. */
 export type ScalarRecognizer = (input: string, pos: number, seed?: number) => number
@@ -38,6 +38,14 @@ export function makeScalarRecognizer(op: number, spec: unknown): ScalarRecognize
 export function scalarTerminalNodeChild(code: ArrayLike<number>, ip: number): number {
   if (code[ip + 1]! < 0 || code[ip + 3] !== 0 || code[ip + 4] !== -1) return -1
   const child = code[ip + 2]!
+  const op = code[child]
+  return op === OP_RX || op === OP_LIT ? child : -1
+}
+
+/** Direct untracked terminal whose recognition `not()` can inspect without materializing it. */
+export function scalarTerminalNotChild(code: ArrayLike<number>, ip: number): number {
+  if (code[ip] !== OP_NOT) return -1
+  const child = code[ip + 1]!
   const op = code[child]
   return op === OP_RX || op === OP_LIT ? child : -1
 }

@@ -47,6 +47,7 @@ import {
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
+import { scalarTerminalNotChild } from './scalar-terminal.ts'
 
 /**
  * THE SHARED DRIVER.
@@ -1465,6 +1466,15 @@ function makeDriver(
       }
 
       case OP_NOT: {
+        // The shipping generic closure/emitted NOT bodies predate pure-global
+        // lookahead rollback. Keep the reference driver aligned with them for
+        // every generic child; only the direct-terminal shape this lane replaces
+        // needs the reference oracle to hide the terminal's diagnostic writes.
+        const scalarChild = scalarTerminalNotChild(code, ip) >= 0
+        const savedFc = scalarChild ? ctx._fc : false
+        const savedFe = scalarChild ? ctx._fe : -1
+        const savedFx = scalarChild ? ctx._fx : undefined
+        const savedProbe = scalarChild ? ctx._probe?.best : undefined
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -1475,6 +1485,12 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (scalarChild) {
+          ctx._fc = savedFc
+          ctx._fe = savedFe
+          ctx._fx = savedFx
+          if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
+        }
         if (v === FAIL) { EC.e = pos; return null }
         // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
         ctx._fe = pos
