@@ -243,6 +243,56 @@ The optimization target is therefore minimum total work, not maximum token cover
 Integer comparison is useful only after the compiler has eliminated enough recognition
 and parser work to pay for producing the integer.
 
+#### Current Jess 93c capability and cost baseline
+
+The exact compiler-only census against Jess
+`93c67d0ae7be0360a6db35f0cfa055043bca8025` separates capability from cost as
+required above:
+
+| | CSS | Less |
+| --- | ---: | ---: |
+| reachable rules / combinator nodes | 198 / 1,268 | 278 / 2,144 |
+| distinct primitive terminal languages | 121 | 187 |
+| authored compound token atoms | 16 | 25 |
+| final `CHOICE` / `DISPATCH` rows | 75 / 7 | 168 / 9 |
+
+Every primitive and compound atom in this graph is semantically tokenizable. None is
+excluded by a Jess state gate or `withCtx` dependency. The existing normalizer still
+has fourteen implementation gaps: nine CSS balanced/scan-transform atoms and five
+Less balanced or trivia-scoped atoms. Complete TOKEN diagnostics, pending consumption,
+CST, probe, recovery, coverage and tracked-mode bodies also do not yet exist for the
+whole inventory. Consequently the canonical completeness gate is currently open and
+TOKEN selection MUST remain disabled for these programs. These are `GAP` results, not
+CHARACTER cost wins and not semantic impossibilities.
+
+Once capability closes, the current cost ranking is:
+
+1. **TOKEN candidate — Less identifier-led statements.** The final `blockItem`,
+   `Body` and stylesheet decisions repeatedly enter and fail `FunctionStatement` and
+   then a ruleset path. An atomic identifier/function result plus declaration/selector
+   continuation facts has a conservative ceiling of 6,373 eliminated entries in
+   `benchmark.less` and 13,654 in generated Less. Its binding comparison is a direct
+   captured closure versus three named emitted sites—not a whole-parser factory.
+2. **CHARACTER candidate — Less `Value`/`MixinReference`.** Although this has the
+   largest raw failed-entry count, `MixinReference` can start only with `.` or `#`.
+   A corrected finite FIRST gate excludes about 7,963 / 24,459 entries more cheaply
+   than producing a general token. The remaining `.`/`#` cases have effectively no
+   token-reuse payoff.
+3. **CHARACTER by present evidence — CSS.** The benchmark has only 442 repeated exact
+   lexical calls and no compound-token same-position reuse. CSS remains token-free
+   unless a specific completed site proves a local cost win.
+
+The previously suspected Less comma/semicolon mixin separator is not a leading target:
+the measured hot separator/trailing probes belong to `CallArgumentFunction`; the
+ambiguous `MixinArguments` site occurs only five times in `benchmark.less` and zero
+times in generated Less. It remains part of capability closure, but coverage is not a
+reason to select it.
+
+This census is the selection baseline, not timing evidence. Its RED plant removed all
+events and failed the pinned count; the clean source/reference/closure runs retained
+full identity and consumption on CSS (123,029 bytes), `benchmark.less` (106,802), and
+generated Less (275,211).
+
 ### 3.1 Global identities, local contexts
 
 - Token ids are compact non-negative integers in one global id space for the
