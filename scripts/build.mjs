@@ -36,6 +36,14 @@ const entryPoints = [
   'src/cli/index.ts',
 ]
 
+const compileEntries = new Set([
+  'src/index.ts',
+  'src/plugin/index.ts',
+  'src/table/index.ts',
+  'src/analysis/diagnostics.ts',
+  'src/cli/index.ts',
+])
+
 const shared = {
   // `src/cli/index.ts` is the diagnostics bin and `src/analysis/diagnostics.ts` its
   // library twin. Both reach the COMPILER (the `--fix` loop recompiles to verify), and
@@ -52,7 +60,16 @@ const shared = {
   target: 'es2022',
 }
 
-const lexicalSource = resolve('src/compiler/token-alphabet.ts')
+const lexicalEntry = 'src/compiler/token-alphabet.ts'
+const lexicalSource = resolve(lexicalEntry)
+const tokenWireSource = resolve('src/table/token-outcome.ts')
+
+function privateModuleRef(entry, output) {
+  const entryOutput = `dist/${relative('src', entry)}`
+  let ref = relative(dirname(entryOutput), output).split(sep).join('/')
+  if (!ref.startsWith('.')) ref = `./${ref}`
+  return ref
+}
 
 /**
  * The lexical normalizer is BUILD logic, but all five compile-capable public
@@ -68,10 +85,8 @@ const lexicalSource = resolve('src/compiler/token-alphabet.ts')
  */
 function externalLexicalPlanner(entry, format) {
   const extension = format === 'esm' ? '.js' : '.cjs'
-  const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, extension)}`
   const lexicalOutput = `dist/compiler/token-alphabet${extension}`
-  let ref = relative(dirname(entryOutput), lexicalOutput).split(sep).join('/')
-  if (!ref.startsWith('.')) ref = `./${ref}`
+  const ref = privateModuleRef(entry.replace(/\.ts$/, extension), lexicalOutput)
   return {
     name: 'shared-lexical-planner',
     setup(ctx) {
@@ -83,7 +98,32 @@ function externalLexicalPlanner(entry, format) {
   }
 }
 
+/**
+ * The token wire proof is shared by the lexical planner and both table engines.
+ * It is deliberately the narrow private boundary: one allocation-free scalar
+ * proof with no parser graph, closure bodies or emitted templates. Keeping
+ * those larger modules in each public bundle preserves their existing entrypoint
+ * tree-shaking and hot-piece selection.
+ */
+function externalTokenWire(entry, format) {
+  const extension = format === 'esm' ? '.js' : '.cjs'
+  const tokenWireOutput = `dist/table/token-outcome${extension}`
+  const ref = privateModuleRef(entry.replace(/\.ts$/, extension), tokenWireOutput)
+  return {
+    name: 'shared-token-wire',
+    setup(ctx) {
+      ctx.onResolve({ filter: /token-outcome\.ts$/ }, args => {
+        if (resolve(args.resolveDir, args.path) !== tokenWireSource) return undefined
+        return { path: ref, external: true }
+      })
+    },
+  }
+}
+
 async function buildPublicEntry(entry, format) {
+  const compilerPlugins = compileEntries.has(entry)
+    ? [externalLexicalPlanner(entry, format), externalTokenWire(entry, format)]
+    : []
   return build({
     ...shared,
     entryPoints: [entry],
@@ -91,7 +131,18 @@ async function buildPublicEntry(entry, format) {
     outdir: 'dist',
     outbase: 'src',
     outExtension: { '.js': format === 'esm' ? '.js' : '.cjs' },
-    plugins: [externalLexicalPlanner(entry, format)],
+    plugins: compilerPlugins,
+  })
+}
+
+async function buildLexicalPlanner(format) {
+  const extension = format === 'esm' ? '.js' : '.cjs'
+  return build({
+    ...shared,
+    entryPoints: [lexicalSource],
+    format,
+    outfile: `dist/compiler/token-alphabet${extension}`,
+    plugins: [externalTokenWire(lexicalEntry, format)],
   })
 }
 
@@ -100,8 +151,10 @@ await Promise.all([
     buildPublicEntry(entry, 'esm'),
     buildPublicEntry(entry, 'cjs'),
   ]),
-  build({ ...shared, entryPoints: [lexicalSource], format: 'esm', outfile: 'dist/compiler/token-alphabet.js' }),
-  build({ ...shared, entryPoints: [lexicalSource], format: 'cjs', outfile: 'dist/compiler/token-alphabet.cjs' }),
+  buildLexicalPlanner('esm'),
+  buildLexicalPlanner('cjs'),
+  build({ ...shared, entryPoints: [tokenWireSource], format: 'esm', outfile: 'dist/table/token-outcome.js' }),
+  build({ ...shared, entryPoints: [tokenWireSource], format: 'cjs', outfile: 'dist/table/token-outcome.cjs' }),
 ])
 
 // `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so

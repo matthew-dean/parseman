@@ -129,7 +129,8 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
 import {
   makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
-import { runtimeChoiceAnchorsSite, runtimeRangeOutcomeKind } from './token-outcome.ts'
+import { runtimeChoiceAnchorsSite } from './token-choice-wire.ts'
+import { runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /**
  * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?

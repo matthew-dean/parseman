@@ -62,7 +62,8 @@ import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
-import { runtimeChoiceAnchorsSite, runtimeRangeOutcomeKind } from './token-outcome.ts'
+import { runtimeChoiceAnchorsSite } from './token-choice-wire.ts'
+import { runtimeRangeOutcomeKind } from './token-outcome.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
