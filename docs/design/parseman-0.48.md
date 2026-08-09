@@ -74,8 +74,11 @@ The table is a compact transport and linking format, not a parse-time descriptio
 reinterpret. Once linked, a combinator whose final arity is three calls its three bound
 children directly. It does not rediscover that topology with `kids[i]`, `pieces[ip]`, an
 opcode switch, or a route-array walk. Arrays remain valid for genuinely dynamic parse
-data such as repeated results or a token record stream; they are not the runtime
-representation of a fixed grammar edge.
+data such as repeated results or a token record stream, and for input-indexed
+classification/transition tables whose index is produced by the input. A classifier
+may return an arm number, but that number must select a direct captured or named arm
+through a fixed switch/chain/tree; it may not feed a second `arms[arm]` lookup. Dynamic
+tables are not the runtime representation of a fixed grammar edge.
 
 Linking may read serialized arrays, but it must not rebox a fixed tuple into another
 runtime array. `makeSeq3(link(a), link(b), link(c))` captures three distinct references;
