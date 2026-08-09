@@ -444,6 +444,13 @@ Near-flat results use the hardened high-sample mode; routine gates remain short.
 timing is promoted when load exceeds the harness ceiling or engine/source realpaths are
 not printed before the number.
 
+There is no universal per-change percentage floor. A stable control-adjusted gain above
+1% with negligible artifact, package, complexity, and cross-fixture cost is a bankable
+0.48 improvement even when it does not remove a shelf by itself. Orthogonal gains are
+measured again on the integrated head because cumulative recovery is the release path.
+Larger mechanisms and package increases require proportionally larger payoff; noise,
+semantic risk, or a material regression elsewhere still rejects a candidate.
+
 ## 10. Release gates
 
 0.48 cannot ship until all of the following are true:

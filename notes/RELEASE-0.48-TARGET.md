@@ -36,6 +36,12 @@ state. A claimed recovery must use the pinned 0.46 build, full-consumption and
 result-identity checks, paired A/B runs, and same-source controls; toy grammars
 or external-parser wins cannot substitute for this criterion.
 
+That absolute exit criterion does not impose a fixed minimum on each contributing
+change. Stable control-adjusted gains above 1% with negligible size, complexity, and
+cross-fixture cost are bankable; multiple orthogonal wins are expected to compound.
+Candidates are rejected for noise, regression, semantic risk, or disproportionate cost,
+not merely for lacking a 5% headline.
+
 The primary orchestrator owns the Jess integration base and agent handoff. The
 currently approved remote base is `origin/dev` at `f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002`.
 Before delegating Jess-dependent work or accepting a timing run, the primary fetches

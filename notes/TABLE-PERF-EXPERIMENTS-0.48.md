@@ -19,6 +19,12 @@ The implementation must retain one `TableProgram` architecture for runtime
 shape mutation, `WeakMap` metadata, a second recognizer, downward baselines, and
 static-factory artifact bloat are outside the design space.
 
+The ledger uses a Pareto gate, not a fixed headline threshold. A repeatable,
+control-adjusted improvement above 1% is eligible to land when artifact/package and
+maintenance cost are negligible and no release fixture materially regresses. Small
+orthogonal wins are banked and remeasured cumulatively on the integrated head. As size,
+runtime surface, or semantic risk grows, the required payoff grows with it.
+
 ## External Jess base and delegation
 
 The primary orchestrator is responsible for keeping Jess `origin/dev` current and for
