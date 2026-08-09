@@ -832,7 +832,43 @@ pinned-reference, checked-out-HEAD gate. `--ref`, `--head-ref`, `--self`, and
 of passes exceeds either ceiling. This is bounded release debt, not a new
 performance baseline.
 
-### Corrected 0.48 literal-EOF checkpoint — `e5247da`, not final release proof
+### Current production-shaped checkpoint — actual Jess `f3b4c3f`
+
+The current shipping-grammar release A/B is Parseman source-identical
+`0385764da4c8cf2aa00bb970d7a4420f1fab7d5e`/
+`2a8c381fb056f57f8d8ba515d7e9c781ec377357` against pinned 0.46
+`a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3`, using exact Jess
+`f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002` and Node 24.11.1. The only commits
+between the measured Parseman SHA and this document update changed evidence
+documents; `src/` is byte-identical.
+
+The authoritative `bench/jess/ab.ts --two-graph` protocol built two independent
+graphs, requested the shipping macro on both sides, and interleaved 16 samples
+per leg. HEAD therefore ran `macro→closure-table`, while 0.46 ran its shipped
+`macro→source`. Separate matching `--self --two-graph` processes provided the
+A/A floor. Both sides parsed all 123,029 CSS, 106,802 benchmark Less, and 275,211
+generated-Less bytes.
+
+| fixture | HEAD / 0.46 | release ratio | matching A/A | paired-round result |
+| --- | ---: | ---: | ---: | --- |
+| CSS `benchmark.css` | 13.84 / 5.56 ms | **2.488x (+148.8%)** | 1.004x (+0.4%) | median 2.488x, range 2.046–2.631x, 0/8 HEAD wins |
+| `benchmark.less` | 33.79 / 17.98 ms | **1.879x (+87.9%)** | 1.020x (+2.0%) | median 1.898x, range 1.658–1.934x, 0/8 |
+| generated Less | 94.89 / 49.56 ms | **1.915x (+91.5%)** | 1.017x (+1.7%) | median 1.917x, range 1.875–1.955x, 0/8 |
+
+All starts were below the load ceiling and the paired/solo cross-check emitted no
+artefact warning. The exact Parseman/Jess pins also passed the strict differential
+teeth run: all six planted defects were caught, including the Jess node-span oracle
+and short-consumption sweep. The two-graph timing intentionally omits the third
+interpreter graph, so this evidence claims full acceptance/consumption and proven
+differential teeth, not a new three-way identity run. Exact realpaths, fixture
+hashes, loads, A/A dispersion, and methodology are retained in
+`TABLE-PERF-EXPERIMENTS-0.48.md`.
+
+All three primary shelves remain. The result is a material recovery from the old
+roughly 3.2–3.4x standard-workload checkpoint, but 1.879–2.488x is still nowhere
+near the 1.0x shipping requirement and removes no named 0.47 shelf.
+
+### Historical corrected literal-EOF checkpoint — `e5247da`, not final release proof
 
 The standard workload gate formerly checked only that reference and candidate
 returned equal results. Three equal results were partial: Less stylesheet ended
@@ -868,9 +904,9 @@ whole-run numeric instability, especially CSS's reference-instance draw, but no
 ambiguity in direction or release disposition. Exact per-pass vectors and
 provenance are retained in `TABLE-PERF-EXPERIMENTS-0.48.md`.
 
-These numbers do not lower 0.46, widen a shelf, or remove one. They are the
-corrected checkpoint before pending scope correctness/performance changes, which
-must be integrated and followed by a fresh final release audit.
+These numbers did not lower 0.46, widen a shelf, or remove one. They were the
+corrected checkpoint before the then-pending scope correctness/performance
+changes. The current production-shaped audit is recorded above.
 
 **RECONCILED — and it was the dialect harness that was wrong, not the release
 A/B.** This paragraph used to read "UNRECONCILED": `bench/jess/fixture.ts`
@@ -880,17 +916,20 @@ it listed three candidate explanations. The third of them was the right one —
 
 `bench/jess/fixture.ts` builds **every leg at HEAD** (§8). Its `ref|` label is a
 contest's a-side, not a reference build, so it had no pre-deletion engine in the
-process and its 1.09× / 1.05× row is withdrawn. The current `workload-perf`
-still interleaves HEAD against a pinned reference, and the bounded rows above
-are the current evidence.
+process and its 1.09× / 1.05× row is withdrawn. The historical `workload-perf`
+checkpoint did interleave HEAD against a pinned reference, so its bounded rows
+remain valid for that older standard-workload snapshot rather than becoming the
+current actual-Jess baseline.
 
 The two surviving measurement families are consistent in sign but answer
-different questions. The final shipping-grammar A/B reads **2.308×–2.736×
-slower**; the synthetic workload gate reads the bounded per-row envelopes above.
-The workloads lean differently on the missing fast paths. Quote `ab.ts` for
-"what did this release do to a shipping grammar" and the final shelf table for
-"what does the release workload gate currently bound." Do not revive the old
-+666%/+780% rows as current candidate evidence.
+different questions. The then-current shipping-grammar A/B read
+**2.308×–2.736× slower**; it is retained as historical evidence and superseded by
+the current 1.879–2.488x actual-Jess block above. The synthetic workload gate
+reads the bounded per-row envelopes in this historical section. The workloads
+lean differently on the missing fast paths. Quote the current `ab.ts` checkpoint
+for "what did this release do to a shipping grammar" and the historical shelf
+table only for what that earlier release-workload gate bounded. Do not revive the
+old +666%/+780% rows as current candidate evidence.
 
 **The 0.48 instruction.** When token streaming lands, take whatever was valuable
 out of these modules. Token streaming is where literal and regex recognition

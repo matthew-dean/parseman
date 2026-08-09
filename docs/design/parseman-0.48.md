@@ -26,19 +26,27 @@ a baseline, or substituting a toy grammar. A final claim requires the pinned 0.4
 build, literal full consumption, complete semantic identity, interleaved paired A/B,
 same-source A/A controls, independent recompilation, and the external Jess grammars.
 
-The corrected `e5247da` checkpoint still measures approximately:
+The current production-shaped release checkpoint, measured from source-identical
+`0385764da4c8cf2aa00bb970d7a4420f1fab7d5e`/
+`2a8c381fb056f57f8d8ba515d7e9c781ec377357` against pinned 0.46
+`a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3` on Jess
+`f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002`, is:
 
-| workload | regression against 0.46 | total relative time |
-| --- | ---: | ---: |
-| Less stylesheet | +219.5% | 3.20x |
-| Less mixins | +226.8% | 3.27x |
-| CSS stylesheet | +238.9% | 3.39x |
-| GraphQL document | +106.1% | 2.06x |
-| JSON document | +123.3% | 2.23x |
+| workload | regression against 0.46 | total relative time | matching A/A |
+| --- | ---: | ---: | ---: |
+| CSS `benchmark.css` | +148.8% | 2.488x | +0.4% |
+| Less `benchmark.less` | +87.9% | 1.879x | +2.0% |
+| generated Less | +91.5% | 1.915x | +1.7% |
 
-CSS's exact center is run-sensitive, but its release disposition is not: two
-corrected complete runs lost all 120/120 pairs. These figures are a checkpoint,
-not a new acceptable baseline.
+This used Node 24.11.1, the authoritative two-graph macro release A/B, 16
+interleaved samples per side, literal full consumption on both legs, and separate
+same-shape A/A processes below the load ceiling. HEAD lost every one of the eight
+paired rounds on all three workloads. All three shelves therefore remain release
+blockers. The older corrected `e5247da` five-workload audit is retained in the
+evidence register as a historical standard-workload checkpoint, not current
+production-shaped release evidence. This is a performance/consumption checkpoint,
+not final release proof: the two-graph timing deliberately omits the third
+semantic-identity graph. Neither checkpoint lowers the 0.46 baseline.
 
 ## 2. Non-negotiable architecture
 

@@ -95,7 +95,64 @@ preserved.
 | T11c | Retired prototype; no commit | A zero-word `-2` operand derived exact repeat-item classes once at assembly from closed dispatch metadata, expanding separator-less CSS guard coverage from 13/32 to 24/32 while keeping 6,066 words and 109 classes. The stabilized three-pass workload screen rejected both shapes: broad derivation measured CSS +1.5%, Less stylesheet +1.1%, mixins +0.2%; restricting to nonexclusive child choices measured CSS +1.4%, Less stylesheet −0.1%, mixins −1.2%. Actual Jess table-reference screens were flat/small (CSS −1.6% versus A/A +2.9%, benchmark Less −0.9%, generated Less −1.9% versus A/A −0.7%); macro source A/B failed before timing at the independently recorded `composeLeaf` precondition and was not replaced with a stale number. Size guard, focused parity/recovery tests, and invariants were green. | REJECTED. Additional repeat coverage is exact and size-neutral but does not move CSS or either Less release bar. Keep the simpler pooled-class guard; do not add derived dispatch plumbing for a flat result. |
 | T12a | `d78ea9f` (feature lane `61c73a1`) | The encoder recognizes only an exact array-destructuring child projection such as `([, value]) => value` and stores `~childIndex` in the existing `OP_SEQX` reducer operand. Reference exec, closure assembly, and emitted assembly return the already-parsed child without allocating the reducer input array or calling a callback; all other callback syntax declines. JSON covered one static site / 3,303 calls (23.4% of callbacks), retained 138 words, and reduced its function pool 9→8. GraphQL covered six sites / 1,176 calls, retained 495 words, and reduced 27→21 functions. Five independently recompiled passes measured JSON −4.1% median / −4.2% min, faster 5/5 with 59/60 paired wins versus A/A +0.6%/+0.4%; GraphQL was flat at −0.1%/−0.5%. The tightest GraphQL comparison margin remained 1.56× over Chevrotain against a 1.05× floor. Built main/table ESM each grew 1,525 raw bytes; npm pack grew 8,265 bytes (+0.267%). A wrong-index plant returned the wrong child; permanent tests pin interpreter/reference/closure/emitted/macro identity and refusal cases. Full 3,890-test, typecheck, lint, invariants, and all six strict differential gates passed. | LANDED. This is a bounded secondary JSON win with zero program-word cost and neutral GraphQL behavior. It does not move CSS/Less release bars and does not change their priority. |
 
-## Current 0.46 shelf audit — literal EOF corrected at `e5247da`
+## Current production-shaped 0.46 shelf audit — actual Jess at `f3b4c3f`
+
+The fresh release checkpoint measured source-identical Parseman
+`0385764da4c8cf2aa00bb970d7a4420f1fab7d5e` and
+`2a8c381fb056f57f8d8ba515d7e9c781ec377357` against pinned 0.46
+`a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3`
+on exact Jess `f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002`. The timing checkout was
+detached `/private/tmp/parseman-048-pinned-baseline`; the only commits between its
+`0385764da4c8cf2aa00bb970d7a4420f1fab7d5e` and the current
+`2a8c381fb056f57f8d8ba515d7e9c781ec377357` changed
+these evidence documents, with no `src/` diff. Node was v24.11.1 on darwin/arm64.
+
+The authoritative `bench/jess/ab.ts --two-graph` release A/B built exactly two
+independent grammar graphs and interleaved adjacent, order-alternated pairs. Both
+sides requested the shipping macro: HEAD realized `macro→closure-table`; 0.46
+realized `macro→source`. That is intentionally a release comparison of what each
+version ships, not an engine-held-still attribution. Each result is the median of
+16 samples (eight rounds × two runs), each sample the median of five one-parse
+timings after three warmups. Matching `--self --two-graph` runs supplied the A/A
+floor without adding a confounding third graph.
+
+| Fixture | HEAD / 0.46 | ratio | paired-round median and range | HEAD wins | matching A/A |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CSS `benchmark.css` (123,029 B) | 13.84 / 5.56 ms | **2.488x (+148.8%)** | 2.488x; 2.046–2.631x | 0/8 | 1.004x (+0.4%); paired 0.993x, 0.953–1.046x |
+| Less `benchmark.less` (106,802 B) | 33.79 / 17.98 ms | **1.879x (+87.9%)** | 1.898x; 1.658–1.934x | 0/8 | 1.020x (+2.0%); paired 1.020x, 0.997–1.029x |
+| generated Less (275,211 B) | 94.89 / 49.56 ms | **1.915x (+91.5%)** | 1.917x; 1.875–1.955x | 0/8 | 1.017x (+1.7%); paired 1.020x, 1.007–1.029x |
+
+Both legs parsed each literal fixture in full: 123,029/123,029,
+106,802/106,802, and 275,211/275,211 bytes respectively. The fixture SHA-256
+values were `5e6bf8603c661099f1f4b1988441fdfa96da2f784654027f945f7b76c027ed74`,
+`abe392656c8a50e9d175c3b0e60415893a8eb7bfe9050518227391430d3a3d48`, and
+`e605bdb1b6d46ab1c4e117cab434d6e4b3fc9e463aba56a2b70bce871aecd945`.
+The generated fixture was reproduced with the checked-in `gen-workload.mjs`
+defaults before measurement.
+
+The printed source realpaths were
+`/private/tmp/parseman-048-pinned-baseline/src` and
+`/private/tmp/parseman-048-pinned-baseline/.cache/jess-ab-a5dc9bd/src`.
+Jess resolved to `/private/tmp/jess-token-stream-origin-dev`; its CSS and Less
+`grammar.ts` files and `packages/parser-shared/src` resolved under that same root.
+The preflight proved `@jesscss/core` source/lib agreement across 104 runtime
+exports. A/A loads were 5.13→5.76 for CSS and 5.62→4.74 for the two Less rows;
+A/B loads were 4.07→3.91 and 3.99→5.02. All starts were below the ceiling of 6,
+and the paired/solo cross-check emitted no pairing-artefact warning.
+
+The exact Parseman/Jess pins were also run through Node 24
+`check:differentials --strict`; all six registered differentials caught their
+planted defects, including the `exec-node-span` Jess oracle and the
+short-consumption `interp-many-cap` sweep. The plants restored cleanly. The
+two-graph timing deliberately does not add an interpreter graph, so this block
+claims full acceptance/consumption and RED-proven harness teeth, not a new
+three-way semantic-identity result.
+
+All three production-shaped shelves remain. The current gaps are materially
+smaller than the earlier roughly 3.2–3.4x standard-workload checkpoint, but none
+is close to the 1.0x release bar and no named 0.47 shelf is removed.
+
+## Historical standard-workload 0.46 shelf audit — literal EOF corrected at `e5247da`
 
 `5fee4ef`, integrated as `e5247da`, repaired the standard workload instrument
 before this audit. The CSS and Less document roots now consume their permitted
@@ -106,16 +163,16 @@ reference, candidate, calibration, and pass instance**. The corrected lengths ar
 53,483/53,483 for Less stylesheet, 60,638/60,638 for Less mixins, 65,554/65,554
 for CSS, 49,762/49,762 for GraphQL, and 60,323/60,323 for JSON on both legs.
 
-The canonical result is the unmodified primary `e5247da` gate against pinned
+The historical canonical result for that standard-workload checkpoint is the
+unmodified primary `e5247da` gate against pinned
 0.46 `a5dc9bd`: five independently recompiled passes, four rounds × three runs,
 six warmups + eleven timed samples, paired and order-alternated, with a same-position
 reference/reference control. Head loaded `src/table/compile.ts` and
 `src/table/assemble.ts`; reference loaded `.cache/workload-perf-guard-a5dc9bd/src/compiler/codegen.ts`;
 both loaded byte-identical copied `bench/workloads/index.ts` and example grammars.
 Every candidate row lost 0/12 pairs in every pass and breached 5/5. Load was
-4.25→6.63. These are current release-audit figures, **not** lower baselines or
-shelf ceilings, and pending scope-correctness/performance integration requires a
-new final audit before release.
+4.25→6.63. These are historical release-audit figures, **not** lower baselines,
+shelf ceilings, or the current actual-Jess checkpoint above.
 
 | Surface | Canonical `e5247da` center (median / min) | Five-pass range (median / min) | Same-source A/A | Disposition |
 | --- | ---: | ---: | ---: | --- |
@@ -184,12 +241,12 @@ mechanism evidence, not a new baseline and not a substitute for the absolute row
 No one of the fourteen 0.47 shelf entries is eligible for removal yet. The
 shared-DAG/repeat, direct projection, and terminal-node changes are retained for
 their exact work reduction, correctness, bounded relative wins, and/or size effects,
-not because any one of them meets the absolute release bar. This corrected audit
-is a checkpoint, not final release proof: scope correctness/performance work was
-still pending after `e5247da` and must be integrated and remeasured. The standard
-five-row gate does not contain Jess `benchmark.less` or the separate generated-Jess fixture;
-those remain separately labelled actual-Jess mechanism evidence, never substitutes
-for the pinned production shelf audit.
+not because any one of them meets the absolute release bar. At `e5247da` this
+corrected standard-workload audit was a checkpoint, not final release proof:
+scope correctness/performance work was still pending, and its five-row gate did
+not contain Jess `benchmark.less` or the separate generated-Jess fixture. The
+fresh actual-Jess audit above now supplies those production-shaped rows without
+deleting or relabelling this historical standard-workload evidence.
 
 ## Handoff worktrees
 
