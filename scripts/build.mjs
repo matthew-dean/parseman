@@ -52,31 +52,42 @@ const shared = {
   target: 'es2022',
 }
 
-const lexicalSource = resolve('src/compiler/token-alphabet.ts')
+const privateSources = [
+  'src/analysis/duplication.ts',
+  'src/compiler/token-alphabet.ts',
+  'src/table/program.ts',
+  'src/table/emit-assembly.ts',
+  'src/table/assemble.ts',
+  'src/table/encode.ts',
+]
+const privateModules = privateSources.map(source => ({ source: resolve(source), output: source.slice(4, -3) }))
 
 /**
- * The lexical normalizer is BUILD logic, but all five compile-capable public
- * entries reach it through the table encoder. Bundling each entry independently
- * copied the same implementation into root/plugin/table/diagnostics/cli in both
- * module formats. Keep the synchronous API and identical lowering everywhere,
- * while making that one module a static relative dependency of each bundle.
+ * The compiler analyses, lexical planner and table compiler/runtime are reached by all five
+ * compile-capable public entries. Bundling each entry independently copied the
+ * same implementations into root/plugin/table/diagnostics/cli in both module
+ * formats. Keep their synchronous APIs and singleton table caches shared while
+ * making each module one static relative dependency of the public bundles.
  *
  * This is deliberately not a package export and not a dynamic import. The
- * generated bundles name a file inside their own `dist/` tree, so Node ESM,
+ * generated bundles name files inside their own `dist/` tree, so Node ESM,
  * CommonJS, browsers/bundlers and CSP builds all execute the same implementation
  * without exposing another public API or adding a runtime loader branch.
  */
-function externalLexicalPlanner(entry, format) {
+function externalPrivateModules(entry, format) {
   const extension = format === 'esm' ? '.js' : '.cjs'
   const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, extension)}`
-  const lexicalOutput = `dist/compiler/token-alphabet${extension}`
-  let ref = relative(dirname(entryOutput), lexicalOutput).split(sep).join('/')
-  if (!ref.startsWith('.')) ref = `./${ref}`
   return {
-    name: 'shared-lexical-planner',
+    name: 'shared-private-modules',
     setup(ctx) {
-      ctx.onResolve({ filter: /token-alphabet\.ts$/ }, args => {
-        if (resolve(args.resolveDir, args.path) !== lexicalSource) return undefined
+      ctx.onResolve({ filter: /(?:duplication|token-alphabet|program|emit-assembly|assemble|encode)\.ts$/ }, args => {
+        const source = resolve(args.resolveDir, args.path)
+        if (source === resolve(entry)) return undefined
+        const target = privateModules.find(module => module.source === source)
+        if (target === undefined) return undefined
+        const output = `dist/${target.output}${extension}`
+        let ref = relative(dirname(entryOutput), output).split(sep).join('/')
+        if (!ref.startsWith('.')) ref = `./${ref}`
         return { path: ref, external: true }
       })
     },
@@ -91,17 +102,15 @@ async function buildPublicEntry(entry, format) {
     outdir: 'dist',
     outbase: 'src',
     outExtension: { '.js': format === 'esm' ? '.js' : '.cjs' },
-    plugins: [externalLexicalPlanner(entry, format)],
+    plugins: [externalPrivateModules(entry, format)],
   })
 }
 
 await Promise.all([
-  ...entryPoints.flatMap(entry => [
+  ...[...entryPoints, ...privateSources].flatMap(entry => [
     buildPublicEntry(entry, 'esm'),
     buildPublicEntry(entry, 'cjs'),
   ]),
-  build({ ...shared, entryPoints: [lexicalSource], format: 'esm', outfile: 'dist/compiler/token-alphabet.js' }),
-  build({ ...shared, entryPoints: [lexicalSource], format: 'cjs', outfile: 'dist/compiler/token-alphabet.cjs' }),
 ])
 
 // `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so

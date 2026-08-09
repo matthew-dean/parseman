@@ -15,6 +15,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const esmPlanner = resolve(ROOT, 'dist/compiler/token-alphabet.js')
 const cjsPlanner = resolve(ROOT, 'dist/compiler/token-alphabet.cjs')
 const implementationMarker = 'recursive token body'
+const sharedMarkers = [
+  'removes a speculative arm:',
+  'table char-class endpoint is outside Unicode',
+  'a malformed token-plan recognizer',
+  'table token recognizer offset does not span one TLV',
+  'choice(autoNot: unmappable first set)',
+] as const
 
 const compileEntries = [
   'dist/index',
@@ -38,14 +45,65 @@ describe('built lexical planner topology', () => {
     for (const entry of compileEntries) {
       for (const extension of ['.js', '.cjs']) {
         const source = readFileSync(resolve(ROOT, `${entry}${extension}`), 'utf8')
-        expect(source, `${entry}${extension} imports the planner`).toMatch(/compiler\/token-alphabet\.(?:js|cjs)/)
         expect(source, `${entry}${extension} does not embed the planner`).not.toContain(implementationMarker)
       }
     }
+    expect(readFileSync(resolve(ROOT, 'dist/table/encode.js'), 'utf8')).toContain('../compiler/token-alphabet.js')
+    expect(readFileSync(resolve(ROOT, 'dist/table/encode.cjs'), 'utf8')).toContain('../compiler/token-alphabet.cjs')
 
     const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as { exports: Record<string, unknown> }
     expect(Object.keys(pkg.exports)).not.toContain('./compiler/token-alphabet')
     expect(Object.keys(pkg.exports)).not.toContain('./internal/token-alphabet')
+  })
+
+  it('ships one private static table implementation per module format', () => {
+    const modules = [
+      ['program', 'table char-class endpoint is outside Unicode'],
+      ['emit-assembly', 'a malformed token-plan recognizer'],
+      ['assemble', 'table token recognizer offset does not span one TLV'],
+      ['encode', 'choice(autoNot: unmappable first set)'],
+    ] as const
+    for (const [module, marker] of modules) {
+      for (const extension of ['js', 'cjs']) {
+        const source = readFileSync(resolve(ROOT, `dist/table/${module}.${extension}`), 'utf8')
+        expect(source, `${module}.${extension} implementation`).toContain(marker)
+        expect(source, `${module}.${extension} stays statically linked`).not.toMatch(/\bimport\s*\(/)
+      }
+      for (const entry of compileEntries) {
+        for (const extension of ['js', 'cjs']) {
+          const source = readFileSync(resolve(ROOT, `${entry}.${extension}`), 'utf8')
+          expect(source, `${entry}.${extension} does not embed ${module}`).not.toContain(marker)
+        }
+      }
+    }
+
+    const esm = readFileSync(resolve(ROOT, 'dist/table/index.js'), 'utf8')
+    const cjs = readFileSync(resolve(ROOT, 'dist/table/index.cjs'), 'utf8')
+    for (const module of modules.map(([name]) => name)) {
+      expect(esm).toContain(`./${module}.js`)
+      expect(cjs).toContain(`./${module}.cjs`)
+    }
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as { exports: Record<string, unknown> }
+    for (const module of modules.map(([name]) => name)) {
+      expect(Object.keys(pkg.exports)).not.toContain(`./table/${module}`)
+      expect(Object.keys(pkg.exports)).not.toContain(`./internal/${module}`)
+    }
+  })
+
+  it('shares the compiler duplication analysis without exporting its private path', () => {
+    const marker = 'removes a speculative arm:'
+    for (const extension of ['js', 'cjs']) {
+      const implementation = readFileSync(resolve(ROOT, `dist/analysis/duplication.${extension}`), 'utf8')
+      expect(implementation).toContain(marker)
+      expect(implementation).not.toMatch(/\bimport\s*\(/)
+      for (const entry of compileEntries) {
+        const source = readFileSync(resolve(ROOT, `${entry}.${extension}`), 'utf8')
+        expect(source, `${entry}.${extension} does not embed duplication analysis`).not.toContain(marker)
+      }
+    }
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as { exports: Record<string, unknown> }
+    expect(Object.keys(pkg.exports)).not.toContain('./analysis/duplication')
+    expect(Object.keys(pkg.exports)).not.toContain('./internal/duplication')
   })
 
   it('contains no dynamic-code or Node-only dependency in the shared planner', () => {
@@ -86,9 +144,12 @@ describe('built lexical planner topology', () => {
     const result = await build({
       stdin: {
         contents: `
-          import { literal } from './dist/index.js'
-          import { encodeTable } from './dist/table/index.js'
-          globalThis.__parsemanBrowserProbe = encodeTable({ Entry: literal('x') })
+          import { analyzeDuplication, literal } from './dist/index.js'
+          import { encodeTable, emitTableModule, resolveTable, tableRules } from './dist/table/index.js'
+          const program = encodeTable({ Entry: literal('x') })
+          globalThis.__parsemanBrowserProbe = {
+            analyzeDuplication, emitTableModule, resolveTable, tableRules, program,
+          }
         `,
         resolveDir: ROOT,
       },
@@ -102,5 +163,6 @@ describe('built lexical planner topology', () => {
     const source = result.outputFiles[0]!.text
     expect(source).toContain('__parsemanBrowserProbe')
     expect(source.split(implementationMarker)).toHaveLength(2)
+    for (const marker of sharedMarkers) expect(source.split(marker), marker).toHaveLength(2)
   })
 })
