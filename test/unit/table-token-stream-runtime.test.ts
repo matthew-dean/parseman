@@ -10,7 +10,7 @@ import {
   ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram, type TokenPlanWire,
 } from '../../src/table/program.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_DISPATCH, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
+import { OP_CHOICE, OP_DISPATCH, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -123,6 +123,59 @@ function unsupportedPlan(): {
     accepted: [unsupportedId, fallbackId],
   }
   return { parser, planned, injected: ownTableProgram({ ...planned, tokenPlan }) }
+}
+
+function countedChoicePlan(): {
+  readonly parser: ReturnType<typeof choice>
+  readonly prog: TableProgram
+  readonly calls: () => number
+} {
+  const selector = token(regex(/([a-z])\1+/))
+  const later = token(regex(/([a-z])\1+/))
+  const parser = choice(
+    transform(dispatch(selector, when('ff', literal('!'))), value => value),
+    later,
+    literal('!'),
+  )
+  const raw = encodeTable({ Entry: parser })
+  const choiceIp = [...reachableIps(raw)].find(ip => raw.code[ip] === OP_CHOICE)!
+  const xformIp = raw.code[choiceIp + 4]!
+  const dispatchIp = raw.code[xformIp + 2]!
+  const dspIndex = raw.code[dispatchIp + 2]!
+  const plan = raw.tokenPlan!
+  let siteIndex = -1
+  for (let i = 0; i < plan.sites.length; i += 4) if (plan.sites[i] === dspIndex) siteIndex = i / 4
+  expect(siteIndex).toBeGreaterThanOrEqual(0)
+  const tokenPlan = { ...plan, choiceSites: [choiceIp, 0, siteIndex] }
+  let calls = 0
+  const constants = raw.k.map(value => {
+    if (!(value instanceof RegExp)) return value
+    const copy = new RegExp(value.source, `${value.flags.replace(/[gy]/g, '')}y`)
+    const exec = copy.exec
+    copy.exec = function (input: string) { calls++; return exec.call(this, input) }
+    return copy
+  })
+  return { parser, prog: ownTableProgram({ ...raw, k: constants, tokenPlan }), calls: () => calls }
+}
+
+function earlierChoicePlan(): { readonly prog: TableProgram; readonly calls: () => number } {
+  const selector = token(regex(/([a-z])\1+/))
+  const parser = choice(
+    literal('bb'),
+    transform(dispatch(selector, when('ff', literal('!'))), value => value),
+    token(regex(/([a-z])\1+/)),
+  )
+  const raw = encodeTable({ Entry: parser })
+  expect(raw.tokenPlan?.choiceSites?.length).toBe(3)
+  let calls = 0
+  const constants = raw.k.map(value => {
+    if (!(value instanceof RegExp)) return value
+    const copy = new RegExp(value.source, `${value.flags.replace(/[gy]/g, '')}y`)
+    const exec = copy.exec
+    copy.exec = function (input: string) { calls++; return exec.call(this, input) }
+    return copy
+  })
+  return { prog: ownTableProgram({ ...raw, k: constants }), calls: () => calls }
 }
 
 describe('table token stream runtime', () => {
@@ -327,6 +380,68 @@ describe('table token stream runtime', () => {
         expect(counter.calls(), `${mode} ${equal ? 'same' : 'different'} family`).toBe(equal ? 1 : 2)
       }
     }
+  })
+
+  it('predecides only a gate-admitted choice arm and retains its range across rollback', () => {
+    for (const mode of ['closure', 'emitted', 'precompiled'] as const) {
+      for (const [input, scans] of [['bb', 1], ['ff!', 1], ['!', 0]] as const) {
+        const counted = countedChoicePlan()
+        const prog = mode === 'closure' ? { ...counted.prog, asm: [] }
+          : mode === 'precompiled' ? precompiled(counted.prog) : counted.prog
+        const entry = tableRules(prog).Entry!
+        const actual = run(entry, input)
+        expect(actual, `${mode} ${input}`).toMatchObject({
+          ok: true, value: run(counted.parser, input).value, unconsumedFrom: null,
+        })
+        expect(counted.calls(), `${mode} ${input} scans`).toBe(scans)
+        if (input === 'bb') {
+          const ctx = createParseContext()
+          const leaves: NonNullable<ParseContext['_cstLeaves']> = []
+          const push = leaves.push
+          let pushes = 0
+          leaves.push = function (...items) { pushes += items.length; return push.apply(this, items) }
+          ctx._cstLeaves = leaves
+          expect(entry(input, 0, ctx)).not.toBe(false)
+          expect(pushes, `${mode} skipped-arm transient selector leaves`).toBe(1)
+        }
+      }
+    }
+  })
+
+  it('does not classify a related arm before an earlier arm succeeds', () => {
+    for (const mode of ['closure', 'emitted', 'precompiled'] as const) {
+      const counted = earlierChoicePlan()
+      const prog = mode === 'closure' ? { ...counted.prog, asm: [] }
+        : mode === 'precompiled' ? precompiled(counted.prog) : counted.prog
+      expect(run(tableRules(prog).Entry!, 'bb')).toMatchObject({ ok: true, unconsumedFrom: null })
+      expect(counted.calls(), `${mode} scans`).toBe(0)
+    }
+  })
+
+  it('defensively ignores an exclusive outer-choice relation', () => {
+    const selector = token(regex(/([a-z])\1+/))
+    const parser = choice(
+      transform(dispatch(selector, when('ff', literal('!'))), value => value),
+      literal('!'),
+    )
+    const raw = encodeTable({ Entry: parser })
+    expect(raw.tokenPlan?.choiceSites).toBeUndefined()
+    const choiceIp = [...reachableIps(raw)].find(ip => raw.code[ip] === OP_CHOICE)!
+    const dispatchIp = raw.code[raw.code[choiceIp + 4]! + 2]!
+    const dspIndex = raw.code[dispatchIp + 2]!
+    let siteIndex = -1
+    for (let i = 0; i < raw.tokenPlan!.sites.length; i += 4) {
+      if (raw.tokenPlan!.sites[i] === dspIndex) siteIndex = i / 4
+    }
+    expect(siteIndex).toBeGreaterThanOrEqual(0)
+    const planted = ownTableProgram({
+      ...raw,
+      tokenPlan: { ...raw.tokenPlan!, choiceSites: [choiceIp, 0, siteIndex] },
+    })
+    for (const entry of [tableRules({ ...planted, asm: [] }).Entry!, tableRules(planted).Entry!]) {
+      expect(run(entry, 'ff!')).toMatchObject({ ok: true, unconsumedFrom: null })
+    }
+    expect(emitAssemblySource(resolveTable(planted), planted, STRICT).source).not.toContain('function _tc')
   })
 
   it('restores routed state on a throwing hot route in closure, emitted, precompiled, and module engines', async () => {

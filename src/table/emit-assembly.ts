@@ -481,6 +481,7 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   type TokenSitePlan = {
+    readonly dispatch: number
     readonly selectorIp: number
     readonly recognizer: number
     readonly family: number
@@ -507,7 +508,9 @@ export function emitAssemblySource(
   if (tokenWire !== undefined) {
     for (let i = 0; i < tokenWire.tokenSites.length; i += 2) {
       const selectorIp = tokenWire.tokenSites[i]!, family = tokenWire.tokenSites[i + 1]!
-      tokenProducers.set(selectorIp, { selectorIp, recognizer: family - 3, family, routeStart: 0, routeCount: 0 })
+      tokenProducers.set(selectorIp, {
+        dispatch: -1, selectorIp, recognizer: family - 3, family, routeStart: 0, routeCount: 0,
+      })
     }
     for (let i = 0; i < tokenWire.outcomeOffsets.length; i++) {
       const at = tokenWire.outcomeOffsets[i]!, id = tokenWire.outcomeData[at]!
@@ -534,7 +537,7 @@ export function emitAssemblySource(
       }
       if (!supported) continue
       tokenSites.set(di, {
-        ...producer, routeStart, routeCount,
+        ...producer, dispatch: di, routeStart, routeCount,
       })
     }
     for (const [ip, producer] of tokenProducers) {
@@ -542,7 +545,33 @@ export function emitAssemblySource(
         && site.recognizer === producer.recognizer)) tokenProducers.delete(ip)
     }
   }
+  type TokenChoicePlan = {
+    readonly arm: number
+    readonly token: TokenSitePlan
+    readonly expected: readonly string[]
+  }
+  const tokenChoices = new Map<number, TokenChoicePlan>()
+  const choiceWire = tokenWire?.choiceSites
+  if (choiceWire !== undefined && choiceWire.length % 3 === 0) {
+    for (let i = 0; i < choiceWire.length; i += 3) {
+      const choice: number = choiceWire[i]!, arm: number = choiceWire[i + 1]!, siteIndex: number = choiceWire[i + 2]!
+      const dispatch = tokenWire!.sites[siteIndex * 4]!
+      const token = tokenSites.get(dispatch)
+      if (code[choice] !== OP_CHOICE) continue
+      const count = code[choice + 2]!
+      if (arm < 0 || arm >= count) continue
+      const armIp: number = code[choice + 4 + arm]!
+      const dispatchIp: number = code[armIp + 2]!
+      if (code[armIp] !== OP_XFORM || code[dispatchIp] !== OP_DISPATCH
+        || code[dispatchIp + 2] !== dispatch || token === undefined
+        || disp[code[choice + 1]!]!.exclusive || tokenChoices.has(choice)) continue
+      tokenChoices.set(choice, { arm, token, expected: dsp[dispatch]!.expected })
+    }
+  }
+  const choiceDispatches = new Set<number>()
+  for (const relation of tokenChoices.values()) choiceDispatches.add(relation.token.dispatch)
   const tokenActive = tokenSites.size > 0
+  const tokenChoiceActive = choiceDispatches.size > 0
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -649,6 +678,45 @@ export function emitAssemblySource(
     }
     if (kind === 4) return 'true'
     throw new Unemittable('a token outcome regex without a bounded range lowering')
+  }
+  const tokenDecisionNames = new Map<number, string>()
+  const tokenDecisionRef = (plan: TokenSitePlan): string => {
+    const hit = tokenDecisionNames.get(plan.dispatch)
+    if (hit !== undefined) return hit
+    const name = `_td${tokenDecisionNames.size}`
+    tokenDecisionNames.set(plan.dispatch, name)
+    const tests: string[] = []
+    for (let i = 0; i < plan.routeCount; i++) {
+      const rw = plan.routeStart + i * 4
+      const arm = tokenWire!.routes[rw]!
+      const flags = tokenWire!.routes[rw + 1]!
+      const acceptedStart = tokenWire!.routes[rw + 2]!, acceptedCount = tokenWire!.routes[rw + 3]!
+      for (let j = 0; j < acceptedCount; j++) {
+        const id = tokenWire!.accepted[acceptedStart + j]!
+        const target = (flags & 3) === 2 ? -1 : arm
+        tests.push(`if(_pfTokOutcome===${id}||${tokenOutcomeExpr(id, 'start', 'end')}){_pfTokOutcome=${id};_pfTokSite=${plan.dispatch};_pfTokRoute=${target};_pfTokRouteFlags=${flags};return ${target}}`)
+      }
+    }
+    prelude.push(`function ${name}(input,start,end){
+if(_pfTokSite===${plan.dispatch})return _pfTokRoute
+${tests.join('\n')}
+_pfTokSite=${plan.dispatch};_pfTokRoute=-2;_pfTokRouteFlags=0
+return -2
+}`)
+    return name
+  }
+  const tokenChoiceDecisionNames = new Map<number, string>()
+  const tokenChoiceDecisionRef = (plan: TokenSitePlan): string => {
+    const hit = tokenChoiceDecisionNames.get(plan.dispatch)
+    if (hit !== undefined) return hit
+    const name = `_tc${tokenChoiceDecisionNames.size}`
+    tokenChoiceDecisionNames.set(plan.dispatch, name)
+    const decide = tokenDecisionRef(plan)
+    prelude.push(`function ${name}(input,pos){
+const packed=_tokRecognize(input,pos,0,${plan.family},${plan.recognizer},${recognizerRef(k.length + plan.recognizer)})
+return packed>=0&&${decide}(input,pos,packed/2)===-2
+}`)
+    return name
   }
   /**
    * The sync sentinel for a char-class index, hoisted once per class.
@@ -1405,6 +1473,15 @@ return v
         ) - 1
         armExpectedPlan.push(Array.from({ length: n }, (_, i) => code[base + n + i]!))
         const afx = hoist('afx', `AFX[${axi}]`)
+        const tokenChoice = tokenChoices.get(ip)
+        const tokenNoRoute = tokenChoice === undefined ? undefined : (() => {
+          const plan = tokenChoice.token
+          return {
+            arm: tokenChoice.arm,
+            expected: hoist('tfx', `DSP[${plan.dispatch}].expected`),
+            condition: `${tokenChoiceDecisionRef(plan)}(input,pos)`,
+          }
+        })()
 
         if (table.exclusive) {
           // NO OPEN ARMS EXIST under `exclusive` — `resolveDispatch` clears the
@@ -1461,8 +1538,8 @@ return FAIL
         // closure engine's, kept verbatim: they run only on a FAILURE path, and
         // an arm that MATCHES returns without paying for any of it. Unrolling
         // them would put an `_accSet` — and its `slice()` — on the success path.
-        const maskArms = arms.map((a, i) => `
-if((bits&${1 << i})!==0){
+        const maskArms = arms.map((a, i) => {
+          const run = `
 ctx._fc=false
 {const v=${a}(input,pos,ctx)
 if(v!==FAIL)return v}
@@ -1470,18 +1547,38 @@ for(let j=prev;j<${i};j++)if((bits&(1<<j))===0)acc=_accSet(${afx}[j],acc)
 prev=${i + 1}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p, L.buf, sinks)}
-}`).join('')
+${emitRollback(p, L.buf, sinks)}`
+          const selected = tokenNoRoute?.arm === i
+            ? `if(${tokenNoRoute.condition}){
+for(let j=prev;j<${i};j++)if((bits&(1<<j))===0)acc=_accSet(${afx}[j],acc)
+prev=${i + 1}
+acc=_accSet(${tokenNoRoute.expected},acc)
+}else{${run}}
+`
+            : run
+          return `
+if((bits&${1 << i})!==0){
+${selected}}
+`
+        }).join('')
 
-        const generalArms = arms.map((a, i) => `
-if(${gRef}[${i}]===null||classHas(${gRef}[${i}],c)){
+        const generalArms = arms.map((a, i) => {
+          const run = `
 ctx._fc=false
 {const v=${a}(input,pos,ctx)
 if(v!==FAIL)return v}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p, L.buf, sinks)}
-}else acc=_accSet(${afx}[${i}],acc)`).join('')
+${emitRollback(p, L.buf, sinks)}`
+          const selected = tokenNoRoute?.arm === i
+            ? `if(${tokenNoRoute.condition})acc=_accSet(${tokenNoRoute.expected},acc)
+else{${run}}
+`
+            : run
+          return `
+if(${gRef}[${i}]===null||classHas(${gRef}[${i}],c)){
+${selected}}else acc=_accSet(${afx}[${i}],acc)`
+        }).join('')
 
         return `${head}
 const c=lead(input,pos)
@@ -1542,19 +1639,22 @@ return FAIL
         const m2 = tmp()
         const tokenPlan = tokenSites.get(di)
         if (tokenPlan !== undefined && tokenWire !== undefined) {
+          const sharedDecision = choiceDispatches.has(di)
+          const decide = sharedDecision ? tokenDecisionRef(tokenPlan) : undefined
           const routeTests: string[] = []
-          for (let i = 0; i < tokenPlan.routeCount; i++) {
-            const rw = tokenPlan.routeStart + i * 4
-            const arm = tokenWire.routes[rw]!
-            const flags = tokenWire.routes[rw + 1]!
-            const acceptedStart = tokenWire.routes[rw + 2]!
-            const acceptedCount = tokenWire.routes[rw + 3]!
-            const accepted = Array.from({ length: acceptedCount }, (_, j) => {
-              const id = tokenWire.accepted[acceptedStart + j]!
-              const target = (flags & 3) === 2 ? -1 : arm
-              return `if(${tokenOutcomeExpr(id, 'pos', 'selEnd')}){_pfTokOutcome=${id};arm=${target};ur=${(flags & 4) !== 0};matched=true}`
-            }).join('\nif(!matched)')
-            routeTests.push(`if(!matched){${accepted}}`)
+          if (!sharedDecision) {
+            for (let i = 0; i < tokenPlan.routeCount; i++) {
+              const rw = tokenPlan.routeStart + i * 4
+              const arm = tokenWire.routes[rw]!
+              const flags = tokenWire.routes[rw + 1]!
+              const acceptedStart = tokenWire.routes[rw + 2]!, acceptedCount = tokenWire.routes[rw + 3]!
+              const accepted = Array.from({ length: acceptedCount }, (_, j) => {
+                const id = tokenWire.accepted[acceptedStart + j]!
+                const target = (flags & 3) === 2 ? -1 : arm
+                return `if(${tokenOutcomeExpr(id, 'pos', 'selEnd')}){_pfTokOutcome=${id};arm=${target};ur=${(flags & 4) !== 0};matched=true}`
+              }).join('\nif(!matched)')
+              routeTests.push(`if(!matched){${accepted}}`)
+            }
           }
           return `${head}
 ${emitMark(m1, L.buf, sinks)}
@@ -1564,9 +1664,11 @@ const selEnd=packed/2
 const key=input.slice(pos,selEnd)
 ${L.buf ? '_pushLeafBuf(ctx,key,pos,selEnd)' : 'if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)_pushLeaf(ctx,key,pos,selEnd)'}
 EC.e=selEnd
-let arm,ur=false,matched=false
+${sharedDecision ? `const arm=${decide}(input,pos,selEnd)
+if(arm===-2){ctx._fe=selEnd;ctx._fx=${dx};return FAIL}
+const ur=(_pfTokRouteFlags&4)!==0` : `let arm,ur=false,matched=false
 ${routeTests.join('\n')}
-if(!matched){ctx._fe=selEnd;ctx._fx=${dx};return FAIL}
+if(!matched){ctx._fe=selEnd;ctx._fx=${dx};return FAIL}`}
 const savedRouted=ctx._routed
 ${emitMark(m2, L.buf, sinks)}
 if(ur){
@@ -1968,11 +2070,11 @@ return nd
   // it, but the `const _ts<N>` each one reads must be initialised before any
   // parse runs, not merely before the declaration is evaluated.
   const tokenPrelude = !tokenActive ? '' : `
-let _pfTokInput,_pfTokStart=-1,_pfTokContext=-1,_pfTokFamily=-1,_pfTokRecognizer=-1,_pfTokPacked=-1,_pfTokOutcome=-1
+let _pfTokInput,_pfTokStart=-1,_pfTokContext=-1,_pfTokFamily=-1,_pfTokRecognizer=-1,_pfTokPacked=-1,_pfTokOutcome=-1${tokenChoiceActive ? ',_pfTokSite=-1,_pfTokRoute=-2,_pfTokRouteFlags=0' : ''}
 function _tokRecognize(input,pos,context,family,recognizer,rec){
 if(_pfTokInput===input&&_pfTokStart===pos&&_pfTokContext===context&&_pfTokFamily===family&&_pfTokRecognizer===recognizer)return _pfTokPacked
 const end=rec(input,pos)
-_pfTokInput=input;_pfTokStart=pos;_pfTokContext=context;_pfTokFamily=family;_pfTokRecognizer=recognizer;_pfTokPacked=end<0?-1:2*end;_pfTokOutcome=-1
+_pfTokInput=input;_pfTokStart=pos;_pfTokContext=context;_pfTokFamily=family;_pfTokRecognizer=recognizer;_pfTokPacked=end<0?-1:2*end;_pfTokOutcome=-1${tokenChoiceActive ? ';_pfTokSite=-1;_pfTokRoute=-2;_pfTokRouteFlags=0' : ''}
 return _pfTokPacked
 }
 function _tokEq(input,start,end,value,fold){
@@ -1986,14 +2088,14 @@ function _tokLine(input,start,end){for(let i=start;i<end;i++){const c=input.char
 `
   const frameSave = !tokenActive
     ? 'if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])'
-    : 'if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e,_pfTokInput,_pfTokStart,_pfTokContext,_pfTokFamily,_pfTokRecognizer,_pfTokPacked,_pfTokOutcome])'
+    : `if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e,_pfTokInput,_pfTokStart,_pfTokContext,_pfTokFamily,_pfTokRecognizer,_pfTokPacked,_pfTokOutcome${tokenChoiceActive ? ',_pfTokSite,_pfTokRoute,_pfTokRouteFlags' : ''}])`
   const tokenBegin = !tokenActive ? '' : `
-_pfTokInput=undefined;_pfTokStart=_pfTokContext=_pfTokFamily=_pfTokRecognizer=_pfTokPacked=_pfTokOutcome=-1`
+_pfTokInput=undefined;_pfTokStart=_pfTokContext=_pfTokFamily=_pfTokRecognizer=_pfTokPacked=_pfTokOutcome=-1${tokenChoiceActive ? ';_pfTokSite=-1;_pfTokRoute=-2;_pfTokRouteFlags=0' : ''}`
   const finishOuter = !tokenActive ? 'if(_pfDepth===0)return' : `if(_pfDepth===0){
-_pfTokInput=undefined;_pfTokStart=_pfTokContext=_pfTokFamily=_pfTokRecognizer=_pfTokPacked=_pfTokOutcome=-1
+_pfTokInput=undefined;_pfTokStart=_pfTokContext=_pfTokFamily=_pfTokRecognizer=_pfTokPacked=_pfTokOutcome=-1${tokenChoiceActive ? ';_pfTokSite=-1;_pfTokRoute=-2;_pfTokRouteFlags=0' : ''}
 return}`
   const tokenRestore = !tokenActive ? '' : `
-_pfTokInput=prior[3];_pfTokStart=prior[4];_pfTokContext=prior[5];_pfTokFamily=prior[6];_pfTokRecognizer=prior[7];_pfTokPacked=prior[8];_pfTokOutcome=prior[9]`
+_pfTokInput=prior[3];_pfTokStart=prior[4];_pfTokContext=prior[5];_pfTokFamily=prior[6];_pfTokRecognizer=prior[7];_pfTokPacked=prior[8];_pfTokOutcome=prior[9]${tokenChoiceActive ? ';_pfTokSite=prior[10];_pfTokRoute=prior[11];_pfTokRouteFlags=prior[12]' : ''}`
   const source = `${RUNTIME_PRELUDE}${tokenPrelude}
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}

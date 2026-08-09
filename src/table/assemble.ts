@@ -470,11 +470,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   type TokenSitePlan = {
+    readonly dispatch: number
     readonly selectorIp: number
     readonly recognizer: number
     readonly family: number
     readonly routeStart: number
     readonly routeCount: number
+  }
+  type TokenChoicePlan = {
+    readonly arm: number
+    readonly token: TokenSitePlan
+    readonly expected: readonly string[]
   }
   type LexRecognizer = (input: string, pos: number) => number
   const configuredTokenWire: TokenPlanWire | undefined = !cfg.probe && !cfg.coverage && !cfg.tolerant && !cfg.trackLines
@@ -484,6 +490,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     ? configuredTokenWire
     : undefined
   const tokenRuntime = tokenWire === undefined ? undefined : (() => {
+  const wire = tokenWire
   const tokenSites = new Map<number, TokenSitePlan>()
   const tokenProducers = new Map<number, TokenSitePlan>()
   const tokenMatchers = new Map<number, (input: string, start: number, end: number) => boolean>()
@@ -656,7 +663,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (code[ip] !== OP_TOKEN || lexicalRecognizers[recognizer] === undefined) {
         throw new TypeError('table token site references an invalid token or family')
       }
-      tokenProducers.set(ip, { selectorIp: ip, recognizer, family: familyId, routeStart: 0, routeCount: 0 })
+      tokenProducers.set(ip, { dispatch: -1, selectorIp: ip, recognizer, family: familyId, routeStart: 0, routeCount: 0 })
     }
     for (let i = 0; i < tokenWire.sites.length; i += 4) {
       const di: number = tokenWire.sites[i]!
@@ -670,7 +677,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       if (producer === undefined) throw new TypeError('table token dispatch has no selector producer')
       const plan: TokenSitePlan = {
-        selectorIp: producer.selectorIp, recognizer: producer.recognizer, family: familyId,
+        dispatch: di, selectorIp: producer.selectorIp, recognizer: producer.recognizer, family: familyId,
         routeStart: tokenWire.sites[i + 2]!, routeCount: tokenWire.sites[i + 3]!,
       }
       let supported = true
@@ -691,11 +698,38 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
   if (tokenSites.size === 0) return undefined
 
+  const choiceWire = wire.choiceSites
+  const choices = choiceWire === undefined ? undefined : new Map<number, TokenChoicePlan>()
+  if (choiceWire !== undefined && choiceWire.length % 3 === 0) {
+    for (let i = 0; i < choiceWire.length; i += 3) {
+      const choice: number = choiceWire[i]!, arm: number = choiceWire[i + 1]!, siteIndex: number = choiceWire[i + 2]!
+      const siteAt = siteIndex * 4
+      const dispatch = wire.sites[siteAt]!
+      const token = tokenSites.get(dispatch)
+      if (code[choice] !== OP_CHOICE) continue
+      const count = code[choice + 2]!
+      if (arm < 0 || arm >= count) continue
+      const armIp: number = code[choice + 4 + arm]!
+      const dispatchIp: number = code[armIp + 2]!
+      if (code[armIp] !== OP_XFORM
+        || code[dispatchIp] !== OP_DISPATCH || code[dispatchIp + 2] !== dispatch || token === undefined
+        || disp[code[choice + 1]!]!.exclusive || choices!.has(choice)) continue
+      choices!.set(choice, { arm, token, expected: dsp[dispatch]!.expected })
+    }
+  }
+  const choiceDispatches = choices !== undefined && choices.size > 0
+    ? new Set(Array.from(choices.values(), relation => relation.token.dispatch))
+    : undefined
+
   const cursor = {
     input: undefined as string | undefined,
     start: -1, context: -1, family: -1, recognizer: -1, packed: -1, outcome: -1,
   }
   const frames: Array<readonly [string | undefined, number, number, number, number, number, number]> = []
+  const choiceCursor = choices !== undefined && choices.size > 0
+    ? { site: -1, route: -2, routeFlags: 0 }
+    : undefined
+  const choiceFrames: Array<readonly [number, number, number]> | undefined = choiceCursor === undefined ? undefined : []
 
   function recognizeToken(input: string, start: number, plan: TokenSitePlan): number {
     if (cursor.input === input && cursor.start === start && cursor.context === 0
@@ -709,18 +743,53 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     cursor.recognizer = plan.recognizer
     cursor.packed = packed
     cursor.outcome = -1
+    if (choiceCursor !== undefined) {
+      choiceCursor.site = -1
+      choiceCursor.route = -2
+      choiceCursor.routeFlags = 0
+    }
     return packed
+  }
+  function classifyToken(input: string, start: number, end: number, plan: TokenSitePlan): number {
+    if (choiceCursor!.site === plan.dispatch) return choiceCursor!.route
+    let selected = -2, flags = 0
+    for (let i = 0; i < plan.routeCount; i++) {
+      const ri = plan.routeStart + i * 4
+      const acceptedStart = wire.routes[ri + 2]!, acceptedCount = wire.routes[ri + 3]!
+      for (let j = 0; j < acceptedCount; j++) {
+        const id = wire.accepted[acceptedStart + j]!
+        if (id !== cursor.outcome && !tokenMatchers.get(id)!(input, start, end)) continue
+        cursor.outcome = id
+        flags = wire.routes[ri + 1]!
+        selected = (flags & 3) === 2 ? -1 : wire.routes[ri]!
+        i = plan.routeCount
+        break
+      }
+    }
+    choiceCursor!.site = plan.dispatch
+    choiceCursor!.route = selected
+    choiceCursor!.routeFlags = flags
+    return selected
   }
   function resetCursor(): void {
     cursor.input = undefined
     cursor.start = cursor.context = cursor.family = cursor.recognizer = cursor.packed = cursor.outcome = -1
+    if (choiceCursor !== undefined) {
+      choiceCursor.site = -1
+      choiceCursor.route = -2
+      choiceCursor.routeFlags = 0
+    }
   }
   return {
     wire: tokenWire, sites: tokenSites, producers: tokenProducers, matchers: tokenMatchers,
-    cursor, recognize: recognizeToken,
+    choices, choiceDispatches,
+    cursor, choiceCursor, recognize: recognizeToken, classify: classifyToken,
     begin(nested: boolean): void {
       if (nested) frames.push([
         cursor.input, cursor.start, cursor.context, cursor.family, cursor.recognizer, cursor.packed, cursor.outcome,
+      ])
+      if (nested && choiceCursor !== undefined) choiceFrames!.push([
+        choiceCursor.site, choiceCursor.route, choiceCursor.routeFlags,
       ])
       resetCursor()
     },
@@ -734,12 +803,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       cursor.recognizer = prior[4]
       cursor.packed = prior[5]
       cursor.outcome = prior[6]
+      if (choiceCursor !== undefined) {
+        const choicePrior = choiceFrames!.pop()!
+        choiceCursor.site = choicePrior[0]
+        choiceCursor.route = choicePrior[1]
+        choiceCursor.routeFlags = choicePrior[2]
+      }
     },
   }
   })()
   const tokenSites = tokenRuntime?.sites
   const tokenProducers = tokenRuntime?.producers
   const tokenMatchers = tokenRuntime?.matchers
+  const tokenChoices = tokenRuntime?.choices
+  const tokenChoiceDispatches = tokenRuntime?.choiceDispatches
 
   /**
    * The INSTALLED trivia scanner for the scope currently running.
@@ -2220,6 +2297,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // the accumulation.
         const armFx: (string[])[] = new Array<string[]>(n)
         for (let i = 0; i < n; i++) armFx[i] = fx[code[base + n + i]!] as string[]
+        const tokenChoice = tokenChoices?.get(ip)
+        const tokenSkip = tokenChoice === undefined ? undefined : (input: string, pos: number): boolean => {
+          const packed = tokenRuntime!.recognize(input, pos, tokenChoice.token)
+          return packed >= 0
+            && tokenRuntime!.classify(input, pos, packed / 2, tokenChoice.token) === -2
+        }
 
         // THE TWO CHOICE SHAPES ARE TWO PIECES. `exec.ts` tested `table.exclusive`
         // on every choice execution; it is table data, so it selects here.
@@ -2332,6 +2415,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               while (bits !== 0) {
                 const i = 31 - Math.clz32(bits & -bits)
                 bits &= bits - 1
+                if (tokenSkip !== undefined && i === tokenChoice!.arm && tokenSkip(input, pos)) {
+                  for (let j = prev; j < i; j++) if ((bits0 & (1 << j)) === 0) acc = accSet(armFx[j]!, acc)
+                  prev = i + 1
+                  acc = accSet(tokenChoice!.expected, acc)
+                  continue
+                }
                 ctx._fc = false
                 const v = arms[i]!(input, pos, ctx)
                 if (v !== FAIL) return v
@@ -2350,6 +2439,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             for (let i = 0; i < n; i++) {
               const cls = gates[i]!
               if (cls !== null && !classHas(cls, c)) { acc = accSet(armFx[i]!, acc); continue }
+              if (tokenSkip !== undefined && i === tokenChoice!.arm && tokenSkip(input, pos)) {
+                acc = accSet(tokenChoice!.expected, acc); continue
+              }
               ctx._fc = false
               const v = arms[i]!(input, pos, ctx)
               if (v !== FAIL) return v
@@ -2376,6 +2468,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           for (let i = 0; i < n; i++) {
             const cls = gates[i]!
             if (cls !== null && !classHas(cls, c)) { acc = accSet(armFx[i]!, acc); continue }
+            if (tokenSkip !== undefined && i === tokenChoice!.arm && tokenSkip(input, pos)) {
+              acc = accSet(tokenChoice!.expected, acc); continue
+            }
             ctx._fc = false
             const v = arms[i]!(input, pos, ctx)
             if (v !== FAIL) return v
@@ -2767,26 +2862,31 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const key = input.slice(pos, selEnd)
             if (cstCaptureActive(ctx)) pushLeaf(ctx, key, pos, selEnd)
             EC.e = selEnd
-            const outcome = tokenRuntime!.cursor.outcome
             let arm: number | undefined
             let routeFlags = 0
-            for (let i = 0; i < tokenPlan.routeCount; i++) {
-              const ri = tokenPlan.routeStart + i * 4
-              const acceptedStart = tokenWire.routes[ri + 2]!
-              const acceptedCount = tokenWire.routes[ri + 3]!
-              let accepted = false
-              for (let j = 0; j < acceptedCount; j++) {
-                const id = tokenWire.accepted[acceptedStart + j]!
-                if (id === outcome || tokenMatchers!.get(id)!(input, pos, selEnd)) {
-                  accepted = true
-                  tokenRuntime!.cursor.outcome = id
+            if (tokenChoiceDispatches?.has(di)) {
+              const selected = tokenRuntime!.classify(input, pos, selEnd, tokenPlan)
+              if (selected !== -2) arm = selected
+              routeFlags = tokenRuntime!.choiceCursor!.routeFlags
+            } else {
+              const outcome = tokenRuntime!.cursor.outcome
+              for (let i = 0; i < tokenPlan.routeCount; i++) {
+                const ri = tokenPlan.routeStart + i * 4
+                const acceptedStart = tokenWire.routes[ri + 2]!, acceptedCount = tokenWire.routes[ri + 3]!
+                let accepted = false
+                for (let j = 0; j < acceptedCount; j++) {
+                  const id = tokenWire.accepted[acceptedStart + j]!
+                  if (id === outcome || tokenMatchers!.get(id)!(input, pos, selEnd)) {
+                    accepted = true
+                    tokenRuntime!.cursor.outcome = id
+                    break
+                  }
+                }
+                if (accepted) {
+                  routeFlags = tokenWire.routes[ri + 1]!
+                  arm = (routeFlags & 3) === 2 ? -1 : tokenWire.routes[ri]!
                   break
                 }
-              }
-              if (accepted) {
-                routeFlags = tokenWire.routes[ri + 1]!
-                arm = (routeFlags & 3) === 2 ? -1 : tokenWire.routes[ri]!
-                break
               }
             }
             if (arm === undefined) {
