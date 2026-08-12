@@ -148,8 +148,11 @@ jobs:
           # backstop that catches anything merged around this gate.
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
           EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'release-exempt') }}
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          HEAD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || 'main' }}
         run: |
           set -euo pipefail
+          node scripts/check-main-release-state.mjs --base-ref="$BASE_REF" --head-ref="$HEAD_REF"
           # `if`, not `[ … ] && …`: under `set -e` a trailing test that evaluates
           # false IS the step's exit status, so the short-circuit form would fail the
           # job precisely when the PR is unlabelled — the common case.
