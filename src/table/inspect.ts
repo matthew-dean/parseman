@@ -1,6 +1,7 @@
 import { OP_NAMES } from './ops.ts'
 import { childSlots } from './child-slots.ts'
 import type { TableProgram } from './program.ts'
+export { buildRegionIR, type RegionIR } from '../compiler/region-ir.ts'
 
 /**
  * Walk the REACHABLE instructions of a program.

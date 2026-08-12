@@ -101,6 +101,12 @@ export function resolve(specifier, context, nextResolve) {
     const sub = specifier.slice('@jesscss/parser-shared/'.length)
     return { url: pathToFileURL(resolvePath(SHARED_SRC, `${sub}.ts`)).href, format: 'module', shortCircuit: true }
   }
+  // Detached authoritative Jess worktrees can be newer than their ignored
+  // lib/ output. The census is over source, so bind the reducers' AST import to
+  // that same worktree instead of mixing grammar source with a stale build.
+  if (specifier === '@jesscss/core/ast') {
+    return { url: pathToFileURL(resolvePath(JESS_ROOT, 'packages/core/src/ast.ts')).href, format: 'module', shortCircuit: true }
+  }
   if (specifier.startsWith('.') && specifier.endsWith('.js') && context.parentURL?.startsWith('file:')) {
     const asTs = resolvePath(dirname(fileURLToPath(context.parentURL)), specifier.slice(0, -3) + '.ts')
     if (existsSync(asTs)) return { url: pathToFileURL(asTs).href, format: 'module', shortCircuit: true }
