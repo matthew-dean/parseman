@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   attempt, choice, classifiedTrivia, literal, noTrivia, optional, parser, regex, rules, run, sequence,
@@ -5,15 +9,21 @@ import {
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { emitTableModule } from '../../src/table/emit.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
+import { tableVariants } from '../../src/table/fold.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { OP_RX, OP_SCOPE, OP_SCOPE_PLAIN } from '../../src/table/ops.ts'
-import { ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
+import {
+  foldPrograms, ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram,
+} from '../../src/table/program.ts'
 
 type Entry = Parameters<typeof run>[0]
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
 const SELECTED = { rootTrivia: { select: ['blockComment'] as const } }
+const DIR = path.dirname(fileURLToPath(import.meta.url))
+const TABLE_RUNTIME = pathToFileURL(path.resolve(DIR, '../../src/table/assemble.ts')).href
 
 const documentTrivia = () => classifiedTrivia({
   whitespace: regex(/[ \t\n\r\f]+/),
@@ -42,6 +52,7 @@ function engines(
       closure: tableRules({ ...prog, asm: [] })[entry]! as Entry,
       reference: execRules(prog)[entry]! as Entry,
       precompiled: tableRules(precompiled(prog))[entry]! as Entry,
+      folded: tableVariants(foldPrograms({ base: { ...prog, asm: [] } }, 'base'), 'base')[entry]! as Entry,
     },
   }
 }
@@ -92,45 +103,58 @@ function syntheticScopeTargets(prog: TableProgram): Set<string> {
   return targets
 }
 
+async function realModuleEntry(prog: TableProgram): Promise<Entry> {
+  const source = emitTableModule({ ...prog, asm: [] }, {
+    name: 'grammar', runtime: TABLE_RUNTIME, runtimeRef: 'tableRules', fnSources: prog.fns.map(f => String(f)),
+  })
+  const dir = mkdtempSync(path.join(tmpdir(), 'pm-scope-plain-'))
+  writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}')
+  const file = path.join(dir, 'grammar.ts')
+  writeFileSync(file, source)
+  const OriginalFunction = globalThis.Function
+  globalThis.Function = function blockedFunction(): never {
+    throw new Error('CSP Function blocked')
+  } as unknown as FunctionConstructor
+  try {
+    const mod = await import(/* @vite-ignore */ pathToFileURL(file).href) as { grammar: Record<string, Entry> }
+    return mod.grammar.First!
+  } finally {
+    globalThis.Function = OriginalFunction
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 describe('artifact-neutral synthetic trivia scopes', () => {
-  it('uses a three-word row, and a following RX opcode is not read as root policy', () => {
+  it('uses a three-word row across every artifact reader without reading the following RX as policy', async () => {
     const trivia = documentTrivia()
-    const grammar = rules({ trivia }, () => ({
-      First: regex(/a/),
-      Second: regex(/b/),
-    })) as Record<string, Combinator<unknown>>
+    const grammar = rules({ trivia }, () => ({ First: regex(/a/), Second: regex(/b/) })) as Record<string, Combinator<unknown>>
     const { prog, entries } = engines(grammar, 'First')
     const first = prog.rules.First!
 
     expect(prog.code).toHaveLength(12)
     expect(prog.code.slice(first, first + 3)).toEqual([OP_SCOPE_PLAIN, 0, 0])
-    // Test teeth: this is a real next row, and its value carries strict-policy
-    // bit 2. The old three-word OP_SCOPE row read it as `policy` and threw.
     expect(prog.code[first + 3]).toBe(OP_RX)
     expect(OP_RX & 2).toBe(2)
+    entries.moduleCsp = await realModuleEntry(prog)
     expectIdentity(entries, 'a /*kept*/')
 
-    // Authored parser scopes retain the four-word OP_SCOPE ABI. Only the two
-    // synthetic zero-policy sites use the compact opcode.
-    const authored = encodeTable({
-      Root: parser({ trivia, rootCapture: 'opaque' }, regex(/a/)),
-    })
+    const authored = encodeTable({ Root: parser({ trivia, rootCapture: 'opaque' }, regex(/a/)) })
     const policyScope = [...reachableIps(authored)].find(ip => authored.code[ip] === OP_SCOPE)
     expect(policyScope).toBeTypeOf('number')
     expect(authored.code[policyScope! + 3]).toBe(1)
 
-    // Permanent semantic RED plant. Re-spell only the row's opcode as the old
-    // policy-bearing form; no production source is mutated. Every table engine
-    // must now expose the exact refusal the plain opcode prevents.
+    // Permanent semantic RED: spelling the three-word row as policy-bearing
+    // OP_SCOPE makes the following RX opcode become strict-policy bit 2.
     const plantedCode = [...prog.code]
     plantedCode[first] = OP_SCOPE
     const planted = ownTableProgram({ ...prog, code: plantedCode })
-    const message = "parser(): selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: 'opaque'."
+    const message = /selected root trivia requires classifiedTrivia/
     const plantedEntries: Record<string, Entry> = {
       emitted: tableRules(planted).First! as Entry,
       closure: tableRules({ ...planted, asm: [] }).First! as Entry,
       reference: execRules(planted).First! as Entry,
       precompiled: tableRules(precompiled(planted)).First! as Entry,
+      folded: tableVariants(foldPrograms({ base: { ...planted, asm: [] } }, 'base'), 'base').First! as Entry,
     }
     for (const [name, entry] of Object.entries(plantedEntries)) {
       expect(() => run(entry, 'a /*kept*/', SELECTED), name).toThrow(message)
@@ -146,10 +170,7 @@ describe('artifact-neutral synthetic trivia scopes', () => {
       Root: noTrivia(sequence(literal('x:'), g.VarCall!)),
     })) as unknown as Record<string, Combinator<unknown>>
     const { prog, entries } = engines(grammar, 'Root')
-
-    expect(syntheticScopeTargets(prog)).toEqual(new Set([
-      'VarFallbackBrace', 'VarFallbackCall', 'VarCall',
-    ]))
+    expect(syntheticScopeTargets(prog)).toEqual(new Set(['VarFallbackBrace', 'VarFallbackCall', 'VarCall']))
     expectIdentity(entries, 'x:var(/*a*/f(/*b*/{/*c*/}/*d*/)/*e*/)')
   })
 
@@ -162,7 +183,6 @@ describe('artifact-neutral synthetic trivia scopes', () => {
       Root: noTrivia(sequence(literal('a:'), g.MathUnary!)),
     })) as unknown as Record<string, Combinator<unknown>>
     const { prog, entries } = engines(grammar, 'Root')
-
     expect(syntheticScopeTargets(prog)).toEqual(new Set(['MathUnary', 'MixinReference']))
     expectIdentity(entries, 'a:- /*kept*/ . /*mix*/ m')
   })

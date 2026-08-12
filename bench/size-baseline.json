@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-08-08",
-  "gitRev": "531116c",
+  "updatedAt": "2026-08-12",
+  "gitRev": "5b14df2",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -66,13 +66,13 @@
     },
     "probe/node-scale-16": {
       "genBytes": 5925,
-      "gzipBytes": 1614,
+      "gzipBytes": 1613,
       "bytesRatio": 2.786,
       "locMultiplier": 0.857
     },
     "probe/node-scale-32": {
       "genBytes": 11093,
-      "gzipBytes": 2583,
+      "gzipBytes": 2582,
       "bytesRatio": 2.763,
       "locMultiplier": 0.486
     },
@@ -102,7 +102,7 @@
     },
     "probe/trivia-on": {
       "genBytes": 1668,
-      "gzipBytes": 787,
+      "gzipBytes": 789,
       "bytesRatio": 2.984,
       "locMultiplier": 3.333
     },
@@ -114,7 +114,7 @@
     },
     "probe/hostmode-ast": {
       "genBytes": 1881,
-      "gzipBytes": 872,
+      "gzipBytes": 873,
       "bytesRatio": 2.898,
       "locMultiplier": 2
     },
@@ -126,19 +126,19 @@
     },
     "probe/variant": {
       "genBytes": 1624,
-      "gzipBytes": 827,
+      "gzipBytes": 823,
       "bytesRatio": 1.614,
       "locMultiplier": 1.267
     },
     "probe/variants-1": {
       "genBytes": 1289,
-      "gzipBytes": 717,
+      "gzipBytes": 718,
       "bytesRatio": 1.535,
       "locMultiplier": 2.067
     },
     "probe/variants-2": {
       "genBytes": 2106,
-      "gzipBytes": 773,
+      "gzipBytes": 769,
       "bytesRatio": 2.057,
       "locMultiplier": 2.5
     },

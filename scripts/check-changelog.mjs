@@ -63,9 +63,9 @@
  *         not a per-PR one.
  *
  * C. BENCH ANCHOR GATE — only with `--base=<ref>`, and only on a RELEASE PR:
- *      6. Every perf gate's `referenceSha` must name the PREVIOUS RELEASE — the
- *         first-parent commit on the base branch that set `package.json` to the
- *         version the base publishes. See `docs/design/perf-gates.md`.
+ *      6. Every perf gate's `referenceSha` must name the EXACT STABLE BASE — the
+ *         main commit this release PR proposes to advance. See
+ *         `docs/design/perf-gates.md`.
  *
  *    Both config files have said "bump this at every release, in the release PR"
  *    in a JSON comment since they were written, and both were missed for TEN
@@ -389,7 +389,7 @@ const basePublished = typeof basePkg.version === 'string' ? parseVersion(basePkg
 // that somehow reads as touching no published surface. It fires on RELEASE PRs only.
 
 /**
- * The perf gates whose `referenceSha` must name the previous release. Each entry is
+ * The perf gates whose `referenceSha` must name the exact stable base. Each entry is
  * a config path relative to the repo root and the `pnpm` script that reads it. A gate
  * whose config is absent is skipped — this list is allowed to lead or trail the repo.
  */
@@ -397,49 +397,6 @@ const ANCHORED_GATES = [
   { config: 'bench/grammar-density/config.json', script: 'pnpm perf:guard:grammars' },
   { config: 'bench/workloads/config.json', script: 'pnpm perf:workloads' },
 ]
-
-/**
- * The commit that RELEASED `version` on the base branch: walking first-parent back
- * from `baseSha`, the OLDEST commit in the contiguous run whose package.json reads
- * `version` — i.e. the commit that introduced it. First-parent, because the version
- * lives on the merge commit of the release PR and not on its constituent commits.
- * Oldest-in-run, because ordinary PRs merge after a release and carry the same number
- * forward; the release is where the number CHANGED.
- *
- * Verified against the two anchors that were set by hand: v0.33.0 resolves to 7f1ddcd
- * and v0.35.0 to 3562f78, which are exactly the values `bench/grammar-density` and
- * `bench/workloads` were given in their release PRs. The rule is the practice, written
- * down.
- *
- * Returns `null` only when the boundary is genuinely out of reach: the window filled
- * without the version ever changing, which means the history is truncated. Reaching
- * the ROOT still holding `atVersion` is not that — the version was introduced there.
- * A truncated history is a reason to say so, not to wave the release through.
- */
-const WALK_LIMIT = 500
-
-const releaseShaFor = (fromSha, atVersion) => {
-  let candidate = null
-  let walked
-  try {
-    walked = git('rev-list', '--first-parent', `--max-count=${WALK_LIMIT}`, fromSha).split('\n').filter(Boolean)
-  } catch {
-    return null
-  }
-  for (const sha of walked) {
-    let v
-    try {
-      v = JSON.parse(git('show', `${sha}:package.json`)).version
-    } catch {
-      return candidate
-    }
-    if (v !== atVersion) return candidate
-    candidate = sha
-  }
-  // Ran off the end still matching. Under the limit that end is the ROOT commit, so
-  // `candidate` is where the version began; at the limit the history is truncated.
-  return walked.length < WALK_LIMIT ? candidate : null
-}
 
 // A RELEASE PR is the shape `--publish` demands: the heading, package.json and
 // src/version.ts all name the same version, and it is above what the base publishes.
@@ -452,15 +409,12 @@ const isReleasePr =
 const presentGates = ANCHORED_GATES.filter((g) => existsSync(resolve(ROOT, g.config)))
 
 if (isReleasePr && presentGates.length > 0) {
-  const expected = releaseShaFor(baseSha, basePublished.raw)
-
-  if (expected === null) {
-    fail(
-      `cannot locate the commit that released ${basePublished.raw} on the base branch, so the\n` +
-        '  bench perf-gate anchors cannot be checked. This gate needs real history: in CI, check\n' +
-        '  out with `fetch-depth: 0` (see .github/workflows/ci.yml, job `release-gate`).',
-    )
-  }
+  // main is mechanically required to be a converged, dated release by
+  // check-main-release-state.mjs. Its exact tip is therefore the authoritative
+  // before-side for a release PR. Do not infer a release from the first commit that
+  // happened to carry a version string: 0.47.0 developed through multiple release
+  // candidates with that number, so that heuristic selected an unpublished tree.
+  const expected = baseSha
 
   const wrong = []
   for (const gate of ANCHORED_GATES) {
@@ -484,7 +438,7 @@ if (isReleasePr && presentGates.length > 0) {
     const short = expected.slice(0, 7)
     fail(
       `this is the RELEASE PR for ${headingVersion.raw}, so every perf gate must be RE-ANCHORED to the\n` +
-        `  previous release — ${basePublished.raw}, released by ${short} — and ${wrong.length} is/are not:\n` +
+        `  exact stable base — ${basePublished.raw} at ${short} — and ${wrong.length} is/are not:\n` +
         '\n' +
         wrong.map((w) => `    ${w.config}\n      referenceSha ${w.got} → should be ${short}`).join('\n') +
         '\n\n' +
@@ -507,7 +461,7 @@ if (isReleasePr && presentGates.length > 0) {
     )
   }
 
-  console.log(`✓ perf-gate anchors name ${expected.slice(0, 7)}, the commit that released ${basePublished.raw}.`)
+  console.log(`✓ perf-gate anchors name ${expected.slice(0, 7)}, the exact stable ${basePublished.raw} base.`)
 }
 
 // ── D. Peak-record gate ─────────────────────────────────────────────────────────
