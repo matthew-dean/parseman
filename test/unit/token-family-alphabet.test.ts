@@ -409,7 +409,7 @@ describe('derived lexical-token families', () => {
       .toMatchObject({ kind: 'gap', reason: expect.stringContaining('transform is effectful') })
   })
 
-  it('folds ambient scanSkip before a non-raw balanced own skip and excludes it for raw', () => {
+  it('keeps ambient balanced scanSkip out of direct lexical IR for raw and non-raw sites', () => {
     const ambient = regex(/"(?:\\.|[^"\\])*"/)
     const own = regex(/'(?:\\.|[^'\\])*'/)
     const scoped = rules({ scanSkip: [ambient] }, () => ({
@@ -422,16 +422,183 @@ describe('derived lexical-token families', () => {
       return JSON.parse(site.semanticKey.slice(2)) as { skip: Array<{ source: string }> }
     }
     expect(language(scoped.Group).skip.map(entry => entry.source)).toEqual([
-      '"(?:\\\\.|[^"\\\\])*"',
       "'(?:\\\\.|[^'\\\\])*'",
     ])
     expect(language(scoped.RawGroup).skip.map(entry => entry.source)).toEqual([
       "'(?:\\\\.|[^'\\\\])*'",
     ])
 
-    // RED provenance: omitting the occurrence context makes both non-raw
-    // grammars share the own-skip-only language; folding ambient into raw makes
-    // RawGroup context-dependent contrary to balanced({ raw:true }).
+    expect(alphabet.scanConsumerPolicies.map(policy => policy.ambient)).toEqual([
+      'array-identity-interior-cache', 'none-raw',
+    ])
+    // RED provenance: folding ambient into canonical IR direct-binds a public
+    // callback and loses balanced's array-identity cache and dynamic `.parse`.
+  })
+
+  it('records scanTo and balanced as distinct scan policies and direct-binds only ownSkip', () => {
+    const ambientA = literal('ambient-a')
+    const ambientB = literal('ambient-b')
+    const ownA = literal('own-a')
+    const ownB = literal('own-b')
+    const scan = token(scanTo(literal(';'), { skip: [ownA, ownB] }))
+    const group = balanced('(', ')', { skip: [ownA] })
+    const scoped = rules({ scanSkip: [ambientA, ambientB] }, () => ({ Scan: scan, Group: group }))
+    const roots = [scoped.Scan, scoped.Group]
+    const alphabet = collectLexicalAlphabet(roots)
+
+    expect(alphabet.scanConsumerPolicies.map(policy => policy.kind)).toEqual(['scanTo', 'balanced'])
+    expect(alphabet.scanConsumerPolicies.every(policy => policy.pendingReuse === 'forbidden')).toBe(true)
+    expect(alphabet.scanConsumerPolicies.map(policy => policy.ambient)).toEqual([
+      'enumerate-trivia-then-scanSkip-per-parse-attempt',
+      'array-identity-interior-cache',
+    ])
+    expect(alphabet.scanConsumerPolicies.map(policy => policy.lookup)).toEqual([
+      'dynamic-parse-property-every-skip-test',
+      'dynamic-parse-property-every-skip-test',
+    ])
+    const plans = alphabet.scanConsumerPolicies.map(policy =>
+      policy.ownSkipPlanId === undefined ? undefined : alphabet.ownSkipPlans[policy.ownSkipPlanId])
+    expect(plans.map(plan => plan?.entries.map(entry => entry.semanticKey))).toEqual([
+      [
+        JSON.stringify({ kind: 'literal', value: 'own-a', caseInsensitive: false }),
+        JSON.stringify({ kind: 'literal', value: 'own-b', caseInsensitive: false }),
+      ],
+      [JSON.stringify({ kind: 'literal', value: 'own-a', caseInsensitive: false })],
+    ])
+    expect(JSON.stringify(alphabet.ownSkipPlans)).not.toContain('ambient-a')
+    expect(JSON.stringify(alphabet.ownSkipPlans)).not.toContain('ambient-b')
+    expect(alphabet.scanConsumerPolicies[0]).toMatchObject({
+      context: 'detached-per-attempt-state-errors-only',
+    })
+    expect(alphabet.scanConsumerPolicies[1]).toMatchObject({
+      context: 'token-cleared-original', cache: 'lookup-every-attempt-enumerate-on-miss',
+    })
+
+    expect(() => assertLexicalCapabilityClosure(roots, alphabet)).not.toThrow()
+    expect(() => assertLexicalCapabilityClosure(roots, {
+      ...alphabet, scanConsumerPolicies: alphabet.scanConsumerPolicies.slice(1),
+    })).toThrow('lexical capability census is incomplete')
+    expect(() => assertLexicalCapabilityClosure(roots, {
+      ...alphabet,
+      contextSnapshots: alphabet.contextSnapshots.map((snapshot, index) => index === 0
+        ? { ...snapshot, hasScanSkip: !snapshot.hasScanSkip }
+        : snapshot),
+    })).toThrow('lexical capability census is incomplete')
+    expect(() => assertLexicalCapabilityClosure(roots, {
+      ...alphabet,
+      ownSkipPlans: alphabet.ownSkipPlans.map((plan, index) => index === 0
+        ? { ...plan, entries: plan.entries.slice(1) }
+        : plan),
+    })).toThrow('lexical capability census is incomplete')
+
+    // RED provenance: folding candidate.context.scanSkip into balanced IR puts
+    // ambient-a/ambient-b into a direct lexical plan. A universal snapshot also
+    // collapses the two distinct enumeration/context/cache policies. Omitting a
+    // policy, static context, or authored own-skip row makes closure fail above.
+  })
+
+  it('records live ambient lookup without reading it or binding raw scanTo skip', () => {
+    const target = literal('ambient')
+    let parseReads = 0
+    const hostile = new Proxy(target, {
+      get(value, key, receiver) {
+        if (key === 'parse') {
+          parseReads++
+          throw new Error('live parse getter must remain a runtime operation')
+        }
+        return Reflect.get(value, key, receiver)
+      },
+    })
+    const own = literal('own')
+    const scoped = rules({ scanSkip: [hostile] }, () => ({
+      Normal: token(scanTo(literal(';'), { skip: [own] })),
+      Raw: token(scanTo(literal(';'), { skip: [own], raw: true })),
+    }))
+    const alphabet = collectLexicalAlphabet([scoped.Normal, scoped.Raw])
+    expect(parseReads).toBe(0)
+    expect(alphabet.scanConsumerPolicies.map(policy => policy.ambient)).toEqual([
+      'enumerate-trivia-then-scanSkip-per-parse-attempt', 'none-raw',
+    ])
+    expect(alphabet.scanConsumerPolicies.map(policy => policy.ownSkipPlanId)).toEqual([0, undefined])
+    expect(alphabet.ownSkipPlans).toHaveLength(1)
+    // RED provenance: reading or direct-binding an ambient callback touches the
+    // throwing `.parse` getter during compilation. Treating scanTo(raw) like
+    // balanced(raw) incorrectly retains its authored skipper.
+  })
+
+  it('keeps nested token scanners owned and snapshots their post-token context', () => {
+    const trivia = regex(/\s+/)
+    const nestedToken = token(token(scanTo(literal(';'))))
+    const nestedChoice = token(choice(scanTo(literal(';')), literal('x')))
+    const scoped = rules({ trivia }, () => ({ NestedToken: nestedToken, NestedChoice: nestedChoice }))
+    const alphabet = collectLexicalAlphabet([scoped.NestedToken, scoped.NestedChoice])
+    expect(alphabet.scanConsumerPolicies).toHaveLength(2)
+    expect(alphabet.capabilities).toHaveLength(2)
+    for (const site of alphabet.capabilities) {
+      expect(site.scanConsumerPolicyIds).toHaveLength(1)
+      const policy = alphabet.scanConsumerPolicies[site.scanConsumerPolicyIds[0]!]!
+      expect(policy.siteId).toBe(site.id)
+      expect(alphabet.contextSnapshots[site.contextSnapshotId]).toMatchObject({ hasTrivia: true })
+      expect(alphabet.contextSnapshots[policy.contextSnapshotId]).toMatchObject({ hasTrivia: false })
+      expect(policy.contextSnapshotId).not.toBe(site.contextSnapshotId)
+    }
+    // RED provenance: treating every nested token/choice as a separate boundary
+    // omits both policies because private token children are not capability
+    // occurrences. Keying the policy with the site's outer snapshot leaves
+    // hasTrivia=true even though token entered and cleared it first.
+  })
+
+  it('preserves observable captureTrivia while token suppresses collector sinks', () => {
+    const base = literal('x')
+    let observedCapture: boolean | undefined
+    let observedLeaves: unknown
+    const hostile: Combinator<unknown> = {
+      ...base,
+      parse(input, pos, ctx) {
+        observedCapture = ctx.captureTrivia
+        observedLeaves = ctx._cstLeaves
+        return base.parse(input, pos, ctx)
+      },
+    }
+    const group = token(balanced('(', ')', { skip: [hostile] }))
+    const scoped = parser({ captureTrivia: true }, group)
+    const alphabet = collectLexicalAlphabet([scoped])
+    const policy = alphabet.scanConsumerPolicies[0]!
+    expect(policy.kind).toBe('balanced')
+    expect(alphabet.contextSnapshots[policy.contextSnapshotId]).toMatchObject({
+      hasTrivia: false, captureTrivia: true,
+    })
+    const result = scoped.parse('(x)')
+    expect(result.ok).toBe(true)
+    expect(observedCapture).toBe(true)
+    expect(observedLeaves).toBeUndefined()
+    // RED provenance: clearing captureTrivia in token context transfer makes the
+    // policy disagree with the hostile own-skip callback. The collector remains
+    // suppressed by its separate sink transaction, not by changing the flag.
+  })
+
+  it('keeps scan-dependent decisions unrestricted and forbids pending reuse', () => {
+    const shared = choice(
+      balanced('(', ')', { skip: [literal('"')] }),
+      token(scanTo(literal(';'), { skip: [literal("'")] })),
+      literal('x'),
+    )
+    const alphabet = collectLexicalAlphabet([shared])
+    const decision = alphabet.decisions.find(site =>
+      alphabet.capabilities[site.siteId]!.parser === shared)!
+    expect(decision.pendingReuse).toBe('forbidden')
+    expect(decision.families).toEqual([])
+    expect(decision.precisionNotes).toContainEqual(expect.stringContaining('dynamic scan consumer'))
+
+    const planted = alphabet.decisions.map(site => site === decision
+      ? { ...site, pendingReuse: 'unproved' as const }
+      : site)
+    expect(() => assertLexicalCapabilityClosure([shared], {
+      ...alphabet,
+      decisions: planted,
+    })).toThrow('lexical capability census is incomplete')
+    // RED provenance: publishing the balanced family as a predecision or
+    // allowing a pending range crosses observable ambient skipper callbacks.
   })
 
   it('records pointer-free token-internal diagnostic events in one state session', () => {

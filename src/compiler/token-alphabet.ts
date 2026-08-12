@@ -267,6 +267,63 @@ export type LexicalCapabilityContext = {
   readonly dynamicState: boolean
 }
 
+/** Immutable compiler occurrence context. Live scanner callbacks are policy,
+ * never identity-bearing lexical facts or pending-range keys. */
+export type LexicalContextSnapshot = {
+  readonly id: number
+  readonly key: string
+  readonly hasTrivia: boolean
+  readonly hasScanSkip: boolean
+  readonly trackLines: boolean
+  readonly captureTrivia: boolean
+  readonly opaqueRootCapture: boolean
+  readonly dynamicState: boolean
+}
+
+export type LexicalOwnSkipEntry = {
+  readonly semanticKey?: string
+  readonly ir?: LexicalIr
+  readonly status: LexicalCapabilityStatus
+}
+
+/** Construction-owned skipper children only. Ambient trivia/scanSkip never
+ * enter this pool because their object and `.parse` lookup are observable. */
+export type LexicalOwnSkipPlan = {
+  readonly id: number
+  readonly entries: readonly LexicalOwnSkipEntry[]
+}
+
+export type LexicalScanConsumerPolicy =
+  | {
+    readonly id: number
+    readonly siteId: number
+    readonly path: string
+    readonly contextSnapshotId: number
+    readonly kind: 'scanTo'
+    readonly raw: boolean
+    readonly ambient: 'enumerate-trivia-then-scanSkip-per-parse-attempt' | 'none-raw'
+    readonly lookup: 'dynamic-parse-property-every-skip-test'
+    readonly context: 'detached-per-attempt-state-errors-only'
+    readonly ownSkipPlanId?: number
+    readonly pendingReuse: 'forbidden'
+    readonly status: LexicalCapabilityStatus
+  }
+  | {
+    readonly id: number
+    readonly siteId: number
+    readonly path: string
+    readonly contextSnapshotId: number
+    readonly kind: 'balanced'
+    readonly raw: boolean
+    readonly ambient: 'array-identity-interior-cache' | 'none-raw'
+    readonly cache: 'lookup-every-attempt-enumerate-on-miss'
+    readonly lookup: 'dynamic-parse-property-every-skip-test'
+    readonly context: 'token-cleared-original'
+    readonly ownSkipPlanId?: number
+    readonly pendingReuse: 'forbidden'
+    readonly status: LexicalCapabilityStatus
+  }
+
 /**
  * Compiler-only phase-A census record. These ids are deliberately not family
  * ids: two authored sites can share one future language while remaining two
@@ -279,6 +336,7 @@ export type LexicalCapabilitySite = {
   readonly path: string
   /** Effective lexical scope at this occurrence; compiler-only, never a family id. */
   readonly contextKey: string
+  readonly contextSnapshotId: number
   /** Context seen by recognition after token() clears trivia/capture sinks. */
   readonly recognitionContextKey: string
   readonly context: LexicalCapabilityContext
@@ -293,6 +351,8 @@ export type LexicalCapabilitySite = {
   readonly boundaryTopologyId?: number
   /** Control ancestry authority used by the boundary overlay. */
   readonly controlPlanId?: number
+  /** Scan consumers owned by this atomic occurrence, in structural order. */
+  readonly scanConsumerPolicyIds: readonly number[]
   /** Derived from `obligations`; callers cannot independently set it. */
   readonly status: LexicalCapabilityStatus
 }
@@ -365,6 +425,7 @@ export type LexicalDecisionSite = {
   readonly atom: 'choice' | 'dispatch'
   readonly path: string
   readonly contextKey: string
+  readonly contextSnapshotId: number
   readonly families: readonly LexicalDecisionFamilyPlan[]
   /** Families not proven at this occurrence remain admitted through this
    * conservative relation. It is an explicit TOKEN-body route, never a request
@@ -373,6 +434,9 @@ export type LexicalDecisionSite = {
   /** Missing inclusion/partition proofs reduce pruning precision only. Every
    * authored arm still runs its own exact replacement recognizer in PEG order. */
   readonly precisionNotes: readonly string[]
+  /** Dynamic scanner callbacks are effectful and can never publish a reusable
+   * cross-arm lexical fact. All other sites remain unproved in this tranche. */
+  readonly pendingReuse: 'forbidden' | 'unproved'
 }
 
 /** One fixed incoming/root edge whose direct linked-body candidates remain owed. */
@@ -380,6 +444,7 @@ export type LexicalBindingEdge = {
   readonly id: number
   readonly path: string
   readonly contextKey: string
+  readonly contextSnapshotId: number
   readonly parentTag: ParserDef['tag'] | 'root'
   readonly childTag: ParserDef['tag']
   readonly status: LexicalCapabilityStatus
@@ -456,6 +521,9 @@ export type LexicalAlphabet = {
   readonly grammarCaptureTriviaKinds: readonly (readonly string[])[]
   readonly boundaryTopologies: readonly LexicalBoundaryTopology[]
   readonly controlPlans: readonly LexicalControlPlan[]
+  readonly contextSnapshots: readonly LexicalContextSnapshot[]
+  readonly ownSkipPlans: readonly LexicalOwnSkipPlan[]
+  readonly scanConsumerPolicies: readonly LexicalScanConsumerPolicy[]
   /** False means phase B is forbidden for the entire program. */
   readonly capabilityComplete: boolean
 }
@@ -467,6 +535,7 @@ export type LexicalCapabilityInventory = Pick<
   | 'boundaryPlans' | 'materializationPlans' | 'grammarWrapperSpecs'
   | 'grammarCaptureTriviaKinds' | 'boundaryTopologies'
   | 'controlPlans'
+  | 'contextSnapshots' | 'ownSkipPlans' | 'scanConsumerPolicies'
   | 'capabilityComplete'
 >
 
@@ -993,7 +1062,6 @@ function normalizeLexicalBody(
 function normalizeBalancedLexical(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
-  ambientScanSkip: readonly Combinator<unknown>[] = [],
   session?: LexicalNormalizeSession,
 ): Normalized | undefined {
   // `token(balanced(...))` is legal and appears in Jess. The outer token owns
@@ -1015,10 +1083,10 @@ function normalizeBalancedLexical(
     }))
     lexicalState(session) // balanced body scan
     const skip: LexicalIr[] = []
-    // balanced() intentionally ignores ambient trivia. Non-raw instances do
-    // consult grammar scanSkip before their own ordered skip list; raw instances
-    // exclude the ambient list entirely.
-    for (const entry of spec.raw ? spec.ownSkip : [...ambientScanSkip, ...spec.ownSkip]) {
+    // Ambient scanSkip is an observable runtime callback policy: balanced keys
+    // its rebuilt interior by the live array identity and dynamically looks up
+    // every callback's `.parse`. Only authored ownSkip belongs to canonical IR.
+    for (const entry of spec.ownSkip) {
       const normalized = withLexicalControl(session, 'balanced-skip', () =>
         normalizeLexical(entry, resolve, new Set(), session))
       if ('refusal' in normalized) return {
@@ -1170,7 +1238,7 @@ function decisionLead(
   const finish = (result: DecisionLeadResult): DecisionLeadResult => { seen.delete(parser); return result }
   const def = parser._def
   if (keyOf(def) !== undefined || def.tag === 'token' || (parser as BalancedSpec)._balancedSpec !== undefined) {
-    const normalized = normalizeBalancedLexical(parser, resolve, context.scanSkip)
+    const normalized = normalizeBalancedLexical(parser, resolve)
       ?? normalizeLexical(def.tag === 'token' ? def.parser : parser, resolve, new Set())
     if ('refusal' in normalized) return finish({ gap: `leading recognizer: ${normalized.refusal}` })
     return finish({ lead: {
@@ -1558,11 +1626,106 @@ type PendingDecisionSite = {
   readonly atom: 'choice' | 'dispatch'
   readonly path: string
   readonly contextKey: string
+  readonly contextSnapshotId: number
   readonly families: ReadonlyArray<{
     readonly familyKey: string
     readonly arms: ReadonlyArray<Omit<LexicalDecisionArm, 'acceptance'> & { readonly acceptance: PendingAcceptance }>
   }>
   readonly precisionNotes: readonly string[]
+  readonly pendingReuse: 'forbidden' | 'unproved'
+}
+
+type ScanConsumerCandidate = {
+  readonly path: string
+  readonly contextKey: string
+  readonly context: CapabilityContext
+  readonly kind: 'scanTo' | 'balanced'
+  readonly raw: boolean
+  readonly ownSkip: readonly Combinator<unknown>[]
+}
+
+function balancedSpecOf(parser: Combinator<unknown>): BalancedSpec['_balancedSpec'] {
+  let current = parser
+  let spec = (current as BalancedSpec)._balancedSpec
+  const seen = new Set<Combinator<unknown>>()
+  while (spec === undefined && current._def.tag === 'token' && !seen.has(current)) {
+    seen.add(current)
+    current = current._def.parser
+    spec = (current as BalancedSpec)._balancedSpec
+  }
+  return spec
+}
+
+function ownedScanConsumers(
+  root: Combinator<unknown>,
+  initialContext: CapabilityContext,
+  contextKeyOf: (context: CapabilityContext) => string,
+  isSeparateOccurrence: (parser: Combinator<unknown>, contextKey: string) => boolean,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ScanConsumerCandidate[] {
+  const out: ScanConsumerCandidate[] = []
+  const stack = new Set<Combinator<unknown>>()
+  const walk = (
+    parser: Combinator<unknown>, path: string, first: boolean, context: CapabilityContext,
+  ): void => {
+    if (stack.has(parser)) return
+    const def = parser._def
+    const contextKey = contextKeyOf(context)
+    // Stop only at an independently inventoried occurrence. Nested atomic
+    // wrappers inside token() are recognition machinery owned by the outer site.
+    if (!first && isSeparateOccurrence(parser, contextKey)) return
+    let childContext = context
+    if (def.tag === 'grammar') childContext = {
+      trivia: def.clearTrivia ? undefined : (def.triviaParser ?? context.trivia),
+      scanSkip: context.scanSkip,
+      trackLines: context.trackLines || def.trackLines,
+      captureTrivia: context.captureTrivia || def.captureTrivia === true,
+      opaqueRootCapture: context.opaqueRootCapture || def.rootCapture === 'opaque',
+      dynamicState: context.dynamicState,
+    }
+    else if (def.tag === 'withCtx') childContext = { ...context, dynamicState: true }
+    // token() clears trivia and collector buffers, but the public
+    // ctx.captureTrivia property remains observable by authored callbacks.
+    else if (def.tag === 'token') childContext = { ...context, trivia: undefined }
+    else if (def.tag === 'trivia') childContext = { ...context, trivia: undefined }
+    const balanced = balancedSpecOf(parser)
+    if (balanced !== undefined) {
+      out.push({
+        path, contextKey: contextKeyOf(childContext), context: childContext,
+        kind: 'balanced', raw: balanced.raw, ownSkip: balanced.ownSkip,
+      })
+      return
+    }
+    if (def.tag === 'scanTo') {
+      // scanTo(raw) skips nothing, including its authored `skip` option.
+      out.push({
+        path, contextKey, context, kind: 'scanTo', raw: def.raw, ownSkip: def.raw ? [] : def.skip,
+      })
+      return
+    }
+    stack.add(parser)
+    const children = tokenChildren(parser, resolve)
+    for (let i = 0; i < children.length; i++) {
+      walk(children[i]!, `${path}/${i}`, false, childContext)
+    }
+    stack.delete(parser)
+  }
+  walk(root, '', true, initialContext)
+  return out
+}
+
+function containsDynamicScanConsumer(
+  root: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+  seen = new Set<Combinator<unknown>>(),
+): boolean {
+  if (seen.has(root)) return false
+  if (balancedSpecOf(root) !== undefined || root._def.tag === 'scanTo') return true
+  seen.add(root)
+  for (const child of tokenChildren(root, resolve)) {
+    if (containsDynamicScanConsumer(child, resolve, seen)) return true
+  }
+  return false
 }
 
 function predicateViews(def: Extract<ParserDef, { tag: 'dispatch' }>): Array<{
@@ -1623,7 +1786,7 @@ type CapabilityCandidate = {
   readonly recognitionContextKey: string
 }
 
-type BindingEdgeCandidate = Omit<LexicalBindingEdge, 'id' | 'status'>
+type BindingEdgeCandidate = Omit<LexicalBindingEdge, 'id' | 'status' | 'contextSnapshotId'>
 
 type CapabilityContext = LexicalCapabilityContext
 
@@ -1635,7 +1798,12 @@ type CapabilityContext = LexicalCapabilityContext
 function lexicalCapabilityCandidates(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
-): { candidates: CapabilityCandidate[]; bindingEdges: BindingEdgeCandidate[] } {
+): {
+  candidates: CapabilityCandidate[]
+  bindingEdges: BindingEdgeCandidate[]
+  contexts: Map<string, CapabilityContext>
+  contextKeyOf: (context: CapabilityContext) => string
+} {
   const parserIds = new Map<Combinator<unknown>, number>()
   const parserId = (parser: Combinator<unknown>): number => {
     const prior = parserIds.get(parser)
@@ -1655,8 +1823,10 @@ function lexicalCapabilityCandidates(
   const ownedPath = new Map<Combinator<unknown>, Map<string, string>>()
   const candidates = new Map<string, CapabilityCandidate>()
   const bindingEdges = new Map<string, BindingEdgeCandidate>()
+  const contexts = new Map<string, CapabilityContext>()
   const visit = (parser: Combinator<unknown>, path: string, owned: boolean, context: CapabilityContext): void => {
     const contextKey = contextKeyOf(context)
+    if (!contexts.has(contextKey)) contexts.set(contextKey, context)
     const seen = owned ? ownedPath : topPath
     let paths = seen.get(parser)
     if (paths === undefined) { paths = new Map(); seen.set(parser, paths) }
@@ -1739,6 +1909,8 @@ function lexicalCapabilityCandidates(
     candidates: [...candidates.values()].sort((a, b) =>
       a.path < b.path ? -1 : a.path > b.path ? 1 : a.atom < b.atom ? -1 : a.atom > b.atom ? 1 : 0),
     bindingEdges: [...bindingEdges.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+    contexts,
+    contextKeyOf,
   }
 }
 
@@ -1750,6 +1922,7 @@ function decisionViewKey(view: LexicalDecisionOutcomeView): string {
 
 function lexicalDecisionInventory(
   candidates: readonly CapabilityCandidate[],
+  contextSnapshotIdByKey: ReadonlyMap<string, number>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): {
   families: LexicalDecisionFamily[]
@@ -1776,7 +1949,7 @@ function lexicalDecisionInventory(
   for (const candidate of candidates) {
     const def = candidate.parser._def
     if (candidate.atom !== 'terminal' && candidate.atom !== 'token') continue
-    const normalized = normalizeBalancedLexical(candidate.parser, resolve, candidate.context.scanSkip)
+    const normalized = normalizeBalancedLexical(candidate.parser, resolve)
       ?? normalizeLexical(def.tag === 'token' ? def.parser : candidate.parser, resolve, new Set())
     if (!('refusal' in normalized)) familyIrByKey.set(JSON.stringify(normalized.ir), normalized.ir)
   }
@@ -1786,6 +1959,16 @@ function lexicalDecisionInventory(
     if (candidate.atom !== 'choice' && candidate.atom !== 'dispatch') continue
     const def = candidate.parser._def
     const precisionNotes: string[] = []
+    const contextSnapshotId = contextSnapshotIdByKey.get(candidate.contextKey)
+    if (contextSnapshotId === undefined) throw new Error('parseman: decision occurrence lost its context snapshot')
+    if (containsDynamicScanConsumer(candidate.parser, resolve)) {
+      pending.push({
+        siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
+        contextSnapshotId, families: [], pendingReuse: 'forbidden',
+        precisionNotes: ['dynamic scan consumer requires unrestricted PEG admission and forbids pending reuse'],
+      })
+      continue
+    }
     if (candidate.atom === 'dispatch') {
       if (def.tag !== 'dispatch') throw new Error('parseman: decision occurrence lost its dispatch')
       const result = decisionLead(def.selector, candidate.context, resolve)
@@ -1793,7 +1976,7 @@ function lexicalDecisionInventory(
         precisionNotes.push(`selector: ${result.gap}`)
         pending.push({
           siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-          families: [], precisionNotes,
+          contextSnapshotId, families: [], precisionNotes, pendingReuse: 'unproved',
         })
         continue
       }
@@ -1828,7 +2011,7 @@ function lexicalDecisionInventory(
       })
       pending.push({
         siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-        families: [{ familyKey, arms }], precisionNotes,
+        contextSnapshotId, families: [{ familyKey, arms }], precisionNotes, pendingReuse: 'unproved',
       })
       continue
     }
@@ -1942,7 +2125,8 @@ function lexicalDecisionInventory(
     })
     pending.push({
       siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-      families, precisionNotes: [...new Set(precisionNotes)].sort(),
+      contextSnapshotId, families, precisionNotes: [...new Set(precisionNotes)].sort(),
+      pendingReuse: 'unproved',
     })
   }
 
@@ -1965,7 +2149,8 @@ function lexicalDecisionInventory(
   })
   const decisions = pending.map((site): LexicalDecisionSite => ({
     siteId: site.siteId, atom: site.atom, path: site.path, contextKey: site.contextKey,
-    fallback: 'unrestricted', precisionNotes: site.precisionNotes,
+    contextSnapshotId: site.contextSnapshotId,
+    fallback: 'unrestricted', precisionNotes: site.precisionNotes, pendingReuse: site.pendingReuse,
     families: site.families.map(family => ({
       familyId: familyIdByKey.get(family.familyKey)!,
       arms: family.arms.map(arm => ({
@@ -2001,9 +2186,48 @@ function lexicalCapabilityInventory(
   grammarWrapperSpecs: LexicalGrammarWrapperSpec[]
   grammarCaptureTriviaKinds: string[][]
   boundaryTopologies: LexicalBoundaryTopology[]
+  contextSnapshots: LexicalContextSnapshot[]
+  ownSkipPlans: LexicalOwnSkipPlan[]
+  scanConsumerPolicies: LexicalScanConsumerPolicy[]
 } {
   const inventory = lexicalCapabilityCandidates(roots, resolve)
-  const decisionInventory = lexicalDecisionInventory(inventory.candidates, resolve)
+  const occurrenceContexts = new Map<Combinator<unknown>, Set<string>>()
+  for (const candidate of inventory.candidates) {
+    let contexts = occurrenceContexts.get(candidate.parser)
+    if (contexts === undefined) occurrenceContexts.set(candidate.parser, contexts = new Set())
+    contexts.add(candidate.contextKey)
+  }
+  const isSeparateOccurrence = (parser: Combinator<unknown>, contextKey: string): boolean =>
+    occurrenceContexts.get(parser)?.has(contextKey) === true
+  const scanConsumersBySite = new Map<number, ScanConsumerCandidate[]>()
+  for (let siteId = 0; siteId < inventory.candidates.length; siteId++) {
+    const candidate = inventory.candidates[siteId]!
+    const consumers = ownedScanConsumers(
+      candidate.parser, candidate.context, inventory.contextKeyOf, isSeparateOccurrence, resolve,
+    )
+    if (consumers.length === 0) continue
+    scanConsumersBySite.set(siteId, consumers)
+    for (const consumer of consumers) {
+      if (!inventory.contexts.has(consumer.contextKey)) {
+        inventory.contexts.set(consumer.contextKey, consumer.context)
+      }
+    }
+  }
+  const contextSnapshots = [...inventory.contexts.entries()]
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([key, context], id): LexicalContextSnapshot => ({
+      id, key,
+      hasTrivia: context.trivia !== undefined,
+      hasScanSkip: context.scanSkip.length > 0,
+      trackLines: context.trackLines,
+      captureTrivia: context.captureTrivia,
+      opaqueRootCapture: context.opaqueRootCapture,
+      dynamicState: context.dynamicState,
+    }))
+  const contextSnapshotIdByKey = new Map(contextSnapshots.map(snapshot => [snapshot.key, snapshot.id]))
+  const decisionInventory = lexicalDecisionInventory(
+    inventory.candidates, contextSnapshotIdByKey, resolve,
+  )
   const transitionDiagnostics: LexicalTransitionDiagnosticPlan[] = []
   const transitionDiagnosticIdByKey = new Map<string, number>()
   const internTransitionDiagnostics = (
@@ -2179,20 +2403,84 @@ function lexicalCapabilityInventory(
     boundaryTopologies.push({ id, frames })
     return { id }
   }
+  const ownSkipPlans: LexicalOwnSkipPlan[] = []
+  const ownSkipPlanIdByKey = new Map<string, number>()
+  const internOwnSkipPlan = (entries: readonly Combinator<unknown>[]): number | undefined => {
+    if (entries.length === 0) return undefined
+    const represented = entries.map((entry): LexicalOwnSkipEntry => {
+      const normalized = normalizeBalancedLexical(entry, resolve)
+        ?? normalizeLexical(entry, resolve, new Set())
+      if ('refusal' in normalized) return {
+        status: gap(`ownSkip normalization: ${normalized.refusal}`),
+      }
+      return {
+        semanticKey: JSON.stringify(normalized.ir), ir: normalized.ir, status: COMPLETE_CAPABILITY,
+      }
+    })
+    const key = JSON.stringify(represented)
+    const prior = ownSkipPlanIdByKey.get(key)
+    if (prior !== undefined) return prior
+    const id = ownSkipPlans.length
+    ownSkipPlanIdByKey.set(key, id)
+    ownSkipPlans.push({ id, entries: represented })
+    return id
+  }
+  const scanConsumerPolicies: LexicalScanConsumerPolicy[] = []
+  const scanPolicyIdsBySite = new Map<number, number[]>()
+  for (let siteId = 0; siteId < inventory.candidates.length; siteId++) {
+    const candidate = inventory.candidates[siteId]!
+    for (const consumer of scanConsumersBySite.get(siteId) ?? []) {
+      const contextSnapshotId = contextSnapshotIdByKey.get(consumer.contextKey)
+      if (contextSnapshotId === undefined) throw new Error('parseman: scan consumer lost its context snapshot')
+      const ownSkipPlanId = internOwnSkipPlan(consumer.ownSkip)
+      const ownSkipPlan = ownSkipPlanId === undefined ? undefined : ownSkipPlans[ownSkipPlanId]
+      const status = ownSkipPlan?.entries.find(entry => entry.status.kind !== 'complete')?.status
+        ?? COMPLETE_CAPABILITY
+      const id = scanConsumerPolicies.length
+      const common = {
+        id, siteId, path: `${candidate.path}${consumer.path}`,
+        contextSnapshotId, raw: consumer.raw,
+        ...(ownSkipPlanId === undefined ? {} : { ownSkipPlanId }),
+        lookup: 'dynamic-parse-property-every-skip-test' as const,
+        pendingReuse: 'forbidden' as const,
+        status,
+      }
+      scanConsumerPolicies.push(consumer.kind === 'scanTo' ? {
+        ...common,
+        kind: 'scanTo',
+        ambient: consumer.raw ? 'none-raw' : 'enumerate-trivia-then-scanSkip-per-parse-attempt',
+        context: 'detached-per-attempt-state-errors-only',
+      } : {
+        ...common,
+        kind: 'balanced',
+        ambient: consumer.raw ? 'none-raw' : 'array-identity-interior-cache',
+        cache: 'lookup-every-attempt-enumerate-on-miss',
+        context: 'token-cleared-original',
+      })
+      let ids = scanPolicyIdsBySite.get(siteId)
+      if (ids === undefined) scanPolicyIdsBySite.set(siteId, ids = [])
+      ids.push(id)
+    }
+  }
+
   const pending = inventory.candidates.map((candidate, id) => {
+    const contextSnapshotId = contextSnapshotIdByKey.get(candidate.contextKey)
+    if (contextSnapshotId === undefined) throw new Error('parseman: capability occurrence lost its context snapshot')
+    const scanConsumerPolicyIds = scanPolicyIdsBySite.get(id) ?? []
     if (candidate.atom === 'terminal') {
       const key = keyOf(candidate.parser._def)
       if (key === undefined) throw new Error('parseman: lexical terminal capability lost its semantic key')
       const obligations = terminalObligations()
       return {
-        id, path: candidate.path, contextKey: candidate.contextKey,
+        id, path: candidate.path, contextKey: candidate.contextKey, contextSnapshotId,
         recognitionContextKey: candidate.recognitionContextKey,
         context: candidate.context,
         recognitionContext: candidate.parser._def.tag === 'token'
           ? { ...candidate.context, trivia: undefined, captureTrivia: false }
           : candidate.context,
         semanticKey: key, atom: candidate.atom,
-        parser: candidate.parser, obligations, status: derivedCapabilityStatus(obligations),
+        parser: candidate.parser, obligations, scanConsumerPolicyIds,
+        status: derivedCapabilityStatus(obligations),
       }
     }
     const def = candidate.parser._def
@@ -2201,13 +2489,13 @@ function lexicalCapabilityInventory(
       const obligations = decisionObligations(decisionInventory.recognitionBySite.get(id)
         ?? gap('choice outcome recognition record is missing'))
       return {
-        id, path: candidate.path,
+        id, path: candidate.path, contextSnapshotId,
         contextKey: candidate.contextKey,
         recognitionContextKey: candidate.recognitionContextKey,
         context: candidate.context,
         recognitionContext: candidate.context,
         semanticKey: `C\u0000${def.parsers.length}\u0000${def.strategy.tag}`,
-        atom: candidate.atom, parser: candidate.parser, obligations,
+        atom: candidate.atom, parser: candidate.parser, obligations, scanConsumerPolicyIds,
         status: derivedCapabilityStatus(obligations),
       }
     }
@@ -2216,30 +2504,30 @@ function lexicalCapabilityInventory(
       const obligations = decisionObligations(decisionInventory.recognitionBySite.get(id)
         ?? gap('dispatch outcome recognition record is missing'))
       return {
-        id, path: candidate.path,
+        id, path: candidate.path, contextSnapshotId,
         contextKey: candidate.contextKey,
         recognitionContextKey: candidate.recognitionContextKey,
         context: candidate.context,
         recognitionContext: candidate.context,
         semanticKey: `D\u0000${def.cases.length}\u0000${def.matchers?.length ?? 0}\u0000${def.otherwise === undefined ? 0 : 1}`,
-        atom: candidate.atom, parser: candidate.parser, obligations,
+        atom: candidate.atom, parser: candidate.parser, obligations, scanConsumerPolicyIds,
         status: derivedCapabilityStatus(obligations),
       }
     }
     if (def.tag !== 'token') throw new Error('parseman: lexical token capability lost its boundary')
     const session = newNormalizeSession()
     const normalized = normalizeBalancedLexical(
-      candidate.parser, resolve, candidate.context.scanSkip, session,
+      candidate.parser, resolve, session,
     ) ?? normalizeLexical(candidate.parser, resolve, new Set(), session)
     if ('refusal' in normalized) {
       const obligations = tokenObligations(gap(`token normalization: ${normalized.refusal}`))
       return {
-        id, path: candidate.path, contextKey: candidate.contextKey,
+        id, path: candidate.path, contextKey: candidate.contextKey, contextSnapshotId,
         recognitionContextKey: candidate.recognitionContextKey,
         context: candidate.context,
         recognitionContext: { ...candidate.context, trivia: undefined, captureTrivia: false },
         semanticKey: `T\u0000GAP\u0000${normalized.refusal}`,
-        atom: candidate.atom, parser: candidate.parser, obligations,
+        atom: candidate.atom, parser: candidate.parser, obligations, scanConsumerPolicyIds,
         status: derivedCapabilityStatus(obligations),
       }
     }
@@ -2250,11 +2538,11 @@ function lexicalCapabilityInventory(
         proof: 'an atomic source token must consume positive width but this token body is nullable',
       })
       return {
-        id, path: candidate.path, contextKey: candidate.contextKey,
+        id, path: candidate.path, contextKey: candidate.contextKey, contextSnapshotId,
         recognitionContextKey: candidate.recognitionContextKey,
         context: candidate.context,
         recognitionContext: { ...candidate.context, trivia: undefined, captureTrivia: false },
-        semanticKey, atom: candidate.atom, parser: candidate.parser,
+        semanticKey, atom: candidate.atom, parser: candidate.parser, scanConsumerPolicyIds,
         obligations, status: derivedCapabilityStatus(obligations),
       }
     }
@@ -2269,11 +2557,12 @@ function lexicalCapabilityInventory(
       materializationPlan: topologyRepresentation,
     })
     return {
-      id, path: candidate.path, contextKey: candidate.contextKey,
+      id, path: candidate.path, contextKey: candidate.contextKey, contextSnapshotId,
       recognitionContextKey: candidate.recognitionContextKey,
       context: candidate.context,
       recognitionContext: { ...candidate.context, trivia: undefined, captureTrivia: false },
       semanticKey, atom: candidate.atom, parser: candidate.parser, diagnosticPlanId,
+      scanConsumerPolicyIds,
       controlPlanId,
       ...('id' in topology ? { boundaryTopologyId: topology.id } : {}),
       obligations, status: derivedCapabilityStatus(obligations),
@@ -2294,7 +2583,10 @@ function lexicalCapabilityInventory(
     languageId: languageIdByKey.get(`${site.atom}\u0000${site.semanticKey}`)!,
   }))
   const bindingEdges = inventory.bindingEdges.map((edge, id): LexicalBindingEdge => ({
-    id, ...edge, status: gap(FIXED_TUPLE_BINDING_GAP),
+    id, ...edge,
+    contextSnapshotId: contextSnapshotIdByKey.get(edge.contextKey)
+      ?? (() => { throw new Error('parseman: binding edge lost its context snapshot') })(),
+    status: gap(FIXED_TUPLE_BINDING_GAP),
   }))
   return {
     capabilities, languages, bindingEdges,
@@ -2310,6 +2602,9 @@ function lexicalCapabilityInventory(
     grammarWrapperSpecs,
     grammarCaptureTriviaKinds,
     boundaryTopologies,
+    contextSnapshots,
+    ownSkipPlans,
+    scanConsumerPolicies,
   }
 }
 
@@ -2318,15 +2613,15 @@ export function assertLexicalCapabilityClosure(
   roots: ReadonlyArray<Combinator<unknown>>,
   alphabet: Pick<LexicalCapabilityInventory,
   'capabilities' | 'capabilityLanguages' | 'bindingEdges' | 'decisionFamilies'
-  | 'decisionOutcomes' | 'decisions'> & Partial<Pick<LexicalCapabilityInventory,
+      | 'decisionOutcomes' | 'decisions'> & Partial<Pick<LexicalCapabilityInventory,
   'transitionDiagnostics' | 'boundaryPlans' | 'materializationPlans'
   | 'grammarWrapperSpecs' | 'grammarCaptureTriviaKinds' | 'boundaryTopologies'
-  | 'controlPlans'>>,
+  | 'controlPlans' | 'contextSnapshots' | 'ownSkipPlans' | 'scanConsumerPolicies'>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): void {
   const actual = lexicalCapabilityInventory(roots, resolve)
   const signature = (site: LexicalCapabilitySite): string =>
-    `${site.id}\u0000${site.languageId}\u0000${site.path}\u0000${site.contextKey}\u0000${site.recognitionContextKey}\u0000${site.atom}\u0000${site.semanticKey}\u0000${site.diagnosticPlanId ?? -1}\u0000${site.controlPlanId ?? -1}\u0000${site.boundaryTopologyId ?? -1}\u0000${JSON.stringify(site.obligations)}`
+    `${site.id}\u0000${site.languageId}\u0000${site.path}\u0000${site.contextKey}\u0000${site.contextSnapshotId}\u0000${site.recognitionContextKey}\u0000${site.atom}\u0000${site.semanticKey}\u0000${site.diagnosticPlanId ?? -1}\u0000${site.controlPlanId ?? -1}\u0000${site.boundaryTopologyId ?? -1}\u0000${site.scanConsumerPolicyIds.join(',')}\u0000${JSON.stringify(site.obligations)}`
   const expectedKeys = actual.capabilities.map(signature)
   const suppliedKeys = alphabet.capabilities.map(signature)
   const expectedLanguages = actual.languages.map(language =>
@@ -2334,7 +2629,7 @@ export function assertLexicalCapabilityClosure(
   const suppliedLanguages = alphabet.capabilityLanguages.map(language =>
     `${language.id}\u0000${language.atom}\u0000${language.semanticKey}`)
   const edgeSignature = (edge: LexicalBindingEdge): string =>
-    `${edge.id}\u0000${edge.path}\u0000${edge.contextKey}\u0000${edge.parentTag}\u0000${edge.childTag}\u0000${JSON.stringify(edge.status)}`
+    `${edge.id}\u0000${edge.path}\u0000${edge.contextKey}\u0000${edge.contextSnapshotId}\u0000${edge.parentTag}\u0000${edge.childTag}\u0000${JSON.stringify(edge.status)}`
   const expectedEdges = actual.bindingEdges.map(edgeSignature)
   const suppliedEdges = alphabet.bindingEdges.map(edgeSignature)
   const familySignature = (family: LexicalDecisionFamily): string =>
@@ -2363,6 +2658,12 @@ export function assertLexicalCapabilityClosure(
   const suppliedCaptureKinds = (alphabet.grammarCaptureTriviaKinds ?? []).map(plan => JSON.stringify(plan))
   const expectedTopologies = actual.boundaryTopologies.map(plan => JSON.stringify(plan))
   const suppliedTopologies = (alphabet.boundaryTopologies ?? []).map(plan => JSON.stringify(plan))
+  const expectedContexts = actual.contextSnapshots.map(plan => JSON.stringify(plan))
+  const suppliedContexts = (alphabet.contextSnapshots ?? []).map(plan => JSON.stringify(plan))
+  const expectedOwnSkip = actual.ownSkipPlans.map(plan => JSON.stringify(plan))
+  const suppliedOwnSkip = (alphabet.ownSkipPlans ?? []).map(plan => JSON.stringify(plan))
+  const expectedScanPolicies = actual.scanConsumerPolicies.map(plan => JSON.stringify(plan))
+  const suppliedScanPolicies = (alphabet.scanConsumerPolicies ?? []).map(plan => JSON.stringify(plan))
   if (expectedKeys.length !== suppliedKeys.length
     || expectedKeys.some((key, index) => key !== suppliedKeys[index])
     || expectedLanguages.length !== suppliedLanguages.length
@@ -2388,7 +2689,13 @@ export function assertLexicalCapabilityClosure(
     || expectedCaptureKinds.length !== suppliedCaptureKinds.length
     || expectedCaptureKinds.some((key, index) => key !== suppliedCaptureKinds[index])
     || expectedTopologies.length !== suppliedTopologies.length
-    || expectedTopologies.some((key, index) => key !== suppliedTopologies[index])) {
+    || expectedTopologies.some((key, index) => key !== suppliedTopologies[index])
+    || expectedContexts.length !== suppliedContexts.length
+    || expectedContexts.some((key, index) => key !== suppliedContexts[index])
+    || expectedOwnSkip.length !== suppliedOwnSkip.length
+    || expectedOwnSkip.some((key, index) => key !== suppliedOwnSkip[index])
+    || expectedScanPolicies.length !== suppliedScanPolicies.length
+    || expectedScanPolicies.some((key, index) => key !== suppliedScanPolicies[index])) {
     throw new Error('parseman: lexical capability census is incomplete after final grammar resolution')
   }
 }
@@ -2413,8 +2720,12 @@ export function collectLexicalCapabilities(
     grammarWrapperSpecs: inventory.grammarWrapperSpecs,
     grammarCaptureTriviaKinds: inventory.grammarCaptureTriviaKinds,
     boundaryTopologies: inventory.boundaryTopologies,
+    contextSnapshots: inventory.contextSnapshots,
+    ownSkipPlans: inventory.ownSkipPlans,
+    scanConsumerPolicies: inventory.scanConsumerPolicies,
     capabilityComplete: inventory.capabilities.every(site => site.status.kind !== 'gap')
-      && inventory.bindingEdges.every(edge => edge.status.kind !== 'gap'),
+      && inventory.bindingEdges.every(edge => edge.status.kind !== 'gap')
+      && inventory.scanConsumerPolicies.every(policy => policy.status.kind !== 'gap'),
   }
 }
 
@@ -2696,6 +3007,9 @@ export function collectLexicalAlphabet(
     grammarWrapperSpecs: capabilityInventory.grammarWrapperSpecs,
     grammarCaptureTriviaKinds: capabilityInventory.grammarCaptureTriviaKinds,
     boundaryTopologies: capabilityInventory.boundaryTopologies,
+    contextSnapshots: capabilityInventory.contextSnapshots,
+    ownSkipPlans: capabilityInventory.ownSkipPlans,
+    scanConsumerPolicies: capabilityInventory.scanConsumerPolicies,
     capabilityComplete: capabilityInventory.capabilityComplete,
   }
 }
