@@ -14,7 +14,9 @@ import { realpathSync } from 'node:fs'
 import type { Combinator, ParserDef } from '../../src/types.ts'
 import { compose, literal, rules, sequence, token } from '../../src/index.ts'
 import { composedCoverageRules } from '../../src/compiler/linker.ts'
-import { collectLexicalAlphabet } from '../../src/compiler/token-alphabet.ts'
+import {
+  assertLexicalCapabilityClosure, collectLexicalAlphabet,
+} from '../../src/compiler/token-alphabet.ts'
 import { assertParseman, JESS_ROOT, loadGrammar } from './grammars.ts'
 
 type Comb = Combinator<unknown>
@@ -38,16 +40,16 @@ type Row = {
 
 const EXPECTED = {
   css: {
-    total: 831,
-    counts: { terminal: 638, token: 39, choice: 143, dispatch: 11 },
+    total: 842,
+    counts: { terminal: 645, token: 39, choice: 147, dispatch: 11 },
     contexts: 9,
-    digest: 'b390d034722828b8cb026f30b36939974de9edde0e91b779208f6630d6d788f7',
+    digest: '797eacdf3610fff1b9da3e0052a7ade72891bba21924a88639a334385d1ac8fe',
   },
   less: {
-    total: 1678,
-    counts: { terminal: 1170, token: 62, choice: 417, dispatch: 29 },
+    total: 1687,
+    counts: { terminal: 1178, token: 62, choice: 418, dispatch: 29 },
     contexts: 11,
-    digest: 'b0046a4d5191eb3b0c32de7a6e812aec2dc8f33ba3ea5bc09cd751ecf348e92a',
+    digest: '6d97393cf6316dd57eacf4710db88119243050bcac3c9338ba524eacbc4178e0',
   },
 } as const
 
@@ -234,8 +236,52 @@ for (const dialect of ['css', 'less'] as const) {
     && site.context.dynamicState === row.context.dynamicState
     && site.context.scanSkip.length === row.context.scanSkip.length
     && site.context.scanSkip.every((entry, index) => entry === row.context.scanSkip[index])))
+  const tokenSites = production.capabilities.filter(site =>
+    site.atom === 'token' && site.diagnosticPlanId !== undefined)
+  assert(production.transitionDiagnostics.length <= tokenSites.length)
+  for (const site of tokenSites) {
+    const plan = production.transitionDiagnostics[site.diagnosticPlanId!]
+    assert(plan !== undefined)
+    assert(plan.events.every(event => event.state >= 0 && event.state < plan.stateCount))
+  }
+  const pointerFree = (value: unknown): boolean => {
+    if (typeof value === 'function') return false
+    if (value === null || typeof value !== 'object') return true
+    if (value instanceof Map || value instanceof Set) return false
+    return Object.values(value).every(pointerFree)
+  }
+  assert(production.transitionDiagnostics.every(pointerFree))
+  const eventHistogram: Record<string, number> = {}
+  let states = 0
+  let expectedSets = 0
+  let expectedStrings = 0
+  let balancedPlans = 0
+  let balancedStates = 0
+  let otherStates = 0
+  for (const plan of production.transitionDiagnostics) {
+    states += plan.stateCount
+    const sites = tokenSites.filter(site => site.diagnosticPlanId === plan.id)
+    if (sites.some(site => site.semanticKey.includes('"kind":"balanced"'))) {
+      balancedPlans++
+      balancedStates += plan.stateCount
+    } else otherStates += plan.stateCount
+    expectedSets += plan.expected.length
+    expectedStrings += plan.expected.reduce((sum, set) => sum + set.length, 0)
+    for (const event of plan.events) eventHistogram[event.op] = (eventHistogram[event.op] ?? 0) + 1
+  }
+  if (process.env.PM_CAPABILITY_ORACLE_PLANT === 'omit-diagnostic-event') {
+    const [first, ...rest] = production.transitionDiagnostics
+    assert(first !== undefined && first.events.length > 0)
+    assertLexicalCapabilityClosure(roots.map(([, parser]) => parser), {
+      ...production,
+      transitionDiagnostics: [{ ...first, events: first.events.slice(1) }, ...rest],
+    }, name => grammar.rules[name])
+  }
   console.log(JSON.stringify({ dialect, occurrences: result.rows.length, counts: expected.counts,
-    contexts: expected.contexts, digest, bindingEdges: result.bindingEdges }))
+    contexts: expected.contexts, digest, bindingEdges: result.bindingEdges,
+    tokenOccurrences: tokenSites.length, diagnosticPlans: production.transitionDiagnostics.length,
+    states, expectedSets, expectedStrings,
+    balancedPlans, balancedStates, otherStates, eventHistogram, tableProgramWords: 0 }))
 }
 console.log(JSON.stringify({
   parseman: realpathSync(process.cwd()),

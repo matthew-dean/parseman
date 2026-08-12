@@ -3,6 +3,7 @@ import { firstSetOf, matchesEmpty, union, type RefResolver } from '../combinator
 import { childrenOf } from '../analysis/gating.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
+import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
 import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators/dispatch.ts'
@@ -728,13 +729,13 @@ class Encoder {
     switch (d.tag) {
       case 'literal': {
         if (d.caseInsensitive) {
-          return this.emit(this.track ? OP_LIT_CI_TRACK : OP_LIT_CI, this.constant(d.value), this.expected(deriveExpected(p)))
+          return this.emit(this.track ? OP_LIT_CI_TRACK : OP_LIT_CI, this.constant(d.value), this.expected(directTerminalFailureExpected(d)))
         }
-        return this.emit(this.track ? OP_LIT_TRACK : OP_LIT, this.constant(d.value), this.expected(deriveExpected(p)))
+        return this.emit(this.track ? OP_LIT_TRACK : OP_LIT, this.constant(d.value), this.expected(directTerminalFailureExpected(d)))
       }
       case 'regex': {
         const flags = d.flags.includes('y') ? d.flags : `${d.flags}y`
-        return this.emit(this.track ? OP_RX_TRACK : OP_RX, this.constant(new RegExp(d.source, flags)), this.expected(deriveExpected(p)))
+        return this.emit(this.track ? OP_RX_TRACK : OP_RX, this.constant(new RegExp(d.source, flags)), this.expected(directTerminalFailureExpected(d)))
       }
       case 'keywords': {
         // `keywords()` compiles to ONE sticky regex and pushes a leaf — which is
@@ -752,7 +753,7 @@ class Encoder {
           // failing keyword arm names the CATEGORY rather than reciting every
           // literal in the family. `deriveExpected` reports the literals, so the
           // table said `'"media"'` where both other engines say `'keyword'`.
-          this.expected(['keyword']),
+          this.expected(directTerminalFailureExpected(d)),
         )
       }
       case 'expect': {
@@ -1213,7 +1214,7 @@ class Encoder {
       // other engine reported `['not(literal)']`. It hid because `expected` is a
       // TOP-LEVEL field on `RunResult` and is NOT part of the identity digest.
       case 'not':
-        return this.emit(OP_NOT, this.node(d.parser).ip, this.expected([`not(${d.parser._tag})`]))
+        return this.emit(OP_NOT, this.node(d.parser).ip, this.expected(assertionFailureExpected(false, d.parser._tag)))
       case 'guard':
         // `'gate'`, the public name — see gate.ts. The def tag stays `'guard'`.
         return this.emit(OP_GUARD, this.fn(d.predicate, d.predSrc ?? null), this.expected(['gate']))
@@ -1253,7 +1254,7 @@ class Encoder {
         // lookahead's failure is "the guard did not hold", and naming the body's
         // internals offers a token the parse never asked the author for. The
         // table propagated the body's set instead.
-        return this.emit(OP_PEEK, this.node(d.parser).ip, this.expected([`peek(${d.parser._tag})`]))
+        return this.emit(OP_PEEK, this.node(d.parser).ip, this.expected(assertionFailureExpected(true, d.parser._tag)))
       // A TRANSACTION IS A ROW. See `OP_ATTEMPT` for why the transparent
       // lowering was correct only for a choice arm.
       case 'attempt': {

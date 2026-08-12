@@ -34,6 +34,8 @@ import type { Combinator, ParserDef } from '../types.ts'
 import { firstSetOf, intersects, matchesEmpty } from '../combinators/first-set.ts'
 import { branchUsesRouted } from '../combinators/dispatch.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
+import { deriveExpected } from '../combinators/expect.ts'
+import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
 
 /** A terminal in the derived alphabet, with its globally assigned id. */
 export type TokenTerminal =
@@ -92,6 +94,78 @@ export type LexicalDiagnosticPlan = {
   readonly body: Combinator<unknown>
 }
 
+/** Pointer-free, compiler-only checkpoints inside one authored token body. */
+export type LexicalDiagnosticEvent =
+  | { readonly op: 'FAIL'; readonly state: number; readonly expectedId: number }
+  | {
+    readonly op: 'ASSERT'
+    readonly state: number
+    readonly innerStart: number
+    readonly innerEnd: number
+    readonly positive: boolean
+    readonly expectedId: number
+    readonly snapshotPolicy: 'saveLookaheadMark'
+    readonly execution: 'deferred'
+  }
+  | {
+    readonly op: 'REQUIRE'
+    readonly state: number
+    readonly childStart: number
+    readonly childEnd: number
+    readonly expectedId: number
+    readonly when: 'mandatory-iteration-2-to-min'
+    readonly committedChild: 'propagate'
+    readonly probe: 'child-only'
+    readonly anchor: 'repeat-position'
+  }
+  | {
+    readonly op: 'BAL_CLOSE_STRICT'
+    readonly state: number
+    readonly expectedId: number
+    readonly probe: true
+    readonly committed: false
+    readonly when: 'close-miss-after-open-body-success'
+  }
+  | {
+    readonly op: 'BAL_CLOSE_RECOVER'
+    readonly state: number
+    readonly expectedId: number
+    readonly probe: true
+    readonly committed: false
+    readonly when: 'close-miss-after-open-body-success'
+    readonly result: 'parseError'
+    readonly errorSpan: 'close-position'
+    readonly lineAnnotation: 'when-active'
+    readonly errorSink: 'when-active'
+    readonly cstErrorCapture: 'when-active'
+  }
+
+/**
+ * Stage-B2 diagnostic metadata. It is intentionally absent from TableProgram:
+ * assertion execution and every token-boundary effect remain capability GAPs.
+ */
+export type LexicalTransitionDiagnosticPlan = {
+  readonly id: number
+  readonly stateCount: number
+  readonly expected: readonly (readonly string[])[]
+  readonly events: readonly LexicalDiagnosticEvent[]
+}
+
+export type LexicalControlNode = {
+  readonly id: number
+  readonly parentControlId?: number
+  /** Authored parser kind, or the conditional/repeated balanced skipper role. */
+  readonly kind: ParserDef['tag'] | 'balanced' | 'balanced-skip'
+  readonly stateStart: number
+  readonly stateEnd: number
+}
+
+export type LexicalControlPlan = {
+  readonly id: number
+  /** Pointer-free source-control index over the one normalization session. */
+  readonly controls: readonly LexicalControlNode[]
+}
+
 /** One globally interned lexical family/base-token id. */
 export type LexicalTokenFamily = {
   readonly id: number
@@ -115,12 +189,73 @@ export type LexicalCapabilityStatus =
   | { readonly kind: 'gap'; readonly reason: string }
   | { readonly kind: 'impossible'; readonly proof: string }
 
+export type LexicalCapabilityPhase = {
+  readonly representation: LexicalCapabilityStatus
+  /** A complete body is constructible for every required reader/variant before selection. */
+  readonly executableLowering: LexicalCapabilityStatus
+}
+
 export type LexicalCapabilityObligations = {
-  readonly recognition: LexicalCapabilityStatus
-  readonly diagnosticsAndEffects: LexicalCapabilityStatus
-  readonly consumptionAndMaterialization: LexicalCapabilityStatus
-  readonly supportedVariants: LexicalCapabilityStatus
-  readonly bindingAndReachability: LexicalCapabilityStatus
+  readonly recognition: LexicalCapabilityPhase
+  readonly diagnostics: LexicalCapabilityPhase
+  readonly boundaryPlan: LexicalCapabilityPhase
+  readonly materializationPlan: LexicalCapabilityPhase
+  readonly supportedVariants: LexicalCapabilityPhase
+  readonly bindingAndReachability: LexicalCapabilityPhase
+}
+
+/** Built-in authored token() context transaction. Compiler-only in this tranche. */
+export type LexicalBoundaryPlan = {
+  readonly id: 0
+  readonly kind: 'token-context-transaction'
+}
+
+/** Built-in authored token() source-range value/CST materialization. */
+export type LexicalMaterializationPlan = {
+  readonly id: 0
+  readonly kind: 'token-source-range'
+}
+
+/** Exact construction-time grammar wrapper policy, not merely its effective context. */
+export type LexicalGrammarWrapperSpec = {
+  readonly id: number
+  readonly sourceOperationId: number
+  readonly clearTrivia: boolean
+  readonly triviaBindingId?: number
+  readonly trackLines: 'on' | 'off' | 'inherit'
+  readonly captureTrivia: boolean
+  readonly captureTriviaKindsId?: number
+  readonly rootCapture: 'opaque' | 'inherit'
+  readonly clonePolicy: 'spread-existing-or-create-canonical'
+  readonly postChildPolicy: 'line-propagate-then-annotate-or-return'
+}
+
+/** Well-nested overlay over the sole LexicalIr/B2 control/state authority. */
+export type LexicalWrapperFrame =
+  | {
+    readonly id: number
+    readonly parentFrameId?: number
+    readonly controlId: number
+    readonly stateStart: number
+    readonly stateEnd: number
+    readonly kind: 'token'
+    readonly boundaryPlanId: 0
+    readonly materializationPlanId: 0
+  }
+  | {
+    readonly id: number
+    readonly parentFrameId?: number
+    readonly controlId: number
+    readonly stateStart: number
+    readonly stateEnd: number
+    readonly kind: 'grammar'
+    readonly wrapperSpecId: number
+  }
+
+export type LexicalBoundaryTopology = {
+  readonly id: number
+  /** Source-order outer-before-inner frames; recognition/control is not duplicated. */
+  readonly frames: readonly LexicalWrapperFrame[]
 }
 
 export type LexicalCapabilityContext = {
@@ -152,6 +287,12 @@ export type LexicalCapabilitySite = {
   readonly atom: 'terminal' | 'token' | 'choice' | 'dispatch'
   readonly parser: Combinator<unknown>
   readonly obligations: LexicalCapabilityObligations
+  /** Internal body metadata only; never claims the boundary effects obligation. */
+  readonly diagnosticPlanId?: number
+  /** Compiler-only boundary overlay; absent when exact representation declined. */
+  readonly boundaryTopologyId?: number
+  /** Control ancestry authority used by the boundary overlay. */
+  readonly controlPlanId?: number
   /** Derived from `obligations`; callers cannot independently set it. */
   readonly status: LexicalCapabilityStatus
 }
@@ -225,7 +366,13 @@ export type LexicalDecisionSite = {
   readonly path: string
   readonly contextKey: string
   readonly families: readonly LexicalDecisionFamilyPlan[]
-  readonly gaps: readonly string[]
+  /** Families not proven at this occurrence remain admitted through this
+   * conservative relation. It is an explicit TOKEN-body route, never a request
+   * to replay the character parser. */
+  readonly fallback: 'unrestricted'
+  /** Missing inclusion/partition proofs reduce pruning precision only. Every
+   * authored arm still runs its own exact replacement recognizer in PEG order. */
+  readonly precisionNotes: readonly string[]
 }
 
 /** One fixed incoming/root edge whose direct linked-body candidates remain owed. */
@@ -302,6 +449,13 @@ export type LexicalAlphabet = {
   readonly decisionFamilies: readonly LexicalDecisionFamily[]
   readonly decisionOutcomes: readonly LexicalDecisionOutcome[]
   readonly decisions: readonly LexicalDecisionSite[]
+  readonly transitionDiagnostics: readonly LexicalTransitionDiagnosticPlan[]
+  readonly boundaryPlans: readonly LexicalBoundaryPlan[]
+  readonly materializationPlans: readonly LexicalMaterializationPlan[]
+  readonly grammarWrapperSpecs: readonly LexicalGrammarWrapperSpec[]
+  readonly grammarCaptureTriviaKinds: readonly (readonly string[])[]
+  readonly boundaryTopologies: readonly LexicalBoundaryTopology[]
+  readonly controlPlans: readonly LexicalControlPlan[]
   /** False means phase B is forbidden for the entire program. */
   readonly capabilityComplete: boolean
 }
@@ -309,7 +463,11 @@ export type LexicalAlphabet = {
 export type LexicalCapabilityInventory = Pick<
   LexicalAlphabet,
   'capabilities' | 'capabilityLanguages' | 'bindingEdges'
-  | 'decisionFamilies' | 'decisionOutcomes' | 'decisions' | 'capabilityComplete'
+  | 'decisionFamilies' | 'decisionOutcomes' | 'decisions' | 'transitionDiagnostics'
+  | 'boundaryPlans' | 'materializationPlans' | 'grammarWrapperSpecs'
+  | 'grammarCaptureTriviaKinds' | 'boundaryTopologies'
+  | 'controlPlans'
+  | 'capabilityComplete'
 >
 
 /** Numeric-only artifact projection; `TableProgram` aliases this contract. */
@@ -489,6 +647,117 @@ export function collectAlphabet(
 
 type Normalized = { ir: LexicalIr } | { refusal: string }
 
+type PendingLexicalWrapperFrame =
+  | {
+    readonly id: number
+    readonly parentFrameId?: number
+    readonly controlId: number
+    readonly kind: 'token'
+    stateStart: number
+    stateEnd: number
+  }
+  | {
+    readonly id: number
+    readonly parentFrameId?: number
+    readonly controlId: number
+    readonly kind: 'grammar'
+    readonly parser: Combinator<unknown>
+    stateStart: number
+    stateEnd: number
+  }
+
+type LexicalNormalizeSession = {
+  nextState: number
+  readonly expected: string[][]
+  readonly expectedIds: Map<string, number>
+  readonly events: LexicalDiagnosticEvent[]
+  readonly wrapperFrames: PendingLexicalWrapperFrame[]
+  readonly wrapperStack: number[]
+  readonly controls: LexicalControlNode[]
+  readonly controlStack: number[]
+}
+
+function newNormalizeSession(): LexicalNormalizeSession {
+  return {
+    nextState: 0, expected: [], expectedIds: new Map(), events: [],
+    wrapperFrames: [], wrapperStack: [], controls: [], controlStack: [],
+  }
+}
+
+function withLexicalControl(
+  session: LexicalNormalizeSession | undefined,
+  kind: LexicalControlNode['kind'],
+  body: () => Normalized,
+): Normalized {
+  if (session === undefined) return body()
+  const id = session.controls.length
+  const parentControlId = session.controlStack[session.controlStack.length - 1]
+  const node: LexicalControlNode = {
+    id, ...(parentControlId === undefined ? {} : { parentControlId }), kind,
+    stateStart: session.nextState, stateEnd: -1,
+  }
+  session.controls.push(node)
+  session.controlStack.push(id)
+  try {
+    const result = body()
+    ;(node as { stateEnd: number }).stateEnd = session.nextState
+    return result
+  } finally {
+    const popped = session.controlStack.pop()
+    if (popped !== id) throw new Error('parseman: lexical control stack is not well nested')
+  }
+}
+
+function withLexicalWrapper(
+  session: LexicalNormalizeSession | undefined,
+  kind: 'token' | 'grammar',
+  parser: Combinator<unknown>,
+  body: () => Normalized,
+): Normalized {
+  if (session === undefined) return body()
+  const controlId = session.controlStack[session.controlStack.length - 1]
+  if (controlId === undefined) throw new Error('parseman: lexical wrapper lacks a control anchor')
+  const id = session.wrapperFrames.length
+  const parentFrameId = session.wrapperStack[session.wrapperStack.length - 1]
+  const common = {
+    id, ...(parentFrameId === undefined ? {} : { parentFrameId }), controlId,
+    stateStart: session.nextState, stateEnd: -1,
+  }
+  const frame: PendingLexicalWrapperFrame = kind === 'token'
+    ? { ...common, kind }
+    : { ...common, kind, parser }
+  session.wrapperFrames.push(frame)
+  session.wrapperStack.push(id)
+  try {
+    const result = body()
+    frame.stateEnd = session.nextState
+    return result
+  } finally {
+    const popped = session.wrapperStack.pop()
+    if (popped !== id) throw new Error('parseman: lexical wrapper stack is not well nested')
+  }
+}
+
+function lexicalState(session?: LexicalNormalizeSession): number {
+  return session === undefined ? -1 : session.nextState++
+}
+
+function lexicalExpected(session: LexicalNormalizeSession, expected: readonly string[]): number {
+  const key = JSON.stringify(expected)
+  const prior = session.expectedIds.get(key)
+  if (prior !== undefined) return prior
+  const id = session.expected.length
+  session.expectedIds.set(key, id)
+  session.expected.push([...expected])
+  return id
+}
+
+function lexicalFail(session: LexicalNormalizeSession | undefined, state: number, expected: readonly string[]): void {
+  if (session !== undefined) {
+    session.events.push({ op: 'FAIL', state, expectedId: lexicalExpected(session, expected) })
+  }
+}
+
 function regexFlags(flags: string): string {
   // regex() itself owns stickiness and ignores authored global/sticky state.
   return new RegExp('', flags.replace(/[gy]/g, '')).flags
@@ -525,9 +794,19 @@ function provenOptionalLiteralSuffix(
   return { base, suffix }
 }
 
-function normalizeRegex(source: string, flags: string): LexicalIr {
+function normalizeRegex(source: string, flags: string, session?: LexicalNormalizeSession): LexicalIr {
+  const failure = directTerminalFailureExpected({ tag: 'regex', source, flags })
   const proof = provenOptionalLiteralSuffix(source, flags)
-  if (proof === undefined) return { kind: 'regex', source, flags }
+  if (proof === undefined) {
+    const state = lexicalState(session)
+    lexicalFail(session, state, failure)
+    return { kind: 'regex', source, flags }
+  }
+  lexicalState(session) // synthetic sequence
+  const baseState = lexicalState(session)
+  lexicalFail(session, baseState, failure)
+  lexicalState(session) // synthetic optional repeat
+  lexicalState(session) // synthetic optional literal; no invented FAIL event
   return {
     kind: 'sequence',
     parts: [
@@ -552,30 +831,52 @@ function normalizeLexical(
   parser: Combinator<unknown>,
   resolve: ((name: string) => Combinator<unknown> | undefined) | undefined,
   stack: Set<Combinator<unknown>>,
+  session?: LexicalNormalizeSession,
 ): Normalized {
   if (stack.has(parser)) return { refusal: 'recursive token body' }
   stack.add(parser)
-  const done = (result: Normalized): Normalized => { stack.delete(parser); return result }
-  const child = (value: Combinator<unknown>): Normalized => normalizeLexical(value, resolve, stack)
+  try {
+    return withLexicalControl(session, parser._def.tag, () =>
+      normalizeLexicalBody(parser, resolve, stack, session))
+  } finally {
+    stack.delete(parser)
+  }
+}
+
+function normalizeLexicalBody(
+  parser: Combinator<unknown>,
+  resolve: ((name: string) => Combinator<unknown> | undefined) | undefined,
+  stack: Set<Combinator<unknown>>,
+  session?: LexicalNormalizeSession,
+): Normalized {
+  const done = (result: Normalized): Normalized => result
+  const child = (value: Combinator<unknown>): Normalized => normalizeLexical(value, resolve, stack, session)
   const def = parser._def
 
   switch (def.tag) {
-    case 'literal':
+    case 'literal': {
+      const state = lexicalState(session)
+      lexicalFail(session, state, directTerminalFailureExpected(def))
       return done({ ir: {
         kind: 'literal',
         value: def.caseInsensitive ? def.value.replace(/[A-Z]/g, c => c.toLowerCase()) : def.value,
         caseInsensitive: def.caseInsensitive,
       } })
-    case 'keywords':
-      { const words = [...new Set(def.words.map(word => def.caseInsensitive
+    }
+    case 'keywords': {
+      const state = lexicalState(session)
+      lexicalFail(session, state, directTerminalFailureExpected(def))
+      const words = [...new Set(def.words.map(word => def.caseInsensitive
         ? word.replace(/[A-Z]/g, c => c.toLowerCase())
         : word))].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0))
       return done({ ir: {
         kind: 'keywords', words, caseInsensitive: def.caseInsensitive, boundary: def.boundary,
-      } }) }
+      } })
+    }
     case 'regex':
-      return done({ ir: normalizeRegex(def.source, regexFlags(def.flags)) })
+      return done({ ir: normalizeRegex(def.source, regexFlags(def.flags), session) })
     case 'sequence': {
+      lexicalState(session)
       const parts: LexicalIr[] = []
       for (const entry of def.parsers) {
         const normalized = child(entry)
@@ -586,6 +887,7 @@ function normalizeLexical(
       return done({ ir: sequenceIr(parts) })
     }
     case 'choice': {
+      lexicalState(session)
       if (def.gates.some(gate => gate !== null)) return done({ refusal: 'choice has a dynamic gate' })
       if (def.autoNot.some(check => check !== null)) return done({ refusal: 'choice has contextual prefix rejection' })
       if (!def.disjoint && def.strategy.tag !== 'firstMatch') {
@@ -600,6 +902,7 @@ function normalizeLexical(
       return done({ ir: arms.length === 1 ? arms[0]! : { kind: 'choice', arms } })
     }
     case 'optional': {
+      lexicalState(session)
       const normalized = child(def.parser)
       return done('refusal' in normalized ? normalized : {
         ir: { kind: 'repeat', body: normalized.ir, min: 0, max: 1, greedy: true, mode: 'possessive' },
@@ -607,16 +910,37 @@ function normalizeLexical(
     }
     case 'many':
     case 'oneOrMore': {
+      const state = lexicalState(session)
       if (matchesEmpty(def.parser)) return done({ refusal: 'repeat body may not make progress' })
+      const childStart = session?.nextState ?? -1
       const normalized = child(def.parser)
-      return done('refusal' in normalized ? normalized : {
+      if ('refusal' in normalized) return done(normalized)
+      if (session !== undefined && def.min > 1) {
+        const expected = deriveExpected(def.parser)
+        session.events.push({
+          op: 'REQUIRE', state, childStart, childEnd: session.nextState,
+          expectedId: lexicalExpected(session, expected.length > 0 ? expected : [def.parser._tag]),
+          when: 'mandatory-iteration-2-to-min', committedChild: 'propagate',
+          probe: 'child-only', anchor: 'repeat-position',
+        })
+      }
+      return done({
         ir: { kind: 'repeat', body: normalized.ir, min: def.min, max: def.max ?? null, greedy: true, mode: 'possessive' },
       })
     }
     case 'not':
     case 'peek': {
+      const state = lexicalState(session)
+      const innerStart = session?.nextState ?? -1
       const normalized = child(def.parser)
-      return done('refusal' in normalized ? normalized : {
+      if ('refusal' in normalized) return done(normalized)
+      if (session !== undefined) session.events.push({
+        op: 'ASSERT', state, innerStart, innerEnd: session.nextState,
+        positive: def.tag === 'peek',
+        expectedId: lexicalExpected(session, assertionFailureExpected(def.tag === 'peek', def.parser._tag)),
+        snapshotPolicy: 'saveLookaheadMark', execution: 'deferred',
+      })
+      return done({
         ir: { kind: 'assert', positive: def.tag === 'peek', body: normalized.ir },
       })
     }
@@ -625,6 +949,7 @@ function normalizeLexical(
       return done(target === undefined ? { refusal: 'unresolved lazy token body' } : child(target))
     }
     case 'token':
+      return done(withLexicalWrapper(session, 'token', parser, () => child(def.parser)))
     case 'trivia':
       return done(child(def.parser))
     case 'grammar':
@@ -633,12 +958,14 @@ function normalizeLexical(
       // therefore recognition-inert (its observable effects remain a separate
       // capability obligation). Keep every other trivia-bearing scope distinct:
       // trivia between ordinary child terms changes the accepted language.
-      if (def.parser._def.tag === 'token') return done(child(def.parser))
+      if (def.parser._def.tag === 'token') {
+        return done(withLexicalWrapper(session, 'grammar', parser, () => child(def.parser)))
+      }
       if (def.trackLines) return done({ refusal: 'token body has line-tracking effects' })
       if (def.triviaParser !== undefined || def.captureTrivia === true || def.rootCapture !== undefined) {
         return done({ refusal: 'token body has a trivia-bearing scope' })
       }
-      return done(child(def.parser))
+      return done(withLexicalWrapper(session, 'grammar', parser, () => child(def.parser)))
     case 'transform': return done({ refusal: 'transform is effectful' })
     case 'leaf': return done({ refusal: 'leaf is effectful' })
     case 'node': return done({ refusal: 'node is effectful' })
@@ -667,33 +994,69 @@ function normalizeBalancedLexical(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
   ambientScanSkip: readonly Combinator<unknown>[] = [],
+  session?: LexicalNormalizeSession,
 ): Normalized | undefined {
   // `token(balanced(...))` is legal and appears in Jess. The outer token owns
   // the public leaf, while the inner balanced token owns the constructor marker.
   let marked = parser
   let spec = (marked as BalancedSpec)._balancedSpec
-  while (spec === undefined && marked._def.tag === 'token') {
+  const tokenWrappers: Combinator<unknown>[] = []
+  while (marked._def.tag === 'token') {
+    tokenWrappers.push(marked)
     marked = marked._def.parser
-    spec = (marked as BalancedSpec)._balancedSpec
+    spec ??= (marked as BalancedSpec)._balancedSpec
   }
   if (spec === undefined) return undefined
-  const skip: LexicalIr[] = []
-  // balanced() intentionally ignores ambient trivia. Non-raw instances do
-  // consult grammar scanSkip before their own ordered skip list; raw instances
-  // exclude the ambient list entirely.
-  for (const entry of spec.raw ? spec.ownSkip : [...ambientScanSkip, ...spec.ownSkip]) {
-    const normalized = normalizeLexical(entry, resolve, new Set())
-    if ('refusal' in normalized) return {
-      refusal: `balanced skipper is not represented: ${normalized.refusal}`,
+  const machine = (): Normalized => withLexicalControl(session, 'balanced', () => {
+    lexicalState(session) // balanced machine
+    const openState = lexicalState(session)
+    if (session !== undefined) lexicalFail(session, openState, directTerminalFailureExpected({
+      tag: 'literal', value: spec.open, caseInsensitive: false,
+    }))
+    lexicalState(session) // balanced body scan
+    const skip: LexicalIr[] = []
+    // balanced() intentionally ignores ambient trivia. Non-raw instances do
+    // consult grammar scanSkip before their own ordered skip list; raw instances
+    // exclude the ambient list entirely.
+    for (const entry of spec.raw ? spec.ownSkip : [...ambientScanSkip, ...spec.ownSkip]) {
+      const normalized = withLexicalControl(session, 'balanced-skip', () =>
+        normalizeLexical(entry, resolve, new Set(), session))
+      if ('refusal' in normalized) return {
+        refusal: `balanced skipper is not represented: ${normalized.refusal}`,
+      }
+      skip.push(normalized.ir)
     }
-    skip.push(normalized.ir)
+    const closeState = lexicalState(session)
+    if (session !== undefined) {
+      const expectedId = lexicalExpected(session, directTerminalFailureExpected({
+        tag: 'literal', value: spec.close, caseInsensitive: false,
+      }))
+      session.events.push(spec.strict
+        ? {
+            op: 'BAL_CLOSE_STRICT', state: closeState, expectedId, probe: true, committed: false,
+            when: 'close-miss-after-open-body-success',
+          }
+        : {
+            op: 'BAL_CLOSE_RECOVER', state: closeState, expectedId,
+            probe: true, committed: false, when: 'close-miss-after-open-body-success',
+            result: 'parseError', errorSpan: 'close-position',
+            lineAnnotation: 'when-active', errorSink: 'when-active', cstErrorCapture: 'when-active',
+          })
+    }
+    return {
+      ir: {
+        kind: 'balanced', open: spec.open, close: spec.close,
+        strict: spec.strict, raw: spec.raw, skip,
+      },
+    }
+  })
+  const wrap = (index: number): Normalized => {
+    const tokenParser = tokenWrappers[index]
+    return tokenParser === undefined ? machine()
+      : withLexicalControl(session, 'token', () =>
+        withLexicalWrapper(session, 'token', tokenParser, () => wrap(index + 1)))
   }
-  return {
-    ir: {
-      kind: 'balanced', open: spec.open, close: spec.close,
-      strict: spec.strict, raw: spec.raw, skip,
-    },
-  }
+  return wrap(0)
 }
 
 const CAPABILITY_VARIANT_GAP =
@@ -702,41 +1065,76 @@ const FIXED_TUPLE_BINDING_GAP =
   'binding candidate set is incomplete: shared, direct captured, and statically named fixed-tuple bodies have not all been built before pricing; fixed children and routes may not be rediscovered from arrays'
 const COMPLETE_CAPABILITY = { kind: 'complete' } as const
 const gap = (reason: string): LexicalCapabilityStatus => ({ kind: 'gap', reason })
+const COMPLETE_PHASE: LexicalCapabilityPhase = {
+  representation: COMPLETE_CAPABILITY,
+  executableLowering: COMPLETE_CAPABILITY,
+}
+const phaseGap = (representation: LexicalCapabilityStatus, loweringReason: string): LexicalCapabilityPhase => ({
+  representation,
+  executableLowering: representation.kind === 'impossible'
+    ? representation : gap(loweringReason),
+})
 
 function derivedCapabilityStatus(obligations: LexicalCapabilityObligations): LexicalCapabilityStatus {
-  const ordered = [
+  const phases = [
     obligations.recognition,
-    obligations.diagnosticsAndEffects,
-    obligations.consumptionAndMaterialization,
+    obligations.diagnostics,
+    obligations.boundaryPlan,
+    obligations.materializationPlan,
     obligations.supportedVariants,
     obligations.bindingAndReachability,
   ]
+  const ordered = phases.flatMap(entry => [entry.representation, entry.executableLowering])
   const impossible = ordered.find((entry): entry is Extract<LexicalCapabilityStatus, { kind: 'impossible' }> =>
     entry.kind === 'impossible')
   if (impossible !== undefined) return impossible
-  const gaps = ordered.filter((entry): entry is Extract<LexicalCapabilityStatus, { kind: 'gap' }> =>
+  // Capability is availability before selection: only executable lowering can
+  // close it. Actual execution is test evidence, not a third status dimension.
+  const gaps = phases.map(entry => entry.executableLowering)
+    .filter((entry): entry is Extract<LexicalCapabilityStatus, { kind: 'gap' }> =>
     entry.kind === 'gap')
   if (gaps.length > 0) return gap([...new Set(gaps.map(entry => entry.reason))].join('; '))
   return COMPLETE_CAPABILITY
 }
 
-function tokenObligations(recognition: LexicalCapabilityStatus): LexicalCapabilityObligations {
+function tokenObligations(
+  recognition: LexicalCapabilityStatus,
+  represented: {
+    readonly diagnostics: boolean
+    readonly boundaryPlan: LexicalCapabilityStatus
+    readonly materializationPlan: LexicalCapabilityStatus
+  } = {
+    diagnostics: false,
+    boundaryPlan: gap('token boundary transaction is not represented'),
+    materializationPlan: gap('token range/value/CST materialization is not represented'),
+  },
+): LexicalCapabilityObligations {
+  const representedOrGap = (yes: boolean, reason: string): LexicalCapabilityStatus =>
+    yes ? COMPLETE_CAPABILITY : gap(reason)
   return {
-    recognition,
-    diagnosticsAndEffects: gap('token diagnostics and parser effects are not represented by a total replacement body'),
-    consumptionAndMaterialization: gap('token range consumption and semantic/CST materialization are not implemented'),
-    supportedVariants: gap(CAPABILITY_VARIANT_GAP),
-    bindingAndReachability: gap(FIXED_TUPLE_BINDING_GAP),
+    recognition: phaseGap(recognition, 'token recognizer lowering is not implemented for every supported variant'),
+    diagnostics: phaseGap(
+      representedOrGap(represented.diagnostics, 'token diagnostic plan is not represented'),
+      'token diagnostic event lowering is deferred'),
+    boundaryPlan: phaseGap(
+      represented.boundaryPlan,
+      'token boundary transaction lowering is deferred'),
+    materializationPlan: phaseGap(
+      represented.materializationPlan,
+      'token range/value/CST materialization lowering is deferred'),
+    supportedVariants: phaseGap(gap(CAPABILITY_VARIANT_GAP), CAPABILITY_VARIANT_GAP),
+    bindingAndReachability: phaseGap(gap(FIXED_TUPLE_BINDING_GAP), FIXED_TUPLE_BINDING_GAP),
   }
 }
 
 function terminalObligations(): LexicalCapabilityObligations {
   return {
-    recognition: COMPLETE_CAPABILITY,
-    diagnosticsAndEffects: COMPLETE_CAPABILITY,
-    consumptionAndMaterialization: COMPLETE_CAPABILITY,
-    supportedVariants: COMPLETE_CAPABILITY,
-    bindingAndReachability: gap(FIXED_TUPLE_BINDING_GAP),
+    recognition: COMPLETE_PHASE,
+    diagnostics: COMPLETE_PHASE,
+    boundaryPlan: COMPLETE_PHASE,
+    materializationPlan: COMPLETE_PHASE,
+    supportedVariants: COMPLETE_PHASE,
+    bindingAndReachability: phaseGap(gap(FIXED_TUPLE_BINDING_GAP), FIXED_TUPLE_BINDING_GAP),
   }
 }
 
@@ -757,7 +1155,9 @@ type DecisionLeadResult = { readonly lead: DecisionLead } | { readonly gap: stri
  * Find the one atomic range whose recognition starts this arm. This is only a
  * language proof: wrappers still owe diagnostics/effects and remain in the
  * eventual replacement body. Nullable prefixes and context-changing wrappers
- * are deliberately GAP rather than guessed through.
+ * deliberately decline the pruning proof rather than being guessed through.
+ * The authored arm remains an explicit unrestricted TOKEN-body candidate; a
+ * declined relation is not a missing recognizer and never licenses replay.
  */
 function decisionLead(
   parser: Combinator<unknown>,
@@ -1162,7 +1562,7 @@ type PendingDecisionSite = {
     readonly familyKey: string
     readonly arms: ReadonlyArray<Omit<LexicalDecisionArm, 'acceptance'> & { readonly acceptance: PendingAcceptance }>
   }>
-  readonly gaps: readonly string[]
+  readonly precisionNotes: readonly string[]
 }
 
 function predicateViews(def: Extract<ParserDef, { tag: 'dispatch' }>): Array<{
@@ -1385,15 +1785,15 @@ function lexicalDecisionInventory(
     const candidate = candidates[siteId]!
     if (candidate.atom !== 'choice' && candidate.atom !== 'dispatch') continue
     const def = candidate.parser._def
-    const gaps: string[] = []
+    const precisionNotes: string[] = []
     if (candidate.atom === 'dispatch') {
       if (def.tag !== 'dispatch') throw new Error('parseman: decision occurrence lost its dispatch')
       const result = decisionLead(def.selector, candidate.context, resolve)
       if ('gap' in result) {
-        gaps.push(`selector: ${result.gap}`)
+        precisionNotes.push(`selector: ${result.gap}`)
         pending.push({
           siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-          families: [], gaps,
+          families: [], precisionNotes,
         })
         continue
       }
@@ -1428,7 +1828,7 @@ function lexicalDecisionInventory(
       })
       pending.push({
         siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-        families: [{ familyKey, arms }], gaps,
+        families: [{ familyKey, arms }], precisionNotes,
       })
       continue
     }
@@ -1436,12 +1836,14 @@ function lexicalDecisionInventory(
     if (def.tag !== 'choice') throw new Error('parseman: decision occurrence lost its choice')
     const leads = def.parsers.map((arm, armId) => {
       const result = decisionLead(arm, candidate.context, resolve)
-      if ('gap' in result) gaps.push(`arm ${armId}: ${result.gap}`)
+      if ('gap' in result) precisionNotes.push(`arm ${armId}: ${result.gap}`)
       return result
     })
     const familyKeys = [...new Set(leads.flatMap(result => 'lead' in result
       ? [addFamily(result.lead)] : []))].sort()
-    if (familyKeys.length === 0 && gaps.length === 0) gaps.push('choice has no completed leading range family')
+    if (familyKeys.length === 0 && precisionNotes.length === 0) {
+      precisionNotes.push('choice has no predecision range family; all arms remain unrestricted')
+    }
     const families = familyKeys.map(familyKey => {
       const familyIr = familyIrByKey.get(familyKey)!
       const wholeKey = addView(familyKey, { kind: 'whole', relation: 'equal' })
@@ -1449,7 +1851,7 @@ function lexicalDecisionInventory(
         'lead' in result && result.lead.key === familyKey && result.lead.dispatch !== undefined
           ? [result.lead.dispatch] : []))]
       const ambiguousPartition = familyDispatches.length > 1
-      if (ambiguousPartition) gaps.push(
+      if (ambiguousPartition) precisionNotes.push(
         `family ${familyKey}: multiple dispatches need distinct site-local outcome partitions`)
       const familyPredicates = ambiguousPartition ? []
         : familyDispatches.flatMap(dispatch => predicateViews(dispatch).map(entry => entry.match))
@@ -1540,7 +1942,7 @@ function lexicalDecisionInventory(
     })
     pending.push({
       siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-      families, gaps: [...new Set(gaps)].sort(),
+      families, precisionNotes: [...new Set(precisionNotes)].sort(),
     })
   }
 
@@ -1563,7 +1965,7 @@ function lexicalDecisionInventory(
   })
   const decisions = pending.map((site): LexicalDecisionSite => ({
     siteId: site.siteId, atom: site.atom, path: site.path, contextKey: site.contextKey,
-    gaps: site.gaps,
+    fallback: 'unrestricted', precisionNotes: site.precisionNotes,
     families: site.families.map(family => ({
       familyId: familyIdByKey.get(family.familyKey)!,
       arms: family.arms.map(arm => ({
@@ -1577,10 +1979,7 @@ function lexicalDecisionInventory(
     })),
   }))
   const recognitionBySite = new Map<number, LexicalCapabilityStatus>(decisions.map(site => [
-    site.siteId,
-    site.gaps.length === 0 && site.families.length > 0
-      ? COMPLETE_CAPABILITY
-      : gap(site.gaps.join('; ') || 'decision has no completed range family'),
+    site.siteId, COMPLETE_CAPABILITY,
   ]))
   return { families, outcomes, decisions, recognitionBySite }
 }
@@ -1595,9 +1994,191 @@ function lexicalCapabilityInventory(
   decisionFamilies: LexicalDecisionFamily[]
   decisionOutcomes: LexicalDecisionOutcome[]
   decisions: LexicalDecisionSite[]
+  transitionDiagnostics: LexicalTransitionDiagnosticPlan[]
+  controlPlans: LexicalControlPlan[]
+  boundaryPlans: LexicalBoundaryPlan[]
+  materializationPlans: LexicalMaterializationPlan[]
+  grammarWrapperSpecs: LexicalGrammarWrapperSpec[]
+  grammarCaptureTriviaKinds: string[][]
+  boundaryTopologies: LexicalBoundaryTopology[]
 } {
   const inventory = lexicalCapabilityCandidates(roots, resolve)
   const decisionInventory = lexicalDecisionInventory(inventory.candidates, resolve)
+  const transitionDiagnostics: LexicalTransitionDiagnosticPlan[] = []
+  const transitionDiagnosticIdByKey = new Map<string, number>()
+  const internTransitionDiagnostics = (
+    recognizerKey: string,
+    session: LexicalNormalizeSession,
+  ): number => {
+    const body = {
+      stateCount: session.nextState, expected: session.expected, events: session.events,
+    }
+    // State ids are local to the canonical recognizer transition graph. Equal
+    // event rows over a different graph are not one plan merely by coincidence.
+    const key = `${recognizerKey}\u0000${JSON.stringify(body)}`
+    const prior = transitionDiagnosticIdByKey.get(key)
+    if (prior !== undefined) return prior
+    const id = transitionDiagnostics.length
+    transitionDiagnosticIdByKey.set(key, id)
+    transitionDiagnostics.push({ id, ...body })
+    return id
+  }
+  const controlPlans: LexicalControlPlan[] = []
+  const controlPlanIdByKey = new Map<string, number>()
+  const internControlPlan = (session: LexicalNormalizeSession): number => {
+    const key = JSON.stringify(session.controls)
+    const prior = controlPlanIdByKey.get(key)
+    if (prior !== undefined) return prior
+    const id = controlPlans.length
+    controlPlanIdByKey.set(key, id)
+    controlPlans.push({ id, controls: session.controls })
+    return id
+  }
+  const grammarWrapperSpecs: LexicalGrammarWrapperSpec[] = []
+  const grammarSpecIdByKey = new Map<string, number>()
+  const grammarSourceOperationIds = new Map<Combinator<unknown>, number>()
+  const triviaBindingIds = new Map<Combinator<unknown>, number>()
+  const grammarCaptureTriviaKinds: string[][] = []
+  const captureKindsIdByKey = new Map<string, number>()
+  const boundaryTopologies: LexicalBoundaryTopology[] = []
+  const topologyIdByKey = new Map<string, number>()
+  const identityId = (map: Map<Combinator<unknown>, number>, parser: Combinator<unknown>): number => {
+    const prior = map.get(parser)
+    if (prior !== undefined) return prior
+    const id = map.size
+    map.set(parser, id)
+    return id
+  }
+  const captureKindsId = (values: readonly string[] | undefined): number | undefined => {
+    if (values === undefined) return undefined
+    const key = JSON.stringify(values)
+    const prior = captureKindsIdByKey.get(key)
+    if (prior !== undefined) return prior
+    const id = grammarCaptureTriviaKinds.length
+    captureKindsIdByKey.set(key, id)
+    grammarCaptureTriviaKinds.push([...values])
+    return id
+  }
+  const internGrammarWrapper = (
+    parser: Combinator<unknown>,
+    captureTriviaKinds: readonly string[] | undefined,
+  ): number | undefined => {
+    const def = parser._def
+    if (def.tag !== 'grammar') return undefined
+    if (def.constructionTrackLines === undefined) return undefined
+    const sourceOperationId = identityId(grammarSourceOperationIds, parser)
+    const triviaBindingId = def.triviaParser === undefined
+      ? undefined : identityId(triviaBindingIds, def.triviaParser)
+    const captureTriviaKindsId = captureKindsId(captureTriviaKinds)
+    const body = {
+      sourceOperationId,
+      clearTrivia: def.clearTrivia === true,
+      ...(triviaBindingId === undefined ? {} : { triviaBindingId }),
+      trackLines: def.constructionTrackLines,
+      captureTrivia: def.captureTrivia === true,
+      ...(captureTriviaKindsId === undefined ? {} : { captureTriviaKindsId }),
+      rootCapture: def.rootCapture === 'opaque' ? 'opaque' as const : 'inherit' as const,
+      clonePolicy: 'spread-existing-or-create-canonical' as const,
+      postChildPolicy: 'line-propagate-then-annotate-or-return' as const,
+    }
+    const key = JSON.stringify(body)
+    const prior = grammarSpecIdByKey.get(key)
+    if (prior !== undefined) return prior
+    const id = grammarWrapperSpecs.length
+    grammarSpecIdByKey.set(key, id)
+    grammarWrapperSpecs.push({ id, ...body })
+    return id
+  }
+  const internBoundaryTopology = (
+    session: LexicalNormalizeSession,
+  ): { readonly id: number } | { readonly gap: string } => {
+    // Validate the entire overlay before interning any source-operation spec.
+    // A declined late frame must not leave unreachable compiler metadata behind.
+    const grammarCaptureKindsByFrame = new Map<number, readonly string[] | undefined>()
+    for (let frameIndex = 0; frameIndex < session.wrapperFrames.length; frameIndex++) {
+      const pending = session.wrapperFrames[frameIndex]!
+      const control = session.controls[pending.controlId]
+      if (pending.stateStart < 0 || pending.stateEnd < pending.stateStart
+        || pending.stateEnd > session.nextState
+        || pending.id !== frameIndex || control === undefined
+        || control.id !== pending.controlId
+        || control.kind !== pending.kind
+        || control.stateStart !== pending.stateStart
+        || control.stateEnd !== pending.stateEnd) {
+        return { gap: 'token boundary overlay has an invalid state interval' }
+      }
+      if (pending.parentFrameId !== undefined) {
+        const parent = session.wrapperFrames[pending.parentFrameId]
+        if (parent === undefined || pending.parentFrameId >= pending.id
+          || pending.stateStart < parent.stateStart || pending.stateEnd > parent.stateEnd) {
+          return { gap: 'token boundary overlay is not well nested' }
+        }
+      }
+      if (pending.kind === 'grammar') {
+        const def = pending.parser._def
+        if (def.tag !== 'grammar' || def.constructionTrackLines === undefined) {
+          return { gap: 'grammar wrapper lacks exact construction-time source-operation metadata' }
+        }
+        try {
+          grammarCaptureKindsByFrame.set(
+            pending.id,
+            def.constructionCaptureTriviaKinds === undefined
+              ? undefined : [...def.constructionCaptureTriviaKinds],
+          )
+        } catch {
+          return { gap: 'grammar wrapper capture-trivia policy cannot be snapshotted safely' }
+        }
+      }
+    }
+    for (let i = 0; i < session.wrapperFrames.length; i++) {
+      for (let j = i + 1; j < session.wrapperFrames.length; j++) {
+        const a = session.wrapperFrames[i]!
+        const b = session.wrapperFrames[j]!
+        const overlap = a.stateStart < b.stateEnd && b.stateStart < a.stateEnd
+        const nested = (a.stateStart <= b.stateStart && b.stateEnd <= a.stateEnd)
+          || (b.stateStart <= a.stateStart && a.stateEnd <= b.stateEnd)
+        if (overlap && !nested) return { gap: 'token boundary overlay has crossed state intervals' }
+      }
+    }
+    const outer = session.wrapperFrames[0]
+    if (outer?.kind !== 'token' || outer.parentFrameId !== undefined
+      || outer.stateStart !== 0 || outer.stateEnd !== session.nextState) {
+      return { gap: 'token boundary overlay lost its outer authored token frame' }
+    }
+
+    const frames: LexicalWrapperFrame[] = []
+    for (const pending of session.wrapperFrames) {
+      if (pending.kind === 'token') frames.push({
+        id: pending.id,
+        ...(pending.parentFrameId === undefined ? {} : { parentFrameId: pending.parentFrameId }),
+        controlId: pending.controlId,
+        stateStart: pending.stateStart,
+        stateEnd: pending.stateEnd,
+        kind: 'token', boundaryPlanId: 0, materializationPlanId: 0,
+      })
+      else {
+        const wrapperSpecId = internGrammarWrapper(
+          pending.parser, grammarCaptureKindsByFrame.get(pending.id),
+        )
+        if (wrapperSpecId === undefined) throw new Error('parseman: validated grammar policy disappeared')
+        frames.push({
+          id: pending.id,
+          ...(pending.parentFrameId === undefined ? {} : { parentFrameId: pending.parentFrameId }),
+          controlId: pending.controlId,
+          stateStart: pending.stateStart,
+          stateEnd: pending.stateEnd,
+          kind: 'grammar', wrapperSpecId,
+        })
+      }
+    }
+    const key = JSON.stringify(frames)
+    const prior = topologyIdByKey.get(key)
+    if (prior !== undefined) return { id: prior }
+    const id = boundaryTopologies.length
+    topologyIdByKey.set(key, id)
+    boundaryTopologies.push({ id, frames })
+    return { id }
+  }
   const pending = inventory.candidates.map((candidate, id) => {
     if (candidate.atom === 'terminal') {
       const key = keyOf(candidate.parser._def)
@@ -1646,8 +2227,10 @@ function lexicalCapabilityInventory(
       }
     }
     if (def.tag !== 'token') throw new Error('parseman: lexical token capability lost its boundary')
-    const normalized = normalizeBalancedLexical(candidate.parser, resolve, candidate.context.scanSkip)
-      ?? normalizeLexical(def.parser, resolve, new Set())
+    const session = newNormalizeSession()
+    const normalized = normalizeBalancedLexical(
+      candidate.parser, resolve, candidate.context.scanSkip, session,
+    ) ?? normalizeLexical(candidate.parser, resolve, new Set(), session)
     if ('refusal' in normalized) {
       const obligations = tokenObligations(gap(`token normalization: ${normalized.refusal}`))
       return {
@@ -1675,13 +2258,24 @@ function lexicalCapabilityInventory(
         obligations, status: derivedCapabilityStatus(obligations),
       }
     }
-    const obligations = tokenObligations(COMPLETE_CAPABILITY)
+    const diagnosticPlanId = internTransitionDiagnostics(semanticKey, session)
+    const controlPlanId = internControlPlan(session)
+    const topology = internBoundaryTopology(session)
+    const topologyRepresentation = 'id' in topology
+      ? COMPLETE_CAPABILITY : gap(topology.gap)
+    const obligations = tokenObligations(COMPLETE_CAPABILITY, {
+      diagnostics: true,
+      boundaryPlan: topologyRepresentation,
+      materializationPlan: topologyRepresentation,
+    })
     return {
       id, path: candidate.path, contextKey: candidate.contextKey,
       recognitionContextKey: candidate.recognitionContextKey,
       context: candidate.context,
       recognitionContext: { ...candidate.context, trivia: undefined, captureTrivia: false },
-      semanticKey, atom: candidate.atom, parser: candidate.parser,
+      semanticKey, atom: candidate.atom, parser: candidate.parser, diagnosticPlanId,
+      controlPlanId,
+      ...('id' in topology ? { boundaryTopologyId: topology.id } : {}),
       obligations, status: derivedCapabilityStatus(obligations),
     }
   })
@@ -1707,6 +2301,15 @@ function lexicalCapabilityInventory(
     decisionFamilies: decisionInventory.families,
     decisionOutcomes: decisionInventory.outcomes,
     decisions: decisionInventory.decisions,
+    transitionDiagnostics,
+    controlPlans,
+    boundaryPlans: boundaryTopologies.length === 0
+      ? [] : [{ id: 0, kind: 'token-context-transaction' }],
+    materializationPlans: boundaryTopologies.length === 0
+      ? [] : [{ id: 0, kind: 'token-source-range' }],
+    grammarWrapperSpecs,
+    grammarCaptureTriviaKinds,
+    boundaryTopologies,
   }
 }
 
@@ -1714,12 +2317,16 @@ function lexicalCapabilityInventory(
 export function assertLexicalCapabilityClosure(
   roots: ReadonlyArray<Combinator<unknown>>,
   alphabet: Pick<LexicalCapabilityInventory,
-  'capabilities' | 'capabilityLanguages' | 'bindingEdges' | 'decisionFamilies' | 'decisionOutcomes' | 'decisions'>,
+  'capabilities' | 'capabilityLanguages' | 'bindingEdges' | 'decisionFamilies'
+  | 'decisionOutcomes' | 'decisions'> & Partial<Pick<LexicalCapabilityInventory,
+  'transitionDiagnostics' | 'boundaryPlans' | 'materializationPlans'
+  | 'grammarWrapperSpecs' | 'grammarCaptureTriviaKinds' | 'boundaryTopologies'
+  | 'controlPlans'>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): void {
   const actual = lexicalCapabilityInventory(roots, resolve)
   const signature = (site: LexicalCapabilitySite): string =>
-    `${site.id}\u0000${site.languageId}\u0000${site.path}\u0000${site.contextKey}\u0000${site.recognitionContextKey}\u0000${site.atom}\u0000${site.semanticKey}\u0000${JSON.stringify(site.obligations)}`
+    `${site.id}\u0000${site.languageId}\u0000${site.path}\u0000${site.contextKey}\u0000${site.recognitionContextKey}\u0000${site.atom}\u0000${site.semanticKey}\u0000${site.diagnosticPlanId ?? -1}\u0000${site.controlPlanId ?? -1}\u0000${site.boundaryTopologyId ?? -1}\u0000${JSON.stringify(site.obligations)}`
   const expectedKeys = actual.capabilities.map(signature)
   const suppliedKeys = alphabet.capabilities.map(signature)
   const expectedLanguages = actual.languages.map(language =>
@@ -1741,6 +2348,21 @@ export function assertLexicalCapabilityClosure(
   const decisionSignature = (decision: LexicalDecisionSite): string => JSON.stringify(decision)
   const expectedDecisions = actual.decisions.map(decisionSignature)
   const suppliedDecisions = alphabet.decisions.map(decisionSignature)
+  const planSignature = (plan: LexicalTransitionDiagnosticPlan): string => JSON.stringify(plan)
+  const expectedPlans = actual.transitionDiagnostics.map(planSignature)
+  const suppliedPlans = (alphabet.transitionDiagnostics ?? []).map(planSignature)
+  const expectedControlPlans = actual.controlPlans.map(plan => JSON.stringify(plan))
+  const suppliedControlPlans = (alphabet.controlPlans ?? []).map(plan => JSON.stringify(plan))
+  const expectedBoundaryPlans = actual.boundaryPlans.map(plan => JSON.stringify(plan))
+  const suppliedBoundaryPlans = (alphabet.boundaryPlans ?? []).map(plan => JSON.stringify(plan))
+  const expectedMaterializationPlans = actual.materializationPlans.map(plan => JSON.stringify(plan))
+  const suppliedMaterializationPlans = (alphabet.materializationPlans ?? []).map(plan => JSON.stringify(plan))
+  const expectedGrammarSpecs = actual.grammarWrapperSpecs.map(plan => JSON.stringify(plan))
+  const suppliedGrammarSpecs = (alphabet.grammarWrapperSpecs ?? []).map(plan => JSON.stringify(plan))
+  const expectedCaptureKinds = actual.grammarCaptureTriviaKinds.map(plan => JSON.stringify(plan))
+  const suppliedCaptureKinds = (alphabet.grammarCaptureTriviaKinds ?? []).map(plan => JSON.stringify(plan))
+  const expectedTopologies = actual.boundaryTopologies.map(plan => JSON.stringify(plan))
+  const suppliedTopologies = (alphabet.boundaryTopologies ?? []).map(plan => JSON.stringify(plan))
   if (expectedKeys.length !== suppliedKeys.length
     || expectedKeys.some((key, index) => key !== suppliedKeys[index])
     || expectedLanguages.length !== suppliedLanguages.length
@@ -1752,7 +2374,21 @@ export function assertLexicalCapabilityClosure(
     || expectedOutcomes.length !== suppliedOutcomes.length
     || expectedOutcomes.some((key, index) => key !== suppliedOutcomes[index])
     || expectedDecisions.length !== suppliedDecisions.length
-    || expectedDecisions.some((key, index) => key !== suppliedDecisions[index])) {
+    || expectedDecisions.some((key, index) => key !== suppliedDecisions[index])
+    || expectedPlans.length !== suppliedPlans.length
+    || expectedPlans.some((key, index) => key !== suppliedPlans[index])
+    || expectedControlPlans.length !== suppliedControlPlans.length
+    || expectedControlPlans.some((key, index) => key !== suppliedControlPlans[index])
+    || expectedBoundaryPlans.length !== suppliedBoundaryPlans.length
+    || expectedBoundaryPlans.some((key, index) => key !== suppliedBoundaryPlans[index])
+    || expectedMaterializationPlans.length !== suppliedMaterializationPlans.length
+    || expectedMaterializationPlans.some((key, index) => key !== suppliedMaterializationPlans[index])
+    || expectedGrammarSpecs.length !== suppliedGrammarSpecs.length
+    || expectedGrammarSpecs.some((key, index) => key !== suppliedGrammarSpecs[index])
+    || expectedCaptureKinds.length !== suppliedCaptureKinds.length
+    || expectedCaptureKinds.some((key, index) => key !== suppliedCaptureKinds[index])
+    || expectedTopologies.length !== suppliedTopologies.length
+    || expectedTopologies.some((key, index) => key !== suppliedTopologies[index])) {
     throw new Error('parseman: lexical capability census is incomplete after final grammar resolution')
   }
 }
@@ -1770,6 +2406,13 @@ export function collectLexicalCapabilities(
     decisionFamilies: inventory.decisionFamilies,
     decisionOutcomes: inventory.decisionOutcomes,
     decisions: inventory.decisions,
+    transitionDiagnostics: inventory.transitionDiagnostics,
+    controlPlans: inventory.controlPlans,
+    boundaryPlans: inventory.boundaryPlans,
+    materializationPlans: inventory.materializationPlans,
+    grammarWrapperSpecs: inventory.grammarWrapperSpecs,
+    grammarCaptureTriviaKinds: inventory.grammarCaptureTriviaKinds,
+    boundaryTopologies: inventory.boundaryTopologies,
     capabilityComplete: inventory.capabilities.every(site => site.status.kind !== 'gap')
       && inventory.bindingEdges.every(edge => edge.status.kind !== 'gap'),
   }
@@ -1811,7 +2454,7 @@ export function collectLexicalAlphabet(
     [family.semanticKey, family.id]))
   const capabilityTokenFamilies = new Map<Combinator<unknown>, Map<number, LexicalDecisionFamily>>()
   for (const site of capabilities) {
-    if (site.atom !== 'token' || site.obligations.recognition.kind !== 'complete') continue
+    if (site.atom !== 'token' || site.obligations.recognition.representation.kind !== 'complete') continue
     const semanticKey = site.semanticKey.slice(2)
     const familyId = capabilityFamilyIdByKey.get(semanticKey)
     const family = familyId === undefined ? undefined
@@ -2046,6 +2689,13 @@ export function collectLexicalAlphabet(
     decisionFamilies: capabilityInventory.decisionFamilies,
     decisionOutcomes: capabilityInventory.decisionOutcomes,
     decisions: capabilityInventory.decisions,
+    transitionDiagnostics: capabilityInventory.transitionDiagnostics,
+    controlPlans: capabilityInventory.controlPlans,
+    boundaryPlans: capabilityInventory.boundaryPlans,
+    materializationPlans: capabilityInventory.materializationPlans,
+    grammarWrapperSpecs: capabilityInventory.grammarWrapperSpecs,
+    grammarCaptureTriviaKinds: capabilityInventory.grammarCaptureTriviaKinds,
+    boundaryTopologies: capabilityInventory.boundaryTopologies,
     capabilityComplete: capabilityInventory.capabilityComplete,
   }
 }

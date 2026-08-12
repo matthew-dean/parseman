@@ -3,6 +3,7 @@ import { fromChar, empty } from './first-set.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
+import { directTerminalFailureExpected } from './expected.ts'
 
 /**
  * ASCII case-fold equality — the interpreter twin of the compiler's `foldEq`
@@ -59,7 +60,7 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
       : firstSet
   }
 
-  const expected = [JSON.stringify(value)]
+  const expected = directTerminalFailureExpected({ tag: 'literal', value, caseInsensitive })
 
   // Single-char case-sensitive literals are the bulk of punctuation-heavy
   // grammars (GraphQL `{ } ( ) : $ @ [ ] ! =`, JSON, CSS). A bare `charCodeAt`

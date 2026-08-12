@@ -4,6 +4,7 @@ import { annotateSpanFromLineContext } from '../line-index.ts'
 import { matchesEmpty, isZeroWidthAssertion } from './first-set.ts'
 
 export type { ParseError }
+export { assertionFailureExpected, directTerminalFailureExpected } from './expected.ts'
 
 /**
  * Statically derive the "expected" token set from a combinator's structure,

@@ -15,9 +15,13 @@ import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, sequence, choice, many, optional,
   expect, compile, parse, isParseError, ref, keywords,
+  not, peek,
 } from '../../src/index.ts'
 import type { ParseError } from '../../src/index.ts'
-import { deriveExpected } from '../../src/combinators/expect.ts'
+import type { ParserDef } from '../../src/types.ts'
+import {
+  assertionFailureExpected, deriveExpected, directTerminalFailureExpected,
+} from '../../src/combinators/expect.ts'
 
 // `{` then optional letters then a REQUIRED `}`. Missing `}` → recover in place.
 const block = sequence(
@@ -92,6 +96,45 @@ describe('expect() — across modes', () => {
 })
 
 describe('deriveExpected() — derives the expected set from structure', () => {
+  it('shares direct terminal/assertion failure spelling without changing composite keywords', () => {
+    vexpect(directTerminalFailureExpected(literal('}')._def as Extract<ParserDef, { tag: 'literal' }>)).toEqual(['"}"'])
+    vexpect(directTerminalFailureExpected(regex(/[0-9]+/)._def as Extract<ParserDef, { tag: 'regex' }>)).toEqual(['/[0-9]+/'])
+    vexpect(directTerminalFailureExpected(keywords(['if', 'else'])._def as Extract<ParserDef, { tag: 'keywords' }>)).toEqual(['keyword'])
+    vexpect(assertionFailureExpected(false, 'literal')).toEqual(['not(literal)'])
+    vexpect(assertionFailureExpected(true, 'literal')).toEqual(['peek(literal)'])
+    vexpect(not(literal('x')).parse('x', 0, {} as never)).toMatchObject({ ok: false, expected: ['not(literal)'] })
+    vexpect(peek(literal('x')).parse('y', 0, {} as never)).toMatchObject({ ok: false, expected: ['peek(literal)'] })
+    vexpect(deriveExpected(keywords(['if', 'else']))).toEqual(['"else"', '"if"'])
+  })
+
+  it('preserves fresh failure arrays for source terminals/assertions and literal reuse', () => {
+    const rx = regex(/[0-9]+/)
+    const kw = keywords(['if'])
+    const fresh = [
+      [rx, '?'], [kw, '?'],
+      [not(literal('x')), 'x'], [peek(literal('x')), '?'],
+    ] as const
+    for (const [parser, input] of fresh) {
+      const first = parser.parse(input, 0, {} as never)
+      const second = parser.parse(input, 0, {} as never)
+      vexpect(first.ok).toBe(false)
+      vexpect(second.ok).toBe(false)
+      if (first.ok || second.ok) throw new Error('test setup: expected source failure')
+      vexpect(first.expected).not.toBe(second.expected)
+      first.expected.push('__plant__')
+      vexpect(second.expected).not.toContain('__plant__')
+    }
+    const fixed = literal('x')
+    const one = fixed.parse('?', 0, {} as never)
+    const two = fixed.parse('?', 0, {} as never)
+    if (one.ok || two.ok) throw new Error('test setup: expected literal failure')
+    vexpect(one.expected).toBe(two.expected)
+    for (const parser of [rx, kw]) {
+      const source = parser.parse.toString()
+      vexpect(source).toMatch(/directTerminalFailureExpected\)\(def\)|directTerminalFailureExpected\(def\)/)
+      vexpect(source).not.toMatch(/directTerminalFailureExpected(?:\))?\s*\(\s*\{/)
+    }
+  })
   it('literal → quoted value', () => {
     vexpect(deriveExpected(literal('}'))).toEqual(['"}"'])
   })

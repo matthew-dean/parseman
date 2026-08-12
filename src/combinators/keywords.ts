@@ -3,6 +3,7 @@ import { fromChar, union, empty } from './first-set.ts'
 import { caseFoldVariants } from './case-fold.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
+import { directTerminalFailureExpected } from './expected.ts'
 
 export type KeywordsOptions = {
   /** Match case-insensitively. */
@@ -125,16 +126,21 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
   }
 
   const meta: ParserMeta = { firstSet, canMatchNewline: false, isTrivia: false }
+  const def = {
+    tag: 'keywords', words: sorted,
+    caseInsensitive: opts.caseInsensitive ?? false,
+    boundary: opts.boundary,
+  } as const
 
   return {
     _tag: 'keywords',
     _meta: meta,
-    _def: { tag: 'keywords', words: sorted, caseInsensitive: opts.caseInsensitive ?? false, boundary: opts.boundary },
+    _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       re.lastIndex = pos
       const m = re.exec(input)
       if (m === null || m.index !== pos) {
-        return failAt(ctx, ['keyword'], pos)
+        return failAt(ctx, directTerminalFailureExpected(def), pos)
       }
       const value = m[0]!
       const span = { start: pos, end: pos + value.length }
