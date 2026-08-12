@@ -225,7 +225,13 @@ export type LexicalDecisionSite = {
   readonly path: string
   readonly contextKey: string
   readonly families: readonly LexicalDecisionFamilyPlan[]
-  readonly gaps: readonly string[]
+  /** Families not proven at this occurrence remain admitted through this
+   * conservative relation. It is an explicit TOKEN-body route, never a request
+   * to replay the character parser. */
+  readonly fallback: 'unrestricted'
+  /** Missing inclusion/partition proofs reduce pruning precision only. Every
+   * authored arm still runs its own exact replacement recognizer in PEG order. */
+  readonly precisionNotes: readonly string[]
 }
 
 /** One fixed incoming/root edge whose direct linked-body candidates remain owed. */
@@ -757,7 +763,9 @@ type DecisionLeadResult = { readonly lead: DecisionLead } | { readonly gap: stri
  * Find the one atomic range whose recognition starts this arm. This is only a
  * language proof: wrappers still owe diagnostics/effects and remain in the
  * eventual replacement body. Nullable prefixes and context-changing wrappers
- * are deliberately GAP rather than guessed through.
+ * deliberately decline the pruning proof rather than being guessed through.
+ * The authored arm remains an explicit unrestricted TOKEN-body candidate; a
+ * declined relation is not a missing recognizer and never licenses replay.
  */
 function decisionLead(
   parser: Combinator<unknown>,
@@ -1162,7 +1170,7 @@ type PendingDecisionSite = {
     readonly familyKey: string
     readonly arms: ReadonlyArray<Omit<LexicalDecisionArm, 'acceptance'> & { readonly acceptance: PendingAcceptance }>
   }>
-  readonly gaps: readonly string[]
+  readonly precisionNotes: readonly string[]
 }
 
 function predicateViews(def: Extract<ParserDef, { tag: 'dispatch' }>): Array<{
@@ -1385,15 +1393,15 @@ function lexicalDecisionInventory(
     const candidate = candidates[siteId]!
     if (candidate.atom !== 'choice' && candidate.atom !== 'dispatch') continue
     const def = candidate.parser._def
-    const gaps: string[] = []
+    const precisionNotes: string[] = []
     if (candidate.atom === 'dispatch') {
       if (def.tag !== 'dispatch') throw new Error('parseman: decision occurrence lost its dispatch')
       const result = decisionLead(def.selector, candidate.context, resolve)
       if ('gap' in result) {
-        gaps.push(`selector: ${result.gap}`)
+        precisionNotes.push(`selector: ${result.gap}`)
         pending.push({
           siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-          families: [], gaps,
+          families: [], precisionNotes,
         })
         continue
       }
@@ -1428,7 +1436,7 @@ function lexicalDecisionInventory(
       })
       pending.push({
         siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-        families: [{ familyKey, arms }], gaps,
+        families: [{ familyKey, arms }], precisionNotes,
       })
       continue
     }
@@ -1436,12 +1444,14 @@ function lexicalDecisionInventory(
     if (def.tag !== 'choice') throw new Error('parseman: decision occurrence lost its choice')
     const leads = def.parsers.map((arm, armId) => {
       const result = decisionLead(arm, candidate.context, resolve)
-      if ('gap' in result) gaps.push(`arm ${armId}: ${result.gap}`)
+      if ('gap' in result) precisionNotes.push(`arm ${armId}: ${result.gap}`)
       return result
     })
     const familyKeys = [...new Set(leads.flatMap(result => 'lead' in result
       ? [addFamily(result.lead)] : []))].sort()
-    if (familyKeys.length === 0 && gaps.length === 0) gaps.push('choice has no completed leading range family')
+    if (familyKeys.length === 0 && precisionNotes.length === 0) {
+      precisionNotes.push('choice has no predecision range family; all arms remain unrestricted')
+    }
     const families = familyKeys.map(familyKey => {
       const familyIr = familyIrByKey.get(familyKey)!
       const wholeKey = addView(familyKey, { kind: 'whole', relation: 'equal' })
@@ -1449,7 +1459,7 @@ function lexicalDecisionInventory(
         'lead' in result && result.lead.key === familyKey && result.lead.dispatch !== undefined
           ? [result.lead.dispatch] : []))]
       const ambiguousPartition = familyDispatches.length > 1
-      if (ambiguousPartition) gaps.push(
+      if (ambiguousPartition) precisionNotes.push(
         `family ${familyKey}: multiple dispatches need distinct site-local outcome partitions`)
       const familyPredicates = ambiguousPartition ? []
         : familyDispatches.flatMap(dispatch => predicateViews(dispatch).map(entry => entry.match))
@@ -1540,7 +1550,7 @@ function lexicalDecisionInventory(
     })
     pending.push({
       siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-      families, gaps: [...new Set(gaps)].sort(),
+      families, precisionNotes: [...new Set(precisionNotes)].sort(),
     })
   }
 
@@ -1563,7 +1573,7 @@ function lexicalDecisionInventory(
   })
   const decisions = pending.map((site): LexicalDecisionSite => ({
     siteId: site.siteId, atom: site.atom, path: site.path, contextKey: site.contextKey,
-    gaps: site.gaps,
+    fallback: 'unrestricted', precisionNotes: site.precisionNotes,
     families: site.families.map(family => ({
       familyId: familyIdByKey.get(family.familyKey)!,
       arms: family.arms.map(arm => ({
@@ -1577,10 +1587,7 @@ function lexicalDecisionInventory(
     })),
   }))
   const recognitionBySite = new Map<number, LexicalCapabilityStatus>(decisions.map(site => [
-    site.siteId,
-    site.gaps.length === 0 && site.families.length > 0
-      ? COMPLETE_CAPABILITY
-      : gap(site.gaps.join('; ') || 'decision has no completed range family'),
+    site.siteId, COMPLETE_CAPABILITY,
   ]))
   return { families, outcomes, decisions, recognitionBySite }
 }

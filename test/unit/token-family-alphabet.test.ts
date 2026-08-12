@@ -8,7 +8,7 @@ import type { Combinator, ParserDef } from '../../src/types.ts'
 import { composedCoverageRules } from '../../src/compiler/linker.ts'
 import {
   adjacent, attempt, balanced, choice, compose, dispatch, endsWith, expect as expectCombinator, field, gate, label, leaf,
-  keywords, literal, makeWhen, many, matches, node, not, otherwise, optional, parse, parser, ref, regex, routed, rules, scanTo,
+  keywords, literal, makeWhen, many, matches, node, not, otherwise, optional, parse, parser, peek, ref, regex, routed, rules, scanTo,
   run, sepBy, sequence, startsWith, token, transform, when, withCtx,
 } from '../../src/index.ts'
 
@@ -672,7 +672,8 @@ describe('derived lexical-token families', () => {
     const alphabet = collectLexicalAlphabet([root])
     const site = alphabet.decisions.find(decision =>
       alphabet.capabilities[decision.siteId]!.parser === root)!
-    expect(site.gaps).toEqual([])
+    expect(site.precisionNotes).toEqual([])
+    expect(site.fallback).toBe('unrestricted')
     expect(site.families).toHaveLength(1)
     const arms = site.families[0]!.arms
     expect(arms.map(arm => arm.armId)).toEqual([0, 1, 2, 3])
@@ -732,7 +733,7 @@ describe('derived lexical-token families', () => {
     const alphabet = collectLexicalAlphabet([root])
     const site = alphabet.decisions.find(decision =>
       alphabet.capabilities[decision.siteId]!.parser === root)!
-    expect(site.gaps).toContainEqual(expect.stringContaining('distinct site-local outcome partitions'))
+    expect(site.precisionNotes).toContainEqual(expect.stringContaining('distinct site-local outcome partitions'))
     expect(site.families).toHaveLength(1)
     expect(site.families[0]!.arms.map(arm => arm.acceptance)).toEqual([
       { kind: 'unrestricted' }, { kind: 'unrestricted' },
@@ -741,7 +742,7 @@ describe('derived lexical-token families', () => {
     // authored otherwise route into its true site-local complement.
   })
 
-  it('keeps reused decision occurrences context-local and gaps incomplete algebra', () => {
+  it('keeps reused decision occurrences context-local and admits imprecise relations unrestricted', () => {
     const shared = choice(choice(literal('a'), literal('b')), token(literal('c')))
     const trivia = regex(/ +/)
     const root = choice(
@@ -753,13 +754,107 @@ describe('derived lexical-token families', () => {
       alphabet.capabilities[decision.siteId]!.parser === shared)
     expect(occurrences).toHaveLength(2)
     expect(new Set(occurrences.map(entry => entry.contextKey)).size).toBe(2)
-    expect(occurrences.every(entry => entry.gaps.some(reason =>
+    expect(occurrences.every(entry => entry.precisionNotes.some(reason =>
       reason.includes('nested leading choice')))).toBe(true)
     expect(alphabet.capabilities.filter(site => site.parser === shared)
-      .every(site => site.obligations.recognition.kind === 'gap')).toBe(true)
+      .every(site => site.obligations.recognition.kind === 'complete')).toBe(true)
+    expect(occurrences.every(entry => entry.fallback === 'unrestricted')).toBe(true)
     // RED provenance: deduplicating by parser/language alone collapses these two
-    // outer lexical contexts; treating an unsupported nested union as
-    // unrestricted silently marks the outcome algebra complete.
+    // outer lexical contexts. A missing nested-union proof is cost-only: the
+    // replacement body still enters every authored arm in PEG order.
+  })
+
+  it('keeps an exact selector family when an effectful wrapper declines only predecision precision', () => {
+    const selectorToken = token(regex(/[a-z]+/))
+    const selector = parser({ trivia: regex(/ +/) }, selectorToken)
+    const root = dispatch(selector, otherwise(routed()))
+    const alphabet = collectLexicalAlphabet([root])
+    const site = alphabet.decisions.find(decision =>
+      alphabet.capabilities[decision.siteId]!.parser === root)!
+    expect(site.fallback).toBe('unrestricted')
+    expect(site.families).toEqual([])
+    expect(site.precisionNotes).toContainEqual(expect.stringContaining('grammar wrapper changes lexical context'))
+    expect(alphabet.capabilities.find(capability => capability.parser === root)!
+      .obligations.recognition).toEqual({ kind: 'complete' })
+    expect(alphabet.sites.find(tokenSite => tokenSite.parser === selectorToken)!.refusal).toBeUndefined()
+    expect(alphabet.decisionFamilies.some(family =>
+      family.ir.kind === 'regex' && family.ir.source === '[a-z]+')).toBe(true)
+    // RED provenance: classifying the wrapper note as a semantic gap makes the
+    // dispatch incomplete despite its exact selector token; dropping the token
+    // family makes the final assertion fail even though fallback stays broad.
+  })
+
+  it('closes every lexical IR kind and makes kind, context, and occurrence omissions RED', () => {
+    const lexicalRoots = [
+      token(literal('a')),
+      token(keywords(['if', 'in'], { boundary: 'A-Za-z' })),
+      token(regex(/[a-z]+/)),
+      token(sequence(literal('s'), regex(/[0-9]+/))),
+      token(choice(literal('c'), literal('d'))),
+      token(many(literal('r'), { min: 1, max: 2 })),
+      token(sequence(peek(literal('p')), literal('p'))),
+      token(balanced('(', ')')),
+    ]
+    const lexical = collectLexicalAlphabet(lexicalRoots)
+    type TestIr = (typeof lexical.decisionFamilies)[number]['ir']
+    const irKinds = (ir: TestIr): string[] => [ir.kind, ...(
+      ir.kind === 'sequence' ? ir.parts.flatMap(irKinds)
+        : ir.kind === 'choice' ? ir.arms.flatMap(irKinds)
+          : ir.kind === 'repeat' || ir.kind === 'assert' ? irKinds(ir.body)
+            : ir.kind === 'balanced' ? ir.skip.flatMap(irKinds)
+              : []
+    )]
+    expect(new Set(lexical.decisionFamilies.flatMap(family => irKinds(family.ir)))).toEqual(new Set([
+      'literal', 'keywords', 'regex', 'sequence', 'choice', 'repeat', 'assert', 'balanced',
+    ]))
+    expect(lexical.capabilities.every(site => site.obligations.recognition.kind === 'complete')).toBe(true)
+    for (const kind of ['literal', 'keywords', 'regex', 'sequence', 'choice', 'repeat', 'assert', 'balanced'] as const) {
+      expect(() => assertLexicalCapabilityClosure(lexicalRoots, {
+        capabilities: lexical.capabilities,
+        capabilityLanguages: lexical.capabilityLanguages,
+        bindingEdges: lexical.bindingEdges,
+        decisionFamilies: lexical.decisionFamilies.filter(family => !irKinds(family.ir).includes(kind)),
+        decisionOutcomes: lexical.decisionOutcomes,
+        decisions: lexical.decisions,
+      })).toThrow('lexical capability census is incomplete')
+    }
+
+    const ws = regex(/ +/)
+    const shared = choice(token(regex(/[a-z]+/)), literal('!'))
+    const contextRoots = [
+      shared,
+      parser({ trivia: ws }, shared),
+      parser({ trivia: null }, shared),
+      parser({ trivia: ws, trackLines: true }, shared),
+      parser({ trivia: ws, captureTrivia: true }, shared),
+      parser({ trivia: ws, rootCapture: 'opaque' }, shared),
+      withCtx({ dialect: 'test' }, shared),
+    ]
+    const contextual = collectLexicalAlphabet(contextRoots)
+    const occurrences = contextual.capabilities.filter(site => site.parser === shared)
+    expect(new Set(occurrences.map(site => site.contextKey)).size).toBeGreaterThanOrEqual(6)
+    expect(occurrences.every(site => site.obligations.recognition.kind === 'complete')).toBe(true)
+    const omitted = occurrences[occurrences.length >> 1]!
+    expect(() => assertLexicalCapabilityClosure(contextRoots, {
+      capabilities: contextual.capabilities.filter(site => site !== omitted),
+      capabilityLanguages: contextual.capabilityLanguages,
+      bindingEdges: contextual.bindingEdges,
+      decisionFamilies: contextual.decisionFamilies,
+      decisionOutcomes: contextual.decisionOutcomes,
+      decisions: contextual.decisions,
+    })).toThrow('lexical capability census is incomplete')
+    const decision = contextual.decisions.find(site => site.siteId === omitted.id)!
+    expect(() => assertLexicalCapabilityClosure(contextRoots, {
+      capabilities: contextual.capabilities,
+      capabilityLanguages: contextual.capabilityLanguages,
+      bindingEdges: contextual.bindingEdges,
+      decisionFamilies: contextual.decisionFamilies,
+      decisionOutcomes: contextual.decisionOutcomes,
+      decisions: contextual.decisions.filter(site => site !== decision),
+    })).toThrow('lexical capability census is incomplete')
+    // RED provenance: each plant deletes one semantically distinct authority:
+    // a canonical recognizer kind, one context-local occurrence, or its ordered
+    // decision relation. None may disappear behind unrestricted admission.
   })
 
   it('fails closed when a final composed decision arm is omitted from the outcome IR', () => {

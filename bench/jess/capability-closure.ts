@@ -38,16 +38,16 @@ type Row = {
 
 const EXPECTED = {
   css: {
-    total: 831,
-    counts: { terminal: 638, token: 39, choice: 143, dispatch: 11 },
+    total: 842,
+    counts: { terminal: 645, token: 39, choice: 147, dispatch: 11 },
     contexts: 9,
-    digest: 'b390d034722828b8cb026f30b36939974de9edde0e91b779208f6630d6d788f7',
+    digest: '797eacdf3610fff1b9da3e0052a7ade72891bba21924a88639a334385d1ac8fe',
   },
   less: {
-    total: 1678,
-    counts: { terminal: 1170, token: 62, choice: 417, dispatch: 29 },
+    total: 1687,
+    counts: { terminal: 1178, token: 62, choice: 418, dispatch: 29 },
     contexts: 11,
-    digest: 'b0046a4d5191eb3b0c32de7a6e812aec2dc8f33ba3ea5bc09cd751ecf348e92a',
+    digest: '6d97393cf6316dd57eacf4710db88119243050bcac3c9338ba524eacbc4178e0',
   },
 } as const
 
