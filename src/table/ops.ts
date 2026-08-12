@@ -37,8 +37,11 @@ export const OP_SEQV = 4
  */
 export const OP_CHOICE = 5
 /**
- * `REP c min max sep flags` — `sep` is a child offset or −1; `max` −1 = ∞.
- * `flags` bit 0 = trailing separator allowed, bit 1 = `keepSeparators`.
+ * `REP c min max sep flags fx sepClass` — `sep` is a child offset or −1; `max`
+ * −1 = ∞. `fx` is recovery metadata. The last class is the separator sentinel
+ * for a separated list, otherwise the finite/non-nullable optional-item class
+ * (or −1). `flags` bit 0 = trailing separator allowed, bit 1 =
+ * `keepSeparators`, bit 2 = item expected reporting.
  */
 export const OP_REP = 6
 /** `REPV …` — `REP` with `valueUnused`. */

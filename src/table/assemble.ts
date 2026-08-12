@@ -2106,6 +2106,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const reportItem = (flags & 4) !== 0
         const itemFx = reportItem ? fx[code[ip + 6]!] as string[] : EMPTY_FX
         const collect = op === OP_REP
+        // A strict optional iteration whose lead is outside the item's finite,
+        // non-nullable first set cannot run or commit. A separator-less repeat
+        // reuses the recovery row's separator-sentinel slot for this class.
+        const itemClassIndex = sepIp < 0 ? code[ip + 7]! : -1
+        const itemClass = !REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined
+        const itemMayStart = itemClass === undefined
+          ? undefined
+          : (input: string, pos: number): boolean => classHas(itemClass, lead(input, pos))
         // `many()` — the min-0, separator-less repeat — is the only shape that runs
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
@@ -2236,6 +2244,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const out: unknown[] | undefined = collect ? [] : undefined
           const hasTrivia = ctx.trivia !== undefined
           const needMark = rollbackNeeded(ctx)
+          // Completions deliberately observe swallowed item failures.
+          const gateItems = itemMayStart !== undefined && ctx._probe === undefined
           let cur = pos
           let count = 0
           for (;;) {
@@ -2244,6 +2254,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // the LOOP HEAD. Held to `count >= min` so an under-`min` list still
             // attempts the separator and reports its expected set.
             if (sep !== undefined && count > 0 && count >= min && cur >= input.length) break
+            if (count >= min && sep === undefined && !hasTrivia
+              && gateItems && !itemMayStart!(input, cur)) break
             // Per ITERATION, never hoisted: a preceding item's `node()` opened and
             // closed a capture buffer, so `ctx._cstBuf` is not the object it was
             // at the loop head. `needMark` is the pre-existing loop-invariant.
@@ -2276,6 +2288,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               itemStart = skipTrivia(input, itemStart, ctx)
             }
             if (itemStart >= input.length && viaRepItem) {
+              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (trailingAllowed && sepEnd >= 0) cur = sepEnd
+              break
+            }
+            if (count >= min && gateItems && !itemMayStart!(input, itemStart)) {
               if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break

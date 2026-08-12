@@ -1447,6 +1447,15 @@ return [key,v]
         const reportItem = (flags & 4) !== 0
         const itemFx = reportItem ? fxRef(code[ip + 6]!) : 'EMPTY_FX'
         const collect = op === OP_REP
+        let itemCls: string | undefined
+        if (!REC) {
+          const itemClassIndex = sepIp < 0 ? code[ip + 7]! : -1
+          if (itemClassIndex >= 0) {
+            const ci = classes.push([t.cc[itemClassIndex]!]) - 1
+            classPlan.push([itemClassIndex])
+            itemCls = hoist('ri', `CLS[${ci}][0]`)
+          }
+        }
         const skipBeforeFirst = sepIp < 0 && min === 0
         const p = tmp()
         // `viaRepItem` is `sep === undefined && count >= min && (count > 0 ||
@@ -1552,10 +1561,10 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&!classHas(${itemCls},lead(input,cur)))break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
 ${markBody}
 let itemStart=cur
 let sepEnd=-1
@@ -1577,7 +1586,11 @@ itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(inp
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-ctx._fc=false
+${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&!classHas(${itemCls},lead(input,itemStart))){
+${rb}
+${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
+}
+`}ctx._fc=false
 const v=${child}(input,itemStart,ctx)
 if(v===FAIL){
 ${REC
