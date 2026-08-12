@@ -84,11 +84,23 @@ export function matchesEmpty(
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
 ): boolean {
-  // Cycle guard: a mutually-nullable ref cycle (e.g. `A = oneOrMore(B); B = oneOrMore(A)`)
-  // would recurse forever. Treat a re-entered node as nullable — the safe (`true`)
-  // default, consistent with the err-toward-true contract below.
+  // `seen` is the current recursion stack, not a global visited set. A node
+  // reached again through a sibling in a shared DAG is not recursive; only a
+  // back-edge on the current path gets the safe nullable answer.
   if (seen.has(p)) return true
   seen.add(p)
+  try {
+    return matchesEmptyBody(p, seen, resolve)
+  } finally {
+    seen.delete(p)
+  }
+}
+
+function matchesEmptyBody(
+  p: Combinator<unknown>,
+  seen: Set<Combinator<unknown>>,
+  resolve: RefResolver | undefined,
+): boolean {
   const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen, resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
@@ -249,8 +261,22 @@ export function firstSetOf(
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
 ): FirstSet {
+  // As above, only a node on the current recursion path is a cycle. Keeping a
+  // completed shared child in this set widened later siblings to `any`.
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
+  try {
+    return firstSetBody(p, seen, resolve)
+  } finally {
+    seen.delete(p)
+  }
+}
+
+function firstSetBody(
+  p: Combinator<unknown>,
+  seen: Set<Combinator<unknown>>,
+  resolve: RefResolver | undefined,
+): FirstSet {
   const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve)
   const empties = (c: Combinator<unknown>): boolean => matchesEmpty(c, new Set(), resolve)
   const d = p._def as ParserDef

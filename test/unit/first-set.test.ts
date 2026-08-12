@@ -6,8 +6,8 @@
  * their own terms. These tests call the module's functions directly.
  */
 import { describe, it, expect } from 'vitest'
-import { union, intersects, fromChar, fromRange, any, empty, sequenceFirstSet, firstSetOf, isZeroWidthAssertion } from '../../src/combinators/first-set.ts'
-import { sequence, not, optional, many, oneOrMore, literal, regex, choice } from '../../src/index.ts'
+import { union, intersects, fromChar, fromRange, any, empty, sequenceFirstSet, firstSetOf, isZeroWidthAssertion, matchesEmpty } from '../../src/combinators/first-set.ts'
+import { sequence, not, optional, many, oneOrMore, literal, regex, choice, rules } from '../../src/index.ts'
 import type { Combinator, FirstSet } from '../../src/types.ts'
 
 describe('first-set — union()', () => {
@@ -92,6 +92,24 @@ describe('first-set — leading zero-width assertion (not) does not poison the s
     const codes = fs.ranges.flatMap(r => Array.from({ length: r.hi - r.lo + 1 }, (_, i) => r.lo + i))
     expect(codes).toContain('a'.charCodeAt(0))
     expect(codes).toContain('b'.charCodeAt(0))
+  })
+})
+
+describe('first-set — sharing is not recursion', () => {
+  it('keeps a reused non-nullable DAG child non-nullable and exact', () => {
+    const shared = sequence(literal('@'), optional(literal('x')))
+    const later = sequence(shared, optional(literal('y')))
+    const sharedDag = choice(shared, later)
+    expect(matchesEmpty(shared)).toBe(false)
+    expect(matchesEmpty(later)).toBe(false)
+    expect(matchesEmpty(sharedDag)).toBe(false)
+    expect(firstSetOf(sharedDag)).toEqual({ kind: 'ranges', ranges: [{ lo: 64, hi: 64 }] })
+  })
+
+  it('still fails closed on an actual recursive back-edge', () => {
+    const recursive = rules(g => ({ A: choice(literal('x'), g.A) })).A
+    expect(matchesEmpty(recursive)).toBe(true)
+    expect(firstSetOf(recursive)).toEqual({ kind: 'any' })
   })
 })
 

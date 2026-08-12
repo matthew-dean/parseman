@@ -9,7 +9,7 @@ import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_COV,
@@ -610,7 +610,7 @@ class Encoder {
     // straight to the body's offset (`case 'lazy'`), so every recursive call and
     // every cross-rule reference would jump past the counter, and a grammar with
     // one entry would report one hit rule however much of it ran.
-    this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.triviaSlot(amb), body)
+    this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE_PLAIN, this.triviaSlot(amb), body)
   }
 
   /**
@@ -656,7 +656,7 @@ class Encoder {
     const amb = p._meta.grammarTrivia ?? target._meta.grammarTrivia
     if (amb === undefined || this.activeTrivia !== undefined) return ip
     if (!hasOwnTriviaBoundary(target)) return ip
-    return this.emit(OP_SCOPE, this.triviaSlot(amb), ip)
+    return this.emit(OP_SCOPE_PLAIN, this.triviaSlot(amb), ip)
   }
 
   node(p: Combinator<unknown>): Emitted {
@@ -1399,7 +1399,7 @@ class Encoder {
       switch (this.code[ip]) {
         case OP_GATE: return [ip + 2]
         case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: return [ip + 1]
-        case OP_SCOPE: case OP_SCOPE_CAP: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
+        case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
         // ARMS START AT ip+4. `ip+3` is the choice's own EXPECTED-SET index, and
