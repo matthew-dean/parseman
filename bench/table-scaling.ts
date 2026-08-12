@@ -20,7 +20,7 @@
  * assembled-vs-assembled control.
  */
 import os from 'node:os'
-import { interleave, median, pairedMinRatio, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
+import { interleave, median, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { execRules } from '../src/table/exec.ts'
@@ -94,8 +94,10 @@ function main(): void {
   const ctl = out.get('control: assembled -> assembled')!, gate = out.get('gate: assembled -> exec')!
   for (let i = 0; i < INPUTS.length; i++) {
     const [id, text] = INPUTS[i]!
-    const cd = (pairedMinRatio(ctl, `ref|${id}`, `head|${id}`) - 1) * 100
-    const gd = (pairedMinRatio(gate, `ref|${id}`, `head|${id}`) - 1) * 100
+    const ca = ctl.get(`ref|${id}`)!, cb = ctl.get(`head|${id}`)!
+    const ga = gate.get(`ref|${id}`)!, gb = gate.get(`head|${id}`)!
+    const cd = (Math.min(...cb) / Math.min(...ca) - 1) * 100
+    const gd = (Math.min(...gb) / Math.min(...ga) - 1) * 100
     console.log(`  ${id.padEnd(9)} ${String(text.length).padStart(8)}  ${sign(cd).padStart(12)}  ${sign(gd).padStart(12)}   ${(1 + gd / 100).toFixed(2)}x`)
   }
   console.log('')

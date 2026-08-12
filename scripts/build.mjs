@@ -6,7 +6,6 @@ import { build } from 'esbuild'
 import { execSync } from 'child_process'
 import { chmodSync, readFileSync, rmSync } from 'fs'
 import { builtinModules } from 'module'
-import { dirname, relative, resolve, sep } from 'path'
 
 rmSync('dist', { recursive: true, force: true })
 
@@ -24,31 +23,12 @@ const external = [
   'tsx/esm/api',
 ]
 
-const entryPoints = [
-  'src/index.ts',
-  'src/run/index.ts',
-  'src/plugin/index.ts',
-  'src/spec/index.ts',
-  'src/language-service/index.ts',
-  'src/oracle/index.ts',
-  'src/table/index.ts',
-  'src/analysis/diagnostics.ts',
-  'src/cli/index.ts',
-]
-
-const compileEntries = new Set([
-  'src/index.ts',
-  'src/plugin/index.ts',
-  'src/table/index.ts',
-  'src/analysis/diagnostics.ts',
-  'src/cli/index.ts',
-])
-
 const shared = {
   // `src/cli/index.ts` is the diagnostics bin and `src/analysis/diagnostics.ts` its
   // library twin. Both reach the COMPILER (the `--fix` loop recompiles to verify), and
   // both are deliberately their own entry points: nothing a library consumer imports may
   // pull the compiler in on their account. Keep them out of `src/index.ts`.
+  entryPoints: ['src/index.ts', 'src/run/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts', 'src/language-service/index.ts', 'src/oracle/index.ts', 'src/table/index.ts', 'src/analysis/diagnostics.ts', 'src/cli/index.ts'],
   bundle: true,
   external,
   sourcemap: true,
@@ -60,45 +40,9 @@ const shared = {
   target: 'es2022',
 }
 
-const capabilitySource = resolve('src/compiler/token-capability.ts')
-
-/** Externalize one private static capability implementation per module format. */
-function externalCapability(entry, format) {
-  const extension = format === 'esm' ? '.js' : '.cjs'
-  const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, extension)}`
-  const capabilityOutput = `dist/compiler/token-capability${extension}`
-  let ref = relative(dirname(entryOutput), capabilityOutput).split(sep).join('/')
-  if (!ref.startsWith('.')) ref = `./${ref}`
-  return {
-    name: 'shared-token-capability',
-    setup(ctx) {
-      ctx.onResolve({ filter: /token-capability\.ts$/ }, args => {
-        if (resolve(args.resolveDir, args.path) !== capabilitySource) return undefined
-        return { path: ref, external: true }
-      })
-    },
-  }
-}
-
-async function buildPublicEntry(entry, format) {
-  return build({
-    ...shared,
-    entryPoints: [entry],
-    format,
-    outdir: 'dist',
-    outbase: 'src',
-    outExtension: { '.js': format === 'esm' ? '.js' : '.cjs' },
-    plugins: compileEntries.has(entry) ? [externalCapability(entry, format)] : [],
-  })
-}
-
 await Promise.all([
-  ...entryPoints.flatMap(entry => [
-    buildPublicEntry(entry, 'esm'),
-    buildPublicEntry(entry, 'cjs'),
-  ]),
-  build({ ...shared, entryPoints: [capabilitySource], format: 'esm', outfile: 'dist/compiler/token-capability.js' }),
-  build({ ...shared, entryPoints: [capabilitySource], format: 'cjs', outfile: 'dist/compiler/token-capability.cjs' }),
+  build({ ...shared, format: 'esm', outdir: 'dist', outExtension: { '.js': '.js' }, banner: { js: '' } }),
+  build({ ...shared, format: 'cjs', outdir: 'dist', outExtension: { '.js': '.cjs' } }),
 ])
 
 // `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so

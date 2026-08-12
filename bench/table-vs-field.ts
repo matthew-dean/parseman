@@ -14,7 +14,7 @@
  * `interleave`), with parseman-assembled-vs-itself as the control.
  */
 import os from 'node:os'
-import { interleave, median, pairedMinRatio, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
+import { interleave, median, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { execRules } from '../src/table/exec.ts'
@@ -108,7 +108,8 @@ function main(): void {
     const s = out.get(k.label)!
     const parts: string[] = []
     for (const [id] of INPUTS) {
-      parts.push(`${id.split('/')[1]}: paired min ${sign((pairedMinRatio(s, `ref|${id}`, `head|${id}`) - 1) * 100)}`)
+      const a = s.get(`ref|${id}`)!, b = s.get(`head|${id}`)!
+      parts.push(`${id.split('/')[1]}: min ${sign((Math.min(...b) / Math.min(...a) - 1) * 100)}`)
     }
     console.log(`  ${k.label.padEnd(38)} ${parts.join('   ')}`)
   }

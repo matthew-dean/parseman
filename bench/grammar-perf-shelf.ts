@@ -6,7 +6,6 @@
  * recovered debt, or a new/worsened failure that must block.
  */
 export type CandidateCeiling = {
-  scoreMethod: 'aggregate-v1'
   /** Maximum allowed per-pass slowdown against the pinned 0.46 reference. */
   medianPct: number
   minPct: number
@@ -15,9 +14,7 @@ export type CandidateCeiling = {
 
 export type ShelfPass = {
   dMedian: number
-  dMedianAggregateV1: number
   dMin: number
-  dMinAggregateV1: number
 }
 
 export type ShelfRow = {
@@ -72,7 +69,7 @@ export function classifyCandidateShelf(
       continue
     }
     const overCeiling = row.passes.filter(pass =>
-      pass.dMedianAggregateV1 > ceiling.medianPct || pass.dMinAggregateV1 > ceiling.minPct,
+      pass.dMedian > ceiling.medianPct || pass.dMin > ceiling.minPct,
     ).length
     if (isStrictMajority(overCeiling, row.passes.length)) {
       const disposition: ShelfDisposition = { kind: 'worsened', row, ceiling, overCeiling }

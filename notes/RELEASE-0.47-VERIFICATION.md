@@ -1,16 +1,15 @@
-# 0.47 release verification ledger — shipped
+# 0.47 release verification ledger
 
-This is the archived release claim ledger for 0.47.0, released on 2026-08-07 via
-PR #124. A claim is not valid merely because it was observed in a chat or a
-one-off terminal run: it must name the code, comparison, protocol, and status
-below. New performance-recovery work belongs in `RELEASE-0.48-TARGET.md`.
+This file is the release claim ledger. A claim is not valid merely because it was
+observed in a chat or a one-off terminal run: it must name the code, comparison,
+protocol, and status below. Update the row when the final candidate changes.
 
-## Released identity
+## Candidate identity
 
 | Item | Value | Status |
 | --- | --- | --- |
-| Released commit | `main` at `67365b6a9aa71aa51057a7ce0c8b1e9c3b3b380c` (PR #124) | shipped 2026-08-07 |
-| Audited candidate lineage | Released source is byte-identical across the audited production/bench surfaces to final PR head `858a0ab`; its `src/` is byte-identical to measured `a28404c` | canonical `a:[]` compiler/macro/fold artifact; strict document helpers, exact chart-factory consumption, supported-Node fixes, and bounded 0.47 performance shelves included |
+| Remote release base | `origin/release/0.47.0` at `9c3ce450ff7cd35efc0cdc76a5f27df65a9fad2b` | pinned |
+| Code candidate | `fix/0.47-audit` production/bench candidate at `4e1cce5` (`src/` byte-identical to measured `a28404c`) | canonical `a:[]` compiler/macro/fold artifact; strict document helpers, exact chart-factory consumption, supported-Node fixes, and bounded 0.47 performance shelves included |
 | 0.46 comparison base | `a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3` (`v0.46.0`) | pinned |
 
 ## Correctness and API
@@ -53,7 +52,7 @@ owner accepts a reproducible small lead; this does not change the repository's
 general 1.05x confidence cushion. Small-input rows are reported as evidence but
 do not decide the gate.
 
-## Final release-gate disposition
+## Release-gate disposition
 
 The supported Node 20, 22, and 24 coverage summaries are byte-identical. On the
 canonical Node 24 preflight, `pnpm coverage:guard` passes the historical
@@ -63,9 +62,8 @@ functions `96.37%` (baseline `96.55%`, inside the existing 0.5pp tolerance), and
 branches `88.59%` (baseline `85.80%`). The earlier `90.07%` diagnostic was Node
 25's changed V8/module-reset aggregation and is not the supported LTS CI result.
 
-PR #124 used the documented `release-exempt` label because it was chained on the
-PR that had already opened the `0.47.0` section. The exemption waived only that
-open-section check. Correctness, coverage, size, identity, and bounded
-performance gates passed; the peak drawdown was separately disclosed by the
-validated `PERF-PEAK-WAIVER` in the 0.47 changelog section. The PR merged as
-`67365b6a9aa71aa51057a7ce0c8b1e9c3b3b380c`.
+The ordinary changelog gate is intentionally red because PR #124 is chained on
+the PR that already opened the `0.47.0` section. The repository's documented
+`release-exempt` mode passes and is the exact label this chained release PR must
+carry; it waives only that already-published-section check. It does not waive
+correctness, coverage, size, identity, or performance-bound gates.

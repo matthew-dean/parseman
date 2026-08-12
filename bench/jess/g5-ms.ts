@@ -32,7 +32,7 @@ import { tableRules } from '../../src/table/assemble.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { assertParseman, corpus, ENTRY, JESS_ROOT, loadGrammar } from './grammars.ts'
-import { interleave, median, pairedMedianRatio, pairedWins, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { interleave, median, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 
 type Entry = Parameters<typeof run>[0]
 
@@ -157,16 +157,16 @@ for (const f of FIXTURES) {
   const execMs = perParse(win.get(`ref|${id}`)!, id)
   const asmMs = perParse(win.get(`head|${id}`)!, id)
   const asmGateMs = perParse(gate.get(`head|${id}`)!, id)
-  const ctlCd = (pairedMedianRatio(ctlC.get(`ref|${id}`)!, ctlC.get(`head|${id}`)!) - 1) * 100
-  const ctlAd = (pairedMedianRatio(ctlA.get(`ref|${id}`)!, ctlA.get(`head|${id}`)!) - 1) * 100
+  const ctlCd = (median(ctlC.get(`head|${id}`)!) / median(ctlC.get(`ref|${id}`)!) - 1) * 100
+  const ctlAd = (median(ctlA.get(`head|${id}`)!) / median(ctlA.get(`ref|${id}`)!) - 1) * 100
   const a = win.get(`ref|${id}`)!, b = win.get(`head|${id}`)!
-  const wins = pairedWins(a, b)
-  const winRatio = pairedMedianRatio(a, b)
+  let wins = 0
+  for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
 
   console.log('')
   console.log(`  ${id}  (${f.input.length} B, ${reps.get(id)} parses per sample)`)
   console.log(`    exec      (bytecode)  ${execMs.toFixed(2).padStart(7)} ms`)
-  console.log(`    assembled (closures)  ${asmMs.toFixed(2).padStart(7)} ms   <- ${((winRatio - 1) * 100).toFixed(1)}% paired, ${wins}/${b.length} wins`)
+  console.log(`    assembled (closures)  ${asmMs.toFixed(2).padStart(7)} ms   <- ${((asmMs / execMs - 1) * 100).toFixed(1)}%, ${wins}/${b.length} wins`)
   console.log(`    assembled (2nd leg)   ${asmGateMs.toFixed(2).padStart(7)} ms   (same leg, other contest — agreement is the sanity check)`)
   console.log(`    assembled (compose)   ${compiledMs.toFixed(2).padStart(7)} ms`)
   console.log(`    REMAINING GAP         ${(asmMs - compiledMs).toFixed(2).padStart(7)} ms   (${(asmMs / compiledMs).toFixed(2)}x)`)

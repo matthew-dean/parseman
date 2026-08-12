@@ -9,7 +9,7 @@ import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_COV,
@@ -22,10 +22,6 @@ import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
-import { directArrayProjection } from '../compiler/direct-projection.ts'
-import {
-  assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
-} from '../compiler/token-capability.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -42,6 +38,37 @@ function emittableConst(v: unknown): boolean {
     const proto = Object.getPrototypeOf(v)
     if (proto !== Object.prototype && proto !== null) return false
     return Object.values(v).every(x => scalar(x) || (Array.isArray(x) && x.every(scalar)))
+  }
+  return false
+}
+
+/**
+ * Does the rule-map entry `winner` bottom out AT the reference `p`?
+ *
+ * The question `Encoder.winners` has to ask before resolving a `g.X` by name. A
+ * map entry that IS the reference — directly, or under the scope wrappers that
+ * `rules()` puts there — is not an override to resolve to; it is the reference's
+ * own binding, and the only thing that reaches the rule's BODY from there is the
+ * ref's thunk. Resolving by name instead hands back the row already in flight for
+ * that entry, which is an alias cycle rather than a parser (see `winners`).
+ *
+ * ONLY WRAPPERS `rules()` ITSELF INTRODUCES are unwrapped — `parser()`/`noTrivia`
+ * scopes (`grammar`) and `trivia()`. Both are single-child and both can encode to
+ * NO ROW, which is what makes the cycle degenerate. Walking further, into a
+ * `seq()` or a `choice()` arm, would answer a different question: a rule whose
+ * body legitimately contains a reference to itself is ordinary recursion and must
+ * keep resolving by name.
+ */
+function wrapsRef(winner: Combinator<unknown>, p: Combinator<unknown>): boolean {
+  let cur = winner
+  // Bounded rather than `while (true)`: `_def.parser` is author-supplied and a
+  // hand-built cycle of scopes would otherwise hang the encoder. Nothing legal
+  // nests these more than a couple deep.
+  for (let n = 0; n < 16; n++) {
+    if (cur === p) return true
+    const d = cur._def as ParserDef
+    if (d.tag !== 'grammar' && d.tag !== 'trivia') return false
+    cur = d.parser
   }
   return false
 }
@@ -180,6 +207,7 @@ class Encoder {
   winners: Readonly<Record<string, Combinator<unknown>>> | undefined = undefined
   triviaSpecs: TriviaSpec[] = []
   private triviaIndex = new Map<Combinator<unknown>, number>()
+
   /**
    * A trivia combinator as DATA where its shape allows.
    *
@@ -455,16 +483,6 @@ class Encoder {
     return i
   }
 
-  /** Bind a guard only when its class is already part of the program. Repeat
-   * gating must not grow the compact artifact merely to avoid a failed call. */
-  private existingCharClass(fs: FirstSet): number {
-    if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
-    const hit = this.ccIndex.get(encodeClassSpec(fs.ranges))
-    // This reuses the recovery row's existing `-1` slot. Keep its decimal width
-    // at two bytes or less so a speed hint cannot grow a compact artifact.
-    return hit !== undefined && hit < 100 ? hit : -1
-  }
-
   /**
    * Wrap one choice arm in its `autoNot` checks (`OP_REJECT`).
    *
@@ -592,7 +610,7 @@ class Encoder {
     // straight to the body's offset (`case 'lazy'`), so every recursive call and
     // every cross-rule reference would jump past the counter, and a grammar with
     // one entry would report one hit rule however much of it ran.
-    this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE_PLAIN, this.triviaSlot(amb), body)
+    this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.triviaSlot(amb), body)
   }
 
   /**
@@ -600,7 +618,7 @@ class Encoder {
    * in the target rule's own ambient trivia when that differs from the trivia
    * lexically active at the reference.
    *
-   * `encodeRule` wraps a rule ENTRY in `OP_SCOPE_PLAIN`, but only the entry: a `g.X`
+   * `encodeRule` wraps a rule ENTRY in `OP_SCOPE`, but only the entry: a `g.X`
    * reference resolves straight to the body's offset and jumps past it (the note
    * at `encodeRule`). So a rule referenced from inside a `noTrivia(...)` region ran
    * with NO ambient trivia of its own — the table scoped trivia DYNAMICALLY, by
@@ -638,7 +656,7 @@ class Encoder {
     const amb = p._meta.grammarTrivia ?? target._meta.grammarTrivia
     if (amb === undefined || this.activeTrivia !== undefined) return ip
     if (!hasOwnTriviaBoundary(target)) return ip
-    return this.emit(OP_SCOPE_PLAIN, this.triviaSlot(amb), ip)
+    return this.emit(OP_SCOPE, this.triviaSlot(amb), ip)
   }
 
   node(p: Combinator<unknown>): Emitted {
@@ -857,7 +875,6 @@ class Encoder {
           // covered on a parse where the choice picked somebody else.
           return this.covWrap(gated, armCovIds?.[src], 1)
         })
-        const rr = this.refResolver()
         // O(1) first-char dispatch is only SOUND when the arms are disjoint.
         // With overlapping first sets, "the first arm whose class contains this
         // char" is not "the first arm that matches": a `Keyword` arm whose first
@@ -887,6 +904,7 @@ class Encoder {
         // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
+        const rr = this.refResolver()
         const classes = arms.map(a => matchesEmpty(a, new Set(), rr) ? -1 : this.charClass(firstSetOf(a, new Set(), rr)))
         const dispIdx = this.disp.length
         this.disp.push(classes)
@@ -914,10 +932,6 @@ class Encoder {
       case 'many':
       case 'oneOrMore': {
         const child = this.node(d.parser).ip
-        const rr = this.refResolver()
-        const itemClass = matchesEmpty(d.parser, new Set(), rr)
-          ? -1
-          : this.existingCharClass(firstSetOf(d.parser, new Set(), rr))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
@@ -926,7 +940,7 @@ class Encoder {
         // set — `deriveExpected(combinator)` in repeat.ts:170, and
         // `deriveExpectedArr([def.parser])` in codegen's emitMany.
         return this.rec
-          ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), itemClass)
+          ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), -1)
           : this.emit(op, child, min, d.max ?? -1, -1, 0)
       }
       case 'sepBy': {
@@ -973,14 +987,7 @@ class Encoder {
         if (inner.tag === 'sequence' && !this.memo.has(d.parser) && !this.pending.has(d.parser)) {
           const kids = inner.parsers.map(c => this.node(c).ip)
           const head = this.emitHead(OP_SEQX, 2 + kids.length + (this.rec ? kids.length : 0))
-          const projection = directArrayProjection(d.fn, d.fnSrc, kids.length)
-          // A negative operand describes an already-parsed child (`~index`),
-          // while every function-pool index remains non-negative.  The row is
-          // otherwise unchanged, so projection fusion costs no table words and
-          // does not create a second closure/factory shape.
-          this.code[head + 1] = projection === null
-            ? this.fn(d.fn, d.fnSrc ?? null)
-            : ~projection
+          this.code[head + 1] = this.fn(d.fn, d.fnSrc ?? null)
           this.code[head + 2] = kids.length
           for (let i = 0; i < kids.length; i++) this.code[head + 3 + i] = kids[i]!
           if (this.rec) {
@@ -1084,9 +1091,8 @@ class Encoder {
         const e = deriveExpected(d.parser)
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
-      case 'token': {
+      case 'token':
         return this.emit(OP_TOKEN, this.node(d.parser).ip)
-      }
       case 'routed':
         return this.emit(OP_ROUTED, d.fallback === undefined ? -1 : this.node(d.fallback).ip)
       case 'dispatch': {
@@ -1198,7 +1204,7 @@ class Encoder {
         // merged (composed) map, and why the identity guard is required.
         const refName = (p as unknown as { _ruleName?: string })._ruleName
         const winner = refName === undefined ? undefined : this.winners?.[refName]
-        if (winner !== undefined && !winnerWrapsReference(winner, p)) return this.scopedRef(p, winner)
+        if (winner !== undefined && !wrapsRef(winner, p)) return this.scopedRef(p, winner)
         let resolved: Combinator<unknown>
         try { resolved = d.thunk() }
         catch {
@@ -1393,7 +1399,7 @@ class Encoder {
       switch (this.code[ip]) {
         case OP_GATE: return [ip + 2]
         case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: return [ip + 1]
-        case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
+        case OP_SCOPE: case OP_SCOPE_CAP: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
         // ARMS START AT ip+4. `ip+3` is the choice's own EXPECTED-SET index, and
@@ -1555,12 +1561,6 @@ export function encodeTableProgram(
     ...(hostMode === undefined ? {} : { hostMode }),
     ...(track ? { trackLines: true } : {}),
   }
-  // Collect once from the FINAL winner-resolved graph. Sorting affects only
-  // content-id discovery; ordinary rule/code order remains the caller's order.
-  const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
-  const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
-  const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
-  assertLexicalCapabilityClosure(lexicalRoots, capabilities, resolveLexical)
   const enc = new Encoder(resolvedSettings)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)

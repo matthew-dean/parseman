@@ -14,7 +14,7 @@ import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { GRAMMAR_COVERAGE_DEFINITIONS } from '../grammar-metadata.ts'
 import { reachableIps } from './inspect.ts'
-import { OP_NODE, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_PLAIN } from './ops.ts'
+import { OP_NODE, OP_NODE_TRACK, OP_SCOPE } from './ops.ts'
 import { covDefinitions, resolveTable, type ResolvedTable, type TableProgram, type TableRule } from './program.ts'
 
 const EMPTY_FX: string[] = []
@@ -98,12 +98,12 @@ export function stampRuleMap(
   // up as `ok: true` with bytes missing, never as an error.
   //
   // Read from the ENTRY ROW, not from one program-wide slot: `encodeRule` wraps each
-  // rule's entry in `OP_SCOPE_PLAIN <triviaSlot> <body>` iff THAT rule has ambient trivia,
+  // rule's entry in `OP_SCOPE <triviaSlot> <body>` iff THAT rule has ambient trivia,
   // and a `composeLeaf` grammar's pieces do not agree (the same disagreement
   // `scanSkipOf` exists for). The owning driver passes its resolved table, so
   // this is the exact trivia array it already built.
   const triviaOfRule = (ip: number): Combinator<unknown> | undefined => {
-    if (prog.code[ip] !== OP_SCOPE_PLAIN && prog.code[ip] !== OP_SCOPE) return undefined
+    if (prog.code[ip] !== OP_SCOPE) return undefined
     const slot = prog.code[ip + 1]!
     return slot < 0 ? undefined : resolved.trivia[slot]
   }

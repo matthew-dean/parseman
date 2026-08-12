@@ -1,57 +1,8 @@
-# 0.48 release target — recover performance on the canonical table
-
-This is the long-form release evidence register. It is not the current design or
-the active work queue:
-
-| Question | Authority |
-| --- | --- |
-| What is 0.48 building, in what order, and what must be true to ship? | [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md) |
-| What is active, landed, rejected, or awaiting proof? | [`TABLE-PERF-EXPERIMENTS-0.48.md`](./TABLE-PERF-EXPERIMENTS-0.48.md) |
-| What measurements and historical decisions produced that direction? | this file and the linked evidence notes |
-
-Do not infer current priority from section order, a historical `QUEUED` marker,
-or the frozen count snapshot below. The canonical spec and live ledger control.
-
-## Active release boundary
-
-0.47.0 shipped on 2026-08-07 through PR #124 at
-`67365b6a9aa71aa51057a7ce0c8b1e9c3b3b380c`. Development now proceeds on
-`release/0.48.0`; 0.47's verification record is archived in
-`RELEASE-0.47-VERIFICATION.md`.
-
-0.48 starts from 0.47's canonical compact `TableProgram` architecture and owns
-the performance debt that 0.47 accepted. The release must recover the
-production-shaped Jess/Less/CSS regressions and remove the named workload and
-grammar shelves as their rows recover, without splitting runtime compilation
-from macro artifacts, moving baselines downward, restoring runtime code
-construction, or giving back correctness and package-size gains. External-parser
-medium/large competitiveness, full-consumption parity, supported-Node coverage,
-V8-shape invariants, and artifact-size gates remain hard constraints.
-
-**Primary 0.48 exit criterion: parse performance must return to at least 0.46
-levels on the production-shaped CSS, Less, and generated-Less release fixtures.**
-This is the release's number-one goal, not an aspirational follow-up. The 0.47
-shelves may bound work in progress, but they are not an acceptable 0.48 shipping
-state. A claimed recovery must use the pinned 0.46 build, full-consumption and
-result-identity checks, paired A/B runs, and same-source controls; toy grammars
-or external-parser wins cannot substitute for this criterion.
-
-That absolute exit criterion does not impose a fixed minimum on each contributing
-change. Stable control-adjusted gains above 1% with negligible size, complexity, and
-cross-fixture cost are bankable; multiple orthogonal wins are expected to compound.
-Candidates are rejected for noise, regression, semantic risk, or disproportionate cost,
-not merely for lacking a 5% headline.
-
-The primary orchestrator owns the Jess integration base and agent handoff. The
-currently approved remote base is `origin/dev` at `93c67d0ae7be0360a6db35f0cfa055043bca8025`.
-Before delegating Jess-dependent work or accepting a timing run, the primary fetches
-that remote, pushes independently approved Jess-native fixes to it, and requires every
-agent to branch an isolated worktree from the recorded head. Preserved older checkouts
-remain evidence only, not new measurement bases.
+# 0.48 target — what 0.47 deliberately shelved
 
 ---
 
-## Historical status taxonomy (frozen 2026-08-07)
+## STATUS CONVENTION (repo-wide, adopted 2026-08-07)
 
 `LANDED` · `MEASURED-NULL` · `REJECTED` · `QUEUED` · `UNMEASURED` · `REFERENCE`.
 Definitions and the repo-wide picture: `PERF_IDEAS.md` § STATUS CONVENTION AND
@@ -66,13 +17,7 @@ Only the first of those four is an "idea". The retractions and rules are marked
 `UNCLASSIFIABLE`; the current disposition below moves each repaired defect to
 `LANDED` while preserving the checkout and measurements that first exposed it.
 
-## Historical count snapshot — 30 classified items
-
-> **Not the current 0.48 queue.** These counts classify the mixed evidence that
-> existed when this register was assembled. They are retained so older notes and
-> backlinks remain intelligible. Current work and dispositions live in the
-> experiment ledger; tokenized PEG is active even though the frozen prose below
-> calls token streaming `QUEUED`.
+## COUNTS — 30 items
 
 | marker | count |
 |---|---:|
@@ -118,8 +63,8 @@ withdrawn · §8b `QUEUED` for the child-kind axis, `REFERENCE` for the owner's
 specification restatement; **the five mechanisms proposed for the gap during 0.47
 are all `REJECTED`** and the file says "Do not re-propose them" — runtime
 `compose()`, per-parse assembly, per-rule assembly, startup cost, interpreter
-fallback · §9 `QUEUED` (= U-53) · §9b `QUEUED` · §10.1–§10.4 `LANDED` in the
-shipped 0.47 release · §10.5 `REJECTED` as a defect after the owner
+fallback · §9 `QUEUED` (= U-53) · §9b `QUEUED` · §10.1–§10.4 `LANDED` on the
+current unreleased 0.47 branch · §10.5 `REJECTED` as a defect after the owner
 ruling established that `forCtx` is G5's required run-start selection, not a
 run-path option branch ·
 `## Standing hazard` **`UNCLASSIFIABLE`** — a measurement-hygiene rule that
@@ -248,47 +193,37 @@ node (INV-6). Expect the `cfgKey` assembly-key space to need another bit.
 
 ---
 
-## 2. Tokenized PEG — active leading implementation
+## 2. Token streaming
 
-The current design is specified in
-[`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md) §§3–7. This
-section retains only the release-history facts needed to interpret older results.
+**What.** Leaves consume classified TOKENS rather than characters.
 
-0.47 shipped the compact table cutover without a token cursor. The preserved
-token modules were analysis prototypes, not production plumbing, and their
-mode-free/global-munch assumptions are not the 0.48 design. The production target
-is virtual token classification at `(input, position, lexicalContext)`: compact
-integer token ids and source ranges, with no required token objects or copied
-strings. A site can use those classifications to reject impossible arms while
-compatible arms continue ordered PEG trial and consume the same pending range.
+**Why deferred.** It was an original requirement of the design that never
+landed, and `src/compiler/token-scanner.ts`, `token-alphabet.ts` and
+`token-dispatch.ts` are already in-tree as built-but-never-wired analysis — they
+carry `DEBT` entries in
+`scripts/invariant-allowlist.mjs` pointing at `docs/design/derived-tokenization.md`.
+0.47 stayed on the cutover instead.
 
-The first compatible-view prototype validated the language semantics and removed
-most retries at the hot Less `Value` choice, but it was slower because it eagerly
-looped over native regex recognizers. That implementation is rejected; tokenized
-PEG is not. The active lane has completed the production census and is implementing
-lazy, seeded recognition; runtime cursor/admission wiring is not yet complete. It
-is also measuring multi-token structural admission for Less mixin declarations,
-mixin calls, and ordinary rulesets. The live status and exact measurements belong
-in T09 of the experiment ledger.
+**Current disposition.** Still `QUEUED`, with its groundwork deliberately
+preserved rather than mistaken for dead code or a completed feature. See
+`notes/TOKEN-STREAM-GROUNDWORK.md` for the static probe, the scanner correctness
+hole, the stale dispatch half, the reusable packing/folding utilities, and the
+first independently landable wiring step. An experiment is ongoing separately;
+it has not resolved §8, and this note makes no speed or memory claim for it.
 
-Three constraints survive every prototype:
+**Carry this forward, it is the part people get wrong.** A prior bound of
+~1.4 ms was measured against the BYTECODE INTERPRETER — it measured *scanning*
+and was structurally blind to entry elimination. **That bound does not
+transfer.** Re-derive it against the closure assembler. The same warning applies
+to every mechanism closed against the interpreter: materialisation (~10%),
+leaf/trivia specialisation, superoperators (~1.6 ms), builder megamorphism
+(~0.1 ms). A bound measured against a replaced architecture is not evidence.
 
-1. unique token-to-arm decisions may jump directly, but same-token and prefix
-   overlaps retain source-order PEG semantics, rollback, commitment, probing, and
-   recovery;
-2. a character gate may remain cheaper and seed token completion with the lead it
-   already read; fixed pieces expose raw, seeded, and pending-result entries into
-   one recognition kernel;
-3. LL(k) and ALL(*) prediction are separate bounded experiments after tokenized
-   PEG works; they may not introduce stringified paths or unbounded predictor state.
-
-The historical ~1.4 ms scanner bound was measured against the retired bytecode
-interpreter and was blind to eliminating wrapper and failed-arm entry. It does not
-bound the closure engine and must not be used to deprioritize the cursor.
-The same provenance limit applies to the retired bytecode-era bounds for
-materialization (~10%), leaf/trivia specialization, superoperators (~1.6 ms), and
-builder megamorphism (~0.1 ms): none bounds the closure assembler without
-remeasurement.
+What token streaming plausibly buys, from the 0.47 profile work: leaf matching
+becomes an integer compare rather than a char test or regex; first-set gating
+becomes a lookup on token kind rather than a char-class computation; trivia is
+classified once by the stream rather than scanned at every boundary. The last of
+those is the one with a measured precedent — see §3.
 
 ---
 
@@ -683,11 +618,10 @@ were wrong. A control proves the box was quiet. It does not prove the two sides
 are different builds. **Check what a harness builds before quoting what it
 prints.**
 
-### 0.47 shipped baseline and measured attempts
+### 0.47 release-audit handoff — final candidate and measured attempts
 
-The shipped 0.47 source at `67365b6` is byte-identical under `src/` to the final
-measured production source (`a28404c`) used for the two-graph comparison on Node
-25.9.0:
+The final production source (`a28404c`, still byte-identical under `src/` at the
+`4e1cce5` release candidate) re-ran the two-graph comparison on Node 25.9.0:
 CSS was 14.88 / 5.44 ms (**2.736×** slower), `benchmark.less` 39.39 /
 17.07 ms (**2.308×**), and `gen-workload.less` 108.44 / 42.39 ms
 (**2.558×**). Every leg consumed in full; same-source controls were 0.975× /
@@ -838,82 +772,6 @@ pinned-reference, checked-out-HEAD gate. `--ref`, `--head-ref`, `--self`, and
 of passes exceeds either ceiling. This is bounded release debt, not a new
 performance baseline.
 
-### Current production-shaped checkpoint — actual Jess `f3b4c3f`
-
-The current shipping-grammar release A/B is Parseman source-identical
-`0385764da4c8cf2aa00bb970d7a4420f1fab7d5e`/
-`2a8c381fb056f57f8d8ba515d7e9c781ec377357` against pinned 0.46
-`a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3`, using exact Jess
-`f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002` and Node 24.11.1. The only commits
-between the measured Parseman SHA and this document update changed evidence
-documents; `src/` is byte-identical.
-
-The authoritative `bench/jess/ab.ts --two-graph` protocol built two independent
-graphs, requested the shipping macro on both sides, and interleaved 16 samples
-per leg. HEAD therefore ran `macro→closure-table`, while 0.46 ran its shipped
-`macro→source`. Separate matching `--self --two-graph` processes provided the
-A/A floor. Both sides parsed all 123,029 CSS, 106,802 benchmark Less, and 275,211
-generated-Less bytes.
-
-| fixture | HEAD / 0.46 | release ratio | matching A/A | paired-round result |
-| --- | ---: | ---: | ---: | --- |
-| CSS `benchmark.css` | 13.84 / 5.56 ms | **2.488x (+148.8%)** | 1.004x (+0.4%) | median 2.488x, range 2.046–2.631x, 0/8 HEAD wins |
-| `benchmark.less` | 33.79 / 17.98 ms | **1.879x (+87.9%)** | 1.020x (+2.0%) | median 1.898x, range 1.658–1.934x, 0/8 |
-| generated Less | 94.89 / 49.56 ms | **1.915x (+91.5%)** | 1.017x (+1.7%) | median 1.917x, range 1.875–1.955x, 0/8 |
-
-All starts were below the load ceiling and the paired/solo cross-check emitted no
-artefact warning. The exact Parseman/Jess pins also passed the strict differential
-teeth run: all six planted defects were caught, including the Jess node-span oracle
-and short-consumption sweep. The two-graph timing intentionally omits the third
-interpreter graph, so this evidence claims full acceptance/consumption and proven
-differential teeth, not a new three-way identity run. Exact realpaths, fixture
-hashes, loads, A/A dispersion, and methodology are retained in
-`TABLE-PERF-EXPERIMENTS-0.48.md`.
-
-All three primary shelves remain. The result is a material recovery from the old
-roughly 3.2–3.4x standard-workload checkpoint, but 1.879–2.488x is still nowhere
-near the 1.0x shipping requirement and removes no named 0.47 shelf.
-
-### Historical corrected literal-EOF checkpoint — `e5247da`, not final release proof
-
-The standard workload gate formerly checked only that reference and candidate
-returned equal results. Three equal results were partial: Less stylesheet ended
-at 53,482/53,483, Less mixins at 60,637/60,638, and CSS at 65,553/65,554 on
-both legs. They left the final newline, so this was not a material prefix-speed
-shortcut, but the instrument's claim of full consumption was false. The old
-`282c978` centers (+216.9%, +226.5%, +252.0%, +103.4%, +129.9% in table order)
-and later `60610fc`/`aae9b30` replicates remain direction-only history. They are
-not absolute rows, baselines, ceilings, or release proof.
-
-`5fee4ef`, integrated as `e5247da`, made both document roots consume their
-permitted tail and made the gate fail closed on failure, a missing span, a
-non-zero start, non-null `unconsumedFrom`, or any end short of the literal input
-length. The validator runs outside timing on every fresh reference, candidate,
-calibration, and pass instance. The unmodified primary `e5247da` five-pass gate
-against pinned 0.46 `a5dc9bd` then measured:
-
-| workload | center median / min | five-pass median range | A/A worst median |
-|---|---:|---:|---:|
-| `less/stylesheet` | +219.5% / +231.2% | +210.7%…+227.4% | −0.1% |
-| `less/mixins` | +226.8% / +225.7% | +210.7%…+235.9% | +0.8% |
-| `css/stylesheet` | +238.9% / +305.3% | +175.1%…+303.9% | +17.4% |
-| `graphql/document` | +106.1% / +108.2% | +91.0%…+112.3% | +1.5% |
-| `json/document` | +123.3% / +121.7% | +119.6%…+124.4% | +1.2% |
-
-Every candidate row lost 0/12 pairs in every pass and breached 5/5. A second
-print-only detached replication at the same SHA preserved the timing protocol,
-printed Node 25.9.0 plus exact head/reference compiler, runtime, loader, and
-workload realpaths before the numbers, and retained every `passRows` record. Its
-centers were +225.9%, +223.7%, +293.3%, +78.7%, and +118.3%; every row again
-lost 0/12 in every pass and breached 5/5. CSS and GraphQL therefore have
-whole-run numeric instability, especially CSS's reference-instance draw, but no
-ambiguity in direction or release disposition. Exact per-pass vectors and
-provenance are retained in `TABLE-PERF-EXPERIMENTS-0.48.md`.
-
-These numbers did not lower 0.46, widen a shelf, or remove one. They were the
-corrected checkpoint before the then-pending scope correctness/performance
-changes. The current production-shaped audit is recorded above.
-
 **RECONCILED — and it was the dialect harness that was wrong, not the release
 A/B.** This paragraph used to read "UNRECONCILED": `bench/jess/fixture.ts`
 measured css 1.09× and less 1.05× while old CI runs printed +666% and +780%, and
@@ -922,20 +780,17 @@ it listed three candidate explanations. The third of them was the right one —
 
 `bench/jess/fixture.ts` builds **every leg at HEAD** (§8). Its `ref|` label is a
 contest's a-side, not a reference build, so it had no pre-deletion engine in the
-process and its 1.09× / 1.05× row is withdrawn. The historical `workload-perf`
-checkpoint did interleave HEAD against a pinned reference, so its bounded rows
-remain valid for that older standard-workload snapshot rather than becoming the
-current actual-Jess baseline.
+process and its 1.09× / 1.05× row is withdrawn. The current `workload-perf`
+still interleaves HEAD against a pinned reference, and the bounded rows above
+are the current evidence.
 
 The two surviving measurement families are consistent in sign but answer
-different questions. The then-current shipping-grammar A/B read
-**2.308×–2.736× slower**; it is retained as historical evidence and superseded by
-the current 1.879–2.488x actual-Jess block above. The synthetic workload gate
-reads the bounded per-row envelopes in this historical section. The workloads
-lean differently on the missing fast paths. Quote the current `ab.ts` checkpoint
-for "what did this release do to a shipping grammar" and the historical shelf
-table only for what that earlier release-workload gate bounded. Do not revive the
-old +666%/+780% rows as current candidate evidence.
+different questions. The final shipping-grammar A/B reads **2.308×–2.736×
+slower**; the synthetic workload gate reads the bounded per-row envelopes above.
+The workloads lean differently on the missing fast paths. Quote `ab.ts` for
+"what did this release do to a shipping grammar" and the final shelf table for
+"what does the release workload gate currently bound." Do not revive the old
++666%/+780% rows as current candidate evidence.
 
 **The 0.48 instruction.** When token streaming lands, take whatever was valuable
 out of these modules. Token streaming is where literal and regex recognition
@@ -999,7 +854,7 @@ independent of an engine that reproduced it accidentally.
 
 None of this was fixed at `90aa867`. The descriptions are retained because they
 govern measurements taken at that checkout; all five findings have since been
-closed before 0.47 shipped or ruled by design.
+closed on the current unreleased 0.47 branch or ruled by design.
 
 1. **LANDED (`8683433`): the `*-lines` grammar variants could not parse
    anything.** `ast-lines` and

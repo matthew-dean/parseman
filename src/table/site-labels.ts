@@ -62,7 +62,7 @@
 import {
   OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE,
-  OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 import { childSlots } from './child-slots.ts'
 
@@ -138,7 +138,7 @@ export function reachableSites(code: Int32Array, roots: Iterable<number>): Set<n
  */
 function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean): SiteLabel {
   const op = code[ip]
-  if (op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN) {
+  if (op === OP_SCOPE || op === OP_SCOPE_CAP) {
     const ki = code[ip + 1]!
     const tri = ki < 0 ? TRI_NONE : ki
     // `OP_SCOPE_CAP` is an OR with the inherited context, never a switch-off

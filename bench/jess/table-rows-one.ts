@@ -49,11 +49,7 @@ const staticSites = new Map<string, Set<number>>()
   for (const ip of reachableIps(prog)) {
     const op = code[ip]!
     switch (op) {
-      case OPS.OP_SEQX: {
-        const reducer = code[ip + 1]!
-        if (reducer >= 0) add('SEQX fn()', reducer)
-        break
-      }
+      case OPS.OP_SEQX: add('SEQX fn()', code[ip + 1]!); break
       case OPS.OP_XFORM: add('XFORM fn()', code[ip + 1]!); break
       case OPS.OP_LEAF: add('LEAF fn()', code[ip + 1]!); break
       case OPS.OP_NODE: case OPS.OP_NODE_TRACK:

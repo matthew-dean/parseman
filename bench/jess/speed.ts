@@ -45,7 +45,7 @@
  */
 import os from 'node:os'
 import { resolve as resolvePath } from 'node:path'
-import { calibrate, interleave, median, pairedMedianRatio, pairedMinRatio, pairedWins, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { calibrate, interleave, median, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -187,9 +187,10 @@ async function main(): Promise<void> {
       const s = out.get(k.label)!
       const a = s.get(`ref|${d}`)!
       const b = s.get(`head|${d}`)!
-      const dMed = (pairedMedianRatio(a, b) - 1) * 100
-      const dMin = (pairedMinRatio(s, `ref|${d}`, `head|${d}`) - 1) * 100
-      const wins = pairedWins(a, b)
+      const dMed = (median(b) / median(a) - 1) * 100
+      const dMin = (Math.min(...b) / Math.min(...a) - 1) * 100
+      let wins = 0
+      for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
       console.log(
         `    ${k.label.padEnd(36)} median ${sign(dMed).padStart(8)}   min ${sign(dMin).padStart(8)}`
         + `   B-wins ${String(wins).padStart(2)}/${b.length}   (${median(a).toFixed(2)} -> ${median(b).toFixed(2)} ms)`,
