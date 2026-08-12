@@ -38,6 +38,7 @@ const Root = parser(
 )
 const rootProgram = encodeTable({ Root })
 const referenceRoot = execRules(rootProgram).Root!
+const closureRoot = tableRules({ ...rootProgram, asm: [] }).Root!
 const emittedRoot = tableRules(rootProgram).Root!
 
 type Entry = (input: string, pos: number, ctx: ParseContext) => ParseResult<unknown>
@@ -137,6 +138,10 @@ describe('nullable node after an ambient trivia boundary', () => {
       assertGolden(referenceRoot(input, 0, { trackLines: false }), input)
     })
 
+    it(`closure table keeps the zero-width node and field for ${JSON.stringify(input)}`, () => {
+      assertGolden(closureRoot(input, 0, { trackLines: false }), input)
+    })
+
     it(`emitted diagnostic assembly keeps the zero-width node and field for ${JSON.stringify(input)}`, () => {
       assertGolden(emittedRoot(input, 0, { trackLines: false }), input)
     })
@@ -155,25 +160,30 @@ describe('zero-width recovery is a committed child effect, not scanned trivia', 
     it(`interpreter and compile retain the recovery error for ${JSON.stringify(input)}`, () => {
       const grammar = recoveryGrammar()
       const iErrors: unknown[] = []
-      const cErrors: unknown[] = []
+      const compiledErrors: unknown[] = []
       const iCtx = { trackLines: false, _tolerant: true, _errors: iErrors } as unknown as ParseContext
-      const cCtx = { trackLines: false, _tolerant: true, _errors: cErrors } as unknown as ParseContext
+      const compiledCtx = { trackLines: false, _tolerant: true, _errors: compiledErrors } as unknown as ParseContext
       const interpreted = grammar.parse(input, 0, iCtx)
-      const compiled = compile(grammar, undefined, { recovery: true }).parseWithContext(input, cCtx, 0)
+      const compiled = compile(grammar, undefined, { recovery: true }).parseWithContext(input, compiledCtx, 0)
       const program = encodeTable({ Entry: grammar })
       const eErrors: unknown[] = []
+      const closureErrors: unknown[] = []
       const tErrors: unknown[] = []
       const eCtx = { trackLines: false, _tolerant: true, _errors: eErrors } as unknown as ParseContext
+      const closureCtx = { trackLines: false, _tolerant: true, _errors: closureErrors } as unknown as ParseContext
       const tCtx = { trackLines: false, _tolerant: true, _errors: tErrors } as unknown as ParseContext
       const reference = execRules(program).Entry!(input, 0, eCtx)
+      const closure = tableRules({ ...program, asm: [] }).Entry!(input, 0, closureCtx)
       const emitted = tableRules(program).Entry!(input, 0, tCtx)
       expect(interpreted.ok).toBe(true)
       expect(compiled).toEqual(interpreted)
       expect(reference).toEqual(interpreted)
+      expect(closure).toEqual(interpreted)
       expect(emitted).toEqual(interpreted)
       expect(iErrors).toHaveLength(1)
-      expect(cErrors).toEqual(iErrors)
+      expect(compiledErrors).toEqual(iErrors)
       expect(eErrors).toEqual(iErrors)
+      expect(closureErrors).toEqual(iErrors)
       expect(tErrors).toEqual(iErrors)
     })
   }
