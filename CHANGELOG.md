@@ -3,6 +3,21 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.47.1 — 2026-08-12
+
+- Preserve nodes, fields, recovery errors, and other child-owned effects when a
+  sequence term succeeds without consuming input after ambient trivia. Only the
+  trivia rows produced by the speculative ambient scan are rolled back.
+- Treat the first-set walk's visited set as a recursion stack. Reusing a completed
+  child through another DAG edge no longer makes that sibling spuriously nullable
+  or widen its first set to `any`; genuine recursive back-edges still fail closed.
+- Encode synthetic rule-entry and cross-rule trivia restoration with the new
+  `SCOPE_PLAIN` row. The former three-word `SCOPE` row let the next opcode be read
+  as root-trivia policy bits. Table artifacts are version-locked: recompile any
+  generated, macro, composed, folded, or precompiled grammar with Parseman 0.47.1.
+- Validate dispatch arm tables before closure/emitted/precompiled linking, and
+  restore caller-owned routed state when a routed branch throws.
+
 ## 0.47.0 — 2026-08-07
 
 - **BREAKING: one engine now has one name. `src/table/exec.ts` exports

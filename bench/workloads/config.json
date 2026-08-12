@@ -1,8 +1,8 @@
 {
   "_comment": "Configuration for `pnpm perf:workloads` — see bench/workload-perf-guard.ts and docs/design/perf-gates.md.",
 
-  "referenceSha": "a5dc9bd",
-  "_referenceNote": "The A/B reference: v0.46.0, the PREVIOUS RELEASE (merge of PR #102 into main, the first-parent commit that set package.json to 0.46.0). Re-anchored from 5d3f60a (0.45.0) in the 0.47.0 release PR; the numbers read at this anchor are in that PR body, with the --self control beside them. Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the released sha at every release, in the release PR, with the numbers read in that PR. Do NOT bump it to silence a red gate.",
+  "referenceSha": "50b5489",
+  "_referenceNote": "The A/B reference: the exact stable v0.47.0 main base for the 0.47.1 release PR. Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the exact stable main base at every release, in the release PR, with the numbers read in that PR. Do NOT infer it from the first commit carrying the version string and do NOT bump it to silence a red gate.",
 
   "peak": {
     "sha": "7d1817f",

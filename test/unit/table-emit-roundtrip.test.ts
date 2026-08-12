@@ -137,6 +137,25 @@ describe('table lowering — the EMITTED module round-trips', () => {
     expect(run(emitted.Word as never, 'abc').ok).toBe(true)
   })
 
+  it('emits a multi-class pool as one delimiter-split string and still round-trips', async () => {
+    const prog = encodeTable(baseNodes)
+    const src = emitTableModule(prog, { name: 'g', fnSources: prog.fns.map(f => String(f)) })
+    const classLine = src.split('\n').find(line => line.startsWith('x:'))
+
+    expect(prog.cc.length).toBeGreaterThan(1)
+    expect(classLine).toBeDefined()
+    const match = classLine!.match(/^x:(.*)\.split\((.*)\),$/)
+    expect(match).not.toBeNull()
+    const encoded = JSON.parse(match![1]!) as string
+    const delimiter = JSON.parse(match![2]!) as string
+    expect(encoded.split(delimiter)).toEqual(prog.cc)
+
+    const emitted = await loadEmitted(prog, 'class-pool-split')
+    for (const input of ['abc', '12', '(a,b,12)', '###']) {
+      expect(outcome(emitted.Doc, input), input).toBe(outcome(baseNodes.Doc, input))
+    }
+  })
+
   it('field() maps survive emission, populated and not merely present', async () => {
     const prog = encodeTable(fieldNodes)
     const emitted = await loadEmitted(prog, 'field')

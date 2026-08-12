@@ -791,12 +791,12 @@ letter while its RESOLUTION was destroyed, silently.
 So `scripts/check-changelog.mjs` now checks it (§C, and
 `docs/design/release-gates.md`). On a **release PR** — heading, `package.json` and
 `src/version.ts` all naming the same, not-yet-published version — every anchor
-above must equal the commit that released the base's version: walking first-parent
-back from the base, the oldest commit in the contiguous run carrying that version,
-i.e. the one that introduced it. Not the base tip: ordinary PRs merge after a
-release and carry the number forward (three sat on top of 0.42.1). The rule
-reproduces both anchors that were set by hand — 0.33.0 → `7f1ddcd`, 0.35.0 →
-`3562f78`.
+above must equal the exact stable base commit the release PR proposes to advance.
+`main` is separately required to be a converged, dated release, so its tip is the
+authoritative before-side. Do not infer a release from the first commit that happened
+to carry a version string: 0.47.0 developed through multiple release candidates with
+the same package version, and that heuristic selected an early, unpublished tree.
+Pinning the exact base also makes the comparison match the PR diff mechanically.
 
 It fires on release PRs only, so no mid-cycle PR pays for it, and it has **no
 hatch** — `release-exempt` does not waive it. Re-anchoring makes a gate STRICTER

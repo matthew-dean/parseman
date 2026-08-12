@@ -15,6 +15,17 @@ function jsString(s: string): string {
   return JSON.stringify(s)
 }
 
+/** Emit a char-class pool in the shorter of the ordinary array and an
+ * equivalent delimiter-split string. Fall back when no delimiter is absent. */
+function emitClassPool(classes: readonly string[]): string {
+  const array = `[${classes.map(jsString).join(',')}]`
+  if (classes.length < 2) return array
+  const delimiter = '|/~?^`'.split('').find(ch => classes.every(spec => !spec.includes(ch)))
+  if (delimiter === undefined) return array
+  const split = `${jsString(classes.join(delimiter))}.split(${jsString(delimiter)})`
+  return split.length < array.length ? split : array
+}
+
 /**
  * Serialise one const-pool entry, or REFUSE it.
  *
@@ -264,7 +275,7 @@ function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOpt
     ...emitAssemblies(prog, opts.assemblies ?? []),
     `c:[${prog.code.join(',')}],`,
     `k:[${prog.k.map(emitConst).join(',')}],`,
-    `x:[${prog.cc.map(jsString).join(',')}],`,
+    `x:${emitClassPool(prog.cc)},`,
     `e:[${prog.fx.map(f => `[${f.map(jsString).join(',')}]`).join(',')}],`,
     `d:[${prog.disp.map(a => `[${a.join(',')}]`).join(',')}],`,
     `r:${JSON.stringify(prog.rules)},`,

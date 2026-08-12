@@ -71,18 +71,18 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt,
+  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
   saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
-  cstCaptureActive, cstLeavesLen,
+  cstCaptureActive, cstLeavesLen, cstTlLen,
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
@@ -118,10 +118,11 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  * property read per terminal miss — the same price codegen pays.
  */
 import {
-  classHas, decodeClassSpec, expandCompact, resolveTable,
+  classHas, decodeClassSpec, expandCompact, resolveTable, validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
+import { reachableSites } from './site-labels.ts'
 import { stampRuleMap } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
@@ -662,22 +663,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       return EC.e > scanEnd ? EC.e : cur
     }
     // SCALAR MARKS — no per-term mark object, as `exec.ts` established.
-    const need = markCst(ctx)
-    const mRaw = MRAW
-    const mTl = MTL
-    const mLv = MLV
-    const mFl = need ? ctx._fields?.length ?? 0 : 0
-    const mEr = need ? ctx._errors?.length ?? 0 : 0
+    const need = rollbackNeeded(ctx)
+    const mTl = need ? cstTlLen(ctx) : 0
     const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
     const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const scanEnd = skipTrivia(input, cur, ctx)
+    const scanTl = need ? cstTlLen(ctx) : 0
+    const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
+    const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const v = child(input, scanEnd, ctx)
     if (v === FAIL) return -1
     TERMV = v
     if (EC.e > scanEnd) return EC.e
     // The term matched nothing, so the trivia in front of it was never consumed
     // by anything — unrecord it and leave the cursor where it was.
-    if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+    if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
     return cur
   }
 
@@ -1212,7 +1212,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_SCOPE:
-      case OP_SCOPE_CAP: {
+      case OP_SCOPE_CAP:
+      case OP_SCOPE_PLAIN: {
         const ki = code[ip + 1]!
         const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
         const scopeLabels = scopeTrivia?._meta.triviaKindLabels
@@ -1261,7 +1262,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               SCAN = savedScan
               return v
             }
-        return scopeRootPolicy(scopePiece, code[ip + 3]!)
+        return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
       }
 
       case OP_ROUTED: {
@@ -2363,15 +2364,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             usesRouted = routed[arm] === 1
           }
 
-          const savedRouted = ctx._routed
           let mark = saveTriviaMark(ctx)
+          let v: unknown
           if (usesRouted) {
+            const savedRouted = ctx._routed
             rollbackTrivia(ctx, selectorMark)
             mark = saveTriviaMark(ctx)
             ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+            try {
+              v = target(input, pos, ctx)
+            } finally {
+              ctx._routed = savedRouted
+            }
+          } else {
+            v = target(input, selEnd, ctx)
           }
-          const v = target(input, usesRouted ? pos : selEnd, ctx)
-          if (usesRouted) ctx._routed = savedRouted
           if (v === FAIL) {
             rollbackTrivia(ctx, mark)
             // A failed dispatch branch is COMMITTED: the selector already matched.
@@ -2602,6 +2609,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
     }
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
+    const validationRoots = [...Object.values(prog.rules), ...extraIps]
+    for (const ip of reachableSites(code, validationRoots)) {
+      if (code[ip] !== OP_DISPATCH) continue
+      validateDispatchSpec(dsp[code[ip + 2]!], code[ip + 5]!, code[ip + 4]!)
+    }
     /**
      * THE BUILD'S OWN ANSWER, TRIED BEFORE THE CONSTRUCTOR.
      *
@@ -2630,7 +2642,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
-        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
+        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
@@ -2705,7 +2717,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
-        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
+        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,

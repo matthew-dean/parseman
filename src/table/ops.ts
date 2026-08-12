@@ -104,12 +104,14 @@ export const OP_LIT_TRACK = 17
 export const OP_RX_TRACK = 18
 export const OP_NODE_TRACK = 19
 /**
- * `SCOPE k c` — a `parser({ trivia })` / `rules({ trivia })` scope.
+ * `SCOPE k c policy` — a policy-bearing `parser({ trivia })` scope.
  *
  * `k` is the scope's trivia COMBINATOR in the const pool. The driver installs it
  * on `ctx.trivia` for the duration and restores the outer one after, which is
  * how the runtime's own `advanceTrivia` fast scanner gets reached — the same
  * shared machinery the interpreter uses, not a second copy of it.
+ * Synthetic rule-entry/restoration scopes use `OP_SCOPE_PLAIN` so a zero
+ * policy stays a three-word row without changing this opcode's ABI.
  */
 export const OP_SCOPE = 20
 /**
@@ -426,6 +428,11 @@ export const OP_LABEL = 39
  */
 export const OP_COV = 40
 /**
+ * `SCOPE_PLAIN k c` — a synthetic ambient-trivia scope with policy fixed to zero.
+ * A distinct opcode prevents the next row's opcode from being read as policy.
+ */
+export const OP_SCOPE_PLAIN = 41
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -456,4 +463,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_ADJ]: 'ADJ',
   [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
   [OP_LIVE]: 'LIVE', [OP_ATTEMPT]: 'ATTEMPT', [OP_LABEL]: 'LABEL', [OP_COV]: 'COV',
+  [OP_SCOPE_PLAIN]: 'SCOPE_PLAIN',
 }

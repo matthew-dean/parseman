@@ -54,9 +54,9 @@ import {
   OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
-  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
-import type { ResolvedClass, ResolvedTable, TableProgram } from './program.ts'
+import { validateDispatchSpec, type ResolvedClass, type ResolvedTable, type TableProgram } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
@@ -94,7 +94,7 @@ export class Unemittable extends Error {
 export const EMITTED_PARAMS = [
   'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
-  'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'failAt',
+  'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'rollbackScannedTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
   'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
   'scanTrivia', 'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
@@ -311,19 +311,24 @@ function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, s: Sinks): string {
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
   if (l.tri === TRI_NONE) return fast
-  const scanned = `${emitMark(t, l.buf, s)}
+  const scanned = `const ${t}tl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+const ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+const ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const ${t}s=${skip}(input,cur,ctx)
+const ${t}stl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+const ${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+const ${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const ${t}v=${callee}(input,${t}s,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(EC.e>${t}s)cur=EC.e
-else{${emitRollback(t, l.buf, s)}}`
+else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt)}`
   if (l.tri !== TRI_UNKNOWN) return scanned
   return `if(ctx.trivia===undefined){
 ${fast}
@@ -744,7 +749,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // `ki >= 0` is required rather than implied: `TRI_NONE` and `TRI_UNKNOWN` are
     // themselves negative, so comparing a negative operand against a lattice
     // element would read "unknown" as a match.
-    if (op === OP_SCOPE && code[ip + 3]! === 0 && code[ip + 1]! >= 0
+    if ((op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0)) && code[ip + 1]! >= 0
       && labels.at(ip).tri === code[ip + 1]!) {
       return code[ip + 2]!
     }
@@ -1016,10 +1021,11 @@ return r.value
       }
 
       case OP_SCOPE:
-      case OP_SCOPE_CAP: {
+      case OP_SCOPE_CAP:
+      case OP_SCOPE_PLAIN: {
         const ki = code[ip + 1]!
         const cap = op === OP_SCOPE_CAP
-        const flags = code[ip + 3]!
+        const flags = op === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
         const child = link(code[ip + 2]!)
         // THE SWAP, RESOLVED AT EMIT. `swapLegal` is `!trackLines`, an option;
         // the other two are table data. All three are known here, so the body
@@ -1228,7 +1234,7 @@ return v
           const vn = `v${i}`
           parts.push(`let ${vn}`)
           if (REC) parts.push(pub(i))
-          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L), sinks))
+          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
           names.push(vn)
         }
         parts.push('EC.e=cur')
@@ -1348,17 +1354,17 @@ return FAIL
 
       case OP_DISPATCH: {
         const di = code[ip + 2]!
-        const spec = dsp[di]!
+        const spec = dsp[di]
         const selector = link(code[ip + 1]!)
         const otherIp = code[ip + 3]!
         const other = otherIp >= 0 ? link(otherIp) : undefined
         const otherRouted = code[ip + 4]! === 1
         const n = code[ip + 5]!
+        validateDispatchSpec(spec, n, code[ip + 4]!)
         const armBase = ip + 6
         const arms: string[] = []
         for (let i = 0; i < n; i++) arms.push(link(code[armBase + i]!))
         const bk = hoist('bk', `DSP[${di}].byKey`)
-        const rt = hoist('rt', `DSP[${di}].routed`)
         const dx = hoist('dx', `DSP[${di}].expected`)
         // THE MATCHER ARMS, AS SOURCE. `exec.ts`'s `linkMatcher` mints one
         // closure per arm from four literals it already has in hand; the four
@@ -1385,6 +1391,19 @@ return FAIL
           : ''
         const m1 = tmp()
         const m2 = tmp()
+        const routedCall = (target: string): string => `{const savedRouted=ctx._routed
+${emitRollback(m1, L.buf, sinks)}
+${emitMark(m2, L.buf, sinks, false)}
+ctx._routed={value:key,span:{start:pos,end:selEnd}}
+try{v=${target}(input,pos,ctx)}finally{ctx._routed=savedRouted}
+break}`
+        const plainCall = (target: string): string => `v=${target}(input,selEnd,ctx);break`
+        const armCases = arms.map((target, i) => `case ${i}:${spec.routed[i] === 1
+          ? routedCall(target)
+          : plainCall(target)}`).join('\n')
+        const fallbackCase = other === undefined ? '' : `default:${otherRouted
+          ? routedCall(other)
+          : plainCall(other)}`
         // THE SELECTOR RUNS ONCE and the key it returns picks the arm — that is
         // what `dispatch()` buys over a choice of arms that each re-parse the
         // opener. A routed arm rewinds the selector's trivia capture and gets
@@ -1396,24 +1415,16 @@ if(sv===FAIL)return FAIL
 const selEnd=EC.e
 const key=sv
 let arm=${bk}.get(key)
-${fold}${chain}let ur
+${fold}${chain}
 if(arm===undefined){
-${other === undefined ? `ctx._fe=selEnd;ctx._fx=${dx};return FAIL` : `ur=${String(otherRouted)}`}
-}else ur=${rt}[arm]===1
-const savedRouted=ctx._routed
-${emitMark(m2, L.buf, sinks)}
-if(ur){
-${emitRollback(m1, L.buf, sinks)}
-${emitMark(m2, L.buf, sinks, false)}
-ctx._routed={value:key,span:{start:pos,end:selEnd}}
+${other === undefined ? `ctx._fe=selEnd;ctx._fx=${dx};return FAIL` : ''}
 }
-const at=ur?pos:selEnd
+${emitMark(m2, L.buf, sinks)}
 let v
 switch(arm){
-${arms.map((a, i) => `case ${i}:v=${a}(input,at,ctx);break`).join('\n')}
-${other === undefined ? '' : `default:v=${other}(input,at,ctx)`}
+${armCases}
+${fallbackCase}
 }
-if(ur)ctx._routed=savedRouted
 if(v===FAIL){
 ${emitRollback(m2, L.buf, sinks)}
 ctx._fc=true
