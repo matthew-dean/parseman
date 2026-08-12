@@ -554,14 +554,9 @@ describe('bench anchor gate', { timeout: SUITE_BUDGET_MS }, () => {
   })
 
   /**
-   * A repo whose base branch has a REAL version boundary, which is the only shape the
-   * "previous release" rule can be read from: an older release, the commit that
-   * released `published`, optionally some commits that merged after it and carry the
-   * same number forward, then the PR head.
-   *
-   * Returns the base sha (the branch tip, as a PR sees it) AND the release sha (the
-   * commit that introduced `published`). They differ whenever anything merged after
-   * the release, which is the case the rule has to get right.
+   * A repo whose base branch is the stable release line, followed by the release PR
+   * head. Optional commits model a stable-main repair or release guard added after the
+   * package was published without changing its runtime source.
    */
   function releaseRepo(opts: {
     previous: string
@@ -610,17 +605,17 @@ describe('bench anchor gate', { timeout: SUITE_BUDGET_MS }, () => {
     // The defect verbatim: the release is prepped, the changelog and both version
     // stamps agree, `--publish` would pass — and both perf gates are still measuring
     // against something ten releases back.
-    const { dir, baseSha, releaseSha } = releasePr('0abc123')
+    const { dir, baseSha } = releasePr('0abc123')
     const r = gate(dir, `--base=${baseSha}`)
     expect(r.ok).toBe(false)
     expect(r.out).toMatch(/RELEASE PR for 0\.45\.0/)
     expect(r.out).toContain(DENSITY)
     expect(r.out).toContain(WORKLOADS)
-    // It must name the sha to use, not merely complain.
-    expect(r.out).toContain(releaseSha.slice(0, 7))
+    // It must name the exact stable base sha to use, not merely complain.
+    expect(r.out).toContain(baseSha.slice(0, 7))
   })
 
-  it('PASSES once both anchors name the commit that released the previous version', () => {
+  it('PASSES once both anchors name the exact stable base', () => {
     const seed = releasePr('0abc123')
     const r0 = gate(seed.dir, `--base=${seed.baseSha}`)
     expect(r0.ok).toBe(false)
@@ -629,7 +624,7 @@ describe('bench anchor gate', { timeout: SUITE_BUDGET_MS }, () => {
     write(seed.dir, {
       version: '0.45.0',
       changelog: released('0.45.0'),
-      files: { 'src/a.ts': 'export const a = 1\n', ...anchors(seed.releaseSha.slice(0, 7)) },
+      files: { 'src/a.ts': 'export const a = 1\n', ...anchors(seed.baseSha.slice(0, 7)) },
     })
     git(seed.dir, 'add', '-A')
     git(seed.dir, 'commit', '-qm', 're-anchor')
@@ -639,16 +634,16 @@ describe('bench anchor gate', { timeout: SUITE_BUDGET_MS }, () => {
     expect(r.out).toMatch(/perf-gate anchors name/)
   })
 
-  it('names the commit that INTRODUCED the version, not the base tip', () => {
-    // Ordinary PRs merge between releases and carry the same number forward — three of
-    // them sat on top of 0.42.1. The anchor is where the number CHANGED, so the rule
-    // cannot just read the branch tip. Anchoring to the tip must still fail.
+  it('names the exact base tip, not the first commit that introduced its version', () => {
+    // 0.47.0 developed through multiple release candidates while package.json already
+    // said 0.47.0. The old first-version heuristic selected an unpublished tree.
+    // Stable main is now guarded, so the release PR compares against its exact tip.
     const { dir, baseSha, releaseSha } = releasePr('0abc123', 3)
     expect(baseSha).not.toBe(releaseSha)
 
     const wrong = gate(dir, `--base=${baseSha}`)
     expect(wrong.ok).toBe(false)
-    expect(wrong.out).toContain(releaseSha.slice(0, 7))
+    expect(wrong.out).toContain(baseSha.slice(0, 7))
 
     write(dir, {
       version: '0.45.0',
@@ -657,15 +652,15 @@ describe('bench anchor gate', { timeout: SUITE_BUDGET_MS }, () => {
     })
     git(dir, 'add', '-A')
     git(dir, 'commit', '-qm', 'anchor at the tip')
-    expect(gate(dir, `--base=${baseSha}`).ok).toBe(false)
+    expect(gate(dir, `--base=${baseSha}`).ok).toBe(true)
   })
 
   it('accepts a FULL sha as well as the abbreviated one', () => {
-    const { dir, baseSha, releaseSha } = releasePr('0abc123')
+    const { dir, baseSha } = releasePr('0abc123')
     write(dir, {
       version: '0.45.0',
       changelog: released('0.45.0'),
-      files: { 'src/a.ts': 'export const a = 1\n', ...anchors(releaseSha) },
+      files: { 'src/a.ts': 'export const a = 1\n', ...anchors(baseSha) },
     })
     git(dir, 'add', '-A')
     git(dir, 'commit', '-qm', 'full sha')

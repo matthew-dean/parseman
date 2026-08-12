@@ -97,6 +97,7 @@
     "prepare": "git config core.hooksPath scripts/git-hooks || true; node scripts/build.mjs",
     "prepublishOnly": "node scripts/check-changelog.mjs --publish",
     "check:changelog": "node scripts/check-changelog.mjs",
+    "check:main-release-state": "node scripts/check-main-release-state.mjs",
     "docs:verify": "node scripts/verify-doc-examples.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
