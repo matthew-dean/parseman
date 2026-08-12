@@ -45,7 +45,18 @@ describe('main release-state gate', () => {
   it('rejects an otherwise converged release while its changelog remains unreleased', () => {
     const result = gate(fixture('0.48.0', '0.48.0 — unreleased'), 'main', 'release/0.48.0')
     expect(result.ok).toBe(false)
-    expect(result.out).toMatch(/unreleased development line cannot merge to main/)
+    expect(result.out).toMatch(/release heading is not dated/)
+  })
+
+  it.each([
+    '0.47.1',
+    '0.47.1 — TBD',
+    '0.47.1 — 2026-02-30',
+    '0.47.1 — 2026-8-12',
+  ])('rejects a missing, placeholder, or invalid release date: %s', (heading) => {
+    const result = gate(fixture('0.47.1', heading), 'main', 'release/0.47.1')
+    expect(result.ok).toBe(false)
+    expect(result.out).toMatch(/real YYYY-MM-DD calendar date/)
   })
 
   it('accepts a dated release whose branch, package, changelog, and artifact stamp agree', () => {

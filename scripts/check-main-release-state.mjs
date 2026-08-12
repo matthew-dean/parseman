@@ -37,6 +37,7 @@ const changelog = readFileSync(resolve(root, 'CHANGELOG.md'), 'utf8')
 const heading = changelog.match(/^##\s+(.+)$/m)?.[1]?.trim()
 if (heading === undefined) fail('CHANGELOG.md has no release heading.')
 const headingVersion = heading.replace(/^\[/, '').split(/[\s\]]/)[0]?.replace(/^v/, '')
+const headingDate = heading.match(/(?:\s+—\s+|\s+-\s+)(\d{4}-\d{2}-\d{2})$/)?.[1]
 
 const releaseBranch = headRef.match(/^release\/(\d+\.\d+\.\d+)$/)?.[1]
 if (releaseBranch !== undefined && releaseBranch !== version) {
@@ -56,10 +57,17 @@ if (headingVersion !== version || stamp !== version) {
   )
 }
 
-if (/\bunreleased\b/i.test(heading)) {
+const validHeadingDate = (() => {
+  if (headingDate === undefined) return false
+  const [year, month, day] = headingDate.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+})()
+
+if (!validHeadingDate) {
   fail(
-    `CHANGELOG.md still says "${heading}".\n` +
-      'An unreleased development line cannot merge to main. Date the release heading first.',
+    `CHANGELOG.md release heading is not dated: "${heading}".\n` +
+      'A main release heading must end with a real YYYY-MM-DD calendar date.',
   )
 }
 
