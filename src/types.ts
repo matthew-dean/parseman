@@ -82,7 +82,7 @@ export type ParserDef =
   | { tag: 'leaf';      parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'field';     name: string; parser: Combinator<unknown> }
-  | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; rootCapture?: 'opaque'; trackLines: boolean }
+  | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; rootCapture?: 'opaque'; trackLines: boolean; constructionTrackLines?: 'on' | 'off' | 'inherit'; constructionCaptureTriviaKinds?: readonly string[] }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
   // Positive lookahead. Zero-width like `not`, but — unlike `not` — it KNOWS what

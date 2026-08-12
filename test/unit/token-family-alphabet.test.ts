@@ -4,7 +4,7 @@ import {
   compatibleLexicalOutcomes, selectedLexicalOutcome, winnerWrapsReference,
   type LexicalTokenClassifier,
 } from '../../src/compiler/token-alphabet.ts'
-import type { Combinator, ParseError, ParserDef } from '../../src/types.ts'
+import type { Combinator, ParseContext, ParseError, ParserDef } from '../../src/types.ts'
 import { composedCoverageRules } from '../../src/compiler/linker.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import {
@@ -167,20 +167,22 @@ describe('derived lexical-token families', () => {
     ])
     expect(alphabet.capabilities).not.toContainEqual(expect.objectContaining({ parser: privateSuffix }))
     expect(alphabet.capabilities[0]!.obligations).toMatchObject({
-      recognition: { kind: 'complete' },
-      diagnosticsAndEffects: { kind: 'complete' },
-      consumptionAndMaterialization: { kind: 'complete' },
-      supportedVariants: { kind: 'complete' },
-      bindingAndReachability: { kind: 'gap' },
+      recognition: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      diagnostics: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      boundaryPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      materializationPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      supportedVariants: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      bindingAndReachability: { representation: { kind: 'gap' }, executableLowering: { kind: 'gap' } },
     })
-    expect(alphabet.capabilities[0]!.obligations.bindingAndReachability)
+    expect(alphabet.capabilities[0]!.obligations.bindingAndReachability.executableLowering)
       .toMatchObject({ kind: 'gap', reason: expect.stringContaining('fixed-tuple') })
     expect(alphabet.capabilities[2]!.obligations).toMatchObject({
-      recognition: { kind: 'complete' },
-      diagnosticsAndEffects: { kind: 'gap' },
-      consumptionAndMaterialization: { kind: 'gap' },
-      supportedVariants: { kind: 'gap' },
-      bindingAndReachability: { kind: 'gap' },
+      recognition: { representation: { kind: 'complete' }, executableLowering: { kind: 'gap' } },
+      diagnostics: { representation: { kind: 'complete' }, executableLowering: { kind: 'gap' } },
+      boundaryPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'gap' } },
+      materializationPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'gap' } },
+      supportedVariants: { representation: { kind: 'gap' }, executableLowering: { kind: 'gap' } },
+      bindingAndReachability: { representation: { kind: 'gap' }, executableLowering: { kind: 'gap' } },
     })
     expect(alphabet.capabilityComplete).toBe(false)
   })
@@ -209,7 +211,9 @@ describe('derived lexical-token families', () => {
       ...site,
       obligations: {
         ...site.obligations,
-        bindingAndReachability: { kind: 'complete' } as const,
+        bindingAndReachability: {
+          representation: { kind: 'complete' }, executableLowering: { kind: 'complete' },
+        } as const,
       },
     } : site)
     expect(() => assertLexicalCapabilityClosure([root], {
@@ -391,7 +395,7 @@ describe('derived lexical-token families', () => {
       kind: 'balanced', open: '(', close: ')', strict: false, raw: false,
       skip: [{ kind: 'regex', source: '"(?:\\\\.|[^"\\\\])*"' }],
     })
-    expect(alphabet.capabilities[0]!.obligations.recognition).toEqual({ kind: 'complete' })
+    expect(alphabet.capabilities[0]!.obligations.recognition.representation).toEqual({ kind: 'complete' })
     expect(collectLexicalAlphabet([token(group)]).recognizers[0]!.ir)
       .toMatchObject({ kind: 'balanced', open: '(', close: ')' })
 
@@ -401,7 +405,7 @@ describe('derived lexical-token families', () => {
       _tag: group._tag, _meta: group._meta, _def: group._def,
       parse: group.parse.bind(group),
     } as Combinator<string>
-    expect(collectLexicalAlphabet([unmarked]).capabilities[0]!.obligations.recognition)
+    expect(collectLexicalAlphabet([unmarked]).capabilities[0]!.obligations.recognition.representation)
       .toMatchObject({ kind: 'gap', reason: expect.stringContaining('transform is effectful') })
   })
 
@@ -507,7 +511,7 @@ describe('derived lexical-token families', () => {
     expect(alphabet.transitionDiagnostics.every(plan => plan.events.every(event =>
       event.state >= 0 && event.state < plan.stateCount))).toBe(true)
     expect(alphabet.capabilities.filter(site => site.atom === 'token').every(site =>
-      site.obligations.diagnosticsAndEffects.kind === 'gap')).toBe(true)
+      site.obligations.diagnostics.executableLowering.kind === 'gap')).toBe(true)
     expect(encodeTable(Object.fromEntries(roots.map((root, index) => [`R${index}`, root]))))
       .not.toHaveProperty('transitionDiagnostics')
 
@@ -547,6 +551,393 @@ describe('derived lexical-token families', () => {
     // occurrence census green because internal checkpoints were not authority.
   })
 
+  it('represents token boundaries as a well-nested overlay on the one diagnostic state session', () => {
+    const simple = token(literal('a'))
+    const nested = token(token(literal('b')))
+    const scoped = token(parser({ trivia: null }, literal('c')))
+    const hiddenBalancedWrappers = token(balanced('(', ')', {
+      skip: [parser({ trivia: null }, parser({ trivia: null }, regex(/ +/)))],
+    }))
+    const deep = token(parser({ trivia: null }, sequence(
+      literal(':'),
+      not(parser({ trivia: regex(/ +/) }, token(parser({ trivia: null }, sequence(
+        literal('extend'), literal('('),
+      ))))),
+      regex(/[a-z]+/),
+    )))
+    const roots = [simple, nested, scoped, hiddenBalancedWrappers, deep]
+    const alphabet = collectLexicalAlphabet(roots)
+    const topologyFor = (parser: Combinator<unknown>) => {
+      const site = alphabet.capabilities.find(entry => entry.atom === 'token' && entry.parser === parser)!
+      expect(site.boundaryTopologyId).toBeTypeOf('number')
+      return alphabet.boundaryTopologies[site.boundaryTopologyId!]!
+    }
+    const shape = (parser: Combinator<unknown>) =>
+      topologyFor(parser).frames.map(frame => frame.kind === 'token' ? 'T' : 'G').join('>')
+
+    expect(shape(simple)).toBe('T')
+    expect(shape(nested)).toBe('T>T')
+    expect(shape(scoped)).toBe('T>G')
+    // The balanced constructor marker hides its skipper graph from ordinary
+    // ParserDef children. Only the shared normalization session sees both scopes.
+    expect(shape(hiddenBalancedWrappers)).toBe('T>T>G>G')
+    expect(shape(deep)).toBe('T>G>G>T>G')
+
+    const deepSite = alphabet.capabilities.find(entry => entry.parser === deep && entry.atom === 'token')!
+    const deepPlan = alphabet.transitionDiagnostics[deepSite.diagnosticPlanId!]!
+    const deepControls = alphabet.controlPlans[deepSite.controlPlanId!]!
+    const assertion = deepPlan.events.find(event => event.op === 'ASSERT')!
+    const frames = topologyFor(deep).frames
+    expect(frames.map(frame => frame.parentFrameId)).toEqual([undefined, 0, 1, 2, 3])
+    expect(frames[2]).toMatchObject({
+      kind: 'grammar', stateStart: assertion.innerStart, stateEnd: assertion.innerEnd,
+    })
+    expect(frames.slice(2).every(frame =>
+      frame.stateStart >= assertion.innerStart && frame.stateEnd <= assertion.innerEnd)).toBe(true)
+    for (const frame of frames) {
+      const control = deepControls.controls[frame.controlId]!
+      expect(control).toMatchObject({
+        id: frame.controlId, kind: frame.kind,
+        stateStart: frame.stateStart, stateEnd: frame.stateEnd,
+      })
+      expect(frame.stateStart).toBeGreaterThanOrEqual(0)
+      expect(frame.stateEnd).toBeGreaterThanOrEqual(frame.stateStart)
+      expect(frame.stateEnd).toBeLessThanOrEqual(deepPlan.stateCount)
+      if (frame.parentFrameId !== undefined) {
+        const parent = frames[frame.parentFrameId]!
+        expect(frame.stateStart).toBeGreaterThanOrEqual(parent.stateStart)
+        expect(frame.stateEnd).toBeLessThanOrEqual(parent.stateEnd)
+      }
+    }
+
+    // Equal state intervals are not equal execution sites. Balanced skipper
+    // wrappers execute conditionally and repeatedly inside the balanced VM;
+    // their unique control ancestry must retain that placement rather than
+    // aliasing them to the enclosing token merely because stateStart matches.
+    const hiddenSite = alphabet.capabilities.find(entry =>
+      entry.atom === 'token' && entry.parser === hiddenBalancedWrappers)!
+    const hiddenTopology = alphabet.boundaryTopologies[hiddenSite.boundaryTopologyId!]!
+    const hiddenPlan = alphabet.controlPlans[hiddenSite.controlPlanId!]!
+    const hiddenGrammar = hiddenTopology.frames.find(frame => frame.kind === 'grammar')!
+    const controlAncestors: string[] = []
+    let control = hiddenPlan.controls[hiddenGrammar.controlId]
+    while (control !== undefined) {
+      controlAncestors.push(control.kind)
+      control = control.parentControlId === undefined
+        ? undefined : hiddenPlan.controls[control.parentControlId]
+    }
+    expect(controlAncestors).toEqual(['grammar', 'balanced-skip', 'balanced', 'token', 'token'])
+    expect(hiddenPlan.controls.filter(entry => entry.stateStart === hiddenGrammar.stateStart)
+      .map(entry => entry.id)).toEqual(expect.arrayContaining([
+      hiddenGrammar.controlId,
+      hiddenPlan.controls.find(entry => entry.kind === 'balanced-skip')!.id,
+    ]))
+    expect(hiddenGrammar.controlId)
+      .not.toBe(hiddenPlan.controls.find(entry => entry.kind === 'balanced-skip')!.id)
+
+    expect(alphabet.boundaryPlans).toEqual([{ id: 0, kind: 'token-context-transaction' }])
+    expect(alphabet.materializationPlans).toEqual([{ id: 0, kind: 'token-source-range' }])
+    expect(alphabet.capabilities.filter(site => site.atom === 'token').every(site =>
+      site.obligations.boundaryPlan.representation.kind === 'complete'
+      && site.obligations.materializationPlan.representation.kind === 'complete'
+      && site.obligations.boundaryPlan.executableLowering.kind === 'gap'
+      && site.obligations.materializationPlan.executableLowering.kind === 'gap')).toBe(true)
+    expect(alphabet.capabilityComplete).toBe(false)
+
+    const pointerFree = (value: unknown): boolean => {
+      if (typeof value === 'function') return false
+      if (value === null || typeof value !== 'object') return true
+      if (value instanceof Map || value instanceof Set || isCombinator(value)) return false
+      return Object.values(value).every(pointerFree)
+    }
+    expect(pointerFree(alphabet.boundaryPlans)).toBe(true)
+    expect(pointerFree(alphabet.materializationPlans)).toBe(true)
+    expect(pointerFree(alphabet.controlPlans)).toBe(true)
+    expect(pointerFree(alphabet.grammarWrapperSpecs)).toBe(true)
+    expect(pointerFree(alphabet.boundaryTopologies)).toBe(true)
+    expect(encodeTable(Object.fromEntries(roots.map((root, index) => [`B${index}`, root]))))
+      .not.toHaveProperty('boundaryTopologies')
+
+    // Each plant mutates one independent compiler authority. Before B3 these
+    // all passed because only the recognizer/diagnostic plans were closed.
+    for (const planted of [
+      { ...alphabet, boundaryPlans: [] },
+      { ...alphabet, materializationPlans: [] },
+      { ...alphabet, controlPlans: alphabet.controlPlans.slice(1) },
+      { ...alphabet, grammarWrapperSpecs: alphabet.grammarWrapperSpecs.slice(1) },
+      { ...alphabet, controlPlans: alphabet.controlPlans.map(plan =>
+        plan !== hiddenPlan ? plan : ({
+          ...plan, controls: plan.controls.filter(entry => entry.kind !== 'balanced-skip'),
+        })) },
+      { ...alphabet, boundaryTopologies: alphabet.boundaryTopologies.map((topology, index) =>
+        index === deepSite.boundaryTopologyId ? { ...topology, frames: topology.frames.slice(0, -1) } : topology) },
+      { ...alphabet, capabilities: alphabet.capabilities.map(site => site === deepSite
+        ? { ...site, boundaryTopologyId: topologyFor(simple).id } : site) },
+    ]) {
+      expect(() => assertLexicalCapabilityClosure(roots, planted))
+        .toThrow('lexical capability census is incomplete')
+    }
+    // RED provenance: replacing frame.controlId with stateStart or omitting the
+    // balanced-skip control used to preserve every interval/count while losing
+    // the conditional/repeated execution anchor.
+  })
+
+  it('preserves authored grammar-wrapper policy separately from effective context', () => {
+    const inheritedGrammar = parser({ trivia: null }, token(literal('x')))
+    const disabledGrammar = parser({ trivia: null, trackLines: false }, token(literal('x')))
+    const authoredCaptureKinds = ['comment', 'license']
+    const capturedKindsGrammar = parser({
+      captureTriviaKinds: authoredCaptureKinds,
+    }, token(literal('x')))
+    const inherited = token(inheritedGrammar)
+    const disabled = token(disabledGrammar)
+    const capturedKinds = token(capturedKindsGrammar)
+    const alphabet = collectLexicalAlphabet([inherited, disabled, capturedKinds])
+    authoredCaptureKinds.push('mutated-after-inventory')
+    const grammarSpecFor = (owner: Combinator<unknown>) => {
+      const site = alphabet.capabilities.find(entry => entry.atom === 'token' && entry.parser === owner)!
+      const topology = alphabet.boundaryTopologies[site.boundaryTopologyId!]!
+      const grammarFrame = topology.frames.find(frame => frame.kind === 'grammar')!
+      return alphabet.grammarWrapperSpecs[grammarFrame.wrapperSpecId]!
+    }
+    const inheritedSpec = grammarSpecFor(inherited)
+    const disabledSpec = grammarSpecFor(disabled)
+    const capturedSpec = grammarSpecFor(capturedKinds)
+    expect(inheritedSpec.trackLines).toBe('inherit')
+    expect(disabledSpec.trackLines).toBe('off')
+    expect(inheritedSpec.id).not.toBe(disabledSpec.id)
+    expect(capturedSpec.captureTriviaKindsId).toBeTypeOf('number')
+    expect(alphabet.grammarCaptureTriviaKinds[capturedSpec.captureTriviaKindsId!])
+      .toEqual(['comment', 'license'])
+    expect(capturedKindsGrammar._def.tag === 'grammar'
+      ? capturedKindsGrammar._def.constructionCaptureTriviaKinds : undefined)
+      .toEqual(['comment', 'license', 'mutated-after-inventory'])
+    expect(capturedKindsGrammar.parse.toString()).not.toContain('constructionTrackLines')
+    expect(capturedKindsGrammar.parse.toString()).not.toContain('constructionCaptureTriviaKinds')
+
+    // Construction policy is ordinary typed compiler IR, not an identity cache
+    // or hidden property. A final-winner/compose-style ParserDef copy retains it
+    // deterministically without consulting the executable parser closure.
+    if (capturedKindsGrammar._def.tag !== 'grammar') throw new Error('lost grammar')
+    const copiedGrammar = synthetic(capturedKindsGrammar, { ...capturedKindsGrammar._def })
+    const copied = collectLexicalAlphabet([token(copiedGrammar)])
+    expect(copied.capabilities.find(site => site.atom === 'token')!
+      .obligations.boundaryPlan.representation).toEqual({ kind: 'complete' })
+    expect(copied.grammarCaptureTriviaKinds).toEqual([
+      ['comment', 'license', 'mutated-after-inventory'],
+    ])
+
+    const observed = (root: Combinator<unknown>): { result: unknown; trackReads: number } => {
+      let trackReads = 0
+      const target = { trackLines: false, state: {} } as ParseContext
+      const ctx = new Proxy(target, {
+        get(value, key, receiver) {
+          if (key === 'trackLines') trackReads++
+          return Reflect.get(value, key, receiver)
+        },
+      })
+      return { result: root.parse('x', 0, ctx), trackReads }
+    }
+    const inheritRun = observed(inherited)
+    const disabledRun = observed(disabled)
+    expect(inheritRun.result).toEqual(disabledRun.result)
+    // Both wrappers spread the incoming context; only the inherited resolver
+    // performs one additional pre-clone read.
+    expect(inheritRun.trackReads).toBe(disabledRun.trackReads + 1)
+
+    // Hand-built/old grammar defs lack exact construction policy. Recognition
+    // remains represented, but boundary/materialization representation declines
+    // without allocating a false wrapper spec or topology.
+    const originalDef = inheritedGrammar._def
+    if (originalDef.tag !== 'grammar') throw new Error('lost grammar')
+    const {
+      constructionTrackLines: _constructionTrackLines,
+      constructionCaptureTriviaKinds: _constructionCaptureTriviaKinds,
+      ...oldDef
+    } = originalDef
+    const oldGrammar = synthetic(inheritedGrammar, oldDef)
+    const oldOwner = token(oldGrammar)
+    const declined = collectLexicalAlphabet([oldOwner])
+    const oldSite = declined.capabilities.find(site => site.atom === 'token')!
+    expect(oldSite.obligations.recognition.representation).toEqual({ kind: 'complete' })
+    expect(oldSite.obligations.diagnostics.representation).toEqual({ kind: 'complete' })
+    expect(oldSite.obligations.boundaryPlan.representation).toMatchObject({ kind: 'gap' })
+    expect(oldSite).not.toHaveProperty('boundaryTopologyId')
+    expect(declined.grammarWrapperSpecs).toEqual([])
+    expect(declined.boundaryTopologies).toEqual([])
+
+    // A missing late wrapper refuses the whole occurrence before an earlier
+    // valid wrapper can intern unreachable source-operation metadata.
+    const lateDecline = collectLexicalAlphabet([token(sequence(
+      parser({ trivia: null }, literal('a')),
+      oldGrammar,
+    ))])
+    expect(lateDecline.grammarWrapperSpecs).toEqual([])
+    expect(lateDecline.boundaryTopologies).toEqual([])
+
+    // Construction metadata must not add option reads or iteration. With
+    // trivia:null the source path ignores captureTriviaKinds entirely, so a
+    // hostile getter remains untouched. With inherited trivia the source reads
+    // the policy once but does not iterate it until parsing; capability
+    // inventory snapshots fail closed without leaving partial wrapper metadata.
+    let ignoredCaptureReads = 0
+    const ignoredOptions = new Proxy({ trivia: null }, {
+      get(target, key, receiver) {
+        if (key === 'captureTriviaKinds') {
+          ignoredCaptureReads++
+          throw new Error('ignored capture policy was read')
+        }
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    expect(() => parser(ignoredOptions, token(literal('i')))).not.toThrow()
+    expect(ignoredCaptureReads).toBe(0)
+
+    let activeCaptureReads = 0
+    const hostileKinds = new Proxy(['comment'], {
+      get(target, key, receiver) {
+        if (key === Symbol.iterator) throw new Error('hostile capture policy iteration')
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    const activeOptions = new Proxy({ captureTriviaKinds: hostileKinds }, {
+      get(target, key, receiver) {
+        if (key === 'captureTriviaKinds') activeCaptureReads++
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    const hostileGrammar = parser(activeOptions, token(literal('h')))
+    expect(activeCaptureReads).toBe(1)
+    const hostile = collectLexicalAlphabet([token(hostileGrammar)])
+    expect(activeCaptureReads).toBe(1)
+    expect(hostile.capabilities.find(site => site.atom === 'token')!
+      .obligations.boundaryPlan.representation)
+      .toMatchObject({ kind: 'gap', reason: expect.stringContaining('snapshotted safely') })
+    expect(hostile.grammarWrapperSpecs).toEqual([])
+    expect(hostile.boundaryTopologies).toEqual([])
+  })
+
+  it('pins the source token transaction order and its abrupt-completion boundaries', () => {
+    const slots = [
+      'trivia', 'triviaKindLabels', '_cstBuf', '_cstChildren', '_cstLeaves',
+      '_cstRawChildren', '_cstTriviaLog', '_triviaLog', '_rootTriviaLog',
+    ] as const
+    const makeTarget = (): ParseContext => ({
+      trivia: literal(' '), triviaKindLabels: ['ws'], _cstBuf: undefined,
+      _cstChildren: [], _cstLeaves: [], _cstRawChildren: [], _cstTriviaLog: [],
+      _triviaLog: [], _rootTriviaLog: [], trackLines: false,
+    })
+    const run = (mode: 'fail' | 'throw', abrupt?: { phase: 'get' | 'set'; key: string; setCount?: number }) => {
+      const log: string[] = []
+      const target = makeTarget()
+      const sets = new Map<PropertyKey, number>()
+      const ctx = new Proxy(target, {
+        get(value, key, receiver) {
+          if ((slots as readonly PropertyKey[]).includes(key)) log.push(`get:${String(key)}`)
+          if (abrupt?.phase === 'get' && abrupt.key === key) throw new Error(`abrupt get ${String(key)}`)
+          return Reflect.get(value, key, receiver)
+        },
+        set(value, key, next, receiver) {
+          if ((slots as readonly PropertyKey[]).includes(key)) log.push(`set:${String(key)}`)
+          const count = (sets.get(key) ?? 0) + 1
+          sets.set(key, count)
+          if (abrupt?.phase === 'set' && abrupt.key === key && count === (abrupt.setCount ?? 1)) {
+            throw new Error(`abrupt set ${String(key)}`)
+          }
+          return Reflect.set(value, key, next, receiver)
+        },
+      })
+      const base = literal('x')
+      const child: Combinator<unknown> = {
+        ...base,
+        parse() {
+          log.push('child')
+          if (mode === 'throw') throw new Error('child throw')
+          return { ok: false, expected: ['x'], span: { start: 0, end: 0 } }
+        },
+      }
+      let thrown: unknown
+      try { token(child).parse('x', 0, ctx) } catch (error) { thrown = error }
+      return { log, target, thrown }
+    }
+    const reads = slots.map(key => `get:${key}`)
+    // cstCaptureActive performs its own two ordered reads after the nine saves.
+    const captureReads = ['get:_cstBuf', 'get:_cstLeaves']
+    const clears = slots.map(key => `set:${key}`)
+    const restores = [...clears]
+
+    const ordinary = run('fail')
+    expect(ordinary.thrown).toBeUndefined()
+    expect(ordinary.log).toEqual([...reads, ...captureReads, ...clears, 'child', ...restores])
+
+    const childThrow = run('throw')
+    expect(childThrow.thrown).toMatchObject({ message: 'child throw' })
+    expect(childThrow.log).toEqual([...reads, ...captureReads, ...clears, 'child', ...restores])
+
+    const saveThrow = run('fail', { phase: 'get', key: '_cstChildren' })
+    expect(saveThrow.thrown).toMatchObject({ message: 'abrupt get _cstChildren' })
+    expect(saveThrow.log).toEqual(reads.slice(0, 4))
+
+    const clearThrow = run('fail', { phase: 'set', key: '_cstLeaves' })
+    expect(clearThrow.thrown).toMatchObject({ message: 'abrupt set _cstLeaves' })
+    expect(clearThrow.log).toEqual([
+      ...reads, ...captureReads, ...clears.slice(0, 5),
+    ])
+
+    const restoreThrow = run('fail', { phase: 'set', key: '_cstLeaves', setCount: 2 })
+    expect(restoreThrow.thrown).toMatchObject({ message: 'abrupt set _cstLeaves' })
+    expect(restoreThrow.log).toEqual([
+      ...reads, ...captureReads, ...clears, 'child', ...restores.slice(0, 5),
+    ])
+  })
+
+  it('pins post-restore token materialization and grammar normal-failure versus throw', () => {
+    const base = literal('x')
+    const success: Combinator<unknown> = {
+      ...base,
+      parse(_input, pos) { return { ok: true, value: 'child', span: { start: pos, end: pos + 1 } } },
+    }
+    const savedLeaves: unknown[] = []
+    const ctx: ParseContext = { trackLines: false, _cstLeaves: savedLeaves }
+    const hostileInput = {
+      slice() { throw new Error('slice after restore') },
+    } as unknown as string
+    expect(() => token(success).parse(hostileInput, 2, ctx)).toThrow('slice after restore')
+    expect(ctx._cstLeaves).toBe(savedLeaves)
+
+    const throwingLeaves = new Proxy([] as unknown[], {
+      get(target, key, receiver) {
+        if (key === 'push') return () => { throw new Error('leaf after restore') }
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    const leafCtx: ParseContext = { trackLines: false, _cstLeaves: throwingLeaves }
+    expect(() => token(success).parse('abc', 1, leafCtx)).toThrow('leaf after restore')
+    expect(leafCtx._cstLeaves).toBe(throwingLeaves)
+
+    const child = (throws: boolean): Combinator<unknown> => ({
+      ...base,
+      parse(_input, pos, inner) {
+        inner._lineScannedTo = 9
+        if (throws) throw new Error('grammar child throw')
+        return { ok: false, expected: ['x'], span: { start: pos, end: pos } }
+      },
+    })
+    const failedOuter: ParseContext = {
+      trackLines: true, _lineIndex: { lineStarts: [0] }, _lineScannedTo: 1,
+    }
+    const failed = parser({ trackLines: true }, child(false)).parse('x', 0, failedOuter)
+    expect(failed.ok).toBe(false)
+    expect(failedOuter._lineScannedTo).toBe(9)
+
+    const thrownOuter: ParseContext = {
+      trackLines: true, _lineIndex: { lineStarts: [0] }, _lineScannedTo: 1,
+    }
+    expect(() => parser({ trackLines: true }, child(true)).parse('x', 0, thrownOuter))
+      .toThrow('grammar child throw')
+    expect(thrownOuter._lineScannedTo).toBe(1)
+  })
+
   it('elides only a trivia scope whose direct token child shadows its lexical context', () => {
     const whitespace = regex(/ +/)
     const shadowed = token(sequence(
@@ -555,7 +946,7 @@ describe('derived lexical-token families', () => {
       regex(/[a-z]+/),
     ))
     const alphabet = collectLexicalAlphabet([shadowed])
-    expect(alphabet.capabilities[0]!.obligations.recognition).toEqual({ kind: 'complete' })
+    expect(alphabet.capabilities[0]!.obligations.recognition.representation).toEqual({ kind: 'complete' })
     expect(alphabet.recognizers[0]!.ir).toMatchObject({
       kind: 'sequence',
       parts: [
@@ -570,7 +961,7 @@ describe('derived lexical-token families', () => {
       not(parser({ trivia: whitespace }, sequence(literal('extend'), literal('(')))),
       regex(/[a-z]+/),
     ))
-    expect(collectLexicalAlphabet([contextBearing]).capabilities[0]!.obligations.recognition)
+    expect(collectLexicalAlphabet([contextBearing]).capabilities[0]!.obligations.recognition.representation)
       .toMatchObject({ kind: 'gap', reason: expect.stringContaining('trivia-bearing scope') })
 
     // RED provenance: stripping every grammar wrapper makes the second token
@@ -875,7 +1266,7 @@ describe('derived lexical-token families', () => {
     expect(occurrences.every(entry => entry.precisionNotes.some(reason =>
       reason.includes('nested leading choice')))).toBe(true)
     expect(alphabet.capabilities.filter(site => site.parser === shared)
-      .every(site => site.obligations.recognition.kind === 'complete')).toBe(true)
+      .every(site => site.obligations.recognition.representation.kind === 'complete')).toBe(true)
     expect(occurrences.every(entry => entry.fallback === 'unrestricted')).toBe(true)
     // RED provenance: deduplicating by parser/language alone collapses these two
     // outer lexical contexts. A missing nested-union proof is cost-only: the
@@ -893,7 +1284,7 @@ describe('derived lexical-token families', () => {
     expect(site.families).toEqual([])
     expect(site.precisionNotes).toContainEqual(expect.stringContaining('grammar wrapper changes lexical context'))
     expect(alphabet.capabilities.find(capability => capability.parser === root)!
-      .obligations.recognition).toEqual({ kind: 'complete' })
+      .obligations.recognition.representation).toEqual({ kind: 'complete' })
     expect(alphabet.sites.find(tokenSite => tokenSite.parser === selectorToken)!.refusal).toBeUndefined()
     expect(alphabet.decisionFamilies.some(family =>
       family.ir.kind === 'regex' && family.ir.source === '[a-z]+')).toBe(true)
@@ -925,7 +1316,7 @@ describe('derived lexical-token families', () => {
     expect(new Set(lexical.decisionFamilies.flatMap(family => irKinds(family.ir)))).toEqual(new Set([
       'literal', 'keywords', 'regex', 'sequence', 'choice', 'repeat', 'assert', 'balanced',
     ]))
-    expect(lexical.capabilities.every(site => site.obligations.recognition.kind === 'complete')).toBe(true)
+    expect(lexical.capabilities.every(site => site.obligations.recognition.representation.kind === 'complete')).toBe(true)
     for (const kind of ['literal', 'keywords', 'regex', 'sequence', 'choice', 'repeat', 'assert', 'balanced'] as const) {
       expect(() => assertLexicalCapabilityClosure(lexicalRoots, {
         capabilities: lexical.capabilities,
@@ -951,7 +1342,7 @@ describe('derived lexical-token families', () => {
     const contextual = collectLexicalAlphabet(contextRoots)
     const occurrences = contextual.capabilities.filter(site => site.parser === shared)
     expect(new Set(occurrences.map(site => site.contextKey)).size).toBeGreaterThanOrEqual(6)
-    expect(occurrences.every(site => site.obligations.recognition.kind === 'complete')).toBe(true)
+    expect(occurrences.every(site => site.obligations.recognition.representation.kind === 'complete')).toBe(true)
     const omitted = occurrences[occurrences.length >> 1]!
     expect(() => assertLexicalCapabilityClosure(contextRoots, {
       capabilities: contextual.capabilities.filter(site => site !== omitted),
@@ -1540,8 +1931,10 @@ describe('derived lexical-token families', () => {
     expect(alphabet.capabilities[0]).toMatchObject({
       status: { kind: 'impossible', proof: expect.stringContaining('positive width') },
       obligations: {
-        recognition: { kind: 'impossible', proof: expect.stringContaining('positive width') },
-        diagnosticsAndEffects: { kind: 'gap' },
+        recognition: {
+          representation: { kind: 'impossible', proof: expect.stringContaining('positive width') },
+        },
+        diagnostics: { representation: { kind: 'gap' } },
       },
     })
   })
