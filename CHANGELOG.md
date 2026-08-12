@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.47.1 — unreleased
+## 0.47.1 — 2026-08-12
 
 - Preserve nodes, fields, recovery errors, and other child-owned effects when a
   sequence term succeeds without consuming input after ambient trivia. Only the
