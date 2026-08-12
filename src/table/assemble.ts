@@ -71,18 +71,18 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
+  advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt,
   saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
-  cstCaptureActive, cstLeavesLen, cstTlLen,
+  cstCaptureActive, cstLeavesLen,
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
@@ -119,17 +119,12 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  */
 import {
   classHas, decodeClassSpec, expandCompact, resolveTable,
-  validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
-import {
-  makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
-} from './scalar-terminal.ts'
 
 /**
  * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?
@@ -419,21 +414,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    */
   const EC = newEndCell()
 
-  // Indexed by the existing constant-pool operand: the same scalar recognizer
-  // serves an ordinary terminal piece and a direct terminal-node materializer.
-  // Value/CST/failure/cursor effects stay in those consumers.
-  const scalarRecognizers: Array<ScalarRecognizer | undefined> = []
-  const rawScalarSpecs = new Set<number>()
-  function scalarFor(child: number): ScalarRecognizer | undefined {
-    const spec = code[child + 1]!
-    let recognize = scalarRecognizers[spec]
-    if (recognize === undefined) {
-      recognize = makeScalarRecognizer(code[child]!, k[spec])
-      scalarRecognizers[spec] = recognize
-    }
-    return recognize
-  }
-
   /**
    * The INSTALLED trivia scanner for the scope currently running.
    *
@@ -681,23 +661,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       TERMV = v
       return EC.e > scanEnd ? EC.e : cur
     }
-    // SCALAR MARKS — only the three trivia sinks can receive ambient-scan rows.
-    // Child-owned nodes, fields and errors are deliberately outside this range.
-    const need = rollbackNeeded(ctx)
-    const mTl = need ? cstTlLen(ctx) : 0
+    // SCALAR MARKS — no per-term mark object, as `exec.ts` established.
+    const need = markCst(ctx)
+    const mRaw = MRAW
+    const mTl = MTL
+    const mLv = MLV
+    const mFl = need ? ctx._fields?.length ?? 0 : 0
+    const mEr = need ? ctx._errors?.length ?? 0 : 0
     const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
     const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const scanEnd = skipTrivia(input, cur, ctx)
-    const scanTl = need ? cstTlLen(ctx) : 0
-    const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
-    const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const v = child(input, scanEnd, ctx)
     if (v === FAIL) return -1
     TERMV = v
     if (EC.e > scanEnd) return EC.e
     // The term matched nothing, so the trivia in front of it was never consumed
     // by anything — unrecord it and leave the cursor where it was.
-    if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
+    if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
     return cur
   }
 
@@ -779,20 +759,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const s = k[code[ip + 1]!] as string
         const len = s.length
         const xf = fx[code[ip + 2]!] as string[]
-        const shared = rawScalarSpecs.has(code[ip + 1]!) ? scalarFor(ip) : undefined
-        if (shared !== undefined) {
-          return (input, pos, ctx) => {
-            const e = shared(input, pos)
-            if (e >= 0) {
-              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
-              EC.e = e
-              return s
-            }
-            ctx._fe = pos; ctx._fx = xf
-            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
-            return FAIL
-          }
-        }
         // LENGTH IS TABLE DATA, so the COMPARE is chosen here rather than
         // delegated to a builtin that has to rediscover it. See `litBodyNote`.
         if (len === 1) {
@@ -918,21 +884,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_RX: {
         const re = k[code[ip + 1]!] as RegExp
         const xf = fx[code[ip + 2]!] as string[]
-        const shared = rawScalarSpecs.has(code[ip + 1]!) ? scalarFor(ip) : undefined
-        if (shared !== undefined) {
-          return (input, pos, ctx) => {
-            const e = shared(input, pos)
-            if (e >= 0) {
-              const v = input.slice(pos, e)
-              if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
-              EC.e = e
-              return v
-            }
-            ctx._fe = pos; ctx._fx = xf
-            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
-            return FAIL
-          }
-        }
         return (input, pos, ctx) => {
           re.lastIndex = pos
           // `regex()` rows are sticky and expose only their whole match.  `exec()`
@@ -1261,8 +1212,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_SCOPE:
-      case OP_SCOPE_CAP:
-      case OP_SCOPE_PLAIN: {
+      case OP_SCOPE_CAP: {
         const ki = code[ip + 1]!
         const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
         const scopeLabels = scopeTrivia?._meta.triviaKindLabels
@@ -1311,7 +1261,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               SCAN = savedScan
               return v
             }
-        return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
+        return scopeRootPolicy(scopePiece, code[ip + 3]!)
       }
 
       case OP_ROUTED: {
@@ -1356,21 +1306,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       /* ── zero-width ──────────────────────────────────────────────────────── */
 
       case OP_NOT: {
-        const scalarChild = scalarTerminalNotChild(code, ip)
-        if (scalarChild >= 0) {
-          const recognize = scalarFor(scalarChild)!
-          const xf = fx[code[ip + 2]!] as string[]
-          return (input, pos, ctx) => {
-            if (recognize(input, pos) < 0) {
-              EC.e = pos
-              return null
-            }
-            ctx._fe = pos
-            ctx._fx = xf
-            EC.e = pos
-            return FAIL
-          }
-        }
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
         return (input, pos, ctx) => {
@@ -1532,10 +1467,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const kids: Piece[] = new Array<Piece>(n)
         for (let i = 0; i < n; i++) kids[i] = link(code[base + i]!)
         const wantValues = op !== OP_SEQV
-        const reducer = fused ? code[ip + 1]! : -1
-        const projection = reducer < 0 ? ~reducer : -1
-        const fn = fused && projection < 0
-          ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
+        const fn = fused
+          ? fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
           : undefined
 
         /**
@@ -1655,7 +1588,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runSyncTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+              return fn!(values, { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1721,7 +1654,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runAdjTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+              return fn!(values, { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1764,7 +1697,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
               if (v === FAIL) return FAIL
-              return projection === 0 ? v : fn!([v], { start: pos, end: EC.e })
+              return fn!([v], { start: pos, end: EC.e })
             }
           }
           if (wantValues) {
@@ -1790,9 +1723,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = nextTerm(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
-              return projection === 0 ? v0
-                : projection === 1 ? TERMV
-                : fn!([v0, TERMV], { start: pos, end: cur })
+              return fn!([v0, TERMV], { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1827,10 +1758,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               cur = nextTerm(k2, input, cur, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
-              return projection === 0 ? v0
-                : projection === 1 ? v1
-                : projection === 2 ? TERMV
-                : fn!([v0, v1, TERMV], { start: pos, end: cur })
+              return fn!([v0, v1, TERMV], { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1864,7 +1792,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const cur = runTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
             EC.e = cur
-            return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+            return fn!(values, { start: pos, end: cur })
           }
         }
         if (wantValues) {
@@ -2177,18 +2105,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const reportItem = (flags & 4) !== 0
         const itemFx = reportItem ? fx[code[ip + 6]!] as string[] : EMPTY_FX
         const collect = op === OP_REP
-        // The item's finite, non-nullable first set is table data. A strict
-        // optional iteration whose lead is outside it cannot run or commit, so
-        // stop before entering the child graph. Tolerant assemblies keep the
-        // ordinary failure path because it may recover the rejected input.
-        // A separator-less repeat has no separator sentinel, so ip+7 carries
-        // the optional item's class at no extra table width. Separated lists
-        // keep that slot for their recovery sentinel and use the ordinary path.
-        const itemClassIndex = sepIp < 0 ? code[ip + 7]! : -1
-        const itemClass = !REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined
-        const itemMayStart = itemClass === undefined
-          ? undefined
-          : (input: string, pos: number): boolean => classHas(itemClass, lead(input, pos))
         // `many()` — the min-0, separator-less repeat — is the only shape that runs
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
@@ -2319,10 +2235,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const out: unknown[] | undefined = collect ? [] : undefined
           const hasTrivia = ctx.trivia !== undefined
           const needMark = rollbackNeeded(ctx)
-          // A completions probe deliberately observes swallowed item failures.
-          // Keep the ordinary child path while one is active so this structural
-          // fast stop cannot erase an item completion at the cursor.
-          const gateItems = itemMayStart !== undefined && ctx._probe === undefined
           let cur = pos
           let count = 0
           for (;;) {
@@ -2331,10 +2243,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // the LOOP HEAD. Held to `count >= min` so an under-`min` list still
             // attempts the separator and reports its expected set.
             if (sep !== undefined && count > 0 && count >= min && cur >= input.length) break
-            // With no trivia or separator to position, the item starts at `cur`.
-            // This is the full 0.46 loop-head cut: no mark and no child setup.
-            if (count >= min && sep === undefined && !hasTrivia
-              && gateItems && !itemMayStart!(input, cur)) break
             // Per ITERATION, never hoisted: a preceding item's `node()` opened and
             // closed a capture buffer, so `ctx._cstBuf` is not the object it was
             // at the loop head. `needMark` is the pre-existing loop-invariant.
@@ -2367,11 +2275,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               itemStart = skipTrivia(input, itemStart, ctx)
             }
             if (itemStart >= input.length && viaRepItem) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-              if (trailingAllowed && sepEnd >= 0) cur = sepEnd
-              break
-            }
-            if (count >= min && gateItems && !itemMayStart!(input, itemStart)) {
               if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
@@ -2460,23 +2363,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             usesRouted = routed[arm] === 1
           }
 
+          const savedRouted = ctx._routed
           let mark = saveTriviaMark(ctx)
-          let v: unknown
           if (usesRouted) {
-            const savedRouted = ctx._routed
             rollbackTrivia(ctx, selectorMark)
             mark = saveTriviaMark(ctx)
             ctx._routed = { value: key, span: { start: pos, end: selEnd } }
-            try {
-              v = target(input, pos, ctx)
-            } finally {
-              ctx._routed = savedRouted
-            }
-          } else {
-            // Keep the ordinary dispatch arm on its direct call path. Only a
-            // branch that installed `_routed` needs exception cleanup.
-            v = target(input, selEnd, ctx)
           }
+          const v = target(input, usesRouted ? pos : selEnd, ctx)
+          if (usesRouted) ctx._routed = savedRouted
           if (v === FAIL) {
             rollbackTrivia(ctx, mark)
             // A failed dispatch branch is COMMITTED: the selector already matched.
@@ -2492,39 +2387,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
-        const scalarChild = !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
-          ? scalarTerminalNodeChild(code, ip)
-          : -1
-        if (scalarChild >= 0) {
-          const recognize = scalarFor(scalarChild)!
-          const spec = k[code[scalarChild + 1]!]
-          const regexValue = code[scalarChild] === OP_RX
-          const xf = fx[code[scalarChild + 2]!] as string[]
-          const build = fns[code[ip + 1]!] as (
-            children: readonly unknown[], fields: undefined, span: { start: number; end: number },
-            rawChildren: readonly unknown[], triviaLog: readonly number[], state: undefined,
-          ) => unknown
-          return (input, pos, ctx) => {
-            const end = recognize(input, pos)
-            if (end < 0) {
-              ctx._fe = pos; ctx._fx = xf
-              if (ctx._probe !== undefined) failAt(ctx, xf, pos)
-              return FAIL
-            }
-            const value = regexValue ? input.slice(pos, end) : spec as string
-            const leaf = { _tag: 'leaf', value, span: { start: pos, end } }
-            const kids = [leaf]
-            const rawKids = [leaf]
-            const span = { start: pos, end }
-            EC.e = end
-            const nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
-            if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
-              pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
-            }
-            EC.e = end
-            return nd
-          }
-        }
         const child = link(code[ip + 2]!)
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
@@ -2740,24 +2602,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
     }
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
-    const roots = [...Object.values(prog.rules), ...extraIps]
-    for (const ip of reachableSites(code, roots)) {
-      if (code[ip] === OP_DISPATCH) {
-        const spec = dsp[code[ip + 2]!]
-        validateDispatchSpec(spec, code[ip + 5]!, code[ip + 4]!)
-      }
-      if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
-        if (code[ip] === OP_NODE) {
-          const child = scalarTerminalNodeChild(code, ip)
-          if (child >= 0) {
-            rawScalarSpecs.add(code[child + 1]!)
-            scalarFor(child)
-          }
-        }
-      }
-      const notChild = scalarTerminalNotChild(code, ip)
-      if (notChild >= 0) scalarFor(notChild)
-    }
     /**
      * THE BUILD'S OWN ANSWER, TRIED BEFORE THE CONSTRUCTOR.
      *
@@ -2786,14 +2630,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
-        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
+        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers,
       )
       emitReached = new Set(pre.reached)
     }
@@ -2862,7 +2705,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
-        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
+        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
@@ -2874,7 +2717,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers,
       )
       emitReached = em.reached
     } catch (e) {

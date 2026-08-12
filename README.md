@@ -195,11 +195,6 @@ pnpm docs:dev     # this documentation site, locally
 Benchmark and chart tasks (`pnpm bench`, `bench:svg`, `bench:parseman`, …) are described in
 the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks#reproducing-the-numbers).
 
-The active 0.48 runtime architecture and release specification is
-[`docs/design/parseman-0.48.md`](./docs/design/parseman-0.48.md). Detailed measurements
-and rejected experiments remain in the linked evidence registers rather than being
-treated as current design.
-
 ## License
 
 MIT © [Matthew Dean](https://github.com/matthew-dean)

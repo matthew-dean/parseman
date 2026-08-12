@@ -36,7 +36,7 @@
 import os from 'node:os'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
-import { interleave, median, pairedMedianRatio, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { interleave, median, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -304,8 +304,8 @@ async function main(): Promise<void> {
     // source lowering, and that quantity NO LONGER EXISTS: codegen.ts was deleted
     // in `37c57b5`. Absolute milliseconds against a named fixture and its byte
     // size are what this harness can honestly report, so that is all it prints.
-    const ctlRatio = pairedMedianRatio(c.get(`ref|${rel}`)!, c.get(`head|${rel}`)!)
-    console.log(`      CONTROL exec/exec  ${sign((ctlRatio - 1) * 100)} — paired noise floor`)
+    const ctlA = median(c.get(`ref|${rel}`)!), ctlB = median(c.get(`head|${rel}`)!)
+    console.log(`      CONTROL exec/exec  ${sign((ctlB / ctlA - 1) * 100)} — this run's noise floor`)
     if (forced) console.log('      *** FORCED: taken over the load ceiling, NOT a canonical number ***')
 
     // THE COMPOSITION TAX, measured rather than left to be rediscovered.
@@ -338,7 +338,7 @@ async function main(): Promise<void> {
     console.log(`    SAME RUN, interpreter leg DROPPED — the composition tax:`)
     console.log(`      assembled (shipped)  ${scm.toFixed(2).padStart(7)} ms   ${sign((scm / cm - 1) * 100)} vs pinned`)
     console.log(`      exec (reference)     ${stm.toFixed(2).padStart(7)} ms   ${sign((stm / tm - 1) * 100)} vs pinned`)
-    console.log(`      CONTROL exec/exec  ${sign((pairedMedianRatio(sc.get(`ref|${rel}`)!, sc.get(`head|${rel}`)!) - 1) * 100)} — paired`)
+    console.log(`      CONTROL exec/exec  ${sign((median(sc.get(`head|${rel}`)!) / median(sc.get(`ref|${rel}`)!) - 1) * 100)}`)
     console.log(`      The interpreter allocates ~6x a table engine per parse; they share one heap.`)
     console.log(`      Quote the PINNED figure — it is the one the reference was taken in — and read`)
     console.log(`      this one to know how much of it is the neighbour rather than the engine.`)

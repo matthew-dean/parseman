@@ -212,22 +212,17 @@ rules) — not a current requirement, so it's out of scope.
 
 ### 9.1 A second lowering accepts a much larger version of this cost — on different grounds
 
-> **Current correction (2026-08-08).** Source codegen was deleted during the 0.47
-> cutover. The canonical shipping engine is now a compact `TableProgram` linked to
-> shared closures by `src/table/assemble.ts`. The ~2.65× figure below compared the
-> historical **reference-bytecode prototype** with the old **source-codegen** engine;
-> it is not a current-engine comparison. See `notes/TABLE-DRIVER.md` for the corrected
-> engine names.
-
 Added later, because this section is cited by number from source comments and now
 reads as forbidding work that is in fact underway. **§9's measurement stands and is
 not softened here.** The ~5–10% property-lookup cost is real, it was measured on the
-benches named above, and for the then-shipping source-codegen lowering the conclusion
-was unchanged: fuse.
+benches named above, and for **codegen — the shipping lowering — the conclusion is
+unchanged: we fuse.**
 
-The historical second lowering compiled a grammar to a flat instruction table read
-by one shared reference-bytecode driver. It measured **~2.65× old source-codegen's
-parse time** in steady state
+What has changed is that codegen is no longer the only lowering being built. A
+**table lowering** (`src/table/`, prototype on `pm-g5-driver`, `notes/G5-TABLE-DRIVER.md`)
+compiles a grammar to a flat instruction table read by one shared driver. It is
+**not wired into the macro, `compile()` or `compose()`, and nothing existing imports
+it.** It measures **~2.65× codegen's parse time** in steady state
 (`bench/g5-scaling.ts`, n=1024, after the SEQX fuse + `OP_RULE` collapse pass) — i.e.
 it accepts **~165%** where this section rejected **~5%**.
 
@@ -244,8 +239,7 @@ The table accepts a much larger one to buy two things §9 was not weighing:
   reads in `src/table/exec.ts`, against **82,273 B** for the 16-rule ladder under
   codegen for **one** variant (`bench/g5-variants.ts`).
 
-That historical prototype established the size/speed trade that led to the current
-closure TableProgram architecture; it does not describe the engine now shipped.
+Whether that trade is worth making is an owner decision and is not recorded here.
 
 **One mechanism this section could not have anticipated.** The table encoder memoises
 rows on **combinator object identity** (`memo: Map<Combinator, number>` in

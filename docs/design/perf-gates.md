@@ -351,17 +351,6 @@ same lottery with the sign flipped.
 
 `medianPct: 6`, `minPct: 6`, `winRateCeiling: 0.25`, `signTest: 3`, `passes: 5`.
 
-The scorer has a versioned reduction contract. `paired-ratio-v2` takes the median
-of aligned HEAD/REF sample ratios and, for the floor signal, the median of aligned
-within-sample-minimum ratios. Ratio-of-aggregate medians/minima is the retired
-`aggregate-v1` method: it discards the adjacency the harness measured and can report
-a 60% regression for a pair series whose aligned median is exactly flat. Changing
-the scorer invalidates percentage noise calibration. Both perf configs therefore
-name their scorer and fail closed for normal gates until a RED-proven `--self` A/A
-run revalidates the thresholds. Historical 0.47 shelf median and minimum ceilings stay
-explicitly tagged `aggregate-v1` and use the retained v1 fields; they are never compared
-to the v2 paired statistics.
-
 `winRateCeiling` is the ceiling **for a null of 0.5**; the ceiling actually
 applied is that number shifted onto the case's measured null, per the section
 above.
@@ -756,10 +745,10 @@ up as "not slower" rather than as a clean win.
 ```sh
 pnpm perf:guard:grammars                    # the sweep gate
 pnpm perf:workloads                         # the broad gate
-pnpm perf:workloads --quick                 # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
+pnpm perf:workloads --quick                 # 1 pass x 2 rounds — TRIAGE ONLY, does not gate
 pnpm perf:workloads --only=less             # substring filter on workload id
 pnpm perf:workloads:describe                # what each workload parses, and whether it reaches EOF
-pnpm perf:guard:grammars --quick            # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
+pnpm perf:guard:grammars --quick            # 2 rounds x 1 run — TRIAGE ONLY, does not gate
 pnpm perf:workloads:peak --base=origin/main # the peak clause, as CI runs it — a
                                             # PERF-PEAK-WAIVER is honoured only with --base
 
@@ -778,13 +767,6 @@ bench/workloads/replay.sh 3175734 fbeb43e 5 --allow-parse-diff   # fix(not)    �
 bench/workloads/replay.sh 9c6fee2 a464372 5                      # fix(expect) — expect RED
 pnpm perf:workloads --self                                       # the noise floor
 ```
-
-Quick mode still recompiles both sides three times. One compiled parser pair is
-one draw of V8's instance-level optimisation lottery, not an independent sample:
-a one-pass Less self-check false-failed byte-identical code at +12.6%. The quick
-shape therefore spends its small budget on three independent pairs and reports
-the median delta across those passes first. The full pass range remains visible
-as noise context; do not reject a borderline experiment from one endpoint.
 
 The reference shas live in `bench/grammar-density/config.json` and
 `bench/workloads/config.json`. Bump BOTH to the

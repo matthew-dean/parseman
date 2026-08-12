@@ -28,7 +28,7 @@
  * (`compiled` = this file's `assembled`, `table` = this file's `exec`).
  */
 import os from 'node:os'
-import { interleave, median, pairedMedianRatio, pairedMinRatio, pairedWins, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
+import { interleave, median, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { execRules } from '../src/table/exec.ts'
@@ -113,9 +113,10 @@ function main(): void {
     for (const [id] of INPUTS) {
       const a = s.get(`ref|${id}`)!
       const b = s.get(`head|${id}`)!
-      const dMed = (pairedMedianRatio(a, b) - 1) * 100
-      const dMin = (pairedMinRatio(s, `ref|${id}`, `head|${id}`) - 1) * 100
-      const wins = pairedWins(a, b)
+      const dMed = (median(b) / median(a) - 1) * 100
+      const dMin = (Math.min(...b) / Math.min(...a) - 1) * 100
+      let wins = 0
+      for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
       console.log(`  ${id.padEnd(12)} median ${sign(dMed).padStart(8)}   min ${sign(dMin).padStart(8)}   B-wins ${wins}/${b.length}   (${median(a).toFixed(3)} -> ${median(b).toFixed(3)} ms per ${reps.get(id)} parses)`)
     }
   }

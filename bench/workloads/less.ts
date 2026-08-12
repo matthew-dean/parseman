@@ -146,12 +146,8 @@ export const lessRules = rules((g: {
   term: Combinator<unknown>
   Keyword: Combinator<unknown>
 }) => {
-  const N = (
-    type: string,
-    body: Combinator<unknown>,
-    opts?: { trailingTrivia?: boolean },
-  ): Combinator<unknown> =>
-    node(type, body, (c, _f, s, raw, tl) => mk(type, c, raw, s, tl), opts)
+  const N = (type: string, body: Combinator<unknown>): Combinator<unknown> =>
+    node(type, body, (c, _f, s, raw, tl) => mk(type, c, raw, s, tl))
 
   const P = (body: Combinator<unknown>): Combinator<unknown> => parser({ trivia: rw }, body)
 
@@ -164,7 +160,7 @@ export const lessRules = rules((g: {
   // that loses here contributes its expected set to the enclosing concat, which
   // is the shape `fix(expect)` made quadratic.
 
-  const Stylesheet = P(N('Stylesheet', many(g.statement), { trailingTrivia: true }))
+  const Stylesheet = N('Stylesheet', P(many(g.statement)))
 
   // Grouped INLINE by what the statement starts with, not flattened into nine
   // independent rules. `@`-led and selector-led statements each share a prefix

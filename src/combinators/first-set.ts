@@ -84,26 +84,11 @@ export function matchesEmpty(
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
 ): boolean {
-  // RECURSION-STACK guard: a mutually-nullable ref cycle (e.g.
-  // `A = oneOrMore(B); B = oneOrMore(A)`) would recurse forever. Treat a node
-  // re-entered on the CURRENT path as nullable — the safe (`true`) default.
-  // Remove it on exit: a shared DAG child reached later through a sibling is not
-  // a cycle. Keeping every completed node in `seen` made an eleven-arm choice of
-  // non-nullable `@` rules report nullable merely because the arms shared leaves.
+  // Cycle guard: a mutually-nullable ref cycle (e.g. `A = oneOrMore(B); B = oneOrMore(A)`)
+  // would recurse forever. Treat a re-entered node as nullable — the safe (`true`)
+  // default, consistent with the err-toward-true contract below.
   if (seen.has(p)) return true
   seen.add(p)
-  try {
-    return matchesEmptyBody(p, seen, resolve)
-  } finally {
-    seen.delete(p)
-  }
-}
-
-function matchesEmptyBody(
-  p: Combinator<unknown>,
-  seen: Set<Combinator<unknown>>,
-  resolve: RefResolver | undefined,
-): boolean {
   const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen, resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
@@ -264,23 +249,8 @@ export function firstSetOf(
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
 ): FirstSet {
-  // `seen` is the current recursion path, not a global visited set. A completed
-  // shared child must be analysed again for a sibling; only a back-edge on this
-  // path is a cycle and needs the safe `any` over-approximation.
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
-  try {
-    return firstSetBody(p, seen, resolve)
-  } finally {
-    seen.delete(p)
-  }
-}
-
-function firstSetBody(
-  p: Combinator<unknown>,
-  seen: Set<Combinator<unknown>>,
-  resolve: RefResolver | undefined,
-): FirstSet {
   const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve)
   const empties = (c: Combinator<unknown>): boolean => matchesEmpty(c, new Set(), resolve)
   const d = p._def as ParserDef

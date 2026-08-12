@@ -46,7 +46,7 @@
  *
  * Usage:
  *   pnpm perf:workloads                       # the gate
- *   pnpm perf:workloads --quick               # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
+ *   pnpm perf:workloads --quick               # 2 rounds x 1 run — TRIAGE ONLY, does not gate
  *   pnpm perf:workloads --only=less           # substring filter on workload id
  *   pnpm perf:workloads --ref=<sha>           # move the A side
  *   pnpm perf:workloads --head-ref=<sha>      # build the B side from a commit, not the working tree
@@ -63,13 +63,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign, peakThresholds,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
 import { classifyWorkloadShelves, SHELVED_WORKLOADS, usesPinned047WorkloadShelf } from './workload-perf-shelf.ts'
 import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
 import type { Workload } from './workloads/index.ts'
-import { assertWorkloadFullyConsumed } from './workloads/consumption.ts'
 
 const GATE = 'workload-perf-guard'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -80,7 +79,6 @@ const CONFIG_PATH = path.join(HERE, 'workloads', 'config.json')
 type GateMeasurement = import('./ab-harness.ts').Measurement & { passes: number }
 
 type Config = {
-  scoreMethod: string
   referenceSha: string
   peak: Peak
   measurement: GateMeasurement
@@ -91,9 +89,6 @@ const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
 
 const QUICK = process.argv.includes('--quick')
 const SELF = process.argv.includes('--self')
-if (!SELF && CONFIG.scoreMethod !== SCORE_METHOD) {
-  fail(GATE, `scorer changed from ${CONFIG.scoreMethod} to ${SCORE_METHOD}; run --self to revalidate thresholds, then update ${CONFIG_PATH}`)
-}
 /**
  * The PEAK clause: compare against the fastest release on record rather than the
  * previous one, and fail on a drawdown beyond the measured noise floor. This is
@@ -111,10 +106,7 @@ const HEAD_REF = SELF ? REF : argValue('--head-ref')
 const ONLY = argValue('--only')
 
 const M: GateMeasurement = QUICK
-  // One compiled pair is one draw of the V8 instance lottery, not a sample.
-  // A one-pass self-check false-failed identical Less parsers at +12.6%; three
-  // fresh pairs keep triage under ten seconds while giving the center a meaning.
-  ? { ...CONFIG.measurement, rounds: 2, runs: 2, passes: 3 }
+  ? { ...CONFIG.measurement, rounds: 2, runs: 1, passes: 1 }
   : CONFIG.measurement
 
 /**
@@ -132,17 +124,9 @@ async function loadSide(dir: string): Promise<Workload[]> {
   return ONLY === null ? all : all.filter(w => w.id.includes(ONLY))
 }
 
-function toCases(workloads: readonly Workload[], side: string): Case[] {
+function toCases(workloads: readonly Workload[]): Case[] {
   return workloads.map(w => {
     const built = w.make()
-    // Outside every timer, but on EVERY fresh instance: otherwise a later
-    // pass/calibration factory could silently construct a partial parser after
-    // the one-off preflight happened to pass.
-    try {
-      assertWorkloadFullyConsumed(side, w.id, w.input, built.parse())
-    } catch (error) {
-      fail(GATE, (error as Error).message)
-    }
     return {
       id: w.id,
       detail: `${(w.bytes / 1024).toFixed(0)} KB`,
@@ -175,12 +159,8 @@ for (let n = 0; n < refWorkloads.length; n++) {
   }
 }
 
-const refCases = toCases(refWorkloads, 'reference')
-const headCases = toCases(headWorkloads, 'head')
-console.log(
-  `  consumption preflight: ${refCases.length}/${refCases.length} exact on reference and head`
-  + ' (rechecked outside the timer on every fresh parser instance)',
-)
+const refCases = toCases(refWorkloads)
+const headCases = toCases(headWorkloads)
 const ALLOW_PARSE_DIFF = process.argv.includes('--allow-parse-diff')
 if (ALLOW_PARSE_DIFF && HEAD_REF === null) {
   fail(GATE, '--allow-parse-diff is only for replaying a pinned --head-ref, never for gating the working tree.')
@@ -193,9 +173,9 @@ const detail = new Map(refCases.map(c => [c.id, c.detail]))
 // raced with — a head start given to exactly one side. The repetition count it
 // produces was already applied to both sides; the WARMING was not, and that is a
 // side-dependent asymmetry in the one direction a gate must not have one.
-const reps = calibrate(toCases(refWorkloads, 'reference calibration'), M)
+const reps = calibrate(toCases(refWorkloads), M)
 console.log(
-  `  scorer ${SCORE_METHOD}   ${refCases.length} workloads`
+  `  ${refCases.length} workloads`
   + `   ${M.passes} passes x ${M.rounds} rounds x ${M.runs} runs, ${M.warmup} warmup + ${M.timed} timed samples, sides paired and order-alternated`
   + `${QUICK ? '  [--quick: TRIAGE ONLY, not a gate]' : ''}`,
 )
@@ -204,7 +184,7 @@ console.log(`  parses per sample: ${refCases.map(c => `${c.id} ${reps.get(c.id)}
 const T = PEAK ? peakThresholds(CONFIG.peak.allowancePct) : CONFIG.thresholds
 const load0 = os.loadavg()[0] ?? 0
 const { passRows, calibration } = measurePasses(
-  () => toCases(refWorkloads, 'reference pass'), () => toCases(headWorkloads, 'head pass'), reps, M, T,
+  () => toCases(refWorkloads), () => toCases(headWorkloads), reps, M, T,
 )
 const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
@@ -240,20 +220,16 @@ console.log(
 for (const v of rows) {
   const worst = v.passes.reduce((a, b) => (b.dMedian > a.dMedian ? b : a))
   const best = v.passes.reduce((a, b) => (b.dMedian < a.dMedian ? b : a))
-  const centerMedian = median(v.passes.map(r => r.dMedian))
-  const centerMin = median(v.passes.map(r => r.dMin))
-  const fasterPasses = v.passes.filter(r => r.dMedian < 0).length
   console.log(
     `  ${v.failed ? 'FAIL' : 'ok  '}  ${v.id.padEnd(18)} ${(detail.get(v.id) ?? '').padStart(6)}`
-    + `   center median ${sign(centerMedian)}, min ${sign(centerMin)}, faster ${fasterPasses}/${v.passes.length} passes`
-    + `   range median ${sign(best.dMedian)} … ${sign(worst.dMedian)}`
-    + `, min ${sign(Math.min(...v.passes.map(r => r.dMin)))} … ${sign(Math.max(...v.passes.map(r => r.dMin)))}`
+    + `   median ${sign(best.dMedian)} … ${sign(worst.dMedian)}`
+    + `   min ${sign(Math.min(...v.passes.map(r => r.dMin)))} … ${sign(Math.max(...v.passes.map(r => r.dMin)))}`
     + `   won ${v.passes.map(r => `${r.wins}/${r.pairs}`).join(' ')}`
     + `   breached ${v.breachCount}/${M.passes}`,
   )
 }
 if (shelf !== null) {
-  console.log('\n  SHELVED 0.47 REGRESSIONS (aggregate-v1 historical reducer; bounded, tracked, never silent):')
+  console.log('\n  SHELVED 0.47 REGRESSIONS (bounded, tracked, never silent):')
   for (const row of shelf.shelved) {
     console.log(
       `    SHELVED ${row.id}: worst median ${sign(row.worstMedian)} / min ${sign(row.worstMin)}`

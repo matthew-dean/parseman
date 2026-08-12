@@ -50,7 +50,6 @@ import { execFileSync } from 'node:child_process'
 import { statSync } from 'node:fs'
 import { dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { solveCrossover } from './load-crossover.ts'
 import { DIALECTS, assertParseman, type Dialect } from './grammars.ts'
 import { LOWERINGS, RATE_FIXTURE, type Lowering, type LoadRow } from './load-one.ts'
 
@@ -72,14 +71,7 @@ function one(dialect: Dialect, lowering: Lowering, phase: string, reps: number, 
   return JSON.parse(out.trim().split('\n').at(-1)!) as LoadRow
 }
 
-type Rates = {
-  assembledMs: number
-  execMs: number
-  /** Median aligned exec−assembled parse time from one interleaved process. */
-  parseDeltaMs: number
-  parseRatio: number
-  jsBytes: number
-}
+type Rates = { assembledMs: number; execMs: number; jsBytes: number }
 
 /** Both parse rates from ONE interleaved process. `lowering` is ignored by that
  * phase; `table` is passed only because the argument is positional. */
@@ -113,10 +105,9 @@ async function main(): Promise<void> {
   console.log(`driver ${DRIVER_DIST} = ${statSync(resolvePath(HERE, '../..', DRIVER_DIST)).size} B, loaded once per process by the TABLE side only`)
   console.log('')
 
-  type Cell = { compileLazy: number; compileEager: number; imp: number; js: number }
+  type Cell = { compileLazy: number; compileEager: number; imp: number; parse: number; js: number }
   const data = new Map<string, Cell>()
   const rateBytes = new Map<Dialect, number>()
-  const pairedRateDelta = new Map<Dialect, number>()
 
   for (const d of DIALECTS) {
     for (const l of LOWERINGS) {
@@ -124,12 +115,13 @@ async function main(): Promise<void> {
       const ce = one(d, l, 'compile', 5, true)
       const imps: number[] = []
       for (let n = 0; n < IMPORT_PROCS; n++) imps.push(one(d, l, 'import', 1).ms)
-      data.set(`${d}|${l}`, { compileLazy: cl.ms, compileEager: ce.ms, imp: median(imps), js: cl.jsBytes })
+      data.set(`${d}|${l}`, { compileLazy: cl.ms, compileEager: ce.ms, imp: median(imps), parse: 0, js: cl.jsBytes })
     }
     // ONE interleaved process gives BOTH parse rates; see `load-one.ts`'s
     // `parse` phase for why they cannot be measured in separate ones.
     const pr = parseRates(d)
-    pairedRateDelta.set(d, pr.parseDeltaMs)
+    data.get(`${d}|codegen`)!.parse = pr.assembledMs
+    data.get(`${d}|table`)!.parse = pr.execMs
     rateBytes.set(d, pr.jsBytes)
   }
 
@@ -170,26 +162,20 @@ async function main(): Promise<void> {
     const c = data.get(`${d}|codegen`)!
     const t = data.get(`${d}|table`)!
     const fixtureBytes = rateBytes.get(d)!
+    // ms per byte on each side, from the measured single-parse median.
+    const perByteC = c.parse / fixtureBytes
+    const perByteT = t.parse / fixtureBytes
     const loadDelta = c.imp - t.imp
-    // The slope is one paired statistic. Subtracting the unrelated absolute
-    // medians above would discard the interleave pairing before the headline.
-    const rateDelta = pairedRateDelta.get(d)! / fixtureBytes
-    const cross = solveCrossover(loadDelta, rateDelta)
-    if (cross.kind === 'positive') {
-      console.log(
-        `  ${d.padEnd(6)} ${loadDelta.toFixed(1).padStart(10)} ${(rateDelta * 1e6).toFixed(1).padStart(18)} ${(cross.bytes / 1e6).toFixed(2).padStart(14)} ${(cross.bytes / fixtureBytes).toFixed(1).padStart(13)}x`
-        + `   ${cross.below} below; ${cross.above} above`,
-      )
-    } else {
-      const disposition = cross.winner === 'tie' ? 'equal at every size' : `${cross.winner} ahead from zero; no positive crossover`
-      console.log(
-        `  ${d.padEnd(6)} ${loadDelta.toFixed(1).padStart(10)} ${(rateDelta * 1e6).toFixed(1).padStart(18)} ${'—'.padStart(14)} ${'—'.padStart(14)}   ${disposition}`,
-      )
-    }
+    const rateDelta = perByteT - perByteC
+    const crossBytes = loadDelta / rateDelta
+    console.log(
+      `  ${d.padEnd(6)} ${loadDelta.toFixed(1).padStart(10)} ${(rateDelta * 1e6).toFixed(1).padStart(18)} ${(crossBytes / 1e6).toFixed(2).padStart(14)} ${(crossBytes / fixtureBytes).toFixed(1).padStart(13)}x`,
+    )
   }
   console.log('')
   console.log(`    Rate fixtures: ${DIALECTS.map(d => `${d}=${RATE_FIXTURE[d].split('/').pop()!}`).join(', ')}`)
-  console.log('    A positive crossover names its winner below and above; a dominant row has no positive crossing.')
+  console.log('    BELOW the crossover the exec side is ahead overall; ABOVE it the assembled side is.')
+  console.log('    Read it as: exec wins whenever a process parses less than this much input.')
   console.log('')
   console.log(`loadavg at END ${os.loadavg().map(n => n.toFixed(2)).join(' ')}`)
 }

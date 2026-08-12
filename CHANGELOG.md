@@ -3,9 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.48.0 — unreleased
-
-## 0.47.0 — 2026-08-07
+## 0.47.0 — unreleased
 
 - **BREAKING: one engine now has one name. `src/table/exec.ts` exports
   `execRules`; `assembledRules` is renamed `tableRules` and `assembledRules` no

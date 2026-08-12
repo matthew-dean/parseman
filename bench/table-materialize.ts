@@ -53,12 +53,12 @@ import { run } from '../src/functional/run.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../src/combinators/trivia-skip.ts'
 import { cstCaptureActive, pushCstLeaf, rollbackCstCapture, saveCstMark, type CstRollbackMark } from '../src/cst/capture-buffer.ts'
 import {
-  OP_CHOICE, OP_LIT, OP_OPT, OP_REP, OP_REPV, OP_RX, OP_SCOPE, OP_SCOPE_PLAIN, OP_SEQX, OP_XFORM,
+  OP_CHOICE, OP_LIT, OP_OPT, OP_REP, OP_REPV, OP_RX, OP_SCOPE, OP_SEQX, OP_XFORM,
 } from '../src/table/ops.ts'
 import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
-import { interleave, median, pairedMedianRatio, pairedMinRatio, pairedWins, sign, type Case, type Contest, type Measurement } from './ab-harness.ts'
+import { interleave, median, sign, type Case, type Contest, type Measurement } from './ab-harness.ts'
 
 const FAIL: unique symbol = Symbol('pm.fail')
 const EMPTY_FX: string[] = []
@@ -197,8 +197,7 @@ function materialize(prog: TableProgram, opts: { specializeTerminals?: boolean }
           return FAIL
         }
       }
-      case OP_SCOPE:
-      case OP_SCOPE_PLAIN: {
+      case OP_SCOPE: {
         const ki = code[ip + 1]!
         const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
         const labels = scopeTrivia?._meta.triviaKindLabels
@@ -223,11 +222,7 @@ function materialize(prog: TableProgram, opts: { specializeTerminals?: boolean }
         }
       }
       case OP_SEQX: {
-        const reducer = code[ip + 1]!
-        const projection = reducer < 0 ? ~reducer : -1
-        const fn = projection < 0
-          ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
-          : undefined
+        const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const n = code[ip + 2]!
         // The driver's SEQ terminal fast path, materialised: a LIT/RX child runs
         // IN PLACE rather than through a call. Dropping it here would measure a
@@ -334,7 +329,7 @@ function materialize(prog: TableProgram, opts: { specializeTerminals?: boolean }
             cur = END
           }
           END = cur
-          return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+          return fn(values, { start: pos, end: cur })
         }
       }
       case OP_OPT: {
@@ -590,9 +585,10 @@ function main(): void {
     for (const [id] of INPUTS) {
       const a = s.get(`ref|${id}`)!
       const b = s.get(`head|${id}`)!
-      const dMed = (pairedMedianRatio(a, b) - 1) * 100
-      const dMin = (pairedMinRatio(s, `ref|${id}`, `head|${id}`) - 1) * 100
-      const wins = pairedWins(a, b)
+      const dMed = (median(b) / median(a) - 1) * 100
+      const dMin = (Math.min(...b) / Math.min(...a) - 1) * 100
+      let wins = 0
+      for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
       console.log(`  ${id.padEnd(12)} median ${sign(dMed).padStart(8)}   min ${sign(dMin).padStart(8)}   B-wins ${wins}/${b.length}`)
     }
   }
