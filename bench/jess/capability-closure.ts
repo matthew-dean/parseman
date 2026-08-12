@@ -12,11 +12,19 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import type { Combinator, ParserDef } from '../../src/types.ts'
-import { choice, compose, literal, rules, scanTo, sequence, token } from '../../src/index.ts'
+import {
+  choice, compose, dispatch, literal, regex, routed, rules, run, scanTo, sequence,
+  token, transform, when, type ParseContext,
+} from '../../src/index.ts'
 import { composedCoverageRules } from '../../src/compiler/linker.ts'
+import { branchUsesRouted } from '../../src/combinators/dispatch.ts'
+import { firstSetOf, matchesEmpty } from '../../src/combinators/first-set.ts'
 import {
   assertLexicalCapabilityClosure, collectLexicalAlphabet,
 } from '../../src/compiler/token-alphabet.ts'
+import { tableRules } from '../../src/table/assemble.ts'
+import { encodeTable } from '../../src/table/encode.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { assertParseman, JESS_ROOT, loadGrammar } from './grammars.ts'
 
 type Comb = Combinator<unknown>
@@ -57,6 +65,11 @@ const EXPECTED = {
     ownSkipPlans: 9,
     bindingEdges: 2705,
     pendingForbidden: 88,
+    decisionEdges: 2507,
+    decisionDigest: '4cca29e12048e2c9f2c42ecc309f176b978963d39dcc51a5f2173daa30f5e1c9',
+    decisions: 158,
+    finalExclusive: 57,
+    routedRoutes: 64,
   },
   less: {
     total: 1687,
@@ -70,6 +83,11 @@ const EXPECTED = {
     ownSkipPlans: 1,
     bindingEdges: 6819,
     pendingForbidden: 217,
+    decisionEdges: 6540,
+    decisionDigest: 'eb139fec0fc365f4bc354dcc9332dc453c309800f464c2a826d9f6d3468fc924',
+    decisions: 447,
+    finalExclusive: 107,
+    routedRoutes: 89,
   },
 } as const
 
@@ -241,7 +259,8 @@ function census(
     }
     if (def.tag === 'withCtx') childContext = { ...context, dynamicState: true }
     const omitThisWinner = def.tag === 'lazy'
-      && process.env.PM_CAPABILITY_ORACLE_PLANT === 'omit-post-compose'
+      && (process.env.PM_CAPABILITY_ORACLE_PLANT === 'omit-post-compose'
+        || process.env.PM_CAPABILITY_ORACLE_PLANT === 'omit-final-winner-edge')
       && !plantedOmission
     if (omitThisWinner) plantedOmission = true
     const edges = def.tag === 'lazy'
@@ -274,6 +293,179 @@ function counts(rows: readonly Row[]): Record<Atom, number> {
   const out = { terminal: 0, token: 0, choice: 0, dispatch: 0 }
   for (const row of rows) out[row.atom]++
   return out
+}
+
+function finalExclusive(parser: Comb, resolve: (name: string) => Comb | undefined): boolean {
+  assert.equal(parser._def.tag, 'choice')
+  const occupied = new Int32Array(128)
+  let highOwner = false
+  for (let arm = 0; arm < parser._def.parsers.length; arm++) {
+    const child = parser._def.parsers[arm]!
+    if (matchesEmpty(child, new Set(), resolve)) return false
+    const first = firstSetOf(child, new Set(), resolve)
+    if (first.kind !== 'ranges') return false
+    let ownsHigh = false
+    for (const range of first.ranges) {
+      if (range.hi >= 128) ownsHigh = true
+      for (let code = Math.max(0, range.lo); code <= Math.min(127, range.hi); code++) {
+        if (occupied[code] !== 0) return false
+        occupied[code] = arm + 1
+      }
+    }
+    if (ownsHigh) {
+      if (highOwner) return false
+      highOwner = true
+    }
+  }
+  return true
+}
+
+function finalDecisionFacts(
+  rows: readonly Row[],
+  contextKey: (context: Context) => string,
+  resolve: (name: string) => Comb | undefined,
+): { decisions: number; finalExclusive: number; routedRoutes: number; digest: string } {
+  const decisionRows: string[] = []
+  let decisions = 0
+  let exclusive = 0
+  let routedRoutes = 0
+  for (const row of rows) {
+    const def = row.parser._def
+    if (def.tag === 'choice') {
+      decisions++
+      const final = finalExclusive(row.parser, resolve)
+      if (final) exclusive++
+      decisionRows.push(`choice\0${row.path}\0${contextKey(row.context)}\0${def.parsers.length}\0${def.disjoint}\0${def.strategy.tag}\0${final}`)
+    } else if (def.tag === 'dispatch') {
+      decisions++
+      const routes = [
+        ...def.cases, ...(def.matchers ?? []),
+        ...(def.otherwise === undefined ? [] : [{ parser: def.otherwise, usesRouted: def.otherwiseUsesRouted }]),
+      ]
+      routedRoutes += routes.filter(branchUsesRouted).length
+      decisionRows.push(`dispatch\0${row.path}\0${contextKey(row.context)}\0${routes.length}\0${routes.map(route => Number(branchUsesRouted(route))).join(',')}`)
+    }
+  }
+  // The digest owns the exact raw decision paths and contexts; bindingEdges is
+  // asserted separately because an omitted non-decision winner can preserve it.
+  return {
+    decisions, finalExclusive: exclusive, routedRoutes,
+    digest: createHash('sha256').update(decisionRows.join('\n')).digest('hex'),
+  }
+}
+
+function proveFinalExclusiveReaderDivergence(): void {
+  const calls: string[] = []
+  const traced = (name: string, value: string): Comb => {
+    const terminal = literal(value)
+    return {
+      ...terminal,
+      parse(input, pos, ctx) { calls.push(name); return terminal.parse(input, pos, ctx) },
+    }
+  }
+  const source = choice(traced('a', 'a'), traced('b', 'b'))
+  const miss = source.parse('z', 0, { trackLines: false } as ParseContext)
+  assert.equal(miss.ok, false)
+  assert.deepEqual(calls, ['a', 'b'])
+  const program = encodeTable({ Entry: source })
+  const engines = {
+    reference: execRules(program).Entry!,
+    closure: tableRules({ ...program, asm: [] }).Entry!,
+    emitted: tableRules(program).Entry!,
+  }
+  for (const [engine, entry] of Object.entries(engines)) {
+    calls.length = 0
+    const actual = run(entry, 'z')
+    assert.deepEqual({ ok: actual.ok, expected: actual.expected, span: actual.span }, {
+      ok: miss.ok, expected: miss.expected, span: miss.span,
+    }, `${engine} final-exclusive miss facets`)
+    assert.deepEqual(calls, [], `${engine} final-exclusive miss must expose zero child entries`)
+  }
+}
+
+function proveClassifyProjection(): void {
+  const parser = choice(
+    transform(literal('if'), value => `kw:${value}`),
+    transform(transform(literal('for'), value => value), value => `kw:${value}`),
+    regex(/[a-z]+/),
+  )
+  assert.equal(parser._def.tag, 'choice')
+  assert.equal(parser._def.strategy.tag, 'greedyClassify')
+  const parsed = parser.parse('if', 0, { trackLines: false } as ParseContext)
+  assert.equal(parsed.ok && parsed.value,
+    process.env.PM_CAPABILITY_ORACLE_PLANT === 'drop-classify-transform' ? 'if' : 'kw:if')
+}
+
+function proveRoutedProtocol(): void {
+  const events: string[] = []
+  const outer = { value: 'outer', span: { start: 7, end: 8 } }
+  let slot: unknown = outer
+  const ctx = { trackLines: false } as ParseContext
+  Object.defineProperty(ctx, '_routed', {
+    configurable: true,
+    get() { events.push('get'); return slot },
+    set(value) { events.push(value === outer ? 'restore' : 'install'); slot = value },
+  })
+  const parser = dispatch(literal('x'), when('x', sequence(routed(), literal('!'))))
+  assert.equal(parser.parse('x!', 0, ctx).ok, true)
+  assert.deepEqual(events, ['get', 'install', 'get', 'restore'])
+
+  const installEvents: string[] = []
+  const throwing = { trackLines: false } as ParseContext
+  Object.defineProperty(throwing, '_routed', {
+    configurable: true,
+    get() { installEvents.push('get'); return undefined },
+    set() { installEvents.push('install'); throw new Error('setter boom') },
+  })
+  assert.throws(() => parser.parse('x!', 0, throwing), /setter boom/)
+  assert.deepEqual(installEvents, ['get', 'install'])
+
+  const plainEvents: string[] = []
+  const plain = { trackLines: false } as ParseContext
+  Object.defineProperty(plain, '_routed', {
+    configurable: true,
+    get() { plainEvents.push('get'); return outer },
+  })
+  assert.equal(dispatch(literal('x'), when('x', literal('!'))).parse('x!', 0, plain).ok, true)
+  assert.deepEqual(plainEvents, ['get'])
+
+  const branchEvents: string[] = []
+  let branchSlot: unknown = outer
+  const branchContext = { trackLines: false } as ParseContext
+  Object.defineProperty(branchContext, '_routed', {
+    configurable: true,
+    get() { branchEvents.push('get'); return branchSlot },
+    set(value) { branchEvents.push(value === outer ? 'restore' : 'install'); branchSlot = value },
+  })
+  const branchThrow = dispatch(literal('x'), when('x', transform(routed(), () => {
+    branchEvents.push('branch')
+    throw new Error('branch boom')
+  })))
+  assert.throws(() => branchThrow.parse('x', 0, branchContext), /branch boom/)
+  assert.deepEqual(branchEvents, ['get', 'install', 'get', 'branch', 'restore'])
+
+  const getterThrow = { trackLines: false } as ParseContext
+  Object.defineProperty(getterThrow, '_routed', {
+    configurable: true,
+    get() { throw new Error('getter boom') },
+  })
+  assert.throws(() => dispatch(literal('x'), when('x', literal('!')))
+    .parse('x!', 0, getterThrow), /getter boom/)
+
+  let setterCalls = 0
+  let restoreSlot: unknown = outer
+  const restoreThrow = { trackLines: false } as ParseContext
+  Object.defineProperty(restoreThrow, '_routed', {
+    configurable: true,
+    get() { return restoreSlot },
+    set(value) {
+      setterCalls++
+      if (setterCalls === 2) throw new Error('restore boom')
+      restoreSlot = value
+    },
+  })
+  assert.throws(() => parser.parse('x!', 0, restoreThrow), /restore boom/)
+  assert.equal(setterCalls, 2)
 }
 
 function proveFinalWinner(): void {
@@ -331,6 +523,9 @@ function proveNestedScannerOwnership(): void {
 
 proveFinalWinner()
 proveNestedScannerOwnership()
+proveFinalExclusiveReaderDivergence()
+proveClassifyProjection()
+proveRoutedProtocol()
 const loader = await assertParseman()
 for (const dialect of ['css', 'less'] as const) {
   const grammar = await loadGrammar(dialect)
@@ -356,6 +551,20 @@ for (const dialect of ['css', 'less'] as const) {
     `${row.atom}\u0000${row.path}\u0000${result.contextKey(consumer.context)}\u0000${consumer.kind}\u0000${Number(consumer.raw)}\u0000${consumer.ownSkip.length}`
   ).join('\n')).digest('hex')
   const expected = EXPECTED[dialect]
+  const decisionFacts = finalDecisionFacts(result.rows, context => {
+    const broad = result.contextKey(context).split('|')
+    return broad.map(part => part === 'root=opaque' ? 'root=1'
+      : part === 'root=-' ? 'root=0'
+        : part.replace(/^lines=/, 'lines=').replace(/^capture=/, 'capture=').replace(/^state=/, 'state='))
+      .join('|')
+  }, name => grammar.rules[name])
+  // Stage-C2 authority is asserted before the broader capability rows so its
+  // final-winner omission plant fails at this independent decision boundary.
+  assert.equal(result.bindingEdges, expected.decisionEdges)
+  assert.equal(decisionFacts.decisions, expected.decisions)
+  assert.equal(decisionFacts.finalExclusive, expected.finalExclusive)
+  assert.equal(decisionFacts.routedRoutes, expected.routedRoutes)
+  assert.equal(decisionFacts.digest, expected.decisionDigest)
   assert.equal(result.rows.length, expected.total)
   assert.deepEqual(counts(result.rows), expected.counts)
   assert.equal(new Set(result.rows.map(row => row.recognition)).size, expected.contexts)
@@ -501,6 +710,8 @@ for (const dialect of ['css', 'less'] as const) {
     scanKinds: expected.scanKinds, scanDigest,
     ownSkipPlans: production.ownSkipPlans.length,
     pendingForbidden: expected.pendingForbidden,
+    decisions: decisionFacts.decisions, finalExclusive: decisionFacts.finalExclusive,
+    routedRoutes: decisionFacts.routedRoutes, decisionDigest: decisionFacts.digest,
     tokenOccurrences: tokenSites.length, diagnosticPlans: production.transitionDiagnostics.length,
     states, expectedSets, expectedStrings,
     balancedPlans, balancedStates, otherStates, eventHistogram, tableProgramWords: 0 }))

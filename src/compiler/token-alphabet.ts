@@ -30,8 +30,8 @@
  * Nothing here decides HOW a token is recognized (see `token-scanner.ts`); this
  * module only decides WHAT the tokens are and WHICH ones each site may see.
  */
-import type { Combinator, ParserDef } from '../types.ts'
-import { firstSetOf, intersects, matchesEmpty } from '../combinators/first-set.ts'
+import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
+import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty } from '../combinators/first-set.ts'
 import { branchUsesRouted } from '../combinators/dispatch.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import { deriveExpected } from '../combinators/expect.ts'
@@ -439,6 +439,126 @@ export type LexicalDecisionSite = {
   readonly pendingReuse: 'forbidden' | 'unproved'
 }
 
+/** Final winner-resolved fixed choice classes, shared with table encoding. */
+export type LexicalChoiceClassAuthority = {
+  readonly id: number
+  readonly armIds: readonly number[]
+  readonly firstSets: readonly FirstSet[]
+}
+
+/** A non-authored execution order such as longest literal first. */
+export type LexicalChoiceExecutionOrder = {
+  readonly id: number
+  readonly armIds: readonly number[]
+}
+
+/** Exact classified spelling to authored arm identity. */
+export type LexicalClassifySpellingMap = {
+  readonly id: number
+  readonly entries: readonly { readonly spelling: string; readonly armId: number }[]
+}
+
+/** Transform callback identities applied to an already recognized spelling. */
+export type LexicalClassifyProjectionPlan = {
+  readonly id: number
+  readonly entries: readonly {
+    readonly armId: number
+    readonly transformIds: readonly number[]
+    readonly transformSourceIds: readonly (number | -1)[]
+    readonly transformCount: number
+  }[]
+}
+
+export type LexicalExpectedAuthority = {
+  readonly id: number
+  readonly values: readonly string[]
+}
+
+/** Compiler-local callback identity; never a TableProgram or public wire value. */
+export type LexicalDecisionCallbackAuthority = {
+  readonly id: number
+  readonly callback:
+    | ((state: unknown) => boolean)
+    | ((value: unknown, span: { start: number; end: number }) => unknown)
+}
+
+/** Named emitted projection for a callback; compiler-only until Stage C selects. */
+export type LexicalDecisionSourceAuthority = {
+  readonly id: number
+  readonly source: string
+}
+
+/** Exact post-success rejection checks, interned without re-deriving them. */
+export type LexicalAutoNotAuthority = {
+  readonly id: number
+  readonly checks: readonly AutoNotCheck[]
+}
+
+export type LexicalFinalDecisionAuthority =
+  | {
+    readonly id: number
+    readonly atom: 'choice'
+    readonly decisionSiteId: number
+    readonly authoredArmIds: readonly number[]
+    readonly mode:
+      | { readonly kind: 'ordered' }
+      | { readonly kind: 'exclusive'; readonly classAuthorityId: number }
+      | { readonly kind: 'longest'; readonly orderAuthorityId: number }
+      | {
+        readonly kind: 'classify'
+        readonly superArmId: number
+        readonly spellingMapAuthorityId: number
+        readonly projectionAuthorityId: number
+      }
+    /** Static total-miss set only for strategies that never consult dynamic gates. */
+    readonly staticMissExpectedAuthorityId?: number
+  }
+  | {
+    readonly id: number
+    readonly atom: 'dispatch'
+    readonly decisionSiteId: number
+    readonly selectorBindingEdgeId: number
+    readonly classifierAuthorityId: number
+    readonly orderedRouteIds: readonly number[]
+    readonly noRouteExpectedAuthorityId: number
+  }
+
+export type LexicalDecisionChildEffect = {
+  readonly id: number
+  readonly decisionSiteId: number
+  readonly armId: number
+  readonly childBindingEdgeId: number
+  readonly expectedAuthorityId: number
+  readonly gateCallbackId?: number
+  readonly gateSourceId?: number
+  readonly autoNotAuthorityId?: number
+}
+
+export type LexicalDecisionEffectProgram = {
+  readonly id: number
+  readonly decisionSiteId: number
+  readonly finalDecisionAuthorityId: number
+  readonly phase: LexicalCapabilityPhase
+  readonly childEffectIds: readonly number[]
+  readonly pendingRollbackPolicyId: 0
+  readonly commitPolicyId: 0
+}
+
+/** Compiler-only C2 pools. No member is a TableProgram or runtime wire field. */
+export type LexicalDecisionEffectInventory = {
+  readonly finalDecisionAuthorities: readonly LexicalFinalDecisionAuthority[]
+  readonly decisionEffects: readonly LexicalDecisionEffectProgram[]
+  readonly decisionChildEffects: readonly LexicalDecisionChildEffect[]
+  readonly choiceClassAuthorities: readonly LexicalChoiceClassAuthority[]
+  readonly choiceExecutionOrders: readonly LexicalChoiceExecutionOrder[]
+  readonly classifySpellingMaps: readonly LexicalClassifySpellingMap[]
+  readonly classifyProjectionPlans: readonly LexicalClassifyProjectionPlan[]
+  readonly decisionExpectedAuthorities: readonly LexicalExpectedAuthority[]
+  readonly decisionCallbackAuthorities: readonly LexicalDecisionCallbackAuthority[]
+  readonly decisionSourceAuthorities: readonly LexicalDecisionSourceAuthority[]
+  readonly decisionAutoNotAuthorities: readonly LexicalAutoNotAuthority[]
+}
+
 /** One fixed incoming/root edge whose direct linked-body candidates remain owed. */
 export type LexicalBindingEdge = {
   readonly id: number
@@ -514,6 +634,7 @@ export type LexicalAlphabet = {
   readonly decisionFamilies: readonly LexicalDecisionFamily[]
   readonly decisionOutcomes: readonly LexicalDecisionOutcome[]
   readonly decisions: readonly LexicalDecisionSite[]
+  readonly decisionEffectPlan: LexicalDecisionEffectInventory
   readonly transitionDiagnostics: readonly LexicalTransitionDiagnosticPlan[]
   readonly boundaryPlans: readonly LexicalBoundaryPlan[]
   readonly materializationPlans: readonly LexicalMaterializationPlan[]
@@ -531,7 +652,8 @@ export type LexicalAlphabet = {
 export type LexicalCapabilityInventory = Pick<
   LexicalAlphabet,
   'capabilities' | 'capabilityLanguages' | 'bindingEdges'
-  | 'decisionFamilies' | 'decisionOutcomes' | 'decisions' | 'transitionDiagnostics'
+  | 'decisionFamilies' | 'decisionOutcomes' | 'decisions' | 'decisionEffectPlan'
+  | 'transitionDiagnostics'
   | 'boundaryPlans' | 'materializationPlans' | 'grammarWrapperSpecs'
   | 'grammarCaptureTriviaKinds' | 'boundaryTopologies'
   | 'controlPlans'
@@ -2169,6 +2291,254 @@ function lexicalDecisionInventory(
   return { families, outcomes, decisions, recognitionBySite }
 }
 
+function classifiedLiteralProjection(parser: Combinator<unknown>): {
+  spelling: string
+  transforms: readonly {
+    fn: (value: unknown, span: { start: number; end: number }) => unknown
+    source?: string
+  }[]
+} | undefined {
+  let current = parser
+  const outerFirst: Array<{
+    fn: (value: unknown, span: { start: number; end: number }) => unknown
+    source?: string
+  }> = []
+  const seen = new Set<Combinator<unknown>>()
+  while (!seen.has(current)) {
+    seen.add(current)
+    const def = current._def
+    if (def.tag === 'literal') return { spelling: def.value, transforms: outerFirst.reverse() }
+    if (def.tag === 'transform') {
+      outerFirst.push({ fn: def.fn, ...(def.fnSrc === undefined ? {} : { source: def.fnSrc }) })
+      current = def.parser
+      continue
+    }
+    if (def.tag === 'label') { current = def.parser; continue }
+    return undefined
+  }
+  return undefined
+}
+
+function decisionEffectInventory(
+  candidates: readonly CapabilityCandidate[],
+  decisions: readonly LexicalDecisionSite[],
+  bindingEdges: readonly LexicalBindingEdge[],
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): LexicalDecisionEffectInventory {
+  const finalDecisionAuthorities: LexicalFinalDecisionAuthority[] = []
+  const decisionEffects: LexicalDecisionEffectProgram[] = []
+  const decisionChildEffects: LexicalDecisionChildEffect[] = []
+  const choiceClassAuthorities: LexicalChoiceClassAuthority[] = []
+  const choiceExecutionOrders: LexicalChoiceExecutionOrder[] = []
+  const classifySpellingMaps: LexicalClassifySpellingMap[] = []
+  const classifyProjectionPlans: LexicalClassifyProjectionPlan[] = []
+  const decisionExpectedAuthorities: LexicalExpectedAuthority[] = []
+  const decisionCallbackAuthorities: LexicalDecisionCallbackAuthority[] = []
+  const expectedIdByKey = new Map<string, number>()
+  const callbackIds = new Map<LexicalDecisionCallbackAuthority['callback'], number>()
+  const sourceIds = new Map<string, number>()
+  const autoNotIds = new Map<string, number>()
+  const edgeByPath = new Map(bindingEdges.map(edge => [edge.path, edge.id]))
+  const expectedId = (values: readonly string[]): number => {
+    const key = JSON.stringify(values)
+    const prior = expectedIdByKey.get(key)
+    if (prior !== undefined) return prior
+    const id = decisionExpectedAuthorities.length
+    expectedIdByKey.set(key, id)
+    decisionExpectedAuthorities.push({ id, values: [...values] })
+    return id
+  }
+  const callbackId = (value: LexicalDecisionCallbackAuthority['callback']): number => {
+    const prior = callbackIds.get(value)
+    if (prior !== undefined) return prior
+    const id = decisionCallbackAuthorities.length
+    callbackIds.set(value, id)
+    decisionCallbackAuthorities.push({ id, callback: value })
+    return id
+  }
+  const stringId = (map: Map<string, number>, value: string): number => {
+    const prior = map.get(value)
+    if (prior !== undefined) return prior
+    const id = map.size
+    map.set(value, id)
+    return id
+  }
+  const edgeAt = (path: string, childIndex: number): number => {
+    const childPath = `${path}/${String(childIndex).padStart(4, '0')}`
+    const edge = edgeByPath.get(childPath)
+    if (edge === undefined) throw new Error(`parseman: decision child lost binding edge ${childPath}`)
+    return edge
+  }
+  const childEffect = (
+    siteId: number,
+    armId: number,
+    childBindingEdgeId: number,
+    parser: Combinator<unknown>,
+    gate: ((state: unknown) => boolean) | null = null,
+    gateSource: string | null = null,
+    autoNot: readonly AutoNotCheck[] | null = null,
+  ): number => {
+    const id = decisionChildEffects.length
+    decisionChildEffects.push({
+      id, decisionSiteId: siteId, armId, childBindingEdgeId,
+      expectedAuthorityId: expectedId(deriveExpected(parser)),
+      ...(gate === null ? {} : { gateCallbackId: callbackId(gate) }),
+      ...(gateSource === null ? {} : { gateSourceId: stringId(sourceIds, gateSource) }),
+      ...(autoNot === null ? {} : { autoNotAuthorityId: stringId(autoNotIds, JSON.stringify(autoNot)) }),
+    })
+    return id
+  }
+
+  for (const decision of decisions) {
+    const candidate = candidates[decision.siteId]
+    if (candidate === undefined || candidate.parser._def.tag !== decision.atom) {
+      throw new Error(`parseman: decision effect lost occurrence ${decision.siteId}`)
+    }
+    const def = candidate.parser._def
+    const authorityId = finalDecisionAuthorities.length
+    const effectId = decisionEffects.length
+    let phase = phaseGap(COMPLETE_CAPABILITY,
+      'decision effect lowering is not implemented for every supported reader and variant')
+    const childEffectIds: number[] = []
+    if (def.tag === 'choice') {
+      const finalChoice = classifyFinalChoice(def.parsers, resolve)
+      const authoredArmIds = def.parsers.map((_, armId) => armId)
+      let mode: Extract<LexicalFinalDecisionAuthority, { atom: 'choice' }>['mode']
+      if (finalChoice.exclusive) {
+        const classAuthorityId = choiceClassAuthorities.length
+        choiceClassAuthorities.push({
+          id: classAuthorityId, armIds: authoredArmIds, firstSets: finalChoice.firstSets,
+        })
+        mode = { kind: 'exclusive', classAuthorityId }
+        phase = phaseGap(COMPLETE_CAPABILITY,
+          'final-exclusive miss observability differs across source and compiled readers')
+      } else if (def.strategy.tag === 'literalsLongestFirst') {
+        const orderAuthorityId = choiceExecutionOrders.length
+        choiceExecutionOrders.push({
+          id: orderAuthorityId, armIds: [...def.strategy.sortedIndices],
+        })
+        mode = { kind: 'longest', orderAuthorityId }
+      } else if (def.strategy.tag === 'greedyClassify') {
+        const spellingMapAuthorityId = classifySpellingMaps.length
+        const projectionAuthorityId = classifyProjectionPlans.length
+        const spellingEntries: Array<{ spelling: string; armId: number }> = []
+        const projectionEntries: Array<{
+          armId: number
+          transformIds: readonly number[]
+          transformSourceIds: readonly (number | -1)[]
+          transformCount: number
+        }> = []
+        for (let armId = 0; armId < def.parsers.length; armId++) {
+          if (armId === def.strategy.superIndex) continue
+          const projection = classifiedLiteralProjection(def.parsers[armId]!)
+          if (projection === undefined) {
+            throw new Error(`parseman: greedy classifier lost literal arm ${armId}`)
+          }
+          spellingEntries.push({ spelling: projection.spelling, armId })
+          const transformIds = projection.transforms.map(entry => callbackId(entry.fn))
+          const transformSourceIds = projection.transforms.map(entry =>
+            entry.source === undefined ? -1 : stringId(sourceIds, entry.source))
+          projectionEntries.push({
+            armId, transformIds, transformSourceIds, transformCount: transformIds.length,
+          })
+          if (transformSourceIds.includes(-1)) {
+            phase = phaseGap(COMPLETE_CAPABILITY,
+              'classified transform has no statically named reader projection')
+          }
+        }
+        classifySpellingMaps.push({ id: spellingMapAuthorityId, entries: spellingEntries })
+        classifyProjectionPlans.push({ id: projectionAuthorityId, entries: projectionEntries })
+        mode = {
+          kind: 'classify', superArmId: def.strategy.superIndex,
+          spellingMapAuthorityId, projectionAuthorityId,
+        }
+      } else mode = { kind: 'ordered' }
+      const expectedParsers = mode.kind === 'longest'
+        ? mode.orderAuthorityId === undefined ? def.parsers
+          : choiceExecutionOrders[mode.orderAuthorityId]!.armIds.map(armId => def.parsers[armId]!)
+        : mode.kind === 'classify' ? [def.parsers[mode.superArmId]!]
+          : mode.kind === 'exclusive' ? def.parsers : undefined
+      finalDecisionAuthorities.push({
+        id: authorityId, atom: 'choice', decisionSiteId: decision.siteId,
+        authoredArmIds, mode,
+        ...(expectedParsers === undefined ? {} : {
+          staticMissExpectedAuthorityId: expectedId(
+            expectedParsers.flatMap(parser => deriveExpected(parser)),
+          ),
+        }),
+      })
+      for (let armId = 0; armId < def.parsers.length; armId++) {
+        const gate = def.gates[armId] ?? null
+        const gateSource = def.gateSrcs?.[armId] ?? null
+        if (gate !== null && gateSource === null) {
+          phase = phaseGap(COMPLETE_CAPABILITY,
+            'dynamic choice gate has no statically named reader projection')
+        }
+        childEffectIds.push(childEffect(
+          decision.siteId, armId, edgeAt(candidate.path, armId), def.parsers[armId]!,
+          gate, gateSource, def.autoNot[armId],
+        ))
+      }
+    } else {
+      const routeParsers = [
+        ...def.cases.map(entry => entry.parser),
+        ...(def.matchers ?? []).map(entry => entry.parser),
+        ...(def.otherwise === undefined ? [] : [def.otherwise]),
+      ]
+      const routeBranches = [
+        ...def.cases,
+        ...(def.matchers ?? []),
+        ...(def.otherwise === undefined ? [] : [{
+          parser: def.otherwise, usesRouted: def.otherwiseUsesRouted,
+        }]),
+      ]
+      const otherwiseOffset = def.otherwise === undefined ? 0 : 1
+      const routeEdgeIndices = [
+        ...def.cases.map((_, index) => 1 + otherwiseOffset + index),
+        ...(def.matchers ?? []).map((_, index) => 1 + otherwiseOffset + def.cases.length + index),
+        ...(def.otherwise === undefined ? [] : [1]),
+      ]
+      const selectorBindingEdgeId = edgeAt(candidate.path, 0)
+      const orderedRouteIds = routeParsers.map((_, routeId) => routeId)
+      finalDecisionAuthorities.push({
+        id: authorityId, atom: 'dispatch', decisionSiteId: decision.siteId,
+        selectorBindingEdgeId,
+        // The Stage-A occurrence owns exact/fold/matcher/otherwise precedence.
+        classifierAuthorityId: decision.siteId,
+        orderedRouteIds,
+        noRouteExpectedAuthorityId: expectedId(def.cases.flatMap(entry =>
+          entry.keys.map(key => JSON.stringify(key)))),
+      })
+      for (let routeId = 0; routeId < routeParsers.length; routeId++) {
+        childEffectIds.push(childEffect(
+          decision.siteId, routeId, edgeAt(candidate.path, routeEdgeIndices[routeId]!),
+          routeParsers[routeId]!,
+        ))
+      }
+      if (routeBranches.some(branchUsesRouted)) {
+        phase = phaseGap(COMPLETE_CAPABILITY,
+          '_routed protocol observability differs across source and compiled readers')
+      }
+    }
+    decisionEffects.push({
+      id: effectId, decisionSiteId: decision.siteId,
+      finalDecisionAuthorityId: authorityId, phase, childEffectIds,
+      pendingRollbackPolicyId: 0, commitPolicyId: 0,
+    })
+  }
+  return {
+    finalDecisionAuthorities, decisionEffects, decisionChildEffects,
+    choiceClassAuthorities, choiceExecutionOrders, classifySpellingMaps,
+    classifyProjectionPlans, decisionExpectedAuthorities,
+    decisionCallbackAuthorities,
+    decisionSourceAuthorities: [...sourceIds.entries()].map(([source, id]) => ({ id, source }))
+      .sort((a, b) => a.id - b.id),
+    decisionAutoNotAuthorities: [...autoNotIds.entries()].map(([key, id]) => ({
+      id, checks: JSON.parse(key) as AutoNotCheck[],
+    })).sort((a, b) => a.id - b.id),
+  }
+}
+
 function lexicalCapabilityInventory(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
@@ -2189,6 +2559,7 @@ function lexicalCapabilityInventory(
   contextSnapshots: LexicalContextSnapshot[]
   ownSkipPlans: LexicalOwnSkipPlan[]
   scanConsumerPolicies: LexicalScanConsumerPolicy[]
+  decisionEffectPlan: LexicalDecisionEffectInventory
 } {
   const inventory = lexicalCapabilityCandidates(roots, resolve)
   const occurrenceContexts = new Map<Combinator<unknown>, Set<string>>()
@@ -2588,11 +2959,15 @@ function lexicalCapabilityInventory(
       ?? (() => { throw new Error('parseman: binding edge lost its context snapshot') })(),
     status: gap(FIXED_TUPLE_BINDING_GAP),
   }))
+  const decisionEffects = decisionEffectInventory(
+    inventory.candidates, decisionInventory.decisions, bindingEdges, resolve,
+  )
   return {
     capabilities, languages, bindingEdges,
     decisionFamilies: decisionInventory.families,
     decisionOutcomes: decisionInventory.outcomes,
     decisions: decisionInventory.decisions,
+    decisionEffectPlan: decisionEffects,
     transitionDiagnostics,
     controlPlans,
     boundaryPlans: boundaryTopologies.length === 0
@@ -2614,7 +2989,8 @@ export function assertLexicalCapabilityClosure(
   alphabet: Pick<LexicalCapabilityInventory,
   'capabilities' | 'capabilityLanguages' | 'bindingEdges' | 'decisionFamilies'
       | 'decisionOutcomes' | 'decisions'> & Partial<Pick<LexicalCapabilityInventory,
-  'transitionDiagnostics' | 'boundaryPlans' | 'materializationPlans'
+      'decisionEffectPlan'
+      | 'transitionDiagnostics' | 'boundaryPlans' | 'materializationPlans'
   | 'grammarWrapperSpecs' | 'grammarCaptureTriviaKinds' | 'boundaryTopologies'
   | 'controlPlans' | 'contextSnapshots' | 'ownSkipPlans' | 'scanConsumerPolicies'>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
@@ -2643,6 +3019,10 @@ export function assertLexicalCapabilityClosure(
   const decisionSignature = (decision: LexicalDecisionSite): string => JSON.stringify(decision)
   const expectedDecisions = actual.decisions.map(decisionSignature)
   const suppliedDecisions = alphabet.decisions.map(decisionSignature)
+  const c2Signature = (value: unknown): string => JSON.stringify(value, (_key, entry: unknown) =>
+    typeof entry === 'function' ? String(entry) : entry)
+  const expectedC2 = c2Signature(actual.decisionEffectPlan)
+  const suppliedC2 = c2Signature(alphabet.decisionEffectPlan ?? {})
   const planSignature = (plan: LexicalTransitionDiagnosticPlan): string => JSON.stringify(plan)
   const expectedPlans = actual.transitionDiagnostics.map(planSignature)
   const suppliedPlans = (alphabet.transitionDiagnostics ?? []).map(planSignature)
@@ -2676,6 +3056,11 @@ export function assertLexicalCapabilityClosure(
     || expectedOutcomes.some((key, index) => key !== suppliedOutcomes[index])
     || expectedDecisions.length !== suppliedDecisions.length
     || expectedDecisions.some((key, index) => key !== suppliedDecisions[index])
+    || expectedC2 !== suppliedC2
+    || actual.decisionEffectPlan.decisionCallbackAuthorities.length
+      !== (alphabet.decisionEffectPlan?.decisionCallbackAuthorities.length ?? 0)
+    || actual.decisionEffectPlan.decisionCallbackAuthorities.some((entry, index) =>
+      entry.callback !== alphabet.decisionEffectPlan?.decisionCallbackAuthorities[index]?.callback)
     || expectedPlans.length !== suppliedPlans.length
     || expectedPlans.some((key, index) => key !== suppliedPlans[index])
     || expectedControlPlans.length !== suppliedControlPlans.length
@@ -2706,25 +3091,14 @@ export function collectLexicalCapabilities(
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): LexicalCapabilityInventory {
   const inventory = lexicalCapabilityInventory(roots, resolve)
+  const { languages: capabilityLanguages, ...fields } = inventory
   return {
-    capabilities: inventory.capabilities,
-    capabilityLanguages: inventory.languages,
-    bindingEdges: inventory.bindingEdges,
-    decisionFamilies: inventory.decisionFamilies,
-    decisionOutcomes: inventory.decisionOutcomes,
-    decisions: inventory.decisions,
-    transitionDiagnostics: inventory.transitionDiagnostics,
-    controlPlans: inventory.controlPlans,
-    boundaryPlans: inventory.boundaryPlans,
-    materializationPlans: inventory.materializationPlans,
-    grammarWrapperSpecs: inventory.grammarWrapperSpecs,
-    grammarCaptureTriviaKinds: inventory.grammarCaptureTriviaKinds,
-    boundaryTopologies: inventory.boundaryTopologies,
-    contextSnapshots: inventory.contextSnapshots,
-    ownSkipPlans: inventory.ownSkipPlans,
-    scanConsumerPolicies: inventory.scanConsumerPolicies,
+    ...fields,
+    capabilityLanguages,
     capabilityComplete: inventory.capabilities.every(site => site.status.kind !== 'gap')
       && inventory.bindingEdges.every(edge => edge.status.kind !== 'gap')
+      && inventory.decisionEffectPlan.decisionEffects.every(effect =>
+        effect.phase.executableLowering.kind !== 'gap')
       && inventory.scanConsumerPolicies.every(policy => policy.status.kind !== 'gap'),
   }
 }
@@ -2760,7 +3134,7 @@ export function collectLexicalAlphabet(
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): LexicalAlphabet {
   const capabilityInventory = collectLexicalCapabilities(roots, resolve)
-  const { capabilities, bindingEdges } = capabilityInventory
+  const { capabilities } = capabilityInventory
   const capabilityFamilyIdByKey = new Map(capabilityInventory.decisionFamilies.map(family =>
     [family.semanticKey, family.id]))
   const capabilityTokenFamilies = new Map<Combinator<unknown>, Map<number, LexicalDecisionFamily>>()
@@ -2987,6 +3361,7 @@ export function collectLexicalAlphabet(
   // A choice-admission consumer therefore cannot accidentally publish a child
   // literal/regex id by reading a field from LexicalAlphabet.
   return {
+    ...capabilityInventory,
     recognizers: stableRecognizers,
     diagnostics,
     families: stableFamilies,
@@ -2994,23 +3369,6 @@ export function collectLexicalAlphabet(
     outcomes: stableOutcomes,
     classifiers: stableClassifiers,
     familyIdOf: stableFamilyIdOf,
-    capabilities,
-    capabilityLanguages: capabilityInventory.capabilityLanguages,
-    bindingEdges,
-    decisionFamilies: capabilityInventory.decisionFamilies,
-    decisionOutcomes: capabilityInventory.decisionOutcomes,
-    decisions: capabilityInventory.decisions,
-    transitionDiagnostics: capabilityInventory.transitionDiagnostics,
-    controlPlans: capabilityInventory.controlPlans,
-    boundaryPlans: capabilityInventory.boundaryPlans,
-    materializationPlans: capabilityInventory.materializationPlans,
-    grammarWrapperSpecs: capabilityInventory.grammarWrapperSpecs,
-    grammarCaptureTriviaKinds: capabilityInventory.grammarCaptureTriviaKinds,
-    boundaryTopologies: capabilityInventory.boundaryTopologies,
-    contextSnapshots: capabilityInventory.contextSnapshots,
-    ownSkipPlans: capabilityInventory.ownSkipPlans,
-    scanConsumerPolicies: capabilityInventory.scanConsumerPolicies,
-    capabilityComplete: capabilityInventory.capabilityComplete,
   }
 }
 
