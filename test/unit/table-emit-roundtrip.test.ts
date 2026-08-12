@@ -143,7 +143,12 @@ describe('table lowering — the EMITTED module round-trips', () => {
     const classLine = src.split('\n').find(line => line.startsWith('x:'))
 
     expect(prog.cc.length).toBeGreaterThan(1)
-    expect(classLine).toMatch(/^x:".*"\.split\("."\),$/)
+    expect(classLine).toBeDefined()
+    const match = classLine!.match(/^x:(.*)\.split\((.*)\),$/)
+    expect(match).not.toBeNull()
+    const encoded = JSON.parse(match![1]!) as string
+    const delimiter = JSON.parse(match![2]!) as string
+    expect(encoded.split(delimiter)).toEqual(prog.cc)
 
     const emitted = await loadEmitted(prog, 'class-pool-split')
     for (const input of ['abc', '12', '(a,b,12)', '###']) {
