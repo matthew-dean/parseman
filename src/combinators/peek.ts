@@ -1,6 +1,7 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any, matchesEmpty } from './first-set.ts'
 import { saveLookaheadMark, rollbackLookahead } from './trivia-skip.ts'
+import { assertionFailureExpected } from './expected.ts'
 
 /**
  * Positive lookahead. Succeeds (consuming nothing) when `combinator` matches at
@@ -57,7 +58,10 @@ export function peek(combinator: Combinator<unknown>): Combinator<null> {
       const result = combinator.parse(input, pos, ctx)
       rollbackLookahead(ctx, mark)
       if (result.ok) return { ok: true, value: null, span: { start: pos, end: pos } }
-      return { ok: false, expected: [`peek(${combinator._tag})`], span: { start: pos, end: pos } }
+      return {
+        ok: false, expected: assertionFailureExpected(true, combinator._tag),
+        span: { start: pos, end: pos },
+      }
     },
   }
 }

@@ -4,8 +4,9 @@ import {
   compatibleLexicalOutcomes, selectedLexicalOutcome, winnerWrapsReference,
   type LexicalTokenClassifier,
 } from '../../src/compiler/token-alphabet.ts'
-import type { Combinator, ParserDef } from '../../src/types.ts'
+import type { Combinator, ParseError, ParserDef } from '../../src/types.ts'
 import { composedCoverageRules } from '../../src/compiler/linker.ts'
+import { encodeTable } from '../../src/table/encode.ts'
 import {
   adjacent, attempt, balanced, choice, compose, dispatch, endsWith, expect as expectCombinator, field, gate, label, leaf,
   keywords, literal, makeWhen, many, matches, node, not, otherwise, optional, parse, parser, peek, ref, regex, routed, rules, scanTo,
@@ -427,6 +428,123 @@ describe('derived lexical-token families', () => {
     // RED provenance: omitting the occurrence context makes both non-raw
     // grammars share the own-skip-only language; folding ambient into raw makes
     // RawGroup context-dependent contrary to balanced({ raw:true }).
+  })
+
+  it('records pointer-free token-internal diagnostic events in one state session', () => {
+    const fixed = token(regex(/[a-z]+\(?/))
+    const min2 = token(many(keywords(['x']), { min: 2 }))
+    const min1 = token(many(keywords(['x']), { min: 1 }))
+    const asserted = token(sequence(not(literal('!')), peek(regex(/[a-z]/)), regex(/[a-z]+/)))
+    const strict = balanced('(', ')', { strict: true, skip: [regex(/"[^"]*"/)] })
+    const recovered = balanced('[', ']', { strict: false, skip: [regex(/'[^']*'/)] })
+    const roots = [fixed, min2, min1, asserted, strict, recovered]
+    const alphabet = collectLexicalAlphabet(roots)
+    const planFor = (parser: Combinator<unknown>) => {
+      const site = alphabet.capabilities.find(entry => entry.parser === parser && entry.atom === 'token')!
+      expect(site.diagnosticPlanId).toBeTypeOf('number')
+      return alphabet.transitionDiagnostics[site.diagnosticPlanId!]!
+    }
+
+    const fixedPlan = planFor(fixed)
+    expect(fixedPlan.stateCount).toBe(4)
+    expect(fixedPlan.events).toEqual([{ op: 'FAIL', state: 1, expectedId: 0 }])
+    expect(fixedPlan.expected).toEqual([['/[a-z]+\\(?/']])
+
+    const required = planFor(min2)
+    expect(required.events.filter(event => event.op === 'REQUIRE')).toEqual([
+      expect.objectContaining({ op: 'REQUIRE', state: 0, childStart: 1, childEnd: 2 }),
+    ])
+    expect(required.expected).toContainEqual(['keyword'])
+    expect(required.expected).toContainEqual(['"x"'])
+    expect(planFor(min1).events.some(event => event.op === 'REQUIRE')).toBe(false)
+    const sourceRequired = min2.parse('x', 0, {} as never)
+    expect(sourceRequired).toMatchObject({ ok: false, span: { start: 1 }, expected: ['"x"'] })
+
+    const assertionEvents = planFor(asserted).events.filter(event => event.op === 'ASSERT')
+    expect(assertionEvents).toEqual([
+      expect.objectContaining({
+        positive: false, snapshotPolicy: 'saveLookaheadMark', execution: 'deferred',
+      }),
+      expect.objectContaining({
+        positive: true, snapshotPolicy: 'saveLookaheadMark', execution: 'deferred',
+      }),
+    ])
+    expect(assertionEvents.every(event => event.innerStart < event.innerEnd)).toBe(true)
+
+    const strictPlan = planFor(strict)
+    const recoverPlan = planFor(recovered)
+    expect(strictPlan.events).toContainEqual(expect.objectContaining({
+      op: 'BAL_CLOSE_STRICT', probe: true, committed: false,
+      when: 'close-miss-after-open-body-success',
+    }))
+    expect(recoverPlan.events).toContainEqual(expect.objectContaining({
+      op: 'BAL_CLOSE_RECOVER', probe: true, committed: false, result: 'parseError',
+      when: 'close-miss-after-open-body-success',
+      errorSpan: 'close-position', lineAnnotation: 'when-active',
+      errorSink: 'when-active', cstErrorCapture: 'when-active',
+    }))
+    expect(strictPlan.events.filter(event => event.op === 'FAIL')).toHaveLength(2) // open + skipper
+    expect(recoverPlan.events.filter(event => event.op === 'FAIL')).toHaveLength(2)
+    const strictClose = strictPlan.events.find(event => event.op === 'BAL_CLOSE_STRICT')!
+    const recoverClose = recoverPlan.events.find(event => event.op === 'BAL_CLOSE_RECOVER')!
+    const strictResult = strict.parse('(x', 0, { trackLines: false, state: {} })
+    expect(strictResult).toMatchObject({ ok: false, expected: strictPlan.expected[strictClose.expectedId] })
+    if (!strictResult.ok) expect(strictResult.committed).not.toBe(true)
+    const errors: ParseError[] = []
+    const recoveredResult = recovered.parse('[x', 0, {
+      trackLines: false, state: {}, _errors: errors,
+    })
+    expect(recoveredResult.ok).toBe(true)
+    expect(errors).toEqual([expect.objectContaining({ expected: recoverPlan.expected[recoverClose.expectedId] })])
+
+    const pointerFree = (value: unknown): boolean => {
+      if (typeof value === 'function') return false
+      if (value === null || typeof value !== 'object') return true
+      if (value instanceof Map || value instanceof Set) return false
+      return Object.values(value).every(pointerFree)
+    }
+    expect(alphabet.transitionDiagnostics.every(pointerFree)).toBe(true)
+    expect(alphabet.transitionDiagnostics.every(plan => plan.events.every(event =>
+      event.state >= 0 && event.state < plan.stateCount))).toBe(true)
+    expect(alphabet.capabilities.filter(site => site.atom === 'token').every(site =>
+      site.obligations.diagnosticsAndEffects.kind === 'gap')).toBe(true)
+    expect(encodeTable(Object.fromEntries(roots.map((root, index) => [`R${index}`, root]))))
+      .not.toHaveProperty('transitionDiagnostics')
+
+    const sameA = token(sequence(literal('q'), optional(literal('!'))))
+    const sameB = token(sequence(literal('q'), optional(literal('!'))))
+    const sharedPlans = collectLexicalAlphabet([sameA, sameB])
+    const occurrenceIds = sharedPlans.capabilities
+      .filter(site => site.atom === 'token').map(site => site.diagnosticPlanId)
+    expect(occurrenceIds).toEqual([0, 0])
+    expect(sharedPlans.transitionDiagnostics).toHaveLength(1)
+
+    const planted = alphabet.transitionDiagnostics.map((plan, index) => index === fixedPlan.id
+      ? { ...plan, events: plan.events.slice(1) }
+      : plan)
+    expect(() => assertLexicalCapabilityClosure(roots, {
+      ...alphabet, transitionDiagnostics: planted,
+    })).toThrow('lexical capability census is incomplete')
+    for (const op of ['FAIL', 'ASSERT', 'REQUIRE', 'BAL_CLOSE_STRICT', 'BAL_CLOSE_RECOVER'] as const) {
+      const owner = alphabet.transitionDiagnostics.find(plan => plan.events.some(event => event.op === op))!
+      const omitted = alphabet.transitionDiagnostics.map(plan => plan !== owner ? plan : ({
+        ...plan, events: plan.events.filter(event => event.op !== op),
+      }))
+      expect(() => assertLexicalCapabilityClosure(roots, {
+        ...alphabet, transitionDiagnostics: omitted,
+      }), `omitted ${op}`).toThrow('lexical capability census is incomplete')
+    }
+    const skipFail = strictPlan.events.find(event => event.op === 'FAIL'
+      && strictPlan.expected[event.expectedId]![0] === '/"[^"]*"/')!
+    expect(skipFail).toBeDefined()
+    const omittedSkip = alphabet.transitionDiagnostics.map(plan => plan !== strictPlan ? plan : ({
+      ...plan, events: plan.events.filter(event => event !== skipFail),
+    }))
+    expect(() => assertLexicalCapabilityClosure(roots, {
+      ...alphabet, transitionDiagnostics: omittedSkip,
+    })).toThrow('lexical capability census is incomplete')
+    // RED provenance: deleting the mandatory regex FAIL used to leave the
+    // occurrence census green because internal checkpoints were not authority.
   })
 
   it('elides only a trivia scope whose direct token child shadows its lexical context', () => {
