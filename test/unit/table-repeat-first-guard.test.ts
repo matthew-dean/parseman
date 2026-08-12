@@ -230,4 +230,3 @@ describe('table REP optional-item first-set guard', () => {
     expect(assembled.emitRefusal).toBeUndefined()
   })
 })
-
