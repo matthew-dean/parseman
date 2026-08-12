@@ -105,7 +105,40 @@ preserved.
 | T11c | Retired prototype; no commit | A zero-word `-2` operand derived exact repeat-item classes once at assembly from closed dispatch metadata, expanding separator-less CSS guard coverage from 13/32 to 24/32 while keeping 6,066 words and 109 classes. The stabilized three-pass workload screen rejected both shapes: broad derivation measured CSS +1.5%, Less stylesheet +1.1%, mixins +0.2%; restricting to nonexclusive child choices measured CSS +1.4%, Less stylesheet −0.1%, mixins −1.2%. Actual Jess table-reference screens were flat/small (CSS −1.6% versus A/A +2.9%, benchmark Less −0.9%, generated Less −1.9% versus A/A −0.7%); macro source A/B failed before timing at the independently recorded `composeLeaf` precondition and was not replaced with a stale number. Size guard, focused parity/recovery tests, and invariants were green. | REJECTED. Additional repeat coverage is exact and size-neutral but does not move CSS or either Less release bar. Keep the simpler pooled-class guard; do not add derived dispatch plumbing for a flat result. |
 | T12a | `d78ea9f` (feature lane `61c73a1`) | The encoder recognizes only an exact array-destructuring child projection such as `([, value]) => value` and stores `~childIndex` in the existing `OP_SEQX` reducer operand. Reference exec, closure assembly, and emitted assembly return the already-parsed child without allocating the reducer input array or calling a callback; all other callback syntax declines. JSON covered one static site / 3,303 calls (23.4% of callbacks), retained 138 words, and reduced its function pool 9→8. GraphQL covered six sites / 1,176 calls, retained 495 words, and reduced 27→21 functions. Five independently recompiled passes measured JSON −4.1% median / −4.2% min, faster 5/5 with 59/60 paired wins versus A/A +0.6%/+0.4%; GraphQL was flat at −0.1%/−0.5%. The tightest GraphQL comparison margin remained 1.56× over Chevrotain against a 1.05× floor. Built main/table ESM each grew 1,525 raw bytes; npm pack grew 8,265 bytes (+0.267%). A wrong-index plant returned the wrong child; permanent tests pin interpreter/reference/closure/emitted/macro identity and refusal cases. Full 3,890-test, typecheck, lint, invariants, and all six strict differential gates passed. | LANDED. This is a bounded secondary JSON win with zero program-word cost and neutral GraphQL behavior. It does not move CSS/Less release bars and does not change their priority. |
 
-## Current production-shaped 0.46 shelf audit — actual Jess at `f3b4c3f`
+## Current production-shaped 0.46 shelf audit — release `876ac98`, Jess `f3b4c3f`
+
+The current release branch was remeasured at
+`876ac9877c6af0bf5d28617e85f53ce358d400cc` against 0.46
+`a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3`, on exact Jess
+`f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002`. The subsequent C2 merge is
+compiler-only and its permanent gate proves the CSS/Less TableProgram and emitted
+source byte-identical to its parent, so it does not alter these post-compile rows.
+Node was v24.19.0 on darwin/arm64. The Jess checkout was a fresh detached
+worktree with a frozen offline install; parser-shared and core were built locally,
+and the preflight resolved every grammar, parser-shared, and core path inside that
+checkout before timing.
+
+Both the separate HEAD/HEAD two-graph control and the release A/B used the
+committed routine defaults: 16 samples per side (eight rounds x two runs), each
+sample the median of five one-parse timings after three warmups. All three ranked
+fixtures consumed in full and retained the pinned hashes below. Loads were
+3.08 -> 5.54 for A/A and 5.15 -> 4.34 for A/B, beneath the ceiling of 6.
+
+| Fixture | HEAD / 0.46 | raw ratio | paired-round median | matching HEAD/HEAD A/A | control-adjusted aggregate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CSS `benchmark.css` (123,029 B) | 13.26 / 5.28 ms | **2.482x (+148.2%)** | 2.483x | 1.005x; paired 0.997x | **2.469x** |
+| Less `benchmark.less` (106,802 B) | 33.25 / 17.07 ms | **1.962x (+96.2%)** | 1.967x | 0.971x; paired 0.972x | **2.021x** |
+| generated Less (275,211 B) | 96.02 / 48.43 ms | **1.991x (+99.1%)** | 1.990x | 0.969x; paired 0.967x | **2.055x** |
+
+Every A/B row lost all eight paired rounds. Pairing agreed with solo timing within
+1.9% for both CSS/benchmark Less HEAD legs and within 0.8% for generated Less;
+the A/A run quantifies the larger identical-code side bias rather than hiding it.
+The release bar is therefore not close: CSS remains about 2.47x and both Less
+fixtures about 2.0x after the matching control correction. This is the current
+post-compile authority until a runtime-selected replacement body changes the
+artifact.
+
+## Prior production-shaped 0.46 shelf audit — actual Jess at `f3b4c3f`
 
 The fresh release checkpoint measured source-identical Parseman
 `0385764da4c8cf2aa00bb970d7a4420f1fab7d5e` and
