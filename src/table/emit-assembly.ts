@@ -109,6 +109,8 @@ export const EMITTED_PARAMS = [
   // Appended so precompiled factories produced by earlier runtimes keep every
   // positional helper binding. Older factories ignore this trailing argument.
   'commitTriviaScan', 'scanTriviaCompact', 'LEX',
+  // Appended for old precompiled-factory ABI: old factories ignore it.
+  'adjacencyHolds',
 ] as const
 
 /**
@@ -1263,21 +1265,14 @@ return v
         const base = fused ? ip + 3 : ip + 2
         const n = code[fused ? ip + 2 : ip + 1]!
         const wantValues = op !== OP_SEQV
-        // ADJACENCY changes the PARENT's term-boundary emission: the assertion
-        // must be answered at the cursor, BEFORE the ambient trivia scan.
-        // Refused rather than lowered wrong — a piece handed the post-scan
-        // position finds the gap already consumed and answers "adjacent" every
-        // time, SILENTLY (`ops.ts:226-251`).
-        for (let i = 1; i < n; i++) {
-          if (code[code[base + i]!] === OP_ADJ) {
-            throw new Unemittable('a sequence carrying an adjacency assertion (OP_ADJ)')
-          }
-        }
         const reducer = fused ? code[ip + 1]! : -1
         const projection = reducer < 0 ? ~reducer : -1
         const fn = fused && projection < 0 ? fnRef(reducer) : undefined
         const kids: string[] = []
-        for (let i = 0; i < n; i++) kids.push(link(code[base + i]!))
+        for (let i = 0; i < n; i++) {
+          const childIp = code[base + i]!
+          kids.push(code[childIp] === OP_ADJ ? '' : link(childIp))
+        }
         /**
          * A RECOVERY SEQUENCE PUBLISHES `ctx._sync`, and that is the WHOLE of
          * "recovery config" — no grammar carries any (`assemble.ts:1446`).
@@ -1323,7 +1318,17 @@ return v
           const vn = `v${i}`
           parts.push(`let ${vn}`)
           if (REC) parts.push(pub(i))
-          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
+          const childIp = code[base + i]!
+          if (code[childIp] === OP_ADJ) {
+            const negated = code[childIp + 1] === 1
+            const ki = code[childIp + 2]!
+            const kinds = ki < 0 ? 'undefined' : `K[${ki}]`
+            const expected = fxRef(code[childIp + 3]!)
+            parts.push(
+              `if(!adjacencyHolds(input,cur,ctx,${negated ? 'true' : 'false'},${kinds})){ctx._fe=cur;ctx._fx=${expected};return FAIL}`,
+              `${vn}=null`,
+            )
+          } else parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
           names.push(vn)
         }
         parts.push('EC.e=cur')

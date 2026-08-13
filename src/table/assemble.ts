@@ -3290,7 +3290,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds,
       )
       emitReached = new Set(pre.reached)
     }
@@ -3371,7 +3371,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds,
       )
       emitReached = em.reached
     } catch (e) {

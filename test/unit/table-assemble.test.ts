@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { adjacent, balanced, choice, keywords, literal, many, node, optional, parser, regex, sequence, token, transform } from '../../src/index.ts'
+import { balanced, choice, keywords, literal, many, node, notAdjacent, optional, parser, regex, sequence, token, transform } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules, AssemblyCache, cfgKey } from '../../src/table/assemble.ts'
@@ -41,11 +41,11 @@ const g = rules((g: any) => ({
 describe('table assembler', () => {
   it('binds arbitrary, adjacency, and recovery sequence terms without fixed child arrays', () => {
     const roots = [
-      ['strict', sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e')), {}],
-      ['adjacency', sequence(literal('a'), adjacent(), literal('b'), literal('c'), literal('d')), {}],
-      ['recovery', sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e')), { recovery: true }],
+      ['strict', sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e')), {}, 'abcde'],
+      ['adjacency', parser({ trivia: regex(/\s+/) }, sequence(literal('a'), notAdjacent(), literal('b'), literal('c'), literal('d'))), {}, 'a bcd'],
+      ['recovery', sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e')), { recovery: true }, 'abcde'],
     ] as const
-    for (const [name, root, settings] of roots) {
+    for (const [name, root, settings, input] of roots) {
       const prog = encodeTable({ Root: root }, settings)
       const linked = assemble(resolveTable({ ...prog, asm: [] }), { ...prog, asm: [] }, {
         hostCst: false, hostReadsChildren: true, trackLines: false,
@@ -54,7 +54,24 @@ describe('table assembler', () => {
       const source = Function.prototype.toString.call(linked.pieces.Root)
       expect(source, name).not.toContain('kids[')
       expect(source, name).not.toContain('runners[')
-      expect(run(tableRules({ ...prog, asm: [] }).Root!, 'abcde').ok, name).toBe(true)
+      expect(run(tableRules({ ...prog, asm: [] }).Root!, input).ok, name).toBe(true)
+      if (name === 'adjacency') {
+        const resolved = resolveTable(prog)
+        const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
+          const emitted = emitAssemblySource(resolved, prog, cfg, [])
+          return {
+            key: cfgKey(cfg),
+            // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+            factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
+            plan: emitted.plan, reached: [...emitted.reached],
+          }
+        })
+        for (const sample of ['abcd', 'a bcd', 'a\tbcd']) {
+          const reference = run(execRules(prog).Root!, sample)
+          expect(digestValue(run(tableRules({ ...prog, asm: [] }).Root!, sample)), `closure ${sample}`).toBe(digestValue(reference))
+          expect(digestValue(run(tableRules({ ...prog, asm: precompiled }).Root!, sample)), `emitted ${sample}`).toBe(digestValue(reference))
+        }
+      }
     }
   })
 
