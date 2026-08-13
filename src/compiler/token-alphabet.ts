@@ -76,6 +76,82 @@ export type LexicalIr =
     readonly skip: readonly LexicalIr[]
   }
 
+/** First complete executable lexical body. It is intentionally a semantic
+ * shape rather than an opcode: the encoder relocates the regex into the table
+ * pool only after TOKEN wins the compiler-only cost comparison. */
+export type OptionalSuffixLexBody = {
+  readonly kind: 'regex-optional-code-unit'
+  readonly source: string
+  readonly flags: string
+  readonly suffix: string
+}
+
+export type LexBodyCandidate =
+  | { readonly strategy: 'character'; readonly estimatedOps: number }
+  | {
+    readonly strategy: 'token'
+    readonly estimatedOps: number
+    readonly body: OptionalSuffixLexBody
+  }
+
+/** Exact recognizer shape admitted by the first end-to-end Stage-C tranche. */
+export function optionalSuffixLexBody(ir: LexicalIr): OptionalSuffixLexBody | undefined {
+  if (ir.kind !== 'sequence' || ir.parts.length !== 2) return undefined
+  const [base, suffix] = ir.parts
+  if (base?.kind !== 'regex' || suffix?.kind !== 'repeat'
+    || suffix.min !== 0 || suffix.max !== 1 || !suffix.greedy
+    || suffix.mode !== 'possessive' || suffix.body.kind !== 'literal'
+    || suffix.body.caseInsensitive || suffix.body.value.length !== 1) return undefined
+  return {
+    kind: 'regex-optional-code-unit', source: base.source, flags: base.flags,
+    suffix: suffix.body.value,
+  }
+}
+
+/** Compare two COMPLETE candidates. The CHARACTER cost is the existing
+ * token-boundary + sequence + regex + optional + literal body. The TOKEN cost
+ * is one selected body and one materialization boundary; neither candidate is
+ * serialized until this decision returns. */
+export function selectOptionalSuffixLexBody(ir: LexicalIr): LexBodyCandidate {
+  const body = optionalSuffixLexBody(ir)
+  const character: LexBodyCandidate = { strategy: 'character', estimatedOps: 5 }
+  if (body === undefined) return character
+  const token: LexBodyCandidate = { strategy: 'token', estimatedOps: 2, body }
+  return token.estimatedOps < character.estimatedOps ? token : character
+}
+
+/** Refuse wrapper/effect lookalikes even when normalization erases them to the
+ * same language. This first executable body owns only the authored token
+ * boundary around a direct sequence(regex, optional(literal-one-code-unit)). */
+export function directOptionalSuffixTokenBody(
+  parser: Combinator<unknown>,
+): OptionalSuffixLexBody | undefined {
+  const outer = parser._def
+  if (outer.tag !== 'token' || parser._meta.canMatchNewline !== false) return undefined
+  const sequence = outer.parser._def
+  if (sequence.tag !== 'sequence' || sequence.parsers.length !== 2) return undefined
+  const base = sequence.parsers[0]?._def
+  const baseParser = sequence.parsers[0]
+  const optional = sequence.parsers[1]?._def
+  if (base?.tag !== 'regex' || baseParser?._meta.canMatchNewline !== false
+    || optional?.tag !== 'optional') return undefined
+  const suffix = optional.parser._def
+  if (suffix.tag !== 'literal' || suffix.caseInsensitive
+    || suffix.value.length !== 1) return undefined
+  const selected = selectOptionalSuffixLexBody({
+    kind: 'sequence',
+    parts: [
+      { kind: 'regex', source: base.source, flags: base.flags },
+      {
+        kind: 'repeat',
+        body: { kind: 'literal', value: suffix.value, caseInsensitive: false },
+        min: 0, max: 1, greedy: true, mode: 'possessive',
+      },
+    ],
+  })
+  return selected.strategy === 'token' ? selected.body : undefined
+}
+
 /** One canonical recognizer spec, shared by every family with equal lexical IR. */
 export type LexicalRecognizer = {
   readonly id: number
@@ -419,6 +495,17 @@ export type LexicalDecisionFamilyPlan = {
   readonly arms: readonly LexicalDecisionArm[]
 }
 
+/** Source-ordered decision regions within which a recognized range may remain
+ * live. A dynamic scanner is its own closed epoch: callbacks and ambient skip
+ * policy may mutate parse state, so no lexical fact may cross that arm in
+ * either direction. This is compiler evidence for one complete TOKEN body,
+ * never a request to replay the CHARACTER body. */
+export type LexicalDecisionReuseEpoch = {
+  readonly armIds: readonly number[]
+  readonly pendingReuse: 'forbidden' | 'unproved'
+  readonly boundary: 'none' | 'dynamic-scan'
+}
+
 /** Occurrence-local ordered decision proof; never serialized in this tranche. */
 export type LexicalDecisionSite = {
   readonly siteId: number
@@ -437,6 +524,7 @@ export type LexicalDecisionSite = {
   /** Dynamic scanner callbacks are effectful and can never publish a reusable
    * cross-arm lexical fact. All other sites remain unproved in this tranche. */
   readonly pendingReuse: 'forbidden' | 'unproved'
+  readonly reuseEpochs: readonly LexicalDecisionReuseEpoch[]
 }
 
 /** Final winner-resolved fixed choice classes, shared with table encoding. */
@@ -1317,6 +1405,17 @@ function tokenObligations(
   }
 }
 
+function executableLexBodyObligations(): LexicalCapabilityObligations {
+  return {
+    recognition: COMPLETE_PHASE,
+    diagnostics: COMPLETE_PHASE,
+    boundaryPlan: COMPLETE_PHASE,
+    materializationPlan: COMPLETE_PHASE,
+    supportedVariants: COMPLETE_PHASE,
+    bindingAndReachability: COMPLETE_PHASE,
+  }
+}
+
 function terminalObligations(): LexicalCapabilityObligations {
   return {
     recognition: COMPLETE_PHASE,
@@ -1755,6 +1854,7 @@ type PendingDecisionSite = {
   }>
   readonly precisionNotes: readonly string[]
   readonly pendingReuse: 'forbidden' | 'unproved'
+  readonly reuseEpochs: readonly LexicalDecisionReuseEpoch[]
 }
 
 type ScanConsumerCandidate = {
@@ -2064,6 +2164,27 @@ function lexicalDecisionInventory(
     if (!viewsByKey.has(key)) viewsByKey.set(key, { familyKey, key, view })
     return key
   }
+  const reuseEpochsForChoice = (
+    arms: readonly Combinator<unknown>[],
+  ): LexicalDecisionReuseEpoch[] => {
+    const epochs: LexicalDecisionReuseEpoch[] = []
+    let pure: number[] = []
+    const flushPure = (): void => {
+      if (pure.length === 0) return
+      epochs.push({ armIds: pure, pendingReuse: 'unproved', boundary: 'none' })
+      pure = []
+    }
+    for (let armId = 0; armId < arms.length; armId++) {
+      if (!containsDynamicScanConsumer(arms[armId]!, resolve)) {
+        pure.push(armId)
+        continue
+      }
+      flushPure()
+      epochs.push({ armIds: [armId], pendingReuse: 'forbidden', boundary: 'dynamic-scan' })
+    }
+    flushPure()
+    return epochs
+  }
 
   // The interner is grammar-wide, not derived from whichever decisions happen
   // to consume a language. This keeps family identity independent of cost/site
@@ -2083,11 +2204,29 @@ function lexicalDecisionInventory(
     const precisionNotes: string[] = []
     const contextSnapshotId = contextSnapshotIdByKey.get(candidate.contextKey)
     if (contextSnapshotId === undefined) throw new Error('parseman: decision occurrence lost its context snapshot')
-    if (containsDynamicScanConsumer(candidate.parser, resolve)) {
+    const dynamicScan = candidate.atom === 'dispatch' && def.tag === 'dispatch'
+      ? containsDynamicScanConsumer(def.selector, resolve)
+      : containsDynamicScanConsumer(candidate.parser, resolve)
+    if (dynamicScan) {
+      precisionNotes.push('dynamic scan consumer forbids pending range reuse')
+    }
+    // A dispatch cannot classify before its selector when the selector itself is
+    // a dynamic scan. Choice is different: a scan in one arm does not erase the
+    // pure source-range languages of its siblings. Those arms remain
+    // unrestricted and the SITE forbids pending reuse, but the compiler still
+    // needs the sibling families to build and price a complete TOKEN body.
+    if (candidate.atom === 'dispatch' && dynamicScan) {
       pending.push({
         siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
         contextSnapshotId, families: [], pendingReuse: 'forbidden',
-        precisionNotes: ['dynamic scan consumer requires unrestricted PEG admission and forbids pending reuse'],
+        reuseEpochs: [{
+          armIds: def.tag === 'dispatch'
+            ? Array.from({ length: def.cases.length + (def.matchers?.length ?? 0)
+              + (def.otherwise === undefined ? 0 : 1) }, (_, armId) => armId)
+            : [],
+          pendingReuse: 'forbidden', boundary: 'dynamic-scan',
+        }],
+        precisionNotes,
       })
       continue
     }
@@ -2099,6 +2238,11 @@ function lexicalDecisionInventory(
         pending.push({
           siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
           contextSnapshotId, families: [], precisionNotes, pendingReuse: 'unproved',
+          reuseEpochs: [{
+            armIds: Array.from({ length: def.cases.length + (def.matchers?.length ?? 0)
+              + (def.otherwise === undefined ? 0 : 1) }, (_, armId) => armId),
+            pendingReuse: 'unproved', boundary: 'none',
+          }],
         })
         continue
       }
@@ -2133,7 +2277,13 @@ function lexicalDecisionInventory(
       })
       pending.push({
         siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
-        contextSnapshotId, families: [{ familyKey, arms }], precisionNotes, pendingReuse: 'unproved',
+        contextSnapshotId, families: [{ familyKey, arms }], precisionNotes,
+        pendingReuse: dynamicScan ? 'forbidden' : 'unproved',
+        reuseEpochs: [{
+          armIds: arms.map(arm => arm.armId),
+          pendingReuse: dynamicScan ? 'forbidden' : 'unproved',
+          boundary: dynamicScan ? 'dynamic-scan' : 'none',
+        }],
       })
       continue
     }
@@ -2248,7 +2398,8 @@ function lexicalDecisionInventory(
     pending.push({
       siteId, atom: candidate.atom, path: candidate.path, contextKey: candidate.contextKey,
       contextSnapshotId, families, precisionNotes: [...new Set(precisionNotes)].sort(),
-      pendingReuse: 'unproved',
+      pendingReuse: dynamicScan ? 'forbidden' : 'unproved',
+      reuseEpochs: reuseEpochsForChoice(def.parsers),
     })
   }
 
@@ -2273,6 +2424,7 @@ function lexicalDecisionInventory(
     siteId: site.siteId, atom: site.atom, path: site.path, contextKey: site.contextKey,
     contextSnapshotId: site.contextSnapshotId,
     fallback: 'unrestricted', precisionNotes: site.precisionNotes, pendingReuse: site.pendingReuse,
+    reuseEpochs: site.reuseEpochs,
     families: site.families.map(family => ({
       familyId: familyIdByKey.get(family.familyKey)!,
       arms: family.arms.map(arm => ({
@@ -2922,11 +3074,13 @@ function lexicalCapabilityInventory(
     const topology = internBoundaryTopology(session)
     const topologyRepresentation = 'id' in topology
       ? COMPLETE_CAPABILITY : gap(topology.gap)
-    const obligations = tokenObligations(COMPLETE_CAPABILITY, {
-      diagnostics: true,
-      boundaryPlan: topologyRepresentation,
-      materializationPlan: topologyRepresentation,
-    })
+    const obligations = directOptionalSuffixTokenBody(candidate.parser) === undefined
+      ? tokenObligations(COMPLETE_CAPABILITY, {
+          diagnostics: true,
+          boundaryPlan: topologyRepresentation,
+          materializationPlan: topologyRepresentation,
+        })
+      : executableLexBodyObligations()
     return {
       id, path: candidate.path, contextKey: candidate.contextKey, contextSnapshotId,
       recognitionContextKey: candidate.recognitionContextKey,
@@ -2953,11 +3107,14 @@ function lexicalCapabilityInventory(
     ...site,
     languageId: languageIdByKey.get(`${site.atom}\u0000${site.semanticKey}`)!,
   }))
+  const executableBodyPaths = new Set(capabilities.flatMap(site =>
+    site.status.kind === 'complete' && directOptionalSuffixTokenBody(site.parser) !== undefined
+      ? [site.path] : []))
   const bindingEdges = inventory.bindingEdges.map((edge, id): LexicalBindingEdge => ({
     id, ...edge,
     contextSnapshotId: contextSnapshotIdByKey.get(edge.contextKey)
       ?? (() => { throw new Error('parseman: binding edge lost its context snapshot') })(),
-    status: gap(FIXED_TUPLE_BINDING_GAP),
+    status: executableBodyPaths.has(edge.path) ? COMPLETE_CAPABILITY : gap(FIXED_TUPLE_BINDING_GAP),
   }))
   const decisionEffects = decisionEffectInventory(
     inventory.candidates, decisionInventory.decisions, bindingEdges, resolve,

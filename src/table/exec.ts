@@ -22,6 +22,7 @@ import {
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_LEX_BODY,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { failAt } from '../combinators/probe.ts'
@@ -203,6 +204,7 @@ function makeDriver(
   fx: readonly (readonly string[])[],
   disp: readonly ResolvedDispatch[],
   dsp: readonly ResolvedDispatchSpec[],
+  lex: readonly ((input: string, pos: number) => number)[],
   trivia: readonly unknown[],
   triviaScan: readonly (FastTriviaScanner | null)[],
   triviaLabelled: readonly boolean[],
@@ -692,6 +694,29 @@ function makeDriver(
         const end = EC.e
         const value = input.slice(pos, end)
         if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+        EC.e = end
+        return value
+      }
+
+      case OP_LEX_BODY: {
+        const recognized = lex[code[ip + 1]!]!(input, pos)
+        if (recognized < 0) {
+          ctx._fe = pos
+          ctx._fx = fx[code[ip + 2]!] as string[]
+          if (ctx._probe !== undefined) failAt(ctx, ctx._fx, pos)
+          return FAIL
+        }
+        const suffixMatched = recognized % 2 === 1
+        const end = (recognized - (suffixMatched ? 1 : 0)) / 2
+        ctx._fc = false
+        if (!suffixMatched) {
+          const suffixExpected = fx[code[ip + 3]!] as string[]
+          ctx._fe = end
+          ctx._fx = suffixExpected
+          if (ctx._probe !== undefined) failAt(ctx, suffixExpected, end)
+        }
+        const value = input.slice(pos, end)
+        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
         EC.e = end
         return value
       }
@@ -1684,7 +1709,7 @@ export function execRules(
   const prog = expandCompact(source)
   const t = resolveTable(prog)
   const scan = opts.leafSwap === false ? t.triviaScan.map(() => null) : t.triviaScan
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog, newEndCell())
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.lex, t.trivia, scan, t.triviaLabelled, prog, newEndCell())
   const names = Object.keys(prog.rules)
   const entries = names.map(n => prog.rules[n]!)
   let last: unknown

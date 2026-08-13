@@ -87,6 +87,7 @@ import {
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_LEX_BODY,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { failAt } from '../combinators/probe.ts'
@@ -1482,6 +1483,33 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
+      case OP_LEX_BODY: {
+        const recognize = t.lex[code[ip + 1]!]!
+        const expected = fx[code[ip + 2]!] as string[]
+        return (input, pos, ctx) => {
+          const recognized = recognize(input, pos)
+          if (recognized < 0) {
+            ctx._fe = pos
+            ctx._fx = expected as string[]
+            if (ctx._probe !== undefined) failAt(ctx, expected, pos)
+            return FAIL
+          }
+          const suffixMatched = recognized % 2 === 1
+          const end = (recognized - (suffixMatched ? 1 : 0)) / 2
+          ctx._fc = false
+          if (!suffixMatched) {
+            const suffixExpected = fx[code[ip + 3]!] as string[]
+            ctx._fe = end
+            ctx._fx = suffixExpected
+            if (ctx._probe !== undefined) failAt(ctx, suffixExpected, end)
+          }
+          const value = input.slice(pos, end)
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          EC.e = end
+          return value
+        }
+      }
+
       case OP_LEAF: {
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const child = link(code[ip + 2]!)
@@ -2791,7 +2819,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex,
       )
       emitReached = new Set(pre.reached)
     }
@@ -2872,7 +2900,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex,
       )
       emitReached = em.reached
     } catch (e) {

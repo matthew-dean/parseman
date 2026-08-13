@@ -2,15 +2,19 @@ import { describe, expect, it } from 'vitest'
 import { balanced, choice, literal, many, node, optional, regex, sequence, token, transform } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assemble, tableRules, AssemblyCache } from '../../src/table/assemble.ts'
+import { assemble, tableRules, AssemblyCache, cfgKey } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
-import { expandCompact, resolveTable } from '../../src/table/program.ts'
+import { foldPrograms, unfoldVariant, expandCompact, resolveTable, type PrecompiledAssembly } from '../../src/table/program.ts'
+import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
+import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
+import { OP_LEX_BODY, OP_LIT, OP_OPT, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
+import { FAIL } from '../../src/table/cell.ts'
 
 /**
  * A grammar with enough shape variety that the assembler's memoisation, its
@@ -50,6 +54,144 @@ describe('table assembler', () => {
           expect([...(ra.expected ?? [])].sort(), `${name} ${JSON.stringify(input)} expected`)
             .toEqual([...(re.expected ?? [])].sort())
         }
+      }
+    }
+  })
+
+  it('executes one selected childless lexical body without retaining its character child', () => {
+    const source = token(sequence(regex(/[a-z]+/), optional(literal('('))))
+    const prog = encodeTable({ Root: source })
+    const entry = prog.rules.Root!
+    expect(prog.code[entry]).toBe(OP_LEX_BODY)
+    expect(prog.lex).toHaveLength(1)
+    const reachableOps = [...reachableIps(prog)].map(ip => prog.code[ip])
+    expect(reachableOps).not.toContain(OP_TOKEN)
+    expect(reachableOps).not.toContain(OP_RX)
+    expect(reachableOps).not.toContain(OP_OPT)
+    expect(reachableOps).not.toContain(OP_LIT)
+    expect(() => resolveTable({ ...prog, lex: [[prog.lex![0]![0], 0x10000]] }))
+      .toThrow('suffix is not one UTF-16 code unit')
+    expect(() => resolveTable({ ...prog, k: ['not a regex'], lex: [[0, '('.charCodeAt(0)]] }))
+      .toThrow('does not reference a RegExp')
+
+    const reference = execRules(prog).Root!
+    const closure = tableRules(prog).Root!
+    const linked = assemble(resolveTable(prog), prog, {
+      hostCst: false, hostReadsChildren: true, trackLines: false,
+      tolerant: false, coverage: false, probe: false,
+    })
+    for (const input of ['word', 'call(', '9', '']) {
+      const expected = run(source, input)
+      for (const [name, candidate] of [['reference', reference], ['closure', closure]] as const) {
+        const actual = run(candidate, input)
+        expect({
+          ok: actual.ok, value: actual.value, span: actual.span,
+          expected: actual.expected, unconsumedFrom: actual.unconsumedFrom,
+        }, `${name} ${JSON.stringify(input)}`).toEqual({
+          ok: expected.ok, value: expected.value, span: expected.span,
+          expected: expected.expected, unconsumedFrom: expected.unconsumedFrom,
+        })
+      }
+      const ctx = createParseContext()
+      linked.begin(ctx)
+      try {
+        const value = linked.pieces.Root!(input, 0, ctx)
+        expect(value === FAIL, `linked closure ${JSON.stringify(input)} fail`).toBe(!expected.ok)
+        if (expected.ok) {
+          expect(value).toBe(expected.value)
+          expect(linked.end()).toBe(expected.span.end)
+        } else {
+          expect(ctx._fe).toBe(expected.span.start)
+          expect(ctx._fx).toEqual(expected.expected)
+        }
+      } finally {
+        linked.finish()
+      }
+    }
+    // `optional('(')` swallows its failed literal but deliberately leaves that
+    // failure in the shared diagnostic registers/probe. The selected body must
+    // publish it even though the TOKEN as a whole succeeds.
+    for (const [name, entry] of [
+      ['source', source], ['reference', reference], ['closure', closure],
+    ] as const) {
+      const ctx = createParseContext()
+      ctx._probe = { offset: 4, best: null }
+      const result = typeof entry === 'function'
+        ? entry('word', 0, ctx)
+        : entry.parse('word', 0, ctx)
+      expect(result.ok, name).toBe(true)
+      if (name !== 'source') {
+        expect(ctx._fe, name).toBe(4)
+        expect(ctx._fx, name).toEqual(['"("'])
+      }
+      expect(ctx._probe.best, name).toMatchObject({
+        expected: ['"("'], span: { start: 4, end: 4 },
+      })
+    }
+    // RED provenance: replacing the selected body's suffix code unit with `]`
+    // makes `call(` stop before `(` while both CHARACTER oracles consume it.
+    const plantedBase = encodeTable({ Root: source })
+    const planted = { ...plantedBase, lex: [[plantedBase.lex![0]![0], ']'.charCodeAt(0)] as const] }
+    expect(run(tableRules(planted).Root!, 'call(').span).not.toEqual(run(source, 'call(').span)
+
+    const resolved = resolveTable(prog)
+    const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
+      const emitted = emitAssemblySource(resolved, prog, cfg, [])
+      return {
+        key: cfgKey(cfg),
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+        factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
+        plan: emitted.plan,
+        reached: [...emitted.reached],
+      }
+    })
+    expect(run(tableRules({ ...prog, asm: precompiled }).Root!, 'call(')).toMatchObject({
+      ok: true, value: 'call(', span: { start: 0, end: 5 },
+    })
+    for (const [name, entry] of [
+      ['emitted', tableRules(prog).Root!],
+      ['closure', tableRules({ ...prog, asm: [] }).Root!],
+      ['precompiled', tableRules({ ...prog, asm: precompiled }).Root!],
+    ] as const) {
+      const ctx = createParseContext()
+      ctx._probe = { offset: 4, best: null }
+      const result = entry('word', 0, ctx)
+      expect(result.ok, name).toBe(true)
+      expect(ctx._fe, name).toBe(4)
+      expect(ctx._fx, name).toEqual(['"("'])
+      expect(ctx._probe.best, name).toMatchObject({
+        expected: ['"("'], span: { start: 4, end: 4 },
+      })
+    }
+
+    const precompiledEntry = tableRules({ ...prog, asm: precompiled }).Root!
+    const OriginalFunction = globalThis.Function
+    globalThis.Function = function blockedFunction(): never {
+      throw new Error('Function constructor reached after precompiled artifact construction')
+    } as unknown as FunctionConstructor
+    try {
+      expect(run(precompiledEntry, 'call(')).toMatchObject({
+        ok: true, value: 'call(', span: { start: 0, end: 5 },
+      })
+    } finally {
+      globalThis.Function = OriginalFunction
+    }
+
+    const cstProg = encodeTable({ Root: source }, { hostMode: 'cst' })
+    const cstOpts = { build: cstBuildHost({ tags: true }) }
+    expect(digestValue(run(tableRules(cstProg).Root!, 'call(', cstOpts).value))
+      .toBe(digestValue(run(source, 'call(', cstOpts).value))
+
+    const tracked = encodeTable({ Root: source }, { trackLines: true })
+    const folded = foldPrograms({ plain: prog, tracked }, 'plain')
+    for (const name of ['plain', 'tracked'] as const) {
+      const direct = name === 'plain' ? prog : tracked
+      const viaFold = unfoldVariant(folded, name)
+      expect(viaFold.lex).toBe(folded.base.lex)
+      for (const input of ['word', 'call(', '9']) {
+        expect(run(tableRules(viaFold).Root!, input)).toMatchObject(
+          run(tableRules(direct).Root!, input),
+        )
       }
     }
   })

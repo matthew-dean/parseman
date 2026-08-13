@@ -49,7 +49,10 @@ function legacyPrecompiled(prog: TableProgram): TableProgram {
   expect(legacySource).not.toContain('scanTriviaCompact')
   expect(legacySource).not.toContain('commitTriviaScan')
   expect(legacySource).not.toBe(emitted.source)
-  const legacyParams = EMITTED_PARAMS.slice(0, -2)
+  // The old factory predates all three appended helpers: compact trivia commit,
+  // compact trivia scan, and selected lexical bodies. New runtimes may append
+  // positional inputs, but must never insert one into this historical prefix.
+  const legacyParams = EMITTED_PARAMS.slice(0, -3)
   const factory = new Function(...legacyParams, legacySource) as PrecompiledAssembly['factory']
   return {
     ...prog,

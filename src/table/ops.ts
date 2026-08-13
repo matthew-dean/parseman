@@ -453,6 +453,17 @@ export const OP_COV = 40
  */
 export const OP_SCOPE_PLAIN = 41
 /**
+ * `LEX_BODY b fx suffixFx` — one compiler-selected childless lexical replacement
+ * body. `b` indexes `prog.lex`; `fx` is the exact base-recognizer failure set;
+ * `suffixFx` is optional()'s swallowed literal failure publication.
+ *
+ * There is deliberately no child operand and no mode bit. The complete
+ * CHARACTER and TOKEN candidates were compared before serialization; this row
+ * is only the winning TOKEN body. A program without a selected TOKEN body has
+ * no row or lexical pool.
+ */
+export const OP_LEX_BODY = 42
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -484,4 +495,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
   [OP_LIVE]: 'LIVE', [OP_ATTEMPT]: 'ATTEMPT', [OP_LABEL]: 'LABEL', [OP_COV]: 'COV',
   [OP_SCOPE_PLAIN]: 'SCOPE_PLAIN',
+  [OP_LEX_BODY]: 'LEX_BODY',
 }

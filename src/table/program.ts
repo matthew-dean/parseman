@@ -5,6 +5,7 @@ import { regex } from '../combinators/regex.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
+import { buildLexBodyRecognizer, type LexBodyRecognizer } from './lex-body.ts'
 
 /**
  * One assembly the BUILD already compiled, so the run does not have to.
@@ -57,6 +58,9 @@ export type TableProgram = {
    * at `resolveTable`, exactly like the char-class ASCII lookups.
    */
   readonly dsp: readonly DispatchSpec[]
+  /** Selected childless lexical bodies. Losing compiler candidates never enter
+   * this pool. The first row is `[regexConst, suffixCodeUnit]`. */
+  readonly lex?: readonly LexBodySpec[]
   /** Rule name → entry offset in `code`. */
   readonly rules: Readonly<Record<string, number>>
   /**
@@ -291,6 +295,7 @@ export type CompactProgram = {
   readonly f: readonly unknown[]
   readonly l?: 0 | 1
   readonly p?: readonly DispatchSpec[]
+  readonly lx?: readonly LexBodySpec[]
   readonly lb?: readonly string[]
   readonly rc?: 0 | 1
   readonly h?: 'ast' | 'cst'
@@ -309,6 +314,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   return ownTableProgram({
     code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
+    ...(p.lx === undefined ? {} : { lex: p.lx }),
     ...(p.lb === undefined ? {} : { labels: p.lb }),
     ...(p.rc === undefined ? {} : { classified: p.rc }),
     ...(p.h === undefined ? {} : { hostMode: p.h }),
@@ -321,6 +327,9 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.a === undefined ? {} : { asm: p.a }),
   })
 }
+
+/** `regex + optional(one code unit)` selected lexical body. */
+export type LexBodySpec = readonly [regexConst: number, suffixCodeUnit: number]
 
 /** One `dispatch()`'s routing tables, in serialisable form. */
 export type DispatchSpec = {
@@ -433,6 +442,7 @@ export type ResolvedTable = {
   readonly fx: readonly (readonly string[])[]
   readonly disp: readonly ResolvedDispatch[]
   readonly dsp: readonly ResolvedDispatchSpec[]
+  readonly lex: readonly LexBodyRecognizer[]
   /** Trivia combinators rebuilt from `triviaSpecs`, once per table. */
   readonly trivia: readonly Combinator<unknown>[]
   /**
@@ -628,6 +638,7 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
       routed: d.routed,
       expected: d.expected,
     })),
+    lex: (prog.lex ?? []).map(spec => buildLexBodyRecognizer(spec, prog.k)),
     rules: prog.rules,
   }
   if (owner !== undefined) owner.resolved = built
@@ -692,7 +703,7 @@ export type CompactFolded = {
  * Named rather than derived so the refusal can say which one broke.
  */
 const SHARED_FIELDS = [
-  'k', 'cc', 'fx', 'disp', 'dsp', 'rules', 'labels', 'classified',
+  'k', 'cc', 'fx', 'disp', 'dsp', 'lex', 'rules', 'labels', 'classified',
   'scanSkip', 'scanSkipOf', 'scans', 'triviaSpecs', 'runtimeOnly',
   // `rec` is a property of the GRAMMAR BUILD, not of the trackLines/hostMode
   // axis a fold varies — every variant of one export is encoded with the same

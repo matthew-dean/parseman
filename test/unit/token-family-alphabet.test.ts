@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertLexicalCapabilityClosure, collectAlphabet, collectLexicalAlphabet,
-  compatibleLexicalOutcomes, selectedLexicalOutcome, winnerWrapsReference,
+  collectLexicalCapabilities, compatibleLexicalOutcomes, selectedLexicalOutcome, winnerWrapsReference,
   type LexicalTokenClassifier,
 } from '../../src/compiler/token-alphabet.ts'
 import type { Combinator, ParseContext, ParseError, ParserDef } from '../../src/types.ts'
@@ -162,10 +162,18 @@ describe('derived lexical-token families', () => {
         id: 2,
         atom: 'token',
         key: expect.stringContaining('"kind":"sequence"'),
-        status: 'gap',
+        status: 'complete',
       },
     ])
     expect(alphabet.capabilities).not.toContainEqual(expect.objectContaining({ parser: privateSuffix }))
+    expect(alphabet.capabilities[2]!.obligations).toEqual({
+      recognition: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      diagnostics: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      boundaryPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      materializationPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      supportedVariants: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+      bindingAndReachability: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
+    })
     expect(alphabet.capabilities[0]!.obligations).toMatchObject({
       recognition: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
       diagnostics: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
@@ -176,15 +184,29 @@ describe('derived lexical-token families', () => {
     })
     expect(alphabet.capabilities[0]!.obligations.bindingAndReachability.executableLowering)
       .toMatchObject({ kind: 'gap', reason: expect.stringContaining('fixed-tuple') })
-    expect(alphabet.capabilities[2]!.obligations).toMatchObject({
-      recognition: { representation: { kind: 'complete' }, executableLowering: { kind: 'gap' } },
-      diagnostics: { representation: { kind: 'complete' }, executableLowering: { kind: 'gap' } },
-      boundaryPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'gap' } },
-      materializationPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'gap' } },
-      supportedVariants: { representation: { kind: 'gap' }, executableLowering: { kind: 'gap' } },
-      bindingAndReachability: { representation: { kind: 'gap' }, executableLowering: { kind: 'gap' } },
-    })
     expect(alphabet.capabilityComplete).toBe(false)
+    // Whole-program closure is the serialization gate. The complete TOKEN
+    // occurrence must not leak into this otherwise incomplete CHARACTER table.
+    expect(encodeTable({ Root: root }).lex).toBeUndefined()
+  })
+
+  it('admits exactly one complete selected token body and rejects astral suffix lookalikes', () => {
+    const selected = token(sequence(regex(/[a-z]+/), optional(literal('('))))
+    const capability = collectLexicalCapabilities([selected])
+    expect(capability.capabilityComplete).toBe(true)
+    expect(capability.capabilities).toEqual([
+      expect.objectContaining({ atom: 'token', status: { kind: 'complete' } }),
+    ])
+    expect(capability.bindingEdges.every(edge => edge.status.kind === 'complete')).toBe(true)
+
+    const astral = token(sequence(regex(/[a-z]+/), optional(literal('🙂'))))
+    expect(collectLexicalCapabilities([astral]).capabilityComplete).toBe(false)
+    const astralProg = encodeTable({ Root: astral })
+    expect(astralProg.lex).toBeUndefined()
+
+    const newline = token(sequence(regex(/[a-z]+/), optional(literal('\n'))))
+    expect(collectLexicalCapabilities([newline]).capabilityComplete).toBe(false)
+    expect(encodeTable({ Root: newline }, { trackLines: true }).lex).toBeUndefined()
   })
 
   it('fails the final-graph census when a valid candidate is hidden', () => {
@@ -577,7 +599,7 @@ describe('derived lexical-token families', () => {
     // suppressed by its separate sink transaction, not by changing the flag.
   })
 
-  it('keeps scan-dependent decisions unrestricted and forbids pending reuse', () => {
+  it('keeps scan arms unrestricted without erasing sibling token families', () => {
     const shared = choice(
       balanced('(', ')', { skip: [literal('"')] }),
       token(scanTo(literal(';'), { skip: [literal("'")] })),
@@ -587,8 +609,19 @@ describe('derived lexical-token families', () => {
     const decision = alphabet.decisions.find(site =>
       alphabet.capabilities[site.siteId]!.parser === shared)!
     expect(decision.pendingReuse).toBe('forbidden')
-    expect(decision.families).toEqual([])
+    expect(decision.families).toHaveLength(2)
+    expect(decision.families.every(family =>
+      family.arms[1]!.acceptance.kind === 'unrestricted')).toBe(true)
+    expect(decision.families.some(family =>
+      family.arms[0]!.acceptance.kind === 'outcomes')).toBe(true)
+    expect(decision.families.some(family =>
+      family.arms[2]!.acceptance.kind === 'outcomes')).toBe(true)
     expect(decision.precisionNotes).toContainEqual(expect.stringContaining('dynamic scan consumer'))
+    expect(decision.reuseEpochs).toEqual([
+      { armIds: [0], pendingReuse: 'forbidden', boundary: 'dynamic-scan' },
+      { armIds: [1], pendingReuse: 'forbidden', boundary: 'dynamic-scan' },
+      { armIds: [2], pendingReuse: 'unproved', boundary: 'none' },
+    ])
 
     const planted = alphabet.decisions.map(site => site === decision
       ? { ...site, pendingReuse: 'unproved' as const }
@@ -597,8 +630,21 @@ describe('derived lexical-token families', () => {
       ...alphabet,
       decisions: planted,
     })).toThrow('lexical capability census is incomplete')
-    // RED provenance: publishing the balanced family as a predecision or
-    // allowing a pending range crosses observable ambient skipper callbacks.
+    const crossedBoundary = alphabet.decisions.map(site => site === decision
+      ? {
+          ...site,
+          reuseEpochs: [{
+            armIds: [0, 1, 2], pendingReuse: 'unproved' as const, boundary: 'none' as const,
+          }],
+        }
+      : site)
+    expect(() => assertLexicalCapabilityClosure([shared], {
+      ...alphabet,
+      decisions: crossedBoundary,
+    })).toThrow('lexical capability census is incomplete')
+    // RED provenance: allowing a pending range across the unrestricted scan
+    // arm crosses observable ambient skipper callbacks. The pure balanced and
+    // literal families remain available to build and price a complete body.
   })
 
   it('records pointer-free token-internal diagnostic events in one state session', () => {

@@ -244,6 +244,14 @@ losing candidate is discarded before `TableProgram` serialization and assembly; 
 runtime and package never carry both implementations merely because the compiler
 considered both.
 
+**Current implementation boundary.** The first executable proof covers only
+`token(sequence(regex(non-newline), optional(literal(one UTF-16 code unit))))` in a
+program whose *entire* lexical capability graph is complete. It serializes one
+childless `OP_LEX_BODY` row and omits the losing regex/optional/literal rows. This is
+a catalogue vertical slice, not a general scanner and not a Jess speed claim. CSS and
+Less still have reachable capability gaps, so their whole-program gate emits zero
+selected lexical rows and preserves the CHARACTER tables unchanged.
+
 Capability scope cannot be narrowed to hot sites, supported kernels, current planner
 candidates, or the sites the cost model is expected to choose. It includes every
 reachable terminal/compound lexical atom and every supported assembly variant in the

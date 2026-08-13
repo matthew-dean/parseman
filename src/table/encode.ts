@@ -14,19 +14,21 @@ import {
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_COV,
+  OP_LEX_BODY,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
 import { resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
 import { missingInferredType } from '../combinators/node.ts'
 import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
-import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
+import type { DispatchSpec, LexBodySpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
   assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
 } from '../compiler/token-capability.ts'
+import { directOptionalSuffixTokenBody } from '../compiler/token-alphabet.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -128,6 +130,8 @@ class Encoder {
   fx: (readonly string[])[] = []
   disp: (readonly number[])[] = []
   dsp: DispatchSpec[] = []
+  lex: LexBodySpec[] = []
+  private lexIndex = new Map<string, number>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -197,6 +201,25 @@ class Encoder {
     this.triviaIndex.set(t, idx)
     this.triviaSpecs.push(this.triviaSpecOf(t))
     return idx
+  }
+
+  private lexicalBodySlot(p: Combinator<unknown>): { body: number; suffixFx: number } | undefined {
+    if (!this.selectLexicalBodies) return undefined
+    const body = directOptionalSuffixTokenBody(p)
+    if (body === undefined) return undefined
+    const flags = body.flags.includes('y') ? body.flags : `${body.flags.replace(/g/g, '')}y`
+    const regex = this.constant(new RegExp(body.source, flags))
+    const suffix = body.suffix.charCodeAt(0)
+    const key = `${regex}:${suffix}`
+    const prior = this.lexIndex.get(key)
+    const suffixFx = this.expected(directTerminalFailureExpected({
+      tag: 'literal', value: body.suffix, caseInsensitive: false,
+    }))
+    if (prior !== undefined) return { body: prior, suffixFx }
+    const id = this.lex.length
+    this.lexIndex.set(key, id)
+    this.lex.push([regex, suffix])
+    return { body: id, suffixFx }
   }
 
   private triviaSpecOf(t: Combinator<unknown>): TriviaSpec {
@@ -318,6 +341,9 @@ class Encoder {
   readonly settings: TableSettings
   /** Resolved once, HERE, at table-build time — never consulted at run time. */
   readonly track: boolean
+  /** TOKEN bodies are an all-program decision. A complete occurrence inside an
+   * otherwise incomplete final graph stays on CHARACTER with every sibling. */
+  readonly selectLexicalBodies: boolean
   /**
    * Decides the extra operands laid down below. ALWAYS TRUE — see
    * `TableSettings.recovery`. Kept as a field rather than folded away because it
@@ -325,9 +351,10 @@ class Encoder {
    * row is stated.
    */
   readonly rec: boolean
-  constructor(settings: TableSettings) {
+  constructor(settings: TableSettings, selectLexicalBodies: boolean) {
     this.settings = settings
     this.track = settings.trackLines === true
+    this.selectLexicalBodies = selectLexicalBodies
     this.rec = true
     this.plan = settings.coverage
     this.cov = settings.coverage === undefined
@@ -1088,6 +1115,12 @@ class Encoder {
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
       case 'token': {
+        const selected = this.lexicalBodySlot(p)
+        if (selected !== undefined) {
+          return this.emit(
+            OP_LEX_BODY, selected.body, this.expected(deriveExpected(d.parser)), selected.suffixFx,
+          )
+        }
         return this.emit(OP_TOKEN, this.node(d.parser).ip)
       }
       case 'routed':
@@ -1455,6 +1488,7 @@ class Encoder {
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
+      ...(this.lex.length === 0 ? {} : { lex: this.lex }),
       ...(this.labels === undefined ? {} : { labels: this.labels }),
       ...(this.classified ? { classified: 1 as const } : {}),
       ...(this.scanSkipSets.length === 0
@@ -1564,7 +1598,7 @@ export function encodeTableProgram(
   const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
   const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
   assertLexicalCapabilityClosure(lexicalRoots, capabilities, resolveLexical)
-  const enc = new Encoder(resolvedSettings)
+  const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   const prog = enc.finish()

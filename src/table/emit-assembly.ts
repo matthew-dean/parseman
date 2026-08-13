@@ -55,6 +55,7 @@ import {
   OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_LEX_BODY,
 } from './ops.ts'
 import { validateDispatchSpec, type ResolvedClass, type ResolvedTable, type TableProgram } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
@@ -112,7 +113,7 @@ export const EMITTED_PARAMS = [
   'RECOG',
   // Appended so precompiled factories produced by earlier runtimes keep every
   // positional helper binding. Older factories ignore this trailing argument.
-  'commitTriviaScan', 'scanTriviaCompact',
+  'commitTriviaScan', 'scanTriviaCompact', 'LEX',
 ] as const
 
 /**
@@ -1152,6 +1153,23 @@ const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
 if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:out,span:{start:pos,end:e}})
 EC.e=e
 return out
+}`
+      }
+
+      case OP_LEX_BODY: {
+        const recognize = hoist('lex', `LEX[${code[ip + 1]!}]`)
+        const expected = fxRef(code[ip + 2]!)
+        const suffixExpected = fxRef(code[ip + 3]!)
+        return `${head}
+const r=${recognize}(input,pos)
+if(r<0){ctx._fe=pos;ctx._fx=${expected};if(ctx._probe!==undefined)failAt(ctx,${expected},pos);return FAIL}
+const sm=r%2===1,e=(r-(sm?1:0))/2
+ctx._fc=false
+if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}
+const v=input.slice(pos,e)
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+EC.e=e
+return v
 }`
       }
 
