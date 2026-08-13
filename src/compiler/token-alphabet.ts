@@ -607,6 +607,9 @@ export type LexicalDecisionSite = {
   readonly contextKey: string
   readonly contextSnapshotId: number
   readonly families: readonly LexicalDecisionFamilyPlan[]
+  /** Dispatch-only source-order routed policy. This remains Stage-A authority;
+   * the effect projection references the site rather than copying route bits. */
+  readonly routeUsesRouted?: readonly boolean[]
   /** Families not proven at this occurrence remain admitted through this
    * conservative relation. It is an explicit TOKEN-body route, never a request
    * to replay the character parser. */
@@ -721,6 +724,14 @@ export type LexicalDecisionEffectProgram = {
   readonly finalDecisionAuthorityId: number
   readonly phase: LexicalCapabilityPhase
   readonly childEffectIds: readonly number[]
+  /** Exact fixed-edge projections consumed by the three existing readers. */
+  readonly childBindingProjectionIds: readonly number[]
+  readonly referenceTemplateId: number
+  readonly capturedTemplateId: number
+  readonly namedTemplateId: number
+  readonly readerMask: number
+  readonly variantMask: number
+  readonly semanticDigest: number
   readonly pendingRollbackPolicyId: 0
   readonly commitPolicyId: 0
 }
@@ -1493,6 +1504,9 @@ const phaseGap = (representation: LexicalCapabilityStatus, loweringReason: strin
 const ALL_BINDING_READERS = 0b111
 const ALL_BINDING_VARIANTS = 0b11_1111
 const TERMINAL_CAPTURED_TEMPLATE_ID = 11
+const DECISION_REFERENCE_TEMPLATE_ID = 12
+const DECISION_CAPTURED_TEMPLATE_ID = 13
+const DECISION_NAMED_TEMPLATE_ID = 14
 
 /** Stable pre-pricing template ids. They name existing reader constructions;
  * they are deliberately not opcodes and never enter the parse path. */
@@ -2053,6 +2067,7 @@ type PendingDecisionSite = {
   readonly precisionNotes: readonly string[]
   readonly pendingReuse: 'forbidden' | 'unproved'
   readonly reuseEpochs: readonly LexicalDecisionReuseEpoch[]
+  readonly routeUsesRouted?: readonly boolean[]
 }
 
 type ScanConsumerCandidate = {
@@ -2445,6 +2460,13 @@ function lexicalDecisionInventory(
     }
     if (candidate.atom === 'dispatch') {
       if (def.tag !== 'dispatch') throw new Error('parseman: decision occurrence lost its dispatch')
+      const routeUsesRouted = [
+        ...def.cases.map(branchUsesRouted),
+        ...(def.matchers ?? []).map(branchUsesRouted),
+        ...(def.otherwise === undefined ? [] : [branchUsesRouted({
+          parser: def.otherwise, usesRouted: def.otherwiseUsesRouted,
+        })]),
+      ]
       const result = decisionLead(def.selector, candidate.context, resolve)
       if ('gap' in result) {
         precisionNotes.push(`selector: ${result.gap}`)
@@ -2456,6 +2478,7 @@ function lexicalDecisionInventory(
               + (def.otherwise === undefined ? 0 : 1) }, (_, armId) => armId),
             pendingReuse: 'unproved', boundary: 'none',
           }],
+          routeUsesRouted,
         })
         continue
       }
@@ -2497,6 +2520,7 @@ function lexicalDecisionInventory(
           pendingReuse: dynamicScan ? 'forbidden' : 'unproved',
           boundary: dynamicScan ? 'dynamic-scan' : 'none',
         }],
+        routeUsesRouted,
       })
       continue
     }
@@ -2638,6 +2662,7 @@ function lexicalDecisionInventory(
     contextSnapshotId: site.contextSnapshotId,
     fallback: 'unrestricted', precisionNotes: site.precisionNotes, pendingReuse: site.pendingReuse,
     reuseEpochs: site.reuseEpochs,
+    ...(site.routeUsesRouted === undefined ? {} : { routeUsesRouted: site.routeUsesRouted }),
     families: site.families.map(family => ({
       familyId: familyIdByKey.get(family.familyKey)!,
       arms: family.arms.map(arm => ({
@@ -2688,6 +2713,7 @@ function decisionEffectInventory(
   candidates: readonly CapabilityCandidate[],
   decisions: readonly LexicalDecisionSite[],
   bindingEdges: readonly LexicalBindingEdge[],
+  bindingProjections: readonly LexicalBindingProjection[],
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): LexicalDecisionEffectInventory {
   const finalDecisionAuthorities: LexicalFinalDecisionAuthority[] = []
@@ -2762,8 +2788,7 @@ function decisionEffectInventory(
     const def = candidate.parser._def
     const authorityId = finalDecisionAuthorities.length
     const effectId = decisionEffects.length
-    let phase = phaseGap(COMPLETE_CAPABILITY,
-      'decision effect lowering is not implemented for every supported reader and variant')
+    let loweringGap: string | undefined
     const childEffectIds: number[] = []
     if (def.tag === 'choice') {
       const finalChoice = classifyFinalChoice(def.parsers, resolve)
@@ -2775,8 +2800,6 @@ function decisionEffectInventory(
           id: classAuthorityId, armIds: authoredArmIds, firstSets: finalChoice.firstSets,
         })
         mode = { kind: 'exclusive', classAuthorityId }
-        phase = phaseGap(COMPLETE_CAPABILITY,
-          'final-exclusive miss observability differs across source and compiled readers')
       } else if (def.strategy.tag === 'literalsLongestFirst') {
         const orderAuthorityId = choiceExecutionOrders.length
         choiceExecutionOrders.push({
@@ -2807,8 +2830,7 @@ function decisionEffectInventory(
             armId, transformIds, transformSourceIds, transformCount: transformIds.length,
           })
           if (transformSourceIds.includes(-1)) {
-            phase = phaseGap(COMPLETE_CAPABILITY,
-              'classified transform has no statically named reader projection')
+            loweringGap = 'classified transform has no statically named reader projection'
           }
         }
         classifySpellingMaps.push({ id: spellingMapAuthorityId, entries: spellingEntries })
@@ -2836,8 +2858,7 @@ function decisionEffectInventory(
         const gate = def.gates[armId] ?? null
         const gateSource = def.gateSrcs?.[armId] ?? null
         if (gate !== null && gateSource === null) {
-          phase = phaseGap(COMPLETE_CAPABILITY,
-            'dynamic choice gate has no statically named reader projection')
+          loweringGap = 'dynamic choice gate has no statically named reader projection'
         }
         childEffectIds.push(childEffect(
           decision.siteId, armId, edgeAt(candidate.path, armId), def.parsers[armId]!,
@@ -2880,14 +2901,65 @@ function decisionEffectInventory(
           routeParsers[routeId]!,
         ))
       }
-      if (routeBranches.some(branchUsesRouted)) {
-        phase = phaseGap(COMPLETE_CAPABILITY,
-          '_routed protocol observability differs across source and compiled readers')
+      const routedAuthority = decision.routeUsesRouted
+      if (routedAuthority === undefined || routedAuthority.length !== routeBranches.length
+        || routedAuthority.some((value, index) => value !== branchUsesRouted(routeBranches[index]!))) {
+        loweringGap = 'dispatch routed policy lost its Stage-A authority'
       }
     }
+    const childBindingProjectionIds = childEffectIds.map(childEffectId => {
+      const child = decisionChildEffects[childEffectId]
+      if (child === undefined) throw new Error('parseman: decision effect lost its child effect')
+      const edge = bindingEdges[child.childBindingEdgeId]
+      if (edge?.projectionId === undefined) {
+        throw new Error('parseman: decision effect lost its child binding projection')
+      }
+      return edge.projectionId
+    })
+    let readerMask = ALL_BINDING_READERS
+    let variantMask = ALL_BINDING_VARIANTS
+    for (const projectionId of childBindingProjectionIds) {
+      const projection = bindingProjections[projectionId]
+      if (projection === undefined) throw new Error('parseman: decision binding projection disappeared')
+      readerMask &= projection.readerMask
+      variantMask &= projection.variantMask
+    }
+    if (childBindingProjectionIds.length === 0) {
+      readerMask = 0
+      variantMask = 0
+    }
+    if (loweringGap === undefined
+      && (readerMask !== ALL_BINDING_READERS || variantMask !== ALL_BINDING_VARIANTS)) {
+      loweringGap = 'decision child binding projection is incomplete'
+    }
+    const authority = finalDecisionAuthorities[authorityId]
+    if (authority === undefined) throw new Error('parseman: decision effect lost its final authority')
+    const digestWords = [
+      decision.siteId, authorityId,
+      authority.atom === 'choice' ? 0 : 1,
+      DECISION_REFERENCE_TEMPLATE_ID, DECISION_CAPTURED_TEMPLATE_ID, DECISION_NAMED_TEMPLATE_ID,
+      readerMask, variantMask, childEffectIds.length,
+      ...(decision.routeUsesRouted ?? []).map(value => value ? 1 : 0),
+      ...childEffectIds.flatMap((childEffectId, index) => {
+        const child = decisionChildEffects[childEffectId]!
+        const projection = bindingProjections[childBindingProjectionIds[index]!]!
+        return [
+          child.armId, child.expectedAuthorityId,
+          child.gateCallbackId ?? -1, child.gateSourceId ?? -1, child.autoNotAuthorityId ?? -1,
+          projection.id, projection.semanticDigest,
+        ]
+      }),
+    ]
     decisionEffects.push({
-      id: effectId, decisionSiteId: decision.siteId,
-      finalDecisionAuthorityId: authorityId, phase, childEffectIds,
+      id: effectId, decisionSiteId: decision.siteId, finalDecisionAuthorityId: authorityId,
+      phase: loweringGap === undefined ? COMPLETE_PHASE
+        : phaseGap(COMPLETE_CAPABILITY, loweringGap),
+      childEffectIds, childBindingProjectionIds,
+      referenceTemplateId: DECISION_REFERENCE_TEMPLATE_ID,
+      capturedTemplateId: DECISION_CAPTURED_TEMPLATE_ID,
+      namedTemplateId: DECISION_NAMED_TEMPLATE_ID,
+      readerMask, variantMask,
+      semanticDigest: bindingDigest(digestWords, authority.atom, String(decision.siteId)),
       pendingRollbackPolicyId: 0, commitPolicyId: 0,
     })
   }
@@ -3405,7 +3477,7 @@ function lexicalCapabilityInventory(
     return { ...site, obligations, status: derivedCapabilityStatus(obligations) }
   })
   const decisionEffects = decisionEffectInventory(
-    inventory.candidates, decisionInventory.decisions, bindingEdges, resolve,
+    inventory.candidates, decisionInventory.decisions, bindingEdges, bindingProjections, resolve,
   )
   return {
     capabilities, languages, bindingEdges, bindingProjections, terminalProjections,

@@ -3,8 +3,10 @@
 Status: normative 0.48 design addendum; implementation is in progress. Primitive
 terminal bodies and all fixed incoming bindings—including scanner sentinel and
 authored own-skip children—now have reference, captured/CSP, and named/emitted
-projections. Choice/dispatch effects and the remaining composite token bodies
-still keep whole-program TOKEN selection closed.
+projections. Choice/dispatch effects now also carry final winner/route authority,
+exact child-binding projections, three reader templates, and a common semantic
+digest. The remaining composite token boundary, diagnostic, materialization,
+and supported-variant bodies still keep whole-program TOKEN selection closed.
 
 This addendum refines [parseman-0.48.md](./parseman-0.48.md) §§2–3. It does not
 relax whole-grammar capability closure, replacement-only selection, or direct

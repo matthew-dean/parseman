@@ -7,10 +7,12 @@ import {
   type LexicalFinalDecisionAuthority,
 } from '../../src/compiler/token-alphabet.ts'
 import {
-  choice, dispatch, literal, regex, routed, rules, sequence, token, transform, when,
+  choice, dispatch, literal, regex, routed, rules, run, sequence, token, transform, when,
   type Combinator, type ParseContext,
 } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 
 function c2(
   roots: readonly Combinator<unknown>[],
@@ -38,11 +40,11 @@ function effectFor(inventory: LexicalCapabilityInventory, siteId = 0): LexicalDe
 }
 
 describe('token Stage C2 compiler-only decision effects', () => {
-  it('derives final exclusivity after rule resolution and keeps every such site lowering-GAP', () => {
+  it('projects final winner exclusivity while pinning the broader construction-time oracle', () => {
     const grammar = rules((g: Record<string, Combinator<unknown>>) => ({
       Entry: choice(g.A!, g.B!),
-      A: literal('a'),
-      B: literal('b'),
+      A: sequence(literal('a'), literal('x')),
+      B: sequence(literal('b'), literal('y')),
     })) as unknown as Record<string, Combinator<unknown>>
     const inventory = c2([grammar.Entry!], name => grammar[name])
 
@@ -55,15 +57,21 @@ describe('token Stage C2 compiler-only decision effects', () => {
     const effect = effectFor(inventory)
     expect(effect.finalDecisionAuthorityId).toBe(authority.id)
     expect(effect.phase).toEqual({
-      representation: { kind: 'complete' },
-      executableLowering: {
-        kind: 'gap',
-        reason: expect.stringContaining('final-exclusive miss observability'),
-      },
+      representation: { kind: 'complete' }, executableLowering: { kind: 'complete' },
     })
+    expect(grammar.Entry!.parse('az', 0, { trackLines: false } as ParseContext))
+      .toMatchObject({ ok: false, expected: ['"x"', '"b"'] })
+    const program = encodeTable(grammar)
+    for (const entry of [
+      execRules(program).Entry!,
+      tableRules({ ...program, asm: [] }).Entry!,
+      tableRules(program).Entry!,
+    ]) {
+      expect(run(entry, 'az')).toMatchObject({ ok: false, expected: ['"x"'] })
+    }
   })
 
-  it('keeps routed-protocol dispatch sites represented but lowering-GAP without copied predicates or flags', () => {
+  it('projects routed dispatch through the Stage-A route authority without copied flags', () => {
     const grammar = dispatch(
       token(regex(/[a-z]+/)),
       when('x', sequence(routed(), literal('!'))),
@@ -73,14 +81,13 @@ describe('token Stage C2 compiler-only decision effects', () => {
     expect(authority).toMatchObject({ atom: 'dispatch', orderedRouteIds: [0] })
     const effect = effectFor(inventory)
     expect(effect.phase).toEqual({
-      representation: { kind: 'complete' },
-      executableLowering: {
-        kind: 'gap',
-        reason: expect.stringContaining('_routed protocol observability'),
-      },
+      representation: { kind: 'complete' }, executableLowering: { kind: 'complete' },
     })
+    expect(inventory.decisions[0]?.routeUsesRouted).toEqual([true])
+    expect(effect).toMatchObject({ readerMask: 0b111, variantMask: 0b11_1111 })
     // C2 references the final Stage-A classifier and route identities. It must
-    // not mint another predicate spelling or construction-time usesRouted bit.
+    // not mint another predicate spelling or construction-time usesRouted bit;
+    // the single source-order policy lives on the Stage-A decision site.
     expect(JSON.stringify({ authority, effect })).not.toMatch(/predicate|usesRouted/)
     const noRouteExpected = inventory.decisionEffectPlan
       .decisionExpectedAuthorities[authority.atom === 'dispatch'
@@ -136,7 +143,7 @@ describe('token Stage C2 compiler-only decision effects', () => {
     })
   })
 
-  it('retains the exact longest-literal execution permutation rather than authored order', () => {
+  it('projects longest-literal order through all three readers before pricing', () => {
     const grammar = choice(literal('a'), literal('abc'), literal('ab'))
     const inventory = c2([grammar])
     const authority = authorityFor(inventory)
@@ -161,9 +168,17 @@ describe('token Stage C2 compiler-only decision effects', () => {
       firstMiss.expected.reverse()
       expect(secondMiss.expected).toEqual(['"abc"', '"ab"', '"a"'])
     }
-    expect(effectFor(inventory).phase.executableLowering).toEqual({
-      kind: 'gap', reason: expect.stringContaining('every supported reader'),
+    const effect = effectFor(inventory)
+    expect(effect.phase).toEqual({
+      representation: { kind: 'complete' }, executableLowering: { kind: 'complete' },
     })
+    expect(effect).toMatchObject({
+      childBindingProjectionIds: [expect.any(Number), expect.any(Number), expect.any(Number)],
+      referenceTemplateId: 12, capturedTemplateId: 13, namedTemplateId: 14,
+      readerMask: 0b111, variantMask: 0b11_1111,
+      semanticDigest: expect.any(Number),
+    })
+    expect(effect.semanticDigest).not.toBe(0)
   })
 
   it('maps one effect to every decision occurrence without authorizing serialization', () => {
@@ -178,8 +193,9 @@ describe('token Stage C2 compiler-only decision effects', () => {
       .map(effect => effect.decisionSiteId).sort((a, b) => a - b))
       .toEqual(inventory.decisions.map(site => site.siteId).sort((a, b) => a - b))
     expect(inventory.decisionEffectPlan.decisionEffects.every(effect =>
-      effect.phase.representation.kind === 'complete'
-      && effect.phase.executableLowering.kind === 'gap')).toBe(true)
+      effect.phase.representation.kind === 'complete')).toBe(true)
+    expect(inventory.decisionEffectPlan.decisionEffects.every(effect =>
+      effect.phase.executableLowering.kind === 'complete')).toBe(true)
     expect(inventory.capabilityComplete).toBe(false)
     const program = encodeTable({ Entry: grammar }) as unknown as Record<string, unknown>
     expect(Object.keys(program).filter(key => /decision|choiceClass|classify/i.test(key))).toEqual([])
@@ -261,6 +277,14 @@ describe('token Stage C2 compiler-only decision effects', () => {
       decisionEffectPlan: {
         ...inventory.decisionEffectPlan,
         decisionEffects: inventory.decisionEffectPlan.decisionEffects.slice(1),
+      },
+    })).toThrow(/census is incomplete/)
+    expect(() => assertLexicalCapabilityClosure([grammar], {
+      ...inventory,
+      decisionEffectPlan: {
+        ...inventory.decisionEffectPlan,
+        decisionEffects: inventory.decisionEffectPlan.decisionEffects.map((effect, index) =>
+          index === 0 ? { ...effect, semanticDigest: effect.semanticDigest ^ 1 } : effect),
       },
     })).toThrow(/census is incomplete/)
     expect(() => assertLexicalCapabilityClosure([grammar], {
