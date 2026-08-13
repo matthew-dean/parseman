@@ -211,6 +211,31 @@ describe('derived lexical-token families', () => {
     const newlineBase = token(sequence(regex(/[a-z\n]+/), optional(literal('('))))
     expect(collectLexicalCapabilities([newlineBase]).capabilityComplete).toBe(true)
     expect(encodeTable({ Root: newlineBase }, { trackLines: true }).lex).toHaveLength(1)
+
+    const wrapped = token(parser({ trivia: null }, sequence(
+      regex(/[a-z]+/), optional(literal('(')),
+    )))
+    expect(collectLexicalCapabilities([wrapped]).capabilityComplete).toBe(true)
+    expect(encodeTable({ Root: wrapped }).lex).toHaveLength(1)
+  })
+
+  it('admits direct regex and keyword token bodies as childless replacements', () => {
+    for (const selected of [
+      token(regex(/[a-z\n]+/i)),
+      token(keywords(['@container', '@media'], {
+        caseInsensitive: true, boundary: '-_a-zA-Z0-9\\u0080-\\uFFFF',
+      })),
+      token(parser({ trivia: null }, regex(/url\(/i))),
+    ]) {
+      const capability = collectLexicalCapabilities([selected])
+      expect(capability.capabilityComplete).toBe(true)
+      expect(capability.capabilities).toEqual([
+        expect.objectContaining({ atom: 'token', status: { kind: 'complete' } }),
+      ])
+      expect(capability.bindingEdges.every(edge => edge.status.kind === 'complete')).toBe(true)
+      const prog = encodeTable({ Root: selected }, { trackLines: true })
+      expect(prog.lex).toEqual([[expect.any(Number), -1]])
+    }
   })
 
   it('fails the final-graph census when a valid candidate is hidden', () => {
@@ -727,7 +752,10 @@ describe('derived lexical-token families', () => {
     expect(alphabet.transitionDiagnostics.every(pointerFree)).toBe(true)
     expect(alphabet.transitionDiagnostics.every(plan => plan.events.every(event =>
       event.state >= 0 && event.state < plan.stateCount))).toBe(true)
-    expect(alphabet.capabilities.filter(site => site.atom === 'token').every(site =>
+    const tokenSites = alphabet.capabilities.filter(site => site.atom === 'token')
+    expect(tokenSites.some(site =>
+      site.obligations.diagnostics.executableLowering.kind === 'complete')).toBe(true)
+    expect(tokenSites.some(site =>
       site.obligations.diagnostics.executableLowering.kind === 'gap')).toBe(true)
     expect(encodeTable(Object.fromEntries(roots.map((root, index) => [`R${index}`, root]))))
       .not.toHaveProperty('transitionDiagnostics')

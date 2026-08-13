@@ -36,6 +36,7 @@ import { branchUsesRouted } from '../combinators/dispatch.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
+import { keywordsRegExp } from '../combinators/keywords.ts'
 
 /** A terminal in the derived alphabet, with its globally assigned id. */
 export type TokenTerminal =
@@ -92,6 +93,20 @@ export type ExecutableOptionalSuffixLexBody = OptionalSuffixLexBody & {
   readonly suffixCanMatchNewline: boolean
 }
 
+/** A direct authored terminal under token(). The boundary shell still owns
+ * source slicing/CST; this body owns exactly the terminal recognizer and lines. */
+export type ExecutableTerminalLexBody = {
+  readonly kind: 'regex-terminal'
+  readonly source: string
+  readonly flags: string
+  readonly canMatchNewline: boolean
+  readonly expected: readonly string[]
+}
+
+export type ExecutableLexBody =
+  | ExecutableOptionalSuffixLexBody
+  | ExecutableTerminalLexBody
+
 export type LexBodyCandidate =
   | { readonly strategy: 'character'; readonly estimatedOps: number }
   | {
@@ -126,15 +141,49 @@ export function selectOptionalSuffixLexBody(ir: LexicalIr): LexBodyCandidate {
   return token.estimatedOps < character.estimatedOps ? token : character
 }
 
+/** Unwrap only scopes that token() has already installed identically. The
+ * returned parser is still the authored terminal/sequence; no effectful wrapper
+ * or final named winner is guessed from construction metadata. */
+function directTokenBodyParser(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): Combinator<unknown> | undefined {
+  const outer = parser._def
+  if (outer.tag !== 'token') return undefined
+  let body = outer.parser
+  const seen = new Set<Combinator<unknown>>()
+  while (!seen.has(body)) {
+    seen.add(body)
+    const wrapper = body._def
+    if (wrapper.tag === 'grammar') {
+      if (wrapper.clearTrivia !== true || wrapper.triviaParser !== undefined
+        || wrapper.captureTrivia === true || wrapper.rootCapture === 'opaque'
+        || wrapper.constructionTrackLines !== 'inherit'
+        || wrapper.constructionCaptureTriviaKinds !== undefined) return undefined
+      body = wrapper.parser
+      continue
+    }
+    if (wrapper.tag === 'lazy') {
+      const target = resolvedLazyTarget(body, resolve)
+      if (target === undefined) return undefined
+      body = target
+      continue
+    }
+    return body
+  }
+  return undefined
+}
+
 /** Refuse wrapper/effect lookalikes even when normalization erases them to the
  * same language. This first executable body owns only the authored token
  * boundary around a direct sequence(regex, optional(literal-one-code-unit)). */
 export function directOptionalSuffixTokenBody(
   parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableOptionalSuffixLexBody | undefined {
-  const outer = parser._def
-  if (outer.tag !== 'token') return undefined
-  const sequence = outer.parser._def
+  const inner = directTokenBodyParser(parser, resolve)
+  if (inner === undefined) return undefined
+  const sequence = inner._def
   if (sequence.tag !== 'sequence' || sequence.parsers.length !== 2) return undefined
   const base = sequence.parsers[0]?._def
   const optional = sequence.parsers[1]?._def
@@ -158,6 +207,40 @@ export function directOptionalSuffixTokenBody(
     baseCanMatchNewline: sequence.parsers[0]!._meta.canMatchNewline,
     suffixCanMatchNewline: optional.parser._meta.canMatchNewline,
   } : undefined
+}
+
+/** Exact direct token terminal bodies. `keywords()` is represented by the same
+ * canonical sticky RegExp its authored parser and OP_RX lowering use. Literal
+ * stays CHARACTER for now: case-insensitive literal() intentionally uses ASCII
+ * folding, which is not JavaScript RegExp `/i` semantics for non-ASCII text. */
+export function directTerminalTokenBody(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ExecutableTerminalLexBody | undefined {
+  const outer = parser._def
+  if (outer.tag !== 'token') return undefined
+  const body = directTokenBodyParser(parser, resolve)
+  if (body === undefined) return undefined
+  const def = body._def
+  if (def.tag === 'regex') return {
+    kind: 'regex-terminal', source: def.source, flags: def.flags,
+    canMatchNewline: body._meta.canMatchNewline,
+    expected: directTerminalFailureExpected(def),
+  }
+  if (def.tag !== 'keywords') return undefined
+  const re = keywordsRegExp(def.words, def.boundary, def.caseInsensitive)
+  return {
+    kind: 'regex-terminal', source: re.source, flags: re.flags,
+    canMatchNewline: body._meta.canMatchNewline,
+    expected: directTerminalFailureExpected(def),
+  }
+}
+
+export function directExecutableTokenBody(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ExecutableLexBody | undefined {
+  return directOptionalSuffixTokenBody(parser, resolve) ?? directTerminalTokenBody(parser, resolve)
 }
 
 /** One canonical recognizer spec, shared by every family with equal lexical IR. */
@@ -3082,7 +3165,7 @@ function lexicalCapabilityInventory(
     const topology = internBoundaryTopology(session)
     const topologyRepresentation = 'id' in topology
       ? COMPLETE_CAPABILITY : gap(topology.gap)
-    const obligations = directOptionalSuffixTokenBody(candidate.parser) === undefined
+    const obligations = directExecutableTokenBody(candidate.parser, resolve) === undefined
       ? tokenObligations(COMPLETE_CAPABILITY, {
           diagnostics: true,
           boundaryPlan: topologyRepresentation,
@@ -3116,7 +3199,7 @@ function lexicalCapabilityInventory(
     languageId: languageIdByKey.get(`${site.atom}\u0000${site.semanticKey}`)!,
   }))
   const executableBodyPaths = new Set(capabilities.flatMap(site =>
-    site.status.kind === 'complete' && directOptionalSuffixTokenBody(site.parser) !== undefined
+    site.status.kind === 'complete' && directExecutableTokenBody(site.parser, resolve) !== undefined
       ? [site.path] : []))
   const bindingEdges = inventory.bindingEdges.map((edge, id): LexicalBindingEdge => ({
     id, ...edge,

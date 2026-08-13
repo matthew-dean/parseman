@@ -328,7 +328,8 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   })
 }
 
-/** `regex + optional(one code unit)` selected lexical body. */
+/** Selected lexical body. `suffixCodeUnit === -1` is a direct regex terminal;
+ * 0..0xFFFF is the legacy regex + optional(one code unit) spelling. */
 export type LexBodySpec = readonly [regexConst: number, suffixCodeUnit: number]
 
 /** One `dispatch()`'s routing tables, in serialisable form. */

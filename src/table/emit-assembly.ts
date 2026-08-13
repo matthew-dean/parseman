@@ -1166,14 +1166,15 @@ return out
         const expected = fxRef(code[ip + 2]!)
         const suffixExpected = fxRef(code[ip + 3]!)
         const lineFlags = code[ip + 4]!
+        const hasSuffix = (lineFlags & 4) !== 0
         return `${head}
 const r=${recognize}(input,pos)
 if(r<0){ctx._fe=pos;ctx._fx=${expected};if(ctx._probe!==undefined)failAt(ctx,${expected},pos);return FAIL}
-const sm=r%2===1,e=(r-(sm?1:0))/2
+const sm=${hasSuffix ? 'r%2===1' : 'false'},e=(r-(sm?1:0))/2
 ${(lineFlags & 1) !== 0 ? '_trackLines(ctx,input,sm?e-1:e)' : ''}
-ctx._fc=false
-${(lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
-if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}
+${hasSuffix ? 'ctx._fc=false' : ''}
+${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
+${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
 const v=input.slice(pos,e)
 if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
 EC.e=e

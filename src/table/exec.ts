@@ -706,13 +706,14 @@ function makeDriver(
           if (ctx._probe !== undefined) failAt(ctx, ctx._fx, pos)
           return FAIL
         }
-        const suffixMatched = recognized % 2 === 1
-        const end = (recognized - (suffixMatched ? 1 : 0)) / 2
         const lineFlags = code[ip + 4]!
+        const hasSuffix = (lineFlags & 4) !== 0
+        const suffixMatched = hasSuffix && recognized % 2 === 1
+        const end = (recognized - (suffixMatched ? 1 : 0)) / 2
         if ((lineFlags & 1) !== 0) trackLines(ctx, input, suffixMatched ? end - 1 : end)
-        ctx._fc = false
-        if (suffixMatched && (lineFlags & 2) !== 0) trackLines(ctx, input, end)
-        if (!suffixMatched) {
+        if (hasSuffix) ctx._fc = false
+        if (hasSuffix && suffixMatched && (lineFlags & 2) !== 0) trackLines(ctx, input, end)
+        if (hasSuffix && !suffixMatched) {
           const suffixExpected = fx[code[ip + 3]!] as string[]
           ctx._fe = end
           ctx._fx = suffixExpected

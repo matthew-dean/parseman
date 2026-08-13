@@ -28,7 +28,7 @@ import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
   assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
 } from '../compiler/token-capability.ts'
-import { directOptionalSuffixTokenBody } from '../compiler/token-alphabet.ts'
+import { directExecutableTokenBody } from '../compiler/token-alphabet.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -205,28 +205,37 @@ class Encoder {
 
   private lexicalBodySlot(p: Combinator<unknown>): {
     body: number
+    expectedFx: number
     suffixFx: number
     lineFlags: number
   } | undefined {
     if (!this.selectLexicalBodies) return undefined
-    const body = directOptionalSuffixTokenBody(p)
+    const body = directExecutableTokenBody(p, name => this.winners?.[name])
     if (body === undefined) return undefined
+    const tokenDef = p._def
+    if (tokenDef.tag !== 'token') throw new Error('parseman: selected lexical body lost token boundary')
+    const expectedFx = this.expected(
+      body.kind === 'regex-terminal'
+        ? body.expected
+        : deriveExpected(tokenDef.parser),
+    )
     const flags = body.flags.includes('y') ? body.flags : `${body.flags.replace(/g/g, '')}y`
     const regex = this.constant(new RegExp(body.source, flags))
-    const suffix = body.suffix.charCodeAt(0)
+    const suffix = body.kind === 'regex-terminal' ? -1 : body.suffix.charCodeAt(0)
     const key = `${regex}:${suffix}`
     const prior = this.lexIndex.get(key)
-    const suffixFx = this.expected(directTerminalFailureExpected({
+    const suffixFx = this.expected(body.kind === 'regex-terminal' ? [] : directTerminalFailureExpected({
       tag: 'literal', value: body.suffix, caseInsensitive: false,
     }))
     const lineFlags = this.track
-      ? (body.baseCanMatchNewline ? 1 : 0) | (body.suffixCanMatchNewline ? 2 : 0)
-      : 0
-    if (prior !== undefined) return { body: prior, suffixFx, lineFlags }
+      ? (body.kind === 'regex-terminal' ? (body.canMatchNewline ? 1 : 0)
+        : (body.baseCanMatchNewline ? 1 : 0) | (body.suffixCanMatchNewline ? 2 : 0) | 4)
+      : body.kind === 'regex-terminal' ? 0 : 4
+    if (prior !== undefined) return { body: prior, expectedFx, suffixFx, lineFlags }
     const id = this.lex.length
     this.lexIndex.set(key, id)
     this.lex.push([regex, suffix])
-    return { body: id, suffixFx, lineFlags }
+    return { body: id, expectedFx, suffixFx, lineFlags }
   }
 
   private triviaSpecOf(t: Combinator<unknown>): TriviaSpec {
@@ -1125,7 +1134,7 @@ class Encoder {
         const selected = this.lexicalBodySlot(p)
         if (selected !== undefined) {
           return this.emit(
-            OP_LEX_BODY, selected.body, this.expected(deriveExpected(d.parser)),
+            OP_LEX_BODY, selected.body, selected.expectedFx,
             selected.suffixFx, selected.lineFlags,
           )
         }

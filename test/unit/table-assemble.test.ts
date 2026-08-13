@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { balanced, choice, literal, many, node, optional, regex, sequence, token, transform } from '../../src/index.ts'
+import { balanced, choice, keywords, literal, many, node, optional, parser, regex, sequence, token, transform } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules, AssemblyCache, cfgKey } from '../../src/table/assemble.ts'
@@ -70,7 +70,7 @@ describe('table assembler', () => {
     expect(reachableOps).not.toContain(OP_OPT)
     expect(reachableOps).not.toContain(OP_LIT)
     expect(() => resolveTable({ ...prog, lex: [[prog.lex![0]![0], 0x10000]] }))
-      .toThrow('suffix is not one UTF-16 code unit')
+      .toThrow('suffix is not absent or one UTF-16 code unit')
     expect(() => resolveTable({ ...prog, k: ['not a regex'], lex: [[0, '('.charCodeAt(0)]] }))
       .toThrow('does not reference a RegExp')
 
@@ -192,6 +192,92 @@ describe('table assembler', () => {
         expect(run(tableRules(viaFold).Root!, input)).toMatchObject(
           run(tableRules(direct).Root!, input),
         )
+      }
+    }
+
+    const wrapped = token(parser({ trivia: null }, sequence(
+      regex(/[a-z]+/), optional(literal('(')),
+    )))
+    const wrappedProg = encodeTable({ Root: wrapped })
+    expect(wrappedProg.code[wrappedProg.rules.Root!]).toBe(OP_LEX_BODY)
+    for (const input of ['word', 'call(', '9']) {
+      const expected = run(wrapped, input)
+      for (const [name, entry] of [
+        ['reference', execRules(wrappedProg).Root!],
+        ['closure', tableRules({ ...wrappedProg, asm: [] }).Root!],
+        ['emitted', tableRules(wrappedProg).Root!],
+      ] as const) {
+        const actual = run(entry, input)
+        expect({
+          ok: actual.ok, value: actual.value, span: actual.span,
+          expected: actual.expected, unconsumedFrom: actual.unconsumedFrom,
+        }, `${name} ${JSON.stringify(input)}`).toEqual({
+          ok: expected.ok, value: expected.value, span: expected.span,
+          expected: expected.expected, unconsumedFrom: expected.unconsumedFrom,
+        })
+      }
+    }
+  })
+
+  it('replaces direct regex and keyword tokens without retaining a terminal child', () => {
+    const sources = [
+      token(regex(/[a-z\n]+/i)),
+      token(keywords(['@container', '@media'], {
+        caseInsensitive: true, boundary: '-_a-zA-Z0-9\\u0080-\\uFFFF',
+      })),
+      token(parser({ trivia: null }, regex(/url\(/i))),
+    ]
+    const inputs = [
+      ['Word', 'a\nb', '9'],
+      ['@MEDIA', '@container-x', '!'],
+      ['URL(', 'url', '!'],
+    ] as const
+    for (let i = 0; i < sources.length; i++) {
+      const source = sources[i]!
+      const prog = encodeTable({ Root: source }, { trackLines: true })
+      expect(prog.code[prog.rules.Root!]).toBe(OP_LEX_BODY)
+      expect(prog.lex?.[0]?.[1]).toBe(-1)
+      const reachableOps = [...reachableIps(prog)].map(ip => prog.code[ip])
+      expect(reachableOps).not.toContain(OP_TOKEN)
+      expect(reachableOps).not.toContain(OP_RX)
+      const entries = [
+        ['source', source],
+        ['reference', execRules(prog).Root!],
+        ['closure', tableRules({ ...prog, asm: [] }).Root!],
+        ['emitted', tableRules(prog).Root!],
+      ] as const
+      for (const input of inputs[i]!) {
+        const expected = run(source, input)
+        for (const [name, entry] of entries) {
+          const actual = run(entry, input)
+          expect({
+            ok: actual.ok, value: actual.value,
+            span: { start: actual.span.start, end: actual.span.end },
+            expected: actual.expected, unconsumedFrom: actual.unconsumedFrom,
+          }, `${name} ${JSON.stringify(input)}`).toEqual({
+            ok: expected.ok, value: expected.value,
+            span: { start: expected.span.start, end: expected.span.end },
+            expected: expected.expected, unconsumedFrom: expected.unconsumedFrom,
+          })
+        }
+      }
+
+      // A plain terminal has no optional boundary, so successful recognition
+      // must not clear an incoming commitment bit.
+      const resolved = resolveTable({ ...prog, asm: [] })
+      const linked = assemble(resolved, { ...prog, asm: [] }, {
+        hostCst: false, hostReadsChildren: true, trackLines: true,
+        tolerant: false, coverage: false, probe: false,
+      })
+      const ctx = createParseContext()
+      ctx._fc = true
+      linked.begin(ctx)
+      try {
+        const sample = inputs[i]![0]
+        expect(linked.pieces.Root!(sample, 0, ctx)).not.toBe(FAIL)
+        expect(ctx._fc).toBe(true)
+      } finally {
+        linked.finish()
       }
     }
   })

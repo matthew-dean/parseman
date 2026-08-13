@@ -15,8 +15,8 @@ export function buildLexBodyRecognizer(
   if (!(raw instanceof RegExp)) {
     throw new TypeError('table lexical body does not reference a RegExp constant')
   }
-  if (!Number.isInteger(spec[1]) || spec[1] < 0 || spec[1] > 0xFFFF) {
-    throw new TypeError('table lexical body suffix is not one UTF-16 code unit')
+  if (!Number.isInteger(spec[1]) || spec[1] < -1 || spec[1] > 0xFFFF) {
+    throw new TypeError('table lexical body suffix is not absent or one UTF-16 code unit')
   }
   const re = raw.sticky ? new RegExp(raw.source, raw.flags) : new RegExp(raw.source, `${raw.flags.replace(/[gy]/g, '')}y`)
   const suffix = spec[1]
@@ -24,6 +24,7 @@ export function buildLexBodyRecognizer(
     re.lastIndex = pos
     if (!re.test(input)) return -1
     const end = re.lastIndex
+    if (suffix < 0) return end * 2
     return input.charCodeAt(end) === suffix ? (end + 1) * 2 + 1 : end * 2
   }
 }
