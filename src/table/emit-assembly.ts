@@ -110,6 +110,9 @@ export const EMITTED_PARAMS = [
   // Pure scalar terminal recognizers, indexed by the terminal's existing const
   // operand. Appended for compatibility with older precompiled factories.
   'RECOG',
+  // Appended so precompiled factories produced by earlier runtimes keep every
+  // positional helper binding. Older factories ignore this trailing argument.
+  'commitTriviaScan', 'scanTriviaCompact',
 ] as const
 
 /**
@@ -135,7 +138,7 @@ function _skipTrivia(input,cur,ctx){
 const s=_pfScan
 if(s!==null&&ctx._triviaLog===undefined&&!(ctx.captureTrivia===true&&(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)))return s(input,cur)
 if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
-if(needsDeferredTriviaCommit(ctx)){const sc=scanTrivia(input,cur,ctx);sc.commit();return sc.end}
+if(needsDeferredTriviaCommit(ctx))return commitTriviaScan(scanTriviaCompact(input,cur,ctx))
 return advanceTrivia(input,cur,ctx)
 }
 function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,{_tag:'leaf',value,span:{start:s,end:e}})}
@@ -614,9 +617,9 @@ export function emitAssemblySource(
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
       // buffer, so an in-node site skips the call that asks.
       skipDefs.push(l.buf
-        ? `function ${nm}(input,cur,ctx){const s=scanTrivia(input,cur,ctx);s.commit();return s.end}`
+        ? `function ${nm}(input,cur,ctx){return commitTriviaScan(scanTriviaCompact(input,cur,ctx))}`
         : `function ${nm}(input,cur,ctx){
-if(needsDeferredTriviaCommit(ctx)){const s=scanTrivia(input,cur,ctx);s.commit();return s.end}
+if(needsDeferredTriviaCommit(ctx))return commitTriviaScan(scanTriviaCompact(input,cur,ctx))
 return advanceTrivia(input,cur,ctx)}`)
       return nm
     }

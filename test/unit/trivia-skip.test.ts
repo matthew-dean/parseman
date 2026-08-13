@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { advanceTrivia, consumeTrivia, scanTrivia } from '../../src/combinators/trivia-skip.ts'
+import { advanceTrivia, commitTriviaScan, consumeTrivia, scanTrivia, triviaScanEnd } from '../../src/combinators/trivia-skip.ts'
 import { trivia, label, regex, oneOrMore, choice, sequence, literal } from '../../src/index.ts'
 
 const labeledRw = trivia(oneOrMore(choice(
@@ -65,8 +65,8 @@ describe('advanceTrivia()', () => {
 describe('scanTrivia()', () => {
   it('returns a no-op scan when ctx has no trivia parser', () => {
     const scan = scanTrivia('  x', 0, { trackLines: false })
-    expect(scan.end).toBe(0)
-    expect(() => scan.commit()).not.toThrow()
+    expect(triviaScanEnd(scan)).toBe(0)
+    expect(() => commitTriviaScan(scan)).not.toThrow()
   })
 
   it('tracks lines and commits logs through the generic fallback', () => {
@@ -80,10 +80,10 @@ describe('scanTrivia()', () => {
       _triviaLog: log,
     }
     const scan = scanTrivia('x\nz', 0, ctx)
-    expect(scan.end).toBe(2)
+    expect(triviaScanEnd(scan)).toBe(2)
     expect(ctx._lineScannedTo).toBe(2)
     expect(lineIndex.lineStarts).toEqual([0, 2])
-    scan.commit()
+    commitTriviaScan(scan)
     expect(log).toEqual([0, 2])
   })
 })

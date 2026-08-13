@@ -71,8 +71,8 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
-  saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
+  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
+  saveTriviaMark, scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
@@ -581,9 +581,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // keeps the exact branch it had.
     if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
     if (needsDeferredTriviaCommit(ctx)) {
-      const scan = scanTrivia(input, cur, ctx)
-      scan.commit()
-      return scan.end
+      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }
     return advanceTrivia(input, cur, ctx)
   }
@@ -2793,7 +2791,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact,
       )
       emitReached = new Set(pre.reached)
     }
@@ -2874,7 +2872,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact,
       )
       emitReached = em.reached
     } catch (e) {

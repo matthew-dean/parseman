@@ -50,7 +50,7 @@ import { encodeTable } from '../src/table/encode.ts'
 import { execRules } from '../src/table/exec.ts'
 import { resolveTable, type TableProgram } from '../src/table/program.ts'
 import { run } from '../src/functional/run.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../src/combinators/trivia-skip.ts'
+import { advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTriviaCompact } from '../src/combinators/trivia-skip.ts'
 import { cstCaptureActive, pushCstLeaf, rollbackCstCapture, saveCstMark, type CstRollbackMark } from '../src/cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_LIT, OP_OPT, OP_REP, OP_REPV, OP_RX, OP_SCOPE, OP_SCOPE_PLAIN, OP_SEQX, OP_XFORM,
@@ -266,9 +266,7 @@ function materialize(prog: TableProgram, opts: { specializeTerminals?: boolean }
               const mark = rollbackNeeded(ctx) ? saveTriviaMark(ctx) : null
               let scanEnd: number
               if (needsDeferredTriviaCommit(ctx)) {
-                const scan = scanTrivia(input, cur, ctx)
-                scan.commit()
-                scanEnd = scan.end
+                scanEnd = commitTriviaScan(scanTriviaCompact(input, cur, ctx))
               } else {
                 scanEnd = advanceTrivia(input, cur, ctx)
               }
@@ -478,9 +476,7 @@ function materialize(prog: TableProgram, opts: { specializeTerminals?: boolean }
 
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
     if (needsDeferredTriviaCommit(ctx)) {
-      const scan = scanTrivia(input, cur, ctx)
-      scan.commit()
-      return scan.end
+      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }
     return advanceTrivia(input, cur, ctx)
   }

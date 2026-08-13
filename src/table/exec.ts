@@ -7,8 +7,8 @@ import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
-  rollbackTriviaAt, saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
+  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
+  rollbackTriviaAt, saveTriviaMark, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
@@ -357,9 +357,7 @@ function makeDriver(
     // grammar that already had a scanner — keeps the exact branch it had.
     if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
     if (needsDeferredTriviaCommit(ctx)) {
-      const scan = scanTrivia(input, cur, ctx)
-      scan.commit()
-      return scan.end
+      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }
     return advanceTrivia(input, cur, ctx)
   }
