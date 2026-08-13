@@ -336,7 +336,7 @@ describe('derived lexical-token families', () => {
     // makes one of these assertions fail; edge dedup alone makes the other fail.
   })
 
-  it('closes universal terminal bindings while scanner-owned edges stay fail-closed', () => {
+  it('closes universal terminal and scanner-owned fixed bindings', () => {
     const sequenceRoot = sequence(
       literal('a'), literal('b'), literal('c'), literal('d'), literal('e'),
     )
@@ -363,11 +363,16 @@ describe('derived lexical-token families', () => {
     const scanAlphabet = collectLexicalAlphabet([scanTo(literal(';'), { skip: [regex(/x+/)] })])
     const scanEdges = scanAlphabet.bindingEdges.filter(edge => edge.parentTag === 'scanTo')
     expect(scanEdges.length).toBeGreaterThan(0)
-    expect(scanEdges.every(edge => edge.status.kind === 'gap')).toBe(true)
+    expect(scanEdges.every(edge => edge.status.kind === 'complete')).toBe(true)
     expect(scanEdges.map(edge => scanAlphabet.bindingProjections[edge.projectionId!]?.readerMask))
-      .toEqual(Array.from({ length: scanEdges.length }, () => 0b001))
-    expect(scanAlphabet.terminalProjections.some(projection => projection.status.kind === 'gap')).toBe(true)
-    expect(scanAlphabet.capabilityComplete).toBe(false)
+      .toEqual(Array.from({ length: scanEdges.length }, () => 0b111))
+    expect(scanEdges.map(edge => scanAlphabet.bindingProjections[edge.projectionId!]?.capturedTemplateId))
+      .toEqual([8, 9])
+    expect(scanAlphabet.terminalProjections.every(projection => projection.status.kind === 'complete')).toBe(true)
+    expect(scanAlphabet.capabilityComplete).toBe(true)
+    expect(() => assertLexicalCapabilityClosure(
+      [scanTo(literal(';'), { skip: [regex(/x+/)] })], scanAlphabet,
+    )).not.toThrow()
   })
 
   it('inventories the final named winner instead of a stale lazy thunk', () => {

@@ -1526,11 +1526,13 @@ function fixedBindingProjection(
   const template = bindingTemplateId(edge.parentTag, edge.childOrdinal)
   let readerMask = ALL_BINDING_READERS
   const variantMask = ALL_BINDING_VARIANTS
-  // The reference reader owns scan rows today, but scanner children still flow
-  // through scan-policy reconstruction rather than a frozen captured/named
-  // projection. Recovery/withCtx likewise have no emitted template yet.
-  if (edge.parentTag === 'scanTo') readerMask = 0b001
-  else if (edge.parentTag === 'recover' || edge.parentTag === 'withCtx') readerMask = 0b011
+  // Scanner children already have one fixed projection per reader: execRules
+  // uses their numeric SubtreeRef, the closure adapter captures `pieceAt(ip)`,
+  // and the emitted adapter captures that site's named body after linking every
+  // scan root. Only ambient trivia/scanSkip remain live runtime callbacks; they
+  // are scanner POLICY, never binding authority for these authored own children.
+  // Recovery/withCtx still have no equivalent named template.
+  if (edge.parentTag === 'recover' || edge.parentTag === 'withCtx') readerMask = 0b011
   // Sequence strict, adjacency, and recovery bodies now all use scalar block
   // chains, so no supported variant is withheld here.
   const words = [
