@@ -746,7 +746,27 @@ export type LexicalBindingEdge = {
   readonly contextSnapshotId: number
   readonly parentTag: ParserDef['tag'] | 'root'
   readonly childTag: ParserDef['tag']
+  readonly projectionId?: number
   readonly status: LexicalCapabilityStatus
+}
+
+/** Compiler-owned fixed-edge lowering. These are numeric construction facts,
+ * not a parse-time micro-IR: each reader consumes only its own preselected
+ * template and the common digest proves all three describe the same edge. */
+export type LexicalBindingProjection = {
+  readonly id: number
+  readonly edgeId: number
+  readonly parentBodyId: number
+  readonly childBodyId: number
+  readonly childOrdinal: number
+  readonly referenceOperand: number
+  readonly capturedTemplateId: number
+  readonly namedTemplateId: number
+  /** bit 0 reference, bit 1 captured/CSP, bit 2 named/emitted. */
+  readonly readerMask: number
+  /** Strict, recovery, tracking, CST, probe, and coverage construction modes. */
+  readonly variantMask: number
+  readonly semanticDigest: number
 }
 
 export type LexicalOutcomeMatch =
@@ -809,6 +829,7 @@ export type LexicalAlphabet = {
   readonly capabilityLanguages: readonly LexicalCapabilityLanguage[]
   /** Every distinct fixed parent/root edge, independently GAP until linked. */
   readonly bindingEdges: readonly LexicalBindingEdge[]
+  readonly bindingProjections: readonly LexicalBindingProjection[]
   /** Phase-A compatible range/arm algebra; compiler-only and occurrence-local. */
   readonly decisionFamilies: readonly LexicalDecisionFamily[]
   readonly decisionOutcomes: readonly LexicalDecisionOutcome[]
@@ -831,6 +852,7 @@ export type LexicalAlphabet = {
 export type LexicalCapabilityInventory = Pick<
   LexicalAlphabet,
   'capabilities' | 'capabilityLanguages' | 'bindingEdges'
+  | 'bindingProjections'
   | 'decisionFamilies' | 'decisionOutcomes' | 'decisions' | 'decisionEffectPlan'
   | 'transitionDiagnostics'
   | 'boundaryPlans' | 'materializationPlans' | 'grammarWrapperSpecs'
@@ -1443,6 +1465,62 @@ const phaseGap = (representation: LexicalCapabilityStatus, loweringReason: strin
   executableLowering: representation.kind === 'impossible'
     ? representation : gap(loweringReason),
 })
+
+const ALL_BINDING_READERS = 0b111
+const ALL_BINDING_VARIANTS = 0b11_1111
+
+/** Stable pre-pricing template ids. They name existing reader constructions;
+ * they are deliberately not opcodes and never enter the parse path. */
+function bindingTemplateId(parentTag: ParserDef['tag'] | 'root', ordinal: number): number {
+  if (parentTag === 'root') return 1
+  switch (parentTag) {
+    case 'sequence': return 2
+    case 'choice': return 3
+    case 'dispatch': return ordinal === 0 ? 4 : 5
+    case 'many': case 'oneOrMore': case 'sepBy': return ordinal === 0 ? 6 : 7
+    case 'scanTo': return ordinal === 0 ? 8 : 9
+    default: return 10
+  }
+}
+
+function bindingDigest(words: readonly number[], parentTag: string, childTag: string): number {
+  let hash = 0x811c9dc5
+  const feed = (value: number): void => { hash ^= value & 0xFF; hash = Math.imul(hash, 0x01000193) }
+  for (const c of `${parentTag}\u0000${childTag}`) feed(c.charCodeAt(0))
+  for (const word of words) {
+    feed(word); feed(word >>> 8); feed(word >>> 16); feed(word >>> 24)
+  }
+  return hash >>> 0
+}
+
+function fixedBindingProjection(
+  edge: BindingEdgeCandidate,
+  edgeId: number,
+  projectionId: number,
+): LexicalBindingProjection {
+  const template = bindingTemplateId(edge.parentTag, edge.childOrdinal)
+  let readerMask = ALL_BINDING_READERS
+  const variantMask = ALL_BINDING_VARIANTS
+  // The reference reader owns scan rows today, but scanner children still flow
+  // through scan-policy reconstruction rather than a frozen captured/named
+  // projection. Recovery/withCtx likewise have no emitted template yet.
+  if (edge.parentTag === 'scanTo') readerMask = 0b001
+  else if (edge.parentTag === 'recover' || edge.parentTag === 'withCtx') readerMask = 0b011
+  // Sequence strict, adjacency, and recovery bodies now all use scalar block
+  // chains, so no supported variant is withheld here.
+  const words = [
+    edge.parentBodyId, edge.childBodyId, edge.childOrdinal,
+    edge.childOrdinal, template, template, readerMask, variantMask,
+  ]
+  return {
+    id: projectionId, edgeId,
+    parentBodyId: edge.parentBodyId, childBodyId: edge.childBodyId,
+    childOrdinal: edge.childOrdinal, referenceOperand: edge.childOrdinal,
+    capturedTemplateId: template, namedTemplateId: template,
+    readerMask, variantMask,
+    semanticDigest: bindingDigest(words, edge.parentTag, edge.childTag),
+  }
+}
 
 function derivedCapabilityStatus(obligations: LexicalCapabilityObligations): LexicalCapabilityStatus {
   const phases = [
@@ -2099,7 +2177,14 @@ type CapabilityCandidate = {
   readonly recognitionContextKey: string
 }
 
-type BindingEdgeCandidate = Omit<LexicalBindingEdge, 'id' | 'status' | 'contextSnapshotId'>
+type BindingEdgeCandidate = Omit<
+  LexicalBindingEdge,
+  'id' | 'status' | 'contextSnapshotId' | 'projectionId'
+> & {
+  readonly parentBodyId: number
+  readonly childBodyId: number
+  readonly childOrdinal: number
+}
 
 type CapabilityContext = LexicalCapabilityContext
 
@@ -2197,6 +2282,9 @@ function lexicalCapabilityCandidates(
         contextKey,
         parentTag: def.tag,
         childTag: child._def.tag,
+        parentBodyId: parserId(parser),
+        childBodyId: parserId(child),
+        childOrdinal: i,
       })
       visit(child, childPath, childOwned, childContext)
     }
@@ -2215,6 +2303,7 @@ function lexicalCapabilityCandidates(
     const contextKey = contextKeyOf(rootContext)
     bindingEdges.set(`root\u0000${i}\u0000${contextKey}`, {
       path: rootPath, contextKey, parentTag: 'root', childTag: root._def.tag,
+      parentBodyId: -1 - i, childBodyId: parserId(root), childOrdinal: i,
     })
     visit(root, rootPath, false, rootContext)
   }
@@ -2789,6 +2878,7 @@ function lexicalCapabilityInventory(
   capabilities: LexicalCapabilitySite[]
   languages: LexicalCapabilityLanguage[]
   bindingEdges: LexicalBindingEdge[]
+  bindingProjections: LexicalBindingProjection[]
   decisionFamilies: LexicalDecisionFamily[]
   decisionOutcomes: LexicalDecisionOutcome[]
   decisions: LexicalDecisionSite[]
@@ -3201,17 +3291,31 @@ function lexicalCapabilityInventory(
   const executableBodyPaths = new Set(capabilities.flatMap(site =>
     site.status.kind === 'complete' && directExecutableTokenBody(site.parser, resolve) !== undefined
       ? [site.path] : []))
-  const bindingEdges = inventory.bindingEdges.map((edge, id): LexicalBindingEdge => ({
-    id, ...edge,
-    contextSnapshotId: contextSnapshotIdByKey.get(edge.contextKey)
-      ?? (() => { throw new Error('parseman: binding edge lost its context snapshot') })(),
-    status: executableBodyPaths.has(edge.path) ? COMPLETE_CAPABILITY : gap(FIXED_TUPLE_BINDING_GAP),
-  }))
+  const bindingProjections: LexicalBindingProjection[] = []
+  const bindingEdges = inventory.bindingEdges.map((edge, id): LexicalBindingEdge => {
+    const projection = fixedBindingProjection(edge, id, bindingProjections.length)
+    bindingProjections.push(projection)
+    const {
+      parentBodyId: _parentBodyId, childBodyId: _childBodyId,
+      childOrdinal: _childOrdinal, ...publicEdge
+    } = edge
+    // The projection is candidate evidence, not completion by itself. Until the
+    // selected plan carries and validates its digest in every reader, only the
+    // already-childless executable body edge is complete; flipping all records
+    // here would be the status-only checkpoint this census exists to prevent.
+    const complete = edge.parentTag === 'root' && executableBodyPaths.has(edge.path)
+    return {
+      id, ...publicEdge, projectionId: projection.id,
+      contextSnapshotId: contextSnapshotIdByKey.get(edge.contextKey)
+        ?? (() => { throw new Error('parseman: binding edge lost its context snapshot') })(),
+      status: complete ? COMPLETE_CAPABILITY : gap(FIXED_TUPLE_BINDING_GAP),
+    }
+  })
   const decisionEffects = decisionEffectInventory(
     inventory.candidates, decisionInventory.decisions, bindingEdges, resolve,
   )
   return {
-    capabilities, languages, bindingEdges,
+    capabilities, languages, bindingEdges, bindingProjections,
     decisionFamilies: decisionInventory.families,
     decisionOutcomes: decisionInventory.outcomes,
     decisions: decisionInventory.decisions,
@@ -3237,7 +3341,7 @@ export function assertLexicalCapabilityClosure(
   alphabet: Pick<LexicalCapabilityInventory,
   'capabilities' | 'capabilityLanguages' | 'bindingEdges' | 'decisionFamilies'
       | 'decisionOutcomes' | 'decisions'> & Partial<Pick<LexicalCapabilityInventory,
-      'decisionEffectPlan'
+      'bindingProjections' | 'decisionEffectPlan'
       | 'transitionDiagnostics' | 'boundaryPlans' | 'materializationPlans'
   | 'grammarWrapperSpecs' | 'grammarCaptureTriviaKinds' | 'boundaryTopologies'
   | 'controlPlans' | 'contextSnapshots' | 'ownSkipPlans' | 'scanConsumerPolicies'>>,
@@ -3253,9 +3357,11 @@ export function assertLexicalCapabilityClosure(
   const suppliedLanguages = alphabet.capabilityLanguages.map(language =>
     `${language.id}\u0000${language.atom}\u0000${language.semanticKey}`)
   const edgeSignature = (edge: LexicalBindingEdge): string =>
-    `${edge.id}\u0000${edge.path}\u0000${edge.contextKey}\u0000${edge.contextSnapshotId}\u0000${edge.parentTag}\u0000${edge.childTag}\u0000${JSON.stringify(edge.status)}`
+    `${edge.id}\u0000${edge.path}\u0000${edge.contextKey}\u0000${edge.contextSnapshotId}\u0000${edge.parentTag}\u0000${edge.childTag}\u0000${edge.projectionId ?? -1}\u0000${JSON.stringify(edge.status)}`
   const expectedEdges = actual.bindingEdges.map(edgeSignature)
   const suppliedEdges = alphabet.bindingEdges.map(edgeSignature)
+  const expectedBindingProjections = actual.bindingProjections.map(plan => JSON.stringify(plan))
+  const suppliedBindingProjections = (alphabet.bindingProjections ?? []).map(plan => JSON.stringify(plan))
   const familySignature = (family: LexicalDecisionFamily): string =>
     `${family.id}\u0000${family.semanticKey}\u0000${JSON.stringify(family.ir)}`
   const expectedFamilies = actual.decisionFamilies.map(familySignature)
@@ -3298,6 +3404,8 @@ export function assertLexicalCapabilityClosure(
     || expectedLanguages.some((key, index) => key !== suppliedLanguages[index])
     || expectedEdges.length !== suppliedEdges.length
     || expectedEdges.some((key, index) => key !== suppliedEdges[index])
+    || expectedBindingProjections.length !== suppliedBindingProjections.length
+    || expectedBindingProjections.some((key, index) => key !== suppliedBindingProjections[index])
     || expectedFamilies.length !== suppliedFamilies.length
     || expectedFamilies.some((key, index) => key !== suppliedFamilies[index])
     || expectedOutcomes.length !== suppliedOutcomes.length

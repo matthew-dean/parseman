@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { balanced, choice, keywords, literal, many, node, optional, parser, regex, sequence, token, transform } from '../../src/index.ts'
+import { adjacent, balanced, choice, keywords, literal, many, node, optional, parser, regex, sequence, token, transform } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules, AssemblyCache, cfgKey } from '../../src/table/assemble.ts'
@@ -39,6 +39,25 @@ const g = rules((g: any) => ({
 })) as Record<string, import('../../src/types.ts').Combinator<unknown>>
 
 describe('table assembler', () => {
+  it('binds arbitrary, adjacency, and recovery sequence terms without fixed child arrays', () => {
+    const roots = [
+      ['strict', sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e')), {}],
+      ['adjacency', sequence(literal('a'), adjacent(), literal('b'), literal('c'), literal('d')), {}],
+      ['recovery', sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e')), { recovery: true }],
+    ] as const
+    for (const [name, root, settings] of roots) {
+      const prog = encodeTable({ Root: root }, settings)
+      const linked = assemble(resolveTable({ ...prog, asm: [] }), { ...prog, asm: [] }, {
+        hostCst: false, hostReadsChildren: true, trackLines: false,
+        tolerant: 'recovery' in settings && settings.recovery === true, coverage: false, probe: false,
+      })
+      const source = Function.prototype.toString.call(linked.pieces.Root)
+      expect(source, name).not.toContain('kids[')
+      expect(source, name).not.toContain('runners[')
+      expect(run(tableRules({ ...prog, asm: [] }).Root!, 'abcde').ok, name).toBe(true)
+    }
+  })
+
   it('answers exactly what the bytecode driver answers', () => {
     const prog = encodeTable(g, {})
     const a = tableRules(prog)

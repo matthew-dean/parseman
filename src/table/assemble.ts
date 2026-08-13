@@ -236,7 +236,14 @@ type DispatchArmBlock = (
  * `nextTerm`'s protocol, so a bound term and a bound assertion are
  * interchangeable in the loop and the loop tests neither.
  */
-type TermRunner = (input: string, cur: number, ctx: ParseContext) => number
+type TermRunner = (
+  input: string, cur: number, ctx: ParseContext,
+  inheritedSync?: Combinator<unknown>,
+) => number
+type SequenceTermBlock = (
+  input: string, cur: number, ctx: ParseContext, values: unknown[] | undefined,
+  inheritedSync?: Combinator<unknown>,
+) => number
 
 /**
  * The option set an assembly is specialised for.
@@ -1800,9 +1807,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const fused = op === OP_SEQX
         const base = fused ? ip + 3 : ip + 2
         const n = code[fused ? ip + 2 : ip + 1]!
-        // Children bound as a plain array of DIRECT references, laid out once.
-        const kids: Piece[] = new Array<Piece>(n)
-        for (let i = 0; i < n; i++) kids[i] = link(code[base + i]!)
         const wantValues = op !== OP_SEQV
         const reducer = fused ? code[ip + 1]! : -1
         const projection = reducer < 0 ? ~reducer : -1
@@ -1810,28 +1814,53 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           : undefined
 
-        /**
-         * The generic term loop, for arities the unrolled pieces below do not
-         * cover.
-         *
-         * `exec.ts` open-coded a LIT/RX fast path here to dodge "a JS call frame
-         * plus a switch dispatch". Half of that cost is gone by construction — a
-         * piece has no switch — and the other half is what TurboFan removes by
-         * INLINING a small monomorphic child. Re-emitting the terminal bodies
-         * would instead grow this function past the inlining budget, which is the
-         * defect being fixed, so they are not re-emitted.
-         */
-        const runTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
-          const v0 = kids[0]!(input, pos, ctx)
-          if (v0 === FAIL) return -1
-          if (values !== undefined) values.push(v0)
-          let cur = EC.e
-          for (let i = 1; i < n; i++) {
-            cur = nextTerm(kids[i]!, input, cur, ctx)
+        const runnerBlock = (
+          count: number,
+          r0: TermRunner, r1: TermRunner, r2: TermRunner, r3: TermRunner,
+          next: SequenceTermBlock | undefined,
+        ): SequenceTermBlock => {
+          if (count === 1) return (input, cur, ctx, values, inherited) => {
+            cur = r0(input, cur, ctx, inherited)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values, inherited)
           }
-          return cur
+          if (count === 2) return (input, cur, ctx, values, inherited) => {
+            cur = r0(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r1(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values, inherited)
+          }
+          if (count === 3) return (input, cur, ctx, values, inherited) => {
+            cur = r0(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r1(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r2(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values, inherited)
+          }
+          return (input, cur, ctx, values, inherited) => {
+            cur = r0(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r1(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r2(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r3(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values, inherited)
+          }
         }
 
         /**
@@ -1882,21 +1911,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * sentinel published is the kind of state a later reader will trust.
          */
         if (REC) {
-          const syncs: (Combinator<unknown> | undefined)[] = new Array<Combinator<unknown> | undefined>(n)
-          for (let i = 0; i < n; i++) syncs[i] = sentinelFor(code[base + n + i]!)
-          const runners: TermRunner[] = new Array<TermRunner>(n)
-          for (let i = 1; i < n; i++) {
+          const first = link(code[base]!)
+          const firstSync = sentinelFor(code[base + n]!)
+          const runnerAt = (i: number): TermRunner => {
+            const sync = sentinelFor(code[base + n + i]!)
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
-              const kid = kids[i]!
-              runners[i] = (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
-              continue
+              const kid = link(kidIp)
+              return (input, cur, ctx, inherited) => {
+                ctx._sync = sync ?? inherited
+                return nextTerm(kid, input, cur, ctx)
+              }
             }
             const negated = code[kidIp + 1] === 1
             const ki = code[kidIp + 2]!
             const kinds = ki < 0 ? undefined : k[ki] as readonly string[]
             const xf = fx[code[kidIp + 3]!] as string[]
-            runners[i] = (input, cur, ctx) => {
+            return (input, cur, ctx, inherited) => {
+              ctx._sync = sync ?? inherited
               if (!adjacencyHolds(input, cur, ctx, negated, kinds)) {
                 ctx._fe = cur; ctx._fx = xf
                 return -1
@@ -1905,19 +1937,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return cur
             }
           }
+          const bindRunners = (start: number): SequenceTermBlock => {
+            const count = Math.min(4, n - start)
+            const at = (offset: number): TermRunner => runnerAt(start + offset)
+            const never: TermRunner = () => -1
+            return runnerBlock(
+              count, at(0), count > 1 ? at(1) : never,
+              count > 2 ? at(2) : never, count > 3 ? at(3) : never,
+              start + count < n ? bindRunners(start + count) : undefined,
+            )
+          }
+          const tail = n > 1 ? bindRunners(1) : undefined
           const runSyncTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
             const inherited = ctx._sync
-            ctx._sync = syncs[0] ?? inherited
-            const v0 = kids[0]!(input, pos, ctx)
+            ctx._sync = firstSync ?? inherited
+            const v0 = first(input, pos, ctx)
             if (v0 === FAIL) { ctx._sync = inherited; return -1 }
             if (values !== undefined) values.push(v0)
-            let cur = EC.e
-            for (let i = 1; i < n; i++) {
-              ctx._sync = syncs[i] ?? inherited
-              cur = runners[i]!(input, cur, ctx)
-              if (cur < 0) { ctx._sync = inherited; return -1 }
-              if (values !== undefined) values.push(TERMV)
-            }
+            const cur = tail === undefined ? EC.e : tail(input, EC.e, ctx, values, inherited)
+            if (cur < 0) { ctx._sync = inherited; return -1 }
             ctx._sync = inherited
             return cur
           }
@@ -1950,13 +1988,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         let hasAdj = false
         for (let i = 1; i < n; i++) if (code[code[base + i]!] === OP_ADJ) { hasAdj = true; break }
         if (hasAdj) {
-          const runners: TermRunner[] = new Array<TermRunner>(n)
-          for (let i = 1; i < n; i++) {
+          const first = link(code[base]!)
+          const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
-              const kid = kids[i]!
-              runners[i] = (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
-              continue
+              const kid = link(kidIp)
+              return (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
             }
             const negated = code[kidIp + 1] === 1
             const ki = code[kidIp + 2]!
@@ -1966,7 +2003,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // the interpreter does.
             const kinds = ki < 0 ? undefined : k[ki] as readonly string[]
             const xf = fx[code[kidIp + 3]!] as string[]
-            runners[i] = (input, cur, ctx) => {
+            return (input, cur, ctx) => {
               if (!adjacencyHolds(input, cur, ctx, negated, kinds)) {
                 ctx._fe = cur; ctx._fx = xf
                 return -1
@@ -1975,17 +2012,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return cur
             }
           }
+          const bindRunners = (start: number): SequenceTermBlock => {
+            const count = Math.min(4, n - start)
+            const at = (offset: number): TermRunner => runnerAt(start + offset)
+            const never: TermRunner = () => -1
+            return runnerBlock(
+              count, at(0), count > 1 ? at(1) : never,
+              count > 2 ? at(2) : never, count > 3 ? at(3) : never,
+              start + count < n ? bindRunners(start + count) : undefined,
+            )
+          }
+          const tail = bindRunners(1)
           const runAdjTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
-            const v0 = kids[0]!(input, pos, ctx)
+            const v0 = first(input, pos, ctx)
             if (v0 === FAIL) return -1
             if (values !== undefined) values.push(v0)
-            let cur = EC.e
-            for (let i = 1; i < n; i++) {
-              cur = runners[i]!(input, cur, ctx)
-              if (cur < 0) return -1
-              if (values !== undefined) values.push(TERMV)
-            }
-            return cur
+            return tail(input, EC.e, ctx, values)
           }
           if (fused) {
             return (input, pos, ctx) => {
@@ -2031,7 +2073,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * runs, so there is no arity this fails to lower.
          */
         if (n === 1) {
-          const k0 = kids[0]!
+          const k0 = link(code[base]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
@@ -2054,7 +2096,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         if (n === 2) {
-          const k0 = kids[0]!, k1 = kids[1]!
+          const k0 = link(code[base]!), k1 = link(code[base + 1]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
@@ -2088,7 +2130,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         if (n === 3) {
-          const k0 = kids[0]!, k1 = kids[1]!, k2 = kids[2]!
+          const k0 = link(code[base]!), k1 = link(code[base + 1]!), k2 = link(code[base + 2]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
@@ -2130,10 +2172,81 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
         }
 
+        // Arbitrary strict arities use a bounded scalar block chain. Fixed
+        // children are captured into prewritten four-term blocks at assembly;
+        // the parse path has no `kids[i]`, fixed-child loop, or opcode lookup.
+        const block = (
+          count: number,
+          k0: Piece, k1: Piece, k2: Piece, k3: Piece,
+          next: SequenceTermBlock | undefined,
+        ): SequenceTermBlock => {
+          if (count === 1) return (input, cur, ctx, values) => {
+            cur = nextTerm(k0, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values)
+          }
+          if (count === 2) return (input, cur, ctx, values) => {
+            cur = nextTerm(k0, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k1, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values)
+          }
+          if (count === 3) return (input, cur, ctx, values) => {
+            cur = nextTerm(k0, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k1, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k2, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values)
+          }
+          return (input, cur, ctx, values) => {
+            cur = nextTerm(k0, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k1, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k2, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k3, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values)
+          }
+        }
+        const bind = (start: number): SequenceTermBlock => {
+          const count = Math.min(4, n - start)
+          const child = (offset: number): Piece => link(code[base + start + offset]!)
+          return block(
+            count, child(0), count > 1 ? child(1) : NEVER_PIECE,
+            count > 2 ? child(2) : NEVER_PIECE, count > 3 ? child(3) : NEVER_PIECE,
+            start + count < n ? bind(start + count) : undefined,
+          )
+        }
+        const first = link(code[base]!)
+        const tail = bind(1)
+        const runDirectTerms = (
+          input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined,
+        ): number => {
+          const v0 = first(input, pos, ctx)
+          if (v0 === FAIL) return -1
+          if (values !== undefined) values.push(v0)
+          return tail(input, EC.e, ctx, values)
+        }
+
         if (fused) {
           return (input, pos, ctx) => {
             const values: unknown[] = []
-            const cur = runTerms(input, pos, ctx, values)
+            const cur = runDirectTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
             EC.e = cur
             return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
@@ -2142,14 +2255,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (wantValues) {
           return (input, pos, ctx) => {
             const values: unknown[] = []
-            const cur = runTerms(input, pos, ctx, values)
+            const cur = runDirectTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
             EC.e = cur
             return values
           }
         }
         return (input, pos, ctx) => {
-          const cur = runTerms(input, pos, ctx, undefined)
+          const cur = runDirectTerms(input, pos, ctx, undefined)
           if (cur < 0) return FAIL
           EC.e = cur
           return undefined

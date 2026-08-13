@@ -309,15 +309,51 @@ describe('derived lexical-token families', () => {
     expect(new Set(occurrences.map(site => site.languageId)).size).toBe(1)
     expect(alphabet.bindingEdges.filter(edge => edge.childTag === 'token')).toHaveLength(2)
 
-    const repeated = collectLexicalAlphabet([choice(shared, shared)])
+    const repeatedRoot = choice(shared, shared)
+    const repeated = collectLexicalAlphabet([repeatedRoot])
     expect(repeated.capabilities.filter(site => site.parser === shared)).toHaveLength(1)
     expect(repeated.bindingEdges.filter(edge => edge.childTag === 'token')).toHaveLength(2)
+    expect(repeated.bindingProjections).toHaveLength(repeated.bindingEdges.length)
     expect(repeated.bindingEdges.every(edge => edge.status.kind === 'gap')).toBe(true)
+    for (const edge of repeated.bindingEdges) {
+      const projection = repeated.bindingProjections[edge.projectionId!]
+      expect(projection).toMatchObject({
+        edgeId: edge.id, readerMask: 0b111, variantMask: 0b11_1111,
+      })
+      expect(projection!.semanticDigest).toBeGreaterThan(0)
+    }
+    expect(() => assertLexicalCapabilityClosure([repeatedRoot], {
+      ...repeated, bindingProjections: repeated.bindingProjections.slice(1),
+    })).toThrow('lexical capability census is incomplete')
+    expect(() => assertLexicalCapabilityClosure([repeatedRoot], {
+      ...repeated,
+      bindingProjections: repeated.bindingProjections.map((projection, index) => index === 0
+        ? { ...projection, childOrdinal: projection.childOrdinal + 1 }
+        : projection),
+    })).toThrow('lexical capability census is incomplete')
 
     // Independent topology oracle: the authored graph above has two grammar ->
     // token edges in distinct contexts, while the repeated graph has two fixed
     // parent slots feeding one recognition state. Parser/language dedup alone
     // makes one of these assertions fail; edge dedup alone makes the other fail.
+  })
+
+  it('keeps partially projected sequence and scanner edges fail-closed', () => {
+    const sequenceAlphabet = collectLexicalAlphabet([sequence(
+      literal('a'), literal('b'), literal('c'), literal('d'), literal('e'),
+    )])
+    const sequenceEdges = sequenceAlphabet.bindingEdges.filter(edge => edge.parentTag === 'sequence')
+    expect(sequenceEdges).toHaveLength(5)
+    expect(sequenceEdges.every(edge => edge.status.kind === 'gap')).toBe(true)
+    expect(sequenceEdges.map(edge => sequenceAlphabet.bindingProjections[edge.projectionId!]?.variantMask))
+      .toEqual(Array.from({ length: 5 }, () => 0b11_1111))
+
+    const scanAlphabet = collectLexicalAlphabet([scanTo(literal(';'), { skip: [regex(/x+/)] })])
+    const scanEdges = scanAlphabet.bindingEdges.filter(edge => edge.parentTag === 'scanTo')
+    expect(scanEdges.length).toBeGreaterThan(0)
+    expect(scanEdges.every(edge => edge.status.kind === 'gap')).toBe(true)
+    expect(scanEdges.map(edge => scanAlphabet.bindingProjections[edge.projectionId!]?.readerMask))
+      .toEqual(Array.from({ length: scanEdges.length }, () => 0b001))
   })
 
   it('inventories the final named winner instead of a stale lazy thunk', () => {
