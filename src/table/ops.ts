@@ -462,6 +462,8 @@ export const OP_SCOPE_PLAIN = 41
  * is only the winning TOKEN body. A program without a selected TOKEN body has
  * no row or lexical pool.
  */
+/** `LEX_BODY body fx suffixFx lineFlags` — selected childless lexical body.
+ * lineFlags bit 0 publishes the regex range; bit 1 publishes a matched suffix. */
 export const OP_LEX_BODY = 42
 /**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.

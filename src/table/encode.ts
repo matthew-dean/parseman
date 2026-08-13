@@ -203,7 +203,11 @@ class Encoder {
     return idx
   }
 
-  private lexicalBodySlot(p: Combinator<unknown>): { body: number; suffixFx: number } | undefined {
+  private lexicalBodySlot(p: Combinator<unknown>): {
+    body: number
+    suffixFx: number
+    lineFlags: number
+  } | undefined {
     if (!this.selectLexicalBodies) return undefined
     const body = directOptionalSuffixTokenBody(p)
     if (body === undefined) return undefined
@@ -215,11 +219,14 @@ class Encoder {
     const suffixFx = this.expected(directTerminalFailureExpected({
       tag: 'literal', value: body.suffix, caseInsensitive: false,
     }))
-    if (prior !== undefined) return { body: prior, suffixFx }
+    const lineFlags = this.track
+      ? (body.baseCanMatchNewline ? 1 : 0) | (body.suffixCanMatchNewline ? 2 : 0)
+      : 0
+    if (prior !== undefined) return { body: prior, suffixFx, lineFlags }
     const id = this.lex.length
     this.lexIndex.set(key, id)
     this.lex.push([regex, suffix])
-    return { body: id, suffixFx }
+    return { body: id, suffixFx, lineFlags }
   }
 
   private triviaSpecOf(t: Combinator<unknown>): TriviaSpec {
@@ -1118,7 +1125,8 @@ class Encoder {
         const selected = this.lexicalBodySlot(p)
         if (selected !== undefined) {
           return this.emit(
-            OP_LEX_BODY, selected.body, this.expected(deriveExpected(d.parser)), selected.suffixFx,
+            OP_LEX_BODY, selected.body, this.expected(deriveExpected(d.parser)),
+            selected.suffixFx, selected.lineFlags,
           )
         }
         return this.emit(OP_TOKEN, this.node(d.parser).ip)

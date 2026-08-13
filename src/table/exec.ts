@@ -708,7 +708,10 @@ function makeDriver(
         }
         const suffixMatched = recognized % 2 === 1
         const end = (recognized - (suffixMatched ? 1 : 0)) / 2
+        const lineFlags = code[ip + 4]!
+        if ((lineFlags & 1) !== 0) trackLines(ctx, input, suffixMatched ? end - 1 : end)
         ctx._fc = false
+        if (suffixMatched && (lineFlags & 2) !== 0) trackLines(ctx, input, end)
         if (!suffixMatched) {
           const suffixExpected = fx[code[ip + 3]!] as string[]
           ctx._fe = end

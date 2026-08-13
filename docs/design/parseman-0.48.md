@@ -245,7 +245,7 @@ runtime and package never carry both implementations merely because the compiler
 considered both.
 
 **Current implementation boundary.** The first executable proof covers only
-`token(sequence(regex(non-newline), optional(literal(one UTF-16 code unit))))` in a
+`token(sequence(regex, optional(literal(one UTF-16 code unit))))` in a
 program whose *entire* lexical capability graph is complete. It serializes one
 childless `OP_LEX_BODY` row and omits the losing regex/optional/literal rows. This is
 a catalogue vertical slice, not a general scanner and not a Jess speed claim. CSS and

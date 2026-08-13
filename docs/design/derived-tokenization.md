@@ -7,11 +7,14 @@
 
 **Current status:** the broad derived scanner is **not wired into the canonical
 engine**. One deliberately narrow vertical slice is wired: a whole-program-complete
-`token(sequence(regex(non-newline), optional(literal(one UTF-16 code unit))))`
+`token(sequence(regex, optional(literal(one UTF-16 code unit))))`
 candidate may lower to childless `OP_LEX_BODY`. It exists to prove winner-only
 TableProgram serialization across every reader, not to claim that CSS or Less has
 been tokenized. Any other reachable capability gap keeps the entire program on the
 CHARACTER lowering, so the shipping Jess graphs still select zero lexical bodies.
+Newline-capable regexes use the same selected body; tracked variants publish the
+matched range into the canonical line index before the optional suffix's swallowed
+failure state, matching the CHARACTER transaction without a second recognizer.
 The 0.46 source-codegen token-keyed `dispatch` experiment (§9.1, commits `caa3d14` /
 `e8612eb`) is historical: `codegen.ts` was deleted in 0.47. The shipping path is one
 compact `TableProgram` linked to closure pieces by `assemble.ts`. Sections below mix

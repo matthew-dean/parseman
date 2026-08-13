@@ -196,6 +196,116 @@ describe('table assembler', () => {
     }
   })
 
+  it('publishes selected regex and suffix line ranges at the authored terminal boundaries', () => {
+    const trace = (
+      entry: Combinator<unknown> | ((input: string, pos: number, ctx: ParseContext) => import('../../src/types.ts').ParseResult<unknown>),
+      input: string,
+    ) => {
+      const ctx = createParseContext()
+      ctx.trackLines = true
+      ctx._lineStarts = [0]
+      ctx._lineScannedTo = 0
+      const result = typeof entry === 'function'
+        ? entry(input, 0, ctx)
+        : entry.parse(input, 0, ctx)
+      return {
+        ok: result.ok,
+        span: { start: result.span.start, end: result.span.end },
+        expected: result.ok ? undefined : result.expected,
+        lineStarts: ctx._lineStarts,
+        lineScannedTo: ctx._lineScannedTo,
+      }
+    }
+    const engines = (source: Combinator<unknown>) => {
+      const prog = encodeTable({ Root: source }, { trackLines: true })
+      expect(prog.code[prog.rules.Root!]).toBe(OP_LEX_BODY)
+      const resolved = resolveTable(prog)
+      const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
+        const emitted = emitAssemblySource(resolved, prog, cfg, [])
+        return {
+          key: cfgKey(cfg),
+          // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+          factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
+          plan: emitted.plan,
+          reached: [...emitted.reached],
+        }
+      })
+      return [
+        ['source', source],
+        ['reference', execRules(prog).Root!],
+        ['closure', tableRules({ ...prog, asm: [] }).Root!],
+        ['precompiled', tableRules({ ...prog, asm: precompiled }).Root!],
+      ] as const
+    }
+
+    const baseLines = token(sequence(regex(/[a-z\n]+/), optional(literal('('))))
+    for (const input of ['a\nb', 'a\nb(']) {
+      const expected = trace(baseLines, input)
+      for (const [name, entry] of engines(baseLines)) {
+        expect(trace(entry, input), `${name} ${JSON.stringify(input)}`).toEqual(expected)
+      }
+      expect(expected.lineStarts).toEqual([0, 2])
+      expect(expected.lineScannedTo).toBe(3)
+    }
+
+    const suffixLine = token(sequence(regex(/[a-z]+/), optional(literal('\n'))))
+    for (const input of ['a', 'a\n']) {
+      const expected = trace(suffixLine, input)
+      for (const [name, entry] of engines(suffixLine)) {
+        expect(trace(entry, input), `${name} ${JSON.stringify(input)}`).toEqual(expected)
+      }
+      expect(expected.lineStarts).toEqual(input.endsWith('\n') ? [0, 2] : [0])
+      expect(expected.lineScannedTo).toBe(input.endsWith('\n') ? 2 : 0)
+    }
+
+    // RED provenance: treating the whole selected range as one line terminal
+    // advances `_lineScannedTo` through a non-newline suffix, while the authored
+    // regex and literal publish independently and stop at the regex end.
+    expect(trace(tableRules(encodeTable({ Root: baseLines }, { trackLines: true })).Root!, 'a\nb(')
+      .lineScannedTo).toBe(3)
+
+    // A tracked table owns line publication even when invoked through normal
+    // `run(entry, input)`: its entry seeds line storage from `prog.lines`, while
+    // the caller-created context does not set the dynamic trackLines option.
+    for (const [name, entry] of engines(baseLines).slice(1)) {
+      expect(run(entry, 'a\nb').span, name).toMatchObject({
+        startLine: 1, startColumn: 1, endLine: 2, endColumn: 2,
+      })
+    }
+
+    // The optional boundary clears commitment before attempting its literal.
+    // If suffix line publication throws, the selected body must expose the same
+    // register state as the authored CHARACTER body rather than retaining the
+    // incoming commitment through the combined lexical recognizer.
+    const selectedProg = encodeTable({ Root: suffixLine }, { trackLines: true })
+    const characterProg = encodeTable({ Root: suffixLine, Incomplete: literal('z') }, { trackLines: true })
+    expect(selectedProg.code[selectedProg.rules.Root!]).toBe(OP_LEX_BODY)
+    expect(characterProg.code[characterProg.rules.Root!]).not.toBe(OP_LEX_BODY)
+    for (const [name, baseProg] of [
+      ['selected-closure', { ...selectedProg, asm: [] }],
+      ['selected-emitted', selectedProg],
+      ['character-closure', { ...characterProg, asm: [] }],
+      ['character-emitted', characterProg],
+    ] as const) {
+      const linked = assemble(resolveTable(baseProg), baseProg, {
+        hostCst: false, hostReadsChildren: true, trackLines: false,
+        tolerant: false, coverage: false, probe: false,
+      })
+      const ctx = createParseContext()
+      ctx.trackLines = true
+      ctx._lineStarts = Object.freeze([0]) as unknown as number[]
+      ctx._lineScannedTo = 1
+      ctx._fc = true
+      linked.begin(ctx)
+      try {
+        expect(() => linked.pieces.Root!('a\n', 0, ctx), name).toThrow(TypeError)
+        expect(ctx._fc, `${name} commitment after suffix line throw`).toBe(false)
+      } finally {
+        linked.finish()
+      }
+    }
+  })
+
   it('lowers a RECURSIVE rule without falling back to an index lookup', () => {
     // `Expr -> Sum -> Expr` is a genuine back-edge, and the encoder emits a
     // patched `OP_RULE` trampoline for it. If the assembler's cycle handling

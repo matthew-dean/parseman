@@ -86,6 +86,12 @@ export type OptionalSuffixLexBody = {
   readonly suffix: string
 }
 
+export type ExecutableOptionalSuffixLexBody = OptionalSuffixLexBody & {
+  /** Match the two authored terminal line-publication points exactly. */
+  readonly baseCanMatchNewline: boolean
+  readonly suffixCanMatchNewline: boolean
+}
+
 export type LexBodyCandidate =
   | { readonly strategy: 'character'; readonly estimatedOps: number }
   | {
@@ -125,16 +131,14 @@ export function selectOptionalSuffixLexBody(ir: LexicalIr): LexBodyCandidate {
  * boundary around a direct sequence(regex, optional(literal-one-code-unit)). */
 export function directOptionalSuffixTokenBody(
   parser: Combinator<unknown>,
-): OptionalSuffixLexBody | undefined {
+): ExecutableOptionalSuffixLexBody | undefined {
   const outer = parser._def
-  if (outer.tag !== 'token' || parser._meta.canMatchNewline !== false) return undefined
+  if (outer.tag !== 'token') return undefined
   const sequence = outer.parser._def
   if (sequence.tag !== 'sequence' || sequence.parsers.length !== 2) return undefined
   const base = sequence.parsers[0]?._def
-  const baseParser = sequence.parsers[0]
   const optional = sequence.parsers[1]?._def
-  if (base?.tag !== 'regex' || baseParser?._meta.canMatchNewline !== false
-    || optional?.tag !== 'optional') return undefined
+  if (base?.tag !== 'regex' || optional?.tag !== 'optional') return undefined
   const suffix = optional.parser._def
   if (suffix.tag !== 'literal' || suffix.caseInsensitive
     || suffix.value.length !== 1) return undefined
@@ -149,7 +153,11 @@ export function directOptionalSuffixTokenBody(
       },
     ],
   })
-  return selected.strategy === 'token' ? selected.body : undefined
+  return selected.strategy === 'token' ? {
+    ...selected.body,
+    baseCanMatchNewline: sequence.parsers[0]!._meta.canMatchNewline,
+    suffixCanMatchNewline: optional.parser._meta.canMatchNewline,
+  } : undefined
 }
 
 /** One canonical recognizer spec, shared by every family with equal lexical IR. */

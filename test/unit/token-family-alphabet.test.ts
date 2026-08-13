@@ -190,7 +190,7 @@ describe('derived lexical-token families', () => {
     expect(encodeTable({ Root: root }).lex).toBeUndefined()
   })
 
-  it('admits exactly one complete selected token body and rejects astral suffix lookalikes', () => {
+  it('admits one-code-unit selected token bodies and rejects astral suffix lookalikes', () => {
     const selected = token(sequence(regex(/[a-z]+/), optional(literal('('))))
     const capability = collectLexicalCapabilities([selected])
     expect(capability.capabilityComplete).toBe(true)
@@ -205,8 +205,12 @@ describe('derived lexical-token families', () => {
     expect(astralProg.lex).toBeUndefined()
 
     const newline = token(sequence(regex(/[a-z]+/), optional(literal('\n'))))
-    expect(collectLexicalCapabilities([newline]).capabilityComplete).toBe(false)
-    expect(encodeTable({ Root: newline }, { trackLines: true }).lex).toBeUndefined()
+    expect(collectLexicalCapabilities([newline]).capabilityComplete).toBe(true)
+    expect(encodeTable({ Root: newline }, { trackLines: true }).lex).toHaveLength(1)
+
+    const newlineBase = token(sequence(regex(/[a-z\n]+/), optional(literal('('))))
+    expect(collectLexicalCapabilities([newlineBase]).capabilityComplete).toBe(true)
+    expect(encodeTable({ Root: newlineBase }, { trackLines: true }).lex).toHaveLength(1)
   })
 
   it('fails the final-graph census when a valid candidate is hidden', () => {
