@@ -48,7 +48,7 @@ const DOCS = ONLY.length
  * Every `.md` under `dir`, recursively.
  *
  * Deliberately NOT `fs.globSync`: that landed in Node 22, and this repo supports
- * `^20.19.0 || >=22.12.0` (see `engines`). Importing it made the whole script
+ * `^20.19.0 || >=22.13.0` (see `engines`). Importing it made the whole script
  * crash on the floor line with no output at all — which surfaced as six
  * `expected '' to contain …` failures in `doc-verifier.test.ts` rather than
  * anything naming the real cause.

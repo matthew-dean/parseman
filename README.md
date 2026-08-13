@@ -30,7 +30,8 @@ combinators you already wrote compile to flat JavaScript — the compiler comput
 sets and left-factors the choices for you.
 
 Grammars work the same in plain JavaScript: the macro compiles a `.js` grammar to the same
-output as a `.ts` one, and the package ships both ESM and CJS. Write in TypeScript and result
+output as a `.ts` one. The package ships one ESM implementation, loadable through either
+`import` or `require()` on the supported Node versions. Write in TypeScript and result
 types are inferred across the whole combinator chain — types you didn't have to write out.
 
 Reach for it when you want CST/AST nodes with spans and trivia, error recovery and
@@ -54,7 +55,7 @@ npm install parseman
 ```
 
 Pre-1.0: minor versions may carry breaking changes — check the [changelog](./CHANGELOG.md)
-before upgrading. Requires Node `^20.19.0 || >=22.12.0`.
+before upgrading. Requires Node `^20.19.0 || >=22.13.0`.
 
 ## Quick start
 
@@ -188,7 +189,7 @@ nodes, so the numbers come from a spec-shaped language rather than a toy.
 pnpm install
 pnpm test         # interpreter + compiled parity, ordered-choice semantics
 pnpm typecheck
-pnpm build        # ESM + CJS + .d.ts → dist/
+pnpm build        # ESM + .d.ts → dist/
 pnpm docs:dev     # this documentation site, locally
 ```
 

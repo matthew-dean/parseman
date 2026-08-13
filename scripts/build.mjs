@@ -53,8 +53,8 @@ const shared = {
   external,
   sourcemap: true,
   // Every public entry point bundles much of the same module graph. Embedding that
-  // graph in each source map duplicates the TypeScript sources eighteen times across
-  // the ESM/CJS outputs. The package ships `src/` once instead, so debuggers can still
+  // graph in each source map duplicates the TypeScript sources across the public
+  // outputs. The package ships `src/` once instead, so debuggers can still
   // resolve the relative paths recorded by these external maps.
   sourcesContent: false,
   target: 'es2022',
@@ -62,11 +62,10 @@ const shared = {
 
 const capabilitySource = resolve('src/compiler/token-capability.ts')
 
-/** Externalize one private static capability implementation per module format. */
-function externalCapability(entry, format) {
-  const extension = format === 'esm' ? '.js' : '.cjs'
-  const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, extension)}`
-  const capabilityOutput = `dist/compiler/token-capability${extension}`
+/** Externalize one private static capability implementation for every public entry. */
+function externalCapability(entry) {
+  const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, '.js')}`
+  const capabilityOutput = 'dist/compiler/token-capability.js'
   let ref = relative(dirname(entryOutput), capabilityOutput).split(sep).join('/')
   if (!ref.startsWith('.')) ref = `./${ref}`
   return {
@@ -80,25 +79,20 @@ function externalCapability(entry, format) {
   }
 }
 
-async function buildPublicEntry(entry, format) {
+async function buildPublicEntry(entry) {
   return build({
     ...shared,
     entryPoints: [entry],
-    format,
+    format: 'esm',
     outdir: 'dist',
     outbase: 'src',
-    outExtension: { '.js': format === 'esm' ? '.js' : '.cjs' },
-    plugins: compileEntries.has(entry) ? [externalCapability(entry, format)] : [],
+    plugins: compileEntries.has(entry) ? [externalCapability(entry)] : [],
   })
 }
 
 await Promise.all([
-  ...entryPoints.flatMap(entry => [
-    buildPublicEntry(entry, 'esm'),
-    buildPublicEntry(entry, 'cjs'),
-  ]),
+  ...entryPoints.map(buildPublicEntry),
   build({ ...shared, entryPoints: [capabilitySource], format: 'esm', outfile: 'dist/compiler/token-capability.js' }),
-  build({ ...shared, entryPoints: [capabilitySource], format: 'cjs', outfile: 'dist/compiler/token-capability.cjs' }),
 ])
 
 // `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so
@@ -119,7 +113,7 @@ console.log('JS bundles built.')
 // The public runtime (including language-service) is browser-capable. Oxc is a
 // macro/plugin implementation detail with native platform bindings; keep it out
 // of these bundles even when runtime composition re-lowers artifact IR.
-for (const file of ['dist/index.js', 'dist/index.cjs', 'dist/language-service/index.js', 'dist/language-service/index.cjs']) {
+for (const file of ['dist/index.js', 'dist/language-service/index.js']) {
   if (readFileSync(file, 'utf8').includes('oxc-parser')) {
     throw new Error(`runtime bundle unexpectedly imports oxc-parser: ${file}`)
   }

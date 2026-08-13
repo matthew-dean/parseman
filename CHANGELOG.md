@@ -5,6 +5,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.48.0 — unreleased
 
+- **BREAKING:** ship one ESM implementation instead of duplicate ESM and CommonJS
+  bundles. Both `import` and synchronous `require()` remain supported on the declared
+  Node `^20.19.0 || >=22.13.0` floor; they now resolve to the same module. Node 22's
+  floor moves from 22.12 to 22.13, the first warning-free 22.x release for synchronous
+  `require(esm)`. This also repairs `require('parseman/diagnostics')`, whose former
+  CommonJS bundle could not load the ESM-only `linecraft` dependency.
+
 ## 0.47.1 — 2026-08-12
 
 - Preserve nodes, fields, recovery errors, and other child-owned effects when a

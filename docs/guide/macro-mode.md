@@ -37,7 +37,7 @@ export default {
 ```
 
 ```js [webpack.config.js]
-const parseman = require('parseman/plugin')
+const parseman = require('parseman/plugin').default
 
 module.exports = {
   plugins: [parseman.webpack()],
