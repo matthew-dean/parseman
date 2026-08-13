@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { balanced, choice, keywords, literal, many, node, notAdjacent, optional, parser, regex, sequence, token, transform } from '../../src/index.ts'
+import { balanced, choice, keywords, literal, many, node, notAdjacent, optional, parser, regex, scanTo, sequence, token, transform } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules, AssemblyCache, cfgKey } from '../../src/table/assemble.ts'
@@ -400,7 +400,12 @@ describe('table assembler', () => {
     // register state as the authored CHARACTER body rather than retaining the
     // incoming commitment through the combined lexical recognizer.
     const selectedProg = encodeTable({ Root: suffixLine }, { trackLines: true })
-    const characterProg = encodeTable({ Root: suffixLine, Incomplete: literal('z') }, { trackLines: true })
+    const characterProg = encodeTable({
+      Root: suffixLine,
+      // Scanner-owned fixed edges intentionally remain outside the selected
+      // reader set, keeping this comparison on the CHARACTER lowering.
+      Incomplete: scanTo(literal(';')),
+    }, { trackLines: true })
     expect(selectedProg.code[selectedProg.rules.Root!]).toBe(OP_LEX_BODY)
     expect(characterProg.code[characterProg.rules.Root!]).not.toBe(OP_LEX_BODY)
     for (const [name, baseProg] of [

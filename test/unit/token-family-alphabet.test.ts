@@ -156,8 +156,8 @@ describe('derived lexical-token families', () => {
     expect(alphabet.capabilities.map(site => ({
       id: site.id, atom: site.atom, key: site.semanticKey, status: site.status.kind,
     }))).toEqual([
-      { id: 0, atom: 'terminal', key: 'L\u0000!\u0000', status: 'gap' },
-      { id: 1, atom: 'terminal', key: 'R\u0000[a-z]+\u0000', status: 'gap' },
+      { id: 0, atom: 'terminal', key: 'L\u0000!\u0000', status: 'complete' },
+      { id: 1, atom: 'terminal', key: 'R\u0000[a-z]+\u0000', status: 'complete' },
       {
         id: 2,
         atom: 'token',
@@ -180,14 +180,12 @@ describe('derived lexical-token families', () => {
       boundaryPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
       materializationPlan: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
       supportedVariants: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
-      bindingAndReachability: { representation: { kind: 'gap' }, executableLowering: { kind: 'gap' } },
+      bindingAndReachability: { representation: { kind: 'complete' }, executableLowering: { kind: 'complete' } },
     })
-    expect(alphabet.capabilities[0]!.obligations.bindingAndReachability.executableLowering)
-      .toMatchObject({ kind: 'gap', reason: expect.stringContaining('fixed-tuple') })
-    expect(alphabet.capabilityComplete).toBe(false)
-    // Whole-program closure is the serialization gate. The complete TOKEN
-    // occurrence must not leak into this otherwise incomplete CHARACTER table.
-    expect(encodeTable({ Root: root }).lex).toBeUndefined()
+    expect(alphabet.capabilityComplete).toBe(true)
+    expect(alphabet.terminalProjections).toHaveLength(2)
+    expect(alphabet.terminalProjections.every(projection => projection.status.kind === 'complete')).toBe(true)
+    expect(encodeTable({ Root: root }).lex).toHaveLength(1)
   })
 
   it('admits one-code-unit selected token bodies and rejects astral suffix lookalikes', () => {
@@ -314,7 +312,7 @@ describe('derived lexical-token families', () => {
     expect(repeated.capabilities.filter(site => site.parser === shared)).toHaveLength(1)
     expect(repeated.bindingEdges.filter(edge => edge.childTag === 'token')).toHaveLength(2)
     expect(repeated.bindingProjections).toHaveLength(repeated.bindingEdges.length)
-    expect(repeated.bindingEdges.every(edge => edge.status.kind === 'gap')).toBe(true)
+    expect(repeated.bindingEdges.every(edge => edge.status.kind === 'complete')).toBe(true)
     for (const edge of repeated.bindingEdges) {
       const projection = repeated.bindingProjections[edge.projectionId!]
       expect(projection).toMatchObject({
@@ -338,15 +336,29 @@ describe('derived lexical-token families', () => {
     // makes one of these assertions fail; edge dedup alone makes the other fail.
   })
 
-  it('keeps partially projected sequence and scanner edges fail-closed', () => {
-    const sequenceAlphabet = collectLexicalAlphabet([sequence(
+  it('closes universal terminal bindings while scanner-owned edges stay fail-closed', () => {
+    const sequenceRoot = sequence(
       literal('a'), literal('b'), literal('c'), literal('d'), literal('e'),
-    )])
+    )
+    const sequenceAlphabet = collectLexicalAlphabet([sequenceRoot])
     const sequenceEdges = sequenceAlphabet.bindingEdges.filter(edge => edge.parentTag === 'sequence')
     expect(sequenceEdges).toHaveLength(5)
-    expect(sequenceEdges.every(edge => edge.status.kind === 'gap')).toBe(true)
+    expect(sequenceEdges.every(edge => edge.status.kind === 'complete')).toBe(true)
     expect(sequenceEdges.map(edge => sequenceAlphabet.bindingProjections[edge.projectionId!]?.variantMask))
       .toEqual(Array.from({ length: 5 }, () => 0b11_1111))
+    expect(sequenceAlphabet.terminalProjections).toHaveLength(5)
+    expect(sequenceAlphabet.terminalProjections.every(projection => projection.status.kind === 'complete')).toBe(true)
+    expect(sequenceAlphabet.capabilityComplete).toBe(true)
+    expect(() => assertLexicalCapabilityClosure([sequenceRoot], {
+      ...sequenceAlphabet,
+      terminalProjections: sequenceAlphabet.terminalProjections.slice(1),
+    })).toThrow('lexical capability census is incomplete')
+    expect(() => assertLexicalCapabilityClosure([sequenceRoot], {
+      ...sequenceAlphabet,
+      terminalProjections: sequenceAlphabet.terminalProjections.map((projection, index) => index === 0
+        ? { ...projection, namedSymbolId: projection.namedSymbolId + 1 }
+        : projection),
+    })).toThrow('lexical capability census is incomplete')
 
     const scanAlphabet = collectLexicalAlphabet([scanTo(literal(';'), { skip: [regex(/x+/)] })])
     const scanEdges = scanAlphabet.bindingEdges.filter(edge => edge.parentTag === 'scanTo')
@@ -354,6 +366,8 @@ describe('derived lexical-token families', () => {
     expect(scanEdges.every(edge => edge.status.kind === 'gap')).toBe(true)
     expect(scanEdges.map(edge => scanAlphabet.bindingProjections[edge.projectionId!]?.readerMask))
       .toEqual(Array.from({ length: scanEdges.length }, () => 0b001))
+    expect(scanAlphabet.terminalProjections.some(projection => projection.status.kind === 'gap')).toBe(true)
+    expect(scanAlphabet.capabilityComplete).toBe(false)
   })
 
   it('inventories the final named winner instead of a stale lazy thunk', () => {
