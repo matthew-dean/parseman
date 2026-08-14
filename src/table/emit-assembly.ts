@@ -152,6 +152,13 @@ if(b.raw!==undefined)b.raw.push(l)
 else if(b.rawSingle!==undefined){b.raw=[b.rawSingle,l];b.rawSingle=undefined}
 else b.rawSingle=l
 }
+function _capturedFlatChildren(children){
+if(children.length===0)return EMPTY_CH
+if(children[0]!==undefined)return children
+let first=1
+while(first<children.length&&children[first]===undefined)first++
+return first===children.length?EMPTY_CH:children.slice(first)
+}
 function _accSet(ax,acc){
 if(ax===undefined||ax.length===0)return acc
 if(acc===undefined)return ax.slice()
@@ -1804,6 +1811,47 @@ return nd
         // interpreter's node case — the most-executed non-terminal in any of
         // these grammars. It selects the emitted shape instead.
         const build = buildIdx >= 0 ? fnRef(buildIdx) : undefined
+        // The closure assembler's direct-builder capture tiers are table facts,
+        // not closure-only semantics. Print the same body for a precompiled
+        // assembly so a large composeLeaf artifact does not fall back to opening
+        // the generic raw/trivia buffer that its reducer arity proved unread.
+        if (!hostCst && !tracked && build !== undefined && proj < 0
+          && (flags === 2 || flags === 18 || flags === 34)) {
+          const fields = flags === 18
+          const collapseChildren = flags === 34
+          const raw = L.buf
+            ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
+            : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined||sRaw!==undefined?rawEntry(nd,input,pos,end):undefined)'
+          return `${head}
+const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf,sFields=ctx._fields
+const flat=[]
+ctx._cstBuf=undefined
+ctx._cstChildren=flat
+ctx._cstLeaves=flat
+ctx._cstRawChildren=undefined
+ctx._cstTriviaLog=undefined
+ctx.captureTrivia=false
+ctx._fields=${fields ? '[]' : 'undefined'}
+const v=${child}(input,pos,ctx)
+const captured=_capturedFlatChildren(flat)
+${fields ? 'const fieldMap=buildFieldMap(ctx._fields)\n' : ''}ctx._fields=sFields
+ctx._cstBuf=sBuf
+ctx._cstChildren=sCh
+ctx._cstLeaves=sLv
+ctx._cstRawChildren=sRaw
+ctx._cstTriviaLog=sTl
+ctx.captureTrivia=sCap
+if(v===FAIL)return FAIL
+const end=EC.e
+${collapseChildren
+    ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`
+    : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`}
+${raw}
+EC.e=end
+return nd
+}`
+        }
         const structural = build === undefined && proj < 0
         const grammarCapture = (flags & 1) !== 0 || trailingTrivia
         const hostCapturesThisType = structural && cfg.hostCaptureTrivia !== undefined

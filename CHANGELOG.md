@@ -34,7 +34,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   CSS remains order-sensitive and is not assigned a release number. Only one of four
   Jess public variants carries the assembly: transformed CSS is 1.64 MB raw / 197 KB
   gzip and Less is 3.10 MB / 381 KB, rather than the rejected multi-megabyte-per-variant
-  direct-source parser.
+  direct-source parser. Projecting the retained direct AST-child collectors into that
+  same static assembly makes it a further 14.0% faster on CSS, 9.2% on benchmark Less,
+  and 9.1% on generated Less in clean two-graph A/A-adjusted runs, for 3.5 KB packed.
 - Validate the final Jess-derived graphs against the CHARACTER oracle, reference table
   driver, closure assembler, and emitted assembly with full consumption and matching
   values, spans, expected sets, errors, and root trivia: 88 CSS inputs and 316 Less

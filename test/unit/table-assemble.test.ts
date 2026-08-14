@@ -118,6 +118,17 @@ describe('table assembler', () => {
       }).pieces.Root)
     expect(childSource).toContain('ctx._cstChildren = kids')
     expect(childSource).not.toContain('const buf')
+    const emittedChildSource = emitAssemblySource(
+      resolveTable(childProgram), childProgram, defaultAssemblyCfgs(childProgram)[0]!, [],
+    ).source
+    expect(emittedChildSource).toContain('const flat=[]')
+    expect(emittedChildSource).toContain('const captured=_capturedFlatChildren(flat)')
+    // The direct collector uses split arrays, not `_cstBuf`; descendants must
+    // therefore keep the generic collector test instead of taking the site's
+    // buffer-only `_pushLeafBuf` shortcut.
+    expect(emittedChildSource).toMatch(
+      /if\(ctx\._cstBuf!==undefined\|\|ctx\._cstLeaves!==undefined\)_pushLeaf\(ctx,/,
+    )
 
     for (const input of ['a', 'ab', 'a,', 'a,b']) {
       const reference = run(execRules(childProgram).Root!, input)
