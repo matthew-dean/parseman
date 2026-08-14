@@ -172,10 +172,20 @@ function linkMatcher(m: readonly [number, string, string, number]): (key: string
     case 1: return key => key.endsWith(value)
     case 3: return key => asciiFoldKey(key).startsWith(value)
     case 4: return key => asciiFoldKey(key).endsWith(value)
-    // A fresh RegExp per test, as `matchesDispatchMatcher` builds — a cached one
-    // would carry `lastIndex` across parses whenever the author's pattern was
-    // sticky or global.
-    default: { const flags = m[2]; return key => new RegExp(value, flags).test(key) }
+    default: {
+      const flags = m[2]
+      // `matches()` refuses global/sticky patterns, so every compiler-owned
+      // matcher has stable `lastIndex` and can be compiled once per assembly.
+      // Preserve the old fresh-per-test behavior for hand-built low-level rows
+      // that contain g/y or invalid flags rather than broadening the wire ABI.
+      if (!flags.includes('g') && !flags.includes('y')) {
+        try {
+          const pattern = new RegExp(value, flags)
+          return key => pattern.test(key)
+        } catch {}
+      }
+      return key => new RegExp(value, flags).test(key)
+    }
   }
 }
 

@@ -1519,16 +1519,26 @@ return FAIL
         // are TABLE DATA, so here they are the test itself and no closure, no
         // pool and no indexed call exist. Kinds are `matcherClaims`'s exactly
         // — 0/1 raw prefix/suffix, 3/4 the pre-folded pair, anything else a
-        // regex. The regex is built PER TEST, deliberately: a hoisted one
-        // carries `lastIndex` across parses whenever the author's pattern is
-        // sticky or global (`exec.ts:140-144`).
+        // regex. Public `matches()` refuses global/sticky patterns, so its
+        // RegExp can be compiled once into the assembly prelude. Hand-built
+        // low-level rows with g/y or invalid flags retain the old per-test
+        // construction and therefore the old `lastIndex`/throw behavior.
         const claims = (m: readonly [number, string, string, number]): string => {
           switch (m[0]) {
             case 0: return `key.startsWith(${q(m[1])})`
             case 1: return `key.endsWith(${q(m[1])})`
             case 3: return `asciiFoldKey(key).startsWith(${q(m[1])})`
             case 4: return `asciiFoldKey(key).endsWith(${q(m[1])})`
-            default: return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
+            default: {
+              if (!m[2].includes('g') && !m[2].includes('y')) {
+                try {
+                  // Validate without changing malformed-row error timing.
+                  new RegExp(m[1], m[2])
+                  return `${hoist('dm', `new RegExp(${q(m[1])},${q(m[2])})`)}.test(key)`
+                } catch {}
+              }
+              return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
+            }
           }
         }
         const chain = spec.match.length === 0

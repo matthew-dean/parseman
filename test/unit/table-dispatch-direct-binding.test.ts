@@ -141,6 +141,9 @@ describe('direct-bound dispatch topology', () => {
     expect(emitted.source).toMatch(/switch\(arm\)/)
     expect(emitted.source).toMatch(/case 0:\{const savedRouted=ctx\._routed/)
     expect(emitted.source).toMatch(/case 1:v=\w+\(input,selEnd,ctx\);break/)
+    expect(emitted.source).toMatch(/const _dm\d+=new RegExp\(/)
+    expect(emitted.source).toMatch(/_dm\d+\.test\(key\)/)
+    expect(emitted.source).not.toMatch(/if\(new RegExp\([^\n]+\.test\(key\)\)arm=/)
     expect(emitted.plan).toEqual({ classes: [], armExpected: [], masks: [] })
 
     const closureBody = assemble(table, { ...prog, asm: [] }, CLOSURE_CFG).pieces.Entry!.toString()
@@ -199,6 +202,27 @@ describe('direct-bound dispatch topology', () => {
     for (let i = 0; i < 3; i++) expectIdentity(entries, ['global+'])
     expect(() => matches(/^global/g)).toThrow(/global or sticky/)
     expect(() => matches(/^sticky/y)).toThrow(/global or sticky/)
+
+    // A hand-built low-level row can still carry mutable lastIndex flags. It
+    // deliberately stays on the fresh-per-test path in every table reader.
+    const lowLevel = dispatch(
+      regex(/[a-z]+/),
+      when(matches(/^global/), literal('+')),
+      otherwise(literal('.')),
+    )
+    const lowLevelBase = program(lowLevel)
+    const lowLevelIp = dispatchIp(lowLevelBase)
+    const lowLevelDi = lowLevelBase.code[lowLevelIp + 2]!
+    const lowLevelSpec = lowLevelBase.dsp[lowLevelDi]!
+    const globalRow = ownTableProgram({
+      ...lowLevelBase,
+      dsp: lowLevelBase.dsp.map((d, i) => i === lowLevelDi
+        ? { ...lowLevelSpec, match: lowLevelSpec.match.map(m => [m[0], m[1], `${m[2]}g`, m[3]] as const) }
+        : d),
+    })
+    const globalSource = emitAssemblySource(resolveTable(globalRow), globalRow, STRICT).source
+    expect(globalSource).toMatch(/if\(new RegExp\([^\n]+\.test\(key\)\)arm=/)
+    for (let i = 0; i < 3; i++) expectIdentity(engines(lowLevel, globalRow), ['global+'])
 
     const noFallback = dispatch(regex(/[a-z]+/), when('yes', literal('!')))
     expectIdentity(engines(noFallback), ['yes!', 'no!', ''])
