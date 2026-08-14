@@ -107,16 +107,24 @@
  *   pnpm bench:jess:ab less --ref=<sha>
  *   pnpm bench:jess:ab less --head-engine=interpreter --ref-engine=interpreter
  *   pnpm bench:jess:ab all --self          # HEAD against ITSELF — the noise floor
+ *   pnpm bench:jess:ab css --two-graph --rounds=40 --runs=4 --timed=9
+ *   pnpm bench:jess:ab less --require-identity --require-full
+ *   pnpm bench:jess:ab less --two-graph --require-full
+ *
+ * `--warmup`, `--timed`, `--rounds`, and `--runs` override only this invocation;
+ * the corresponding `PM_JESS_AB_*` environment variables do the same for scripts.
+ * CLI wins over environment. The committed routine defaults remain fast.
  *
  * RUN `--self` FIRST on any machine or node version this has not run on. It is
  * not ceremony: the first working version of this harness left the head legs
  * untagged and sharing one module graph, and `--self` read 3.70x. See buildLeg.
  */
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { interleave, materialise, median, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { interleave, materialise, median, pairedMedianRatio, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 import { run } from '../../src/functional/run.ts'
 import {
   DIALECTS, ENTRY, JESS_ROOT, LOAD_CEILING, VARIANT_SETTINGS,
@@ -124,6 +132,7 @@ import {
   type Dialect,
 } from './grammars.ts'
 import { COLUMNS, FACETS, digestRow } from './digest.ts'
+import { pairedRoundDispersion, resolveMeasurement } from './ab-options.ts'
 
 const GATE = 'jess-ab'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -175,6 +184,24 @@ const argValue = (flag: string): string | null =>
  */
 const TWO_GRAPH = process.argv.includes('--two-graph')
 const SELF = process.argv.includes('--self')
+const REQUIRE_IDENTITY = process.argv.includes('--require-identity')
+const REQUIRE_FULL = process.argv.includes('--require-full')
+const PLANT = process.env.PM_JESS_AB_PLANT ?? ''
+if (PLANT !== '' && PLANT !== 'result-value' && PLANT !== 'partial-consumption') {
+  throw new Error(`unknown PM_JESS_AB_PLANT '${PLANT}'`)
+}
+if (TWO_GRAPH && REQUIRE_IDENTITY) {
+  throw new Error('--require-identity needs rich mode; --two-graph deliberately does not build the interpreter identity leg')
+}
+if (REQUIRE_IDENTITY && !REQUIRE_FULL) {
+  throw new Error('--require-identity also needs --require-full; identical partial/dead legs are not identity evidence')
+}
+if (PLANT === 'result-value' && !REQUIRE_IDENTITY) {
+  throw new Error("PM_JESS_AB_PLANT=result-value needs --require-identity (and therefore --require-full)")
+}
+if (PLANT === 'partial-consumption' && !REQUIRE_FULL) {
+  throw new Error('PM_JESS_AB_PLANT=partial-consumption needs --require-full')
+}
 const cleanHeadSha = (): string => {
   const sha = headSha()
   if (sha.includes('dirty')) {
@@ -183,7 +210,8 @@ const cleanHeadSha = (): string => {
   return sha
 }
 const REF = SELF ? cleanHeadSha() : argValue('--ref') ?? CONFIG.referenceSha
-const M = CONFIG.measurement
+const MEASUREMENT = resolveMeasurement(CONFIG.measurement, process.argv, process.env)
+const M = MEASUREMENT.measurement
 
 /** The grammar module of each dialect, in the jess repo. */
 const MODULE: Record<Dialect, string> = {
@@ -205,6 +233,38 @@ const FIXTURES: Record<Dialect, string[]> = {
   less: ['packages/jess/benchmark/benchmark.less', 'packages/jess/benchmark/gen-workload.less'],
   scss: ['packages/jess/benchmark/gen-workload.scss'],
   jess: ['packages/jess/benchmark/benchmark.jess'],
+}
+
+type JessPreflight = {
+  root: string
+  grammars: { dialect: Dialect; real: string }[]
+  parserShared: string
+  coreRoot: string
+  packageJson: string
+  source: string
+  lib: string
+  exports: number
+}
+
+/**
+ * Check Jess source/build provenance in a throwaway process. Importing both AST
+ * modules here would warm a module graph before the benchmark had even named it.
+ */
+function preflightJess(dialects: readonly Dialect[]): JessPreflight {
+  try {
+    const output = execFileSync(process.execPath, [
+      '--import', pathToFileURL(path.join(HERE, 'register.mjs')).href,
+      path.join(HERE, 'ab-preflight.ts'), JESS_ROOT, dialects.join(','),
+    ], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return JSON.parse(output) as JessPreflight
+  } catch (error) {
+    const e = error as Error & { stderr?: string | Buffer }
+    const stderr = typeof e.stderr === 'string' ? e.stderr : e.stderr?.toString('utf8')
+    throw new Error(
+      `Jess grammar/core preflight failed before any timed graph was built.\n${stderr?.trim() || e.message}`,
+      { cause: error },
+    )
+  }
 }
 
 /** Under this many bytes a fixture is REPORTED but never ranked on. */
@@ -417,37 +477,50 @@ async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: str
 
 /** THE PROTOCOL, printed with the numbers. A figure without it is not quotable. */
 function protocol(headEngine: Engine, refEngine: Engine, refSha: string): string[] {
+  const composition = TWO_GRAPH
+    ? [
+        '  composition EXACTLY TWO timed graphs: h1 and r1. No interpreter or control graph is built',
+        '              in this process. Take the noise floor from a separate --self --two-graph run.',
+      ]
+    : [
+        '  composition RICH identity/control mode: the h1/r1 gate pair, one independent control pair',
+        '              per side, and a HEAD interpreter graph unless h1 is already the interpreter.',
+        '              This is up to seven graphs and is not the canonical millisecond shape; use',
+        '              --two-graph for a release number.',
+      ]
+  const control = TWO_GRAPH
+    ? [
+        '  control     NONE in-process by design: a third graph is the measured confound. Run a',
+        '              separate --self --two-graph invocation with the same measurement settings.',
+      ]
+    : [
+        '  control     ONE PER SIDE — two independently loaded graphs of the SAME build against each',
+        '              other, on the reference side and on the head side. The worse delta is shown,',
+        '              but this rich-mode control does not clear a release ratio; --two-graph does.',
+      ]
   return [
     `  question    what did parseman HEAD do to a SHIPPING jess dialect, versus ${refSha}?`,
-    `  grammars    jess's four real grammar.ts files, loaded from SOURCE (never lib/, which is a`,
-    `              compiled artifact of an older parseman and does not even fuse for less/scss)`,
+    `  grammars    jess's real grammar.ts files, loaded from SOURCE. Their runtime`,
+    `              @jesscss/core/ast import uses lib/, so a child-process preflight proves that`,
+    `              package's source and lib export surfaces agree before any timed graph exists.`,
     `  fixtures    named files under jess's packages/jess/benchmark, read verbatim, byte size printed`,
     `  variant     ast — hostMode='ast', trackLines=false. Canonical by owner ruling.`,
     `  engines     HEAD ${headEngine}   vs   ${refSha} ${refEngine}. BOTH printed on every row, and a`,
     `              MIXED pair is refused by default — it folds the engine difference into the`,
     `              release difference, and was measured not to produce a stable number.`,
     `  binding     the reference leg loads the SAME grammar source through bench/jess/ab-hooks.mjs,`,
-    `              which binds its 'parseman' and '@jesscss/parser-shared' to the reference`,
-    `              worktree. @jesscss/core/ast is SHARED — identical on both sides, and one set of`,
-    `              AST builders is what makes the two trees comparable by digest.`,
+    `              which binds its 'parseman' to the reference worktree. parser-shared source and`,
+    `              @jesscss/core/ast are independently URL-tagged per side, so no builder call site`,
+    `              is shared between timed graphs. Their exact checkout paths are printed above.`,
     `  process     ONE process, sides interleaved in adjacent order-alternated pairs`,
     `              (bench/ab-harness.ts interleave). Separate process launches on this hardware read`,
     `              9.4 ms and 26 ms for the same case; nothing survives that.`,
-    `  composition THREE hot graphs PER SIDE, symmetric by construction: the gate pair (h1/r1,`,
-    `              used nowhere else) plus one control pair on each side. They share one heap and`,
-    `              adding a leg MOVES the others by ~18% on benchmark.less, so the two sides must`,
-    `              carry the SAME number of legs. They did not: the reference leg was the 'a' side`,
-    `              of both the gate and the control, giving the reference side two hot graphs to`,
-    `              the head side's one, and --self read 0.835x/0.822x on the two less fixtures`,
-    `              against controls of +0.3%/-0.1% — a 17-18% bias flattering HEAD.`,
+    ...composition,
     `  warmup      ${M.warmup} parses per side before any sample is kept`,
     `  sampling    ${M.rounds} rounds x ${M.runs} runs = ${M.rounds * M.runs} samples per side, ONE parse per repetition, each`,
     `              sample itself the median of ${M.timed} timed repetitions`,
     `  statistic   MEDIAN of the ${M.rounds * M.runs} samples. Not the min, not the mean.`,
-    `  control     ONE PER SIDE — two independently loaded graphs of the SAME build against each`,
-    `              other, on the reference side and on the head side. Identical code in both cases.`,
-    `              The WORSE of the two deltas is this run's noise floor; a gap smaller than it is`,
-    `              not a result. A control that is flat on one side and not the other is a finding.`,
+    ...control,
     `  cross-check every leg is ALSO timed alone, outside the pairing, and both figures printed.`,
     `              They must agree; when they do not, the pairing changed what was measured and`,
     `              the row says so. A mixed-engine pair once read 5.35 ms for a 19.4 ms leg.`,
@@ -457,7 +530,12 @@ function protocol(headEngine: Engine, refEngine: Engine, refSha: string): string
 }
 
 function rowOf(leg: Leg, input: string): string[] {
-  try { return digestRow(leg.run(leg.entry, input)) }
+  try {
+    const result = leg.run(leg.entry, input)
+    return digestRow(PLANT === 'result-value' && leg.side === 'h1'
+      ? { ...result, value: { planted: true, original: result.value } }
+      : result)
+  }
   catch (e) { return Array.from({ length: COLUMNS.length }, () => `threw:${(e as Error).message.split('\n')[0] ?? ''}`) }
 }
 
@@ -481,23 +559,27 @@ function rowOf(leg: Leg, input: string): string[] {
  * ratio. A throughput figure over bytes nobody looked at is not slow or fast, it
  * is nothing.
  */
-type Outcome = { threw: boolean; ok: boolean; consumed: number; at: number; detail: string }
-function outcomeOf(leg: Leg, input: string, bytes: number): Outcome {
+type Outcome = { threw: boolean; ok: boolean; full: boolean; consumed: number; at: number; detail: string }
+function outcomeOf(leg: Leg, input: string): Outcome {
   try {
-    const r = leg.run(leg.entry, input) as unknown as {
-      ok?: boolean; span?: { start?: number; end?: number }
+    const raw = leg.run(leg.entry, input) as unknown as {
+      ok?: boolean; span?: { start?: number; end?: number }; unconsumedFrom?: number | null
     }
+    const r = PLANT === 'partial-consumption' && leg.side === 'h1'
+      ? { ...raw, unconsumedFrom: Math.max(0, input.length - 1) }
+      : raw
     const ok = r.ok === true
-    const consumed = ok ? r.span?.end ?? 0 : 0
+    const consumed = r.unconsumedFrom ?? input.length
     const at = r.span?.start ?? 0
+    const full = ok && r.unconsumedFrom === null && r.span?.end === input.length
     return {
-      threw: false, ok, consumed, at,
+      threw: false, ok, full, consumed, at,
       detail: ok
-        ? consumed >= bytes ? 'parsed in full' : `ACCEPTED only ${consumed} of ${bytes} B`
-        : `FAILED at byte ${at} of ${bytes}`,
+        ? full ? 'parsed in full' : `ACCEPTED only ${consumed} of ${input.length} code units`
+        : `FAILED at offset ${at} of ${input.length}`,
     }
   } catch (e) {
-    return { threw: true, ok: false, consumed: 0, at: 0, detail: `THREW: ${(e as Error).message.split('\n')[0] ?? ''}` }
+    return { threw: true, ok: false, full: false, consumed: 0, at: 0, detail: `THREW: ${(e as Error).message.split('\n')[0] ?? ''}` }
   }
 }
 
@@ -564,7 +646,10 @@ async function measureDialect(
   // at all: if the two sides' `src` realpaths or entry shapes differ, that is the
   // finding, and no amount of re-running the timing will produce a better one.
   console.log(`    legs (${TWO_GRAPH ? 'TWO-GRAPH mode — the only shape measured to be unbiased' : 'rich mode — see --two-graph'}):`)
-  for (const l of [head, ref, ref2, ref3, head2, head3, interp].filter((l): l is Leg => l !== null)) {
+  const legs = TWO_GRAPH
+    ? [head, ref]
+    : [head, ref, ref2, ref3, head2, head3, ...(interp === head ? [] : [interp])]
+  for (const l of legs.filter((l): l is Leg => l !== null)) {
     console.log(`      ${l.side.padEnd(3)} ${l.engine.padEnd(11)} ${l.lowering.padEnd(14)} ${l.shape.padEnd(34)} ${l.srcReal}`)
   }
   // THE ENGINE CLAIM, MADE FROM WHAT WAS DETECTED rather than from the flags.
@@ -591,9 +676,9 @@ async function measureDialect(
     const [ih, ir, ii] = [identity(rh), identity(rr), identity(ri)]
     // ACCEPTANCE, read off the RunResult rather than inferred from the absence of
     // a throw. See `outcomeOf` — this line is the one that was lying.
-    const oh = outcomeOf(head, input, bytes)
-    const or = outcomeOf(ref, input, bytes)
-    const oi = outcomeOf(interp, input, bytes)
+    const oh = outcomeOf(head, input)
+    const or = outcomeOf(ref, input)
+    const oi = outcomeOf(interp, input)
     console.log(`    parse:  HEAD ${headEngine} ${oh.detail}`)
     if (!TWO_GRAPH) console.log(`            HEAD interpreter ${oi.detail}`)
     console.log(`            ${REF} ${refEngine} ${or.detail}`)
@@ -616,15 +701,21 @@ async function measureDialect(
       console.log(`    differing facets: ${differing.join(', ')}`)
       console.log('    TIMED ANYWAY, CAVEATED: the sides are not doing identical work, so the')
       console.log('    milliseconds below are indicative of cost and NOT a like-for-like contest.')
+      if (REQUIRE_IDENTITY) {
+        throw new Error(`${rel}: --require-identity caught semantic disagreement (${who}; ${differing.join(', ')})`)
+      }
     }
     // A leg that did not consume the file is not a slower or faster parse of it —
     // it is not a parse of it. Say so where the ratio would otherwise be read.
-    const bothParsed = oh.consumed >= bytes && or.consumed >= bytes
+    const bothParsed = oh.full && or.full && (TWO_GRAPH || oi.full)
     if (!bothParsed) {
       console.log('    *** NO RATIO IS QUOTABLE FOR THIS ROW: a side did not consume the file.')
-      console.log(`        HEAD consumed ${oh.consumed} B, ${REF} consumed ${or.consumed} B, of ${bytes} B.`)
+      console.log(`        HEAD ok=${oh.ok} consumed=${oh.consumed} failureAt=${oh.at}; ${REF} ok=${or.ok} consumed=${or.consumed} failureAt=${or.at}; input=${input.length} code units.`)
       console.log('        The milliseconds below are the cost of REACHING THE FAILURE, and the MB/s')
       console.log('        figures are computed over bytes that side never looked at.')
+      if (REQUIRE_FULL) {
+        throw new Error(`${rel}: --require-full caught incomplete parse (HEAD ok=${oh.ok} full=${oh.full}, ${REF} ok=${or.ok} full=${or.full}, input ${input.length})`)
+      }
     }
     // The container is reported EVERY time, agreement or not: it is the reason
     // `whole` cannot be the verdict across releases, and a reader who does not
@@ -682,8 +773,12 @@ async function measureDialect(
     const g = out.get('ref -> head')!
     const c = out.get('CONTROL ref -> ref')
     const ch = out.get('CONTROL head -> head')
-    const rm = median(g.get(`ref|${rel}`)!)
-    const hm = median(g.get(`head|${rel}`)!)
+    const refSamples = g.get(`ref|${rel}`)!
+    const headSamples = g.get(`head|${rel}`)!
+    const rm = median(refSamples)
+    const hm = median(headSamples)
+    const ratio = pairedMedianRatio(refSamples, headSamples)
+    const dispersion = pairedRoundDispersion(refSamples, headSamples, M.runs)
     console.log('')
     console.log(`    ONE PARSE, median of ${M.rounds * M.runs} samples:`)
     // Sub-millisecond fixtures print more places rather than a row of `0.00 ms`.
@@ -691,7 +786,9 @@ async function measureDialect(
     const ms = (v: number): string => (v >= 1 ? v.toFixed(2) : v.toFixed(4)).padStart(8)
     console.log(`      HEAD    ${headEngine.padEnd(11)} ${ms(hm)} ms   ${(bytes / hm / 1000).toFixed(2)} MB/s`)
     console.log(`      ${REF} ${refEngine.padEnd(11)} ${ms(rm)} ms   ${(bytes / rm / 1000).toFixed(2)} MB/s`)
-    console.log(`      ratio HEAD/${REF}   ${(hm / rm).toFixed(3)}x   (${sign((hm / rm - 1) * 100)} — negative is HEAD faster)`)
+    console.log(`      ratio HEAD/${REF}   ${ratio.toFixed(3)}x   (${sign((ratio - 1) * 100)} — paired; negative is HEAD faster)`)
+    console.log(`      paired rounds HEAD/${REF}  p10 ${dispersion.p10.toFixed(3)}x  median ${dispersion.median.toFixed(3)}x  p90 ${dispersion.p90.toFixed(3)}x`)
+    console.log(`        range ${dispersion.min.toFixed(3)}x..${dispersion.max.toFixed(3)}x; HEAD faster in ${dispersion.headWins}/${dispersion.ratios.length} rounds (${M.runs} adjacent pairs/round)`)
     if (!bothParsed) console.log('      ^ VOID — see the acceptance lines above. This is not a like-for-like ratio.')
     // BOTH noise floors. The worst of the two is what the gate is judged against:
     // a gap smaller than either side's own self-disagreement is not a result.
@@ -702,11 +799,11 @@ async function measureDialect(
     // printing a floor it did not measure.
     let ctl = 0
     if (c !== undefined && ch !== undefined) {
-      const ctlA = median(c.get(`ref|${rel}`)!), ctlB = median(c.get(`head|${rel}`)!)
-      const ctlHA = median(ch.get(`ref|${rel}`)!), ctlHB = median(ch.get(`head|${rel}`)!)
-      ctl = Math.max(Math.abs(ctlB / ctlA - 1), Math.abs(ctlHB / ctlHA - 1))
-      console.log(`      CONTROL ref/ref     ${sign((ctlB / ctlA - 1) * 100)}   — ${REF}-side noise floor`)
-      console.log(`      CONTROL head/head   ${sign((ctlHB / ctlHA - 1) * 100)}   — HEAD-side noise floor`)
+      const ctlRef = pairedMedianRatio(c.get(`ref|${rel}`)!, c.get(`head|${rel}`)!)
+      const ctlHead = pairedMedianRatio(ch.get(`ref|${rel}`)!, ch.get(`head|${rel}`)!)
+      ctl = Math.max(Math.abs(ctlRef - 1), Math.abs(ctlHead - 1))
+      console.log(`      CONTROL ref/ref     ${sign((ctlRef - 1) * 100)}   — paired ${REF}-side noise floor`)
+      console.log(`      CONTROL head/head   ${sign((ctlHead - 1) * 100)}   — paired HEAD-side noise floor`)
       console.log('      ^ NOTE both controls are taken in a SEVEN-GRAPH process, and graphs realised')
       console.log('        beyond the first couple run ~18-20% slower. A flat control here does NOT')
       console.log('        clear the gate ratio; only --two-graph does. See TWO_GRAPH in this file.')
@@ -714,7 +811,7 @@ async function measureDialect(
       console.log('      CONTROL             none in-process — --two-graph deliberately has no third')
       console.log('        graph. Take the floor from a separate `--self --two-graph` run of this shape.')
     }
-    if (ctl > 0 && Math.abs(hm / rm - 1) <= ctl) {
+    if (ctl > 0 && Math.abs(ratio - 1) <= ctl) {
       console.log('      ^ the gap is INSIDE the control. That is not a result in either direction.')
     }
 
@@ -758,6 +855,7 @@ async function main(): Promise<void> {
   const requested = first === undefined || first.startsWith('--') ? 'less' : first
   const dialects: Dialect[] = requested === 'all' ? [...DIALECTS] : [requested as Dialect]
   for (const d of dialects) if (!DIALECTS.includes(d)) throw new Error(`unknown dialect '${d}'`)
+  const jess = preflightJess(dialects)
   const headEngine = normEngine(argValue('--head-engine') ?? 'macro')
   const refEngine = normEngine(argValue('--ref-engine') ?? 'macro')
   for (const e of [headEngine, refEngine]) if (!ENGINES.includes(e)) throw new Error(`unknown engine '${e}'`)
@@ -804,11 +902,20 @@ async function main(): Promise<void> {
   console.log(`  HEAD src      ${headSrc}`)
   console.log(`  reference src ${refSrc}`)
   console.log(`  jess          ${JESS_ROOT}   (READ ONLY here; it installs parseman ${pm.installed}, which is NOT what is measured)`)
+  console.log(`  jess real     ${jess.root}`)
+  for (const grammar of jess.grammars) console.log(`  ${grammar.dialect.padEnd(13)} ${grammar.real}`)
+  console.log(`  parser shared ${jess.parserShared}`)
+  console.log(`  core package  ${jess.packageJson}`)
+  console.log(`  core ast src  ${jess.source}`)
+  console.log(`  core ast lib  ${jess.lib}`)
+  console.log(`  core exports  ${jess.exports} runtime names; source/lib EXACT`)
   console.log(`node ${process.version}   ${os.platform()}/${os.arch()}   cpus ${os.cpus().length}`)
   console.log(`loadavg at START ${loads()}   gate ${LOAD_CEILING}`)
   const { forced } = assertQuiet()
   console.log('')
   for (const line of protocol(headEngine, refEngine, REF)) console.log(line)
+  console.log(`  measurement  ${MEASUREMENT.overrides.length === 0 ? 'committed routine defaults' : `OVERRIDDEN: ${MEASUREMENT.overrides.join(', ')}`}`)
+  console.log(`  enforcement  identity=${REQUIRE_IDENTITY ? 'REQUIRED' : 'report-only'} full=${REQUIRE_FULL ? 'REQUIRED' : 'report-only'} plant=${PLANT || 'none'}`)
   if (forced) console.log('  *** FORCED PAST THE LOAD CEILING — these figures are NOT canonical ***')
 
   for (const d of dialects) await measureDialect(d, headSrc, refSrc, headEngine, refEngine, forced)
@@ -816,8 +923,10 @@ async function main(): Promise<void> {
   console.log(`\nloadavg at END ${loads()}`)
   console.log('')
   console.log('  A figure from this harness is quotable only WITH the block above it: both shas, both')
-  console.log('  engine names, the loadavg at each end, and the CONTROL row. A gap smaller than the')
-  console.log('  control is not a result in either direction, and a run whose END load is far off its')
+  console.log(`  engine names, the loadavg at each end, and ${TWO_GRAPH
+    ? 'a separate matching --self --two-graph run as its control.'
+    : 'the in-process CONTROL row.'}`)
+  console.log('  A gap smaller than that control is not a result in either direction, and a run whose END load is far off its')
   console.log('  START load measured a moving box, ceiling or no ceiling.')
 }
 

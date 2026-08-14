@@ -96,18 +96,29 @@ describe('first-set — leading zero-width assertion (not) does not poison the s
 })
 
 describe('first-set — sharing is not recursion', () => {
-  it('keeps a reused non-nullable DAG child non-nullable and exact', () => {
+  it('does not make a later sibling nullable merely because it reuses a completed child', () => {
     const shared = sequence(literal('@'), optional(literal('x')))
     const later = sequence(shared, optional(literal('y')))
-    const sharedDag = choice(shared, later)
+    const bothNonNullable = choice(shared, later)
+
+    // Before the recursion-stack fix, analysing arm 0 left `shared` in the
+    // global visited set. Arm 1 then treated the reuse as a cycle (nullable),
+    // and its optional tail made the whole choice spuriously nullable.
     expect(matchesEmpty(shared)).toBe(false)
     expect(matchesEmpty(later)).toBe(false)
-    expect(matchesEmpty(sharedDag)).toBe(false)
+    expect(matchesEmpty(bothNonNullable)).toBe(false)
+  })
+
+  it('does not widen a later sibling to any merely because it reuses a completed child', () => {
+    const shared = sequence(literal('@'), optional(literal('x')))
+    const sharedDag = choice(shared, sequence(shared, literal('!')))
+
     expect(firstSetOf(sharedDag)).toEqual({ kind: 'ranges', ranges: [{ lo: 64, hi: 64 }] })
   })
 
-  it('still fails closed on an actual recursive back-edge', () => {
+  it('still fails closed on a real back-edge', () => {
     const recursive = rules(g => ({ A: choice(literal('x'), g.A) })).A
+
     expect(matchesEmpty(recursive)).toBe(true)
     expect(firstSetOf(recursive)).toEqual({ kind: 'any' })
   })

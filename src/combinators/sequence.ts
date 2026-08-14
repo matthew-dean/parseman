@@ -1,6 +1,9 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseFail } from '../types.ts'
 import { sequenceFirstSet, firstSetOf, union } from './first-set.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, scanTrivia } from './trivia-skip.ts'
+import {
+  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt,
+  scanTriviaCompact,
+} from './trivia-skip.ts'
 import { cstTlLen } from '../cst/capture-buffer.ts'
 import { firstSetSentinel } from '../recovery/scan.ts'
 import { adjacencyFail, adjacencyOf, holdsAdjacency, type AdjacencyDef } from './adjacency.ts'
@@ -86,9 +89,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           const mRootLog = ctx._rootTriviaLog?.length ?? 0
           let scanEnd: number
           if (needsDeferredTriviaCommit(ctx)) {
-            const scan = scanTrivia(input, cur, ctx)
-            scan.commit()
-            scanEnd = scan.end
+            scanEnd = commitTriviaScan(scanTriviaCompact(input, cur, ctx))
           } else {
             scanEnd = advanceTrivia(input, cur, ctx)
           }
@@ -98,7 +99,9 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           const result = parsers[i]!.parse(input, scanEnd, ctx)
           if (!result.ok) return result as ParseFail
           if (result.span.end > scanEnd) cur = result.span.end
-          else rollbackScannedTriviaAt(ctx, mTlog, scanTlog, mLog, scanLog, mRootLog, scanRootLog)
+          else rollbackScannedTriviaAt(
+            ctx, mTlog, scanTlog, mLog, scanLog, mRootLog, scanRootLog,
+          )
           if (values !== undefined) values.push(result.value)
           continue
         }
@@ -141,9 +144,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
         const mLog = ctx._triviaLog?.length ?? 0
         const mRootLog = ctx._rootTriviaLog?.length ?? 0
         if (needsDeferredTriviaCommit(ctx)) {
-          const scan = scanTrivia(input, cur, ctx)
-          scan.commit()
-          scanEnd = scan.end
+          scanEnd = commitTriviaScan(scanTriviaCompact(input, cur, ctx))
         } else {
           scanEnd = advanceTrivia(input, cur, ctx)
         }
@@ -153,7 +154,9 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
         const result = parsers[i]!.parse(input, scanEnd, ctx)
         if (!result.ok) return result as ParseFail
         if (result.span.end > scanEnd) cur = result.span.end
-        else rollbackScannedTriviaAt(ctx, mTlog, scanTlog, mLog, scanLog, mRootLog, scanRootLog)
+        else rollbackScannedTriviaAt(
+          ctx, mTlog, scanTlog, mLog, scanLog, mRootLog, scanRootLog,
+        )
         if (values !== undefined) values.push(result.value)
         continue
       }
@@ -199,22 +202,22 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           const mRootLog = ctx._rootTriviaLog?.length ?? 0
 
           if (needsDeferredTriviaCommit(ctx)) {
-            const scan = scanTrivia(input, cur, ctx)
-            scan.commit()
-            scanEnd = scan.end
+            scanEnd = commitTriviaScan(scanTriviaCompact(input, cur, ctx))
           } else {
             scanEnd = advanceTrivia(input, cur, ctx)
           }
-
           const scanTlog = cstTlLen(ctx)
           const scanLog = ctx._triviaLog?.length ?? 0
           const scanRootLog = ctx._rootTriviaLog?.length ?? 0
+
           const result = parsers[i]!.parse(input, scanEnd, ctx)
           if (!result.ok) return result as ParseFail
           if (result.span.end > scanEnd) {
             cur = result.span.end
           } else {
-            rollbackScannedTriviaAt(ctx, mTlog, scanTlog, mLog, scanLog, mRootLog, scanRootLog)
+            rollbackScannedTriviaAt(
+              ctx, mTlog, scanTlog, mLog, scanLog, mRootLog, scanRootLog,
+            )
           }
           if (values !== undefined) values.push(result.value)
           continue

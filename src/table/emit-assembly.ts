@@ -9,16 +9,11 @@
  *
  * ## Why text, and not a rearrangement of `assemble.ts`
  *
- * V8 attaches inline-cache feedback per FUNCTION LITERAL, not per closure. The
- * second closure minted from a `CreateClosure` site moves its `FeedbackCell` to
- * `kManyClosures`, and the vector is shared from then on. `assemble.ts` mints 18
- * arity-2 `SEQV` closures for `less/stylesheet` from ONE literal, so the two
- * child call sites inside that literal see 18 unrelated callees and go
- * megamorphic — a hash lookup in the megamorphic stub cache, no inlining, no
- * type feedback for the callee body. No rearrangement of a file that MINTS
- * closures can produce a distinct literal per site. Emitting one
- * `function _pf<N>` per site can: inside `_pf12` the call `_pf7(…)` names ONE
- * binding and stays monomorphic.
+ * Emission makes each fixed grammar edge a direct generated identifier and is
+ * also the form a build can serialise as an ordinary function literal for CSP.
+ * The closure assembler can bind the same topology directly through scalar
+ * captures; emission's distinct job is to print that binding, not to assert a
+ * V8 property that the semantic design depends on.
  *
  * ## What may be shared, and what must be emitted
  *
@@ -55,12 +50,14 @@ import {
   OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { validateDispatchSpec, type ResolvedClass, type ResolvedTable, type TableProgram } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
-  CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
+  CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
+import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -106,6 +103,16 @@ export const EMITTED_PARAMS = [
   // span, expected set and CST embedding are produced by the SAME code in every
   // engine and cannot drift.
   'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError',
+  // Pure scalar terminal recognizers, indexed by the terminal's existing const
+  // operand. Appended for compatibility with older precompiled factories.
+  'RECOG',
+  // Appended so precompiled factories produced by earlier runtimes keep every
+  // positional helper binding. Older factories ignore this trailing argument.
+  'commitTriviaScan', 'scanTriviaCompact', 'LEX',
+  // Appended for old precompiled-factory ABI: old factories ignore it.
+  'adjacencyHolds',
+  // Appended for selected composite lexical programs; old factories ignore it.
+  'LEXPROG',
 ] as const
 
 /**
@@ -131,7 +138,7 @@ function _skipTrivia(input,cur,ctx){
 const s=_pfScan
 if(s!==null&&ctx._triviaLog===undefined&&!(ctx.captureTrivia===true&&(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)))return s(input,cur)
 if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
-if(needsDeferredTriviaCommit(ctx)){const sc=scanTrivia(input,cur,ctx);sc.commit();return sc.end}
+if(needsDeferredTriviaCommit(ctx))return commitTriviaScan(scanTriviaCompact(input,cur,ctx))
 return advanceTrivia(input,cur,ctx)
 }
 function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,{_tag:'leaf',value,span:{start:s,end:e}})}
@@ -144,6 +151,13 @@ else b.single=l
 if(b.raw!==undefined)b.raw.push(l)
 else if(b.rawSingle!==undefined){b.raw=[b.rawSingle,l];b.rawSingle=undefined}
 else b.rawSingle=l
+}
+function _capturedFlatChildren(children){
+if(children.length===0)return EMPTY_CH
+if(children[0]!==undefined)return children
+let first=1
+while(first<children.length&&children[first]===undefined)first++
+return first===children.length?EMPTY_CH:children.slice(first)
 }
 function _accSet(ax,acc){
 if(ax===undefined||ax.length===0)return acc
@@ -370,7 +384,11 @@ export type PoolPlan = {
   readonly classes: readonly (readonly number[])[]
   /** Per `AFX` row: the `fx` index of each arm's expected set. */
   readonly armExpected: readonly (readonly number[])[]
-  /** Per `MASK` row: the `CLS` index the mask is computed from. */
+  /**
+   * Per `MASK` row: a non-negative legacy `CLS` row index, or `~dispIndex` for
+   * a directly bound choice. The negative form names the EXISTING resolved
+   * dispatch row rather than serialising a second copy of its arm classes.
+   */
   readonly masks: readonly number[]
 }
 
@@ -408,13 +426,18 @@ function maskForClassRow(gates: readonly (ResolvedClass | null)[]): Uint32Array 
 export function rebuildPools(
   cc: readonly ResolvedClass[],
   fx: readonly (readonly string[])[],
+  disp: ResolvedTable['disp'],
   plan: PoolPlan,
 ): { masks: Uint32Array[]; classes: (ResolvedClass | null)[][]; armExpected: (readonly string[])[][] } {
   const classes = plan.classes.map(row => row.map(i => (i < 0 ? null : cc[i] ?? null)))
   return {
     classes,
     armExpected: plan.armExpected.map(row => row.map(i => fx[i] ?? [])),
-    masks: plan.masks.map(ci => maskForClassRow(classes[ci]!)),
+    masks: plan.masks.map(source => {
+      const row = source >= 0 ? classes[source] : disp[~source]?.armCls
+      if (row === undefined) throw new TypeError(`table emitter: invalid MASK plan source ${source}`)
+      return maskForClassRow(row)
+    }),
   }
 }
 
@@ -476,6 +499,17 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   const labels = computeSiteLabels(code, roots, hostCst)
+  // Eligibility is pooled by the terminal's existing constant operand, matching
+  // the closure recognizer pool: distinct terminal rows sharing one spec share
+  // both the recognizer and the ordinary-terminal lowering.
+  const scalarSpecs = new Set<number>()
+  if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
+    for (const ip of reachableSites(code, roots)) {
+      if (code[ip] !== OP_NODE) continue
+      const child = scalarTerminalNodeChild(code, ip)
+      if (child >= 0) scalarSpecs.add(code[child + 1]!)
+    }
+  }
 
   // THE SIDE-SINK CENSUS, over the same reachable set the labels are computed
   // from. `OP_FIELD` is the only ROW that writes `_fields` and `OP_EXPECT` the
@@ -520,6 +554,7 @@ export function emitAssemblySource(
   const reached = new Set<number>()
   const prelude: string[] = []
   const skipDefs: string[] = []
+  const choiceDefs: string[] = []
   const skipPool = new Map<string, string>()
   const pool = new Map<string, string>()
   const masks: Uint32Array[] = []
@@ -548,6 +583,7 @@ export function emitAssemblySource(
   const kRef = (i: number): string => hoist('k', `K[${i}]`)
   const fxRef = (i: number): string => hoist('fx', `FX[${i}]`)
   const fnRef = (i: number): string => hoist('fn', `FNS[${i}]`)
+  const recognizerRef = (i: number): string => hoist('rec', `RECOG[${i}]`)
   /**
    * The sync sentinel for a char-class index, hoisted once per class.
    *
@@ -598,9 +634,9 @@ export function emitAssemblySource(
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
       // buffer, so an in-node site skips the call that asks.
       skipDefs.push(l.buf
-        ? `function ${nm}(input,cur,ctx){const s=scanTrivia(input,cur,ctx);s.commit();return s.end}`
+        ? `function ${nm}(input,cur,ctx){return commitTriviaScan(scanTriviaCompact(input,cur,ctx))}`
         : `function ${nm}(input,cur,ctx){
-if(needsDeferredTriviaCommit(ctx)){const s=scanTrivia(input,cur,ctx);s.commit();return s.end}
+if(needsDeferredTriviaCommit(ctx))return commitTriviaScan(scanTriviaCompact(input,cur,ctx))
 return advanceTrivia(input,cur,ctx)}`)
       return nm
     }
@@ -734,17 +770,17 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
     if (op === OP_RULE) return code[ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
-    // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE`, so a
+    // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
     // entry — six context stores, a scanner swap and their six restores, per
     // call, to arrive at the values already there.
     //
     // The label is what makes this decidable: `tri >= 0` can ONLY have come from
-    // an enclosing `OP_SCOPE` carrying that slot, and that scope set
+    // an enclosing scope carrying that slot, and that scope set
     // `ctx.triviaKindLabels` and `_pfScan` from the same slot, so all three are
-    // already the values this row would write. Restricted to plain `OP_SCOPE`
-    // with no root-capture policy: `OP_SCOPE_CAP` also raises `captureTrivia`,
-    // and the two flag bits are a real refusal and a real save/restore.
+    // already the values this row would write. `OP_SCOPE_PLAIN` has no root
+    // policy by construction; a policy-bearing `OP_SCOPE` aliases only when its
+    // literal policy is zero. `OP_SCOPE_CAP` also raises `captureTrivia`.
     //
     // `ki >= 0` is required rather than implied: `TRI_NONE` and `TRI_UNKNOWN` are
     // themselves negative, so comparing a negative operand against a lattice
@@ -788,6 +824,19 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
         const s = k[code[ip + 1]!] as string
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_LIT_TRACK
+        if (!track && scalarSpecs.has(code[ip + 1]!)) {
+          const recognize = recognizerRef(code[ip + 1]!)
+          return `${head}
+const e=${recognize}(input,pos)
+if(e>=0){
+${captureLeaf(q(s))}
+EC.e=e
+return ${q(s)}
+}
+ctx._fe=pos;ctx._fx=${xf}
+return FAIL
+}`
+        }
         // LENGTH IS TABLE DATA, so the compare is chosen here — the emitted twin
         // of the closure engine's length-keyed literal bodies.
         const test = s.length === 1
@@ -862,6 +911,20 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       case OP_RX_TRACK: {
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_RX_TRACK
+        if (!track && scalarSpecs.has(code[ip + 1]!)) {
+          const recognize = recognizerRef(code[ip + 1]!)
+          return `${head}
+const e=${recognize}(input,pos)
+if(e>=0){
+const v=input.slice(pos,e)
+${captureLeaf('v')}
+EC.e=e
+return v
+}
+ctx._fe=pos;ctx._fx=${xf}
+return FAIL
+}`
+        }
         // THE MATCH ARRAY IS THE COST, not the matching. `re.exec` allocates one
         // per row — 6,005 rows per `json/document` parse, 12.9% of everything
         // executed — and every field of it but `[0]` is discarded here. A shape
@@ -1109,6 +1172,75 @@ return out
 }`
       }
 
+      case OP_LEX_BODY: {
+        const recognize = hoist('lex', `LEX[${code[ip + 1]!}]`)
+        const expected = fxRef(code[ip + 2]!)
+        const suffixExpected = fxRef(code[ip + 3]!)
+        const lineFlags = code[ip + 4]!
+        const hasSuffix = (lineFlags & 4) !== 0
+        return `${head}
+const r=${recognize}(input,pos)
+if(r<0){ctx._fe=pos;ctx._fx=${expected};if(ctx._probe!==undefined)failAt(ctx,${expected},pos);return FAIL}
+const sm=${hasSuffix ? 'r%2===1' : 'false'},e=(r-(sm?1:0))/2
+${(lineFlags & 1) !== 0 ? '_trackLines(ctx,input,sm?e-1:e)' : ''}
+${hasSuffix ? 'ctx._fc=false' : ''}
+${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
+${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
+const v=input.slice(pos,e)
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+EC.e=e
+return v
+}`
+      }
+
+      case OP_LEX_PROGRAM: {
+        const programId = code[ip + 1]!
+        const run = hoist('lexProgram', `LEXPROG[${programId}]`)
+        const scanId = t.lexPrograms[programId]!.scan
+        if (scanId !== undefined) return `${head}
+const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan
+const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+const sOtl=ctx._triviaLog,sRtl=ctx._rootTriviaLog
+const wasCap=ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined
+_pfScan=null
+ctx.trivia=undefined
+ctx.triviaKindLabels=undefined
+ctx._cstBuf=undefined
+ctx._cstChildren=undefined
+ctx._cstLeaves=undefined
+ctx._cstRawChildren=undefined
+ctx._cstTriviaLog=undefined
+ctx._triviaLog=undefined
+ctx._rootTriviaLog=undefined
+let e
+try{e=${run}(input,pos,ctx,SCANS[${scanId}])}finally{
+_pfScan=sScan
+ctx.trivia=sTri
+ctx.triviaKindLabels=sKinds
+ctx._cstBuf=sBuf
+ctx._cstChildren=sCh
+ctx._cstLeaves=sLv
+ctx._cstRawChildren=sRaw
+ctx._cstTriviaLog=sTl
+ctx._triviaLog=sOtl
+ctx._rootTriviaLog=sRtl
+}
+if(e<0)return FAIL
+const v=input.slice(pos,e)
+if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+EC.e=e
+return v
+}`
+        return `${head}
+const e=${run}(input,pos,ctx)
+if(e<0)return FAIL
+const v=input.slice(pos,e)
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+EC.e=e
+return v
+}`
+      }
+
       /* ── transaction ─────────────────────────────────────────────────────── */
 
       case OP_ATTEMPT: {
@@ -1126,6 +1258,18 @@ return FAIL
       }
 
       case OP_NOT: {
+        const scalarChild = scalarTerminalNotChild(code, ip)
+        if (scalarChild >= 0) {
+          const recognize = recognizerRef(code[scalarChild + 1]!)
+          const xf = fxRef(code[ip + 2]!)
+          return `${head}
+if(${recognize}(input,pos)<0){EC.e=pos;return null}
+ctx._fe=pos
+ctx._fx=${xf}
+EC.e=pos
+return FAIL
+}`
+        }
         const child = link(code[ip + 1]!)
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
@@ -1178,19 +1322,14 @@ return v
         const base = fused ? ip + 3 : ip + 2
         const n = code[fused ? ip + 2 : ip + 1]!
         const wantValues = op !== OP_SEQV
-        // ADJACENCY changes the PARENT's term-boundary emission: the assertion
-        // must be answered at the cursor, BEFORE the ambient trivia scan.
-        // Refused rather than lowered wrong — a piece handed the post-scan
-        // position finds the gap already consumed and answers "adjacent" every
-        // time, SILENTLY (`ops.ts:226-251`).
-        for (let i = 1; i < n; i++) {
-          if (code[code[base + i]!] === OP_ADJ) {
-            throw new Unemittable('a sequence carrying an adjacency assertion (OP_ADJ)')
-          }
-        }
-        const fn = fused ? fnRef(code[ip + 1]!) : undefined
+        const reducer = fused ? code[ip + 1]! : -1
+        const projection = reducer < 0 ? ~reducer : -1
+        const fn = fused && projection < 0 ? fnRef(reducer) : undefined
         const kids: string[] = []
-        for (let i = 0; i < n; i++) kids.push(link(code[base + i]!))
+        for (let i = 0; i < n; i++) {
+          const childIp = code[base + i]!
+          kids.push(code[childIp] === OP_ADJ ? '' : link(childIp))
+        }
         /**
          * A RECOVERY SEQUENCE PUBLISHES `ctx._sync`, and that is the WHOLE of
          * "recovery config" — no grammar carries any (`assemble.ts:1446`).
@@ -1225,7 +1364,9 @@ return v
         parts.push(`const v0=${kids[0]}(input,pos,ctx)`, 'if(v0===FAIL)return FAIL')
         const close = (): string => REC ? `${parts.join('\n')}\n}finally{ctx._sync=${sy}}\n}` : `${parts.join('\n')}\n}`
         if (n === 1) {
-          parts.push(fused ? `return ${fn}([v0],{start:pos,end:EC.e})` : wantValues ? 'return [v0]' : 'return undefined')
+          parts.push(fused
+            ? projection === 0 ? 'return v0' : `return ${fn}([v0],{start:pos,end:EC.e})`
+            : wantValues ? 'return [v0]' : 'return undefined')
           return close()
         }
         parts.push('let cur=EC.e')
@@ -1234,12 +1375,22 @@ return v
           const vn = `v${i}`
           parts.push(`let ${vn}`)
           if (REC) parts.push(pub(i))
-          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
+          const childIp = code[base + i]!
+          if (code[childIp] === OP_ADJ) {
+            const negated = code[childIp + 1] === 1
+            const ki = code[childIp + 2]!
+            const kinds = ki < 0 ? 'undefined' : `K[${ki}]`
+            const expected = fxRef(code[childIp + 3]!)
+            parts.push(
+              `if(!adjacencyHolds(input,cur,ctx,${negated ? 'true' : 'false'},${kinds})){ctx._fe=cur;ctx._fx=${expected};return FAIL}`,
+              `${vn}=null`,
+            )
+          } else parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
           names.push(vn)
         }
         parts.push('EC.e=cur')
         parts.push(fused
-          ? `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
+          ? projection >= 0 ? `return ${names[projection]}` : `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
           : wantValues ? `return [${names.join(',')}]` : 'return undefined')
         return close()
       }
@@ -1251,11 +1402,6 @@ return v
         const base = ip + 4
         const arms: string[] = []
         for (let i = 0; i < n; i++) arms.push(link(code[base + i]!))
-        const axi = armExpected.push(
-          Array.from({ length: n }, (_, i) => t.fx[code[base + n + i]!] as readonly string[]),
-        ) - 1
-        armExpectedPlan.push(Array.from({ length: n }, (_, i) => code[base + n + i]!))
-        const afx = hoist('afx', `AFX[${axi}]`)
 
         if (table.exclusive) {
           // NO OPEN ARMS EXIST under `exclusive` — `resolveDispatch` clears the
@@ -1289,52 +1435,51 @@ return FAIL
 }`
         }
 
-        // THE PER-ARM GATE. `assemble.ts` precomputes a candidate bitmask so one
-        // `Uint32Array` load replaces `n` class tests, then walks the set bits
-        // through `arms[i]`. The mask survives here; the indexed CALL does not.
-        const ci = classes.push(Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)) - 1
-        // `resolveDispatch` builds `armCls[a]` as `cc[disp[di][a]]`, or null when
-        // that index is negative (program.ts:419-423), so the arm's CLASS INDEX
-        // is the dispatch row itself. Nothing is re-derived here.
-        classPlan.push(Array.from({ length: n }, (_, i) => prog.disp[code[ip + 1]!]![i] ?? -1))
-        const gates = classes[ci]!
-        const gRef = hoist('g', `CLS[${ci}]`)
-        const maskable = n <= 32
-        let maskName = ''
-        if (maskable) {
-          maskName = hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
-          // The mask is a pure function of `gates`, i.e. of `CLS[ci]`, so the
-          // plan records the class-pool index rather than 129 words per site.
-          maskPlan.push(ci)
-        }
-        const p = tmp()
-        // THE SKIPPED ARMS' SETS STAY LAZY. `prev` and the catch-up loop are the
-        // closure engine's, kept verbatim: they run only on a FAILURE path, and
-        // an arm that MATCHES returns without paying for any of it. Unrolling
-        // them would put an `_accSet` — and its `slice()` — on the success path.
-        const maskArms = arms.map((a, i) => `
-if((bits&${1 << i})!==0){
+        {
+          // Direct topology for every fixed arity. The emitted body names every
+          // child, gate and expected set; no AFX/CLS row survives merely to feed
+          // an indexed winner back into one call site.
+          const di = code[ip + 1]!
+          const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
+          const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
+          const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
+          const maskable = n <= 32
+          const maskName = maskable
+            ? hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
+            : ''
+          // `~di` points back to the authoritative dispatch row. A precompiled
+          // module reconstructs only the input-indexed mask from that row; it
+          // cannot carry a second mutable answer for the arms' classes.
+          if (maskable) maskPlan.push(~di)
+          const p = tmp()
+          const catchName = maskable ? `_cx${uid++}_` : ''
+          if (maskable) {
+            const catchCases = expected.map((e, i) =>
+              `case ${i}:if(target<=${i})return acc;acc=_accSet(${e},acc)`).join('\n')
+            choiceDefs.push(`function ${catchName}(target,prev,acc){switch(prev){\n${catchCases}\n}return acc}`)
+          }
+          const maskArms = maskable ? arms.map((arm, i) => {
+            return `if((bits&${1 << i})!==0){
 ctx._fc=false
-{const v=${a}(input,pos,ctx)
+{const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
-for(let j=prev;j<${i};j++)if((bits&(1<<j))===0)acc=_accSet(${afx}[j],acc)
+acc=${catchName}(${i},prev,acc)
 prev=${i + 1}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
-}`).join('')
-
-        const generalArms = arms.map((a, i) => `
-if(${gRef}[${i}]===null||classHas(${gRef}[${i}],c)){
+}`
+          }).join('\n') : ''
+          const generalArms = arms.map((arm, i) => `if(${gateRefs[i]}===null||classHas(${gateRefs[i]},c)){
 ctx._fc=false
-{const v=${a}(input,pos,ctx)
+{const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
-}else acc=_accSet(${afx}[${i}],acc)`).join('')
+}else acc=_accSet(${expected[i]},acc)`).join('\n')
 
-        return `${head}
+          return `${head}
 const c=lead(input,pos)
 ${emitMark(p, L.buf, sinks)}
 let acc
@@ -1342,14 +1487,17 @@ ${maskable ? `if(c<128){
 const bits=${maskName}[c<0?128:c]
 let prev=0
 ${maskArms}
-for(let j=prev;j<${n};j++)if((bits&(1<<j))===0)acc=_accSet(${afx}[j],acc)
+acc=${catchName}(${n},prev,acc)
 ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL
 }
-` : ''}${generalArms}
+` : ''}
+${generalArms}
 ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL
 }`
+        }
+
       }
 
       case OP_DISPATCH: {
@@ -1371,16 +1519,26 @@ return FAIL
         // are TABLE DATA, so here they are the test itself and no closure, no
         // pool and no indexed call exist. Kinds are `matcherClaims`'s exactly
         // — 0/1 raw prefix/suffix, 3/4 the pre-folded pair, anything else a
-        // regex. The regex is built PER TEST, deliberately: a hoisted one
-        // carries `lastIndex` across parses whenever the author's pattern is
-        // sticky or global (`exec.ts:140-144`).
+        // regex. Public `matches()` refuses global/sticky patterns, so its
+        // RegExp can be compiled once into the assembly prelude. Hand-built
+        // low-level rows with g/y or invalid flags retain the old per-test
+        // construction and therefore the old `lastIndex`/throw behavior.
         const claims = (m: readonly [number, string, string, number]): string => {
           switch (m[0]) {
             case 0: return `key.startsWith(${q(m[1])})`
             case 1: return `key.endsWith(${q(m[1])})`
             case 3: return `asciiFoldKey(key).startsWith(${q(m[1])})`
             case 4: return `asciiFoldKey(key).endsWith(${q(m[1])})`
-            default: return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
+            default: {
+              if (!m[2].includes('g') && !m[2].includes('y')) {
+                try {
+                  // Validate without changing malformed-row error timing.
+                  new RegExp(m[1], m[2])
+                  return `${hoist('dm', `new RegExp(${q(m[1])},${q(m[2])})`)}.test(key)`
+                } catch {}
+              }
+              return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
+            }
           }
         }
         const chain = spec.match.length === 0
@@ -1447,6 +1605,15 @@ return [key,v]
         const reportItem = (flags & 4) !== 0
         const itemFx = reportItem ? fxRef(code[ip + 6]!) : 'EMPTY_FX'
         const collect = op === OP_REP
+        let itemCls: string | undefined
+        if (!REC) {
+          const itemClassIndex = sepIp < 0 ? code[ip + 7]! : -1
+          if (itemClassIndex >= 0) {
+            const ci = classes.push([t.cc[itemClassIndex]!]) - 1
+            classPlan.push([itemClassIndex])
+            itemCls = hoist('ri', `CLS[${ci}][0]`)
+          }
+        }
         const skipBeforeFirst = sepIp < 0 && min === 0
         const p = tmp()
         // `viaRepItem` is `sep === undefined && count >= min && (count > 0 ||
@@ -1466,7 +1633,6 @@ return [key,v]
         const skip = skipFor(L)
         const knownTrivia = L.tri === TRI_NONE ? false : L.tri !== TRI_UNKNOWN ? true : undefined
         const hasTrivia = knownTrivia === undefined ? 'hasTrivia' : String(knownTrivia)
-        const needMark = L.buf ? 'true' : 'needMark'
         // THE `_fields` AND `_errors` MARKS ARE TAKEN ONLY WHERE THE TABLE HAS A
         // WRITER, which is the same emit-time census `emitMark` applies to the
         // non-loop marks. Before `OP_FIELD` and `OP_EXPECT` were emittable the
@@ -1552,10 +1718,10 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&!classHas(${itemCls},lead(input,cur)))break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
 ${markBody}
 let itemStart=cur
 let sepEnd=-1
@@ -1577,7 +1743,11 @@ itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(inp
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-ctx._fc=false
+${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&!classHas(${itemCls},lead(input,itemStart))){
+${rb}
+${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
+}
+`}ctx._fc=false
 const v=${child}(input,itemStart,ctx)
 if(v===FAIL){
 ${REC
@@ -1614,6 +1784,26 @@ return out
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
+        const scalarChild = scalarTerminalNodeChild(code, ip)
+        if (scalarChild >= 0 && scalarSpecs.has(code[scalarChild + 1]!)) {
+          const recognize = recognizerRef(code[scalarChild + 1]!)
+          const spec = code[scalarChild] === OP_RX ? null : k[code[scalarChild + 1]!] as string
+          const value = spec === null ? 'input.slice(pos,end)' : q(spec)
+          const xf = fxRef(code[scalarChild + 2]!)
+          const build = fnRef(code[ip + 1]!)
+          return `${head}
+const end=${recognize}(input,pos)
+if(end<0){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+const value=${value}
+const leaf={_tag:'leaf',value,span:{start:pos,end}}
+const kids=[leaf],rawKids=[leaf],span={start:pos,end}
+EC.e=end
+const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
+${L.buf ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))' : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
+EC.e=end
+return nd
+}`
+        }
         const child = link(code[ip + 2]!)
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
@@ -1631,6 +1821,58 @@ return out
         // interpreter's node case — the most-executed non-terminal in any of
         // these grammars. It selects the emitted shape instead.
         const build = buildIdx >= 0 ? fnRef(buildIdx) : undefined
+        // The closure assembler's direct-builder capture tiers are table facts,
+        // not closure-only semantics. Print the same body for a precompiled
+        // assembly so a large composeLeaf artifact does not fall back to opening
+        // the generic raw/trivia buffer that its reducer arity proved unread.
+        if (!hostCst && !tracked && build !== undefined && proj < 0
+          && (flags === 2 || flags === 18 || flags === 34)) {
+          const fields = flags === 18
+          const collapseChildren = flags === 34
+          const publish = `if(sBuf!==undefined){
+if(sBuf.rawOnly!==true){
+if(sBuf.ch!==undefined)sBuf.ch.push(nd)
+else if(sBuf.single!==undefined){sBuf.ch=[sBuf.single,nd];sBuf.single=undefined}
+else sBuf.single=nd
+}
+const rawNd=rawEntry(nd,input,pos,end)
+if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
+else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
+else sBuf.rawSingle=rawNd
+}else if(sCh!==undefined){
+sCh.push(nd)
+if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
+}`
+          return `${head}
+const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf,sFields=ctx._fields
+const flat=[]
+ctx._cstBuf=undefined
+ctx._cstChildren=flat
+ctx._cstLeaves=flat
+ctx._cstRawChildren=undefined
+ctx._cstTriviaLog=undefined
+ctx.captureTrivia=false
+ctx._fields=${fields ? '[]' : 'undefined'}
+const v=${child}(input,pos,ctx)
+const captured=_capturedFlatChildren(flat)
+${fields ? 'const fieldMap=buildFieldMap(ctx._fields)\n' : ''}ctx._fields=sFields
+ctx._cstBuf=sBuf
+ctx._cstChildren=sCh
+ctx._cstLeaves=sLv
+ctx._cstRawChildren=sRaw
+ctx._cstTriviaLog=sTl
+ctx.captureTrivia=sCap
+if(v===FAIL)return FAIL
+const end=EC.e
+${collapseChildren
+    ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`
+    : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`}
+${publish}
+EC.e=end
+return nd
+}`
+        }
         const structural = build === undefined && proj < 0
         const grammarCapture = (flags & 1) !== 0 || trailingTrivia
         const hostCapturesThisType = structural && cfg.hostCaptureTrivia !== undefined
@@ -1745,6 +1987,7 @@ return nd
   const source = `${RUNTIME_PRELUDE}
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}
+${choiceDefs.join('\n')}
 ${bodies.join('\n')}
 function _begin(ctx){
 const host=ctx.build

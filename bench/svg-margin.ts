@@ -26,8 +26,9 @@
  *                this is a sign test over paired samples, and it survives drift
  *                that would swamp a ratio of independent means.
  *   control      an A/A pair: `parseman-runtime` measured twice per round, in two
- *                separate processes, under two slots. Its ratio should read ~1.0
- *                and its win-rate ~50%. It is measured in the SAME run as
+ *                separate processes, in adjacent order-alternated slots. Its
+ *                same-round ratio should read ~1.0 and its win-rate ~50%.
+ *                It is measured in the SAME run as
  *                everything else, so it prices that run's noise floor directly.
  *                A margin smaller than the control's spread is not a margin.
  *
@@ -43,6 +44,7 @@ import { resolve, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { CHART_GROUPS, CHART_BARS, BAR_MARKER, type ChartKey } from './chart-specs.ts'
+import { marginRoundSlots, pairedControlSpread, type MarginSlot } from './margin-control.ts'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(__dir, '..')
@@ -88,8 +90,6 @@ const NON_RIVAL: Record<string, string> = {
   'parseman-interp': "Parséman's own interpreter build, not a competitor",
   native: 'JSON.parse is C++ inside the engine, not a JS parser generator',
 }
-
-type Slot = { slot: string; key: string }
 
 /* ── ARTIFACT EVIDENCE ──────────────────────────────────────────────────────
  *
@@ -394,6 +394,8 @@ type GroupResult = {
     /** rounds Parséman won, out of ROUNDS (paired within round). */
     wins: number
     rounds: number
+    /** Median same-round reciprocal A/A ratio. Present only for CONTROL. */
+    controlSpread?: number
   }[]
 }
 
@@ -429,9 +431,12 @@ function reportChart(chart: ChartKey, groups: GroupResult[]): void {
     console.log(`  ${'competitor'.padEnd(30)} ${'min µs'.padStart(9)} ${'×'.padStart(8)}  win-rate`)
     for (const row of g.rows) {
       let flag: string
+      const displayedRatio = row.slot === CONTROL ? row.controlSpread! : row.ratio
       if (row.slot === CONTROL) {
-        // Two measurements of one bar. Deviation in EITHER direction is noise.
-        const spread = Math.max(row.ratio, 1 / row.ratio)
+        // Two adjacent same-round measurements of one bar. Deviation in EITHER
+        // direction is noise; unrelated minima and one loaded child are not the
+        // typical paired control measured across the run.
+        const spread = row.controlSpread!
         if (spread > worstControl) {
           worstControl = spread
           worstControlAt = `${chart} / ${g.group}`
@@ -453,7 +458,7 @@ function reportChart(chart: ChartKey, groups: GroupResult[]): void {
       }
       console.log(
         `  ${row.label.padEnd(30)} ${row.min.toFixed(3).padStart(9)} ` +
-          `${row.ratio.toFixed(2).padStart(7)}× ${`${row.wins}/${row.rounds}`.padStart(9)}${flag}`,
+          `${displayedRatio.toFixed(2).padStart(7)}× ${`${row.wins}/${row.rounds}`.padStart(9)}${flag}`,
       )
     }
   }
@@ -475,10 +480,9 @@ printEvidence(CHARTS)
 
 for (const chart of CHARTS) {
   // Every real bar, plus an A/A control slot that re-measures the subject.
-  const slots: Slot[] = [
-    ...CHART_BARS[chart].map(b => ({ slot: b.key, key: b.key })),
-    { slot: CONTROL, key: SUBJECT },
-  ]
+  const realSlots: MarginSlot[] = CHART_BARS[chart].map(b => ({ slot: b.key, key: b.key }))
+  const controlSlot: MarginSlot = { slot: CONTROL, key: SUBJECT }
+  const slots: MarginSlot[] = [...realSlots, controlSlot]
   const labelOf = (slot: string) =>
     slot === CONTROL
       ? 'CONTROL (A/A, same bar)'
@@ -490,10 +494,10 @@ for (const chart of CHARTS) {
   const samples: Record<string, number[][]> = {}
   for (const s of slots) samples[s.slot] = CHART_GROUPS[chart].map(() => [])
 
-  const shift = Math.max(1, Math.round(slots.length / ROUNDS))
+  const shift = Math.max(1, Math.round(realSlots.length / ROUNDS))
   for (let r = 0; r < ROUNDS; r++) {
-    for (let k = 0; k < slots.length; k++) {
-      const s = slots[(k + r * shift) % slots.length]!
+    const roundSlots = marginRoundSlots(realSlots, r, shift, SUBJECT, controlSlot)
+    for (const s of roundSlots) {
       const us = measureBar(chart, s.key)
       us.forEach((v, gi) => samples[s.slot]![gi]!.push(v))
     }
@@ -517,6 +521,7 @@ for (const chart of CHARTS) {
           ratio: min(other) / subjectMin,
           wins,
           rounds: ROUNDS,
+          ...(s.slot === CONTROL ? { controlSpread: pairedControlSpread(subj, other) } : {}),
         }
       })
     return { group: g.title, subjectMin, rows }
@@ -547,7 +552,7 @@ console.log()
 console.log('═'.repeat(76))
 console.log('SELF-CALIBRATION')
 console.log('═'.repeat(76))
-console.log(`  Worst A/A control spread: ${((worstControl - 1) * 100).toFixed(1)}%  (ratio ${worstControl.toFixed(4)})`)
+console.log(`  Worst median paired A/A spread: ${((worstControl - 1) * 100).toFixed(1)}%  (ratio ${worstControl.toFixed(4)})`)
 if (worstControlAt) console.log(`  at ${worstControlAt}`)
 console.log('  The control measures ONE bar twice, in two processes, in the same sweep.')
 console.log('  Its honest reading is 1.0000. Whatever it reads is this run\'s noise floor,')

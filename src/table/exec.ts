@@ -6,7 +6,10 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt, saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
+import {
+  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
+  rollbackTriviaAt, saveTriviaMark, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
+} from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
@@ -19,6 +22,7 @@ import {
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { failAt } from '../combinators/probe.ts'
@@ -41,9 +45,10 @@ import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
   decodeClassSpec, expandCompact, resolveTable,
-  type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
+  type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
+import { scalarTerminalNotChild } from './scalar-terminal.ts'
 
 /**
  * THE SHARED DRIVER.
@@ -199,6 +204,8 @@ function makeDriver(
   fx: readonly (readonly string[])[],
   disp: readonly ResolvedDispatch[],
   dsp: readonly ResolvedDispatchSpec[],
+  lex: readonly ((input: string, pos: number) => number)[],
+  lexPrograms: ResolvedTable['lexPrograms'],
   trivia: readonly unknown[],
   triviaScan: readonly (FastTriviaScanner | null)[],
   triviaLabelled: readonly boolean[],
@@ -353,9 +360,7 @@ function makeDriver(
     // grammar that already had a scanner — keeps the exact branch it had.
     if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
     if (needsDeferredTriviaCommit(ctx)) {
-      const scan = scanTrivia(input, cur, ctx)
-      scan.commit()
-      return scan.end
+      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }
     return advanceTrivia(input, cur, ctx)
   }
@@ -622,6 +627,8 @@ function makeDriver(
             ctx._routed = savedRouted
           }
         } else {
+          // The reference engine mirrors dispatch.parse(): plain arms do not
+          // install routed state and stay outside the exception guard.
           v = exec(target, input, selEnd, ctx)
         }
         if (v === FAIL) {
@@ -686,6 +693,84 @@ function makeDriver(
         }
         if (v === FAIL) return FAIL
         const end = EC.e
+        const value = input.slice(pos, end)
+        if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+        EC.e = end
+        return value
+      }
+
+      case OP_LEX_BODY: {
+        const recognized = lex[code[ip + 1]!]!(input, pos)
+        if (recognized < 0) {
+          ctx._fe = pos
+          ctx._fx = fx[code[ip + 2]!] as string[]
+          if (ctx._probe !== undefined) failAt(ctx, ctx._fx, pos)
+          return FAIL
+        }
+        const lineFlags = code[ip + 4]!
+        const hasSuffix = (lineFlags & 4) !== 0
+        const suffixMatched = hasSuffix && recognized % 2 === 1
+        const end = (recognized - (suffixMatched ? 1 : 0)) / 2
+        if ((lineFlags & 1) !== 0) trackLines(ctx, input, suffixMatched ? end - 1 : end)
+        if (hasSuffix) ctx._fc = false
+        if (hasSuffix && suffixMatched && (lineFlags & 2) !== 0) trackLines(ctx, input, end)
+        if (hasSuffix && !suffixMatched) {
+          const suffixExpected = fx[code[ip + 3]!] as string[]
+          ctx._fe = end
+          ctx._fx = suffixExpected
+          if (ctx._probe !== undefined) failAt(ctx, suffixExpected, end)
+        }
+        const value = input.slice(pos, end)
+        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+        EC.e = end
+        return value
+      }
+
+      case OP_LEX_PROGRAM: {
+        const run = lexPrograms[code[ip + 1]!]!
+        const scanId = run.scan
+        if (scanId === undefined) {
+          const end = run(input, pos, ctx)
+          if (end < 0) return FAIL
+          const value = input.slice(pos, end)
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          EC.e = end
+          return value
+        }
+        // The recognizer is the canonical balanced() pool entry. Reproduce the
+        // enclosing token boundary here so its internal token leaf and skippers
+        // cannot publish into the outer collector; this row publishes one leaf.
+        const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
+        const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
+        const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
+        const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
+        const wasCapturing = cstCaptureActive(ctx)
+        const sScan = SCAN
+        SCAN = null
+        ctx.trivia = undefined
+        ctx.triviaKindLabels = undefined
+        ctx._cstBuf = undefined
+        ctx._cstChildren = undefined
+        ctx._cstLeaves = undefined
+        ctx._cstRawChildren = undefined
+        ctx._cstTriviaLog = undefined
+        ctx._triviaLog = undefined
+        ctx._rootTriviaLog = undefined
+        let end: number
+        try { end = run(input, pos, ctx, scans[scanId]) }
+        finally {
+          SCAN = sScan
+          ctx.trivia = sTrivia
+          ctx.triviaKindLabels = sKinds
+          ctx._cstBuf = sBuf
+          ctx._cstChildren = sChildren
+          ctx._cstLeaves = sLeaves
+          ctx._cstRawChildren = sRaw
+          ctx._cstTriviaLog = sTl
+          ctx._triviaLog = sOuterTl
+          ctx._rootTriviaLog = sRootTl
+        }
+        if (end < 0) return FAIL
         const value = input.slice(pos, end)
         if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
         EC.e = end
@@ -854,7 +939,9 @@ function makeDriver(
         if (REC) ctx._sync = inheritedSync
         EC.e = cur
         if (fused) {
-          const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+          const reducer = code[ip + 1]!
+          if (reducer < 0) return values![~reducer]
+          const fn = fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           if (COUNT) siteFn('SEQX fn()', fn)
           return fn(values, { start: pos, end: cur })
         }
@@ -1116,6 +1203,11 @@ function makeDriver(
         const mySync = REC ? ctx._sync : undefined
         const recFx = REC ? fx[code[ip + 6]!] as string[] : undefined
         const sepSent = REC ? sentinelFor(code[ip + 7]!) : undefined
+        const itemClassIndex = sep < 0 ? code[ip + 7]! : -1
+        const itemClass = REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined
+        // `completionsAt` observes failures swallowed by an optional iteration;
+        // tolerant recovery does too. Both keep the ordinary child path.
+        const gateItems = itemClass !== undefined && ctx._tolerant !== true && ctx._probe === undefined
         let cur = pos
         let count = 0
         for (;;) {
@@ -1128,6 +1220,8 @@ function makeDriver(
           // must attempt the separator so its failure sets the expected set, which
           // is the only thing an under-`min` list has to report.
           if (sep >= 0 && count > 0 && count >= min && cur >= input.length) break
+          if (count >= min && sep < 0 && !hasTrivia
+            && gateItems && !classHas(itemClass!, lead(input, cur))) break
           // One mark pair for the whole loop when a rollback is even possible,
           // refreshed per iteration rather than reallocated.
           // SCALAR MARKS. This loop took TWO allocations per item (a CST mark and
@@ -1196,6 +1290,11 @@ function makeDriver(
             // `trailing: 'allow'` (`a,b,`), and this early-out ran before the
             // item was ever attempted — so handling it only on the item-failure
             // path left the separator unconsumed.
+            if (trailingAllowed && sepEnd >= 0) cur = sepEnd
+            break
+          }
+          if (count >= min && gateItems && !classHas(itemClass!, lead(input, itemStart))) {
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
           }
@@ -1454,6 +1553,15 @@ function makeDriver(
       }
 
       case OP_NOT: {
+        // The shipping generic closure/emitted NOT bodies predate pure-global
+        // lookahead rollback. Keep the reference driver aligned with them for
+        // every generic child; only the direct-terminal shape this lane replaces
+        // needs the reference oracle to hide the terminal's diagnostic writes.
+        const scalarChild = scalarTerminalNotChild(code, ip) >= 0
+        const savedFc = scalarChild ? ctx._fc : false
+        const savedFe = scalarChild ? ctx._fe : -1
+        const savedFx = scalarChild ? ctx._fx : undefined
+        const savedProbe = scalarChild ? ctx._probe?.best : undefined
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -1464,6 +1572,12 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (scalarChild) {
+          ctx._fc = savedFc
+          ctx._fe = savedFe
+          ctx._fx = savedFx
+          if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
+        }
         if (v === FAIL) { EC.e = pos; return null }
         // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
         ctx._fe = pos
@@ -1651,7 +1765,7 @@ export function execRules(
   const prog = expandCompact(source)
   const t = resolveTable(prog)
   const scan = opts.leafSwap === false ? t.triviaScan.map(() => null) : t.triviaScan
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog, newEndCell())
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.lex, t.lexPrograms, t.trivia, scan, t.triviaLabelled, prog, newEndCell())
   const names = Object.keys(prog.rules)
   const entries = names.map(n => prog.rules[n]!)
   let last: unknown

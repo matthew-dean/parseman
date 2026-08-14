@@ -3,11 +3,14 @@ import { choice, label, literal, oneOrMore, regex, sequence, trivia } from '../.
 import { createParseContext } from '../../src/parse-context.ts'
 import {
   advanceTrivia,
+  commitTriviaScan,
   fastTriviaScanner,
   rollbackLookahead,
   rollbackTriviaAt,
   saveLookaheadMark,
   scanTrivia,
+  scanTriviaCompact,
+  triviaScanEnd,
   skipTriviaScanned,
 } from '../../src/combinators/trivia-skip.ts'
 
@@ -17,6 +20,34 @@ const labeled = trivia(oneOrMore(choice(
 )))
 
 describe('trivia skip branch matrix', () => {
+  it('reuses the no-op commit after classified trivia produces no retained rows', () => {
+    const ctx = createParseContext()
+    ctx.trivia = labeled
+    ctx.triviaKindLabels = ['space', 'comment']
+    ctx._rootTriviaLog = []
+    ctx._rootTriviaKindIndex = { comment: 0 }
+
+    const first = scanTriviaCompact('   x', 0, ctx)
+    const second = scanTriviaCompact('   x', 0, ctx)
+    expect(first).toBe(3)
+    expect(second).toBe(3)
+    expect(triviaScanEnd(first)).toBe(3)
+    expect(commitTriviaScan(first)).toBe(3)
+    expect(ctx._rootTriviaLog).toEqual([])
+
+    // The legacy API is the positional contract embedded in precompiled
+    // factories from earlier runtimes. It must remain object-shaped even when
+    // the compact internal twin returns a number for the same scan.
+    const legacy = scanTrivia('   x', 0, ctx)
+    expect(legacy.end).toBe(3)
+    expect(() => legacy.commit()).not.toThrow()
+
+    const retained = scanTriviaCompact(' /*x*/z', 0, ctx)
+    expect(retained).not.toBeTypeOf('number')
+    expect(commitTriviaScan(retained)).toBe(6)
+    expect(ctx._rootTriviaLog).toEqual([0, 6, 1, 6, 0])
+  })
+
   it('tracks newline ranges on both fast and labelled advance paths', () => {
     const fast = createParseContext()
     fast.trackLines = true
@@ -47,9 +78,9 @@ describe('trivia skip branch matrix', () => {
     ctx._cstTriviaLog = []
 
     const scan = scanTrivia('  /*x*/ z', 0, ctx)
-    expect(scan.end).toBe(8)
+    expect(triviaScanEnd(scan)).toBe(8)
     expect(ctx._triviaLog).toEqual([])
-    scan.commit()
+    commitTriviaScan(scan)
     expect(ctx._triviaLog).toEqual([0, 2, 0, 2, 7, 1, 7, 8, 0])
     expect(ctx._rootTriviaLog).toEqual([0, 8, 2, 7, 0])
     expect(ctx._cstTriviaLog).toEqual([2, 7, 0, 1])
@@ -62,10 +93,10 @@ describe('trivia skip branch matrix', () => {
     ctx.triviaKindLabels = ['space']
     ctx._triviaLog = []
 
-    expect(scanTrivia(' x', 0, ctx).end).toBe(0)
+    expect(triviaScanEnd(scanTrivia(' x', 0, ctx))).toBe(0)
     const scan = scanTrivia('  x', 0, ctx)
-    expect(scan.end).toBe(2)
-    scan.commit()
+    expect(triviaScanEnd(scan)).toBe(2)
+    commitTriviaScan(scan)
     expect(ctx._triviaLog).toEqual([0, 1, 0, 1, 2, 0])
   })
 
@@ -86,8 +117,8 @@ describe('trivia skip branch matrix', () => {
         ctx._lineScannedTo = 0
       }
       const scan = scanTrivia(entry.input, 0, ctx)
-      expect(scan.end).toBe(entry.end)
-      scan.commit()
+      expect(triviaScanEnd(scan)).toBe(entry.end)
+      commitTriviaScan(scan)
       expect(ctx._triviaLog).toEqual([0, entry.end])
     }
   })
@@ -103,8 +134,8 @@ describe('trivia skip branch matrix', () => {
         ctx._lineScannedTo = 0
       }
       const scan = scanTrivia(' /*x*/z', 0, ctx)
-      expect(scan.end).toBe(6)
-      scan.commit()
+      expect(triviaScanEnd(scan)).toBe(6)
+      commitTriviaScan(scan)
     }
   })
 
@@ -123,6 +154,64 @@ describe('trivia skip branch matrix', () => {
       expect(scanner!('no match', 0)).toBe(0)
     }
     expect(fastTriviaScanner(regex(/"(?:[^"\\]|\\.)*"/))).toBeNull()
+  })
+
+  it('fuses the canonical CSS and Less trivia tuples without changing PEG boundaries', () => {
+    const ws = () => label('space', regex(/[ \t\n\r\f]+/))
+    const line = () => label('line', regex(/\/\/[^\n\r]*/))
+    const block = () => label('block', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//))
+    const entries = [
+      {
+        parser: trivia(oneOrMore(choice(ws(), block()))),
+        scannerName: 'scanWsBlockTrivia',
+        cases: [
+          ['  /*a*/\t/*b*/x', 0],
+          ['xx /*a*//*b*/!', 2],
+          ['  /* unterminated', 0],
+          ['x', 0],
+        ],
+      },
+      {
+        parser: trivia(oneOrMore(choice(ws(), line(), block()))),
+        scannerName: 'scanWsLineBlockTrivia',
+        cases: [
+          ['// a\n /*b*/x', 0],
+          ['xx// a\r\n/*b*/!', 2],
+          ['\f\t/*a*///b', 0],
+          ['x', 0],
+        ],
+      },
+      {
+        parser: trivia(oneOrMore(choice(line(), block()))),
+        scannerName: 'scanLineBlockTrivia',
+        cases: [
+          ['// a\n/*b*/', 0],
+          ['xx/*a*//*b*/!', 2],
+          ['/* unterminated', 0],
+          ['x', 0],
+        ],
+      },
+      {
+        parser: trivia(oneOrMore(choice(block()))),
+        scannerName: 'scanBlockTrivia',
+        cases: [
+          ['/*a*//*b*/x', 0],
+          ['xx/*a*/!', 2],
+          ['/* unterminated', 0],
+          ['', 0],
+        ],
+      },
+    ] as const
+
+    for (const entry of entries) {
+      const scanner = fastTriviaScanner(entry.parser)
+      expect(scanner?.name).toBe(entry.scannerName)
+      for (const [input, pos] of entry.cases) {
+        const parsed = entry.parser.parse(input, pos, createParseContext())
+        expect(scanner!(input, pos), `${entry.scannerName} at ${pos} in ${JSON.stringify(input)}`)
+          .toBe(parsed.ok ? parsed.span.end : pos)
+      }
+    }
   })
 
   it('records through an installed scanner and restores scalar/lookahead marks', () => {

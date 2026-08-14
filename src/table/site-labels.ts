@@ -148,10 +148,20 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
     return { tri, buf: at.buf, cap }
   }
   if (op === OP_NODE || op === OP_NODE_TRACK) {
+    const flags = code[ip + 3]!
+    const directChildren = !hostCst && op === OP_NODE && code[ip + 1]! >= 0 && code[ip + 4]! < 0
+      && (flags === 2 || flags === 18 || flags === 34)
+    if (directChildren) {
+      // The confirmed low-arity builder projection installs split child/leaf
+      // arrays instead of a CstCaptureBuf. Descendants still capture, but they
+      // must take the generic collector branch rather than dereference `_cstBuf`.
+      // False means UNKNOWN in this lattice, which is exactly the safe answer.
+      return { tri: at.tri, buf: false, cap: CAP_OFF }
+    }
     // `ctx._cstBuf = buf` and `ctx.captureTrivia = <literal>`, both unconditional
     // — `emit-assembly.ts`'s `OP_NODE` body opens the buffer before it descends
     // and closes it after, whatever the host mode is.
-    const cap = ((code[ip + 3]! & 4) !== 0 || hostCst) ? CAP_ON : CAP_OFF
+    const cap = ((flags & 4) !== 0 || hostCst) ? CAP_ON : CAP_OFF
     if (at.buf && cap === at.cap) return at
     return { tri: at.tri, buf: true, cap }
   }

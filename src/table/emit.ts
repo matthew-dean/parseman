@@ -15,8 +15,20 @@ function jsString(s: string): string {
   return JSON.stringify(s)
 }
 
-/** Emit a char-class pool in the shorter of the ordinary array and an
- * equivalent delimiter-split string. Fall back when no delimiter is absent. */
+/**
+ * Emit the char-class pool in the shorter of two equivalent forms.
+ *
+ * A normal array repeats two quote bytes around every class. Real grammars have
+ * dozens of classes, and the recursion-stack first-set correction legitimately
+ * discovers more of them. One delimiter-joined string pays for `.split()` once
+ * and removes those repeated quotes; the resulting value handed to
+ * `expandCompact` is still the exact `string[]` its wire contract declares.
+ *
+ * Pick a delimiter absent from every encoded class. These strings contain RANGE
+ * ENDPOINTS, not regex source, so no character is universally reserved. If this
+ * small printable set is exhausted, keep the ordinary array — never escape or
+ * reinterpret class data to force the compact form.
+ */
 function emitClassPool(classes: readonly string[]): string {
   const array = `[${classes.map(jsString).join(',')}]`
   if (classes.length < 2) return array
@@ -287,6 +299,8 @@ function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOpt
     // `run({ rootTrivia })` rejected a grammar that plainly has labels — the
     // exact failure the root-trivia work exists to prevent, one hop downstream.
     ...(prog.dsp.length === 0 ? [] : [`p:[${prog.dsp.map(emitDispatchSpec).join(',')}],`]),
+    ...(prog.lex === undefined ? [] : [`lx:[${prog.lex.map(row => `[${row.join(',')}]`).join(',')}],`]),
+    ...(prog.lexPrograms === undefined ? [] : [`lp:[${prog.lexPrograms.map(row => `[${row.join(',')}]`).join(',')}],`]),
     ...(prog.labels === undefined ? [] : [`lb:[${prog.labels.map(jsString).join(',')}],`]),
     ...(prog.classified === 1 ? ['rc:1,'] : []),
     // Without this a recovery table's MODULE loads as a strict one: the extra

@@ -506,6 +506,12 @@ export const grammar = composeLeaf([
 Every item before the final local map must prove recognition-only. `composeLeaf`
 is terminal: it cannot be fed into another `compose()`/`composeLeaf()` call.
 
+Once its canonical table reaches 1,024 instruction words, the default AST/no-lines leaf
+embeds one strict TableProgram assembly at build time. Smaller leaves stay compact. The
+assembly increases that generated grammar artifact in exchange for faster parsing; tracked
+and CST leaf variants remain compact closure tables. It is a static function
+literal and remains CSP-safe—no runtime source generation or second parser is involved.
+
 **Build it with the macro.** The macro is the only supported way to produce a leaf
 grammar: it lowers the call to static fused source, and a call it cannot fuse is a
 build error (`composeLeaf() must macro-fuse`), never a silent fallback. An unlowered

@@ -115,8 +115,10 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
   const refuseUnclassified = scopeTrivia !== undefined
     && !scopeTrivia._meta?.rootTriviaClassified && !opaqueRootCapture
   const forceCaptureTrivia = opts.captureTrivia === true
-  const trackLinesOf = opts.trackLines === true ? TRACK_LINES_ON
-    : opts.trackLines === false ? TRACK_LINES_OFF
+  const trackLinesPolicy = opts.trackLines === true ? 'on'
+    : opts.trackLines === false ? 'off' : 'inherit'
+  const trackLinesOf = trackLinesPolicy === 'on' ? TRACK_LINES_ON
+    : trackLinesPolicy === 'off' ? TRACK_LINES_OFF
     : TRACK_LINES_INHERIT
   /**
    * The per-node capture mask, resolved as far as this scope can resolve it.
@@ -130,7 +132,7 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
     : scopeLabels !== undefined ? triviaKindMask(scopeLabels, captureKinds)
     : undefined
   const inheritCaptureMask = captureKinds !== undefined && scopeLabels === undefined
-  return {
+  const grammar: ParsemanParser<T> = {
     _tag: 'grammar',
     _meta: {
       ...root._meta,
@@ -150,6 +152,8 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
       ...(opaqueRootCapture ? { rootCapture: 'opaque' as const } : {}),
       ...(opts.captureTrivia ? { captureTrivia: true } : {}),
       trackLines: opts.trackLines ?? false,
+      constructionTrackLines: trackLinesPolicy,
+      ...(captureKinds === undefined ? {} : { constructionCaptureTriviaKinds: captureKinds }),
     },
     parse(input: string, pos?: number, _ctx?: ParseContext): ParseResult<T> {
       if (refuseUnclassified) refuseUnclassifiedRootScope(_ctx?._rootTriviaStrictScopes)
@@ -197,6 +201,7 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
       return lineIndex ? annotateResultLines(result, normalizeLineIndex(lineIndex)) : result
     },
   } as ParsemanParser<T>
+  return grammar
 }
 
 /**

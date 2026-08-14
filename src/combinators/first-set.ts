@@ -14,6 +14,55 @@ import type { CharRange, FirstSet, Combinator, ParserDef } from '../types.ts'
  */
 export type RefResolver = (name: string) => Combinator<unknown> | undefined
 
+/** Winner-resolved choice facts shared by table encoding and capability IR. */
+export type FinalChoiceClassification = {
+  readonly exclusive: boolean
+  readonly firstSets: readonly FirstSet[]
+  readonly nullable: readonly boolean[]
+}
+
+/** Resolve final arm winners before deciding whether a choice is exclusive. */
+export function classifyFinalChoice(
+  arms: readonly Combinator<unknown>[],
+  resolve?: RefResolver,
+): FinalChoiceClassification {
+  const firstSets: FirstSet[] = []
+  const nullable: boolean[] = []
+  let exclusive = true
+  // Preserve the encoder's historical per-arm evaluation order: nullability
+  // first, then first-set resolution only for a non-nullable arm. Besides
+  // keeping compile-time lazy resolution behavior stable, a nullable arm has no
+  // usable dispatch class, so resolving its set would mint unused authority.
+  for (const arm of arms) {
+    const empty = matchesEmpty(arm, new Set(), resolve)
+    nullable.push(empty)
+    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve))
+    if (empty) exclusive = false
+  }
+  if (exclusive) {
+    // Match `resolveDispatch` exactly: ASCII has an indexed owner per code;
+    // above ASCII the compact table does not index ranges, so a second arm with
+    // any high range conservatively declines exclusivity even when disjoint.
+    const ascii = new Uint8Array(128)
+    let highOwners = 0
+    for (let arm = 0; arm < firstSets.length && exclusive; arm++) {
+      const first = firstSets[arm]!
+      if (first.kind !== 'ranges' || first.ranges.length === 0) { exclusive = false; break }
+      let ownsHigh = false
+      for (const range of first.ranges) {
+        if (range.hi >= 128) ownsHigh = true
+        for (let code = Math.max(0, range.lo); code <= Math.min(127, range.hi); code++) {
+          if (ascii[code] !== 0) { exclusive = false; break }
+          ascii[code] = 1
+        }
+        if (!exclusive) break
+      }
+      if (ownsHigh && ++highOwners > 1) exclusive = false
+    }
+  }
+  return { exclusive, firstSets, nullable }
+}
+
 /** The `resolve`-supplied target for an unresolvable NAMED lazy, if any. */
 function resolveNamedRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
   if (resolve === undefined) return undefined
@@ -84,9 +133,12 @@ export function matchesEmpty(
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
 ): boolean {
-  // `seen` is the current recursion stack, not a global visited set. A node
-  // reached again through a sibling in a shared DAG is not recursive; only a
-  // back-edge on the current path gets the safe nullable answer.
+  // RECURSION-STACK guard: a mutually-nullable ref cycle (e.g.
+  // `A = oneOrMore(B); B = oneOrMore(A)`) would recurse forever. Treat a node
+  // re-entered on the CURRENT path as nullable — the safe (`true`) default.
+  // Remove it on exit: a shared DAG child reached later through a sibling is not
+  // a cycle. Keeping every completed node in `seen` made an eleven-arm choice of
+  // non-nullable `@` rules report nullable merely because the arms shared leaves.
   if (seen.has(p)) return true
   seen.add(p)
   try {
@@ -261,8 +313,9 @@ export function firstSetOf(
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
 ): FirstSet {
-  // As above, only a node on the current recursion path is a cycle. Keeping a
-  // completed shared child in this set widened later siblings to `any`.
+  // `seen` is the current recursion path, not a global visited set. A completed
+  // shared child must be analysed again for a sibling; only a back-edge on this
+  // path is a cycle and needs the safe `any` over-approximation.
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
   try {

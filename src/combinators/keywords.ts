@@ -3,6 +3,7 @@ import { fromChar, union, empty } from './first-set.ts'
 import { caseFoldVariants } from './case-fold.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
+import { directTerminalFailureExpected } from './expected.ts'
 
 export type KeywordsOptions = {
   /** Match case-insensitively. */
@@ -70,6 +71,19 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/** The terminal's one canonical recognizer spelling. Table-selected lexical
+ * bodies call this at construction time so the authored parser, CHARACTER row,
+ * and TOKEN replacement cannot drift on alternation order, boundary, or flags. */
+export function keywordsRegExp(
+  words: readonly string[],
+  boundary: string | undefined,
+  caseInsensitive: boolean,
+): RegExp {
+  const alt = words.map(escapeRe).join('|')
+  const boundarySource = boundary ? `(?![${boundary}])` : ''
+  return new RegExp(`(?:${alt})${boundarySource}`, caseInsensitive ? 'iy' : 'uy')
+}
+
 /**
  * Match any one of a set of fixed keywords, longest-first (so `border` wins over
  * `bord`), with an optional trailing word-boundary guard. Compiles to a single
@@ -84,8 +98,6 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
   // Longest-first keeps the alternation greedy-correct (regex alternation is
   // first-match, not longest-match).
   const sorted = [...new Set(words)].sort((a, b) => b.length - a.length)
-  const alt = sorted.map(escapeRe).join('|')
-  const boundary = opts.boundary ? `(?![${opts.boundary}])` : ''
   // Case-INSENSITIVE drops `u` deliberately, so that MATCHING and the first-set
   // below fold the SAME set of characters — the invariant `regex()` established in
   // 0.32.0 (see the flag-aware widening in `src/combinators/regex.ts`):
@@ -102,8 +114,7 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
   //     not entering Unicode mode at all, which keeps the gate.
   // Every keyword is fully escaped by `escapeRe`, so `u` mode changes nothing about
   // what a case-SENSITIVE set matches; that path keeps `u` unchanged.
-  const flags = opts.caseInsensitive ? 'iy' : 'uy'
-  const re = new RegExp(`(?:${alt})${boundary}`, flags)
+  const re = keywordsRegExp(sorted, opts.boundary, opts.caseInsensitive ?? false)
 
   // First-set: the set of first code points across all keywords (and their
   // case-folded variants when case-insensitive), for choice() dispatch.
@@ -125,16 +136,21 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
   }
 
   const meta: ParserMeta = { firstSet, canMatchNewline: false, isTrivia: false }
+  const def = {
+    tag: 'keywords', words: sorted,
+    caseInsensitive: opts.caseInsensitive ?? false,
+    boundary: opts.boundary,
+  } as const
 
   return {
     _tag: 'keywords',
     _meta: meta,
-    _def: { tag: 'keywords', words: sorted, caseInsensitive: opts.caseInsensitive ?? false, boundary: opts.boundary },
+    _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       re.lastIndex = pos
       const m = re.exec(input)
       if (m === null || m.index !== pos) {
-        return failAt(ctx, ['keyword'], pos)
+        return failAt(ctx, directTerminalFailureExpected(def), pos)
       }
       const value = m[0]!
       const span = { start: pos, end: pos + value.length }

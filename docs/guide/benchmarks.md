@@ -2,15 +2,7 @@
 
 **Parsing to JS values** — JSON → objects, CSV → rows, GraphQL → AST — is what most
 parsers do. The release gate measures Parséman's compact table artifact against
-[Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) on equivalent medium and large inputs.
-
-::: warning 0.47 chart refresh in progress
-The committed SVG snapshots and historical numbers below predate canonical artifact
-unification: they measured runtime `compile()` while calling it “macro build,” and that
-runtime path then used a different emitted-assembly strategy. They are historical material,
-not 0.47 release evidence. The release ledger records only a fresh run whose runtime and
-macro artifacts share the same `a:[]` closure shape.
-:::
+[Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) on equivalent small, medium, and large inputs.
 
 For **syntax tree building**, Parséman's table CST path is compared with
 [Lezer](https://lezer.codemirror.net/) too — while producing a richer object tree with
@@ -20,14 +12,14 @@ This page is about **speed**. For a feature-by-feature look at how these parsers
 output shape, context-sensitive grammars, incremental re-parse, error recovery — see
 [How Parséman compares](./comparison).
 
-Measured on Apple M4 Pro. Bars show µs per parse — shorter is faster.
+Measured on Apple M4 Pro with Node 25.9.0. Bars show µs per parse — shorter is faster.
 
 ::: info Basis for every timing on this page
-The historical Parséman bars and tables below measure the former **JS-codegen lowering** — the interpreter,
-`compile()`, and what the charts called the macro build. Every number is transcribed from the committed charts in
-`assets/bench-*.svg`, last regenerated at **0.29.0 (2026-07-22)** by `pnpm bench:svg`.
-Re-run that command to refresh both the charts and these tables together; if a table and a
-chart disagree, the chart is the source.
+The Parséman compiled bars measure the 0.48 canonical `TableProgram` produced by runtime
+`compile()`, not the removed direct-source parser and not a separately named macro leg.
+Every number below is transcribed from `assets/bench-*.svg`, regenerated for **0.48.0 on
+2026-08-14** by `pnpm bench:svg`. Each parser bar runs in its own process and each group is
+measured in three rotated rounds. If a table and chart disagree, the chart is the source.
 :::
 
 Compared parsers: **Parséman**, [Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) (plus [`JSON.parse`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/parse) on JSON). Each implements the same parsing work on the bench fixtures —
@@ -58,23 +50,21 @@ Each chart has two sections:
 2. **Warm parse** — median µs per parse after setup. **This is the meaningful
    comparison** — init numbers are pinned on the charts but noisy run-to-run.
 
-### Parséman's three modes on the charts
+### Parséman's modes on the charts
 
-Parséman appears as up to three bars:
+Parséman appears as two warm-parse bars:
 
 | Bar | What it is |
 | --- | --- |
 | **interpreted** | The default combinator interpreter — zero setup |
-| **compiled** | `compile()` at runtime — costs **111–603 µs** once on the chart grammars, depending on grammar size |
-| **macro** | Build-time compilation via the bundler plugin — zero runtime setup |
+| **runtime compile** | `compile()` once, then parse the canonical compiled `TableProgram` |
 
-Most production use lands on **interpreted** (tests, REPLs) or **macro** (shipped apps).
-See [The three modes](./modes). Speed isn't free: `compile()` and **macro** expand a
-grammar into flat generated JS. Budget in **bytes**, not lines: small self-contained
-grammars land at **3–9× the source bytes**, and denser or derived ones go well past that.
-Size is roughly linear in `node()` call sites at **≈4.2 kB each**, and the ceiling
-enforced in CI is **10×**. See [macro code size](./macro-mode#code-size-what-to-expect)
-for the measurement and its basis.
+The build-time macro is a production delivery mode for the same canonical table
+architecture, but it is not a separate warm bar in these charts. See [The three
+modes](./modes). The generated artifact has a real byte cost: the current probe is roughly
+1.1–3.0× source bytes for its representative shapes and about 324 bytes per additional
+`node()` site. CI enforces a 10× ceiling. See [macro code
+size](./macro-mode#code-size-what-to-expect) for the current measurements.
 
 For comparison, [Chevrotain](https://chevrotain.io/) always pays **745–1,340 µs** initialization before its first
 parse — that's why it only shows up in the init section. Both init ranges are the values
@@ -82,23 +72,24 @@ pinned in `bench/chart-types.ts`.
 
 ## Headline numbers
 
-On JSON, CSV, and GraphQL, Parséman **macro** beats every other library at every fixture
-size in the charts above:
+On JSON, CSV, and GraphQL, Parséman's **runtime-compiled TableProgram** beats every other
+library at every fixture size in the charts above:
 
-| Fixture | Parséman macro | [Peggy](https://peggyjs.org/) | [Chevrotain](https://chevrotain.io/) | Native |
+| Fixture | Parséman compiled | [Peggy](https://peggyjs.org/) | [Chevrotain](https://chevrotain.io/) | Native |
 | --- | --- | --- | --- | --- |
-| JSON large (11.9 kB) | **133 µs** | 445 | 241 | `JSON.parse` 51.6 µs |
-| JSON medium (1.8 kB) | **16.5 µs** | 63.0 | 29.2 | `JSON.parse` 4.34 µs |
-| CSV large (14.5 kB) | **75.3 µs** | 420 | 1,060 | — |
-| GraphQL large (7.7 kB) | **131 µs** | 328 | 343 | — |
+| JSON small (52 B) | **0.94 µs** | 2.58 | 0.99 | `JSON.parse` 0.20 µs |
+| JSON medium (1.8 kB) | **27.5 µs** | 64.9 | 29.7 | `JSON.parse` 4.27 µs |
+| JSON large (11.9 kB) | **223 µs** | 455 | 238 | `JSON.parse` 50.3 µs |
+| CSV small (54 B) | **0.66 µs** | 1.89 | 5.30 | — |
+| CSV large (14.5 kB) | **114 µs** | 422 | 1,029 | — |
+| GraphQL small (27 B) | **1.04 µs** | 2.08 | 2.11 | — |
+| GraphQL medium (336 B) | **7.72 µs** | 14.2 | 12.4 | — |
+| GraphQL large (7.7 kB) | **188 µs** | 323 | 328 | — |
 
-The zero-setup **interpreter** stays close behind with no compile step at all. On **CSV** it's
-the fastest option after the macro build, well ahead of every generator. On **JSON** and
-**GraphQL** it runs in the leading pack: ahead of
-Peggy, and roughly neck-and-neck with a well-tuned [Chevrotain](https://chevrotain.io/)
-(Chevrotain edges it on large JSON; the two trade places within noise on GraphQL) — and well
-ahead of Parsimmon, Nearley, and Jison throughout. Reach for the macro build when you want the
-last 2–3×; either way you pay nothing up front.
+The zero-setup **interpreter** remains competitive with no compile step. It is the fastest
+option after compiled Parseman on CSV, ahead of Peggy on JSON, and in the leading group on
+GraphQL. Reach for the macro build when you want construction moved out of runtime; use
+`compile()` when the grammar itself is assembled dynamically.
 
 ## Parsing to a syntax tree
 
@@ -111,18 +102,18 @@ span capture). Measured on the same JSON fixtures (`pnpm bench:svg`, tree-buildi
 
 | Parser | small (52 B) | medium (1.8 kB) | large (11.9 kB) | Output |
 | --- | --- | --- | --- | --- |
-| **Parséman CST (macro build)** | **0.72 µs** | **21.2 µs** | **174 µs** | object tree + spans |
-| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.31 µs | 71.2 µs | 594 µs | compact buffer tree |
-| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.60 µs | 79.4 µs | 664 µs | compact buffer tree |
-| Parséman CST (interpreter) | 2.59 µs | 92.9 µs | 579 µs | object tree + spans |
-| [Chevrotain](https://chevrotain.io/) CST | 8.19 µs | 260 µs | 1.98 ms | object CST |
+| **Parséman CST (runtime compile)** | **0.92 µs** | **28.0 µs** | **242 µs** | object tree + spans |
+| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.18 µs | 66.8 µs | 570 µs | compact buffer tree |
+| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.53 µs | 76.3 µs | 654 µs | compact buffer tree |
+| Parséman CST (interpreter) | 1.96 µs | 71.1 µs | 464 µs | object tree + spans |
+| [Chevrotain](https://chevrotain.io/) CST | 7.62 µs | 241 µs | 1.85 ms | object CST |
 
-**Macro build** = compiled by the bundler plugin at build time (zero runtime setup).
-**Interpreter** = default combinator runtime, no `compile()` or macro. These are the two
-ways to run Parséman; the chart shows both against Lezer and Chevrotain.
+**Runtime compile** = construct the canonical compiled table once, then time parsing.
+**Interpreter** = default combinator runtime, no `compile()` or macro. The chart shows both
+against Lezer and Chevrotain; it does not label the macro as a third warm engine.
 
-**Compiled Parséman CST (macro build) beats Lezer at every fixture size on this chart** —
-~3.4× at large — while building a directly-usable object tree with per-node spans. Optional
+**Compiled Parséman CST beats Lezer at every fixture size on this chart** — ~2.4× at large
+— while building a directly-usable object tree with per-node spans. Optional
 [`captureTrivia`](./trivia) (`parser({ captureTrivia: true })`) also logs whitespace
 between tokens for formatters — it adds ~5% on this fixture, so it isn't a separate bar.
 Lezer emits a compact buffer tree optimized for CodeMirror's incremental
@@ -130,9 +121,9 @@ editor pipeline; Parséman emits JS objects ready for formatters and refactors w
 second walk. Pick the output your consumer actually needs.
 
 Even the zero-setup **interpreter** CST holds its own against a purpose-built incremental
-generator: it's within ~1.1× of Lezer parse-only at small inputs, and slightly faster at large
-(579 µs vs 594 µs) while building a richer object tree, and **~2.8–3.4× faster than
-Chevrotain** throughout. Compile it (macro build) and it moves ahead of Lezer outright.
+generator: it is faster than Lezer parse-only at small and large inputs (1.96 vs 2.18 µs;
+464 vs 570 µs) while building a richer object tree, and **about 3.9–4.0× faster than
+Chevrotain** throughout. Compile it and it moves ahead of Lezer outright.
 
 ## Incremental re-parse
 
@@ -172,16 +163,15 @@ churn stays within a small factor of Lezer.
 
 ## Reproducing the numbers
 
-**When you're parsing to JS values — objects, rows, AST nodes — Parséman's macro build is
+**When you're parsing to JS values — objects, rows, AST nodes — Parséman's runtime-compiled artifact is
 the fastest general-purpose JS parser in this comparison, at every benchmarked grammar and
-every input size in it**, with **zero initialization cost**. For syntax trees, the same macro build beats
-Lezer and Chevrotain on the JSON CST fixture. And the setup-free interpreter is
-remarkably competitive on its own — the fastest option after the macro build on CSV, and
-running with the leading generators on JSON and GraphQL (ahead of Peggy; trading the lead
-with a well-tuned Chevrotain).
+every input size in it**. For syntax trees, the compiled CST artifact beats Lezer and
+Chevrotain on the JSON fixture. The setup-free interpreter is also the fastest option after
+compiled Parseman on CSV and remains in the leading group on JSON and GraphQL.
 
-The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M4
-Pro / Node+V8, median of 15 samples. Got a parser you think belongs in the comparison?
+The numbers come from a reproducible suite you can run yourself (`pnpm bench:svg`) on one
+M4 Pro / Node 25.9.0, three rotated rounds with one parser bar per process. Got a parser
+you think belongs in the comparison?
 [Open an issue](https://github.com/matthew-dean/parseman/issues) — the harness
 (`bench/run.ts`) is built to add competitors.
 
@@ -194,7 +184,8 @@ pnpm bench:svg    # run chart-only benchmarks, then write assets/bench-*.svg
 ```
 
 That's the whole workflow — one command. It runs **only** the JSON / CSV / GraphQL /
-CST-JSON warm-parse timings the charts need (~30–60 s), not the full `pnpm bench` suite.
+CST-JSON timings the charts need, not the full `pnpm bench` suite. Runtime depends on the
+host and on the restored high-iteration small rows; allow several minutes.
 
 | Command | What it does |
 | --- | --- |

@@ -40,7 +40,7 @@ import {
  * just its own cases. A `describe.skipIf` cannot help with that; the import has to
  * be conditional, hence the top-level await.
  *
- * Node 20 is inside this package's supported range (`^20.19.0 || >=22.12.0`). The
+ * Node 20 is inside this package's supported range (`^20.19.0 || >=22.13.0`). The
  * other four bench parsers still run there — only the Chevrotain comparison is
  * dropped, and it compares a THIRD-PARTY library's output shape, so nothing about
  * Parseman goes unverified on that line.

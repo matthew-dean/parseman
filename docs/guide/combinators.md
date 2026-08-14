@@ -274,8 +274,8 @@ applies. Don't rely on it: add one non-literal arm and ordering matters again.
 :::
 
 When the arms start with disjoint characters the whole `choice` becomes a single O(1)
-character dispatch — a lookup table in the interpreter, an inline `switch` in the JS
-that `compile()` and the macro build emit. See
+character dispatch — a lookup table in the interpreter and a direct indexed body in the
+compiled `TableProgram`. See
 [First-char gating](./first-char-gating).
 
 When alternatives begin by recognizing the same lexical family and then diverge

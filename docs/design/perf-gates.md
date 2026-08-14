@@ -351,6 +351,17 @@ same lottery with the sign flipped.
 
 `medianPct: 6`, `minPct: 6`, `winRateCeiling: 0.25`, `signTest: 3`, `passes: 5`.
 
+The scorer has a versioned reduction contract. `paired-ratio-v2` takes the median
+of aligned HEAD/REF sample ratios and, for the floor signal, the median of aligned
+within-sample-minimum ratios. Ratio-of-aggregate medians/minima is the retired
+`aggregate-v1` method: it discards the adjacency the harness measured and can report
+a 60% regression for a pair series whose aligned median is exactly flat. Changing
+the scorer invalidates percentage noise calibration. Both perf configs therefore
+name their scorer and fail closed for normal gates until a RED-proven `--self` A/A
+run revalidates the thresholds. Historical 0.47 shelf median and minimum ceilings stay
+explicitly tagged `aggregate-v1` and use the retained v1 fields; they are never compared
+to the v2 paired statistics.
+
 `winRateCeiling` is the ceiling **for a null of 0.5**; the ceiling actually
 applied is that number shifted onto the case's measured null, per the section
 above.
@@ -745,10 +756,10 @@ up as "not slower" rather than as a clean win.
 ```sh
 pnpm perf:guard:grammars                    # the sweep gate
 pnpm perf:workloads                         # the broad gate
-pnpm perf:workloads --quick                 # 1 pass x 2 rounds — TRIAGE ONLY, does not gate
+pnpm perf:workloads --quick                 # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
 pnpm perf:workloads --only=less             # substring filter on workload id
 pnpm perf:workloads:describe                # what each workload parses, and whether it reaches EOF
-pnpm perf:guard:grammars --quick            # 2 rounds x 1 run — TRIAGE ONLY, does not gate
+pnpm perf:guard:grammars --quick            # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
 pnpm perf:workloads:peak --base=origin/main # the peak clause, as CI runs it — a
                                             # PERF-PEAK-WAIVER is honoured only with --base
 
@@ -767,6 +778,13 @@ bench/workloads/replay.sh 3175734 fbeb43e 5 --allow-parse-diff   # fix(not)    �
 bench/workloads/replay.sh 9c6fee2 a464372 5                      # fix(expect) — expect RED
 pnpm perf:workloads --self                                       # the noise floor
 ```
+
+Quick mode still recompiles both sides three times. One compiled parser pair is
+one draw of V8's instance-level optimisation lottery, not an independent sample:
+a one-pass Less self-check false-failed byte-identical code at +12.6%. The quick
+shape therefore spends its small budget on three independent pairs and reports
+the median delta across those passes first. The full pass range remains visible
+as noise context; do not reject a borderline experiment from one endpoint.
 
 The reference shas live in `bench/grammar-density/config.json` and
 `bench/workloads/config.json`. Bump BOTH to the
@@ -827,11 +845,11 @@ gate would have caught none of it.**
 
 ### The clause
 
-A release may not sit below the fastest release **on record** by more than the
-noise floor. The record lives in `bench/workloads/config.json`:
+A release may not sit below the committed broad-workload **release baseline** by
+more than the noise floor. The baseline lives in `bench/workloads/config.json`:
 
 ```json
-"peak": { "sha": "7d1817f", "version": "0.45.0", "allowancePct": 5 }
+"peak": { "sha": "bf03092", "version": "0.48.0", "allowancePct": 5 }
 ```
 
 - **Absolute, not differential.** `sha` names a **commit**, never a stored
@@ -852,11 +870,11 @@ its win rate at 5–8 of 12 — verdict correctly `ok`. That is the whole design
 one row: **the median is the statistic a contended runner destroys; min and win
 rate are not.**
 
-### The peak is seeded, not swept — and cannot be imported
+### The original peak was seeded, not swept — and cannot be imported
 
-**Stated rather than left to be discovered.** 0.45.0 is the **starting record**,
-the bar to beat from here. It is *not* the winner of a measured sweep across all
-releases. That sweep was attempted at 0.46.0 and abandoned: the machine sat at
+**Stated rather than left to be discovered.** 0.45.0 was the **starting record**.
+It was *not* the winner of a measured sweep across all releases. That sweep was
+attempted at 0.46.0 and abandoned: the machine sat at
 load average 70–90, where triage runs of this very gate reported the same workload
 anywhere from **−86% to +131%**. A number a control cannot reproduce is worse than
 no number.
@@ -872,12 +890,20 @@ place. On *this* workload set there is no evidence of a historical peak above HE
 Whatever peak a different instrument reports is evidence about that instrument's
 shape. **Re-measure; never import.**
 
+0.48 is the first deliberate operational reset of that record. Its release CI
+measured the canonical TableProgram 98–249% slower than the seeded 0.45 baseline
+across these five broad workloads. The owner accepted that architectural reset after
+correctness, artifact-size, package-size, and external-competitor gates passed, so
+`bf03092` is the new baseline for detecting *additional* regressions. The exact 0.45
+drawdowns remain in the 0.48 changelog, and pinned-0.46 Jess parity remains a separate
+0.49 objective; resetting this gate does not rewrite either historical comparison.
+
 ### Re-baselining is a deliberate, committed diff — and it is enforced
 
-Moving `peak` forward is how a genuine improvement becomes the new bar. Moving it
-**backward**, or **widening `allowancePct`**, makes a slower build the reference —
-which may be a legitimate trade, and is also exactly how a regression gets
-laundered into a baseline.
+Moving `peak` forward is how a genuine improvement or an explicitly accepted new
+normal becomes the new bar. Moving it **backward**, or **widening
+`allowancePct`**, makes a slower build the reference — which may be a legitimate
+trade, and is also exactly how a regression gets laundered into a baseline.
 
 `scripts/check-changelog.mjs` §D therefore:
 
@@ -923,10 +949,10 @@ the slower path is a trade this release makes, not the new normal. If the
 slowdown genuinely is the new normal, **move the peak** (§D above) and say so;
 that is not this.
 
-**It does not move the baseline.** This is the whole point. The peak record is
-untouched, `0.45.0` stays the bar, and the next PR is measured against the same
-number, goes red in exactly the same way, and must state its own measurement. A
-waived breach is still a breach on the record.
+**It does not move the baseline.** This is the whole point. The committed peak stays
+the bar, and the next PR is measured against the same number, goes red in exactly the
+same way, and must state its own measurement. A waived breach is still a breach on
+the record.
 
 Every property of it is friction on purpose — `docs/design/release-gates.md`: *"A
 gate that fires spuriously gets bypassed, and then the gates that matter get

@@ -71,8 +71,8 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
-  saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
+  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
+  saveTriviaMark, scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
@@ -87,6 +87,7 @@ import {
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { failAt } from '../combinators/probe.ts'
@@ -118,14 +119,18 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  * property read per terminal miss — the same price codegen pays.
  */
 import {
-  classHas, decodeClassSpec, expandCompact, resolveTable, validateDispatchSpec,
+  classHas, decodeClassSpec, expandCompact, resolveTable,
+  validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
-import { reachableSites } from './site-labels.ts'
 import { stampRuleMap } from './stamp.ts'
+import { reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
+import {
+  makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
+} from './scalar-terminal.ts'
 
 /**
  * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?
@@ -139,7 +144,7 @@ const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | 
   .process?.env?.PM_TABLE_EMIT !== '0'
 
 /** Failure sentinel — SHARED with the other two engines, see `cell.ts`. */
-import { FAIL, newEndCell, type EndCell } from './cell.ts'
+import { FAIL, newEndCell } from './cell.ts'
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
 /** `finishCstBuf`'s two empty sentinels, held here so the node piece can inline it. */
@@ -167,10 +172,20 @@ function linkMatcher(m: readonly [number, string, string, number]): (key: string
     case 1: return key => key.endsWith(value)
     case 3: return key => asciiFoldKey(key).startsWith(value)
     case 4: return key => asciiFoldKey(key).endsWith(value)
-    // A fresh RegExp per test, as `matchesDispatchMatcher` builds — a cached one
-    // would carry `lastIndex` across parses whenever the author's pattern was
-    // sticky or global.
-    default: { const flags = m[2]; return key => new RegExp(value, flags).test(key) }
+    default: {
+      const flags = m[2]
+      // `matches()` refuses global/sticky patterns, so every compiler-owned
+      // matcher has stable `lastIndex` and can be compiled once per assembly.
+      // Preserve the old fresh-per-test behavior for hand-built low-level rows
+      // that contain g/y or invalid flags rather than broadening the wire ABI.
+      if (!flags.includes('g') && !flags.includes('y')) {
+        try {
+          const pattern = new RegExp(value, flags)
+          return key => pattern.test(key)
+        } catch {}
+      }
+      return key => new RegExp(value, flags).test(key)
+    }
   }
 }
 
@@ -198,6 +213,36 @@ const NO_COVERAGE = (_id: string): void => {}
  * `{ value, end }` pair would be an allocation per row.
  */
 type Piece = (input: string, pos: number, ctx: ParseContext) => unknown
+type NodeBuilder = (
+  children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
+  rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
+) => unknown
+type ChoiceExpectedPrefix = (
+  target: number, prev: number, acc: string[] | undefined,
+) => string[] | undefined
+type MaskedChoiceBlock = (
+  input: string, pos: number, ctx: ParseContext, bits: number,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number,
+  mEr: number, mLog: number, mRoot: number,
+  acc: string[] | undefined, prev: number,
+) => unknown
+type GeneralChoiceBlock = (
+  input: string, pos: number, ctx: ParseContext, c: number,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number,
+  mEr: number, mLog: number, mRoot: number,
+  acc: string[] | undefined, prev: number,
+) => unknown
+type ExclusiveChoiceBlock = (arm: number, input: string, pos: number, ctx: ParseContext) => unknown
+type DispatchMatcher = (key: string) => boolean
+type DispatchMatcherBlock = (key: string) => number | undefined
+type DispatchBranch = (
+  input: string, pos: number, selEnd: number, key: string,
+  selectorMark: ReturnType<typeof saveTriviaMark>, ctx: ParseContext,
+) => unknown
+type DispatchArmBlock = (
+  arm: number, input: string, pos: number, selEnd: number, key: string,
+  selectorMark: ReturnType<typeof saveTriviaMark>, ctx: ParseContext,
+) => unknown
 
 /**
  * ONE NON-FIRST SEQUENCE TERM, in a sequence that carries an adjacency
@@ -205,7 +250,14 @@ type Piece = (input: string, pos: number, ctx: ParseContext) => unknown
  * `nextTerm`'s protocol, so a bound term and a bound assertion are
  * interchangeable in the loop and the loop tests neither.
  */
-type TermRunner = (input: string, cur: number, ctx: ParseContext) => number
+type TermRunner = (
+  input: string, cur: number, ctx: ParseContext,
+  inheritedSync?: Combinator<unknown>,
+) => number
+type SequenceTermBlock = (
+  input: string, cur: number, ctx: ParseContext, values: unknown[] | undefined,
+  inheritedSync?: Combinator<unknown>,
+) => number
 
 /**
  * The option set an assembly is specialised for.
@@ -415,6 +467,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    */
   const EC = newEndCell()
 
+  // Indexed by the existing constant-pool operand: the same scalar recognizer
+  // serves an ordinary terminal piece and a direct terminal-node materializer.
+  // Value/CST/failure/cursor effects stay in those consumers.
+  const scalarRecognizers: Array<ScalarRecognizer | undefined> = []
+  const rawScalarSpecs = new Set<number>()
+  function scalarFor(child: number): ScalarRecognizer | undefined {
+    const spec = code[child + 1]!
+    let recognize = scalarRecognizers[spec]
+    if (recognize === undefined) {
+      recognize = makeScalarRecognizer(code[child]!, k[spec])
+      scalarRecognizers[spec] = recognize
+    }
+    return recognize
+  }
+
   /**
    * The INSTALLED trivia scanner for the scope currently running.
    *
@@ -431,6 +498,263 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function pushLeaf(ctx: ParseContext, value: string, s: number, e: number): void {
     const lf: Leaf = { _tag: 'leaf', value, span: { start: s, end: e } }
     pushCstLeaf(ctx, lf)
+  }
+
+  /**
+   * The three dominant AST node shapes, selected once while linking.
+   *
+   * The generic node body is necessarily broad: CST hosts, tracked spans,
+   * fields, trivia/state reads, structural hosts, projections, collapse and
+   * unwrap all share it. That made its one FunctionLiteral 1,100+ V8 bytecodes
+   * even for the ordinary AST builder that needs none of those branches. Jess's
+   * exact AST workloads execute the three shapes below 42k/66k/205k times per
+   * CSS/Less/generated parse. Keep their bodies scalar and keep every other
+   * shape on the generic oracle below.
+   */
+  function plainBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const buf: CstCaptureBuf = {}
+      ctx._cstBuf = buf
+      ctx._cstChildren = undefined
+      ctx._cstLeaves = undefined
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+      const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const span = { start: pos, end }
+      const node = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  /** The lazy capture buffer uses `single === undefined` as its empty sentinel:
+   * leading undefined semantic children are therefore absent, while undefined
+   * values after the first present child are retained in `ch`. A flat collector
+   * normalizes only that cold prefix so the builder sees the identical list. */
+  function capturedFlatChildren(children: unknown[]): readonly unknown[] {
+    if (children.length === 0) return EMPTY_CH
+    if (children[0] !== undefined) return children
+    let first = 1
+    while (first < children.length && children[first] === undefined) first++
+    return first === children.length ? EMPTY_CH : children.slice(first)
+  }
+
+  /** Direct reducer whose declared arity proves `rawChildren` is unobservable.
+   * Use the existing split children/leaves collector instead of opening a
+   * duplicate raw capture buffer. The body shape is selected while linking. */
+  function childrenOnlyBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const kids: unknown[] = []
+      ctx._cstBuf = undefined
+      ctx._cstChildren = kids
+      ctx._cstLeaves = kids
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const captured = capturedFlatChildren(kids)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  function childrenOnlyFieldsBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const kids: unknown[] = []
+      ctx._cstBuf = undefined
+      ctx._cstChildren = kids
+      ctx._cstLeaves = kids
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = []
+      const value = child(input, pos, ctx)
+      const captured = capturedFlatChildren(kids)
+      const fieldMap = buildFieldMap(ctx._fields)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = build(captured, fieldMap, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  function collapseBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const buf: CstCaptureBuf = {}
+      ctx._cstBuf = buf
+      ctx._cstChildren = undefined
+      ctx._cstLeaves = undefined
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+      const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const span = { start: pos, end }
+      const node = kids.length === 1
+        ? kids[0]
+        : build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  function childrenOnlyCollapseBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const kids: unknown[] = []
+      ctx._cstBuf = undefined
+      ctx._cstChildren = kids
+      ctx._cstLeaves = kids
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const captured = capturedFlatChildren(kids)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = captured.length === 1
+        ? captured[0]
+        : build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  function plainProjectNode(child: Piece, projection: number, type: string): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const buf: CstCaptureBuf = {}
+      ctx._cstBuf = buf
+      ctx._cstChildren = undefined
+      ctx._cstLeaves = undefined
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = projectChild(kids, projection, type)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+      }
+      EC.e = end
+      return node
+    }
   }
 
   /** Mirrors `exec.ts`'s `rollbackNeeded` — a runtime question about live sinks. */
@@ -562,9 +886,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // keeps the exact branch it had.
     if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
     if (needsDeferredTriviaCommit(ctx)) {
-      const scan = scanTrivia(input, cur, ctx)
-      scan.commit()
-      return scan.end
+      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }
     return advanceTrivia(input, cur, ctx)
   }
@@ -662,7 +984,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       TERMV = v
       return EC.e > scanEnd ? EC.e : cur
     }
-    // SCALAR MARKS — no per-term mark object, as `exec.ts` established.
+    // SCALAR MARKS — only the three trivia sinks can receive ambient-scan rows.
+    // Child-owned nodes, fields and errors are deliberately outside this range.
     const need = rollbackNeeded(ctx)
     const mTl = need ? cstTlLen(ctx) : 0
     const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
@@ -703,6 +1026,218 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (acc === undefined) return ax.slice()
     for (const s of ax) acc.push(s)
     return acc
+  }
+
+  /** No fixed child array is permitted to survive into a choice piece. */
+  const NEVER_PIECE: Piece = () => FAIL
+  const NEVER_CLASS: ResolvedClass = { ascii: new Uint8Array(128), hi: [] }
+  const EMPTY_EXPECTED_PREFIX: ChoiceExpectedPrefix = (_target, _prev, acc) => acc
+
+  /**
+   * Four directly captured static expected sets. The chain keeps skipped-arm
+   * diagnostics lazy across block boundaries: a later successful arm never
+   * materialises expectations for earlier char-excluded arms.
+   */
+  function expectedBlock(
+    start: number,
+    e0: readonly string[], e1: readonly string[], e2: readonly string[], e3: readonly string[],
+    prior: ChoiceExpectedPrefix,
+  ): ChoiceExpectedPrefix {
+    return (target, prev, acc) => {
+      if (prev < start) { acc = prior(start, prev, acc); prev = start }
+      if (target > start && prev < start + 1) acc = accSet(e0, acc)
+      if (target > start + 1 && prev < start + 2) acc = accSet(e1, acc)
+      if (target > start + 2 && prev < start + 3) acc = accSet(e2, acc)
+      if (target > start + 3 && prev < start + 4) acc = accSet(e3, acc)
+      return acc
+    }
+  }
+
+  /** One four-arm ASCII-mask block, selected once when the arity is maskable. */
+  function maskedChoiceBlock(
+    start: number,
+    a0: Piece, a1: Piece, a2: Piece, a3: Piece,
+    through: ChoiceExpectedPrefix,
+    next: MaskedChoiceBlock | undefined,
+    total: number,
+    choiceFx: string[],
+  ): MaskedChoiceBlock {
+    return (input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev) => {
+      if ((bits & (1 << start)) !== 0) {
+        ctx._fc = false
+        const v = a0(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start, prev, acc); prev = start + 1
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if ((bits & (1 << (start + 1))) !== 0) {
+        ctx._fc = false
+        const v = a1(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 1, prev, acc); prev = start + 2
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if ((bits & (1 << (start + 2))) !== 0) {
+        ctx._fc = false
+        const v = a2(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 2, prev, acc); prev = start + 3
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if ((bits & (1 << (start + 3))) !== 0) {
+        ctx._fc = false
+        const v = a3(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 3, prev, acc); prev = start + 4
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (next !== undefined) {
+        return next(input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev)
+      }
+      acc = through(total, prev, acc)
+      ctx._fe = pos; ctx._fx = acc ?? choiceFx
+      return FAIL
+    }
+  }
+
+  /** One four-arm non-ASCII/general block. No mask state exists in this shape. */
+  function generalChoiceBlock(
+    start: number,
+    a0: Piece, a1: Piece, a2: Piece, a3: Piece,
+    g0: ResolvedClass | null, g1: ResolvedClass | null,
+    g2: ResolvedClass | null, g3: ResolvedClass | null,
+    through: ChoiceExpectedPrefix,
+    next: GeneralChoiceBlock | undefined,
+    total: number,
+    choiceFx: string[],
+  ): GeneralChoiceBlock {
+    return (input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev) => {
+      if (g0 === null || classHas(g0, c)) {
+        ctx._fc = false
+        const v = a0(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start, prev, acc); prev = start + 1
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (g1 === null || classHas(g1, c)) {
+        ctx._fc = false
+        const v = a1(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 1, prev, acc); prev = start + 2
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (g2 === null || classHas(g2, c)) {
+        ctx._fc = false
+        const v = a2(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 2, prev, acc); prev = start + 3
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (g3 === null || classHas(g3, c)) {
+        ctx._fc = false
+        const v = a3(input, pos, ctx)
+        if (v !== FAIL) return v
+        acc = through(start + 3, prev, acc); prev = start + 4
+        acc = accSet(ctx._fx, acc)
+        if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      }
+      if (next !== undefined) {
+        return next(input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev)
+      }
+      acc = through(total, prev, acc)
+      ctx._fe = pos; ctx._fx = acc ?? choiceFx
+      return FAIL
+    }
+  }
+
+  /** Four direct exclusive arms, chained for every arity above three. */
+  function exclusiveChoiceBlock(
+    start: number, a0: Piece, a1: Piece, a2: Piece, a3: Piece,
+    next: ExclusiveChoiceBlock | undefined,
+  ): ExclusiveChoiceBlock {
+    return (arm, input, pos, ctx) => {
+      if (arm === start) return a0(input, pos, ctx)
+      if (arm === start + 1) return a1(input, pos, ctx)
+      if (arm === start + 2) return a2(input, pos, ctx)
+      if (arm === start + 3) return a3(input, pos, ctx)
+      return next === undefined ? FAIL : next(arm, input, pos, ctx)
+    }
+  }
+
+  function dispatchMatcherBlock(
+    m0: DispatchMatcher, a0: number, m1: DispatchMatcher, a1: number,
+    m2: DispatchMatcher, a2: number, m3: DispatchMatcher, a3: number,
+    next: DispatchMatcherBlock | undefined,
+  ): DispatchMatcherBlock {
+    return key => {
+      if (m0(key)) return a0
+      if (m1(key)) return a1
+      if (m2(key)) return a2
+      if (m3(key)) return a3
+      return next?.(key)
+    }
+  }
+
+  function dispatchBranch(child: Piece, usesRouted: boolean): DispatchBranch {
+    if (!usesRouted) {
+      return (input, _pos, selEnd, key, _selectorMark, ctx) => {
+        const mark = saveTriviaMark(ctx)
+        const v = child(input, selEnd, ctx)
+        if (v === FAIL) {
+          rollbackTrivia(ctx, mark)
+          ctx._fc = true
+          return FAIL
+        }
+        return [key, v]
+      }
+    }
+    return (input, pos, selEnd, key, selectorMark, ctx) => {
+      const savedRouted = ctx._routed
+      rollbackTrivia(ctx, selectorMark)
+      const mark = saveTriviaMark(ctx)
+      ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+      let v: unknown
+      try {
+        v = child(input, pos, ctx)
+      } finally {
+        ctx._routed = savedRouted
+      }
+      if (v === FAIL) {
+        rollbackTrivia(ctx, mark)
+        ctx._fc = true
+        return FAIL
+      }
+      return [key, v]
+    }
+  }
+
+  function dispatchArmBlock(
+    start: number,
+    a0: DispatchBranch, a1: DispatchBranch, a2: DispatchBranch, a3: DispatchBranch,
+    next: DispatchArmBlock | undefined,
+  ): DispatchArmBlock {
+    return (arm, input, pos, selEnd, key, selectorMark, ctx) => {
+      if (arm === start) return a0(input, pos, selEnd, key, selectorMark, ctx)
+      if (arm === start + 1) return a1(input, pos, selEnd, key, selectorMark, ctx)
+      if (arm === start + 2) return a2(input, pos, selEnd, key, selectorMark, ctx)
+      if (arm === start + 3) return a3(input, pos, selEnd, key, selectorMark, ctx)
+      return next === undefined ? FAIL : next(arm, input, pos, selEnd, key, selectorMark, ctx)
+    }
   }
 
 
@@ -759,6 +1294,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const s = k[code[ip + 1]!] as string
         const len = s.length
         const xf = fx[code[ip + 2]!] as string[]
+        const shared = rawScalarSpecs.has(code[ip + 1]!) ? scalarFor(ip) : undefined
+        if (shared !== undefined) {
+          return (input, pos, ctx) => {
+            const e = shared(input, pos)
+            if (e >= 0) {
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
+              EC.e = e
+              return s
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
         // LENGTH IS TABLE DATA, so the COMPARE is chosen here rather than
         // delegated to a builtin that has to rediscover it. See `litBodyNote`.
         if (len === 1) {
@@ -884,6 +1433,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_RX: {
         const re = k[code[ip + 1]!] as RegExp
         const xf = fx[code[ip + 2]!] as string[]
+        const shared = rawScalarSpecs.has(code[ip + 1]!) ? scalarFor(ip) : undefined
+        if (shared !== undefined) {
+          return (input, pos, ctx) => {
+            const e = shared(input, pos)
+            if (e >= 0) {
+              const v = input.slice(pos, e)
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
+              EC.e = e
+              return v
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
         return (input, pos, ctx) => {
           re.lastIndex = pos
           // `regex()` rows are sticky and expose only their whole match.  `exec()`
@@ -1307,6 +1871,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       /* ── zero-width ──────────────────────────────────────────────────────── */
 
       case OP_NOT: {
+        const scalarChild = scalarTerminalNotChild(code, ip)
+        if (scalarChild >= 0) {
+          const recognize = scalarFor(scalarChild)!
+          const xf = fx[code[ip + 2]!] as string[]
+          return (input, pos, ctx) => {
+            if (recognize(input, pos) < 0) {
+              EC.e = pos
+              return null
+            }
+            ctx._fe = pos
+            ctx._fx = xf
+            EC.e = pos
+            return FAIL
+          }
+        }
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
         return (input, pos, ctx) => {
@@ -1420,6 +1999,93 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
+      case OP_LEX_BODY: {
+        const recognize = t.lex[code[ip + 1]!]!
+        const expected = fx[code[ip + 2]!] as string[]
+        return (input, pos, ctx) => {
+          const recognized = recognize(input, pos)
+          if (recognized < 0) {
+            ctx._fe = pos
+            ctx._fx = expected as string[]
+            if (ctx._probe !== undefined) failAt(ctx, expected, pos)
+            return FAIL
+          }
+          const lineFlags = code[ip + 4]!
+          const hasSuffix = (lineFlags & 4) !== 0
+          const suffixMatched = hasSuffix && recognized % 2 === 1
+          const end = (recognized - (suffixMatched ? 1 : 0)) / 2
+          if ((lineFlags & 1) !== 0) {
+            trackLinesInto(ctx, input, suffixMatched ? end - 1 : end)
+          }
+          if (hasSuffix) ctx._fc = false
+          if (hasSuffix && suffixMatched && (lineFlags & 2) !== 0) {
+            trackLinesInto(ctx, input, end)
+          }
+          if (hasSuffix && !suffixMatched) {
+            const suffixExpected = fx[code[ip + 3]!] as string[]
+            ctx._fe = end
+            ctx._fx = suffixExpected
+            if (ctx._probe !== undefined) failAt(ctx, suffixExpected, end)
+          }
+          const value = input.slice(pos, end)
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          EC.e = end
+          return value
+        }
+      }
+
+      case OP_LEX_PROGRAM: {
+        const run = t.lexPrograms[code[ip + 1]!]!
+        const scanId = run.scan
+        if (scanId !== undefined) {
+          return (input, pos, ctx) => {
+            const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
+            const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
+            const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
+            const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
+            const wasCapturing = cstCaptureActive(ctx)
+            const sScan = SCAN
+            SCAN = null
+            ctx.trivia = undefined
+            ctx.triviaKindLabels = undefined
+            ctx._cstBuf = undefined
+            ctx._cstChildren = undefined
+            ctx._cstLeaves = undefined
+            ctx._cstRawChildren = undefined
+            ctx._cstTriviaLog = undefined
+            ctx._triviaLog = undefined
+            ctx._rootTriviaLog = undefined
+            let end: number
+            try { end = run(input, pos, ctx, scans[scanId]) }
+            finally {
+              SCAN = sScan
+              ctx.trivia = sTrivia
+              ctx.triviaKindLabels = sKinds
+              ctx._cstBuf = sBuf
+              ctx._cstChildren = sChildren
+              ctx._cstLeaves = sLeaves
+              ctx._cstRawChildren = sRaw
+              ctx._cstTriviaLog = sTl
+              ctx._triviaLog = sOuterTl
+              ctx._rootTriviaLog = sRootTl
+            }
+            if (end < 0) return FAIL
+            const value = input.slice(pos, end)
+            if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+            EC.e = end
+            return value
+          }
+        }
+        return (input, pos, ctx) => {
+          const end = run(input, pos, ctx)
+          if (end < 0) return FAIL
+          const value = input.slice(pos, end)
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          EC.e = end
+          return value
+        }
+      }
+
       case OP_LEAF: {
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const child = link(code[ip + 2]!)
@@ -1464,36 +2130,60 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const fused = op === OP_SEQX
         const base = fused ? ip + 3 : ip + 2
         const n = code[fused ? ip + 2 : ip + 1]!
-        // Children bound as a plain array of DIRECT references, laid out once.
-        const kids: Piece[] = new Array<Piece>(n)
-        for (let i = 0; i < n; i++) kids[i] = link(code[base + i]!)
         const wantValues = op !== OP_SEQV
-        const fn = fused
-          ? fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+        const reducer = fused ? code[ip + 1]! : -1
+        const projection = reducer < 0 ? ~reducer : -1
+        const fn = fused && projection < 0
+          ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           : undefined
 
-        /**
-         * The generic term loop, for arities the unrolled pieces below do not
-         * cover.
-         *
-         * `exec.ts` open-coded a LIT/RX fast path here to dodge "a JS call frame
-         * plus a switch dispatch". Half of that cost is gone by construction — a
-         * piece has no switch — and the other half is what TurboFan removes by
-         * INLINING a small monomorphic child. Re-emitting the terminal bodies
-         * would instead grow this function past the inlining budget, which is the
-         * defect being fixed, so they are not re-emitted.
-         */
-        const runTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
-          const v0 = kids[0]!(input, pos, ctx)
-          if (v0 === FAIL) return -1
-          if (values !== undefined) values.push(v0)
-          let cur = EC.e
-          for (let i = 1; i < n; i++) {
-            cur = nextTerm(kids[i]!, input, cur, ctx)
+        const runnerBlock = (
+          count: number,
+          r0: TermRunner, r1: TermRunner, r2: TermRunner, r3: TermRunner,
+          next: SequenceTermBlock | undefined,
+        ): SequenceTermBlock => {
+          if (count === 1) return (input, cur, ctx, values, inherited) => {
+            cur = r0(input, cur, ctx, inherited)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values, inherited)
           }
-          return cur
+          if (count === 2) return (input, cur, ctx, values, inherited) => {
+            cur = r0(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r1(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values, inherited)
+          }
+          if (count === 3) return (input, cur, ctx, values, inherited) => {
+            cur = r0(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r1(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r2(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values, inherited)
+          }
+          return (input, cur, ctx, values, inherited) => {
+            cur = r0(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r1(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r2(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = r3(input, cur, ctx, inherited)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values, inherited)
+          }
         }
 
         /**
@@ -1544,21 +2234,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * sentinel published is the kind of state a later reader will trust.
          */
         if (REC) {
-          const syncs: (Combinator<unknown> | undefined)[] = new Array<Combinator<unknown> | undefined>(n)
-          for (let i = 0; i < n; i++) syncs[i] = sentinelFor(code[base + n + i]!)
-          const runners: TermRunner[] = new Array<TermRunner>(n)
-          for (let i = 1; i < n; i++) {
+          const first = link(code[base]!)
+          const firstSync = sentinelFor(code[base + n]!)
+          const runnerAt = (i: number): TermRunner => {
+            const sync = sentinelFor(code[base + n + i]!)
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
-              const kid = kids[i]!
-              runners[i] = (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
-              continue
+              const kid = link(kidIp)
+              return (input, cur, ctx, inherited) => {
+                ctx._sync = sync ?? inherited
+                return nextTerm(kid, input, cur, ctx)
+              }
             }
             const negated = code[kidIp + 1] === 1
             const ki = code[kidIp + 2]!
             const kinds = ki < 0 ? undefined : k[ki] as readonly string[]
             const xf = fx[code[kidIp + 3]!] as string[]
-            runners[i] = (input, cur, ctx) => {
+            return (input, cur, ctx, inherited) => {
+              ctx._sync = sync ?? inherited
               if (!adjacencyHolds(input, cur, ctx, negated, kinds)) {
                 ctx._fe = cur; ctx._fx = xf
                 return -1
@@ -1567,19 +2260,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return cur
             }
           }
+          const bindRunners = (start: number): SequenceTermBlock => {
+            const count = Math.min(4, n - start)
+            const at = (offset: number): TermRunner => runnerAt(start + offset)
+            const never: TermRunner = () => -1
+            return runnerBlock(
+              count, at(0), count > 1 ? at(1) : never,
+              count > 2 ? at(2) : never, count > 3 ? at(3) : never,
+              start + count < n ? bindRunners(start + count) : undefined,
+            )
+          }
+          const tail = n > 1 ? bindRunners(1) : undefined
           const runSyncTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
             const inherited = ctx._sync
-            ctx._sync = syncs[0] ?? inherited
-            const v0 = kids[0]!(input, pos, ctx)
+            ctx._sync = firstSync ?? inherited
+            const v0 = first(input, pos, ctx)
             if (v0 === FAIL) { ctx._sync = inherited; return -1 }
             if (values !== undefined) values.push(v0)
-            let cur = EC.e
-            for (let i = 1; i < n; i++) {
-              ctx._sync = syncs[i] ?? inherited
-              cur = runners[i]!(input, cur, ctx)
-              if (cur < 0) { ctx._sync = inherited; return -1 }
-              if (values !== undefined) values.push(TERMV)
-            }
+            const cur = tail === undefined ? EC.e : tail(input, EC.e, ctx, values, inherited)
+            if (cur < 0) { ctx._sync = inherited; return -1 }
             ctx._sync = inherited
             return cur
           }
@@ -1589,7 +2288,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runSyncTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return fn!(values, { start: pos, end: cur })
+              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1612,13 +2311,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         let hasAdj = false
         for (let i = 1; i < n; i++) if (code[code[base + i]!] === OP_ADJ) { hasAdj = true; break }
         if (hasAdj) {
-          const runners: TermRunner[] = new Array<TermRunner>(n)
-          for (let i = 1; i < n; i++) {
+          const first = link(code[base]!)
+          const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
-              const kid = kids[i]!
-              runners[i] = (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
-              continue
+              const kid = link(kidIp)
+              return (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
             }
             const negated = code[kidIp + 1] === 1
             const ki = code[kidIp + 2]!
@@ -1628,7 +2326,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // the interpreter does.
             const kinds = ki < 0 ? undefined : k[ki] as readonly string[]
             const xf = fx[code[kidIp + 3]!] as string[]
-            runners[i] = (input, cur, ctx) => {
+            return (input, cur, ctx) => {
               if (!adjacencyHolds(input, cur, ctx, negated, kinds)) {
                 ctx._fe = cur; ctx._fx = xf
                 return -1
@@ -1637,17 +2335,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return cur
             }
           }
+          const bindRunners = (start: number): SequenceTermBlock => {
+            const count = Math.min(4, n - start)
+            const at = (offset: number): TermRunner => runnerAt(start + offset)
+            const never: TermRunner = () => -1
+            return runnerBlock(
+              count, at(0), count > 1 ? at(1) : never,
+              count > 2 ? at(2) : never, count > 3 ? at(3) : never,
+              start + count < n ? bindRunners(start + count) : undefined,
+            )
+          }
+          const tail = bindRunners(1)
           const runAdjTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
-            const v0 = kids[0]!(input, pos, ctx)
+            const v0 = first(input, pos, ctx)
             if (v0 === FAIL) return -1
             if (values !== undefined) values.push(v0)
-            let cur = EC.e
-            for (let i = 1; i < n; i++) {
-              cur = runners[i]!(input, cur, ctx)
-              if (cur < 0) return -1
-              if (values !== undefined) values.push(TERMV)
-            }
-            return cur
+            return tail(input, EC.e, ctx, values)
           }
           if (fused) {
             return (input, pos, ctx) => {
@@ -1655,7 +2358,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runAdjTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return fn!(values, { start: pos, end: cur })
+              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1693,12 +2396,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * runs, so there is no arity this fails to lower.
          */
         if (n === 1) {
-          const k0 = kids[0]!
+          const k0 = link(code[base]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
               if (v === FAIL) return FAIL
-              return fn!([v], { start: pos, end: EC.e })
+              return projection === 0 ? v : fn!([v], { start: pos, end: EC.e })
             }
           }
           if (wantValues) {
@@ -1716,7 +2419,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         if (n === 2) {
-          const k0 = kids[0]!, k1 = kids[1]!
+          const k0 = link(code[base]!), k1 = link(code[base + 1]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
@@ -1724,7 +2427,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = nextTerm(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
-              return fn!([v0, TERMV], { start: pos, end: cur })
+              return projection === 0 ? v0
+                : projection === 1 ? TERMV
+                : fn!([v0, TERMV], { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1748,7 +2453,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         if (n === 3) {
-          const k0 = kids[0]!, k1 = kids[1]!, k2 = kids[2]!
+          const k0 = link(code[base]!), k1 = link(code[base + 1]!), k2 = link(code[base + 2]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
@@ -1759,7 +2464,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               cur = nextTerm(k2, input, cur, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
-              return fn!([v0, v1, TERMV], { start: pos, end: cur })
+              return projection === 0 ? v0
+                : projection === 1 ? v1
+                : projection === 2 ? TERMV
+                : fn!([v0, v1, TERMV], { start: pos, end: cur })
             }
           }
           if (wantValues) {
@@ -1787,26 +2495,97 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
         }
 
+        // Arbitrary strict arities use a bounded scalar block chain. Fixed
+        // children are captured into prewritten four-term blocks at assembly;
+        // the parse path has no `kids[i]`, fixed-child loop, or opcode lookup.
+        const block = (
+          count: number,
+          k0: Piece, k1: Piece, k2: Piece, k3: Piece,
+          next: SequenceTermBlock | undefined,
+        ): SequenceTermBlock => {
+          if (count === 1) return (input, cur, ctx, values) => {
+            cur = nextTerm(k0, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values)
+          }
+          if (count === 2) return (input, cur, ctx, values) => {
+            cur = nextTerm(k0, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k1, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values)
+          }
+          if (count === 3) return (input, cur, ctx, values) => {
+            cur = nextTerm(k0, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k1, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k2, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values)
+          }
+          return (input, cur, ctx, values) => {
+            cur = nextTerm(k0, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k1, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k2, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            cur = nextTerm(k3, input, cur, ctx)
+            if (cur < 0) return -1
+            if (values !== undefined) values.push(TERMV)
+            return next === undefined ? cur : next(input, cur, ctx, values)
+          }
+        }
+        const bind = (start: number): SequenceTermBlock => {
+          const count = Math.min(4, n - start)
+          const child = (offset: number): Piece => link(code[base + start + offset]!)
+          return block(
+            count, child(0), count > 1 ? child(1) : NEVER_PIECE,
+            count > 2 ? child(2) : NEVER_PIECE, count > 3 ? child(3) : NEVER_PIECE,
+            start + count < n ? bind(start + count) : undefined,
+          )
+        }
+        const first = link(code[base]!)
+        const tail = bind(1)
+        const runDirectTerms = (
+          input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined,
+        ): number => {
+          const v0 = first(input, pos, ctx)
+          if (v0 === FAIL) return -1
+          if (values !== undefined) values.push(v0)
+          return tail(input, EC.e, ctx, values)
+        }
+
         if (fused) {
           return (input, pos, ctx) => {
             const values: unknown[] = []
-            const cur = runTerms(input, pos, ctx, values)
+            const cur = runDirectTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
             EC.e = cur
-            return fn!(values, { start: pos, end: cur })
+            return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
           }
         }
         if (wantValues) {
           return (input, pos, ctx) => {
             const values: unknown[] = []
-            const cur = runTerms(input, pos, ctx, values)
+            const cur = runDirectTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
             EC.e = cur
             return values
           }
         }
         return (input, pos, ctx) => {
-          const cur = runTerms(input, pos, ctx, undefined)
+          const cur = runDirectTerms(input, pos, ctx, undefined)
           if (cur < 0) return FAIL
           EC.e = cur
           return undefined
@@ -1820,20 +2599,74 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const n = code[ip + 2]!
         const choiceFx = fx[code[ip + 3]!] as string[]
         const base = ip + 4
-        const arms: Piece[] = new Array<Piece>(n)
-        for (let i = 0; i < n; i++) arms[i] = link(code[base + i]!)
-        // PER-ARM STATIC SETS, resolved once at assembly. An arm the char gate
-        // declines to enter still owes its expectation: the interpreter has no
-        // such gate, enters the arm, and its opener's failure is what lands in
-        // the accumulation.
-        const armFx: (string[])[] = new Array<string[]>(n)
-        for (let i = 0; i < n; i++) armFx[i] = fx[code[base + n + i]!] as string[]
 
         // THE TWO CHOICE SHAPES ARE TWO PIECES. `exec.ts` tested `table.exclusive`
         // on every choice execution; it is table data, so it selects here.
         if (table.exclusive) {
           const ascii = table.ascii
           const hi = table.hi
+          // THE COMMON ARITIES OWN THEIR TOPOLOGY AS SCALARS. Do not build an
+          // `arms[]` merely to rediscover the same two or three children at
+          // every dispatch. The classifier remains table data; only its result
+          // is turned into a direct captured call.
+          if (n === 2) {
+            const a0 = link(code[base]!), a1 = link(code[base + 1]!)
+            return (input, pos, ctx) => {
+              const c = lead(input, pos)
+              let arm = -1
+              if (c >= 0 && c < 128) {
+                const a = ascii[c]!
+                if (a !== 0) arm = a - 1
+              } else if (c >= 128) {
+                for (let i = 0; i < hi.length; i += 3) {
+                  if (c >= hi[i]! && c <= hi[i + 1]!) { arm = hi[i + 2]!; break }
+                }
+              }
+              if (arm >= 0) {
+                ctx._fc = false
+                const v = arm === 0 ? a0(input, pos, ctx) : a1(input, pos, ctx)
+                if (v !== FAIL) return v
+                if (committed(ctx)) return FAIL
+                const failed = ctx._fx
+                if (failed !== undefined && failed.length > 0) { ctx._fe = pos; return FAIL }
+              }
+              ctx._fe = pos; ctx._fx = choiceFx
+              return FAIL
+            }
+          }
+          if (n === 3) {
+            const a0 = link(code[base]!), a1 = link(code[base + 1]!), a2 = link(code[base + 2]!)
+            return (input, pos, ctx) => {
+              const c = lead(input, pos)
+              let arm = -1
+              if (c >= 0 && c < 128) {
+                const a = ascii[c]!
+                if (a !== 0) arm = a - 1
+              } else if (c >= 128) {
+                for (let i = 0; i < hi.length; i += 3) {
+                  if (c >= hi[i]! && c <= hi[i + 1]!) { arm = hi[i + 2]!; break }
+                }
+              }
+              if (arm >= 0) {
+                ctx._fc = false
+                const v = arm === 0 ? a0(input, pos, ctx) : arm === 1 ? a1(input, pos, ctx) : a2(input, pos, ctx)
+                if (v !== FAIL) return v
+                if (committed(ctx)) return FAIL
+                const failed = ctx._fx
+                if (failed !== undefined && failed.length > 0) { ctx._fe = pos; return FAIL }
+              }
+              ctx._fe = pos; ctx._fx = choiceFx
+              return FAIL
+            }
+          }
+          const bindExclusive = (start: number): ExclusiveChoiceBlock => {
+            const at = (i: number): Piece => i < n ? link(code[base + i]!) : NEVER_PIECE
+            const next = start + 4 < n ? bindExclusive(start + 4) : undefined
+            return exclusiveChoiceBlock(
+              start, at(start), at(start + 1), at(start + 2), at(start + 3), next,
+            )
+          }
+          const selected = bindExclusive(0)
           // THERE ARE NO OPEN ARMS HERE, and the piece is written to say so. An
           // ungated arm is one whose class is −1, and `resolveDispatch` clears
           // `exclusive` for exactly those arms (program.ts) — so `table.open` is
@@ -1852,7 +2685,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             }
             if (arm >= 0) {
               ctx._fc = false
-              const v = arms[arm]!(input, pos, ctx)
+              const v = selected(arm, input, pos, ctx)
               if (v !== FAIL) return v
               // THE CUT — a committed failure fails the whole choice.
               if (committed(ctx)) return FAIL
@@ -1876,48 +2709,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // excludes the char at `pos`. `null` means nullable or unmappable, and
         // those arms are always entered.
         const armCls = table.armCls
-        const gates: (ResolvedClass | null)[] = new Array<ResolvedClass | null>(n)
-        for (let i = 0; i < n; i++) gates[i] = armCls[i] ?? null
-
-        /**
-         * THE GATE, PRECOMPUTED. One `Uint32Array` load replaces `n` class tests.
-         *
-         * `exec.ts` asked, per arm per execution, "does this arm's class hold the
-         * char at `pos`" — `n` calls into `classHas`, each a bounds check plus a
-         * `Uint8Array` load, on 136,760 choice executions per parse of
-         * `benchmark.less`. Every one of those answers is a function of the
-         * CHARACTER and the TABLE, both of which are known here, so the whole
-         * question is answered once at assembly: `cand[c]` is the bitmask of arms
-         * that could match `c`, and the loop visits only set bits, IN ORDER, so
-         * the source ordering the gate exists to preserve is preserved exactly.
-         *
-         * Slot 128 is EOF (`lead` returns −1): `classHas` rejects a negative code,
-         * so only the always-enter arms are candidates there. Code points ≥ 128
-         * keep the per-arm loop — the ranges make a table the wrong shape and
-         * astral input is not the hot path.
-         *
-         * Bounded at 32 arms because the mask is one word. Above that the general
-         * loop runs, which is the same code the ≥ 128 path takes, so there is no
-         * second implementation to drift.
-         */
-        const maskable = n <= 32
-        let cand: Uint32Array | undefined
-        if (maskable) {
-          const m = new Uint32Array(129)
-          for (let i = 0; i < n; i++) {
-            const cls = gates[i]!
-            const bit = 1 << i
+        if (n === 2 || n === 3) {
+          const a0 = link(code[base]!), a1 = link(code[base + 1]!)
+          const a2 = n === 3 ? link(code[base + 2]!) : undefined
+          const e0 = fx[code[base + n]!] as string[]
+          const e1 = fx[code[base + n + 1]!] as string[]
+          const e2 = n === 3 ? fx[code[base + n + 2]!] as string[] : undefined
+          const g0 = armCls[0] ?? null, g1 = armCls[1] ?? null
+          const g2 = n === 3 ? armCls[2] ?? null : null
+          const mask = new Uint32Array(129)
+          const addGate = (cls: ResolvedClass | null, bit: number): void => {
             if (cls === null) {
-              for (let c = 0; c < 129; c++) m[c]! |= bit
-              continue
+              for (let c = 0; c < 129; c++) mask[c]! |= bit
+              return
             }
-            for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) m[c]! |= bit
+            for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) mask[c]! |= bit
           }
-          cand = m
-        }
+          addGate(g0, 1); addGate(g1, 2)
+          if (n === 3) addGate(g2, 4)
 
-        if (cand !== undefined) {
-          const mask = cand
           return (input, pos, ctx) => {
             const c = lead(input, pos)
             const need = markCst(ctx)
@@ -1930,43 +2740,141 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             let acc: string[] | undefined
             if (c < 128) {
-              // `c` is −1 at EOF, which indexes slot 128 — the always-enter arms.
-              const bits0 = mask[c < 0 ? 128 : c]!
-              let bits = bits0
-              // Arms below `prev` have already contributed. Only the FAILURE path
-              // advances it, so a matching arm returns without paying for any of
-              // this — the skipped arms' sets are read on no other exit.
+              const bits = mask[c < 0 ? 128 : c]!
               let prev = 0
-              while (bits !== 0) {
-                const i = 31 - Math.clz32(bits & -bits)
-                bits &= bits - 1
+              if ((bits & 1) !== 0) {
                 ctx._fc = false
-                const v = arms[i]!(input, pos, ctx)
+                const v = a0(input, pos, ctx)
                 if (v !== FAIL) return v
-                for (let j = prev; j < i; j++) if ((bits0 & (1 << j)) === 0) acc = accSet(armFx[j]!, acc)
-                prev = i + 1
+                prev = 1
                 acc = accSet(ctx._fx, acc)
-                // A committed arm cuts, and the interpreter reports the
-                // accumulation at the ARM's span (choice.ts:170), not at `pos`.
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
                 if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               }
-              for (let j = prev; j < n; j++) if ((bits0 & (1 << j)) === 0) acc = accSet(armFx[j]!, acc)
+              if ((bits & 2) !== 0) {
+                ctx._fc = false
+                const v = a1(input, pos, ctx)
+                if (v !== FAIL) return v
+                if (prev < 1) acc = accSet(e0, acc)
+                prev = 2
+                acc = accSet(ctx._fx, acc)
+                if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              }
+              if (n === 3 && (bits & 4) !== 0) {
+                ctx._fc = false
+                const v = a2!(input, pos, ctx)
+                if (v !== FAIL) return v
+                if (prev < 1) acc = accSet(e0, acc)
+                if (prev < 2) acc = accSet(e1, acc)
+                prev = 3
+                acc = accSet(ctx._fx, acc)
+                if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              }
+              if (prev < 1) acc = accSet(e0, acc)
+              if (prev < 2) acc = accSet(e1, acc)
+              if (n === 3 && prev < 3) acc = accSet(e2, acc)
               ctx._fe = pos; ctx._fx = acc ?? choiceFx
               return FAIL
             }
-            for (let i = 0; i < n; i++) {
-              const cls = gates[i]!
-              if (cls !== null && !classHas(cls, c)) { acc = accSet(armFx[i]!, acc); continue }
+
+            if (g0 === null || classHas(g0, c)) {
               ctx._fc = false
-              const v = arms[i]!(input, pos, ctx)
+              const v = a0(input, pos, ctx)
               if (v !== FAIL) return v
               acc = accSet(ctx._fx, acc)
               if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            } else acc = accSet(e0, acc)
+            if (g1 === null || classHas(g1, c)) {
+              ctx._fc = false
+              const v = a1(input, pos, ctx)
+              if (v !== FAIL) return v
+              acc = accSet(ctx._fx, acc)
+              if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            } else acc = accSet(e1, acc)
+            if (n === 3) {
+              if (g2 === null || classHas(g2, c)) {
+                ctx._fc = false
+                const v = a2!(input, pos, ctx)
+                if (v !== FAIL) return v
+                acc = accSet(ctx._fx, acc)
+                if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              } else acc = accSet(e2, acc)
             }
             ctx._fe = pos; ctx._fx = acc ?? choiceFx
             return FAIL
+          }
+        }
+
+        const bindGeneral = (start: number, prior: ChoiceExpectedPrefix): GeneralChoiceBlock => {
+          const arm = (i: number): Piece => i < n ? link(code[base + i]!) : NEVER_PIECE
+          const expected = (i: number): readonly string[] => i < n
+            ? fx[code[base + n + i]!] as string[]
+            : EMPTY_FX
+          const gate = (i: number): ResolvedClass | null => i < n ? armCls[i] ?? null : NEVER_CLASS
+          const through = expectedBlock(
+            start, expected(start), expected(start + 1), expected(start + 2), expected(start + 3), prior,
+          )
+          const next = start + 4 < n ? bindGeneral(start + 4, through) : undefined
+          return generalChoiceBlock(
+            start,
+            arm(start), arm(start + 1), arm(start + 2), arm(start + 3),
+            gate(start), gate(start + 1), gate(start + 2), gate(start + 3),
+            through, next, n, choiceFx,
+          )
+        }
+        const general = bindGeneral(0, EMPTY_EXPECTED_PREFIX)
+
+        if (n <= 32) {
+          const mask = new Uint32Array(129)
+          for (let i = 0; i < n; i++) {
+            const cls = armCls[i] ?? null
+            const bit = 1 << i
+            if (cls === null) {
+              for (let c = 0; c < 129; c++) mask[c]! |= bit
+              continue
+            }
+            for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) mask[c]! |= bit
+          }
+
+          const bindMasked = (start: number, prior: ChoiceExpectedPrefix): MaskedChoiceBlock => {
+            const arm = (i: number): Piece => i < n ? link(code[base + i]!) : NEVER_PIECE
+            const expected = (i: number): readonly string[] => i < n
+              ? fx[code[base + n + i]!] as string[]
+              : EMPTY_FX
+            const through = expectedBlock(
+              start, expected(start), expected(start + 1), expected(start + 2), expected(start + 3), prior,
+            )
+            const next = start + 4 < n ? bindMasked(start + 4, through) : undefined
+            return maskedChoiceBlock(
+              start, arm(start), arm(start + 1), arm(start + 2), arm(start + 3),
+              through, next, n, choiceFx,
+            )
+          }
+          const masked = bindMasked(0, EMPTY_EXPECTED_PREFIX)
+          return (input, pos, ctx) => {
+            const c = lead(input, pos)
+            const need = markCst(ctx)
+            const mRaw = MRAW
+            const mTl = MTL
+            const mLv = MLV
+            const mFl = need ? ctx._fields?.length ?? 0 : 0
+            const mEr = need ? ctx._errors?.length ?? 0 : 0
+            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            if (c < 128) {
+              return masked(
+                input, pos, ctx, mask[c < 0 ? 128 : c]!,
+                need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+              )
+            }
+            return general(
+              input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+            )
           }
         }
 
@@ -1980,19 +2888,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
-          let acc: string[] | undefined
-          for (let i = 0; i < n; i++) {
-            const cls = gates[i]!
-            if (cls !== null && !classHas(cls, c)) { acc = accSet(armFx[i]!, acc); continue }
-            ctx._fc = false
-            const v = arms[i]!(input, pos, ctx)
-            if (v !== FAIL) return v
-            acc = accSet(ctx._fx, acc)
-            if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-            if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          }
-          ctx._fe = pos; ctx._fx = acc ?? choiceFx
-          return FAIL
+          return general(
+            input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+          )
         }
       }
 
@@ -2106,6 +3004,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const reportItem = (flags & 4) !== 0
         const itemFx = reportItem ? fx[code[ip + 6]!] as string[] : EMPTY_FX
         const collect = op === OP_REP
+        // The item's finite, non-nullable first set is table data. A strict
+        // optional iteration whose lead is outside it cannot run or commit, so
+        // stop before entering the child graph. Tolerant assemblies keep the
+        // ordinary failure path because it may recover the rejected input.
+        // A separator-less repeat has no separator sentinel, so ip+7 carries
+        // the optional item's class at no extra table width. Separated lists
+        // keep that slot for their recovery sentinel and use the ordinary path.
+        const itemClassIndex = sepIp < 0 ? code[ip + 7]! : -1
+        const itemClass = !REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined
+        const itemMayStart = itemClass === undefined
+          ? undefined
+          : (input: string, pos: number): boolean => classHas(itemClass, lead(input, pos))
         // `many()` — the min-0, separator-less repeat — is the only shape that runs
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
@@ -2236,6 +3146,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const out: unknown[] | undefined = collect ? [] : undefined
           const hasTrivia = ctx.trivia !== undefined
           const needMark = rollbackNeeded(ctx)
+          // A completions probe deliberately observes swallowed item failures.
+          // Keep the ordinary child path while one is active so this structural
+          // fast stop cannot erase an item completion at the cursor.
+          const gateItems = itemMayStart !== undefined && ctx._probe === undefined
           let cur = pos
           let count = 0
           for (;;) {
@@ -2244,6 +3158,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // the LOOP HEAD. Held to `count >= min` so an under-`min` list still
             // attempts the separator and reports its expected set.
             if (sep !== undefined && count > 0 && count >= min && cur >= input.length) break
+            // With no trivia or separator to position, the item starts at `cur`.
+            // This is the full 0.46 loop-head cut: no mark and no child setup.
+            if (count >= min && sep === undefined && !hasTrivia
+              && gateItems && !itemMayStart!(input, cur)) break
             // Per ITERATION, never hoisted: a preceding item's `node()` opened and
             // closed a capture buffer, so `ctx._cstBuf` is not the object it was
             // at the loop head. `needMark` is the pre-existing loop-invariant.
@@ -2276,6 +3194,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               itemStart = skipTrivia(input, itemStart, ctx)
             }
             if (itemStart >= input.length && viaRepItem) {
+              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (trailingAllowed && sepEnd >= 0) cur = sepEnd
+              break
+            }
+            if (count >= min && gateItems && !itemMayStart!(input, itemStart)) {
               if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
@@ -2317,18 +3240,51 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const otherRouted = code[ip + 4]! === 1
         const n = code[ip + 5]!
         const armBase = ip + 6
-        const arms: Piece[] = new Array<Piece>(n)
-        for (let i = 0; i < n; i++) arms[i] = link(code[armBase + i]!)
         const byKey = spec.byKey
         const byFold = spec.byFold
         const hasFold = spec.byFold.size > 0
         const match = spec.match
         const matchN = match.length
-        const matchFn: Array<(key: string) => boolean> = new Array<(key: string) => boolean>(matchN)
-        const matchArm: number[] = new Array<number>(matchN)
-        for (let i = 0; i < matchN; i++) { matchFn[i] = linkMatcher(match[i]!); matchArm[i] = match[i]![3] }
         const routed = spec.routed
         const expected = spec.expected as string[]
+
+        const validArm = (arm: number): boolean => Number.isInteger(arm) && arm >= 0 && arm < n
+        if (routed.length !== n) throw new TypeError('table assembler: malformed dispatch routed arity')
+        for (const arm of byKey.values()) if (!validArm(arm)) throw new TypeError('table assembler: malformed dispatch exact arm')
+        for (const arm of byFold.values()) if (!validArm(arm)) throw new TypeError('table assembler: malformed dispatch folded arm')
+        for (const m of match) if (!validArm(m[3])) throw new TypeError('table assembler: malformed dispatch matcher arm')
+
+        const neverMatch: DispatchMatcher = () => false
+        const bindMatchers = (start: number): DispatchMatcherBlock => {
+          const pred = (i: number): DispatchMatcher => i < matchN ? linkMatcher(match[i]!) : neverMatch
+          const arm = (i: number): number => i < matchN ? match[i]![3] : -1
+          const next = start + 4 < matchN ? bindMatchers(start + 4) : undefined
+          return dispatchMatcherBlock(
+            pred(start), arm(start), pred(start + 1), arm(start + 1),
+            pred(start + 2), arm(start + 2), pred(start + 3), arm(start + 3), next,
+          )
+        }
+        const matchBlock = matchN === 0 ? undefined : bindMatchers(0)
+        const classify: (key: string) => number | undefined = hasFold
+          ? matchBlock === undefined
+            ? key => byKey.get(key) ?? byFold.get(asciiFoldKey(key))
+            : key => byKey.get(key) ?? byFold.get(asciiFoldKey(key)) ?? matchBlock(key)
+          : matchBlock === undefined
+            ? key => byKey.get(key)
+            : key => byKey.get(key) ?? matchBlock(key)
+
+        const neverBranch: DispatchBranch = () => FAIL
+        const bindArms = (start: number): DispatchArmBlock => {
+          const branch = (i: number): DispatchBranch => i < n
+            ? dispatchBranch(link(code[armBase + i]!), routed[i] === 1)
+            : neverBranch
+          const next = start + 4 < n ? bindArms(start + 4) : undefined
+          return dispatchArmBlock(
+            start, branch(start), branch(start + 1), branch(start + 2), branch(start + 3), next,
+          )
+        }
+        const runArm = n === 0 ? undefined : bindArms(0)
+        const runOther = other === undefined ? undefined : dispatchBranch(other, otherRouted)
 
         return (input, pos, ctx) => {
           const selectorMark = saveTriviaMark(ctx)
@@ -2336,56 +3292,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (selVal === FAIL) return FAIL
           const selEnd = EC.e
           const key = selVal as string
-
-          let arm = byKey.get(key)
-          if (arm === undefined && hasFold) arm = byFold.get(asciiFoldKey(key))
+          const arm = classify(key)
           if (arm === undefined) {
-            for (let i = 0; i < matchN; i++) {
-              if (matchFn[i]!(key)) {
-                arm = matchArm[i]!
-                break
-              }
-            }
-          }
-
-          let target: Piece
-          let usesRouted: boolean
-          if (arm === undefined) {
-            if (other === undefined) {
+            if (runOther === undefined) {
               // No branch and no fallback: fail AT THE SELECTOR'S END.
               ctx._fe = selEnd
               ctx._fx = expected
               return FAIL
             }
-            target = other
-            usesRouted = otherRouted
-          } else {
-            target = arms[arm]!
-            usesRouted = routed[arm] === 1
+            return runOther(input, pos, selEnd, key, selectorMark, ctx)
           }
-
-          let mark = saveTriviaMark(ctx)
-          let v: unknown
-          if (usesRouted) {
-            const savedRouted = ctx._routed
-            rollbackTrivia(ctx, selectorMark)
-            mark = saveTriviaMark(ctx)
-            ctx._routed = { value: key, span: { start: pos, end: selEnd } }
-            try {
-              v = target(input, pos, ctx)
-            } finally {
-              ctx._routed = savedRouted
-            }
-          } else {
-            v = target(input, selEnd, ctx)
-          }
-          if (v === FAIL) {
-            rollbackTrivia(ctx, mark)
-            // A failed dispatch branch is COMMITTED: the selector already matched.
-            ctx._fc = true
-            return FAIL
-          }
-          return [key, v]
+          return runArm!(arm, input, pos, selEnd, key, selectorMark, ctx)
         }
       }
 
@@ -2394,6 +3311,41 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
+        const scalarChild = !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
+          ? scalarTerminalNodeChild(code, ip)
+          : -1
+        if (scalarChild >= 0) {
+          const recognize = scalarFor(scalarChild)!
+          const spec = k[code[scalarChild + 1]!]
+          const regexValue = code[scalarChild] === OP_RX
+          const xf = fx[code[scalarChild + 2]!] as string[]
+          const build = fns[code[ip + 1]!] as (
+            children: readonly unknown[], fields: undefined, span: { start: number; end: number },
+            rawChildren: readonly unknown[], triviaLog: readonly number[], state: undefined,
+          ) => unknown
+          return (input, pos, ctx) => {
+            const end = recognize(input, pos)
+            if (end < 0) {
+              ctx._fe = pos; ctx._fx = xf
+              if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+              return FAIL
+            }
+            const value = regexValue ? input.slice(pos, end) : spec as string
+            const leaf = { _tag: 'leaf', value, span: { start: pos, end } }
+            const kids = [leaf]
+            const rawKids = [leaf]
+            const span = { start: pos, end }
+            EC.e = end
+            const nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
+            if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
+              pushCstChild(ctx, nd, ctx._cstRawChildren !== undefined || ctx._cstBuf !== undefined
+                ? rawEntry(nd, input, pos, end)
+                : undefined)
+            }
+            EC.e = end
+            return nd
+          }
+        }
         const child = link(code[ip + 2]!)
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
@@ -2412,11 +3364,33 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // 145,512 executions per parse of `benchmark.less`. `cstOutputHost(ctx.build)`
         // is fixed by `run()` before the entry is called, so it selects the piece.
         const build = buildIdx >= 0
-          ? fns[buildIdx] as (
-            children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
-            rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
-          ) => unknown
+          ? fns[buildIdx] as NodeBuilder
           : undefined
+
+        // The common AST-only bodies are separate FunctionLiterals, not a mode
+        // branch in the generic node body. Their eligibility is entirely table
+        // data plus this assembly's fixed option set; direct/custom contexts and
+        // every richer node shape retain the generic implementation below.
+        if (!hostCst && !tracked) {
+          if (build !== undefined && proj < 0 && flags === 0) {
+            return plainBuildNode(child, build)
+          }
+          if (build !== undefined && proj < 0 && flags === 2) {
+            return childrenOnlyBuildNode(child, build)
+          }
+          if (build !== undefined && proj < 0 && flags === 18) {
+            return childrenOnlyFieldsBuildNode(child, build)
+          }
+          if (build !== undefined && proj < 0 && flags === 32) {
+            return collapseBuildNode(child, build)
+          }
+          if (build !== undefined && proj < 0 && flags === 34) {
+            return childrenOnlyCollapseBuildNode(child, build)
+          }
+          if (build === undefined && proj >= 0 && flags === 0) {
+            return plainProjectNode(child, proj, type)
+          }
+        }
 
         // A STRUCTURAL node — no builder, no projection — is the only shape that
         // takes a per-node-type trivia-kind mask off the host (`node.ts:260`).
@@ -2584,10 +3558,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * Emitted source is attempted FIRST, and the closure walk above runs only for
    * what it refuses.
    *
-   * The reason it has to be source at all is in `emit-assembly.ts`'s header:
-   * V8's inline-cache feedback is per FUNCTION LITERAL, so every piece minted
-   * from one literal here shares one feedback vector and every call site inside
-   * it is megamorphic. That is not a property this file can rearrange away.
+   * Source emission names each fixed grammar edge directly and can be carried
+   * as a build-time factory for CSP. The closure path may bind the same fixed
+   * topology through scalar captures; this ordering selects the generated form
+   * where it exists without making shared-literal IC behavior an architecture
+   * premise.
    *
    * The refusal is RECORDED, not swallowed. A grammar that silently drops to
    * the closure path is a permanently slow path nobody would ever find, which
@@ -2609,10 +3584,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
     }
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
-    const validationRoots = [...Object.values(prog.rules), ...extraIps]
-    for (const ip of reachableSites(code, validationRoots)) {
-      if (code[ip] !== OP_DISPATCH) continue
-      validateDispatchSpec(dsp[code[ip + 2]!], code[ip + 5]!, code[ip + 4]!)
+    const roots = [...Object.values(prog.rules), ...extraIps]
+    for (const ip of reachableSites(code, roots)) {
+      if (code[ip] === OP_DISPATCH) {
+        const spec = dsp[code[ip + 2]!]
+        validateDispatchSpec(spec, code[ip + 5]!, code[ip + 4]!)
+      }
+      if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
+        if (code[ip] === OP_NODE) {
+          const child = scalarTerminalNodeChild(code, ip)
+          if (child >= 0) {
+            rawScalarSpecs.add(code[child + 1]!)
+            scalarFor(child)
+          }
+        }
+      }
+      const notChild = scalarTerminalNotChild(code, ip)
+      if (notChild >= 0) scalarFor(notChild)
     }
     /**
      * THE BUILD'S OWN ANSWER, TRIED BEFORE THE CONSTRUCTOR.
@@ -2637,7 +3625,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ? prog.asm?.find(a => a.key === cfgKey(cfg))
       : undefined
     if (pre !== undefined) {
-      const pools = rebuildPools(t.cc, t.fx, pre.plan)
+      const pools = rebuildPools(t.cc, t.fx, t.disp, pre.plan)
       emitted = pre.factory(
         EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
@@ -2649,6 +3637,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
       )
       emitReached = new Set(pre.reached)
     }
@@ -2729,6 +3718,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
       )
       emitReached = em.reached
     } catch (e) {

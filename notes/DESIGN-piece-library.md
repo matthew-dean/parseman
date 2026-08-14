@@ -1,5 +1,14 @@
 # DESIGN — the piece library: generate ahead of time, link at run start, parse with no option reads
 
+> **Authority/status (2026-08-08): detailed historical design and measurement
+> register, not the current 0.48 specification.** The canonical architecture,
+> implementation order, virtual-token representation, and ship contract are in
+> [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md). In particular,
+> the ahead-of-time factory direction in the older sections below was rejected on
+> artifact size; the shipping architecture is a compact `TableProgram` linked to
+> shared closures. Preserve the V8 and binding-time evidence here, but do not infer
+> current priority from this document's branch, section order, or hypotheses.
+
 Branch `design/balance`, on `origin/release/0.47.0` = `6bc265f5b854b256a2e8ea0df5522ca7cfd57770`,
 the base all lanes are standardised on. (This lane opened at `c8eb725`, two commits behind; the two
 byte measurements in §5 were re-run at `6bc265f` and are **byte-identical** at both, and the line
@@ -935,6 +944,48 @@ them, and so are pure waste: `assemble.ts:803`'s `ctx._probe` **and `ctx._tolera
 reading misses it entirely), and `:298`'s `REC = prog.rec === 1 && cfg.tolerant` guarding bodies
 that then re-test `ctx._tolerant === true` internally, justified at `:294` as keeping `exec.ts` the
 identity reference. Rule 3 does not admit that justification.
+
+### 7.5 Token cursors bind through the library; they do not replace it
+
+Derived tokenization is another application of the same binding-time law, not a new
+engine axis. The terminal alphabet, site lexical context, first-character classes and
+available seeded kernels are **encode-time** facts. Which character-gated, raw-token,
+seeded-token or pending-result body the site uses is an **assembly/link-time**
+selection. Recognition at `(input, pos, context)` is the parse-time result.
+
+That yields four rules for piece work in 0.48:
+
+1. **Use the cheapest sound discriminator.** A disjoint first-character choice keeps
+   its O(1) character fork; a shared-leading choice recognizes a token; same-token or
+   prefix-compatible arms retain source-order PEG trial over that shared result. A
+   finite first-character exclusion for an optional repeat may still stop before any
+   child or token work.
+2. **Make terminal pieces multi-entry, not duplicated.** Their one recognition kernel
+   must support raw input, a seed carrying the already-read lead/prefix, and a pending
+   classified result with identical value/span/capture/failure semantics. A seeded
+   kernel continues after the prefix; it does not restart recognition. The classifier
+   and fallback do not get independent regex logic.
+3. **Make every trial use and the selected arm consume the pending result.** A gate
+   that calls an ordinary leaf which rescans the same span has preserved correctness
+   and lost the design. Compatible arms reuse token id/value/end or a prefix view
+   across rollback. See `docs/design/derived-tokenization.md` §2 for the seed payload,
+   invalidation rules and three-way eager/seeded/raw measurement gate.
+4. **Do not postpone orthogonal wins.** Repeat admission, composite setup, rollback,
+   node materialisation and reducer work remain outside token recognition. Bank those
+   wins when their shape leaves the pending-result seam intact.
+
+The practical review question is therefore not "pieces or tokens?" It is: **does
+this piece remain the raw fallback, the token consumer, or useful work on both paths?**
+Reject a prototype when a future cursor would delete it or duplicate its semantics;
+do not reject a large compatible win merely because cursor eligibility may expand.
+
+The current evidence prevents overclaiming. Static distinct-lead eligibility selected
+sites the character gate already decided. Resolving nested/shared leads instead finds
+one Less `Value` choice where a position-token classifier can eliminate 7,734/7,927
+prior entries on benchmark.less and 27,119/30,430 on generated Less, with zero observed
+winner mismatches. CSS's corresponding whole-grammar ceiling is much smaller. This
+points at the seam—classification must own the choice and pass its result forward—and
+at site-specific lexical proofs rather than a conservative global opt-out.
 
 ---
 

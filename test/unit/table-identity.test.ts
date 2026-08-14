@@ -449,10 +449,11 @@ describe('table lowering — three-way identity across every encodable grammar',
   })
 
   it('a parse allocates ZERO regex objects — same identity across parses', () => {
-    // notes/derived-tokenization.md §10.4.3 records that a codegen parse
-    // allocates no regex per parse, because emitted literals sit in a per-rule
-    // IIFE closure evaluated once at module load. A TABLE HAS NO PER-RULE
-    // IIFEs, so the property has to be re-established rather than inherited.
+    // Historical source codegen allocated no regex per parse because emitted
+    // literals sat in per-rule IIFE closures evaluated once at module load
+    // (docs/design/derived-tokenization.md §10.4.3). The current closure engine
+    // instead links one compact TableProgram whose regex constants are built once
+    // into `prog.k`; the closures and this reference-driver test read that pool.
     //
     // It holds by a different mechanism: regexes are built once at ENCODE time
     // into the const pool (`encode.ts` `this.constant(new RegExp(...))`) and the

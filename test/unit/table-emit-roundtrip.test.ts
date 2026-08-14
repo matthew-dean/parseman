@@ -9,7 +9,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes } from '../../bench/table-grammars.ts'
-import { balanced, choice, literal, many, node, optional, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
+import { balanced, choice, keywords, literal, many, node, optional, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
 import type { TableProgram } from '../../src/table/program.ts'
 
 /**
@@ -30,9 +30,16 @@ import type { TableProgram } from '../../src/table/program.ts'
 
 const DIR = path.dirname(fileURLToPath(import.meta.url))
 const EXEC = pathToFileURL(path.resolve(DIR, '../../src/table/exec.ts')).href
+const ASSEMBLE = pathToFileURL(path.resolve(DIR, '../../src/table/assemble.ts')).href
 
 /** Emit a program as a real module, write it, import it, hand back its rules. */
-async function loadEmitted(prog: TableProgram, tag: string, preamble = ''): Promise<Record<string, unknown>> {
+async function loadEmitted(
+  prog: TableProgram,
+  tag: string,
+  preamble = '',
+  runtime = EXEC,
+  runtimeRef: 'execRules' | 'tableRules' = 'execRules',
+): Promise<Record<string, unknown>> {
   // The author's reducers are emitted from their own source. `() => {}`
   // placeholders would make every reducer-bearing rule return `undefined` and
   // the round-trip vacuous — the grammars here are chosen closure-free so
@@ -41,7 +48,7 @@ async function loadEmitted(prog: TableProgram, tag: string, preamble = ''): Prom
   // emitted import at the REFERENCE interpreter — deliberately, it is the oracle
   // here — and before the two engines had distinct names that aim was invisible
   // from the emitted source, which read exactly like a shipped artifact.
-  const src = emitTableModule(prog, { name: 'g', runtime: EXEC, runtimeRef: 'execRules', fnSources: prog.fns.map(f => String(f)) })
+  const src = emitTableModule(prog, { name: 'g', runtime, runtimeRef, fnSources: prog.fns.map(f => String(f)) })
   const dir = mkdtempSync(path.join(tmpdir(), `pm-table-emit-${tag}-`))
   writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}')
   const file = path.join(dir, 'grammar.ts')
@@ -61,6 +68,34 @@ function outcome(rule: unknown, input: string, opts?: Record<string, unknown>): 
 }
 
 describe('table lowering — the EMITTED module round-trips', () => {
+  it('round-trips a selected childless lexical body through the emitted reader', async () => {
+    const source = token(sequence(regex(/[a-z]+/), optional(literal('('))))
+    const prog = encodeTable({ Root: source })
+    expect(emitTableOnly(prog)).toContain('lx:[')
+    const emitted = await loadEmitted(prog, 'lex-body', '', ASSEMBLE, 'tableRules')
+    const reference = execRules(prog)
+    for (const input of ['word', 'call(', '9', '']) {
+      expect(outcome(emitted.Root, input), input).toBe(outcome(reference.Root, input))
+      expect(outcome(emitted.Root, input), input).toBe(outcome(source, input))
+    }
+  })
+
+  it('round-trips a selected composite lexical program through the emitted reader', async () => {
+    const source = token(choice(
+      keywords(['@media']), keywords(['@supports']), keywords(['@layer']),
+      regex(/@(?:-[a-z]+-)?keyframes/),
+    ))
+    const prog = encodeTable({ Root: source })
+    expect(emitTableOnly(prog)).toContain('lp:[')
+    const emitted = await loadEmitted(prog, 'lex-program', '', ASSEMBLE, 'tableRules')
+    const reference = execRules(prog)
+    const character = execRules(encodeTable({ Root: source, Gap: token(balanced('(', ')')) }))
+    for (const input of ['@media', '@supports', '@foo', '!']) {
+      expect(outcome(emitted.Root, input), input).toBe(outcome(reference.Root, input))
+      expect(outcome(emitted.Root, input), input).toBe(outcome(character.Root, input))
+    }
+  })
+
   it('a RECOVERY table stays a recovery table across emit', async () => {
     // `rec` selects the pieces that read the sync operands. Emitted without it,
     // the operands are still in `c` and nothing reads them: the module LOADS,

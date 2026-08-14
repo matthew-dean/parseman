@@ -37,8 +37,11 @@ export const OP_SEQV = 4
  */
 export const OP_CHOICE = 5
 /**
- * `REP c min max sep flags` — `sep` is a child offset or −1; `max` −1 = ∞.
- * `flags` bit 0 = trailing separator allowed, bit 1 = `keepSeparators`.
+ * `REP c min max sep flags fx sepClass` — `sep` is a child offset or −1; `max`
+ * −1 = ∞. `fx` is recovery metadata. The last class is the separator sentinel
+ * for a separated list, otherwise the finite/non-nullable optional-item class
+ * (or −1). `flags` bit 0 = trailing separator allowed, bit 1 =
+ * `keepSeparators`, bit 2 = item expected reporting.
  */
 export const OP_REP = 6
 /** `REPV …` — `REP` with `valueUnused`. */
@@ -57,7 +60,8 @@ export const OP_XFORM = 9
  * none), `type` and `tags` index the const pool (`tags` −1 = none).
  *
  * `flags` is a BIT FIELD, not a boolean: bit 0 (`&1`) = grammar-owned explicit
- * `captureTrivia`, bit 2 (`&4`) = the builder reads
+ * `captureTrivia`, bit 1 (`&2`) = a direct builder is proven not to read
+ * `rawChildren`, bit 2 (`&4`) = the builder reads
  * `triviaLog`, bit 3 (`&8`) = it reads `ctx.state`, bit 4 (`&16`) = the node has
  * read fields, bit 5 (`&32`) = `collapse`, bit 6 (`&64`) = `unwrap`, bit 7
  * (`&128`) = `trailingTrivia`. Bit 0 distinguishes capture a host may not
@@ -110,8 +114,12 @@ export const OP_NODE_TRACK = 19
  * on `ctx.trivia` for the duration and restores the outer one after, which is
  * how the runtime's own `advanceTrivia` fast scanner gets reached — the same
  * shared machinery the interpreter uses, not a second copy of it.
- * Synthetic rule-entry/restoration scopes use `OP_SCOPE_PLAIN` so a zero
- * policy stays a three-word row without changing this opcode's ABI.
+ *
+ * `policy` bit 0 suppresses selected root capture for an opaque scope; bit 1
+ * refuses an unclassified local scope while selected root capture is active.
+ * Synthetic rule-entry and cross-rule restoration scopes have no policy and use
+ * the three-word `OP_SCOPE_PLAIN` row below. Keeping the opcodes distinct means
+ * a zero policy costs no extra program word without changing this opcode's ABI.
  */
 export const OP_SCOPE = 20
 /**
@@ -121,6 +129,11 @@ export const OP_SCOPE = 20
 export const OP_EXPECT = 21
 /**
  * `SEQX f n c1 … cn` — a `transform()` whose child is a `sequence()`.
+ *
+ * `f >= 0` indexes the reducer in `prog.fns`. `f < 0` is the descriptor
+ * `~childIndex`: the transform is the exact direct projection
+ * `([…, value, …]) => value`, so the row returns that already-parsed child and
+ * carries no reducer.  Both forms have the same row width.
  *
  * That pair is the dominant shape in every grammar here (json is nine of them),
  * and running it as two rows costs two switch dispatches and two JS call frames
@@ -428,10 +441,33 @@ export const OP_LABEL = 39
  */
 export const OP_COV = 40
 /**
- * `SCOPE_PLAIN k c` — a synthetic ambient-trivia scope with policy fixed to zero.
- * A distinct opcode prevents the next row's opcode from being read as policy.
+ * `SCOPE_PLAIN k c` — a synthetic zero-policy ambient-trivia scope.
+ *
+ * This is the same scanner/context swap as `OP_SCOPE`, with policy fixed to
+ * zero at assembly. `encodeRule()` uses it for a rule entry and `scopedRef()`
+ * for the lexical-trivia restoration around a reference reached from
+ * `noTrivia()`. Neither row represents an authored `parser()` scope, so neither
+ * can be opaque or require the unclassified-scope refusal.
+ *
+ * A separate opcode is load-bearing: treating a three-word synthetic row as the
+ * four-word `OP_SCOPE` makes the following row's opcode become the policy bits.
  */
 export const OP_SCOPE_PLAIN = 41
+/**
+ * `LEX_BODY b fx suffixFx` — one compiler-selected childless lexical replacement
+ * body. `b` indexes `prog.lex`; `fx` is the exact base-recognizer failure set;
+ * `suffixFx` is optional()'s swallowed literal failure publication.
+ *
+ * There is deliberately no child operand and no mode bit. The complete
+ * CHARACTER and TOKEN candidates were compared before serialization; this row
+ * is only the winning TOKEN body. A program without a selected TOKEN body has
+ * no row or lexical pool.
+ */
+/** `LEX_BODY body fx suffixFx lineFlags` — selected childless lexical body.
+ * lineFlags bit 0 publishes the regex range; bit 1 publishes a matched suffix. */
+export const OP_LEX_BODY = 42
+/** `LEX_PROGRAM p` — selected fixed composite lexical body, childless. */
+export const OP_LEX_PROGRAM = 43
 /**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
@@ -464,4 +500,6 @@ export const OP_NAMES: Record<number, string> = {
   [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
   [OP_LIVE]: 'LIVE', [OP_ATTEMPT]: 'ATTEMPT', [OP_LABEL]: 'LABEL', [OP_COV]: 'COV',
   [OP_SCOPE_PLAIN]: 'SCOPE_PLAIN',
+  [OP_LEX_BODY]: 'LEX_BODY',
+  [OP_LEX_PROGRAM]: 'LEX_PROGRAM',
 }

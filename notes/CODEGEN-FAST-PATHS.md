@@ -1,199 +1,103 @@
-# How Parseman generated code is designed to be fast (agent-readable)
+# Historical source-codegen fast paths
 
-This is the working model for **why the macro/`compile()` output looks the way it
-does**, and the rules to preserve (and extend) when touching `src/compiler/codegen.ts`.
-It is prescriptive: new codegen should follow these, and new combinators should be
-checked against the **"early exit before setup"** rule below.
+> **Authority/status (2026-08-08): historical evidence, not current architecture.**
+> The source generator described here (`src/compiler/codegen.ts`,
+> `trivia-fast-path.ts`, and `scannable-run.ts`) was deleted during the 0.47
+> cutover. The shipping lowering is the closure-based TableProgram assembler in
+> `src/table/assemble.ts`; current piece and token integration rules live in
+> [`DESIGN-piece-library.md`](./DESIGN-piece-library.md) and
+> [`derived-tokenization.md`](../docs/design/derived-tokenization.md). Keep this
+> note for the old mechanisms, recovery point, and weakly-proven measurements.
 
+## Provenance and status
 
----
+The deletion was an LLM oversight, not an owner decision. Recovery point:
+**`3d4dac6`** (`trivia-fast-path.ts` 296 lines,
+`scannable-run.ts` 1,627 lines). The 0.48 owner ledger tracks recovery under
+[`RELEASE-0.48-TARGET.md`](./RELEASE-0.48-TARGET.md) §9 and
+[`PERF_IDEAS.md`](./PERF_IDEAS.md) U-53.
 
-## STATUS CONVENTION (repo-wide, adopted 2026-08-07)
+The historical register contained **16 items**. Under the repository status
+convention, 11 mechanisms below are **LANDED, THEN
+REMOVED**, two are `QUEUED`, one is `UNMEASURED`, and two blocks are
+`REFERENCE`. That exceptional state is deliberate: the work once shipped and
+was later removed without a decision, so neither `REJECTED` nor `QUEUED` is
+accurate.
 
-`LANDED` · `MEASURED-NULL` · `REJECTED` · `QUEUED` · `UNMEASURED` · `REFERENCE`.
-Definitions and the repo-wide picture: `PERF_IDEAS.md` § STATUS CONVENTION AND
-COUNTS. Strikethroughs and "partial ✅" are retired; a compound item carries one
-marker per part. `UNCLASSIFIABLE` is used where an item genuinely does not fit,
-with the reason stated — it is not a sixth bucket, it is an admission.
+The figures below name Less `benchmark.less` (parse-only), but name **no commit,
+harness, sample count, protocol, or instrumentation**. The old engine no longer
+exists at HEAD, so none is re-derivable as stated. Treat `~3–4%`, `~6–7%`,
+`~11%`, `~1%`, `~56k`, `981`, `26`, and the `11`/`35` site counts as weak
+historical evidence, never as a current performance claim.
 
-## ⚠️ READ THIS BEFORE THE REST OF THE FILE — IT DESCRIBES AN ENGINE THAT NO LONGER SHIPS
+## Engine-independent law
 
-This file is written prescriptively against `src/compiler/codegen.ts` and its
-`trivia-fast-path.ts` / `scannable-run.ts` machinery. **All three were DELETED
-during the 0.47 cutover.** `RELEASE-0.48-TARGET.md` §9 records it, files it as
-"**an LLM oversight, not a decision**", and gives the recovery point:
-**`3d4dac6`** (`trivia-fast-path.ts` 296 lines, `scannable-run.ts` 1,627 lines).
-What ships now is `src/table/emit-assembly.ts` (`RELEASE-0.48-TARGET.md` §8b's
-engine inventory).
+Reject on the cheapest sound signal **before** allocating, saving rollback
+marks, swapping capture sinks, cloning state, or installing trivia. A first-set
+guard is sound when the body has a discrete first set and is non-nullable. It
+must preserve the body's static `expected` result and must not bypass recovery
+or completion semantics.
 
-So this file's opening claim — "Codegen is the shipping lowering; this file is
-written against it and stays that way" — **is false as of 0.47**, and every
-technique below is `LANDED, THEN REMOVED`. That is not one of the six markers,
-deliberately: the work shipped and was then deleted without a decision, which is
-a different state from any of `LANDED` / `REJECTED` / `QUEUED`. Recovering it is
-`PERF_IDEAS.md` **U-53**.
+The old generator implemented that law with a first-character check above the
+setup. These were the exact historical sites:
 
-**Keep the file.** The *principle* ("reject on the cheapest available signal
-before allocating or mutating anything") is engine-independent and is the thing
-worth carrying into the assembler. The *call sites* are historical.
-
-## COUNTS — 16 items
-
-| marker | count |
-|---|---:|
-| `LANDED, THEN REMOVED` (module deleted at the 0.47 cutover — U-53) | 11 |
-| `QUEUED` | 2 |
-| **`UNMEASURED`** | **1** |
-| `REFERENCE` | 2 |
-
-> ### **Untried in this file: 2 — both file-local, neither in `PERF_IDEAS.md`.**
-> 1. **`sepBy` separator first-set guard** — `QUEUED`. The one `⬜ CANDIDATE` in the guard table, and the only technique here never built. Blocked on machinery, not on doubt: "marks precede the trivia-skip and the separator starts *after* trivia, so a clean pre-marks first-set check needs a post-trivia peek." Sized: 11 grammar uses against 35 `many(sequence(sep,elem))` already covered.
-> 2. **Interpreter first-set parity in `node`/`repeat`** — `UNMEASURED`, and **narrow it to `node()` before spending anything on it.** `INTERPRETER_PERF_IDEAS.md` records that the `many`/`oneOrMore` half of exactly this was tried and **regressed** GraphQL/CSS/TOML. This file does not know that. The two files were never cross-checked.
-
-**Per-item markers.** `## The one rule that matters most` — `REFERENCE` (a design
-law and a review criterion, not an item; its applications are the guard-table
-rows). Guard table: `choice` arm `LANDED` (pre-existing, no work needed) ·
-`many`/`oneOrMore` body `LANDED, THEN REMOVED` (0.29.0) · `node()` capture frame
-`LANDED, THEN REMOVED` (0.29.0) · `attempt(inner)` `LANDED, THEN REMOVED`
-(0.29.0) · `sepBy` separator loop `QUEUED` · `sequence` `LANDED` (already lazy,
-no work needed). The seven "techniques the generated code relies on" — labelled
-blocks, first-set char dispatch, arity-gated capture elision, profiling-phase
-hoist, zero-alloc failure payloads, trivia fast-path, `markUnusedValues` — all
-`LANDED, THEN REMOVED`. `## Measured impact` and `## Loop early-exit review
-(2026-07-22)` are `REFERENCE` (a results block and a completed audit whose one
-open finding is the `sepBy` row).
-
-> ### PROVENANCE WARNING FOR THIS FILE
-> "Measured impact" names a fixture (Less `benchmark.less`, parse-only) but **no
-> commit, no harness, no sample count and no protocol** for "~3–4%", "~6–7%",
-> "~11%". "~1% — reads, not allocs" has no fixture at all. The invocation counts
-> ("~56k times/parse — 981 `@`, 26 real `@{`") name no instrumentation, and the
-> "11 grammar uses vs 35" claim names no grammar set. Since the engine these were
-> measured on **no longer exists**, none of them is re-derivable as stated.
-
-> **Scope.** Two halves, and they generalise differently.
->
-> - **The principle — reject on the cheapest available signal before allocating or
->   mutating anything — is about how parsing costs work, not about how parseman
->   emits code.** Speculative calls that fail immediately dominate any lowering, so
->   this applies to **any** lowering: a recognizer that sets up a frame before
->   testing the first byte has paid for a match it did not get, whether that setup is
->   emitted JavaScript or an interpreted instruction row.
-> - **Everything concrete below is about codegen** — the emitted-construct table, the
->   `break <failLabel>` / `return fail` shapes, `emitMany` / `emitNode` / `emitAttempt`,
->   the named gating helpers. Those are statements about
->   `src/compiler/codegen.ts`'s output and should not be read as constraints on
->   another lowering, which allocates and dispatches on entirely different terms.
->
-> Codegen is the shipping lowering; this file is written against it and stays that way.
-
-## The one rule that matters most: pre-compute the early exit BEFORE any setup
-
-**A combinator must reject on the cheapest available signal (usually a single
-`input.codePointAt(pos)` first-set test) BEFORE it allocates or mutates anything.**
-
-Parsing is dominated by *speculative* calls that fail immediately — an early arm of
-a non-disjoint `choice`, a `many` body at its terminating iteration, a production
-tried at every position by a non-dispatching caller. Every one of those must cost a
-first-byte comparison, not a frame setup. Concretely, generated recognizers should
-`break <failLabel>` / `return fail` on a first-set miss *above* the lines that:
-
-- allocate collector arrays (`_ch`/`_raw`/`_tl = []`),
-- swap CST context fields (`_ctx._cstChildren = …`),
-- save rollback marks (`_ctx._cstLeaves?.length ?? 0`),
-- clone state, install trivia, etc.
-
-The guard is **sound** exactly when the body has a discrete (non-`any`) first set
-and cannot match empty (`needsFirstSetGuard`): a first-set miss then *cannot* match,
-so bailing is behavior-identical, and nothing was set up to roll back. It must record
-the same static `expected` a body start-fail would (`armStaticExpected`) so
-diagnostics are unchanged, and it is **skipped under compiled recovery**
-(`ctx.recovery`), where a swallowed failure still feeds the completions probe.
-
-### Where this guard is applied (keep this table current)
-
-| construct | setup done before recognize | guard status |
+| construct | setup avoided | old status / evidence |
 |---|---|---|
-| `choice` arm | — (already first-set dispatches; `asciiDispatch` / per-arm `firstSetCond`) | ✅ built-in |
-| `many` / `oneOrMore` body | attempt-then-fail at the terminating iteration | ✅ 0.29.0 (`emitMany`, gated `!failsAtStart`) |
-| `node()` capture frame | allocates `_ch`/`_raw`/`_tl` arrays + swaps CST context | ✅ 0.29.0 (`emitNode`, gated `capturesChildren \|\| structural`) |
-| `attempt(inner)` | 6 rollback-mark reads (`_ctx._cstLeaves?.length ?? 0`, …) before `inner` | ✅ 0.29.0 (`emitAttempt`; ~1% — reads, not allocs) |
-| `sepBy` separator loop | 4 rollback marks + trivia-skip before the separator | ⬜ CANDIDATE — trickier: marks precede the trivia-skip and the separator starts *after* trivia, so a clean pre-marks first-set check needs a post-trivia peek. 11 grammar uses vs 35 `many(sequence(sep,elem))` already covered by the `many` guard |
-| `sequence` | tuple `[…]` only AFTER terms parse; skipped when `valueUnused` | ✅ already lazy |
+| disjoint `choice` arm | ordered speculative arm entry | built in via `asciiDispatch` / `firstSetCond` |
+| `many` / `oneOrMore` body | terminating attempt | landed 0.29.0 in `emitMany`; claimed ~3–4% |
+| `node()` | `_ch`/`_raw`/`_tl` allocation and CST sink swap | landed 0.29.0 in `emitNode`; claimed ~6–7% on top |
+| `attempt(inner)` | six rollback-mark reads | landed 0.29.0 in `emitAttempt`; claimed ~1% |
+| `sepBy` separator loop | four marks plus trivia skip | **QUEUED**; 11 alleged uses vs 35 `many(sequence(sep, elem))` |
+| `sequence` | tuple allocation | already lazy; `valueUnused` skipped it |
 
-**When adding a combinator, ask:** does it do any allocation/mutation/mark before
-its first token is recognized? If yes and its first set is discrete + non-empty,
-emit a `firstSetCond` guard before that setup, recording `armStaticExpected`, gated
-on `!ctx.recovery`.
+The claimed node result came from Less interpolation: `@{…}` was allegedly
+entered ~56k times per parse for 981 `@` bytes and 26 real interpolations, so
+almost every entry rejected after previously allocating a capture frame. The
+claimed cumulative repeat-plus-node result was ~11%.
 
-## The other techniques the generated code relies on
+The current architecture must re-measure the mechanism at current production
+sites. A standalone recognizer win is not evidence for boundary elimination;
+the relevant question is whether a TableProgram piece can reject before its
+closure/capture/rollback setup while preserving the one recognition contract.
 
-- **Labeled-block + `break` to skip logic, not nested `if/else`.** Recognizers wrap
-  their body in `_pfail: { … }` (and trivia scanners in `_triv: { … }`). A failure
-  anywhere `break`s straight to the boundary; the failure result is returned once
-  after the block. This keeps the hot success path a straight line with no
-  per-step branching to re-check "did we already fail", and lets any depth bail in
-  one jump. Preserve this — do not convert `break _pfail` chains into nested
-  conditionals.
+## Other old generated shapes worth auditing, not copying blindly
 
-- **First-set char dispatch for disjoint choices.** When a `choice`'s arms have
-  pairwise-disjoint first sets, codegen emits one `input.codePointAt(pos)` read and
-  a `switch`/`if` jump table (`planDisjointDispatch`) straight to the one arm that
-  can match — no ordered tr-and-backtrack. Non-disjoint choices fall back to ordered
-  `firstMatch`; that is exactly where the per-arm/per-node first-set guards above pay
-  off (a shared-prefix arm is entered speculatively).
+- **Labeled failure blocks.** `_pfail: { … }` and `_triv: { … }` let any depth
+  `break` to one failure boundary without success-path rechecks.
+- **One-read disjoint dispatch.** `planDisjointDispatch` read the lead character
+  once and jumped directly to the only possible arm; overlapping arms retained
+  ordered first-match semantics.
+- **Arity-gated capture elision.** `buildReadsChildren`, `buildReadsRaw`,
+  `buildReadsFields`, `buildReadsTrivia`, and `_hostReads` avoided collectors a
+  builder could not observe.
+- **Profile-phase hoisting.** `_pm`/`_rec`/`_cap` cached the profile phase once
+  per node instead of repeating `_ctx._pmProfile?.phase === …` roughly eight
+  times.
+- **Zero-allocation static failures.** `hoistExpected` froze payloads; swallowed
+  optional/repeat/choice misses did not record a failure.
+- **Trivia scan fusion.** `analyzeTriviaFastPath` /
+  `buildFastTriviaFnDecl` recognized scannable trivia with one character loop
+  and one whole-run capture; labeled trivia additionally captured per kind.
+- **Unused-value elimination.** `markUnusedValues` / `valueUnused` omitted
+  sequence tuples and repeat arrays whose enclosing node only observed captures.
 
-- **Arity-gated capture elision.** A direct `node(build)` only allocates the
-  collectors its builder actually reads (`buildReadsChildren`/`buildReadsRaw`/
-  `buildReadsFields`/`buildReadsTrivia`; structural/host nodes gate on `_hostReads`).
-  An unread collector is never allocated. Don't defensively capture "just in case".
+All of those concrete names refer to deleted source codegen. Current equivalents
+must bind through the fixed-piece library and keep its bounded-family and
+fallback rules; they are not instructions to restore per-rule emitted source.
 
-- **Profiling-phase hoist.** The `run({profile:true})` recognizer/capture/host phase
-  split is read ONCE per node into `_pm`/`_rec`/`_cap` locals, not re-evaluated
-  `_ctx._pmProfile?.phase === X` ~8× per node. On the normal path `_pm` is undefined
-  and the ternaries collapse to cheap boolean locals.
+## Completed loop audit and remaining candidates
 
-- **Zero-alloc failure payloads.** Static `expected` arrays are hoisted+frozen
-  module constants (`hoistExpected`); a leaf failure references the frozen array
-  rather than building one. `recordFail` is OFF inside swallowers (optional / many /
-  sepBy / not / choice arms) — a leaf failing there just `break`s and records
-  nothing (the hot loop-termination / first-arm-miss path pays zero).
+The 2026-07-22 audit found no systematic over-iteration beyond
+setup-before-recognize. Old loops otherwise stopped on body failure, EOF, or
+zero-width progress (`iterEnd <= itemPos`); first-match stopped at the first
+matching arm. The one unbuilt old-generator case was `sepBy`: its separator
+starts after trivia but rollback marks preceded the trivia skip, so a sound
+pre-mark guard needed a post-trivia peek.
 
-- **Trivia fast-path.** A scannable trivia (`oneOrMore(choice(<scannable arms>))`)
-  lowers to a hand-rolled `while` char-scan (`analyzeTriviaFastPath` /
-  `buildFastTriviaFnDecl`) instead of running the combinator, with a single
-  whole-run capture. Labeled variants add per-chunk kind capture.
+Two candidates remain only as questions:
 
-- **`markUnusedValues` / `valueUnused`.** When a `sequence` tuple or a `many` array is
-  never observed (it sits under a `node()` that builds from captured children), the
-  array is not built — the terms still parse and self-capture.
-
-## Measured impact (Less `benchmark.less`, parse-only)
-
-- Repeat-body first-set guard (`emitMany`): ~3–4% (loop-termination misses).
-- Node-capture first-set guard (`emitNode`): ~6–7% on top (Less `@{…}` interpolation
-  was invoked ~56k times/parse — 981 `@`, 26 real `@{` — almost all rejected on the
-  first byte, each previously allocating a full capture frame).
-- Cumulative vs no guards: ~11%. These are parseman-level, so **every** parser
-  (css/less/scss/jess) that recompiles inherits them — the highest-leverage place to
-  optimize is here, not in a single grammar.
-
-## Loop early-exit review (2026-07-22)
-
-Reviewed every generated loop for "does it keep iterating / doing setup when it
-could already stop?". The only systematic finding is the **setup-before-recognize**
-pattern above — a loop that allocates/marks/skip-trivia for an iteration whose body
-then rejects on the first byte. That is now guarded for `many`/`oneOrMore` and the
-speculative `node`/`attempt` entries. The `while (cur < input.length)` loops
-otherwise exit correctly (body-fail, EOF, or zero-width `iterEnd <= itemPos`).
-`choice` firstMatch stops at the first matching arm; on no match it must try all
-(that is what the per-arm first-set guards make cheap). No other over-iteration
-pattern found. Remaining: `sepBy` (above).
-
-## Not-yet-done candidates (early-exit-before-setup rule)
-
-1. **`sepBy` separator guard** — needs the post-trivia peek (marks precede the
-   trivia-skip); do it when the post-trivia first-set machinery exists.
-2. **Interpreter parity** — the interpreter (`src/combinators/*`) does the analogous
-   allocate-before-recognize in `node`/`repeat`; a matching first-set pre-check keeps
-   interpreter and compiled speed closer and is a natural mirror of the codegen guards.
+1. **`sepBy` post-trivia separator guard — `QUEUED`.** Re-express through the
+   current skip/piece seam, then measure production dynamic coverage.
+2. **Interpreter `node()` parity — `UNMEASURED`.** Do not repeat the
+   `many`/`oneOrMore` half: [`INTERPRETER_PERF_IDEAS.md`](./INTERPRETER_PERF_IDEAS.md)
+   records that experiment regressing GraphQL, CSS, and TOML.

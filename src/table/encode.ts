@@ -1,9 +1,10 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { firstSetOf, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
+import { classifyFinalChoice, firstSetOf, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
-import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
+import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
+import { buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators/dispatch.ts'
 import {
@@ -13,15 +14,28 @@ import {
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_COV,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
 import { resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
 import { missingInferredType } from '../combinators/node.ts'
 import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
-import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
+import type { DispatchSpec, LexBodySpec, LexProgramSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
+import {
+  lexProgramDigest,
+  LEX_NODE_CHOICE2, LEX_NODE_CHOICE4, LEX_NODE_CHOICE8,
+  LEX_NODE_NOT, LEX_NODE_OPTIONAL,
+  LEX_NODE_SEQUENCE2, LEX_NODE_SEQUENCE3, LEX_NODE_SEQUENCE4, LEX_NODE_SEQUENCE5,
+  LEX_NODE_TERMINAL,
+} from './lex-program.ts'
 import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
+import { directArrayProjection } from '../compiler/direct-projection.ts'
+import {
+  assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
+} from '../compiler/token-capability.ts'
+import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -38,37 +52,6 @@ function emittableConst(v: unknown): boolean {
     const proto = Object.getPrototypeOf(v)
     if (proto !== Object.prototype && proto !== null) return false
     return Object.values(v).every(x => scalar(x) || (Array.isArray(x) && x.every(scalar)))
-  }
-  return false
-}
-
-/**
- * Does the rule-map entry `winner` bottom out AT the reference `p`?
- *
- * The question `Encoder.winners` has to ask before resolving a `g.X` by name. A
- * map entry that IS the reference — directly, or under the scope wrappers that
- * `rules()` puts there — is not an override to resolve to; it is the reference's
- * own binding, and the only thing that reaches the rule's BODY from there is the
- * ref's thunk. Resolving by name instead hands back the row already in flight for
- * that entry, which is an alias cycle rather than a parser (see `winners`).
- *
- * ONLY WRAPPERS `rules()` ITSELF INTRODUCES are unwrapped — `parser()`/`noTrivia`
- * scopes (`grammar`) and `trivia()`. Both are single-child and both can encode to
- * NO ROW, which is what makes the cycle degenerate. Walking further, into a
- * `seq()` or a `choice()` arm, would answer a different question: a rule whose
- * body legitimately contains a reference to itself is ordinary recursion and must
- * keep resolving by name.
- */
-function wrapsRef(winner: Combinator<unknown>, p: Combinator<unknown>): boolean {
-  let cur = winner
-  // Bounded rather than `while (true)`: `_def.parser` is author-supplied and a
-  // hand-built cycle of scopes would otherwise hang the encoder. Nothing legal
-  // nests these more than a couple deep.
-  for (let n = 0; n < 16; n++) {
-    if (cur === p) return true
-    const d = cur._def as ParserDef
-    if (d.tag !== 'grammar' && d.tag !== 'trivia') return false
-    cur = d.parser
   }
   return false
 }
@@ -154,6 +137,10 @@ class Encoder {
   fx: (readonly string[])[] = []
   disp: (readonly number[])[] = []
   dsp: DispatchSpec[] = []
+  lex: LexBodySpec[] = []
+  private lexIndex = new Map<string, number>()
+  lexPrograms: LexProgramSpec[] = []
+  private lexProgramIndex = new Map<string, number>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -207,7 +194,6 @@ class Encoder {
   winners: Readonly<Record<string, Combinator<unknown>>> | undefined = undefined
   triviaSpecs: TriviaSpec[] = []
   private triviaIndex = new Map<Combinator<unknown>, number>()
-
   /**
    * A trivia combinator as DATA where its shape allows.
    *
@@ -224,6 +210,160 @@ class Encoder {
     this.triviaIndex.set(t, idx)
     this.triviaSpecs.push(this.triviaSpecOf(t))
     return idx
+  }
+
+  private lexicalBodySlot(p: Combinator<unknown>): {
+    kind: 'body'
+    body: number
+    expectedFx: number
+    suffixFx: number
+    lineFlags: number
+  } | { kind: 'program'; program: number } | undefined {
+    if (!this.selectLexicalBodies) return undefined
+    const body = directExecutableTokenBody(p, name => this.winners?.[name])
+    if (body === undefined) return undefined
+    const tokenDef = p._def
+    if (tokenDef.tag !== 'token') throw new Error('parseman: selected lexical body lost token boundary')
+    const matcher = (arm: Extract<typeof body, { kind: 'regex-terminal' }>): number => {
+      const flags = arm.flags.includes('y') ? arm.flags : `${arm.flags.replace(/g/g, '')}y`
+      const regex = this.constant(new RegExp(arm.source, flags))
+      const key = `${regex}:-1`
+      const prior = this.lexIndex.get(key)
+      if (prior !== undefined) return prior
+      const id = this.lex.length
+      this.lexIndex.set(key, id)
+      this.lex.push([regex, -1])
+      return id
+    }
+    if (body.kind === 'balanced-scan') {
+      const scan = this.scanSlot({
+        kind: 1,
+        flags: (body.raw ? 1 : 0) | (body.strict ? 4 : 0),
+        skip: body.ownSkip.map(combinator => this.subtree(combinator)),
+        open: body.open,
+        close: body.close,
+      })
+      const words = [scan]
+      const spec = [3, lexProgramDigest(words), scan] as LexProgramSpec
+      const key = spec.join(',')
+      const prior = this.lexProgramIndex.get(key)
+      if (prior !== undefined) return { kind: 'program', program: prior }
+      const id = this.lexPrograms.length
+      this.lexProgramIndex.set(key, id)
+      this.lexPrograms.push(spec)
+      return { kind: 'program', program: id }
+    }
+    if (body.kind === 'fixed-tree') {
+      const words: number[] = []
+      const emitNode = (node: ExecutableLexNode): boolean => {
+        switch (node.kind) {
+          case 'terminal':
+            words.push(
+              LEX_NODE_TERMINAL,
+              matcher(node.terminal),
+              this.expected(node.terminal.expected),
+              this.track ? 1 : 0,
+            )
+            return true
+          case 'sequence': {
+            for (const part of node.parts) if (!emitNode(part)) return false
+            const op = node.parts.length === 2 ? LEX_NODE_SEQUENCE2
+              : node.parts.length === 3 ? LEX_NODE_SEQUENCE3
+                : node.parts.length === 4 ? LEX_NODE_SEQUENCE4
+                  : node.parts.length === 5 ? LEX_NODE_SEQUENCE5 : -1
+            if (op < 0) return false
+            words.push(op)
+            return true
+          }
+          case 'choice': {
+            for (const arm of node.arms) if (!emitNode(arm)) return false
+            const op = node.arms.length === 2 ? LEX_NODE_CHOICE2
+              : node.arms.length === 4 ? LEX_NODE_CHOICE4
+                : node.arms.length === 8 ? LEX_NODE_CHOICE8 : -1
+            if (op < 0) return false
+            words.push(op, this.expected(node.expected))
+            for (let i = 0; i < node.arms.length; i++) {
+              const first = node.firstSets[i]!
+              words.push(first.kind === 'ranges' ? this.charClass(first) : -1)
+              words.push(this.expected(node.armExpected[i]!))
+            }
+            return true
+          }
+          case 'not':
+            if (!emitNode(node.body)) return false
+            words.push(LEX_NODE_NOT, this.expected(node.expected))
+            return true
+          case 'optional':
+            if (!emitNode(node.body)) return false
+            words.push(LEX_NODE_OPTIONAL)
+            return true
+        }
+      }
+      if (!emitNode(body.root)) return undefined
+      const spec = [2, lexProgramDigest(words), ...words] as LexProgramSpec
+      const key = spec.join(',')
+      const prior = this.lexProgramIndex.get(key)
+      if (prior !== undefined) return { kind: 'program', program: prior }
+      const id = this.lexPrograms.length
+      this.lexProgramIndex.set(key, id)
+      this.lexPrograms.push(spec)
+      return { kind: 'program', program: id }
+    }
+    if (body.kind === 'not2-ordered4-terminal') {
+      const words = [
+        ...body.guard0.map(matcher), this.expected(body.guard0Expected),
+        matcher(body.guard1), this.expected(body.guard1Expected),
+        matcher(body.terminal), this.expected(body.terminalExpected),
+        this.track ? 1 : 0,
+      ]
+      const spec = [1, lexProgramDigest(words), ...words] as unknown as LexProgramSpec
+      const key = spec.join(',')
+      const prior = this.lexProgramIndex.get(key)
+      if (prior !== undefined) return { kind: 'program', program: prior }
+      const id = this.lexPrograms.length
+      this.lexProgramIndex.set(key, id)
+      this.lexPrograms.push(spec)
+      return { kind: 'program', program: id }
+    }
+    if (body.kind === 'ordered4-terminals') {
+      const commonClass = this.charClass(body.commonFirstSet)
+      if (commonClass < 0) return undefined
+      const words: number[] = [commonClass, this.expected(body.commonMissExpected)]
+      for (const arm of body.arms) {
+        words.push(matcher(arm), this.expected(arm.expected))
+      }
+      words.push(this.track ? 1 : 0)
+      const spec = [0, lexProgramDigest(words), ...words] as unknown as LexProgramSpec
+      const key = spec.join(',')
+      const prior = this.lexProgramIndex.get(key)
+      if (prior !== undefined) return { kind: 'program', program: prior }
+      const id = this.lexPrograms.length
+      this.lexProgramIndex.set(key, id)
+      this.lexPrograms.push(spec)
+      return { kind: 'program', program: id }
+    }
+    const expectedFx = this.expected(body.expected)
+    const flags = body.flags.includes('y') ? body.flags : `${body.flags.replace(/g/g, '')}y`
+    const regex = this.constant(new RegExp(body.source, flags))
+    const suffix = body.kind === 'regex-terminal' ? -1 : body.suffix.charCodeAt(0)
+    const key = `${regex}:${suffix}`
+    const prior = this.lexIndex.get(key)
+    const suffixFx = this.expected(body.kind === 'regex-terminal' ? [] : directTerminalFailureExpected({
+      tag: 'literal', value: body.suffix, caseInsensitive: false,
+    }))
+    // Tracked terminal rows advance the high-water mark even when their static
+    // language cannot contain a newline. Otherwise a preceding newline stays
+    // behind an incorrectly advanced boundary and the next CST node receives a
+    // stale line. The suffix advances only when it actually matched (reader bit
+    // 2), exactly like the authored optional literal.
+    const lineFlags = this.track
+      ? (body.kind === 'regex-terminal' ? 1 : 1 | 2 | 4)
+      : body.kind === 'regex-terminal' ? 0 : 4
+    if (prior !== undefined) return { kind: 'body', body: prior, expectedFx, suffixFx, lineFlags }
+    const id = this.lex.length
+    this.lexIndex.set(key, id)
+    this.lex.push([regex, suffix])
+    return { kind: 'body', body: id, expectedFx, suffixFx, lineFlags }
   }
 
   private triviaSpecOf(t: Combinator<unknown>): TriviaSpec {
@@ -345,6 +485,9 @@ class Encoder {
   readonly settings: TableSettings
   /** Resolved once, HERE, at table-build time — never consulted at run time. */
   readonly track: boolean
+  /** TOKEN bodies are an all-program decision. A complete occurrence inside an
+   * otherwise incomplete final graph stays on CHARACTER with every sibling. */
+  readonly selectLexicalBodies: boolean
   /**
    * Decides the extra operands laid down below. ALWAYS TRUE — see
    * `TableSettings.recovery`. Kept as a field rather than folded away because it
@@ -352,9 +495,10 @@ class Encoder {
    * row is stated.
    */
   readonly rec: boolean
-  constructor(settings: TableSettings) {
+  constructor(settings: TableSettings, selectLexicalBodies: boolean) {
     this.settings = settings
     this.track = settings.trackLines === true
+    this.selectLexicalBodies = selectLexicalBodies
     this.rec = true
     this.plan = settings.coverage
     this.cov = settings.coverage === undefined
@@ -481,6 +625,16 @@ class Encoder {
     this.cc.push(spec)
     this.ccIndex.set(spec, i)
     return i
+  }
+
+  /** Bind a guard only when its class is already part of the program. Repeat
+   * gating must not grow the compact artifact merely to avoid a failed call. */
+  private existingCharClass(fs: FirstSet): number {
+    if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
+    const hit = this.ccIndex.get(encodeClassSpec(fs.ranges))
+    // This reuses the recovery row's existing `-1` slot. Keep its decimal width
+    // at two bytes or less so a speed hint cannot grow a compact artifact.
+    return hit !== undefined && hit < 100 ? hit : -1
   }
 
   /**
@@ -618,7 +772,7 @@ class Encoder {
    * in the target rule's own ambient trivia when that differs from the trivia
    * lexically active at the reference.
    *
-   * `encodeRule` wraps a rule ENTRY in `OP_SCOPE`, but only the entry: a `g.X`
+   * `encodeRule` wraps a rule ENTRY in `OP_SCOPE_PLAIN`, but only the entry: a `g.X`
    * reference resolves straight to the body's offset and jumps past it (the note
    * at `encodeRule`). So a rule referenced from inside a `noTrivia(...)` region ran
    * with NO ambient trivia of its own — the table scoped trivia DYNAMICALLY, by
@@ -713,6 +867,20 @@ class Encoder {
 
   private encodeDef(p: Combinator<unknown>): number {
     const d = p._def as ParserDef
+    // `balanced()` returns a token carrying `_balancedSpec` on that same
+    // object. Give a complete selected token shell first refusal; otherwise the
+    // generic scan row below would permanently shadow it before the `token`
+    // switch is reached.
+    if (d.tag === 'token') {
+      const selected = this.lexicalBodySlot(p)
+      if (selected !== undefined) {
+        if (selected.kind === 'program') return this.emit(OP_LEX_PROGRAM, selected.program)
+        return this.emit(
+          OP_LEX_BODY, selected.body, selected.expectedFx,
+          selected.suffixFx, selected.lineFlags,
+        )
+      }
+    }
     // THE SCANNING CONSTRUCTS, as their constructor arguments.
     //
     // Neither is recoverable from `_def` alone — `balanced()` overrides `.parse`
@@ -746,13 +914,13 @@ class Encoder {
     switch (d.tag) {
       case 'literal': {
         if (d.caseInsensitive) {
-          return this.emit(this.track ? OP_LIT_CI_TRACK : OP_LIT_CI, this.constant(d.value), this.expected(deriveExpected(p)))
+          return this.emit(this.track ? OP_LIT_CI_TRACK : OP_LIT_CI, this.constant(d.value), this.expected(directTerminalFailureExpected(d)))
         }
-        return this.emit(this.track ? OP_LIT_TRACK : OP_LIT, this.constant(d.value), this.expected(deriveExpected(p)))
+        return this.emit(this.track ? OP_LIT_TRACK : OP_LIT, this.constant(d.value), this.expected(directTerminalFailureExpected(d)))
       }
       case 'regex': {
         const flags = d.flags.includes('y') ? d.flags : `${d.flags}y`
-        return this.emit(this.track ? OP_RX_TRACK : OP_RX, this.constant(new RegExp(d.source, flags)), this.expected(deriveExpected(p)))
+        return this.emit(this.track ? OP_RX_TRACK : OP_RX, this.constant(new RegExp(d.source, flags)), this.expected(directTerminalFailureExpected(d)))
       }
       case 'keywords': {
         // `keywords()` compiles to ONE sticky regex and pushes a leaf — which is
@@ -770,7 +938,7 @@ class Encoder {
           // failing keyword arm names the CATEGORY rather than reciting every
           // literal in the family. `deriveExpected` reports the literals, so the
           // table said `'"media"'` where both other engines say `'keyword'`.
-          this.expected(['keyword']),
+          this.expected(directTerminalFailureExpected(d)),
         )
       }
       case 'expect': {
@@ -875,6 +1043,7 @@ class Encoder {
           // covered on a parse where the choice picked somebody else.
           return this.covWrap(gated, armCovIds?.[src], 1)
         })
+        const rr = this.refResolver()
         // O(1) first-char dispatch is only SOUND when the arms are disjoint.
         // With overlapping first sets, "the first arm whose class contains this
         // char" is not "the first arm that matches": a `Keyword` arm whose first
@@ -904,8 +1073,9 @@ class Encoder {
         // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
-        const rr = this.refResolver()
-        const classes = arms.map(a => matchesEmpty(a, new Set(), rr) ? -1 : this.charClass(firstSetOf(a, new Set(), rr)))
+        const finalChoice = classifyFinalChoice(arms, rr)
+        const classes = arms.map((_, i) => finalChoice.nullable[i]
+          ? -1 : this.charClass(finalChoice.firstSets[i]!))
         const dispIdx = this.disp.length
         this.disp.push(classes)
         // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. The ordered
@@ -932,6 +1102,10 @@ class Encoder {
       case 'many':
       case 'oneOrMore': {
         const child = this.node(d.parser).ip
+        const rr = this.refResolver()
+        const itemClass = matchesEmpty(d.parser, new Set(), rr)
+          ? -1
+          : this.existingCharClass(firstSetOf(d.parser, new Set(), rr))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
@@ -940,7 +1114,7 @@ class Encoder {
         // set — `deriveExpected(combinator)` in repeat.ts:170, and
         // `deriveExpectedArr([def.parser])` in codegen's emitMany.
         return this.rec
-          ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), -1)
+          ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), itemClass)
           : this.emit(op, child, min, d.max ?? -1, -1, 0)
       }
       case 'sepBy': {
@@ -987,7 +1161,14 @@ class Encoder {
         if (inner.tag === 'sequence' && !this.memo.has(d.parser) && !this.pending.has(d.parser)) {
           const kids = inner.parsers.map(c => this.node(c).ip)
           const head = this.emitHead(OP_SEQX, 2 + kids.length + (this.rec ? kids.length : 0))
-          this.code[head + 1] = this.fn(d.fn, d.fnSrc ?? null)
+          const projection = directArrayProjection(d.fn, d.fnSrc, kids.length)
+          // A negative operand describes an already-parsed child (`~index`),
+          // while every function-pool index remains non-negative.  The row is
+          // otherwise unchanged, so projection fusion costs no table words and
+          // does not create a second closure/factory shape.
+          this.code[head + 1] = projection === null
+            ? this.fn(d.fn, d.fnSrc ?? null)
+            : ~projection
           this.code[head + 2] = kids.length
           for (let i = 0; i < kids.length; i++) this.code[head + 3 + i] = kids[i]!
           if (this.rec) {
@@ -1046,12 +1227,14 @@ class Encoder {
         // a `project` replaces the value outright.
         const noBuildCaptures = d.project === undefined
         const derivedTrivia = d.build !== undefined ? buildReadsTrivia(d) : noBuildCaptures
+        const omitsRaw = d.build !== undefined && !buildReadsRaw(d)
         const derivedState = d.build !== undefined ? buildReadsState(d) : noBuildCaptures
         const derivedFields = d.build !== undefined ? buildReadsFields(d) : noBuildCaptures
         // Field capture additionally requires the body to CONTAIN `field()`
         // captures: a node that reads fields but has none allocates nothing.
         const wantsFields = parserHasOwnFields(d.parser) && (cstOut || derivedFields)
         const flags = (cstOut || d.captureTrivia === true || d.trailingTrivia === true || derivedTrivia ? 4 : 0)
+          | (!cstOut && omitsRaw ? 2 : 0)
           | (cstOut || derivedState ? 8 : 0)
           | (wantsFields ? 16 : 0)
           | (d.collapse === true ? 32 : 0)
@@ -1091,8 +1274,9 @@ class Encoder {
         const e = deriveExpected(d.parser)
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
-      case 'token':
+      case 'token': {
         return this.emit(OP_TOKEN, this.node(d.parser).ip)
+      }
       case 'routed':
         return this.emit(OP_ROUTED, d.fallback === undefined ? -1 : this.node(d.fallback).ip)
       case 'dispatch': {
@@ -1204,7 +1388,7 @@ class Encoder {
         // merged (composed) map, and why the identity guard is required.
         const refName = (p as unknown as { _ruleName?: string })._ruleName
         const winner = refName === undefined ? undefined : this.winners?.[refName]
-        if (winner !== undefined && !wrapsRef(winner, p)) return this.scopedRef(p, winner)
+        if (winner !== undefined && !winnerWrapsReference(winner, p)) return this.scopedRef(p, winner)
         let resolved: Combinator<unknown>
         try { resolved = d.thunk() }
         catch {
@@ -1219,7 +1403,7 @@ class Encoder {
       // other engine reported `['not(literal)']`. It hid because `expected` is a
       // TOP-LEVEL field on `RunResult` and is NOT part of the identity digest.
       case 'not':
-        return this.emit(OP_NOT, this.node(d.parser).ip, this.expected([`not(${d.parser._tag})`]))
+        return this.emit(OP_NOT, this.node(d.parser).ip, this.expected(assertionFailureExpected(false, d.parser._tag)))
       case 'guard':
         // `'gate'`, the public name — see gate.ts. The def tag stays `'guard'`.
         return this.emit(OP_GUARD, this.fn(d.predicate, d.predSrc ?? null), this.expected(['gate']))
@@ -1259,7 +1443,7 @@ class Encoder {
         // lookahead's failure is "the guard did not hold", and naming the body's
         // internals offers a token the parse never asked the author for. The
         // table propagated the body's set instead.
-        return this.emit(OP_PEEK, this.node(d.parser).ip, this.expected([`peek(${d.parser._tag})`]))
+        return this.emit(OP_PEEK, this.node(d.parser).ip, this.expected(assertionFailureExpected(true, d.parser._tag)))
       // A TRANSACTION IS A ROW. See `OP_ATTEMPT` for why the transparent
       // lowering was correct only for a choice arm.
       case 'attempt': {
@@ -1458,6 +1642,8 @@ class Encoder {
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
+      ...(this.lex.length === 0 ? {} : { lex: this.lex }),
+      ...(this.lexPrograms.length === 0 ? {} : { lexPrograms: this.lexPrograms }),
       ...(this.labels === undefined ? {} : { labels: this.labels }),
       ...(this.classified ? { classified: 1 as const } : {}),
       ...(this.scanSkipSets.length === 0
@@ -1561,7 +1747,13 @@ export function encodeTableProgram(
     ...(hostMode === undefined ? {} : { hostMode }),
     ...(track ? { trackLines: true } : {}),
   }
-  const enc = new Encoder(resolvedSettings)
+  // Collect once from the FINAL winner-resolved graph. Sorting affects only
+  // content-id discovery; ordinary rule/code order remains the caller's order.
+  const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
+  const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
+  const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
+  assertLexicalCapabilityClosure(lexicalRoots, capabilities, resolveLexical)
+  const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   const prog = enc.finish()

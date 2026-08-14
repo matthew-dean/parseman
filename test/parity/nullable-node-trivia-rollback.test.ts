@@ -1,25 +1,68 @@
-import { describe, expect, it } from 'vitest'
+/**
+ * A successful zero-width sequence term still owns every effect its parser
+ * produced. Only the ambient trivia scanned before that term is speculative.
+ *
+ * Regression (0.47.0): sequence took one mark before both operations and used
+ * it when `end <= scanEnd`. A nullable node at EOF therefore vanished from its
+ * parent's CST together with its field, while a zero-width recovery lost the
+ * error it had deliberately emitted. The real CSS symptom was an empty custom
+ * property value: `a{--x:}` built `CustomValue` at [8, 8], then erased it.
+ */
+import { beforeAll, describe, expect, it } from 'vitest'
 import {
-  compile, expect as expectTerm, field, literal, node, optional, parse, parser, regex, sequence,
+  compile, expect as expectTerm, field, literal, node, optional, parse, parser,
+  regex, sequence,
 } from '../../src/index.ts'
-import type { ParseContext, ParseResult } from '../../src/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
+import type { Combinator, ParseContext, ParseResult } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
-import { tableRules } from '../../src/table/assemble.ts'
+import { AssemblyCache, tableRules } from '../../src/table/assemble.ts'
+import { expandCompact } from '../../src/table/program.ts'
 import { rollbackScannedTriviaAt } from '../../src/combinators/trivia-skip.ts'
 
 const emptyValue = () => ({ kind: 'empty' as const })
 const buildRoot = (
-  children: ReadonlyArray<unknown>, fields: Record<string, unknown> | undefined,
-  span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[],
+  children: ReadonlyArray<unknown>,
+  fields: Record<string, unknown> | undefined,
+  span: { start: number; end: number },
+  rawChildren: ReadonlyArray<unknown>,
+  triviaLog: readonly number[],
 ) => ({ children: [...children], fields, span, rawChildren: [...rawChildren], triviaLog: [...triviaLog] })
+
 const space = regex(/ +/)
 const Empty = node('Empty', optional(literal('x')), emptyValue)
 const Root = parser(
   { trivia: space, captureTrivia: true },
   node('Root', sequence(literal('a'), field('tail', Empty)), buildRoot),
 )
-const prog = encodeTable({ Root })
+const rootProgram = encodeTable({ Root })
+const referenceRoot = execRules(rootProgram).Root!
+const closureRoot = tableRules({ ...rootProgram, asm: [] }).Root!
+const emittedRoot = tableRules(rootProgram).Root!
+
+type Entry = (input: string, pos: number, ctx: ParseContext) => ParseResult<unknown>
+let macroRoot: Entry
+
+const MACRO_CODE = `
+import { field, literal, node, optional, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+const space = regex(/ +/)
+const Empty = node('Empty', optional(literal('x')), () => ({ kind: 'empty' }))
+export const Root = parser(
+  { trivia: space, captureTrivia: true },
+  node('Root', sequence(literal('a'), field('tail', Empty)),
+    (children, fields, span, rawChildren, triviaLog) =>
+      ({ children: [...children], fields, span, rawChildren: [...rawChildren], triviaLog: [...triviaLog] })),
+)
+`.trim()
+
+beforeAll(async () => {
+  const { transformMacro } = await import('../../src/plugin/index.ts')
+  const transformed = transformMacro(MACRO_CODE, 'nullable-node-trivia-rollback.ts', new Set(['parseman']))
+  if (!transformed) throw new Error('macro transform returned null')
+  if (transformed.code.includes("from 'parseman'")) throw new Error('macro did not compile')
+  macroRoot = evalMacroModule<Entry>(transformed.code, 'Root')
+})
 
 function assertGolden(result: ParseResult<unknown>, input: string): void {
   expect(result.ok).toBe(true)
@@ -31,74 +74,117 @@ function assertGolden(result: ParseResult<unknown>, input: string): void {
   expect(root.fields).toEqual({
     tail: { value: { kind: 'empty' }, span: { start: input.length, end: input.length } },
   })
+  // The zero-width term does not consume the gap in front of it. Its node and
+  // field survive; the unowned gap does not become this node's trivia.
   expect(root.triviaLog).toEqual([])
   expect(result.span).toEqual({ start: 0, end: 1 })
 }
 
-describe('zero-width sequence effects after ambient trivia', () => {
-  it('compacts only the ambient trivia ranges', () => {
-    const scanError = new Error('scan')
-    const childError = new Error('child')
+describe('nullable node after an ambient trivia boundary', () => {
+  it('compacts only the ambient trivia slice and leaves later child effects in place', () => {
+    const scanError = new Error('scan-owned sentinel')
+    const childError = new Error('child-owned sentinel')
     const ctx = {
       trackLines: false,
       _cstLeaves: ['before', 'child'],
       _cstRawChildren: ['before-raw', 'child-raw'],
       _cstTriviaLog: [0, 1, 0, 10, 11, 1, 20, 21, 2],
-      _fields: [{ name: 'before' }, { name: 'child' }],
+      _fields: [
+        { name: 'before', value: 1, span: { start: 0, end: 1 } },
+        { name: 'child', value: 2, span: { start: 2, end: 2 } },
+      ],
       _errors: [scanError, childError],
       _triviaLog: [0, 1, 10, 11, 20, 21],
       _rootTriviaLog: [0, 1, 0, 1, 0, 10, 11, 10, 11, 1, 20, 21, 20, 21, 2],
     } as unknown as ParseContext
+
     rollbackScannedTriviaAt(ctx, 3, 6, 2, 4, 5, 10)
+
     expect(ctx._cstTriviaLog).toEqual([0, 1, 0, 20, 21, 2])
     expect(ctx._triviaLog).toEqual([0, 1, 20, 21])
     expect(ctx._rootTriviaLog).toEqual([0, 1, 0, 1, 0, 20, 21, 20, 21, 2])
     expect(ctx._cstLeaves).toEqual(['before', 'child'])
+    expect(ctx._cstRawChildren).toEqual(['before-raw', 'child-raw'])
     expect(ctx._fields?.map(f => f.name)).toEqual(['before', 'child'])
     expect(ctx._errors).toEqual([scanError, childError])
   })
 
+  it('uses the emitted diagnostic assembly for the low-level table program', () => {
+    const assembly = new AssemblyCache(expandCompact(rootProgram)).for({
+      hostCst: false,
+      hostReadsChildren: true,
+      trackLines: false,
+      tolerant: false,
+      coverage: false,
+      probe: false,
+    })
+    expect(assembly.emitRefusal).toBeUndefined()
+  })
+
   for (const input of ['a', 'a ']) {
-    it(`preserves the child node and field for ${JSON.stringify(input)}`, () => {
+    it(`interpreter keeps the zero-width node and field for ${JSON.stringify(input)}`, () => {
       assertGolden(parse(Root, input), input)
+    })
+
+    it(`runtime compile keeps the zero-width node and field for ${JSON.stringify(input)}`, () => {
       assertGolden(compile(Root).parse(input), input)
-      assertGolden(execRules(prog).Root!(input, 0, { trackLines: false }), input)
-      assertGolden(tableRules({ ...prog, asm: [] }).Root!(input, 0, { trackLines: false }), input)
-      assertGolden(tableRules(prog).Root!(input, 0, { trackLines: false }), input)
+    })
+
+    it(`actual macro artifact keeps the zero-width node and field for ${JSON.stringify(input)}`, () => {
+      assertGolden(macroRoot(input, 0, { trackLines: false }), input)
+    })
+
+    it(`reference table keeps the zero-width node and field for ${JSON.stringify(input)}`, () => {
+      assertGolden(referenceRoot(input, 0, { trackLines: false }), input)
+    })
+
+    it(`closure table keeps the zero-width node and field for ${JSON.stringify(input)}`, () => {
+      assertGolden(closureRoot(input, 0, { trackLines: false }), input)
+    })
+
+    it(`emitted diagnostic assembly keeps the zero-width node and field for ${JSON.stringify(input)}`, () => {
+      assertGolden(emittedRoot(input, 0, { trackLines: false }), input)
     })
   }
+})
 
-  it('preserves a zero-width recovery error after the ambient scan', () => {
-    const grammar = parser(
-      { trivia: space },
-      node('Recovered', sequence(literal('a'), expectTerm(literal('x')))),
-    )
-    const recoveryProgram = encodeTable({ Entry: grammar })
-    const entries = [
-      execRules(recoveryProgram).Entry!,
-      tableRules({ ...recoveryProgram, asm: [] }).Entry!,
-      tableRules(recoveryProgram).Entry!,
-    ]
-    for (const input of ['a', 'a ']) {
-      const expectedErrors: unknown[] = []
-      const expected = grammar.parse(input, 0, {
-        trackLines: false, _tolerant: true, _errors: expectedErrors,
-      } as unknown as ParseContext)
-      expect(expected.ok).toBe(true)
-      expect(expectedErrors).toHaveLength(1)
-      for (const entry of entries) {
-        const errors: unknown[] = []
-        const actual = entry(input, 0, {
-          trackLines: false, _tolerant: true, _errors: errors,
-        } as unknown as ParseContext)
-        expect(actual).toEqual(expected)
-        expect(errors).toEqual(expectedErrors)
-      }
+function recoveryGrammar(): Combinator<unknown> {
+  return parser(
+    { trivia: space },
+    node('Recovered', sequence(literal('a'), expectTerm(literal('x')))),
+  )
+}
+
+describe('zero-width recovery is a committed child effect, not scanned trivia', () => {
+  for (const input of ['a', 'a ']) {
+    it(`interpreter and compile retain the recovery error for ${JSON.stringify(input)}`, () => {
+      const grammar = recoveryGrammar()
+      const iErrors: unknown[] = []
       const compiledErrors: unknown[] = []
-      expect(compile(grammar, undefined, { recovery: true }).parseWithContext(input, {
-        trackLines: false, _tolerant: true, _errors: compiledErrors,
-      } as unknown as ParseContext, 0)).toEqual(expected)
-      expect(compiledErrors).toEqual(expectedErrors)
-    }
-  })
+      const iCtx = { trackLines: false, _tolerant: true, _errors: iErrors } as unknown as ParseContext
+      const compiledCtx = { trackLines: false, _tolerant: true, _errors: compiledErrors } as unknown as ParseContext
+      const interpreted = grammar.parse(input, 0, iCtx)
+      const compiled = compile(grammar, undefined, { recovery: true }).parseWithContext(input, compiledCtx, 0)
+      const program = encodeTable({ Entry: grammar })
+      const eErrors: unknown[] = []
+      const closureErrors: unknown[] = []
+      const tErrors: unknown[] = []
+      const eCtx = { trackLines: false, _tolerant: true, _errors: eErrors } as unknown as ParseContext
+      const closureCtx = { trackLines: false, _tolerant: true, _errors: closureErrors } as unknown as ParseContext
+      const tCtx = { trackLines: false, _tolerant: true, _errors: tErrors } as unknown as ParseContext
+      const reference = execRules(program).Entry!(input, 0, eCtx)
+      const closure = tableRules({ ...program, asm: [] }).Entry!(input, 0, closureCtx)
+      const emitted = tableRules(program).Entry!(input, 0, tCtx)
+      expect(interpreted.ok).toBe(true)
+      expect(compiled).toEqual(interpreted)
+      expect(reference).toEqual(interpreted)
+      expect(closure).toEqual(interpreted)
+      expect(emitted).toEqual(interpreted)
+      expect(iErrors).toHaveLength(1)
+      expect(compiledErrors).toEqual(iErrors)
+      expect(eErrors).toEqual(iErrors)
+      expect(closureErrors).toEqual(iErrors)
+      expect(tErrors).toEqual(iErrors)
+    })
+  }
 })

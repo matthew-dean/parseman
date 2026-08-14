@@ -3,12 +3,20 @@ import { hasDirectBuildDef } from '../analysis/commitment.ts'
 import type { HostMode } from '../cst/host-mode.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
-import { emitTableExpression } from './emit.ts'
+import { defaultAssemblyCfgs, emitTableExpression } from './emit.ts'
 import { tableRules } from './assemble.ts'
 import { closureArtifact } from './program.ts'
 import type { TableProgram, TableRule } from './program.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplication-hook.ts'
+
+/**
+ * Static assembly has a fixed source cost that tiny grammars cannot amortize.
+ * The canonical size probe's composeLeaf is 62 words and grows by ~12 kB with
+ * a factory; the shipping Jess leaves are 6,365/10,892 words. Keep the policy
+ * between those measured populations so small artifacts retain table density.
+ */
+const DEFAULT_PRECOMPILE_MIN_WORDS = 1_024
 
 /**
  * `compileRuleMap()` FOR THE TABLE LOWERING — the counterpart that did not exist.
@@ -100,7 +108,10 @@ export type CompiledRuleMapTable = {
   /** The expression that replaces the whole `rules(factory)` call. */
   replacement: string
   /** Re-emit the same table call with construction-time artifact metadata. */
-  replacementWithMetadata(metadataSource: string): string
+  replacementWithMetadata(
+    metadataSource: string,
+    options?: { readonly precompileDefault?: boolean },
+  ): string
   hostMode: HostMode
   hostBranchElided: boolean
   reflection: GrammarReflection
@@ -307,10 +318,17 @@ export function compileRuleMap(
     )
   }
 
-  const replacementWithMetadata = (metadataSource?: string): string => emitTableExpression(artifact, {
+  const replacementWithMetadata = (
+    metadataSource?: string,
+    options: { readonly precompileDefault?: boolean } = {},
+  ): string => emitTableExpression(artifact, {
     entry: null,
     runtimeRef: opts.runtimeRef ?? 'tableRules',
     fnSources: sources as string[],
+    ...(options.precompileDefault === true && hostMode === 'ast' && prog.lines !== 1
+      && prog.code.length >= DEFAULT_PRECOMPILE_MIN_WORDS
+      ? { assemblies: defaultAssemblyCfgs(artifact).slice(0, 1) }
+      : {}),
     ...(metadataSource === undefined ? {} : { metadataSource }),
   })
   const replacement = replacementWithMetadata()

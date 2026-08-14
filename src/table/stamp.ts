@@ -98,7 +98,7 @@ export function stampRuleMap(
   // up as `ok: true` with bytes missing, never as an error.
   //
   // Read from the ENTRY ROW, not from one program-wide slot: `encodeRule` wraps each
-  // rule's entry in `OP_SCOPE <triviaSlot> <body>` iff THAT rule has ambient trivia,
+  // rule's entry in `OP_SCOPE_PLAIN <triviaSlot> <body>` iff THAT rule has ambient trivia,
   // and a `composeLeaf` grammar's pieces do not agree (the same disagreement
   // `scanSkipOf` exists for). The owning driver passes its resolved table, so
   // this is the exact trivia array it already built.

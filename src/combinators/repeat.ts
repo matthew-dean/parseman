@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
+import { advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTriviaCompact } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
@@ -36,9 +36,7 @@ function repItem<T>(
   let pos = cur
   if (ctx.trivia) {
     if (needsDeferredTriviaCommit(ctx)) {
-      const scan = scanTrivia(input, cur, ctx)
-      scan.commit()
-      pos = scan.end
+      pos = commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     } else {
       pos = advanceTrivia(input, cur, ctx)
     }
@@ -478,9 +476,7 @@ export function sepBy<T, S>(
         let sepPos = cur
         if (ctx.trivia) {
           if (needsDeferredTriviaCommit(ctx)) {
-            const scan = scanTrivia(input, cur, ctx)
-            scan.commit()
-            sepPos = scan.end
+            sepPos = commitTriviaScan(scanTriviaCompact(input, cur, ctx))
           } else {
             sepPos = advanceTrivia(input, cur, ctx)
           }
@@ -503,9 +499,7 @@ export function sepBy<T, S>(
         let nextPos = sep.span.end
         if (ctx.trivia) {
           if (needsDeferredTriviaCommit(ctx)) {
-            const scan = scanTrivia(input, sep.span.end, ctx)
-            scan.commit()
-            nextPos = scan.end
+            nextPos = commitTriviaScan(scanTriviaCompact(input, sep.span.end, ctx))
           } else {
             nextPos = advanceTrivia(input, sep.span.end, ctx)
           }

@@ -30,7 +30,7 @@ const SELECTOR_LINE_TRIVIA_LOG = [1, 11, 12, 13] as const
 const SELECTOR_FILE_TRIVIA_LOG = [
   0, 1, 2, 12, 13,
   14, 16, 18, 19, 29,
-  30, 31,
+  30, 31, 33, 34,
 ] as const
 
 describe('regression: interpreted/compiled _triviaLog parity', () => {
@@ -61,7 +61,7 @@ describe('regression: interpreted/compiled _triviaLog parity', () => {
 
     expectTriviaLogGolden(iLog, SELECTOR_FILE_TRIVIA_LOG)
     expectTriviaLogParity(iLog, cLog)
-    expect(iLog.length / 2, 'six trivia pairs on selector.css').toBe(6)
+    expect(iLog.length / 2, 'seven trivia pairs on selector.css').toBe(7)
   })
 
   it('space-before-{ trivia is logged exactly once per ruleset', () => {

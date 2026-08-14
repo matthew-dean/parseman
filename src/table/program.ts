@@ -5,6 +5,8 @@ import { regex } from '../combinators/regex.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
+import { buildLexBodyRecognizer, type LexBodyRecognizer } from './lex-body.ts'
+import { buildLexProgramRunner, type LexProgramRunner } from './lex-program.ts'
 
 /**
  * One assembly the BUILD already compiled, so the run does not have to.
@@ -57,6 +59,11 @@ export type TableProgram = {
    * at `resolveTable`, exactly like the char-class ASCII lookups.
    */
   readonly dsp: readonly DispatchSpec[]
+  /** Selected childless lexical bodies. Losing compiler candidates never enter
+   * this pool. The first row is `[regexConst, suffixCodeUnit]`. */
+  readonly lex?: readonly LexBodySpec[]
+  /** Selected composite lexical programs. Losing candidates never enter it. */
+  readonly lexPrograms?: readonly LexProgramSpec[]
   /** Rule name → entry offset in `code`. */
   readonly rules: Readonly<Record<string, number>>
   /**
@@ -291,6 +298,8 @@ export type CompactProgram = {
   readonly f: readonly unknown[]
   readonly l?: 0 | 1
   readonly p?: readonly DispatchSpec[]
+  readonly lx?: readonly LexBodySpec[]
+  readonly lp?: readonly LexProgramSpec[]
   readonly lb?: readonly string[]
   readonly rc?: 0 | 1
   readonly h?: 'ast' | 'cst'
@@ -309,6 +318,8 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   return ownTableProgram({
     code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
+    ...(p.lx === undefined ? {} : { lex: p.lx }),
+    ...(p.lp === undefined ? {} : { lexPrograms: p.lp }),
     ...(p.lb === undefined ? {} : { labels: p.lb }),
     ...(p.rc === undefined ? {} : { classified: p.rc }),
     ...(p.h === undefined ? {} : { hostMode: p.h }),
@@ -321,6 +332,28 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.a === undefined ? {} : { asm: p.a }),
   })
 }
+
+/** Selected lexical body. `suffixCodeUnit === -1` is a direct regex terminal;
+ * 0..0xFFFF is the legacy regex + optional(one code unit) spelling. */
+export type LexBodySpec = readonly [regexConst: number, suffixCodeUnit: number]
+
+/** `kind=0`: fixed ordered four-terminal selected body. */
+export type LexProgramSpec = readonly [
+  kind: 0, digest: number, commonClass: number, choiceFx: number,
+  arm0Matcher: number, arm0Fx: number,
+  arm1Matcher: number, arm1Fx: number,
+  arm2Matcher: number, arm2Fx: number,
+  arm3Matcher: number, arm3Fx: number,
+  trackLines: 0 | 1,
+] | readonly [
+  kind: 1, digest: number,
+  guard0Arm0: number, guard0Arm1: number, guard0Arm2: number, guard0Arm3: number,
+  guard0Fx: number,
+  guard1Matcher: number, guard1Fx: number,
+  terminalMatcher: number, terminalFx: number,
+  trackLines: 0 | 1,
+] | readonly [kind: 2, digest: number, ...fixedTreeWords: number[]]
+  | readonly [kind: 3, digest: number, scan: number]
 
 /** One `dispatch()`'s routing tables, in serialisable form. */
 export type DispatchSpec = {
@@ -353,7 +386,12 @@ export type ResolvedDispatchSpec = {
   readonly expected: readonly string[]
 }
 
-/** Refuse malformed dispatch arm references before closure/emitted linking. */
+/**
+ * Refuse malformed fixed arm references before closure or emitted linking.
+ *
+ * This is deliberately an assembly-time trust boundary. `execRules()` stays an
+ * independent semantic oracle and never pays artifact validation per parse.
+ */
 export function validateDispatchSpec(
   spec: ResolvedDispatchSpec | undefined,
   arity: number,
@@ -428,6 +466,8 @@ export type ResolvedTable = {
   readonly fx: readonly (readonly string[])[]
   readonly disp: readonly ResolvedDispatch[]
   readonly dsp: readonly ResolvedDispatchSpec[]
+  readonly lex: readonly LexBodyRecognizer[]
+  readonly lexPrograms: readonly LexProgramRunner[]
   /** Trivia combinators rebuilt from `triviaSpecs`, once per table. */
   readonly trivia: readonly Combinator<unknown>[]
   /**
@@ -605,6 +645,7 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
   if (hit !== undefined) return hit
   const cc = prog.cc.map(resolveClass)
   const triviaBuilt = (prog.triviaSpecs ?? []).map(buildTrivia)
+  const lex = (prog.lex ?? []).map(spec => buildLexBodyRecognizer(spec, prog.k))
   const built: ResolvedTable = {
     prog,
     code: Int32Array.from(prog.code),
@@ -623,6 +664,9 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
       routed: d.routed,
       expected: d.expected,
     })),
+    lex,
+    lexPrograms: (prog.lexPrograms ?? []).map(spec =>
+      buildLexProgramRunner(spec, lex, cc, prog.fx)),
     rules: prog.rules,
   }
   if (owner !== undefined) owner.resolved = built
@@ -687,7 +731,7 @@ export type CompactFolded = {
  * Named rather than derived so the refusal can say which one broke.
  */
 const SHARED_FIELDS = [
-  'k', 'cc', 'fx', 'disp', 'dsp', 'rules', 'labels', 'classified',
+  'k', 'cc', 'fx', 'disp', 'dsp', 'lex', 'lexPrograms', 'rules', 'labels', 'classified',
   'scanSkip', 'scanSkipOf', 'scans', 'triviaSpecs', 'runtimeOnly',
   // `rec` is a property of the GRAMMAR BUILD, not of the trackLines/hostMode
   // axis a fold varies — every variant of one export is encoded with the same

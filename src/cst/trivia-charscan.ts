@@ -26,6 +26,7 @@
  */
 import type { Combinator } from '../types.ts'
 import { parseClassRanges } from '../regex/classes.ts'
+import { commonCssTriviaVisitor, type CssTriviaVisitor } from './trivia-css-scanner.ts'
 import type { LabeledTriviaSpec } from './trivia-kinds.ts'
 
 export type TriviaArmMatcher = (input: string, pos: number) => number
@@ -218,6 +219,39 @@ function classifyParser(p: Combinator<unknown>): TriviaArmMatcher | null {
   const d = p._def
   if (d.tag !== 'regex' || d.flags) return null
   return classifyArm(d.source)
+}
+
+function plainRegexSource(p: Combinator<unknown>): string | null {
+  const d = p._def
+  return d.tag === 'regex' && d.flags === '' ? d.source : null
+}
+
+let visitSpec0: LabeledTriviaSpec | undefined
+let visitSpec1: LabeledTriviaSpec | undefined
+let visitSpec2: LabeledTriviaSpec | undefined
+let visitSpec3: LabeledTriviaSpec | undefined
+let visitValue0: CssTriviaVisitor | null | undefined
+let visitValue1: CssTriviaVisitor | null | undefined
+let visitValue2: CssTriviaVisitor | null | undefined
+let visitValue3: CssTriviaVisitor | null | undefined
+
+/** A direct classified scanner for the four canonical CSS/Less trivia tuples. */
+export function commonLabeledTriviaVisitor(spec: LabeledTriviaSpec): CssTriviaVisitor | null {
+  if (spec === visitSpec0) return visitValue0!
+  if (spec === visitSpec1) return visitValue1!
+  if (spec === visitSpec2) return visitValue2!
+  if (spec === visitSpec3) return visitValue3!
+  const sources = spec.minRepeats <= 1 ? spec.arms.map(arm => plainRegexSource(arm.parser)) : []
+  const visitor = commonCssTriviaVisitor(sources)
+  visitSpec3 = visitSpec2
+  visitValue3 = visitValue2
+  visitSpec2 = visitSpec1
+  visitValue2 = visitValue1
+  visitSpec1 = visitSpec0
+  visitValue1 = visitValue0
+  visitSpec0 = spec
+  visitValue0 = visitor
+  return visitor
 }
 
 let armSpec0: LabeledTriviaSpec | undefined

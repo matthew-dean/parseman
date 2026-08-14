@@ -7,7 +7,7 @@ turned into running code.
 | Mode | Setup | Per-parse work | Where it fits |
 | --- | --- | --- | --- |
 | **Interpreter** | None | Walks the combinator tree | Tests, REPLs, dynamic grammars, anywhere a bundler isn't around |
-| **Macro build** | Bundler plugin + `with { type: 'macro' }` — lowers at build time | Runs a compact table artifact through the shared table runtime | Production apps built with Vite/Rollup/webpack |
+| **Macro build** | Bundler plugin + `with { type: 'macro' }` — lowers at build time | Runs a table artifact through the shared table runtime; a large terminal `composeLeaf` also embeds one strict assembly | Production apps built with Vite/Rollup/webpack |
 | **`compile()`** | Call `compile()` — lowers once at runtime | Runs the same compact table artifact through the shared table runtime | Grammars assembled dynamically at runtime |
 
 Most production use lands on one of the first two; `compile()` is there for dynamic
@@ -34,9 +34,12 @@ their tooling isn't present.
 Register the [bundler plugin](./macro-mode) and add `with { type: 'macro' }` to your
 `parseman` import — standard [import-attributes](./macro-mode#import-attributes) syntax,
 with `macro` as the bundler convention for compile-time evaluation. At build time the
-plugin evaluates your combinator declarations and replaces them with a compact table-program
-literal. The combinator import disappears; the artifact imports only the shared
-`parseman/table` runtime rather than copying a parser implementation per grammar.
+plugin evaluates your combinator declarations and replaces them with a table-program
+literal. Ordinary rules and `compose()` remain compact data. A sufficiently large
+terminal `composeLeaf()` also carries one build-time strict AST assembly: this deliberately spends generated
+grammar bytes to avoid closure linking and reduce parse time, while its tracked and CST
+siblings stay compact. The combinator import disappears; every artifact imports only the
+shared `parseman/table` runtime rather than copying a parser implementation per grammar.
 
 Executing that grammar is still a `run()` / `parse()` call, so parseman stays an ordinary
 import in the code that *drives* the parser. The macro removes the combinators and the
@@ -67,10 +70,13 @@ compiled.inlineExpression                        // table expression (requires t
 ```
 
 ::: warning Content Security Policy
-Normal table artifacts — from both `compile()` and the macro — never use
-`new Function` at build time or parse time. They carry the same explicit empty
-assembly inventory (`a:[]`) and use the shared closure assembler, so they work
-under a strict [Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP).
+Compiler-created table artifacts never use `new Function` at build time or parse
+time. Runtime `compile()`, ordinary macro rules, and `compose()` carry an explicit
+empty assembly inventory (`a:[]`) and use the shared closure assembler. Terminal
+large `composeLeaf()` artifacts carry one ordinary function literal for their strict
+AST/no-lines assembly; it is emitted by the build, not constructed from source at runtime.
+Small leaves remain on the empty-inventory closure form. Both
+forms work under a strict [Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP).
 
 `test/unit/no-function-constructor.test.ts` proxies `globalThis.Function` across
 runtime compilation, macro output, rule-map compilation, and folded variants.

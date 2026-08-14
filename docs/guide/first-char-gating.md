@@ -9,8 +9,8 @@ recognizer, then rollback) until one matches or all fail.
 
 Gating is decided by the shared first-set analysis, so **both** run paths benefit: the
 interpreter dispatches through a prebuilt ASCII lookup table
-(`src/combinators/choice.ts`), and the **JS-codegen lowering** used by `compile()` and the
-macro build emits a `switch`/jump table inline. The diagnostics below report the gating
+(`src/combinators/choice.ts`), and the compiled `TableProgram` links an indexed dispatch
+body instead of speculatively entering every arm. The diagnostics below report the gating
 decision itself, which is a property of the grammar, not of how you run it.
 
 Here's the trap: **PEG grammars are correct regardless of whether a choice gates.** An

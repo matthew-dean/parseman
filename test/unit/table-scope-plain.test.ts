@@ -39,6 +39,27 @@ function precompiled(prog: TableProgram): TableProgram {
   }
 }
 
+function legacyPrecompiled(prog: TableProgram): TableProgram {
+  const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
+  const compactCall = 'return commitTriviaScan(scanTriviaCompact(input,cur,ctx))'
+  const legacySource = emitted.source.replaceAll(
+    compactCall,
+    'return (()=>{const scan=scanTrivia(input,cur,ctx);scan.commit();return scan.end})()',
+  )
+  expect(legacySource).not.toContain('scanTriviaCompact')
+  expect(legacySource).not.toContain('commitTriviaScan')
+  expect(legacySource).not.toBe(emitted.source)
+  // The old factory predates all three appended helpers: compact trivia commit,
+  // compact trivia scan, and selected lexical bodies. New runtimes may append
+  // positional inputs, but must never insert one into this historical prefix.
+  const legacyParams = EMITTED_PARAMS.slice(0, -3)
+  const factory = new Function(...legacyParams, legacySource) as PrecompiledAssembly['factory']
+  return {
+    ...prog,
+    asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+  }
+}
+
 function engines(
   grammar: Record<string, Combinator<unknown>>,
   entry: string,
@@ -125,6 +146,25 @@ async function realModuleEntry(prog: TableProgram): Promise<Entry> {
 }
 
 describe('artifact-neutral synthetic trivia scopes', () => {
+  it('executes compact and legacy precompiled classified-trivia factories', () => {
+    const trivia = documentTrivia()
+    const grammar = rules({ trivia }, () => ({
+      Doc: sequence(literal('a'), literal('b')),
+    })) as Record<string, Combinator<unknown>>
+    const prog = encodeTable(grammar)
+    const input = 'a   b'
+    const expected = outcome(grammar.Doc! as Entry, input)
+
+    // The current emitted factory takes the compact numeric no-row branch:
+    // whitespace advances, but rootTrivia selects comments, so no row survives.
+    expect(outcome(tableRules(precompiled(prog)).Doc! as Entry, input)).toEqual(expected)
+
+    // A factory compiled against the previous positional ABI still calls
+    // `scanTrivia(...).commit()`. The new helpers are appended, never inserted,
+    // and the legacy helper remains object-shaped.
+    expect(outcome(tableRules(legacyPrecompiled(prog)).Doc! as Entry, input)).toEqual(expected)
+  })
+
   it('uses a three-word row across every artifact reader without reading the following RX as policy', async () => {
     const trivia = documentTrivia()
     const grammar = rules({ trivia }, () => ({ First: regex(/a/), Second: regex(/b/) })) as Record<string, Combinator<unknown>>

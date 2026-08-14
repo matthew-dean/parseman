@@ -16,6 +16,7 @@ import {
 } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
+import { commonCssTriviaScanner } from '../cst/trivia-css-scanner.ts'
 
 /**
  * Result of scanning trivia: the position after it, plus a `commit()` that
@@ -25,11 +26,22 @@ import { createDetachedParseContext } from '../parse-context.ts'
  * trivia that doesn't actually sit between two accepted items.
  */
 export type TriviaScan = { end: number; commit: () => void }
+export type CompactTriviaScan = number | TriviaScan
 
 /** Saved lengths for rolling back speculative trivia commits. */
 export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; log: number; rootLog: number }
 
 const NOOP_COMMIT = () => {}
+
+export function triviaScanEnd(scan: CompactTriviaScan): number {
+  return typeof scan === 'number' ? scan : scan.end
+}
+
+export function commitTriviaScan(scan: CompactTriviaScan): number {
+  if (typeof scan === 'number') return scan
+  scan.commit()
+  return scan.end
+}
 export type FastTriviaScanner = (input: string, cur: number) => number
 /**
  * Bounded structural cache for the handful of trivia grammars a process actively
@@ -102,8 +114,14 @@ function removeNumberRange(values: number[] | undefined, start: number, end: num
 }
 
 /**
- * Remove only the trivia rows appended by an ambient scan, preserving effects
- * appended later by a successful zero-width child.
+ * Remove only the trivia rows appended by an ambient scan, preserving rows a
+ * successful zero-width child appended after that scan.
+ *
+ * A sequence cannot use `rollbackTriviaAt` for this case: its pre-scan mark also
+ * precedes the child, so truncating to it erases the child's nodes, fields,
+ * recovery errors, and trivia. The scan's contribution is instead the half-open
+ * range between the pre-scan and post-scan lengths. Compact that range in place;
+ * this is the cold zero-width-success path and allocates no replacement arrays.
  */
 export function rollbackScannedTriviaAt(
   ctx: ParseContext,
@@ -169,10 +187,10 @@ export function rollbackLookahead(ctx: ParseContext, mark: LookaheadMark): void 
   if (ctx._probe) ctx._probe.best = mark.probeBest
 }
 
-function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaScan {
+function scanWithLabels(input: string, cur: number, ctx: ParseContext): CompactTriviaScan {
   const triviaP = ctx.trivia!
   const spec = analyzeLabeledTrivia(triviaP)
-  if (!spec) return { end: cur, commit: NOOP_COMMIT }
+  if (!spec) return cur
 
   const log = ctx._triviaLog
   const rootLog = ctx._rootTriviaLog
@@ -193,7 +211,8 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaSc
     }
   })
   if (visitedEnd !== undefined) {
-    if (visitedEnd === cur) return { end: cur, commit: NOOP_COMMIT }
+    if (visitedEnd === cur) return cur
+    if (fullRows === undefined && rootRows === undefined && cstRows === undefined) return visitedEnd
     return {
       end: visitedEnd,
       commit: () => {
@@ -213,7 +232,7 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaSc
   }
 
   const { end, chunks } = scanLabeledTriviaChunks(input, cur, spec, ctx.state)
-  if (end === cur) return { end: cur, commit: NOOP_COMMIT }
+  if (end === cur) return cur
 
   return {
     end,
@@ -273,9 +292,11 @@ export function advanceTrivia(input: string, cur: number, ctx: ParseContext): nu
 
 /**
  * Scan trivia at `cur` using `ctx.trivia`, WITHOUT recording it. Returns the
- * position after the trivia (or `cur` if none) and a `commit()` to record it.
+ * position directly when a classified scan retained no rows; otherwise returns
+ * that position with a deferred `commit()` that records the retained rows.
+ * Use `triviaScanEnd()` / `commitTriviaScan()` rather than inspecting the shape.
  */
-export function scanTrivia(input: string, cur: number, ctx: ParseContext): TriviaScan {
+export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext): CompactTriviaScan {
   const triviaP = ctx.trivia
   if (!triviaP) return { end: cur, commit: NOOP_COMMIT }
 
@@ -337,7 +358,7 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
 
   if (ctx.triviaKindLabels && (log !== undefined || rootLog !== undefined || captureTl)) {
     const scan = scanWithLabels(input, cur, ctx)
-    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, scan.end)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, triviaScanEnd(scan))
     return scan
   }
 
@@ -377,6 +398,12 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
   return { end: tr.ok ? tr.span.end : cur, commit: NOOP_COMMIT }
 }
 
+/** Legacy object-shaped contract used by previously emitted assembly factories. */
+export function scanTrivia(input: string, cur: number, ctx: ParseContext): TriviaScan {
+  const scan = scanTriviaCompact(input, cur, ctx)
+  return typeof scan === 'number' ? { end: scan, commit: NOOP_COMMIT } : scan
+}
+
 /**
  * Skip trivia at `cur` through an INSTALLED scanner, recording it immediately.
  *
@@ -410,9 +437,7 @@ export function skipTriviaScanned(
  */
 export function consumeTrivia(input: string, cur: number, ctx: ParseContext): number {
   if (!needsDeferredTriviaCommit(ctx)) return advanceTrivia(input, cur, ctx)
-  const scan = scanTrivia(input, cur, ctx)
-  scan.commit()
-  return scan.end
+  return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
 }
 
 /**
@@ -436,7 +461,7 @@ export function probeTriviaEnd(input: string, cur: number, ctx: ParseContext): n
   // actually need to find the end (`trivia`, `state`, the deferred-commit sinks)
   // is carried through unchanged.
   const probeCtx: ParseContext = { ...ctx, trackLines: false }
-  if (needsDeferredTriviaCommit(probeCtx)) return scanTrivia(input, cur, probeCtx).end
+  if (needsDeferredTriviaCommit(probeCtx)) return triviaScanEnd(scanTriviaCompact(input, cur, probeCtx))
   return advanceTrivia(input, cur, probeCtx)
 }
 
@@ -480,9 +505,17 @@ function buildFastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner 
   if (one) return loopScanner([one])
 
   if (repeat._def.tag !== 'choice') return null
+  const fused = commonCssTriviaScanner(repeat._def.parsers.map(triviaRegexSource))
+  if (fused !== null) return fused
   const arms = repeat._def.parsers.map(regexTriviaScanner)
   if (arms.some(s => s === null)) return null
   return loopScanner(arms as FastTriviaScanner[])
+}
+
+/** The regex source beneath a classified-trivia `label()`, when it is plain. */
+function triviaRegexSource(parser: Combinator<unknown>): string | null {
+  const d = parser._def.tag === 'label' ? parser._def.parser._def : parser._def
+  return d.tag === 'regex' && d.flags === '' ? d.source : null
 }
 
 function loopScanner(arms: FastTriviaScanner[]): FastTriviaScanner {

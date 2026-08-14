@@ -170,25 +170,22 @@ jobs:
     strategy:
       fail-fast: false
       # One leg per SUPPORTED LTS line, matching `engines`
-      # (`^20.19.0 || >=22.12.0`): today 24 / 22 / 20.
+      # (`^20.19.0 || >=22.13.0`): today 24 / 22 / 20.
       #
       # The two upper legs are ALIASES so they follow Node instead of rotting —
       # when the next line goes LTS they shift on their own.
       #
-      # The FLOOR leg is PINNED, and deliberately not `lts/-2`. An alias tracks a
-      # moving window; `engines` states a fixed contract. The moment Node 26 becomes
-      # the current LTS, `lts/-2` resolves to 22 and Node 20 stops being tested
-      # while `^20.19.0` still promises it — the matrix would drift off the contract
-      # silently, in the opposite direction from stale pins. Pinning the boundary is
-      # the only leg where the exact version is the point: it is the literal claim
-      # the manifest makes. The upper lines have no such boundary to verify.
+      # The two FLOOR legs are PINNED, and deliberately not aliases. An alias tracks
+      # a moving window; `engines` states fixed contracts. Node 20.19 is the lower
+      # supported line, while Node 22.13 is the first 22.x release whose synchronous
+      # `require(esm)` bridge is warning-free. Both are literal packaging claims.
       #
       # A single pinned major — what this was — tests neither end of the range and
       # let a real bug through: `case-fold.test.ts` pinned a Unicode-derived count
       # that is 2313 on Node 22 and 2307 on Node 24, so it passed locally and failed
       # CI. Anything ICU-, Intl- or Unicode-derived drifts silently between lines.
       matrix:
-        node-version: ['lts/*', 'lts/-1', '20.19.0']
+        node-version: ['lts/*', 'lts/-1', '22.13.0', '20.19.0']
     name: test (node ${{ matrix.node-version }})
     steps:
       - name: Checkout

@@ -1,9 +1,9 @@
 {
   "name": "parseman",
-  "version": "0.47.1",
+  "version": "0.48.0",
   "packageManager": "pnpm@10.15.1",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": "^20.19.0 || >=22.13.0"
   },
   "description": "Parser combinators that compile to optimized JavaScript \u2014 use as a library or as a build-time macro",
   "type": "module",
@@ -14,49 +14,49 @@
   },
   "homepage": "https://github.com/matthew-dean/parseman",
   "bugs": "https://github.com/matthew-dean/parseman/issues",
-  "main": "./dist/index.cjs",
+  "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "require": "./dist/index.js"
     },
     "./diagnostics": {
       "types": "./dist/analysis/diagnostics.d.ts",
       "import": "./dist/analysis/diagnostics.js",
-      "require": "./dist/analysis/diagnostics.cjs"
+      "require": "./dist/analysis/diagnostics.js"
     },
     "./plugin": {
       "types": "./dist/plugin/index.d.ts",
       "import": "./dist/plugin/index.js",
-      "require": "./dist/plugin/index.cjs"
+      "require": "./dist/plugin/index.js"
     },
     "./run": {
       "types": "./dist/run/index.d.ts",
       "import": "./dist/run/index.js",
-      "require": "./dist/run/index.cjs"
+      "require": "./dist/run/index.js"
     },
     "./table": {
       "types": "./dist/table/index.d.ts",
       "import": "./dist/table/index.js",
-      "require": "./dist/table/index.cjs"
+      "require": "./dist/table/index.js"
     },
     "./spec": {
       "types": "./dist/spec/index.d.ts",
       "import": "./dist/spec/index.js",
-      "require": "./dist/spec/index.cjs"
+      "require": "./dist/spec/index.js"
     },
     "./language-service": {
       "types": "./dist/language-service/index.d.ts",
       "import": "./dist/language-service/index.js",
-      "require": "./dist/language-service/index.cjs"
+      "require": "./dist/language-service/index.js"
     },
     "./oracle": {
       "types": "./dist/oracle/index.d.ts",
       "import": "./dist/oracle/index.js",
-      "require": "./dist/oracle/index.cjs"
+      "require": "./dist/oracle/index.js"
     }
   },
   "bin": {

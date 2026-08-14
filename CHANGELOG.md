@@ -3,6 +3,91 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.48.0 — 2026-08-14
+
+- **BREAKING:** ship one ESM implementation instead of duplicate ESM and CommonJS
+  bundles. Both `import` and synchronous `require()` remain supported on the declared
+  Node `^20.19.0 || >=22.13.0` floor; they now resolve to the same module. Node 22's
+  floor moves from 22.12 to 22.13, the first warning-free 22.x release for synchronous
+  `require(esm)`. This also repairs `require('parseman/diagnostics')`, whose former
+  CommonJS bundle could not load the ESM-only `linecraft` dependency.
+- Keep `TableProgram` as the single semantic parser authority while selecting direct,
+  childless lexical bodies for closed token graphs. Literal, regex, optional suffix,
+  composite choice/assertion, scanner, binding, decision-effect, line-tracking,
+  diagnostics, probe, and emitted/precompiled projections are validated together;
+  incomplete graphs fail closed to the ordinary table rows. Generated artifacts are
+  version-locked: rebuild generated, macro, composed, folded, and precompiled grammars
+  with Parseman 0.48.0.
+- Compact classified-trivia scans with no retained rows to a scalar result, avoiding
+  result objects and no-op commit closures while preserving the legacy emitted-factory
+  ABI. Across one CSS, benchmark Less, and generated Less parse this removes about
+  288,000 result objects and 83,000 no-op closures.
+- Select kind-preserving visitors for the four canonical CSS/Less classified-trivia
+  grammars at construction time. Five-pass A/A-adjusted runs improve CSS by 5.75%,
+  benchmark Less by 4.76%, and generated Less by 5.94%, with every pass winning and
+  unrecognized trivia grammars retaining the generic path.
+- Select bounded direct closure bodies for common fixed sequences, scalar terminals,
+  lexical token programs, and AST nodes at assembly time. The retained AST-node tranche
+  is 2.45% faster on CSS, 1.29% faster on benchmark Less, and 5.71% faster on generated
+  Less in five-pass A/A-adjusted runs, without a second parser, parse-time IR loop, or
+  per-site generated factory.
+- Precompile exactly the terminal `composeLeaf` default AST/no-lines assembly from the
+  canonical TableProgram once it reaches 1,024 instruction words; smaller leaves remain
+  compact and the deterministic size ceiling stays green. The Jess Less macro improves 15.4% on `benchmark.less` and
+  23.9% on generated Less against the prior 0.48 closure artifact in the causal screen;
+  CSS remains order-sensitive and is not assigned a release number. Only one of four
+  Jess public variants carries the assembly: transformed CSS is 1.64 MB raw / 197 KB
+  gzip and Less is 3.10 MB / 381 KB, rather than the rejected multi-megabyte-per-variant
+  direct-source parser. Projecting the retained direct AST-child collectors into that
+  same static assembly makes it a further 14.0% faster on CSS, 9.2% on benchmark Less,
+  and 9.1% on generated Less in clean two-graph A/A-adjusted runs, for 3.5 KB packed.
+  Publishing those built nodes straight into their saved collector removes the residual
+  generic helper and improves another 4.4%, 6.3%, and 4.4%, respectively, for 666 packed
+  bytes.
+- Validate the final Jess-derived graphs against the CHARACTER oracle, reference table
+  driver, closure assembler, and emitted assembly with full consumption and matching
+  values, spans, expected sets, errors, and root trivia: 88 CSS inputs and 316 Less
+  inputs pass.
+- **Accepted performance carry-forward:** 0.48 recovers most, but not all, of 0.47's
+  regression against pinned 0.46. In the final clean Node 24 two-graph bracket, a full
+  CSS parse is 6.34 ms versus 5.26 ms, benchmark Less is 17.92 ms versus 15.76 ms, and
+  generated Less is 46.75 ms versus 45.93 ms. The surrounding same-source A/A controls
+  put the approximate remaining gaps at 1.19x, 1.12x, and 1.03x. The owner accepted
+  this tradeoff for 0.48 after the correctness, package, and external-competitor gates
+  passed; strict 0.46 parity moves to the explicit 0.49 target rather than being
+  misreported as complete here.
+- **Broad workload baseline reset:** move `bench/workloads/config.json`'s committed
+  peak from 0.45.0 (`7d1817f`) to the accepted 0.48.0 runtime checkpoint
+  (`bf03092`) while leaving the 5% drawdown allowance unchanged. The clean release
+  CI comparison against the seeded 0.45 peak measured:
+
+  | workload | median drawdown | minimum drawdown |
+  | --- | ---: | ---: |
+  | Less stylesheet | +187.3% | +189.0% |
+  | Less mixins | +185.4% | +187.5% |
+  | CSS stylesheet | +248.8% | +248.6% |
+  | GraphQL document | +97.6% | +97.3% |
+  | JSON document | +117.8% | +117.5% |
+
+  This is an explicit re-baseline, not an administrative override and not a claim
+  that the historical drawdown disappeared. The canonical TableProgram, version-
+  locked artifacts, much smaller generated/package output, and unified correctness
+  semantics are the accepted 0.48 normal; subsequent PRs now guard against further
+  regression from it. The separate pinned-0.46 Jess parity target remains unchanged
+  for 0.49.
+- Restore small rows to every external comparison chart. In the three-round release
+  sweep Parseman is the fastest competitor-ranked JavaScript parser in every JSON, CSV,
+  GraphQL, and CST group. The tightest row is JSON-small at 0.894 microseconds versus
+  Chevrotain at 0.956 microseconds (1.07x, above the 1.05x floor) with 1.5% worst-case
+  live A/A control spread.
+- Regenerate all four public comparison SVGs from 0.48.0 on Node 25.9.0, including the
+  restored small rows. Runtime-compiled Parseman leads every compared JS parser on all
+  JSON, CSV, GraphQL, and CST rows; the tightest fresh chart row is JSON-small at
+  0.94 microseconds versus Chevrotain at 0.99 microseconds.
+- Removing duplicate CommonJS output and retaining the selected-body work leaves the
+  package at about 2.18 MB packed and 9.37 MB unpacked (392 files), down from the prior
+  dual-format 0.48 candidate's roughly 3.4 MB packed package.
+
 ## 0.47.1 — 2026-08-12
 
 - Preserve nodes, fields, recovery errors, and other child-owned effects when a

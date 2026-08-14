@@ -6,6 +6,7 @@ import { build } from 'esbuild'
 import { execSync } from 'child_process'
 import { chmodSync, readFileSync, rmSync } from 'fs'
 import { builtinModules } from 'module'
+import { dirname, relative, resolve, sep } from 'path'
 
 rmSync('dist', { recursive: true, force: true })
 
@@ -23,26 +24,75 @@ const external = [
   'tsx/esm/api',
 ]
 
+const entryPoints = [
+  'src/index.ts',
+  'src/run/index.ts',
+  'src/plugin/index.ts',
+  'src/spec/index.ts',
+  'src/language-service/index.ts',
+  'src/oracle/index.ts',
+  'src/table/index.ts',
+  'src/analysis/diagnostics.ts',
+  'src/cli/index.ts',
+]
+
+const compileEntries = new Set([
+  'src/index.ts',
+  'src/plugin/index.ts',
+  'src/table/index.ts',
+  'src/analysis/diagnostics.ts',
+  'src/cli/index.ts',
+])
+
 const shared = {
   // `src/cli/index.ts` is the diagnostics bin and `src/analysis/diagnostics.ts` its
   // library twin. Both reach the COMPILER (the `--fix` loop recompiles to verify), and
   // both are deliberately their own entry points: nothing a library consumer imports may
   // pull the compiler in on their account. Keep them out of `src/index.ts`.
-  entryPoints: ['src/index.ts', 'src/run/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts', 'src/language-service/index.ts', 'src/oracle/index.ts', 'src/table/index.ts', 'src/analysis/diagnostics.ts', 'src/cli/index.ts'],
   bundle: true,
   external,
   sourcemap: true,
   // Every public entry point bundles much of the same module graph. Embedding that
-  // graph in each source map duplicates the TypeScript sources eighteen times across
-  // the ESM/CJS outputs. The package ships `src/` once instead, so debuggers can still
+  // graph in each source map duplicates the TypeScript sources across the public
+  // outputs. The package ships `src/` once instead, so debuggers can still
   // resolve the relative paths recorded by these external maps.
   sourcesContent: false,
   target: 'es2022',
 }
 
+const capabilitySource = resolve('src/compiler/token-capability.ts')
+
+/** Externalize one private static capability implementation for every public entry. */
+function externalCapability(entry) {
+  const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, '.js')}`
+  const capabilityOutput = 'dist/compiler/token-capability.js'
+  let ref = relative(dirname(entryOutput), capabilityOutput).split(sep).join('/')
+  if (!ref.startsWith('.')) ref = `./${ref}`
+  return {
+    name: 'shared-token-capability',
+    setup(ctx) {
+      ctx.onResolve({ filter: /token-capability\.ts$/ }, args => {
+        if (resolve(args.resolveDir, args.path) !== capabilitySource) return undefined
+        return { path: ref, external: true }
+      })
+    },
+  }
+}
+
+async function buildPublicEntry(entry) {
+  return build({
+    ...shared,
+    entryPoints: [entry],
+    format: 'esm',
+    outdir: 'dist',
+    outbase: 'src',
+    plugins: compileEntries.has(entry) ? [externalCapability(entry)] : [],
+  })
+}
+
 await Promise.all([
-  build({ ...shared, format: 'esm', outdir: 'dist', outExtension: { '.js': '.js' }, banner: { js: '' } }),
-  build({ ...shared, format: 'cjs', outdir: 'dist', outExtension: { '.js': '.cjs' } }),
+  ...entryPoints.map(buildPublicEntry),
+  build({ ...shared, entryPoints: [capabilitySource], format: 'esm', outfile: 'dist/compiler/token-capability.js' }),
 ])
 
 // `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so
@@ -63,7 +113,7 @@ console.log('JS bundles built.')
 // The public runtime (including language-service) is browser-capable. Oxc is a
 // macro/plugin implementation detail with native platform bindings; keep it out
 // of these bundles even when runtime composition re-lowers artifact IR.
-for (const file of ['dist/index.js', 'dist/index.cjs', 'dist/language-service/index.js', 'dist/language-service/index.cjs']) {
+for (const file of ['dist/index.js', 'dist/language-service/index.js']) {
   if (readFileSync(file, 'utf8').includes('oxc-parser')) {
     throw new Error(`runtime bundle unexpectedly imports oxc-parser: ${file}`)
   }

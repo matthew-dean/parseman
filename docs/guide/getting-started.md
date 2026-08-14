@@ -13,8 +13,8 @@ ways:
 
 - **Interpreted** — zero setup, runs anywhere (including tests and REPLs).
 - **Compiled at build time** — a bundler plugin evaluates your grammar and replaces
-  it with flat, allocation-light JavaScript. The macro'd combinator import vanishes; you
-  still import `run`/`parse` to execute the result.
+  it with an optimized `TableProgram` artifact. The macro'd combinator import vanishes;
+  the result uses the shared `parseman/table` runtime and you still call `run`/`parse`.
 - **Compiled at runtime** — `compile()` runs the same optimizer on demand, for
   grammars assembled dynamically.
 
@@ -39,8 +39,9 @@ yarn add parseman
 
 :::
 
-Parséman ships ESM and CJS builds plus TypeScript declarations. It has no required
-runtime configuration — import and go.
+Parséman ships one ESM implementation plus TypeScript declarations. Supported Node
+versions can load the same implementation through either `import` or `require()`.
+There is no required runtime configuration — import and go.
 
 ## Quick start
 
@@ -93,6 +94,8 @@ reusable `.parse(input)` method — wrap your root combinator with
 
 ## Where to go next
 
+- **[Upgrading to 0.48](./upgrading-to-0.48)** — Node/module changes, artifact rebuilds,
+  diagnostics, and the unchanged grammar-authoring surface.
 - **[The three modes](./modes)** — interpreter vs. macro vs. `compile()`, and when
   each matters.
 - **[Combinators](./combinators)** — the full building-block vocabulary.
@@ -108,7 +111,7 @@ reusable `.parse(input)` method — wrap your root combinator with
 pnpm install
 pnpm test        # Vitest — interpreter + compiler parity + ordered-choice semantics
 pnpm typecheck   # TypeScript 7
-pnpm build       # ESM + CJS + .d.ts → dist/
+pnpm build       # ESM + .d.ts → dist/
 pnpm bench       # vs Peggy, Parsimmon, Chevrotain, Nearley, Jison
 pnpm docs:dev    # this documentation site
 ```

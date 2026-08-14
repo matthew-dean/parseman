@@ -96,9 +96,11 @@ box's noise. `bench:margin` keeps every round and reports three things.
   conditions. That makes this a sign test over paired samples, and it survives
   drift that would swamp a ratio of independent means.
 - **CONTROL** — an A/A pair. `parseman-runtime` is measured a **second** time each
-  round, in its own process, under a separate slot. It should read ~1.00× with a
-  win-rate near 50%. It is measured in the **same run** as everything else, so it
-  prices *that run's* noise floor rather than a remembered one.
+  round, in its own process, immediately beside the subject with their order
+  alternated by round. Its spread is the median reciprocal **same-round** ratio,
+  never a ratio of unrelated minima. It should read ~1.00× with a win-rate near
+  50%. It is measured in the **same run** as everything else, so it prices *that
+  run's* noise floor rather than a remembered one.
 
 **The control is enforced, not advisory.** A margin smaller than the control's
 spread is not a margin, and the harness now acts on that itself rather than

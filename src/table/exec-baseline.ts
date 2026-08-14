@@ -1,5 +1,5 @@
 import type { ParseContext, ParseResult } from '../types.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
+import { advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTriviaCompact } from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, endCstNodeCapture, pushCstChild,
   pushCstLeaf, rollbackCstCapture, saveCstMark, type CstRollbackMark,
@@ -142,9 +142,7 @@ function makeDriver(
    */
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
     if (needsDeferredTriviaCommit(ctx)) {
-      const scan = scanTrivia(input, cur, ctx)
-      scan.commit()
-      return scan.end
+      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }
     return advanceTrivia(input, cur, ctx)
   }
@@ -256,9 +254,7 @@ function makeDriver(
             const mark = rollbackNeeded(ctx) ? saveTriviaMark(ctx) : null
             let scanEnd: number
             if (needsDeferredTriviaCommit(ctx)) {
-              const scan = scanTrivia(input, cur, ctx)
-              scan.commit()
-              scanEnd = scan.end
+              scanEnd = commitTriviaScan(scanTriviaCompact(input, cur, ctx))
             } else {
               scanEnd = advanceTrivia(input, cur, ctx)
             }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { classifiedTrivia, regex } from '../../src/index.ts'
 import { analyzeLabeledTrivia, scanLabeledTriviaEnd, visitLabeledTrivia, triviaKindMaskAt } from '../../src/cst/trivia-kinds.ts'
-import { charArmsFor } from '../../src/cst/trivia-charscan.ts'
+import { charArmsFor, commonLabeledTriviaVisitor } from '../../src/cst/trivia-charscan.ts'
 import { createDetachedParseContext } from '../../src/parse-context.ts'
 import type { LabeledTriviaSpec } from '../../src/cst/trivia-kinds.ts'
 
@@ -16,6 +16,35 @@ function cssLikeSpec(): LabeledTriviaSpec {
 }
 
 describe('char-level labelled trivia — lowering', () => {
+  it('selects direct visitors for the four canonical CSS/Less kind tuples', () => {
+    const ws = regex(/[ \t\n\r\f]+/)
+    const line = regex(/\/\/[^\n\r]*/)
+    const block = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)
+    const entries = [
+      [classifiedTrivia({ ws, line, block }), 'visitWsLineBlock', ' //x\n/*y*/z'],
+      [classifiedTrivia({ ws, block }), 'visitWsBlock', ' /*y*/z'],
+      [classifiedTrivia({ line, block }), 'visitLineBlock', '//x\n/*y*/z'],
+      [classifiedTrivia({ block }), 'visitBlock', '/*x*//*y*/z'],
+    ] as const
+    for (const [trivia, name, input] of entries) {
+      const spec = analyzeLabeledTrivia(trivia)!
+      const visitor = commonLabeledTriviaVisitor(spec)
+      expect(visitor?.name).toBe(name)
+      const got: Array<[number, number, number]> = []
+      const end = visitor!(input, 0, (start, matchEnd, kind) => got.push([start, matchEnd, kind]))
+      const want: Array<[number, number, number]> = []
+      const wantEnd = visitLabeledTriviaViaCombinators(input, 0, spec, want)
+      expect({ end, got }).toEqual({ end: wantEnd, got: want })
+    }
+  })
+
+  it('refuses reordered or noncanonical labelled tuples', () => {
+    const reordered = classifiedTrivia({ block: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//), ws: regex(/[ \t\n\r\f]+/) })
+    const custom = classifiedTrivia({ ws: regex(/[ \t]+/) })
+    expect(commonLabeledTriviaVisitor(analyzeLabeledTrivia(reordered)!)).toBeNull()
+    expect(commonLabeledTriviaVisitor(analyzeLabeledTrivia(custom)!)).toBeNull()
+  })
+
   it('lowers whitespace, line-comment and block-comment arms', () => {
     const arms = charArmsFor(cssLikeSpec())
     expect(arms).not.toBeNull()

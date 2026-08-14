@@ -5,7 +5,7 @@ import {
 import type { Verdict } from '../../bench/ab-harness.ts'
 
 const SHELF: Readonly<Record<string, WorkloadShelf>> = {
-  known: { medianPct: 10, minPct: 12, tracking: '0.48 tracking' },
+  known: { scoreMethod: 'aggregate-v1', medianPct: 10, minPct: 12, tracking: '0.48 tracking' },
 }
 
 function verdict(id: string, failed: boolean, values: ReadonlyArray<readonly [number, number]>): Verdict {
@@ -15,7 +15,22 @@ function verdict(id: string, failed: boolean, values: ReadonlyArray<readonly [nu
     breachCount: failed ? values.length : 0,
     passes: values.map(([dMedian, dMin]) => ({
       id, dMedian, dMin, breach: failed,
-      refMedian: 1, headMedian: 1, refMin: 1, headMin: 1, wins: 0, pairs: 1,
+      scorer: 'paired-ratio-v2', refMedian: 1, headMedian: 1,
+      dMedianAggregateV1: dMedian, dMinAggregateV1: dMin, wins: 0, pairs: 1,
+    })),
+  }
+}
+
+function splitVerdict(
+  paired: readonly [number, number], aggregate: readonly [number, number], count = 3,
+): Verdict {
+  return {
+    id: 'known', failed: true, breachCount: count,
+    passes: Array.from({ length: count }, () => ({
+      id: 'known', scorer: 'paired-ratio-v2', refMedian: 1, headMedian: 1,
+      dMedian: paired[0], dMin: paired[1],
+      dMedianAggregateV1: aggregate[0], dMinAggregateV1: aggregate[1],
+      wins: 0, pairs: 1, breach: true,
     })),
   }
 }
@@ -23,11 +38,11 @@ function verdict(id: string, failed: boolean, values: ReadonlyArray<readonly [nu
 describe('0.47 workload performance shelf', () => {
   it('names only the five owner-accepted rows at their measured ceilings', () => {
     expect(SHELVED_WORKLOADS).toEqual({
-      'less/stylesheet': { medianPct: 332.3, minPct: 348.5, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
-      'less/mixins': { medianPct: 329.8, minPct: 344.3, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
-      'css/stylesheet': { medianPct: 309.6, minPct: 333.2, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
-      'graphql/document': { medianPct: 124.7, minPct: 129.6, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
-      'json/document': { medianPct: 145.8, minPct: 146.9, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+      'less/stylesheet': { scoreMethod: 'aggregate-v1', medianPct: 332.3, minPct: 348.5, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+      'less/mixins': { scoreMethod: 'aggregate-v1', medianPct: 329.8, minPct: 344.3, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+      'css/stylesheet': { scoreMethod: 'aggregate-v1', medianPct: 309.6, minPct: 333.2, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+      'graphql/document': { scoreMethod: 'aggregate-v1', medianPct: 124.7, minPct: 129.6, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
+      'json/document': { scoreMethod: 'aggregate-v1', medianPct: 145.8, minPct: 146.9, tracking: 'notes/RELEASE-0.48-TARGET.md §8' },
     })
   })
 
@@ -62,6 +77,14 @@ describe('0.47 workload performance shelf', () => {
       id: 'known', worstMedian: 10.1, worstMin: 12.1, overCeilingPasses: 2, totalPasses: 3,
     }])
     expect(d.shelved).toEqual([])
+  })
+
+  it('uses aggregate-v1 fields for the historical ceiling, not paired-v2 fields', () => {
+    const aggregateOver = classifyWorkloadShelves([splitVerdict([0, 0], [11, 13])], SHELF)
+    expect(aggregateOver.worsened).toMatchObject([{ overCeilingPasses: 3 }])
+
+    const pairedOver = classifyWorkloadShelves([splitVerdict([99, 99], [0, 0])], SHELF)
+    expect(pairedOver.shelved).toMatchObject([{ overCeilingPasses: 0 }])
   })
 
   it('blocks a new regression rather than allowing it behind the shelf', () => {
