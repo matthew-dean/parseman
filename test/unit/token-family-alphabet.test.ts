@@ -189,7 +189,7 @@ describe('derived lexical-token families', () => {
     expect(encodeTable({ Root: root }).lex).toHaveLength(1)
   })
 
-  it('admits one-code-unit selected token bodies and rejects astral suffix lookalikes', () => {
+  it('admits both the compact one-code-unit slice and fixed astral suffix templates', () => {
     const selected = token(sequence(regex(/[a-z]+/), optional(literal('('))))
     const capability = collectLexicalCapabilities([selected])
     expect(capability.capabilityComplete).toBe(true)
@@ -199,9 +199,10 @@ describe('derived lexical-token families', () => {
     expect(capability.bindingEdges.every(edge => edge.status.kind === 'complete')).toBe(true)
 
     const astral = token(sequence(regex(/[a-z]+/), optional(literal('🙂'))))
-    expect(collectLexicalCapabilities([astral]).capabilityComplete).toBe(false)
+    expect(collectLexicalCapabilities([astral]).capabilityComplete).toBe(true)
     const astralProg = encodeTable({ Root: astral })
-    expect(astralProg.lex).toBeUndefined()
+    expect(astralProg.lex).toHaveLength(2)
+    expect(astralProg.lexPrograms).toHaveLength(1)
 
     const newline = token(sequence(regex(/[a-z]+/), optional(literal('\n'))))
     expect(collectLexicalCapabilities([newline]).capabilityComplete).toBe(true)
@@ -984,9 +985,9 @@ describe('derived lexical-token families', () => {
     expect(alphabet.capabilities.filter(site => site.atom === 'token').every(site =>
       site.obligations.boundaryPlan.representation.kind === 'complete'
       && site.obligations.materializationPlan.representation.kind === 'complete'
-      && site.obligations.boundaryPlan.executableLowering.kind === 'gap'
-      && site.obligations.materializationPlan.executableLowering.kind === 'gap')).toBe(true)
-    expect(alphabet.capabilityComplete).toBe(false)
+      && site.obligations.boundaryPlan.executableLowering.kind === 'complete'
+      && site.obligations.materializationPlan.executableLowering.kind === 'complete')).toBe(true)
+    expect(alphabet.capabilityComplete).toBe(true)
 
     const pointerFree = (value: unknown): boolean => {
       if (typeof value === 'function') return false
@@ -1326,7 +1327,7 @@ describe('derived lexical-token families', () => {
       'choice', 'dispatch', 'token', 'terminal', 'terminal', 'terminal',
     ])
     expect(alphabet.capabilities.filter(site => site.parser === ownedChoice)).toHaveLength(0)
-    expect(alphabet.capabilityComplete).toBe(false)
+    expect(alphabet.capabilityComplete).toBe(true)
   })
 
   it('keeps equal and shorter prefix views compatible without changing PEG arm order', () => {

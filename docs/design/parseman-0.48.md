@@ -244,18 +244,24 @@ losing candidate is discarded before `TableProgram` serialization and assembly; 
 runtime and package never carry both implementations merely because the compiler
 considered both.
 
-**Current implementation boundary.** The first executable proof covers
-`token(sequence(regex, optional(literal(one UTF-16 code unit))))` in a program whose
-*entire* lexical capability graph is complete. It serializes one childless
-`OP_LEX_BODY` row and omits the losing regex/optional/literal rows. A second proof
-serializes selected-only fixed `OP_LEX_PROGRAM` rows for an ordered four-terminal
-choice and for two negative terminal guards followed by a terminal. The composite
-rows reuse scalar terminal matchers and carry their exact failure/probe outcomes;
-they are fixed closure or named bodies, not a recursive lexical-IR interpreter or a
-parse-time child-array walk. These are catalogue vertical slices, not a general
-scanner and not a Jess speed claim. CSS and Less still have reachable capability
-gaps, so their whole-program gate emits zero selected lexical rows/programs and
-preserves the CHARACTER tables unchanged.
+**Current implementation boundary.** The executable catalogue covers direct
+terminals, fixed sequences of arity 2–5, fixed ordered lexical choices of arity
+2/4/8, negative assertions, optional bodies, the earlier optional-code-unit and
+four-terminal vertical slices, and balanced tokens through the canonical scan pool.
+Assembly decodes each fixed tuple once into direct scalar closures; emitted and
+precompiled bodies name the same captured runner. There is no parse-time lexical
+opcode switch, fixed-child array, recursive IR interpreter, or alternate CHARACTER
+body. Balanced selection reuses the existing `ScanSpec`/`balanced()` authority, so
+ambient `scanSkip` identity caching, authored skippers, recovery, and diagnostics
+are not reimplemented.
+
+Existing `OP_CHOICE`, `OP_GREEDY`, `OP_DISPATCH`, `OP_REJECT`, and `OP_ARMGATE`
+rows remain the decision projection; selection does not introduce a parallel token
+decision wire. At the current CSS and Less Jess checkpoints the complete final
+graphs have zero capability, binding, decision-effect, or scan-policy gaps, so the
+whole-program gate is non-vacuously open and emits selected lexical rows with no
+reachable `OP_TOKEN` row. This is a correctness/architecture checkpoint, not a speed
+claim; retention still depends on hardened timing against the CHARACTER table.
 
 Capability scope cannot be narrowed to hot sites, supported kernels, current planner
 candidates, or the sites the cost model is expected to choose. It includes every

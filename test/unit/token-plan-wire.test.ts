@@ -27,7 +27,9 @@ describe('compact lexical token plan wire', () => {
       when(endsWith('('), literal('two')),
       otherwise(literal('other')),
     )
-    const unsupported = token(sequence(regex(/[0-9]+/), literal(')')))
+    const unsupported = token(sequence(
+      regex(/[0-9]+/), literal('a'), literal('b'), literal('c'), literal('d'), literal('e'),
+    ))
 
     const root = sequence(first, duplicate, unsupported)
     const prog = encodeTable({ Root: root })

@@ -1765,6 +1765,46 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_LEX_PROGRAM: {
         const run = t.lexPrograms[code[ip + 1]!]!
+        const scanId = run.scan
+        if (scanId !== undefined) {
+          return (input, pos, ctx) => {
+            const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
+            const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
+            const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
+            const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
+            const wasCapturing = cstCaptureActive(ctx)
+            const sScan = SCAN
+            SCAN = null
+            ctx.trivia = undefined
+            ctx.triviaKindLabels = undefined
+            ctx._cstBuf = undefined
+            ctx._cstChildren = undefined
+            ctx._cstLeaves = undefined
+            ctx._cstRawChildren = undefined
+            ctx._cstTriviaLog = undefined
+            ctx._triviaLog = undefined
+            ctx._rootTriviaLog = undefined
+            let end: number
+            try { end = run(input, pos, ctx, scans[scanId]) }
+            finally {
+              SCAN = sScan
+              ctx.trivia = sTrivia
+              ctx.triviaKindLabels = sKinds
+              ctx._cstBuf = sBuf
+              ctx._cstChildren = sChildren
+              ctx._cstLeaves = sLeaves
+              ctx._cstRawChildren = sRaw
+              ctx._cstTriviaLog = sTl
+              ctx._triviaLog = sOuterTl
+              ctx._rootTriviaLog = sRootTl
+            }
+            if (end < 0) return FAIL
+            const value = input.slice(pos, end)
+            if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+            EC.e = end
+            return value
+          }
+        }
         return (input, pos, ctx) => {
           const end = run(input, pos, ctx)
           if (end < 0) return FAIL

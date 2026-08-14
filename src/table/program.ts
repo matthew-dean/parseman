@@ -344,13 +344,16 @@ export type LexProgramSpec = readonly [
   arm1Matcher: number, arm1Fx: number,
   arm2Matcher: number, arm2Fx: number,
   arm3Matcher: number, arm3Fx: number,
+  trackLines: 0 | 1,
 ] | readonly [
   kind: 1, digest: number,
   guard0Arm0: number, guard0Arm1: number, guard0Arm2: number, guard0Arm3: number,
   guard0Fx: number,
   guard1Matcher: number, guard1Fx: number,
   terminalMatcher: number, terminalFx: number,
-]
+  trackLines: 0 | 1,
+] | readonly [kind: 2, digest: number, ...fixedTreeWords: number[]]
+  | readonly [kind: 3, digest: number, scan: number]
 
 /** One `dispatch()`'s routing tables, in serialisable form. */
 export type DispatchSpec = {

@@ -1187,7 +1187,43 @@ return v
       }
 
       case OP_LEX_PROGRAM: {
-        const run = hoist('lexProgram', `LEXPROG[${code[ip + 1]!}]`)
+        const programId = code[ip + 1]!
+        const run = hoist('lexProgram', `LEXPROG[${programId}]`)
+        const scanId = t.lexPrograms[programId]!.scan
+        if (scanId !== undefined) return `${head}
+const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan
+const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+const sOtl=ctx._triviaLog,sRtl=ctx._rootTriviaLog
+const wasCap=ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined
+_pfScan=null
+ctx.trivia=undefined
+ctx.triviaKindLabels=undefined
+ctx._cstBuf=undefined
+ctx._cstChildren=undefined
+ctx._cstLeaves=undefined
+ctx._cstRawChildren=undefined
+ctx._cstTriviaLog=undefined
+ctx._triviaLog=undefined
+ctx._rootTriviaLog=undefined
+let e
+try{e=${run}(input,pos,ctx,SCANS[${scanId}])}finally{
+_pfScan=sScan
+ctx.trivia=sTri
+ctx.triviaKindLabels=sKinds
+ctx._cstBuf=sBuf
+ctx._cstChildren=sCh
+ctx._cstLeaves=sLv
+ctx._cstRawChildren=sRaw
+ctx._cstTriviaLog=sTl
+ctx._triviaLog=sOtl
+ctx._rootTriviaLog=sRtl
+}
+if(e<0)return FAIL
+const v=input.slice(pos,e)
+if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+EC.e=e
+return v
+}`
         return `${head}
 const e=${run}(input,pos,ctx)
 if(e<0)return FAIL

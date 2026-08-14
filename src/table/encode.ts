@@ -22,14 +22,20 @@ import { missingInferredType } from '../combinators/node.ts'
 import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, LexBodySpec, LexProgramSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
-import { lexProgramDigest } from './lex-program.ts'
+import {
+  lexProgramDigest,
+  LEX_NODE_CHOICE2, LEX_NODE_CHOICE4, LEX_NODE_CHOICE8,
+  LEX_NODE_NOT, LEX_NODE_OPTIONAL,
+  LEX_NODE_SEQUENCE2, LEX_NODE_SEQUENCE3, LEX_NODE_SEQUENCE4, LEX_NODE_SEQUENCE5,
+  LEX_NODE_TERMINAL,
+} from './lex-program.ts'
 import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
   assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
 } from '../compiler/token-capability.ts'
-import { directExecutableTokenBody } from '../compiler/token-alphabet.ts'
+import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -229,11 +235,86 @@ class Encoder {
       this.lex.push([regex, -1])
       return id
     }
+    if (body.kind === 'balanced-scan') {
+      const scan = this.scanSlot({
+        kind: 1,
+        flags: (body.raw ? 1 : 0) | (body.strict ? 4 : 0),
+        skip: body.ownSkip.map(combinator => this.subtree(combinator)),
+        open: body.open,
+        close: body.close,
+      })
+      const words = [scan]
+      const spec = [3, lexProgramDigest(words), scan] as LexProgramSpec
+      const key = spec.join(',')
+      const prior = this.lexProgramIndex.get(key)
+      if (prior !== undefined) return { kind: 'program', program: prior }
+      const id = this.lexPrograms.length
+      this.lexProgramIndex.set(key, id)
+      this.lexPrograms.push(spec)
+      return { kind: 'program', program: id }
+    }
+    if (body.kind === 'fixed-tree') {
+      const words: number[] = []
+      const emitNode = (node: ExecutableLexNode): boolean => {
+        switch (node.kind) {
+          case 'terminal':
+            words.push(
+              LEX_NODE_TERMINAL,
+              matcher(node.terminal),
+              this.expected(node.terminal.expected),
+              this.track ? 1 : 0,
+            )
+            return true
+          case 'sequence': {
+            for (const part of node.parts) if (!emitNode(part)) return false
+            const op = node.parts.length === 2 ? LEX_NODE_SEQUENCE2
+              : node.parts.length === 3 ? LEX_NODE_SEQUENCE3
+                : node.parts.length === 4 ? LEX_NODE_SEQUENCE4
+                  : node.parts.length === 5 ? LEX_NODE_SEQUENCE5 : -1
+            if (op < 0) return false
+            words.push(op)
+            return true
+          }
+          case 'choice': {
+            for (const arm of node.arms) if (!emitNode(arm)) return false
+            const op = node.arms.length === 2 ? LEX_NODE_CHOICE2
+              : node.arms.length === 4 ? LEX_NODE_CHOICE4
+                : node.arms.length === 8 ? LEX_NODE_CHOICE8 : -1
+            if (op < 0) return false
+            words.push(op, this.expected(node.expected))
+            for (let i = 0; i < node.arms.length; i++) {
+              const first = node.firstSets[i]!
+              words.push(first.kind === 'ranges' ? this.charClass(first) : -1)
+              words.push(this.expected(node.armExpected[i]!))
+            }
+            return true
+          }
+          case 'not':
+            if (!emitNode(node.body)) return false
+            words.push(LEX_NODE_NOT, this.expected(node.expected))
+            return true
+          case 'optional':
+            if (!emitNode(node.body)) return false
+            words.push(LEX_NODE_OPTIONAL)
+            return true
+        }
+      }
+      if (!emitNode(body.root)) return undefined
+      const spec = [2, lexProgramDigest(words), ...words] as LexProgramSpec
+      const key = spec.join(',')
+      const prior = this.lexProgramIndex.get(key)
+      if (prior !== undefined) return { kind: 'program', program: prior }
+      const id = this.lexPrograms.length
+      this.lexProgramIndex.set(key, id)
+      this.lexPrograms.push(spec)
+      return { kind: 'program', program: id }
+    }
     if (body.kind === 'not2-ordered4-terminal') {
       const words = [
         ...body.guard0.map(matcher), this.expected(body.guard0Expected),
         matcher(body.guard1), this.expected(body.guard1Expected),
         matcher(body.terminal), this.expected(body.terminalExpected),
+        this.track ? 1 : 0,
       ]
       const spec = [1, lexProgramDigest(words), ...words] as unknown as LexProgramSpec
       const key = spec.join(',')
@@ -251,6 +332,7 @@ class Encoder {
       for (const arm of body.arms) {
         words.push(matcher(arm), this.expected(arm.expected))
       }
+      words.push(this.track ? 1 : 0)
       const spec = [0, lexProgramDigest(words), ...words] as unknown as LexProgramSpec
       const key = spec.join(',')
       const prior = this.lexProgramIndex.get(key)
@@ -269,9 +351,13 @@ class Encoder {
     const suffixFx = this.expected(body.kind === 'regex-terminal' ? [] : directTerminalFailureExpected({
       tag: 'literal', value: body.suffix, caseInsensitive: false,
     }))
+    // Tracked terminal rows advance the high-water mark even when their static
+    // language cannot contain a newline. Otherwise a preceding newline stays
+    // behind an incorrectly advanced boundary and the next CST node receives a
+    // stale line. The suffix advances only when it actually matched (reader bit
+    // 2), exactly like the authored optional literal.
     const lineFlags = this.track
-      ? (body.kind === 'regex-terminal' ? (body.canMatchNewline ? 1 : 0)
-        : (body.baseCanMatchNewline ? 1 : 0) | (body.suffixCanMatchNewline ? 2 : 0) | 4)
+      ? (body.kind === 'regex-terminal' ? 1 : 1 | 2 | 4)
       : body.kind === 'regex-terminal' ? 0 : 4
     if (prior !== undefined) return { kind: 'body', body: prior, expectedFx, suffixFx, lineFlags }
     const id = this.lex.length
@@ -781,6 +867,20 @@ class Encoder {
 
   private encodeDef(p: Combinator<unknown>): number {
     const d = p._def as ParserDef
+    // `balanced()` returns a token carrying `_balancedSpec` on that same
+    // object. Give a complete selected token shell first refusal; otherwise the
+    // generic scan row below would permanently shadow it before the `token`
+    // switch is reached.
+    if (d.tag === 'token') {
+      const selected = this.lexicalBodySlot(p)
+      if (selected !== undefined) {
+        if (selected.kind === 'program') return this.emit(OP_LEX_PROGRAM, selected.program)
+        return this.emit(
+          OP_LEX_BODY, selected.body, selected.expectedFx,
+          selected.suffixFx, selected.lineFlags,
+        )
+      }
+    }
     // THE SCANNING CONSTRUCTS, as their constructor arguments.
     //
     // Neither is recoverable from `_def` alone — `balanced()` overrides `.parse`
@@ -1173,14 +1273,6 @@ class Encoder {
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
       case 'token': {
-        const selected = this.lexicalBodySlot(p)
-        if (selected !== undefined) {
-          if (selected.kind === 'program') return this.emit(OP_LEX_PROGRAM, selected.program)
-          return this.emit(
-            OP_LEX_BODY, selected.body, selected.expectedFx,
-            selected.suffixFx, selected.lineFlags,
-          )
-        }
         return this.emit(OP_TOKEN, this.node(d.parser).ip)
       }
       case 'routed':

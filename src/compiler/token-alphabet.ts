@@ -129,11 +129,43 @@ export type ExecutableNot2LexBody = {
   readonly terminal: ExecutableTerminalLexBody
 }
 
+export type ExecutableLexNode =
+  | { readonly kind: 'terminal'; readonly terminal: ExecutableTerminalLexBody }
+  | { readonly kind: 'sequence'; readonly parts: readonly ExecutableLexNode[] }
+  | {
+    readonly kind: 'choice'
+    readonly arms: readonly ExecutableLexNode[]
+    readonly firstSets: readonly FirstSet[]
+    readonly armExpected: readonly (readonly string[])[]
+    readonly expected: readonly string[]
+  }
+  | { readonly kind: 'not'; readonly body: ExecutableLexNode; readonly expected: readonly string[] }
+  | { readonly kind: 'optional'; readonly body: ExecutableLexNode }
+
+export type ExecutableFixedLexBody = {
+  readonly kind: 'fixed-tree'
+  readonly root: ExecutableLexNode
+}
+
+/** A balanced token whose recognition remains owned by the canonical scanner
+ * pool. The selected shell removes only the losing token/parent topology; it
+ * never restates ambient scanSkip, recovery, or skipper semantics. */
+export type ExecutableBalancedLexBody = {
+  readonly kind: 'balanced-scan'
+  readonly open: string
+  readonly close: string
+  readonly raw: boolean
+  readonly strict: boolean
+  readonly ownSkip: readonly Combinator<unknown>[]
+}
+
 export type ExecutableLexBody =
   | ExecutableOptionalSuffixLexBody
   | ExecutableTerminalLexBody
   | ExecutableOrdered4LexBody
   | ExecutableNot2LexBody
+  | ExecutableFixedLexBody
+  | ExecutableBalancedLexBody
 
 export type LexBodyCandidate =
   | { readonly strategy: 'character'; readonly estimatedOps: number }
@@ -303,6 +335,15 @@ function directTerminalLexBody(
   const terminal = directTerminalParser(parser, resolve)
   if (terminal === undefined) return undefined
   const def = terminal._def
+  if (def.tag === 'literal') {
+    if (def.caseInsensitive) return undefined
+    const source = def.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return {
+      kind: 'regex-terminal', source, flags: '',
+      canMatchNewline: terminal._meta.canMatchNewline,
+      expected: directTerminalFailureExpected(def),
+    }
+  }
   if (def.tag === 'regex') return {
     kind: 'regex-terminal', source: def.source, flags: def.flags,
     canMatchNewline: terminal._meta.canMatchNewline,
@@ -390,6 +431,99 @@ export function directNot2TokenBody(
   }
 }
 
+function directFixedLexNode(
+  parser: Combinator<unknown>,
+  resolve: ((name: string) => Combinator<unknown> | undefined) | undefined,
+  active: Set<Combinator<unknown>>,
+  pureOnly = false,
+): ExecutableLexNode | undefined {
+  let current = parser
+  const wrappers = new Set<Combinator<unknown>>()
+  while (!wrappers.has(current)) {
+    wrappers.add(current)
+    const def = current._def
+    if (def.tag === 'lazy') {
+      const target = resolvedLazyTarget(current, resolve)
+      if (target === undefined) return undefined
+      current = target
+      continue
+    }
+    if (def.tag === 'token') { current = def.parser; continue }
+    break
+  }
+  if (wrappers.has(current) && current !== parser && current._def.tag === 'lazy') return undefined
+  if (active.has(current)) return undefined
+  active.add(current)
+  try {
+    const terminal = directTerminalLexBody(current, resolve)
+    if (terminal !== undefined) return { kind: 'terminal', terminal }
+    const def = current._def
+    if (def.tag === 'grammar') {
+      if (!pureOnly || (def.parser._def.tag !== 'token'
+        && (def.clearTrivia !== true || def.triviaParser !== undefined
+          || def.captureTrivia === true || def.rootCapture === 'opaque'))) return undefined
+      return directFixedLexNode(def.parser, resolve, active, true)
+    }
+    if (def.tag === 'sequence') {
+      if (def.parsers.length < 2 || def.parsers.length > 5) return undefined
+      const parts = def.parsers.map(part => directFixedLexNode(part, resolve, active, pureOnly))
+      if (parts.some(part => part === undefined)) return undefined
+      return { kind: 'sequence', parts: parts as ExecutableLexNode[] }
+    }
+    if (def.tag === 'choice') {
+      if ((def.parsers.length !== 2 && def.parsers.length !== 4 && def.parsers.length !== 8)
+        || def.strategy.tag !== 'firstMatch'
+        || def.gates.some(gate => gate !== null)
+        || def.autoNot.some(check => check !== null)) return undefined
+      const arms = def.parsers.map(arm => directFixedLexNode(arm, resolve, active, pureOnly))
+      if (arms.some(arm => arm === undefined)) return undefined
+      const final = classifyFinalChoice(def.parsers, resolve)
+      return {
+        kind: 'choice', arms: arms as ExecutableLexNode[],
+        firstSets: final.firstSets,
+        armExpected: def.parsers.map(deriveExpected),
+        expected: def.parsers.flatMap(deriveExpected),
+      }
+    }
+    if (def.tag === 'not') {
+      const body = directFixedLexNode(def.parser, resolve, active, true)
+      return body === undefined ? undefined : {
+        kind: 'not', body,
+        expected: assertionFailureExpected(false, def.parser._tag),
+      }
+    }
+    if (def.tag === 'optional') {
+      const body = directFixedLexNode(def.parser, resolve, active, pureOnly)
+      return body === undefined ? undefined : { kind: 'optional', body }
+    }
+    return undefined
+  } finally {
+    active.delete(current)
+  }
+}
+
+export function directFixedTokenBody(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ExecutableFixedLexBody | undefined {
+  const body = directTokenBodyParser(parser, resolve)
+  if (body === undefined) return undefined
+  const root = directFixedLexNode(body, resolve, new Set())
+  return root === undefined ? undefined : { kind: 'fixed-tree', root }
+}
+
+export function directBalancedTokenBody(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ExecutableBalancedLexBody | undefined {
+  if (directTokenBodyParser(parser, resolve) === undefined) return undefined
+  const spec = balancedSpecOf(parser)
+  return spec === undefined ? undefined : {
+    kind: 'balanced-scan', open: spec.open, close: spec.close,
+    raw: spec.raw, strict: spec.strict, ownSkip: spec.ownSkip,
+  }
+}
+
 export function directExecutableTokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
@@ -398,6 +532,8 @@ export function directExecutableTokenBody(
     ?? directTerminalTokenBody(parser, resolve)
     ?? directOrdered4TokenBody(parser, resolve)
     ?? directNot2TokenBody(parser, resolve)
+    ?? directBalancedTokenBody(parser, resolve)
+    ?? directFixedTokenBody(parser, resolve)
 }
 
 /** One canonical recognizer spec, shared by every family with equal lexical IR. */
@@ -1603,7 +1739,8 @@ function normalizeBalancedLexical(
     // every callback's `.parse`. Only authored ownSkip belongs to canonical IR.
     for (const entry of spec.ownSkip) {
       const normalized = withLexicalControl(session, 'balanced-skip', () =>
-        normalizeLexical(entry, resolve, new Set(), session))
+        normalizeBalancedLexical(entry, resolve, session)
+          ?? normalizeLexical(entry, resolve, new Set(), session))
       if ('refusal' in normalized) return {
         refusal: `balanced skipper is not represented: ${normalized.refusal}`,
       }

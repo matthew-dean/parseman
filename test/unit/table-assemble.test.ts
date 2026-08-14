@@ -268,6 +268,9 @@ describe('table assembler', () => {
       not(keywords(['@import'])),
       regex(/@[a-z-]+/),
     ))
+    const unsupported = token(sequence(
+      literal('a'), literal('b'), literal('c'), literal('d'), literal('e'), literal('f'),
+    ))
     const prog = encodeTable({ Ordered: ordered, Guarded: guarded })
     expect(prog.code[prog.rules.Ordered!]).toBe(OP_LEX_PROGRAM)
     expect(prog.code[prog.rules.Guarded!]).toBe(OP_LEX_PROGRAM)
@@ -282,7 +285,7 @@ describe('table assembler', () => {
       ['emitted', tableRules(prog)],
     ] as const
     const characterRules = execRules(encodeTable({
-      Ordered: ordered, Guarded: guarded, Gap: token(balanced('(', ')')),
+      Ordered: ordered, Guarded: guarded, Gap: unsupported,
     }))
     const cases = [
       ['Ordered', ['@media', '@supports', '@foo', '!']],
@@ -333,7 +336,7 @@ describe('table assembler', () => {
       expect(ctx._fc, `commit clear ${input}`).toBe(false)
     }
 
-    const refused = encodeTable({ Ordered: ordered, Gap: token(balanced('(', ')')) })
+    const refused = encodeTable({ Ordered: ordered, Gap: unsupported })
     expect(refused.lexPrograms).toBeUndefined()
     expect(refused.code[refused.rules.Ordered!]).toBe(OP_TOKEN)
 
@@ -372,6 +375,103 @@ describe('table assembler', () => {
       .toThrow('invalid fixed body width')
     expect(() => resolveTable({ ...detached, lexPrograms: [[2, 0] as never] }))
       .toThrow('invalid fixed body width')
+  })
+
+  it('decodes fixed lexical sequence, choice, assertion, and optional templates once', () => {
+    const roots = {
+      S2: token(sequence(literal('a'), literal('b'))),
+      S3: token(sequence(literal('a'), literal('b'), literal('c'))),
+      S4: token(sequence(
+        not(choice(literal('x'), literal('y'))),
+        regex(/[a-z]+/), optional(literal('(')), literal('!'),
+      )),
+      S5: token(sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e'))),
+      C2: token(choice(literal('a'), literal('b'))),
+      C4: token(choice(literal('a'), literal('b'), literal('c'), literal('d'))),
+      C8: token(choice(
+        literal('a'), literal('b'), literal('c'), literal('d'),
+        literal('e'), literal('f'), literal('g'), literal('h'),
+      )),
+    }
+    const prog = encodeTable(roots)
+    expect(Object.values(prog.rules).map(ip => prog.code[ip])).toEqual(
+      Array.from({ length: Object.keys(roots).length }, () => OP_LEX_PROGRAM),
+    )
+    expect([...reachableIps(prog)].map(ip => prog.code[ip])).not.toContain(OP_TOKEN)
+    const readers = [
+      ['reference', execRules(prog)],
+      ['closure', tableRules({ ...prog, asm: [] })],
+      ['emitted', tableRules(prog)],
+    ] as const
+    const cases: Record<keyof typeof roots, readonly string[]> = {
+      S2: ['ab', 'ax', ''],
+      S3: ['abc', 'abx'],
+      S4: ['word!', 'word(!', 'x!', 'word?'],
+      S5: ['abcde', 'abcdx'],
+      C2: ['a', 'b', 'z'],
+      C4: ['a', 'd', 'z'],
+      C8: ['a', 'h', 'z'],
+    }
+    for (const name of Object.keys(roots) as Array<keyof typeof roots>) {
+      for (const input of cases[name]) {
+        const expected = digestValue(run(roots[name], input))
+        for (const [reader, entries] of readers) {
+          expect(digestValue(run(entries[name]!, input)), `${reader} ${name} ${JSON.stringify(input)}`)
+            .toBe(expected)
+        }
+      }
+    }
+  })
+
+  it('selects balanced tokens through the canonical scan pool', () => {
+    const quoted = sequence(literal('"'), regex(/[^"\\]*(?:\\.[^"\\]*)*/), literal('"'))
+    const curly = balanced('{', '}')
+    const grammar = rules({ scanSkip: [quoted] }, () => ({
+      Group: balanced('(', ')'),
+      OwnSkip: balanced('[', ']', { skip: [curly] }),
+      Strict: balanced('<', '>', { strict: true }),
+    })) as Record<string, Combinator<unknown>>
+    const prog = encodeTable(grammar)
+    expect(Object.values(prog.rules).map(ip => prog.code[ip])).toEqual([
+      OP_LEX_PROGRAM, OP_LEX_PROGRAM, OP_LEX_PROGRAM,
+    ])
+    expect(prog.lexPrograms?.every(spec => spec[0] === 3)).toBe(true)
+    const resolved = resolveTable(prog)
+    const scanRoots = [
+      ...(prog.scans ?? []).flatMap(spec => [
+        ...spec.skip.map(ref => ref[0]), ...(spec.sentinel === undefined ? [] : [spec.sentinel[0]]),
+      ]),
+      ...(prog.scanSkip ?? []).flatMap(set => set.map(ref => ref[0])),
+    ]
+    const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
+      const emitted = emitAssemblySource(resolved, prog, cfg, scanRoots)
+      return {
+        key: cfgKey(cfg),
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+        factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
+        plan: emitted.plan, reached: [...emitted.reached],
+      }
+    })
+    const readers = [
+      ['reference', execRules(prog)],
+      ['closure', tableRules({ ...prog, asm: [] })],
+      ['emitted', tableRules(prog)],
+      ['precompiled', tableRules({ ...prog, asm: precompiled })],
+    ] as const
+    const cases = {
+      Group: ['(a(b)c)', '(a")"b)', '(a', 'x'],
+      OwnSkip: ['[a{]}b]', '[a', 'x'],
+      Strict: ['<a>', '<a', 'x'],
+    } as const
+    for (const name of Object.keys(cases) as Array<keyof typeof cases>) {
+      for (const input of cases[name]) {
+        const expected = digestValue(run(grammar[name]!, input))
+        for (const [reader, entries] of readers) {
+          expect(digestValue(run(entries[name]!, input)), `${reader} ${name} ${JSON.stringify(input)}`)
+            .toBe(expected)
+        }
+      }
+    }
   })
 
   it('selects composite bodies through final named token bindings', () => {
@@ -490,14 +590,15 @@ describe('table assembler', () => {
     const trace = (
       entry: Combinator<unknown> | ((input: string, pos: number, ctx: ParseContext) => import('../../src/types.ts').ParseResult<unknown>),
       input: string,
+      pos = 0,
     ) => {
       const ctx = createParseContext()
       ctx.trackLines = true
       ctx._lineStarts = [0]
       ctx._lineScannedTo = 0
       const result = typeof entry === 'function'
-        ? entry(input, 0, ctx)
-        : entry.parse(input, 0, ctx)
+        ? entry(input, pos, ctx)
+        : entry.parse(input, pos, ctx)
       return {
         ok: result.ok,
         span: { start: result.span.start, end: result.span.end },
@@ -508,6 +609,12 @@ describe('table assembler', () => {
     }
     const engines = (source: Combinator<unknown>) => {
       const prog = encodeTable({ Root: source }, { trackLines: true })
+      const character = encodeTable({
+        Root: source,
+        Incomplete: token(sequence(
+          literal('a'), literal('b'), literal('c'), literal('d'), literal('e'), literal('f'),
+        )),
+      }, { trackLines: true })
       expect(prog.code[prog.rules.Root!]).toBe(OP_LEX_BODY)
       const resolved = resolveTable(prog)
       const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
@@ -521,7 +628,7 @@ describe('table assembler', () => {
         }
       })
       return [
-        ['source', source],
+        ['character', execRules(character).Root!],
         ['reference', execRules(prog).Root!],
         ['closure', tableRules({ ...prog, asm: [] }).Root!],
         ['precompiled', tableRules({ ...prog, asm: precompiled }).Root!],
@@ -530,29 +637,56 @@ describe('table assembler', () => {
 
     const baseLines = token(sequence(regex(/[a-z\n]+/), optional(literal('('))))
     for (const input of ['a\nb', 'a\nb(']) {
-      const expected = trace(baseLines, input)
-      for (const [name, entry] of engines(baseLines)) {
+      const selected = engines(baseLines)
+      const expected = trace(selected[0][1], input)
+      for (const [name, entry] of selected) {
         expect(trace(entry, input), `${name} ${JSON.stringify(input)}`).toEqual(expected)
       }
       expect(expected.lineStarts).toEqual([0, 2])
-      expect(expected.lineScannedTo).toBe(3)
+      expect(expected.lineScannedTo).toBe(input.endsWith('(') ? 4 : 3)
     }
 
     const suffixLine = token(sequence(regex(/[a-z]+/), optional(literal('\n'))))
     for (const input of ['a', 'a\n']) {
-      const expected = trace(suffixLine, input)
-      for (const [name, entry] of engines(suffixLine)) {
+      const selected = engines(suffixLine)
+      const expected = trace(selected[0][1], input)
+      for (const [name, entry] of selected) {
         expect(trace(entry, input), `${name} ${JSON.stringify(input)}`).toEqual(expected)
       }
       expect(expected.lineStarts).toEqual(input.endsWith('\n') ? [0, 2] : [0])
-      expect(expected.lineScannedTo).toBe(input.endsWith('\n') ? 2 : 0)
+      expect(expected.lineScannedTo).toBe(input.endsWith('\n') ? 2 : 1)
     }
 
-    // RED provenance: treating the whole selected range as one line terminal
-    // advances `_lineScannedTo` through a non-newline suffix, while the authored
-    // regex and literal publish independently and stop at the regex end.
-    expect(trace(tableRules(encodeTable({ Root: baseLines }, { trackLines: true })).Root!, 'a\nb(')
-      .lineScannedTo).toBe(3)
+    // A token can begin after trivia whose newline has not yet been published.
+    // Even a statically non-newline terminal must advance from the old high-water
+    // point so that newline is available to the next CST node.
+    const afterTrivia = token(sequence(regex(/[a-z]+/), optional(literal('('))))
+    const afterTriviaEngines = engines(afterTrivia)
+    const afterTriviaExpected = trace(afterTriviaEngines[0][1], '\neach(', 1)
+    for (const [name, entry] of afterTriviaEngines) {
+      expect(trace(entry, '\neach(', 1), name).toEqual(afterTriviaExpected)
+    }
+    expect(afterTriviaExpected.lineStarts).toEqual([0, 1])
+    expect(afterTriviaExpected.lineScannedTo).toBe(6)
+
+    const fixed = token(sequence(literal('a'), literal('b')))
+    const fixedSelected = encodeTable({ Root: fixed }, { trackLines: true })
+    const fixedCharacter = encodeTable({
+      Root: fixed,
+      Incomplete: token(sequence(
+        literal('a'), literal('b'), literal('c'), literal('d'), literal('e'), literal('f'),
+      )),
+    }, { trackLines: true })
+    expect(fixedSelected.code[fixedSelected.rules.Root!]).toBe(OP_LEX_PROGRAM)
+    const fixedExpected = trace(execRules(fixedCharacter).Root!, '\nab', 1)
+    for (const [name, entry] of [
+      ['reference', execRules(fixedSelected).Root!],
+      ['closure', tableRules({ ...fixedSelected, asm: [] }).Root!],
+      ['emitted', tableRules(fixedSelected).Root!],
+    ] as const) {
+      expect(trace(entry, '\nab', 1), name).toEqual(fixedExpected)
+    }
+    expect(fixedExpected).toMatchObject({ lineStarts: [0, 1], lineScannedTo: 3 })
 
     // A tracked table owns line publication even when invoked through normal
     // `run(entry, input)`: its entry seeds line storage from `prog.lines`, while
