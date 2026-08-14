@@ -19,6 +19,12 @@ const suites: readonly {
 ]
 
 describe('chart Parseman runtime factories', () => {
+  it('keeps the small comparison row in every chart rather than cherry-picking wins', () => {
+    for (const chart of ['json', 'csv', 'graphql', 'cst'] as const) {
+      expect(CHART_GROUPS[chart][0]?.title).toContain('small')
+    }
+  })
+
   for (const { chart, reference } of suites) {
     for (const group of CHART_GROUPS[chart]) {
       it(`${chart} — ${group.title} consumes and builds the reference value`, async () => {
