@@ -27,6 +27,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   is 2.45% faster on CSS, 1.29% faster on benchmark Less, and 5.71% faster on generated
   Less in five-pass A/A-adjusted runs, without a second parser, parse-time IR loop, or
   per-site generated factory.
+- Precompile exactly the terminal `composeLeaf` default AST/no-lines assembly from the
+  canonical TableProgram once it reaches 1,024 instruction words; smaller leaves remain
+  compact and the deterministic size ceiling stays green. The Jess Less macro improves 15.4% on `benchmark.less` and
+  23.9% on generated Less against the prior 0.48 closure artifact in the causal screen;
+  CSS remains order-sensitive and is not assigned a release number. Only one of four
+  Jess public variants carries the assembly: transformed CSS is 1.64 MB raw / 197 KB
+  gzip and Less is 3.10 MB / 381 KB, rather than the rejected multi-megabyte-per-variant
+  direct-source parser.
 - Validate the final Jess-derived graphs against the CHARACTER oracle, reference table
   driver, closure assembler, and emitted assembly with full consumption and matching
   values, spans, expected sets, errors, and root trivia: 88 CSS inputs and 316 Less

@@ -277,6 +277,13 @@ export const cssCstGrammar           = composeLeaf([...pieces, rules({ trivia, h
 export const cssDiagnosticCstGrammar = composeLeaf([...pieces, rules({ trivia, hostMode: 'cst', trackLines: true }, f)])
 ```
 
+In 0.48 a sufficiently large terminal default AST/no-lines leaf is the deliberate speed
+variant: it embeds one precompiled TableProgram assembly. Small leaves stay compact; the
+line-tracking and CST leaves keep the
+compact closure representation, so four public variants do not duplicate four large
+assemblies. This is still one TableProgram semantic implementation—the embedded function
+is a build-time materialization of the same table, not the removed direct-source parser.
+
 **Each extra variant costs real bytes, but no longer a full copy.** Measured by
 `pnpm size:probe`, holding the grammar constant and varying only the number of variants:
 

@@ -90,6 +90,37 @@ const grammar = rules(g => ({ Entry: literal('ok') }))
     })).toBe(0)
   })
 
+  it('precompiles exactly one terminal composeLeaf default artifact once the table is large', () => {
+    const recognitionRules = Array.from(
+      { length: 400 },
+      (_, i) => `R${i}: literal(${JSON.stringify(`value-${i}`)})`,
+    ).join(',\n')
+    const out = transformMacro(`
+import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
+const recognition = rules(g => ({ ${recognitionRules} }))
+const grammar = composeLeaf([recognition, rules(g => ({ Entry: g.R0 }))])
+`, 'canonical-compose-leaf.ts', new Set(['parseman']))
+    expect(out?.warnings).toEqual([])
+    expect(out?.code.match(/a:\[\{/g)).toHaveLength(1)
+    expect(out?.code).toMatch(/const recognition\s*=\s*\/\* @__PURE__ \*\/ tableRules\(\{\s*a:\[\],/)
+
+    const entry = evalMacroModule<ParseFn>(out!.code, 'grammar.Entry')
+    expect(functionCalls(() => {
+      expect(entry('value-0', 0, {}).ok).toBe(true)
+    })).toBe(0)
+  })
+
+  it('keeps small, tracked, and CST precompile requests on the compact closure artifact', () => {
+    const entries = [['Entry', literal('ok')]] as const
+    const request = { precompileDefault: true } as const
+    const small = compileRuleMap(entries)
+    const tracked = compileRuleMap(entries, { trackLines: true })
+    const cst = compileRuleMap(entries, { hostMode: 'cst' })
+    expect(small?.replacementWithMetadata('{}', request)).toContain('a:[],')
+    expect(tracked?.replacementWithMetadata('{}', request)).toContain('a:[],')
+    expect(cst?.replacementWithMetadata('{}', request)).toContain('a:[],')
+  })
+
   it('a macro round-trip preserves a descriptor-backed sequence projection', () => {
     const out = transformMacro(`
 import { literal, rules, sequence, transform } from 'parseman' with { type: 'macro' }

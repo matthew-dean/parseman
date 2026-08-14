@@ -1625,10 +1625,10 @@ function transformMacroImpl(
         if (compiled !== null) {
           usedTableRuntime = true
           return {
-            replacement: compiled.replacementWithMetadata(staticTableMetadataSource({
-              reflection: compiled.reflection,
-              leaf: true,
-            })),
+            replacement: compiled.replacementWithMetadata(
+              staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
+              { precompileDefault: true },
+            ),
             ...(importedFactories.length ? { importedFactories } : {}),
           }
         }

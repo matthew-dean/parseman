@@ -8,8 +8,9 @@ parsers do. The release gate measures Parséman's compact table artifact against
 The committed SVG snapshots and historical numbers below predate canonical artifact
 unification: they measured runtime `compile()` while calling it “macro build,” and that
 runtime path then used a different emitted-assembly strategy. They are historical material,
-not 0.47 release evidence. The release ledger records only a fresh run whose runtime and
-macro artifacts share the same `a:[]` closure shape.
+not 0.47 release evidence. The 0.48 release ledger records the exact artifact shape:
+ordinary runtime and macro tables use the `a:[]` closure form, while a sufficiently
+large terminal default `composeLeaf` embeds one build-time strict assembly.
 :::
 
 For **syntax tree building**, Parséman's table CST path is compared with
