@@ -108,6 +108,8 @@
  *   pnpm bench:jess:ab less --head-engine=interpreter --ref-engine=interpreter
  *   pnpm bench:jess:ab all --self          # HEAD against ITSELF — the noise floor
  *   pnpm bench:jess:ab css --two-graph --rounds=40 --runs=4 --timed=9
+ *   pnpm bench:jess:ab less --require-identity --require-full
+ *   pnpm bench:jess:ab less --two-graph --require-full
  *
  * `--warmup`, `--timed`, `--rounds`, and `--runs` override only this invocation;
  * the corresponding `PM_JESS_AB_*` environment variables do the same for scripts.
@@ -182,6 +184,24 @@ const argValue = (flag: string): string | null =>
  */
 const TWO_GRAPH = process.argv.includes('--two-graph')
 const SELF = process.argv.includes('--self')
+const REQUIRE_IDENTITY = process.argv.includes('--require-identity')
+const REQUIRE_FULL = process.argv.includes('--require-full')
+const PLANT = process.env.PM_JESS_AB_PLANT ?? ''
+if (PLANT !== '' && PLANT !== 'result-value' && PLANT !== 'partial-consumption') {
+  throw new Error(`unknown PM_JESS_AB_PLANT '${PLANT}'`)
+}
+if (TWO_GRAPH && REQUIRE_IDENTITY) {
+  throw new Error('--require-identity needs rich mode; --two-graph deliberately does not build the interpreter identity leg')
+}
+if (REQUIRE_IDENTITY && !REQUIRE_FULL) {
+  throw new Error('--require-identity also needs --require-full; identical partial/dead legs are not identity evidence')
+}
+if (PLANT === 'result-value' && !REQUIRE_IDENTITY) {
+  throw new Error("PM_JESS_AB_PLANT=result-value needs --require-identity (and therefore --require-full)")
+}
+if (PLANT === 'partial-consumption' && !REQUIRE_FULL) {
+  throw new Error('PM_JESS_AB_PLANT=partial-consumption needs --require-full')
+}
 const cleanHeadSha = (): string => {
   const sha = headSha()
   if (sha.includes('dirty')) {
@@ -510,7 +530,12 @@ function protocol(headEngine: Engine, refEngine: Engine, refSha: string): string
 }
 
 function rowOf(leg: Leg, input: string): string[] {
-  try { return digestRow(leg.run(leg.entry, input)) }
+  try {
+    const result = leg.run(leg.entry, input)
+    return digestRow(PLANT === 'result-value' && leg.side === 'h1'
+      ? { ...result, value: { planted: true, original: result.value } }
+      : result)
+  }
   catch (e) { return Array.from({ length: COLUMNS.length }, () => `threw:${(e as Error).message.split('\n')[0] ?? ''}`) }
 }
 
@@ -534,23 +559,27 @@ function rowOf(leg: Leg, input: string): string[] {
  * ratio. A throughput figure over bytes nobody looked at is not slow or fast, it
  * is nothing.
  */
-type Outcome = { threw: boolean; ok: boolean; consumed: number; at: number; detail: string }
-function outcomeOf(leg: Leg, input: string, bytes: number): Outcome {
+type Outcome = { threw: boolean; ok: boolean; full: boolean; consumed: number; at: number; detail: string }
+function outcomeOf(leg: Leg, input: string): Outcome {
   try {
-    const r = leg.run(leg.entry, input) as unknown as {
-      ok?: boolean; span?: { start?: number; end?: number }
+    const raw = leg.run(leg.entry, input) as unknown as {
+      ok?: boolean; span?: { start?: number; end?: number }; unconsumedFrom?: number | null
     }
+    const r = PLANT === 'partial-consumption' && leg.side === 'h1'
+      ? { ...raw, unconsumedFrom: Math.max(0, input.length - 1) }
+      : raw
     const ok = r.ok === true
-    const consumed = ok ? r.span?.end ?? 0 : 0
+    const consumed = r.unconsumedFrom ?? input.length
     const at = r.span?.start ?? 0
+    const full = ok && r.unconsumedFrom === null && r.span?.end === input.length
     return {
-      threw: false, ok, consumed, at,
+      threw: false, ok, full, consumed, at,
       detail: ok
-        ? consumed >= bytes ? 'parsed in full' : `ACCEPTED only ${consumed} of ${bytes} B`
-        : `FAILED at byte ${at} of ${bytes}`,
+        ? full ? 'parsed in full' : `ACCEPTED only ${consumed} of ${input.length} code units`
+        : `FAILED at offset ${at} of ${input.length}`,
     }
   } catch (e) {
-    return { threw: true, ok: false, consumed: 0, at: 0, detail: `THREW: ${(e as Error).message.split('\n')[0] ?? ''}` }
+    return { threw: true, ok: false, full: false, consumed: 0, at: 0, detail: `THREW: ${(e as Error).message.split('\n')[0] ?? ''}` }
   }
 }
 
@@ -647,9 +676,9 @@ async function measureDialect(
     const [ih, ir, ii] = [identity(rh), identity(rr), identity(ri)]
     // ACCEPTANCE, read off the RunResult rather than inferred from the absence of
     // a throw. See `outcomeOf` — this line is the one that was lying.
-    const oh = outcomeOf(head, input, bytes)
-    const or = outcomeOf(ref, input, bytes)
-    const oi = outcomeOf(interp, input, bytes)
+    const oh = outcomeOf(head, input)
+    const or = outcomeOf(ref, input)
+    const oi = outcomeOf(interp, input)
     console.log(`    parse:  HEAD ${headEngine} ${oh.detail}`)
     if (!TWO_GRAPH) console.log(`            HEAD interpreter ${oi.detail}`)
     console.log(`            ${REF} ${refEngine} ${or.detail}`)
@@ -672,15 +701,21 @@ async function measureDialect(
       console.log(`    differing facets: ${differing.join(', ')}`)
       console.log('    TIMED ANYWAY, CAVEATED: the sides are not doing identical work, so the')
       console.log('    milliseconds below are indicative of cost and NOT a like-for-like contest.')
+      if (REQUIRE_IDENTITY) {
+        throw new Error(`${rel}: --require-identity caught semantic disagreement (${who}; ${differing.join(', ')})`)
+      }
     }
     // A leg that did not consume the file is not a slower or faster parse of it —
     // it is not a parse of it. Say so where the ratio would otherwise be read.
-    const bothParsed = oh.consumed >= bytes && or.consumed >= bytes
+    const bothParsed = oh.full && or.full && (TWO_GRAPH || oi.full)
     if (!bothParsed) {
       console.log('    *** NO RATIO IS QUOTABLE FOR THIS ROW: a side did not consume the file.')
-      console.log(`        HEAD consumed ${oh.consumed} B, ${REF} consumed ${or.consumed} B, of ${bytes} B.`)
+      console.log(`        HEAD ok=${oh.ok} consumed=${oh.consumed} failureAt=${oh.at}; ${REF} ok=${or.ok} consumed=${or.consumed} failureAt=${or.at}; input=${input.length} code units.`)
       console.log('        The milliseconds below are the cost of REACHING THE FAILURE, and the MB/s')
       console.log('        figures are computed over bytes that side never looked at.')
+      if (REQUIRE_FULL) {
+        throw new Error(`${rel}: --require-full caught incomplete parse (HEAD ok=${oh.ok} full=${oh.full}, ${REF} ok=${or.ok} full=${or.full}, input ${input.length})`)
+      }
     }
     // The container is reported EVERY time, agreement or not: it is the reason
     // `whole` cannot be the verdict across releases, and a reader who does not
@@ -880,6 +915,7 @@ async function main(): Promise<void> {
   console.log('')
   for (const line of protocol(headEngine, refEngine, REF)) console.log(line)
   console.log(`  measurement  ${MEASUREMENT.overrides.length === 0 ? 'committed routine defaults' : `OVERRIDDEN: ${MEASUREMENT.overrides.join(', ')}`}`)
+  console.log(`  enforcement  identity=${REQUIRE_IDENTITY ? 'REQUIRED' : 'report-only'} full=${REQUIRE_FULL ? 'REQUIRED' : 'report-only'} plant=${PLANT || 'none'}`)
   if (forced) console.log('  *** FORCED PAST THE LOAD CEILING — these figures are NOT canonical ***')
 
   for (const d of dialects) await measureDialect(d, headSrc, refSrc, headEngine, refEngine, forced)
