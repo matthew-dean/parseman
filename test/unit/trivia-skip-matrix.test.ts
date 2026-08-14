@@ -156,6 +156,64 @@ describe('trivia skip branch matrix', () => {
     expect(fastTriviaScanner(regex(/"(?:[^"\\]|\\.)*"/))).toBeNull()
   })
 
+  it('fuses the canonical CSS and Less trivia tuples without changing PEG boundaries', () => {
+    const ws = () => label('space', regex(/[ \t\n\r\f]+/))
+    const line = () => label('line', regex(/\/\/[^\n\r]*/))
+    const block = () => label('block', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//))
+    const entries = [
+      {
+        parser: trivia(oneOrMore(choice(ws(), block()))),
+        scannerName: 'scanWsBlockTrivia',
+        cases: [
+          ['  /*a*/\t/*b*/x', 0],
+          ['xx /*a*//*b*/!', 2],
+          ['  /* unterminated', 0],
+          ['x', 0],
+        ],
+      },
+      {
+        parser: trivia(oneOrMore(choice(ws(), line(), block()))),
+        scannerName: 'scanWsLineBlockTrivia',
+        cases: [
+          ['// a\n /*b*/x', 0],
+          ['xx// a\r\n/*b*/!', 2],
+          ['\f\t/*a*///b', 0],
+          ['x', 0],
+        ],
+      },
+      {
+        parser: trivia(oneOrMore(choice(line(), block()))),
+        scannerName: 'scanLineBlockTrivia',
+        cases: [
+          ['// a\n/*b*/', 0],
+          ['xx/*a*//*b*/!', 2],
+          ['/* unterminated', 0],
+          ['x', 0],
+        ],
+      },
+      {
+        parser: trivia(oneOrMore(choice(block()))),
+        scannerName: 'scanBlockTrivia',
+        cases: [
+          ['/*a*//*b*/x', 0],
+          ['xx/*a*/!', 2],
+          ['/* unterminated', 0],
+          ['', 0],
+        ],
+      },
+    ] as const
+
+    for (const entry of entries) {
+      const scanner = fastTriviaScanner(entry.parser)
+      expect(scanner?.name).toBe(entry.scannerName)
+      for (const [input, pos] of entry.cases) {
+        const parsed = entry.parser.parse(input, pos, createParseContext())
+        expect(scanner!(input, pos), `${entry.scannerName} at ${pos} in ${JSON.stringify(input)}`)
+          .toBe(parsed.ok ? parsed.span.end : pos)
+      }
+    }
+  })
+
   it('records through an installed scanner and restores scalar/lookahead marks', () => {
     const ctx = createParseContext()
     ctx._triviaLog = []
