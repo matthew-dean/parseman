@@ -10,24 +10,24 @@ Parser combinators are pleasant to write and usually slow. Parser generators are
 usually mean grammar files, generated code, and extra tooling. Parséman is a combinator
 library with an optional compiler, and it gives you both.
 
-**Parsing to JS values, the macro build is the fastest general-purpose JS parser in the
-suite** — ahead of every other library measured, at every grammar and every input size in
-that suite.
+**Parsing to JS values, the runtime-compiled artifact is the fastest general-purpose JS
+parser in the suite** — ahead of every other library measured, at every grammar and every
+input size in that suite.
 Every parser in the suite builds real output: objects, row arrays, AST nodes. On a 7.7 kB
-GraphQL document Parséman takes **131 µs**; Peggy takes 328 µs. Only a purpose-built native
-edges it out, `JSON.parse` on JSON.
+GraphQL document Parséman takes **188 µs**; Peggy takes 323 µs. Only a purpose-built native
+edges it out: `JSON.parse` on JSON.
 
 ![GraphQL parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-graphql.svg)
 
-Two more results. The compiled CST path beats Lezer on the JSON CST fixture — **174 µs** vs
-594 µs at 11.9 kB — while producing a richer tree carrying spans and trivia. And `parseDoc`
+Two more results. The compiled CST path beats Lezer on the JSON CST fixture — **242 µs** vs
+570 µs at 11.9 kB — while producing a richer tree carrying spans and trivia. And `parseDoc`
 stores parent-relative spans, so an in-place edit costs a fraction of a full reparse rather
 than a multiple of it. Results move with grammar shape, input size and runtime — which is
 why [the suite](#benchmarks) ships with the library rather than only its conclusions.
 
 You get there by writing normal code. Add the bundler plugin, mark one import, and the
-combinators you already wrote compile to flat JavaScript — the compiler computes the first
-sets and left-factors the choices for you.
+combinators you already wrote compile to an optimized `TableProgram` artifact — the compiler
+computes first sets, links direct bodies for proven shapes, and left-factors choices for you.
 
 Grammars work the same in plain JavaScript: the macro compiles a `.js` grammar to the same
 output as a `.ts` one. The package ships one ESM implementation, loadable through either
@@ -85,9 +85,9 @@ The same combinator code runs three ways, with identical results:
 - **Interpreter** — zero setup, works anywhere (tests, REPLs, dynamic grammars).
 - **Macro build** — a [bundler plugin](https://matthew-dean.github.io/parseman/guide/macro-mode)
   evaluates your grammar at build time and inlines the result. The combinator import you
-  mark `with { type: 'macro' }` disappears entirely; what ships is flat JavaScript with no
-  parseman import in it. (Executing that parser still goes through `run()`/`parse()`, so an
-  app keeps parseman as an ordinary dependency — see
+  mark `with { type: 'macro' }` disappears entirely; what ships is a compact table artifact
+  using the shared `parseman/table` runtime. Executing it still goes through `run()`/`parse()`,
+  so an app keeps Parseman as an ordinary dependency — see
   [the three modes](https://matthew-dean.github.io/parseman/guide/modes).)
 - **`compile()`** — the same optimizer, on demand at runtime.
 
@@ -159,13 +159,13 @@ Benchmarked against [Peggy](https://peggyjs.org/),
 [Lezer](https://lezer.codemirror.net/) on JSON, CSV and GraphQL, at three input sizes each.
 Each chart's legend names the libraries measured for that grammar.
 
-Largest fixture of each, macro build against the fastest other library on that chart:
-GraphQL **131 µs** vs Peggy's 328 µs, JSON **133 µs** vs Chevrotain's 241 µs, CSV
-**75.3 µs** vs Peggy's 420 µs. Native `JSON.parse` does JSON large in 51.6 µs. On the CST
-chart, macro build runs 174 µs against Lezer's 594 µs parse-only.
+Largest fixture of each, runtime compile against the fastest other library on that chart:
+GraphQL **188 µs** vs Peggy's 323 µs, JSON **223 µs** vs Chevrotain's 238 µs, CSV
+**114 µs** vs Peggy's 422 µs. Native `JSON.parse` does JSON large in 50.3 µs. On the CST
+chart, runtime compile runs 242 µs against Lezer's 570 µs parse-only.
 
-Those are the committed charts, regenerated at 0.29.0 (2026-07-22) on an M4 Pro, measuring
-the JS-codegen lowering that `compile()` and the macro build emit.
+Those are the committed 0.48.0 charts, regenerated on 2026-08-14 on an M4 Pro with
+Node 25.9.0. They include the restored small rows for JSON, CSV, GraphQL, and CST.
 
 ![JSON parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-json.svg)
 
@@ -196,7 +196,7 @@ pnpm docs:dev     # this documentation site, locally
 Benchmark and chart tasks (`pnpm bench`, `bench:svg`, `bench:parseman`, …) are described in
 the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks#reproducing-the-numbers).
 
-The active 0.48 runtime architecture and release specification is
+The frozen 0.48 runtime architecture and release specification is
 [`docs/design/parseman-0.48.md`](./docs/design/parseman-0.48.md). Detailed measurements
 and rejected experiments remain in the linked evidence registers rather than being
 treated as current design.

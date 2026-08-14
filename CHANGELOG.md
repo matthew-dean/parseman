@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.48.0 — 2026-08-13
+## 0.48.0 — 2026-08-14
 
 - **BREAKING:** ship one ESM implementation instead of duplicate ESM and CommonJS
   bundles. Both `import` and synchronous `require()` remain supported on the declared
@@ -22,6 +22,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   result objects and no-op commit closures while preserving the legacy emitted-factory
   ABI. Across one CSS, benchmark Less, and generated Less parse this removes about
   288,000 result objects and 83,000 no-op closures.
+- Select kind-preserving visitors for the four canonical CSS/Less classified-trivia
+  grammars at construction time. Five-pass A/A-adjusted runs improve CSS by 5.75%,
+  benchmark Less by 4.76%, and generated Less by 5.94%, with every pass winning and
+  unrecognized trivia grammars retaining the generic path.
 - Select bounded direct closure bodies for common fixed sequences, scalar terminals,
   lexical token programs, and AST nodes at assembly time. The retained AST-node tranche
   is 2.45% faster on CSS, 1.29% faster on benchmark Less, and 5.71% faster on generated
@@ -44,13 +48,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   driver, closure assembler, and emitted assembly with full consumption and matching
   values, spans, expected sets, errors, and root trivia: 88 CSS inputs and 316 Less
   inputs pass.
+- **Accepted performance carry-forward:** 0.48 recovers most, but not all, of 0.47's
+  regression against pinned 0.46. In the final clean Node 24 two-graph bracket, a full
+  CSS parse is 6.34 ms versus 5.26 ms, benchmark Less is 17.92 ms versus 15.76 ms, and
+  generated Less is 46.75 ms versus 45.93 ms. The surrounding same-source A/A controls
+  put the approximate remaining gaps at 1.19x, 1.12x, and 1.03x. The owner accepted
+  this tradeoff for 0.48 after the correctness, package, and external-competitor gates
+  passed; strict 0.46 parity moves to the explicit 0.49 target rather than being
+  misreported as complete here.
 - Restore small rows to every external comparison chart. In the three-round release
   sweep Parseman is the fastest competitor-ranked JavaScript parser in every JSON, CSV,
   GraphQL, and CST group. The tightest row is JSON-small at 0.894 microseconds versus
   Chevrotain at 0.956 microseconds (1.07x, above the 1.05x floor) with 1.5% worst-case
   live A/A control spread.
+- Regenerate all four public comparison SVGs from 0.48.0 on Node 25.9.0, including the
+  restored small rows. Runtime-compiled Parseman leads every compared JS parser on all
+  JSON, CSV, GraphQL, and CST rows; the tightest fresh chart row is JSON-small at
+  0.94 microseconds versus Chevrotain at 0.99 microseconds.
 - Removing duplicate CommonJS output and retaining the selected-body work leaves the
-  package at about 2.2 MB packed and 9.2 MB unpacked (389 files), down from the prior
+  package at about 2.18 MB packed and 9.37 MB unpacked (392 files), down from the prior
   dual-format 0.48 candidate's roughly 3.4 MB packed package.
 
 ## 0.47.1 — 2026-08-12

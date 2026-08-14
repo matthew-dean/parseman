@@ -1,17 +1,19 @@
 # 0.48 table performance experiment ledger
 
-This is the live working view for 0.48 performance work. The canonical design and
+This is the frozen working view for 0.48 performance work. The canonical design and
 implementation order are in
 [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md). Historical
 evidence and retractions remain in `RELEASE-0.48-TARGET.md`; this file alone
-answers what is active, why, and what result would keep it.
+records what was active, why, and what result kept or rejected it. New performance work
+belongs in [`RELEASE-0.49-TARGET.md`](./RELEASE-0.49-TARGET.md).
 
 ## Release criterion
 
-0.48 does not ship until the canonical compact table path is at least as fast as
-0.46 on all three production-shaped release fixtures: CSS, Less, and generated
-Less. Each claim must compare against the pinned 0.46 build, parse the full
-input, prove result identity, use paired runs, and include a same-source control.
+0.48 shipped with an explicit owner-approved carry-forward instead of claiming that
+the canonical compact table path had reached 0.46 on all three production fixtures.
+The accepted approximate remaining ratios are 1.19x CSS, 1.12x benchmark Less, and
+1.03x generated Less. The original comparison discipline—pinned 0.46, full input,
+result identity, paired runs, and same-source controls—remains mandatory for 0.49.
 
 The implementation must retain one `TableProgram` architecture for runtime
 `compile()`, macro output, rule-map/linkable compilation, compose/fuse,

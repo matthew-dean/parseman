@@ -1,4 +1,10 @@
-# 0.48 release target — recover performance on the canonical table
+# 0.48 release target — closed; residual performance moves to 0.49
+
+> **Disposition (2026-08-14):** 0.48 retains the canonical TableProgram architecture
+> and ships with an explicit owner-approved performance carry-forward. The remaining
+> pinned-0.46 CSS/Less gap is now tracked in
+> [`RELEASE-0.49-TARGET.md`](./RELEASE-0.49-TARGET.md). This file is historical evidence,
+> not an active release blocker.
 
 This is the long-form release evidence register. It is not the current design or
 the active work queue:
@@ -19,7 +25,7 @@ or the frozen count snapshot below. The canonical spec and live ledger control.
 `release/0.48.0`; 0.47's verification record is archived in
 `RELEASE-0.47-VERIFICATION.md`.
 
-0.48 starts from 0.47's canonical compact `TableProgram` architecture and owns
+0.48 started from 0.47's canonical compact `TableProgram` architecture and owned
 the performance debt that 0.47 accepted. The release must recover the
 production-shaped Jess/Less/CSS regressions and remove the named workload and
 grammar shelves as their rows recover, without splitting runtime compilation
@@ -28,13 +34,12 @@ construction, or giving back correctness and package-size gains. External-parser
 medium/large competitiveness, full-consumption parity, supported-Node coverage,
 V8-shape invariants, and artifact-size gates remain hard constraints.
 
-**Primary 0.48 exit criterion: parse performance must return to at least 0.46
-levels on the production-shaped CSS, Less, and generated-Less release fixtures.**
-This is the release's number-one goal, not an aspirational follow-up. The 0.47
-shelves may bound work in progress, but they are not an acceptable 0.48 shipping
-state. A claimed recovery must use the pinned 0.46 build, full-consumption and
-result-identity checks, paired A/B runs, and same-source controls; toy grammars
-or external-parser wins cannot substitute for this criterion.
+**Historical primary criterion:** parse performance was intended to return to at
+least 0.46 on the production-shaped CSS, Less, and generated-Less fixtures. The final
+0.48 checkpoint did not completely meet that criterion; the accepted remaining ratios
+are approximately 1.19x, 1.12x, and 1.03x. This is an explicit owner decision, not a
+retroactive parity claim. The same pinned build, full-consumption/result-identity,
+paired A/B, and same-source controls carry forward unchanged to 0.49.
 
 That absolute exit criterion does not impose a fixed minimum on each contributing
 change. Stable control-adjusted gains above 1% with negligible size, complexity, and

@@ -5,10 +5,11 @@ on the benchmarks — but grammar authoring still has one dominant lever. This p
 the technique that matters most, plus how to measure.
 
 ::: info What "the compiler" means on this page
-Except where a claim names a different path, "the compiler" here means the **JS-codegen
-lowering** — the flat generated JavaScript that `compile()` and the [macro
-build](./macro-mode) produce, and the only compiled form Parséman ships. Timings on this
-page were measured against that lowering and the interpreter.
+In 0.48, "the compiler" means the canonical **`TableProgram` lowering** used by both
+`compile()` and the [macro build](./macro-mode). The macro serializes the table and may
+materialize one strict assembly for a sufficiently large terminal `composeLeaf`; it does
+not restore the removed direct-source parser. Historical numbers below describe their
+named checkpoint and should not be read as current 0.48 release measurements.
 :::
 
 ## The one rule: fewer combinator boundaries
@@ -31,19 +32,13 @@ content three ways:
 
 Two takeaways:
 
-- **For a bare terminal, shared combinator ref vs. inline `regex(…)` literal makes no
-  difference to parse speed.** Both produce the identical runtime structure (one `regex`
-  combinator either way), and **the JS-codegen lowering** — what `compile()` and the macro
-  build emit today — inlines a `regex` test at every use site whether or not the
-  combinator object is shared. Factor out shared terminals for readability; on the
-  compiled path it costs no parse time.
+- **For a bare terminal, shared combinator ref vs. an inline `regex(…)` literal is not a
+  useful speed lever.** The final graph retains one terminal recognizer either way. Factor
+  shared terminals for readability; optimize the semantic boundaries, not object spelling.
 
-  This is a statement about *terminals*, not about sharing in general. Codegen does hoist
-  a **multiply-referenced** subtree into a named function once it is bigger than a small
-  threshold (`HOIST_MIN_SUBTREE` in `src/compiler/codegen.ts`), so for larger shapes a
-  shared `const` and a copy-pasted literal do not emit the same code. Sharing also affects
-  *emitted size* independently of parse speed — see
-  [macro code size](./macro-mode#code-size-what-to-expect).
+  This is a statement about *terminals*, not sharing in general. Multiply referenced and
+  recursive subtrees remain named linkage boundaries in the final `TableProgram`, so a
+  shared subtree and a copy-pasted subtree are not interchangeable for topology or size.
 - **Collapsing a fixed multi-token shape into a single `regex` is 4–5× faster** in both
   the interpreter and compiled output, because it erases the per-step call + allocation
   overhead. `compile()` is a real but smaller win (~1.7×) and **stacks** with collapsing.
@@ -84,9 +79,9 @@ and from `cstBuildHost({ collapse })`, which changes **public CST shape**. See
 ## `compile()` stacks on top
 
 Collapsing reduces the *number* of combinators; [`compile()`](./modes#compile-runtime-jit)
-(or the macro build) makes each remaining combinator cheaper by emitting flat JS. The two
-compound — a collapsed grammar compiled is the fastest configuration. Use the macro build
-for production so you pay the compile cost once, at build time.
+(or the macro build) makes remaining boundaries cheaper by assembling direct bodies for
+proven shapes. The two compound. Use the macro build for production so construction and
+linking happen at build/import time rather than on the first runtime compile.
 
 ## Shared broad openers: prefer `dispatch`
 

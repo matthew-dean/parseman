@@ -20,8 +20,8 @@ Two questions sort most of the field:
 ## The parsers
 
 - **[Parséman](https://github.com/matthew-dean/parseman)** — parser combinators in JS/TS
-  that compile to flat JS (as a library, at runtime with `compile()`, or build-time via
-  the [macro](./macro-mode)).
+  that compile to optimized table artifacts (as a library, at runtime with `compile()`,
+  or build-time via the [macro](./macro-mode)).
 - **[Peggy](https://peggyjs.org/)** — the maintained successor to PEG.js; a PEG grammar
   DSL that generates a parser.
 - **[Parsimmon](https://github.com/jneen/parsimmon)** — small parser-combinator library,
@@ -68,10 +68,9 @@ Two questions sort most of the field:
   (breakpoints, real stack traces) and read the parser *as code*, rather than debugging a
   generated state table or a parser in another language. Runtime combinator/DSL libraries
   qualify; generators mostly don't — Peggy emits JS you *can* trace, hence ⚠️. Parséman's
-  ✅ covers the interpreter (your combinator source, run directly) and the **JS-codegen
-  lowering** used by `compile()` and the macro build, whose output is readable JavaScript
-  you can breakpoint. It is a claim about those paths, not about any lowering that
-  produces a data table rather than code.
+  ✅ covers the interpreter (your combinator source, run directly) and macro source maps
+  back to the authored grammar. Runtime-compiled artifacts can be inspected through their
+  generated table/assembly source and the shared runtime.
 - **Grammar coverage / trace** — Parséman can record successful named rules,
   choice arms, and labels plus a bounded semantic lifecycle trace. This row is
   intentionally not a claim that the other tools lack test-runner coverage,

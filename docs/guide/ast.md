@@ -60,8 +60,8 @@ Expr.parse('1 + 2 + 3', 0, { trackLines: false })
   [Context-sensitive parsing](./context)).
 
 Wrap a rule's inner combinator in `parser({ trivia }, combinator)` so trivia-skipping is
-baked in regardless of which rule you start from; the macro compiles the wrapper (and all
-capture) away to flat JS.
+baked in regardless of which rule you start from; the compiled table records the scope and
+elides capture work wherever the final graph proves it unused.
 
 ### Scoped trivia ownership
 

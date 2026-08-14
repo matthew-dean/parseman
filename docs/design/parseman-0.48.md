@@ -1,18 +1,19 @@
 # Parseman 0.48 architecture and release specification
 
-- **Status:** active implementation specification
+- **Status:** frozen release architecture; remaining performance work moved to 0.49
 - **Release branch:** `release/0.48.0`
 - **Primary performance architecture:** tokenized PEG over the canonical compact
   `TableProgram`
 **Detailed evidence registers:**
 [`derived-tokenization.md`](./derived-tokenization.md),
-[`RELEASE-0.48-TARGET.md`](../../notes/RELEASE-0.48-TARGET.md), and
-[`TABLE-PERF-EXPERIMENTS-0.48.md`](../../notes/TABLE-PERF-EXPERIMENTS-0.48.md)
+[`RELEASE-0.48-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.48-TARGET.md), and
+[`TABLE-PERF-EXPERIMENTS-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/notes/TABLE-PERF-EXPERIMENTS-0.48.md).
+The accepted follow-up is [`RELEASE-0.49-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.49-TARGET.md).
 
-This is the canonical, current 0.48 design. The linked documents retain the full
+This is the canonical, frozen 0.48 design. The linked documents retain the full
 experiment history, measurements, rejected implementations, and longer-form
 reasoning. When an older note conflicts with this file, this file controls the
-0.48 implementation direction. Measurements still come from the evidence ledger;
+0.48 implementation history. Measurements still come from the evidence ledger;
 this specification does not turn a historical result into a baseline.
 
 ### Agent reading contract
@@ -32,36 +33,28 @@ permission to weaken them.
 
 ## 1. Release objective
 
-0.48 must recover production-shaped parse performance to at least 0.46 on CSS,
-`benchmark.less`, and generated Less while retaining the compact architecture and
-correctness gains shipped in 0.47.
+0.48 was originally required to recover production-shaped parse performance to at
+least 0.46 on CSS, `benchmark.less`, and generated Less while retaining the compact
+architecture and correctness gains shipped in 0.47. The architecture and correctness
+requirements remain satisfied; the absolute performance requirement was explicitly
+accepted as a carry-forward on 2026-08-14 rather than silently weakened.
 
-The release does not succeed by narrowing the benchmark, widening a shelf, lowering
-a baseline, or substituting a toy grammar. A final claim requires the pinned 0.46
-build, literal full consumption, complete semantic identity, interleaved paired A/B,
-same-source A/A controls, independent recompilation, and the external Jess grammars.
+The final clean checkpoint is `77cd124e13ce326e001d38fa24e5239bb24f9498`, compared
+with pinned 0.46 `a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3` on Jess
+`f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002`. A Node 24.11.1 two-graph bracket,
+with literal full consumption and same-shape A/A processes, measured:
 
-The current production-shaped release checkpoint, measured from source-identical
-`0385764da4c8cf2aa00bb970d7a4420f1fab7d5e`/
-`2a8c381fb056f57f8d8ba515d7e9c781ec377357` against pinned 0.46
-`a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3` on Jess
-`f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002`, is:
+| workload | 0.48 | 0.46 | raw ratio | approximate A/A-adjusted ratio |
+| --- | ---: | ---: | ---: | ---: |
+| CSS `benchmark.css` | 6.34 ms | 5.26 ms | 1.177x | 1.19x |
+| Less `benchmark.less` | 17.92 ms | 15.76 ms | 1.122x | 1.12x |
+| generated Less | 46.75 ms | 45.93 ms | 1.027x | 1.03x |
 
-| workload | regression against 0.46 | total relative time | matching A/A |
-| --- | ---: | ---: | ---: |
-| CSS `benchmark.css` | +148.8% | 2.488x | +0.4% |
-| Less `benchmark.less` | +87.9% | 1.879x | +2.0% |
-| generated Less | +91.5% | 1.915x | +1.7% |
-
-This used Node 24.11.1, the authoritative two-graph macro release A/B, 16
-interleaved samples per side, literal full consumption on both legs, and separate
-same-shape A/A processes below the load ceiling. HEAD lost every one of the eight
-paired rounds on all three workloads. All three shelves therefore remain release
-blockers. The older corrected `e5247da` five-workload audit is retained in the
-evidence register as a historical standard-workload checkpoint, not current
-production-shaped release evidence. This is a performance/consumption checkpoint,
-not final release proof: the two-graph timing deliberately omits the third
-semantic-identity graph. Neither checkpoint lowers the 0.46 baseline.
+Those gaps are disclosed release results, not parity claims. The owner accepted them
+for 0.48 after full correctness, package, supported-Node, CSP, differential, coverage,
+and external comparison gates passed. Pinned-0.46 parity, the same fail-closed timing
+protocol, and the remaining optimization ledger now belong to 0.49; see
+[`RELEASE-0.49-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.49-TARGET.md).
 
 ## 2. Non-negotiable architecture
 
@@ -805,19 +798,20 @@ timing is promoted when load exceeds the harness ceiling or engine/source realpa
 not printed before the number.
 
 There is no universal per-change percentage floor. A stable control-adjusted gain above
-1% with negligible artifact, package, complexity, and cross-fixture cost is a bankable
-0.48 improvement even when it does not remove a shelf by itself. Orthogonal gains are
+1% with negligible artifact, package, complexity, and cross-fixture cost was a bankable
+0.48 improvement even when it did not remove a shelf by itself. Further orthogonal gains are
 measured again on the integrated head because cumulative recovery is the release path.
 Larger mechanisms and package increases require proportionally larger payoff; noise,
 semantic risk, or a material regression elsewhere still rejects a candidate.
 
 ## 10. Release gates
 
-0.48 cannot ship until all of the following are true:
+0.48 ships with one explicitly accepted performance waiver: the pinned-0.46 CSS and
+Less shelves above move intact to 0.49. It still cannot ship until all of the following
+non-waived gates are true:
 
-- CSS, benchmark Less, and generated Less are at least as fast as pinned 0.46 under
-  the authoritative production protocol;
-- every named 0.47 shelf is removed rather than widened;
+- the accepted 0.46 comparison is disclosed without claiming parity, and its exact
+  follow-up remains a 0.49 target rather than a lowered baseline;
 - actual Jess CSS and Less fully consume and preserve selected root-trivia maps;
 - interpreter, reference, closure, emitted, runtime compile, macro, compose/fuse,
   rule-map/linkable, run-tabled, folded, CST, tolerant, probe, coverage, and tracked
@@ -835,8 +829,9 @@ pnpm check:differentials && pnpm test:coverage && pnpm coverage:guard && \
 pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 ```
 
-Passing that command is necessary, not sufficient: the final pinned performance and
-external Jess gates remain separate release blockers.
+Passing that command is necessary, not sufficient: the external Jess correctness and
+comparison-margin gates remain separate release blockers. Pinned-0.46 parity is no
+longer a 0.48 blocker; it is the primary 0.49 performance target.
 
 ## 11. Evidence that motivates the cursor
 
@@ -861,15 +856,14 @@ landing.
 
 ## 12. Authority and maintenance
 
-Update this file when the 0.48 architecture, implementation order, semantics, or release
-criteria change. Record individual measurements and dispositions in
-[`TABLE-PERF-EXPERIMENTS-0.48.md`](../../notes/TABLE-PERF-EXPERIMENTS-0.48.md). Preserve
+This file is frozen with the 0.48 release. Record its individual measurements and dispositions in
+[`TABLE-PERF-EXPERIMENTS-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/notes/TABLE-PERF-EXPERIMENTS-0.48.md). Preserve
 long-form historical evidence in [`derived-tokenization.md`](./derived-tokenization.md)
 instead of copying its full experiment register here.
 
 This split is intentional:
 
-- this file answers **what 0.48 is building and what must be true to ship**;
+- this file answers **what 0.48 built and what was true when it shipped**;
 - the experiment ledger answers **what was tried and what happened**;
 - the long-form design answers **why earlier alternatives were accepted or rejected**.
 
