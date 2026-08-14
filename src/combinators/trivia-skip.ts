@@ -16,6 +16,7 @@ import {
 } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
+import { commonCssTriviaScanner } from '../cst/trivia-css-scanner.ts'
 
 /**
  * Result of scanning trivia: the position after it, plus a `commit()` that
@@ -504,109 +505,17 @@ function buildFastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner 
   if (one) return loopScanner([one])
 
   if (repeat._def.tag !== 'choice') return null
-  const fused = commonCssTriviaScanner(repeat._def.parsers)
+  const fused = commonCssTriviaScanner(repeat._def.parsers.map(triviaRegexSource))
   if (fused !== null) return fused
   const arms = repeat._def.parsers.map(regexTriviaScanner)
   if (arms.some(s => s === null)) return null
   return loopScanner(arms as FastTriviaScanner[])
 }
 
-const CSS_WS_SOURCE = '[ \\t\\n\\r\\f]+'
-const CSS_LINE_COMMENT_SOURCE = '\\/\\/[^\\n\\r]*'
-const CSS_BLOCK_COMMENT_SOURCE = '\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/'
-
 /** The regex source beneath a classified-trivia `label()`, when it is plain. */
 function triviaRegexSource(parser: Combinator<unknown>): string | null {
   const d = parser._def.tag === 'label' ? parser._def.parser._def : parser._def
   return d.tag === 'regex' && d.flags === '' ? d.source : null
-}
-
-function cssWhitespaceCode(c: number): boolean {
-  return c === 32 || c === 9 || c === 10 || c === 13 || c === 12
-}
-
-function scanCssWhitespace(input: string, cur: number): number {
-  let pos = cur
-  while (pos < input.length && cssWhitespaceCode(input.charCodeAt(pos))) pos++
-  return pos
-}
-
-function scanCssBlockComment(input: string, cur: number): number {
-  if (input.charCodeAt(cur) !== 47 || input.charCodeAt(cur + 1) !== 42) return cur
-  const close = input.indexOf('*/', cur + 2)
-  return close < 0 ? cur : close + 2
-}
-
-function scanCssLineComment(input: string, cur: number): number {
-  if (input.charCodeAt(cur) !== 47 || input.charCodeAt(cur + 1) !== 47) return cur
-  let pos = cur + 2
-  while (pos < input.length) {
-    const c = input.charCodeAt(pos)
-    if (c === 10 || c === 13) break
-    pos++
-  }
-  return pos
-}
-
-function scanWsBlockTrivia(input: string, cur: number): number {
-  let pos = cur
-  for (;;) {
-    const ws = scanCssWhitespace(input, pos)
-    if (ws !== pos) { pos = ws; continue }
-    const block = scanCssBlockComment(input, pos)
-    if (block !== pos) { pos = block; continue }
-    return pos
-  }
-}
-
-function scanWsLineBlockTrivia(input: string, cur: number): number {
-  let pos = cur
-  for (;;) {
-    const ws = scanCssWhitespace(input, pos)
-    if (ws !== pos) { pos = ws; continue }
-    const line = scanCssLineComment(input, pos)
-    if (line !== pos) { pos = line; continue }
-    const block = scanCssBlockComment(input, pos)
-    if (block !== pos) { pos = block; continue }
-    return pos
-  }
-}
-
-function scanLineBlockTrivia(input: string, cur: number): number {
-  let pos = cur
-  for (;;) {
-    const line = scanCssLineComment(input, pos)
-    if (line !== pos) { pos = line; continue }
-    const block = scanCssBlockComment(input, pos)
-    if (block !== pos) { pos = block; continue }
-    return pos
-  }
-}
-
-function scanBlockTrivia(input: string, cur: number): number {
-  let pos = cur
-  for (;;) {
-    const block = scanCssBlockComment(input, pos)
-    if (block === pos) return pos
-    pos = block
-  }
-}
-
-/** One straight-line scanner for the canonical CSS/Less trivia arm tuples. */
-function commonCssTriviaScanner(parsers: readonly Combinator<unknown>[]): FastTriviaScanner | null {
-  const sources = parsers.map(triviaRegexSource)
-  if (sources.length === 3
-    && sources[0] === CSS_WS_SOURCE
-    && sources[1] === CSS_LINE_COMMENT_SOURCE
-    && sources[2] === CSS_BLOCK_COMMENT_SOURCE) return scanWsLineBlockTrivia
-  if (sources.length === 2
-    && sources[0] === CSS_WS_SOURCE
-    && sources[1] === CSS_BLOCK_COMMENT_SOURCE) return scanWsBlockTrivia
-  if (sources.length === 2
-    && sources[0] === CSS_LINE_COMMENT_SOURCE
-    && sources[1] === CSS_BLOCK_COMMENT_SOURCE) return scanLineBlockTrivia
-  if (sources.length === 1 && sources[0] === CSS_BLOCK_COMMENT_SOURCE) return scanBlockTrivia
-  return null
 }
 
 function loopScanner(arms: FastTriviaScanner[]): FastTriviaScanner {

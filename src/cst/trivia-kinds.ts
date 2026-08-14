@@ -2,7 +2,7 @@ import type { Combinator, ParseContext } from '../types.ts'
 import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
-import { charArmsFor, charTriviaEnd, charTriviaKindMask, charTriviaVisit } from './trivia-charscan.ts'
+import { charArmsFor, charTriviaEnd, charTriviaKindMask, charTriviaVisit, commonLabeledTriviaVisitor } from './trivia-charscan.ts'
 
 export type TriviaChunk = { start: number; end: number; kindIndex: number }
 
@@ -199,6 +199,8 @@ export function visitLabeledTrivia(
   visit: (start: number, end: number, kindIndex: number) => void,
 ): number | undefined {
   if (spec.minRepeats > 1) return undefined
+  const common = commonLabeledTriviaVisitor(spec)
+  if (common !== null) return common(input, cur, visit)
   const chars = charArmsFor(spec)
   if (chars !== null) return charTriviaVisit(input, cur, chars, visit)
 
