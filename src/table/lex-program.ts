@@ -116,17 +116,26 @@ function sequence3(a: BuiltLexNode, b: BuiltLexNode, c: BuiltLexNode): BuiltLexN
 }
 
 function sequence4(a: BuiltLexNode, b: BuiltLexNode, c: BuiltLexNode, d: BuiltLexNode): BuiltLexNode {
-  const abc = sequence3(a, b, c)
   return {
     match: (input, pos) => {
-      const end = abc.match(input, pos)
-      return end < 0 ? -1 : d.match(input, end)
+      const e0 = a.match(input, pos)
+      if (e0 < 0) return -1
+      const e1 = b.match(input, e0)
+      if (e1 < 0) return -1
+      const e2 = c.match(input, e1)
+      return e2 < 0 ? -1 : d.match(input, e2)
     },
     run: (input, pos, ctx) => {
-      const end = abc.run(input, pos, ctx)
-      if (end < 0) return -1
+      const e0 = a.run(input, pos, ctx)
+      if (e0 < 0) return -1
       ctx._fc = false
-      return d.run(input, end, ctx)
+      const e1 = b.run(input, e0, ctx)
+      if (e1 < 0) return -1
+      ctx._fc = false
+      const e2 = c.run(input, e1, ctx)
+      if (e2 < 0) return -1
+      ctx._fc = false
+      return d.run(input, e2, ctx)
     },
   }
 }
@@ -134,17 +143,31 @@ function sequence4(a: BuiltLexNode, b: BuiltLexNode, c: BuiltLexNode, d: BuiltLe
 function sequence5(
   a: BuiltLexNode, b: BuiltLexNode, c: BuiltLexNode, d: BuiltLexNode, e: BuiltLexNode,
 ): BuiltLexNode {
-  const abcd = sequence4(a, b, c, d)
   return {
     match: (input, pos) => {
-      const end = abcd.match(input, pos)
-      return end < 0 ? -1 : e.match(input, end)
+      const e0 = a.match(input, pos)
+      if (e0 < 0) return -1
+      const e1 = b.match(input, e0)
+      if (e1 < 0) return -1
+      const e2 = c.match(input, e1)
+      if (e2 < 0) return -1
+      const e3 = d.match(input, e2)
+      return e3 < 0 ? -1 : e.match(input, e3)
     },
     run: (input, pos, ctx) => {
-      const end = abcd.run(input, pos, ctx)
-      if (end < 0) return -1
+      const e0 = a.run(input, pos, ctx)
+      if (e0 < 0) return -1
       ctx._fc = false
-      return e.run(input, end, ctx)
+      const e1 = b.run(input, e0, ctx)
+      if (e1 < 0) return -1
+      ctx._fc = false
+      const e2 = c.run(input, e1, ctx)
+      if (e2 < 0) return -1
+      ctx._fc = false
+      const e3 = d.run(input, e2, ctx)
+      if (e3 < 0) return -1
+      ctx._fc = false
+      return e.run(input, e3, ctx)
     },
   }
 }
