@@ -3,6 +3,19 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.48.1 — 2026-08-14
+
+- Fix ordered-choice failure diagnostics to keep the expected tokens from the
+  deepest failed arm, merging only arms tied at that offset. The reported choice
+  span, dispatch and committed-arm cuts, and opener union for a pure dispatch miss
+  are unchanged. This restores tight consumer diagnostics such as a missing `)` or
+  `;` without collapsing legitimate same-depth unions.
+- Rebuild generated, macro, composed, folded, precompiled, and rule-map artifacts
+  with 0.48.1; Parseman artifacts are version-locked to their runtime.
+- Keep release-only upgrade notes and the 0.49 engineering target out of the
+  published documentation surface. User-facing 0.48 migration requirements remain
+  recorded in the 0.48.0 changelog.
+
 ## 0.48.0 — 2026-08-14
 
 - **BREAKING:** ship one ESM implementation instead of duplicate ESM and CommonJS

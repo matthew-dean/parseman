@@ -85,6 +85,7 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnionArms<T>> {
       const expected: string[] = []
+      let expectedAt = pos
 
       // ── Disjoint: O(1) first-char dispatch (arms may be gated) ────────────
       //
@@ -164,7 +165,9 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
         const result = parsers[i]!.parse(input, pos, ctx)
         if (!result.ok) {
           rollbackTrivia(ctx, mark)
-          expected.push(...result.expected)
+          const at = result.span.start
+          if (at > expectedAt) { expectedAt = at; expected.length = 0 }
+          if (at === expectedAt) expected.push(...result.expected)
           if (result.committed) return { ok: false, expected, span: result.span, committed: true }
           continue
         }
@@ -174,6 +177,12 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
           continue
         }
         return result as ParseResult<UnionArms<T>>
+      }
+      // A nested gated choice can decline every arm after an enclosing arm has
+      // already advanced. Do not let that empty dynamic set erase both the
+      // shallower arms and the choice's own static opener contract.
+      if (expected.length === 0) {
+        for (const parser of parsers) expected.push(...deriveExpected(parser))
       }
       return { ok: false, expected, span: { start: pos, end: pos } }
     },

@@ -43,32 +43,24 @@ describe('table lowering — tree identity', () => {
       ],
       { trivia: jsonWs },
     )
-    // THE THREE REJECTING CASES DIVERGE, and all three are ONE defect, which is
-    // not in the failure-reporting code at all. See `STALE_DISJOINT` below.
-    //
-    // NOT furthest-failure merging, which the previous note here claimed and
-    // which no engine performs on the `expected` path — `failAt`
-    // (combinators/probe.ts) and `probeUpdate` (codegen.ts) are the library's
-    // only positional merges, they are gated on `_ctx._probe`, and they surface
-    // as `RunResult.furthestFail`. Every `_fe`/`_fx` site in all three drivers is
-    // last-write-wins.
+    // One rejecting case still diverges because of stale construction-time
+    // dispatch metadata, not failure-depth selection. See `STALE_DISJOINT` below.
     //
     // `Value` is `choice(g.Obj, g.Arr, g.Str, g.Num, g.True, g.False, g.Null)`.
     // At the moment `choice()` runs, those `g.X` arms are `ref()` slots whose
     // first set is still `any()` (combinators/ref.ts:21 — `define()` fills the
     // meta in place, AFTERWARDS), so `areDisjoint` says no and `disjoint` freezes
-    // FALSE (combinators/choice.ts:35). The interpreter and codegen both read
-    // that frozen flag, so both firstMatch all seven arms and concatenate seven
-    // expected sets. `encode.ts:439` recomputes disjointness from the RESOLVED
-    // classes, gets the right answer, and dispatches to one arm — so the table
-    // reports one arm's set. The rule is the same in all three; the set of arms
-    // ATTEMPTED is not, and no change to failure recording can reconcile that.
+    // FALSE (combinators/choice.ts:35). On `nope`, all seven attempted arms fail
+    // at offset zero and therefore tie; the interpreter reports all seven sets.
+    // `encode.ts:439` recomputes disjointness from the RESOLVED classes and
+    // dispatches to the one matching arm. Structured failures that advance now
+    // agree because shallower arms are discarded.
     //
     // The proof is the next case: `examples/json/parser.ts` is the SAME LANGUAGE
     // spelled with local consts instead of `g.X` refs, so its arms' first sets
     // are resolved when `choice()` runs, `disjoint` is TRUE in every engine, and
     // it diverges on NOTHING.
-    const STALE_DISJOINT = ['bad-bare', 'bad-trailing-comma', 'bad-unclosed']
+    const STALE_DISJOINT = ['bad-bare']
     expect([...new Set(r.mismatches.map(m => m.case))].sort())
       .toEqual(STALE_DISJOINT)
   })
@@ -174,12 +166,9 @@ describe('table lowering — three-way identity across every encodable grammar',
     const { checkIdentity: ci } = await import('../../bench/table-lowering-identity.ts')
     const { JSON_CASES } = await import('./table-identity-cases.ts')
     const r = ci(jsonRules as unknown as Record<string, Combinator<unknown>>, 'Value', JSON_CASES, { trivia: jsonWs })
-    // The same THREE rejecting cases as the `tree identity` row above, and the
-    // same single cause: `jsonRules.Value`'s arms are `g.X` refs, so `disjoint`
-    // froze FALSE at construction (choice.ts:35 / ref.ts:21) and the two engines
-    // firstMatch seven arms where the table dispatches to one. Read the long note
-    // there; the SHIPPED spelling of the same language diverges on nothing.
-    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-bare', 'bad-trailing-comma', 'bad-unclosed']
+    // The same offset-zero tie as the `tree identity` row above. The SHIPPED
+    // spelling of the same language diverges on nothing.
+    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-bare']
     expect([...new Set(r.mismatches.map(m => m.case))].sort(), JSON.stringify(r.mismatches.slice(0, 3)))
       .toEqual(KNOWN_EXPECTED_SET_DIVERGENCE)
     expect(r.total).toBeGreaterThan(0)

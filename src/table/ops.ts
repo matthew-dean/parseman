@@ -30,10 +30,10 @@ export const OP_SEQV = 4
  * `CHOICE d n fx c1 … cn` — `d` indexes a dispatch table (or −1 for ordered
  * try); `fx` indexes the choice's OWN expected set.
  *
- * Both shipped engines report the UNION of the arms' expectations when a choice
- * fails. The driver reported whatever the last attempted arm left behind — or,
- * on a dispatch miss with no arm claiming the lead character, NOTHING, so a user
- * got an error naming nothing at all.
+ * Ordered failure keeps the expected sets at the deepest arm offset, merging
+ * exact ties in source order. Exclusive dispatch propagates its sole selected
+ * arm. A pure dispatch miss uses `fx`, the static union of every arm opener, so
+ * the result never names nothing merely because no arm claimed the lead.
  */
 export const OP_CHOICE = 5
 /**

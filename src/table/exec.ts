@@ -952,9 +952,8 @@ function makeDriver(
         const d = code[ip + 1]!
         const base = ip + 4
         const choiceFx = fx[code[ip + 3]!] as string[]
-        // Report the union, at the choice's own position, on every exit that
-        // fails — matching both engines and, more importantly, never handing a
-        // user an empty expected set.
+        // A pure dispatch miss has no attempted arm to rank. Report the static
+        // opener union at the choice's own position so the result is meaningful.
         const failChoice = (): typeof FAIL => {
           ctx._fe = pos
           ctx._fx = choiceFx
@@ -1003,12 +1002,9 @@ function makeDriver(
           // union IS that flatMap's answer, without running seven parsers to
           // rediscover it.
           //
-          // NOT furthest-failure merging, which no engine on the `expected` path
-          // performs. `failAt` (combinators/probe.ts:13-24) and its compiled mirror
-          // `probeUpdate` (codegen.ts:692) are the only positional merges in the
-          // library, they are gated on `_ctx._probe` and they surface as
-          // `RunResult.furthestFail` under `{recover:true}` — a different field.
-          // Every `_fe`/`_fx` site in all three drivers is last-write-wins.
+          // There is only one selected arm on this path, so ordered-arm depth
+          // ranking does not apply. `furthestFail` under `{recover:true}` remains
+          // a separate probe result.
           //
           // A residual JSON divergence survives this and is NOT a failure-reporting
           // bug: on `{"a":]` this driver reports `["}"]` (the Obj arm's own
@@ -1034,18 +1030,15 @@ function makeDriver(
         const mEr = need ? ctx._errors?.length ?? 0 : 0
         const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
-        // THE ORDERED PATH REPORTS THE ARMS THAT ACTUALLY RAN, accumulated in
-        // order — `choice.ts:167`'s `expected.push(...result.expected)` per failed
-        // arm, reported at the choice's own position. The static `choiceFx` union
-        // is a set of OPENERS, so a left-factored or shared-prefix choice whose
-        // arms all failed PAST their common opener reported that opener instead of
-        // the tokens the arms were actually waiting for: `['/::?/']` where the
-        // interpreter says `['"before"', '"hover"']`.
+        // The ordered path keeps only arms at the deepest failure offset. Exact
+        // ties merge in source order. The final failure is still anchored at the
+        // choice's own position; the deeper offset ranks diagnostics only.
         //
         // `choiceFx` is still the answer when nothing ran or every arm reported
         // nothing — the char gate can skip arms the interpreter would have entered,
         // and the union is what those arms' start-failures would have contributed.
         let acc: string[] | undefined
+        let best = pos
         const push = (ax: readonly string[] | undefined): void => {
           if (ax === undefined || ax.length === 0) return
           if (acc === undefined) acc = ax.slice()
@@ -1060,7 +1053,7 @@ function makeDriver(
             // enters the arm, the arm's opener fails, and its static set is what
             // lands in the accumulation. Declining to enter must not also decline
             // to say what the arm wanted.
-            push(fx[code[armFx + i]!] as string[])
+            if (best === pos) push(fx[code[armFx + i]!] as string[])
             continue
           }
           ctx._fc = false
@@ -1069,7 +1062,9 @@ function makeDriver(
           const v = exec(code[base + i]!, input, pos, ctx)
           if (v !== FAIL) return v
           if (COUNT) { tableCounters.ungatedFails++; tableCounters.ungatedFailRows += tableCounters.rows - rows0 }
-          push(ctx._fx)
+          const at = ctx._fe ?? pos
+          if (at > best) { best = at; acc = undefined }
+          if (at === best) push(ctx._fx)
           // A committed arm cuts, and the interpreter reports the accumulation at
           // the arm's OWN span (`choice.ts:170`), not at the choice's position.
           if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }

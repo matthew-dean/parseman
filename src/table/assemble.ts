@@ -224,13 +224,13 @@ type MaskedChoiceBlock = (
   input: string, pos: number, ctx: ParseContext, bits: number,
   need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number,
   mEr: number, mLog: number, mRoot: number,
-  acc: string[] | undefined, prev: number,
+  acc: string[] | undefined, prev: number, best: number,
 ) => unknown
 type GeneralChoiceBlock = (
   input: string, pos: number, ctx: ParseContext, c: number,
   need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number,
   mEr: number, mLog: number, mRoot: number,
-  acc: string[] | undefined, prev: number,
+  acc: string[] | undefined, prev: number, best: number,
 ) => unknown
 type ExclusiveChoiceBlock = (arm: number, input: string, pos: number, ctx: ParseContext) => unknown
 type DispatchMatcher = (key: string) => boolean
@@ -1008,19 +1008,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return c._fc === true
   }
 
-  /**
-   * Accumulate one failed choice arm's expected set, in arm order.
-   *
-   * `choice.ts:167` is `expected.push(...result.expected)` per failed arm, and the
-   * accumulation — not the static union of the arms' OPENERS — is what a failing
-   * ordered choice reports. A left-factored or shared-prefix choice whose arms all
-   * failed PAST their common opener reported that opener alone: `['/::?/']` where
-   * the interpreter says `['"before"', '"hover"']`.
-   *
-   * Returns the accumulator so the common one-failing-arm case borrows the arm's
-   * own array (`slice` once) instead of building one per choice execution the way
-   * the interpreter's eager `const expected: string[] = []` does.
-   */
+  /** Append an exact-depth failed arm set in source order. Callers own depth ranking. */
   function accSet(ax: readonly string[] | undefined, acc: string[] | undefined): string[] | undefined {
     if (ax === undefined || ax.length === 0) return acc
     if (acc === undefined) return ax.slice()
@@ -1062,13 +1050,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     total: number,
     choiceFx: string[],
   ): MaskedChoiceBlock {
-    return (input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev) => {
+    return (input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best) => {
       if ((bits & (1 << start)) !== 0) {
         ctx._fc = false
         const v = a0(input, pos, ctx)
         if (v !== FAIL) return v
-        acc = through(start, prev, acc); prev = start + 1
-        acc = accSet(ctx._fx, acc)
+        if (best === pos) acc = through(start, prev, acc)
+        prev = start + 1
+        const at = ctx._fe ?? pos
+        if (at > best) { best = at; acc = undefined }
+        if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
@@ -1076,8 +1067,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._fc = false
         const v = a1(input, pos, ctx)
         if (v !== FAIL) return v
-        acc = through(start + 1, prev, acc); prev = start + 2
-        acc = accSet(ctx._fx, acc)
+        if (best === pos) acc = through(start + 1, prev, acc)
+        prev = start + 2
+        const at = ctx._fe ?? pos
+        if (at > best) { best = at; acc = undefined }
+        if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
@@ -1085,8 +1079,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._fc = false
         const v = a2(input, pos, ctx)
         if (v !== FAIL) return v
-        acc = through(start + 2, prev, acc); prev = start + 3
-        acc = accSet(ctx._fx, acc)
+        if (best === pos) acc = through(start + 2, prev, acc)
+        prev = start + 3
+        const at = ctx._fe ?? pos
+        if (at > best) { best = at; acc = undefined }
+        if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
@@ -1094,15 +1091,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._fc = false
         const v = a3(input, pos, ctx)
         if (v !== FAIL) return v
-        acc = through(start + 3, prev, acc); prev = start + 4
-        acc = accSet(ctx._fx, acc)
+        if (best === pos) acc = through(start + 3, prev, acc)
+        prev = start + 4
+        const at = ctx._fe ?? pos
+        if (at > best) { best = at; acc = undefined }
+        if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
       if (next !== undefined) {
-        return next(input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev)
+        return next(input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best)
       }
-      acc = through(total, prev, acc)
+      if (best === pos) acc = through(total, prev, acc)
       ctx._fe = pos; ctx._fx = acc ?? choiceFx
       return FAIL
     }
@@ -1119,13 +1119,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     total: number,
     choiceFx: string[],
   ): GeneralChoiceBlock {
-    return (input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev) => {
+    return (input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best) => {
       if (g0 === null || classHas(g0, c)) {
         ctx._fc = false
         const v = a0(input, pos, ctx)
         if (v !== FAIL) return v
-        acc = through(start, prev, acc); prev = start + 1
-        acc = accSet(ctx._fx, acc)
+        if (best === pos) acc = through(start, prev, acc)
+        prev = start + 1
+        const at = ctx._fe ?? pos
+        if (at > best) { best = at; acc = undefined }
+        if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
@@ -1133,8 +1136,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._fc = false
         const v = a1(input, pos, ctx)
         if (v !== FAIL) return v
-        acc = through(start + 1, prev, acc); prev = start + 2
-        acc = accSet(ctx._fx, acc)
+        if (best === pos) acc = through(start + 1, prev, acc)
+        prev = start + 2
+        const at = ctx._fe ?? pos
+        if (at > best) { best = at; acc = undefined }
+        if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
@@ -1142,8 +1148,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._fc = false
         const v = a2(input, pos, ctx)
         if (v !== FAIL) return v
-        acc = through(start + 2, prev, acc); prev = start + 3
-        acc = accSet(ctx._fx, acc)
+        if (best === pos) acc = through(start + 2, prev, acc)
+        prev = start + 3
+        const at = ctx._fe ?? pos
+        if (at > best) { best = at; acc = undefined }
+        if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
@@ -1151,15 +1160,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._fc = false
         const v = a3(input, pos, ctx)
         if (v !== FAIL) return v
-        acc = through(start + 3, prev, acc); prev = start + 4
-        acc = accSet(ctx._fx, acc)
+        if (best === pos) acc = through(start + 3, prev, acc)
+        prev = start + 4
+        const at = ctx._fe ?? pos
+        if (at > best) { best = at; acc = undefined }
+        if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       }
       if (next !== undefined) {
-        return next(input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev)
+        return next(input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best)
       }
-      acc = through(total, prev, acc)
+      if (best === pos) acc = through(total, prev, acc)
       ctx._fe = pos; ctx._fx = acc ?? choiceFx
       return FAIL
     }
@@ -2690,10 +2702,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               // THE CUT — a committed failure fails the whole choice.
               if (committed(ctx)) return FAIL
               // THE DISPATCHED ARM'S OWN SET IS THE ANSWER, at the choice's own
-              // position — the rule both shipped engines apply (choice.ts:105,
-              // codegen.ts:1985). `_fx` already holds it; reporting the arm is
-              // declining to overwrite it. See `exec.ts` for why this is NOT
-              // furthest-failure merging and what the residual JSON gap is.
+              // position. `_fx` already holds it; reporting the sole selected arm
+              // is declining to overwrite it.
               const armFx = ctx._fx
               if (armFx !== undefined && armFx.length > 0) { ctx._fe = pos; return FAIL }
             }
@@ -2739,6 +2749,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             let acc: string[] | undefined
+            let best = pos
             if (c < 128) {
               const bits = mask[c < 0 ? 128 : c]!
               let prev = 0
@@ -2747,7 +2758,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 const v = a0(input, pos, ctx)
                 if (v !== FAIL) return v
                 prev = 1
-                acc = accSet(ctx._fx, acc)
+                const at = ctx._fe ?? pos
+                if (at > best) { best = at; acc = undefined }
+                if (at === best) acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
                 if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               }
@@ -2755,9 +2768,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 ctx._fc = false
                 const v = a1(input, pos, ctx)
                 if (v !== FAIL) return v
-                if (prev < 1) acc = accSet(e0, acc)
+                if (best === pos && prev < 1) acc = accSet(e0, acc)
                 prev = 2
-                acc = accSet(ctx._fx, acc)
+                const at = ctx._fe ?? pos
+                if (at > best) { best = at; acc = undefined }
+                if (at === best) acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
                 if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               }
@@ -2765,16 +2780,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 ctx._fc = false
                 const v = a2!(input, pos, ctx)
                 if (v !== FAIL) return v
-                if (prev < 1) acc = accSet(e0, acc)
-                if (prev < 2) acc = accSet(e1, acc)
+                if (best === pos && prev < 1) acc = accSet(e0, acc)
+                if (best === pos && prev < 2) acc = accSet(e1, acc)
                 prev = 3
-                acc = accSet(ctx._fx, acc)
+                const at = ctx._fe ?? pos
+                if (at > best) { best = at; acc = undefined }
+                if (at === best) acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
                 if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               }
-              if (prev < 1) acc = accSet(e0, acc)
-              if (prev < 2) acc = accSet(e1, acc)
-              if (n === 3 && prev < 3) acc = accSet(e2, acc)
+              if (best === pos && prev < 1) acc = accSet(e0, acc)
+              if (best === pos && prev < 2) acc = accSet(e1, acc)
+              if (best === pos && n === 3 && prev < 3) acc = accSet(e2, acc)
               ctx._fe = pos; ctx._fx = acc ?? choiceFx
               return FAIL
             }
@@ -2783,27 +2800,33 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               ctx._fc = false
               const v = a0(input, pos, ctx)
               if (v !== FAIL) return v
-              acc = accSet(ctx._fx, acc)
+              const at = ctx._fe ?? pos
+              if (at > best) { best = at; acc = undefined }
+              if (at === best) acc = accSet(ctx._fx, acc)
               if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-            } else acc = accSet(e0, acc)
+            } else if (best === pos) acc = accSet(e0, acc)
             if (g1 === null || classHas(g1, c)) {
               ctx._fc = false
               const v = a1(input, pos, ctx)
               if (v !== FAIL) return v
-              acc = accSet(ctx._fx, acc)
+              const at = ctx._fe ?? pos
+              if (at > best) { best = at; acc = undefined }
+              if (at === best) acc = accSet(ctx._fx, acc)
               if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-            } else acc = accSet(e1, acc)
+            } else if (best === pos) acc = accSet(e1, acc)
             if (n === 3) {
               if (g2 === null || classHas(g2, c)) {
                 ctx._fc = false
                 const v = a2!(input, pos, ctx)
                 if (v !== FAIL) return v
-                acc = accSet(ctx._fx, acc)
+                const at = ctx._fe ?? pos
+                if (at > best) { best = at; acc = undefined }
+                if (at === best) acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
                 if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-              } else acc = accSet(e2, acc)
+              } else if (best === pos) acc = accSet(e2, acc)
             }
             ctx._fe = pos; ctx._fx = acc ?? choiceFx
             return FAIL
@@ -2869,11 +2892,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (c < 128) {
               return masked(
                 input, pos, ctx, mask[c < 0 ? 128 : c]!,
-                need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+                need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
               )
             }
             return general(
-              input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+              input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
             )
           }
         }
@@ -2889,7 +2912,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           return general(
-            input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0,
+            input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
           )
         }
       }

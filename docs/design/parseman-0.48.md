@@ -8,7 +8,7 @@
 [`derived-tokenization.md`](./derived-tokenization.md),
 [`RELEASE-0.48-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.48-TARGET.md), and
 [`TABLE-PERF-EXPERIMENTS-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/notes/TABLE-PERF-EXPERIMENTS-0.48.md).
-The accepted follow-up is [`RELEASE-0.49-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.49-TARGET.md).
+The remaining performance work is an internal 0.49 engineering target.
 
 This is the canonical, frozen 0.48 design. The linked documents retain the full
 experiment history, measurements, rejected implementations, and longer-form
@@ -53,8 +53,8 @@ with literal full consumption and same-shape A/A processes, measured:
 Those gaps are disclosed release results, not parity claims. The owner accepted them
 for 0.48 after full correctness, package, supported-Node, CSP, differential, coverage,
 and external comparison gates passed. Pinned-0.46 parity, the same fail-closed timing
-protocol, and the remaining optimization ledger now belong to 0.49; see
-[`RELEASE-0.49-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.49-TARGET.md).
+protocol, and the remaining optimization ledger now belong to the internal 0.49
+engineering work queue.
 
 ## 2. Non-negotiable architecture
 

@@ -40,7 +40,7 @@ function effectFor(inventory: LexicalCapabilityInventory, siteId = 0): LexicalDe
 }
 
 describe('token Stage C2 compiler-only decision effects', () => {
-  it('projects final winner exclusivity while pinning the broader construction-time oracle', () => {
+  it('projects final winner exclusivity while preserving source deepest-arm diagnostics', () => {
     const grammar = rules((g: Record<string, Combinator<unknown>>) => ({
       Entry: choice(g.A!, g.B!),
       A: sequence(literal('a'), literal('x')),
@@ -60,7 +60,7 @@ describe('token Stage C2 compiler-only decision effects', () => {
       representation: { kind: 'complete' }, executableLowering: { kind: 'complete' },
     })
     expect(grammar.Entry!.parse('az', 0, { trackLines: false } as ParseContext))
-      .toMatchObject({ ok: false, expected: ['"x"', '"b"'] })
+      .toMatchObject({ ok: false, expected: ['"x"'] })
     const program = encodeTable(grammar)
     for (const entry of [
       execRules(program).Entry!,
@@ -251,7 +251,7 @@ describe('token Stage C2 compiler-only decision effects', () => {
       .toBeUndefined()
     const committedMiss = committedChoice.parse('z', 0, { trackLines: false } as ParseContext)
     expect(committedMiss).toMatchObject({
-      ok: false, expected: ['"a"', 'committed'], span: { start: 1, end: 1 }, committed: true,
+      ok: false, expected: ['committed'], span: { start: 1, end: 1 }, committed: true,
     })
     expect(committedInventory.decisionEffectPlan.decisionChildEffects.map(child =>
       committedInventory.decisionEffectPlan.decisionExpectedAuthorities[child.expectedAuthorityId]!.values))

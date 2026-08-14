@@ -5,7 +5,7 @@ implementation order are in
 [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md). Historical
 evidence and retractions remain in `RELEASE-0.48-TARGET.md`; this file alone
 records what was active, why, and what result kept or rejected it. New performance work
-belongs in [`RELEASE-0.49-TARGET.md`](./RELEASE-0.49-TARGET.md).
+belongs in the internal 0.49 work queue.
 
 ## Release criterion
 

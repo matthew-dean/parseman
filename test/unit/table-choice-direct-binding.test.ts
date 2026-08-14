@@ -226,6 +226,70 @@ describe('direct-bound choice topology', () => {
     }
   })
 
+  it('keeps only the deepest failed-arm expectations and merges exact-depth ties in every engine', () => {
+    const cases: Array<{ grammar: Combinator<unknown>; input: string; expected: string[] }> = [
+      {
+        grammar: choice(
+          sequence(literal('a'), literal('b')),
+          sequence(literal('a'), literal('x'), literal('y')),
+          literal('z'),
+        ),
+        input: 'axq',
+        expected: ['"y"'],
+      },
+      {
+        grammar: choice(
+          sequence(literal('a'), literal('b')),
+          sequence(literal('a'), literal('c')),
+          literal('z'),
+        ),
+        input: 'ax',
+        expected: ['"b"', '"c"'],
+      },
+      {
+        grammar: choice(
+          sequence(regex(/[a\u0080]/), literal('b')),
+          sequence(regex(/[a\u0080]/), literal('x'), literal('y')),
+          literal('z'), literal('q'), literal('r'),
+        ),
+        input: '\u0080xq',
+        expected: ['"y"'],
+      },
+      {
+        grammar: choice(
+          sequence(literal('a'), literal('b')),
+          sequence(literal('a'), literal('c')),
+          sequence(literal('a'), literal('d')),
+          sequence(literal('a'), literal('e')),
+          sequence(literal('a'), literal('x'), literal('y')),
+        ),
+        input: 'axq',
+        expected: ['"y"'],
+      },
+      {
+        grammar: choice(
+          sequence(literal('a'), literal('x'), literal('y')),
+          sequence(literal('a'), literal('b')),
+          sequence(literal('a'), literal('c')),
+          sequence(literal('a'), literal('d')),
+          sequence(literal('a'), literal('e')),
+        ),
+        input: 'axq',
+        expected: ['"y"'],
+      },
+    ]
+
+    for (const { grammar, input, expected } of cases) {
+      for (const [name, entry] of Object.entries(engines(grammar))) {
+        expect(projection(entry, input), name).toMatchObject({
+          ok: false,
+          span: { start: 0, end: 0 },
+          expected,
+        })
+      }
+    }
+  })
+
   it('preserves exclusive direct selection, dispatch misses and selected-arm commitment', () => {
     expectIdentity(engines(exclusive(2)), ['a', 'b', 'c', '\u0080', ''])
     expectIdentity(engines(exclusive(3)), ['a', 'b', 'c', 'd', '\u0080', ''])

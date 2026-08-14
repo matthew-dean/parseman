@@ -8,7 +8,7 @@
  *     verbatim (deepest failing leaf's span + expected).
  *   - sequence / oneOrMore : propagate the failing term's failure.
  *   - not : synthesize `[not(<innerTag>)]` at the not's own position.
- *   - choice : expected = concat of tried arms' (deep) expected, span at choice pos.
+ *   - choice : expected = the deepest failed arm set (ties merge), span at choice pos.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
@@ -17,6 +17,7 @@ import {
   not, ref, withCtx, optional, parse,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
+import { createParseContext } from '../../src/parse-context.ts'
 import { compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
@@ -119,11 +120,31 @@ describe('withCtx failure diagnostics parity', () => {
 })
 
 describe('choice() failure diagnostics parity', () => {
-  it('composite arms report deep expected (not a structural label)', () => {
+  it('merges composite arms tied at the same deepest offset', () => {
     const p = choice(sequence(literal('a'), literal('b')), sequence(literal('a'), literal('c')))
     const i = failParity(p, 'ax')
-    // interpreter concatenates each tried arm's deep expected
     expect([...i.expected].sort()).toEqual(['"b"', '"c"'])
+  })
+  it('discards shallower arm sets when a later arm fails deeper', () => {
+    const p = choice(
+      sequence(literal('a'), literal('b')),
+      sequence(literal('a'), literal('x'), literal('y')),
+      literal('z'),
+    )
+    const i = failParity(p, 'axq')
+    expect(i.span.start).toBe(0)
+    expect(i.expected).toEqual(['"y"'])
+  })
+  it('falls back to the deepest nested choice openers when every gated arm is disabled', () => {
+    const nested = choice(
+      { gate: () => false, combinator: literal('y') },
+      { gate: () => false, combinator: regex(/[a-z]/) },
+    )
+    const p = choice(sequence(literal('a'), nested), literal('z'))
+    const direct = asFail(p.parse('ax', 0, createParseContext()))
+    expect(direct.expected).toEqual(['"y"', '/[a-z]/'])
+    const i = failParity(p, 'ax')
+    expect(i.expected).toEqual(['"y"', '/[a-z]/'])
   })
   it('no-arm-first-set-match reports arms first-token expected', () => {
     const p = choice(sequence(literal('a'), literal('b')), sequence(literal('c'), literal('d')))

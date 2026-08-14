@@ -41,7 +41,6 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: 'What is Parséman?', link: '/guide/getting-started' },
-            { text: 'Upgrading to 0.48', link: '/guide/upgrading-to-0.48' },
             { text: 'The three modes', link: '/guide/modes' },
             { text: 'Macro mode', link: '/guide/macro-mode' },
             { text: 'Benchmarks', link: '/guide/benchmarks' },
