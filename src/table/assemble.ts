@@ -540,6 +540,96 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
   }
 
+  /** The lazy capture buffer uses `single === undefined` as its empty sentinel:
+   * leading undefined semantic children are therefore absent, while undefined
+   * values after the first present child are retained in `ch`. A flat collector
+   * normalizes only that cold prefix so the builder sees the identical list. */
+  function capturedFlatChildren(children: unknown[]): readonly unknown[] {
+    if (children.length === 0) return EMPTY_CH
+    if (children[0] !== undefined) return children
+    let first = 1
+    while (first < children.length && children[first] === undefined) first++
+    return first === children.length ? EMPTY_CH : children.slice(first)
+  }
+
+  /** Direct reducer whose declared arity proves `rawChildren` is unobservable.
+   * Use the existing split children/leaves collector instead of opening a
+   * duplicate raw capture buffer. The body shape is selected while linking. */
+  function childrenOnlyBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const kids: unknown[] = []
+      ctx._cstBuf = undefined
+      ctx._cstChildren = kids
+      ctx._cstLeaves = kids
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const captured = capturedFlatChildren(kids)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  function childrenOnlyFieldsBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const kids: unknown[] = []
+      ctx._cstBuf = undefined
+      ctx._cstChildren = kids
+      ctx._cstLeaves = kids
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = []
+      const value = child(input, pos, ctx)
+      const captured = capturedFlatChildren(kids)
+      const fieldMap = buildFieldMap(ctx._fields)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = build(captured, fieldMap, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+      }
+      EC.e = end
+      return node
+    }
+  }
+
   function collapseBuildNode(child: Piece, build: NodeBuilder): Piece {
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
@@ -575,6 +665,45 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         : build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  function childrenOnlyCollapseBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const kids: unknown[] = []
+      ctx._cstBuf = undefined
+      ctx._cstChildren = kids
+      ctx._cstLeaves = kids
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const captured = capturedFlatChildren(kids)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = captured.length === 1
+        ? captured[0]
+        : build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
       EC.e = end
       return node
@@ -3199,7 +3328,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             EC.e = end
             const nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
             if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
-              pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+              pushCstChild(ctx, nd, ctx._cstRawChildren !== undefined || ctx._cstBuf !== undefined
+                ? rawEntry(nd, input, pos, end)
+                : undefined)
             }
             EC.e = end
             return nd
@@ -3234,8 +3365,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (build !== undefined && proj < 0 && flags === 0) {
             return plainBuildNode(child, build)
           }
+          if (build !== undefined && proj < 0 && flags === 2) {
+            return childrenOnlyBuildNode(child, build)
+          }
+          if (build !== undefined && proj < 0 && flags === 18) {
+            return childrenOnlyFieldsBuildNode(child, build)
+          }
           if (build !== undefined && proj < 0 && flags === 32) {
             return collapseBuildNode(child, build)
+          }
+          if (build !== undefined && proj < 0 && flags === 34) {
+            return childrenOnlyCollapseBuildNode(child, build)
           }
           if (build === undefined && proj >= 0 && flags === 0) {
             return plainProjectNode(child, proj, type)

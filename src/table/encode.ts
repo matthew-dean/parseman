@@ -4,7 +4,7 @@ import { childrenOf } from '../analysis/gating.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
-import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
+import { buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators/dispatch.ts'
 import {
@@ -1227,12 +1227,14 @@ class Encoder {
         // a `project` replaces the value outright.
         const noBuildCaptures = d.project === undefined
         const derivedTrivia = d.build !== undefined ? buildReadsTrivia(d) : noBuildCaptures
+        const omitsRaw = d.build !== undefined && !buildReadsRaw(d)
         const derivedState = d.build !== undefined ? buildReadsState(d) : noBuildCaptures
         const derivedFields = d.build !== undefined ? buildReadsFields(d) : noBuildCaptures
         // Field capture additionally requires the body to CONTAIN `field()`
         // captures: a node that reads fields but has none allocates nothing.
         const wantsFields = parserHasOwnFields(d.parser) && (cstOut || derivedFields)
         const flags = (cstOut || d.captureTrivia === true || d.trailingTrivia === true || derivedTrivia ? 4 : 0)
+          | (!cstOut && omitsRaw ? 2 : 0)
           | (cstOut || derivedState ? 8 : 0)
           | (wantsFields ? 16 : 0)
           | (d.collapse === true ? 32 : 0)

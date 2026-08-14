@@ -60,7 +60,8 @@ export const OP_XFORM = 9
  * none), `type` and `tags` index the const pool (`tags` −1 = none).
  *
  * `flags` is a BIT FIELD, not a boolean: bit 0 (`&1`) = grammar-owned explicit
- * `captureTrivia`, bit 2 (`&4`) = the builder reads
+ * `captureTrivia`, bit 1 (`&2`) = a direct builder is proven not to read
+ * `rawChildren`, bit 2 (`&4`) = the builder reads
  * `triviaLog`, bit 3 (`&8`) = it reads `ctx.state`, bit 4 (`&16`) = the node has
  * read fields, bit 5 (`&32`) = `collapse`, bit 6 (`&64`) = `unwrap`, bit 7
  * (`&128`) = `trailingTrivia`. Bit 0 distinguishes capture a host may not

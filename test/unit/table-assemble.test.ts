@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { balanced, choice, keywords, literal, many, node, not, notAdjacent, optional, parser, regex, sequence, token, transform, withCtx } from '../../src/index.ts'
+import { balanced, choice, field, gate, keywords, literal, many, node, not, notAdjacent, optional, parser, regex, sepBy, sequence, token, transform, withCtx } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules, AssemblyCache, cfgKey } from '../../src/table/assemble.ts'
@@ -15,6 +15,7 @@ import { createParseContext } from '../../src/parse-context.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
 import { OP_LEX_BODY, OP_LEX_PROGRAM, OP_LIT, OP_NODE, OP_NOT, OP_OPT, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
 import { FAIL } from '../../src/table/cell.ts'
+import { finishCstBuf } from '../../src/cst/capture-buffer.ts'
 
 /**
  * A grammar with enough shape variety that the assembler's memoisation, its
@@ -66,8 +67,11 @@ describe('table assembler', () => {
         tolerant: false, coverage: false, probe: false,
       })
       const source = Function.prototype.toString.call(linked.pieces.Root)
-      if (name === 'Plain') expect(source).toContain('build(kids, undefined, span, rawKids')
-      if (name === 'Collapsed') expect(source).toContain('kids.length === 1')
+      if (name === 'Plain') {
+        expect(source).toContain('ctx._cstChildren = kids')
+        expect(source).toContain('EMPTY_CH')
+      }
+      if (name === 'Collapsed') expect(source).toContain('captured.length === 1')
       if (name === 'Projected') expect(source).toContain('kids, projection, type')
     }
 
@@ -78,8 +82,192 @@ describe('table assembler', () => {
       .toEqual({ kind: 'pair', children: ['a', 'b'] })
     expect(run(tableRules({ ...encodeTable({ Root: roots.Collapsed }), asm: [] }).Root!, 'a').value)
       .toMatchObject({ value: 'a' })
+    const legacyCollapsed = encodeTable({ Root: roots.Collapsed })
+    const legacyCollapsedIp = [...reachableIps(legacyCollapsed)].find(ip => legacyCollapsed.code[ip] === OP_NODE)!
+    const legacyCollapsedCode = [...legacyCollapsed.code]
+    legacyCollapsedCode[legacyCollapsedIp + 3] = legacyCollapsedCode[legacyCollapsedIp + 3]! & ~2
+    expect(run(tableRules({ ...legacyCollapsed, code: legacyCollapsedCode, asm: [] }).Root!, 'a').value)
+      .toMatchObject({ value: 'a' })
     expect(run(tableRules({ ...encodeTable({ Root: roots.Projected }), asm: [] }).Root!, '(x)').value)
       .toBe('x')
+  })
+
+  it('selects a children-only node collector from confirmed builder arity without changing old table rows', () => {
+    const childValues = (children: readonly unknown[]) => children.map(child => (child as { value?: unknown }).value)
+    const childrenOnly = node('ChildrenOnly', sequence(
+      literal('a'),
+      optional(sequence(literal(','), literal('b'))),
+    ), children => ({ children: childValues(children) }))
+    const separated = node('Separated', sepBy(literal('a'), literal(',')),
+      children => ({ children: childValues(children) }))
+    const raw = node('Raw', sequence(literal('a'), literal(','), literal('b')),
+      (children, _fields, _span, rawChildren) => ({
+        children: childValues(children),
+        raw: childValues(rawChildren),
+      }))
+
+    const childProgram = encodeTable({ Root: childrenOnly })
+    const childIp = [...reachableIps(childProgram)].find(ip => childProgram.code[ip] === OP_NODE)!
+    expect(childProgram.code[childIp + 3]! & 2).toBe(2)
+    const childClosure = tableRules({ ...childProgram, asm: [] }).Root!
+    const directChildProgram = { ...childProgram, rules: { Root: childIp }, asm: [] }
+    const childSource = Function.prototype.toString.call(assemble(resolveTable(directChildProgram),
+      directChildProgram, {
+        hostCst: false, hostReadsChildren: true, trackLines: false,
+        tolerant: false, coverage: false, probe: false,
+      }).pieces.Root)
+    expect(childSource).toContain('ctx._cstChildren = kids')
+    expect(childSource).not.toContain('const buf')
+
+    for (const input of ['a', 'ab', 'a,', 'a,b']) {
+      const reference = run(execRules(childProgram).Root!, input)
+      expect(digestValue(run(childClosure, input)), `closure ${input}`).toBe(digestValue(reference))
+      expect(digestValue(run(tableRules(childProgram).Root!, input)), `emitted ${input}`).toBe(digestValue(reference))
+    }
+    expect(run(childClosure, 'a,').value).toEqual({ children: ['a'] })
+
+    const separatedProgram = encodeTable({ Root: separated })
+    expect(run(tableRules({ ...separatedProgram, asm: [] }).Root!, 'a,a').value)
+      .toEqual({ children: ['a', 'a'] })
+
+    const rawProgram = encodeTable({ Root: raw })
+    const rawIp = [...reachableIps(rawProgram)].find(ip => rawProgram.code[ip] === OP_NODE)!
+    expect(rawProgram.code[rawIp + 3]! & 2).toBe(0)
+    expect(run(tableRules({ ...rawProgram, asm: [] }).Root!, 'a,b').value)
+      .toEqual({ children: ['a', ',', 'b'], raw: ['a', ',', 'b'] })
+
+    // Tables emitted before the bit existed have zero here. They must keep the
+    // full raw collector rather than being reinterpreted as children-only.
+    const legacyCode = [...childProgram.code]
+    legacyCode[childIp + 3] = legacyCode[childIp + 3]! & ~2
+    const legacyProgram = { ...childProgram, code: legacyCode, asm: [] }
+    expect(digestValue(run(tableRules(legacyProgram).Root!, 'a,b')))
+      .toBe(digestValue(run(execRules(legacyProgram).Root!, 'a,b')))
+
+    const undefinedChildren = node('UndefinedChildren', sequence(
+      node('LeadingUndefined', literal('a'), () => undefined),
+      literal('b'),
+      node('MiddleUndefined', literal('c'), () => undefined),
+      literal('d'),
+    ), children => ({ children }))
+    const undefinedProgram = encodeTable({ Root: undefinedChildren })
+    const undefinedEntries = [
+      execRules(undefinedProgram).Root!,
+      tableRules({ ...undefinedProgram, asm: [] }).Root!,
+      tableRules(undefinedProgram).Root!,
+    ]
+    const undefinedResults = undefinedEntries.map(entry => run(entry, 'abcd'))
+    expect(undefinedResults[0]!.value).toEqual({
+      children: [expect.objectContaining({ value: 'b' }), undefined, expect.objectContaining({ value: 'd' })],
+    })
+    expect(new Set(undefinedResults.map(result => digestValue(result))).size).toBe(1)
+
+    const undef = (text: string) => node(`U${text}`, literal(text), () => undefined)
+    const hostile = [
+      ['collapse-leading-undefined',
+        node('Root', undef('a'), children => ({ children }), { collapse: true }), 'a'],
+      ['optional-rollback', node('Root', sequence(
+        optional(sequence(undef('a'), literal('!'))), literal('a'), literal('b'),
+      ), children => ({ children })), 'ab'],
+      ['separator-demotion', node('Root', sepBy(undef('a'), literal(',')),
+        children => ({ children })), 'a,a'],
+      ['field-rollback', node('Root', sequence(
+        optional(sequence(field('ghost', literal('a')), literal('!'))),
+        field('kept', literal('a')),
+      ), (children, fields) => ({ children, fields })), 'a'],
+    ] as const
+    for (const [name, root, input] of hostile) {
+      const program = encodeTable({ Root: root })
+      const results = [
+        execRules(program).Root!,
+        tableRules({ ...program, asm: [] }).Root!,
+        tableRules(program).Root!,
+      ].map(entry => digestValue(run(entry, input)))
+      expect(new Set(results).size, name).toBe(1)
+    }
+
+    const emptyProgram = encodeTable({
+      Root: node('Empty', optional(literal('a')), children => children),
+    })
+    for (const entry of [
+      execRules(emptyProgram).Root!,
+      tableRules({ ...emptyProgram, asm: [] }).Root!,
+      tableRules(emptyProgram).Root!,
+    ]) {
+      const first = run(entry, '').value
+      expect(run(entry, '').value).toBe(first)
+      expect(first).toEqual([])
+    }
+  })
+
+  it('preserves direct capture sinks, reentry, and fail-open reducer arity', () => {
+    const root = node('Root', sequence(literal('a'), literal('b')), children => ({ children }))
+    const program = encodeTable({ Root: root })
+    const directDigest = (entry: (input: string, pos: number, ctx: ParseContext) => unknown, buffered: boolean) => {
+      const ctx = createParseContext()
+      if (buffered) ctx._cstBuf = {}
+      else {
+        const children: unknown[] = []
+        ctx._cstChildren = children
+        ctx._cstLeaves = children
+        ctx._cstRawChildren = []
+      }
+      const first = entry('ab', 0, ctx)
+      const second = entry('ab', 0, ctx)
+      return digestValue({
+        first, second,
+        children: ctx._cstChildren,
+        raw: ctx._cstRawChildren,
+        capture: buffered ? finishCstBuf(ctx._cstBuf) : undefined,
+      })
+    }
+    for (const buffered of [false, true]) {
+      expect(directDigest(tableRules({ ...program, asm: [] }).Root!, buffered))
+        .toBe(directDigest(execRules(program).Root!, buffered))
+    }
+
+    type ReentryState = {
+      active: boolean
+      ctx?: ParseContext
+      entry?: (input: string, pos: number, ctx: ParseContext) => unknown
+    }
+    const reenter = gate(value => {
+      const state = value as ReentryState
+      if (!state.active) {
+        state.active = true
+        state.entry!('ab', 0, state.ctx!)
+        state.active = false
+      }
+      return true
+    })
+    const reentryProgram = encodeTable({
+      Root: node('Reentrant', sequence(literal('a'), reenter, literal('b')), children => ({ children })),
+    })
+    const reentryDigest = (entry: NonNullable<ReentryState['entry']>) => {
+      const ctx = createParseContext()
+      const children: unknown[] = [], raw: unknown[] = []
+      ctx._cstChildren = children; ctx._cstLeaves = children; ctx._cstRawChildren = raw
+      const state: ReentryState = { active: false, ctx, entry }
+      ctx.state = state
+      return digestValue({ result: entry!('ab', 0, ctx), children, raw, active: state.active })
+    }
+    expect(reentryDigest(tableRules({ ...reentryProgram, asm: [] }).Root!))
+      .toBe(reentryDigest(execRules(reentryProgram).Root!))
+
+    const restBuild = (...args: unknown[]) => ({ raw: args[3] })
+    const argumentsBuild = function(children: readonly unknown[]) {
+      return { children, raw: arguments[3] }
+    }
+    for (const [name, build, opts, expected] of [
+      ['rest', restBuild, undefined, 0],
+      ['arguments', argumentsBuild, undefined, 0],
+      ['declared-one', restBuild, { buildArity: 1 }, 2],
+      ['declared-four', (children: readonly unknown[]) => children, { buildArity: 4 }, 0],
+    ] as const) {
+      const p = encodeTable({ Root: node('Arity', literal('a'), build as never, opts) })
+      const ip = [...reachableIps(p)].find(at => p.code[at] === OP_NODE)!
+      expect(p.code[ip + 3]! & 2, name).toBe(expected)
+    }
   })
 
   it('binds arbitrary, adjacency, and recovery sequence terms without fixed child arrays', () => {

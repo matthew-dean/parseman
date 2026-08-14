@@ -50,12 +50,14 @@ describe('encodeTable({ hostMode })', () => {
     const cst = encodeTable(lowArity, { hostMode: 'cst' })
     const diff = codeDiff(plain.code, cst.code)
     // One flags word per node() rule, and only the flags word: same length, same
-    // opcodes, same operands. `4|8` = capture trivia + snapshot state. An encoder
+    // opcodes, same operands. Plain AST has bit 1 (`2`) because these builders
+    // omit rawChildren; CST host mode clears that omission and `4|8` forces
+    // capture trivia + snapshot state. An encoder
     // that also flipped, say, the project or build slot would show up here as an
     // extra differing index rather than as a passing "the tables differ".
     expect(diff.length).toBe(2)
     for (const [, before, after] of diff) {
-      expect(before).toBe(0)
+      expect(before).toBe(2)
       expect(after).toBe(4 | 8)
     }
     // The pools are untouched — the setting is not allowed to add constants.
