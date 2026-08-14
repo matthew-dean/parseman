@@ -896,7 +896,7 @@ across these five broad workloads. The owner accepted that architectural reset a
 correctness, artifact-size, package-size, and external-competitor gates passed, so
 `bf03092` is the new baseline for detecting *additional* regressions. The exact 0.45
 drawdowns remain in the 0.48 changelog, and pinned-0.46 Jess parity remains a separate
-0.49 objective; resetting this gate does not rewrite either historical comparison.
+internal objective; resetting this gate does not rewrite either historical comparison.
 
 ### Re-baselining is a deliberate, committed diff — and it is enforced
 

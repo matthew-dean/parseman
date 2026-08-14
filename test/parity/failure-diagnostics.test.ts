@@ -123,7 +123,7 @@ describe('choice() failure diagnostics parity', () => {
   it('merges composite arms tied at the same deepest offset', () => {
     const p = choice(sequence(literal('a'), literal('b')), sequence(literal('a'), literal('c')))
     const i = failParity(p, 'ax')
-    expect([...i.expected].sort()).toEqual(['"b"', '"c"'])
+    expect(i.expected).toEqual(['"b"', '"c"'])
   })
   it('discards shallower arm sets when a later arm fails deeper', () => {
     const p = choice(
