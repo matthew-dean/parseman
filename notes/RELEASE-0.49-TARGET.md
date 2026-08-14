@@ -27,6 +27,14 @@ Jess `f3b4c3fa1917bc2a1b4e5bd7f0e4b7992b64a002` measured:
 These are the accepted 0.48 release numbers, not a five-pass parity result. 0.49 must
 run the full five-pass bracket on its final integrated SHA before claiming closure.
 
+The broad `perf:workloads:peak` guard has a different job and a different corpus. Its
+seeded 0.45 record measured the accepted 0.48 runtime roughly 98–249% slower across
+Less, CSS, GraphQL, and JSON. 0.48 therefore resets that operational guard to
+`bf03092`; future PRs must not regress more than 5% from the released TableProgram
+runtime. That reset does **not** lower this document's pinned-0.46 Jess target. The
+historical broad-workload drawdowns remain quoted in the 0.48 changelog, while 0.49
+still owns the 1.19x / 1.12x / 1.03x production-shaped gaps above.
+
 ## Constraints inherited from 0.48
 
 - One compact `TableProgram` remains the serialized semantic authority.

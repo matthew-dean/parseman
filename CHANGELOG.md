@@ -56,6 +56,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   this tradeoff for 0.48 after the correctness, package, and external-competitor gates
   passed; strict 0.46 parity moves to the explicit 0.49 target rather than being
   misreported as complete here.
+- **Broad workload baseline reset:** move `bench/workloads/config.json`'s committed
+  peak from 0.45.0 (`7d1817f`) to the accepted 0.48.0 runtime checkpoint
+  (`bf03092`) while leaving the 5% drawdown allowance unchanged. The clean release
+  CI comparison against the seeded 0.45 peak measured:
+
+  | workload | median drawdown | minimum drawdown |
+  | --- | ---: | ---: |
+  | Less stylesheet | +187.3% | +189.0% |
+  | Less mixins | +185.4% | +187.5% |
+  | CSS stylesheet | +248.8% | +248.6% |
+  | GraphQL document | +97.6% | +97.3% |
+  | JSON document | +117.8% | +117.5% |
+
+  This is an explicit re-baseline, not an administrative override and not a claim
+  that the historical drawdown disappeared. The canonical TableProgram, version-
+  locked artifacts, much smaller generated/package output, and unified correctness
+  semantics are the accepted 0.48 normal; subsequent PRs now guard against further
+  regression from it. The separate pinned-0.46 Jess parity target remains unchanged
+  for 0.49.
 - Restore small rows to every external comparison chart. In the three-round release
   sweep Parseman is the fastest competitor-ranked JavaScript parser in every JSON, CSV,
   GraphQL, and CST group. The tightest row is JSON-small at 0.894 microseconds versus

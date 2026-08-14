@@ -845,11 +845,11 @@ gate would have caught none of it.**
 
 ### The clause
 
-A release may not sit below the fastest release **on record** by more than the
-noise floor. The record lives in `bench/workloads/config.json`:
+A release may not sit below the committed broad-workload **release baseline** by
+more than the noise floor. The baseline lives in `bench/workloads/config.json`:
 
 ```json
-"peak": { "sha": "7d1817f", "version": "0.45.0", "allowancePct": 5 }
+"peak": { "sha": "bf03092", "version": "0.48.0", "allowancePct": 5 }
 ```
 
 - **Absolute, not differential.** `sha` names a **commit**, never a stored
@@ -870,11 +870,11 @@ its win rate at 5–8 of 12 — verdict correctly `ok`. That is the whole design
 one row: **the median is the statistic a contended runner destroys; min and win
 rate are not.**
 
-### The peak is seeded, not swept — and cannot be imported
+### The original peak was seeded, not swept — and cannot be imported
 
-**Stated rather than left to be discovered.** 0.45.0 is the **starting record**,
-the bar to beat from here. It is *not* the winner of a measured sweep across all
-releases. That sweep was attempted at 0.46.0 and abandoned: the machine sat at
+**Stated rather than left to be discovered.** 0.45.0 was the **starting record**.
+It was *not* the winner of a measured sweep across all releases. That sweep was
+attempted at 0.46.0 and abandoned: the machine sat at
 load average 70–90, where triage runs of this very gate reported the same workload
 anywhere from **−86% to +131%**. A number a control cannot reproduce is worse than
 no number.
@@ -890,12 +890,20 @@ place. On *this* workload set there is no evidence of a historical peak above HE
 Whatever peak a different instrument reports is evidence about that instrument's
 shape. **Re-measure; never import.**
 
+0.48 is the first deliberate operational reset of that record. Its release CI
+measured the canonical TableProgram 98–249% slower than the seeded 0.45 baseline
+across these five broad workloads. The owner accepted that architectural reset after
+correctness, artifact-size, package-size, and external-competitor gates passed, so
+`bf03092` is the new baseline for detecting *additional* regressions. The exact 0.45
+drawdowns remain in the 0.48 changelog, and pinned-0.46 Jess parity remains a separate
+0.49 objective; resetting this gate does not rewrite either historical comparison.
+
 ### Re-baselining is a deliberate, committed diff — and it is enforced
 
-Moving `peak` forward is how a genuine improvement becomes the new bar. Moving it
-**backward**, or **widening `allowancePct`**, makes a slower build the reference —
-which may be a legitimate trade, and is also exactly how a regression gets
-laundered into a baseline.
+Moving `peak` forward is how a genuine improvement or an explicitly accepted new
+normal becomes the new bar. Moving it **backward**, or **widening
+`allowancePct`**, makes a slower build the reference — which may be a legitimate
+trade, and is also exactly how a regression gets laundered into a baseline.
 
 `scripts/check-changelog.mjs` §D therefore:
 
@@ -941,10 +949,10 @@ the slower path is a trade this release makes, not the new normal. If the
 slowdown genuinely is the new normal, **move the peak** (§D above) and say so;
 that is not this.
 
-**It does not move the baseline.** This is the whole point. The peak record is
-untouched, `0.45.0` stays the bar, and the next PR is measured against the same
-number, goes red in exactly the same way, and must state its own measurement. A
-waived breach is still a breach on the record.
+**It does not move the baseline.** This is the whole point. The committed peak stays
+the bar, and the next PR is measured against the same number, goes red in exactly the
+same way, and must state its own measurement. A waived breach is still a breach on
+the record.
 
 Every property of it is friction on purpose — `docs/design/release-gates.md`: *"A
 gate that fires spuriously gets bypassed, and then the gates that matter get

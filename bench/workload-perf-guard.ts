@@ -95,9 +95,10 @@ if (!SELF && CONFIG.scoreMethod !== SCORE_METHOD) {
   fail(GATE, `scorer changed from ${CONFIG.scoreMethod} to ${SCORE_METHOD}; run --self to revalidate thresholds, then update ${CONFIG_PATH}`)
 }
 /**
- * The PEAK clause: compare against the fastest release on record rather than the
- * previous one, and fail on a drawdown beyond the measured noise floor. This is
- * the half of the release policy a per-step gate structurally cannot enforce —
+ * The PEAK clause: compare against the committed broad-workload release baseline
+ * rather than the previous release, and fail on a drawdown beyond the measured
+ * noise floor. This is the half of the release policy a per-step gate structurally
+ * cannot enforce —
  * see `Peak` in `ab-harness.ts`.
  */
 const PEAK = process.argv.includes('--peak')
@@ -160,7 +161,7 @@ console.log(
   `${GATE}: ${SELF
     ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)`
     : PEAK
-      ? `PEAK CLAUSE — ${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs the fastest release on record,`
+      ? `PEAK CLAUSE — ${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs the committed release baseline,`
         + ` ${CONFIG.peak.version} (${REF}), drawdown allowance ${CONFIG.peak.allowancePct}%`
       : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REF}`}`,
 )
