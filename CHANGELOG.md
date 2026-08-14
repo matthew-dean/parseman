@@ -3,6 +3,19 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.48.1 — 2026-08-14
+
+- Fix ordered-choice failure diagnostics to keep the expected tokens from the
+  deepest failed arm, merging only arms tied at that offset. The reported choice
+  span, dispatch and committed-arm cuts, and opener union for a pure dispatch miss
+  are unchanged. This restores tight consumer diagnostics such as a missing `)` or
+  `;` without collapsing legitimate same-depth unions.
+- Rebuild generated, macro, composed, folded, precompiled, and rule-map artifacts
+  with 0.48.1; Parseman artifacts are version-locked to their runtime.
+- Keep release-only upgrade notes and the future engineering target out of the
+  published documentation surface. User-facing 0.48 migration requirements remain
+  recorded in the 0.48.0 changelog.
+
 ## 0.48.0 — 2026-08-14
 
 - **BREAKING:** ship one ESM implementation instead of duplicate ESM and CommonJS
@@ -54,7 +67,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   generated Less is 46.75 ms versus 45.93 ms. The surrounding same-source A/A controls
   put the approximate remaining gaps at 1.19x, 1.12x, and 1.03x. The owner accepted
   this tradeoff for 0.48 after the correctness, package, and external-competitor gates
-  passed; strict 0.46 parity moves to the explicit 0.49 target rather than being
+  passed; strict 0.46 parity moves to the explicit internal target rather than being
   misreported as complete here.
 - **Broad workload baseline reset:** move `bench/workloads/config.json`'s committed
   peak from 0.45.0 (`7d1817f`) to the accepted 0.48.0 runtime checkpoint
@@ -74,7 +87,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   locked artifacts, much smaller generated/package output, and unified correctness
   semantics are the accepted 0.48 normal; subsequent PRs now guard against further
   regression from it. The separate pinned-0.46 Jess parity target remains unchanged
-  for 0.49.
+  for the internal follow-up.
 - Restore small rows to every external comparison chart. In the three-round release
   sweep Parseman is the fastest competitor-ranked JavaScript parser in every JSON, CSV,
   GraphQL, and CST group. The tightest row is JSON-small at 0.894 microseconds versus

@@ -216,18 +216,12 @@ describe('compileRuleMap() is value-, span- and expected-identical to the interp
       const i = [...interp.expected].sort()
       if (JSON.stringify(t) === JSON.stringify(i)) continue
       /**
-       * A PRE-EXISTING, UNADJUDICATED DIVERGENCE — not one this function
-       * introduced. `compile()` on the same `Value` rule reports the same
-       * sets (verified directly), and `test/unit/table-compile.test.ts` already
-       * records it as open: on a failure under a top-level `choice` of rule
-       * refs the table reports the arm that failed LAST and the interpreter
-       * reports the union of every arm's first token.
-       *
-       * Which engine is right is not settled, so nothing here pins a set. What
-       * IS pinned is the relationship actually observed — the table's set is a
-       * non-empty SUBSET of the interpreter's — which moves if either engine
-       * changes, in either direction, and cannot be satisfied by an empty
-       * `expected` (the failure mode a bare "reports something" check misses).
+       * A PRE-EXISTING DISPATCH-METADATA DIVERGENCE. Both engines retain only
+       * deepest-offset arms, but construction-time `ref()` first sets can make
+       * the interpreter try several arms where the resolved table selects one.
+       * When every attempted arm fails at the same offset, the interpreter's
+       * tied set is broader. Pin the observed non-empty subset relation until
+       * stale `ref()` dispatch metadata is resolved.
        */
       expect(t.length, `${name}: table must report something`).toBeGreaterThan(0)
       expect(t.filter(x => !i.includes(x)), `${name}: table reported an expectation the interpreter does not`).toEqual([])

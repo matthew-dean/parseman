@@ -1078,20 +1078,16 @@ class Encoder {
           ? -1 : this.charClass(finalChoice.firstSets[i]!))
         const dispIdx = this.disp.length
         this.disp.push(classes)
-        // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. The ordered
-        // path reports the CONCATENATION of the arms' sets (`choice.ts:167`), and
-        // it must include the arms the driver's char gate declined to enter — the
-        // interpreter has no such gate, runs them, and gets exactly their static
-        // opener set back. Without these words a partially-gated site reported
-        // only the arms that happened to run.
+        // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. While the best
+        // failure remains at the choice position, an arm declined by the driver's
+        // char gate contributes the static opener set the interpreter would get by
+        // entering it. A deeper dynamic arm failure discards those shallower sets.
         const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
         this.code[head + 1] = dispIdx
         this.code[head + 2] = kids.length
         // THE CHOICE'S OWN SET IS THE ARMS' FLATMAP, NOT `deriveExpected(p)`.
-        // `deriveExpected` DEDUPES, and neither engine does: `choice.ts:110-118`
-        // is `parsers.flatMap(p => p.parse(...).expected)`, so a shared-prefix
-        // choice whose two arms both open with `/::?/` reports it TWICE. The
-        // deduped union silently collapsed that to one.
+        // It is the pure-dispatch-miss and empty-dynamic fallback, where source
+        // order and duplicates remain observable. `deriveExpected` would dedupe.
         this.code[head + 3] = this.expected(arms.flatMap(a => deriveExpected(a)))
         for (let i = 0; i < kids.length; i++) {
           this.code[head + 4 + i] = kids[i]!

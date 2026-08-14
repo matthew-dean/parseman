@@ -1463,9 +1463,11 @@ return FAIL
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
-acc=${catchName}(${i},prev,acc)
+if(best===pos)acc=${catchName}(${i},prev,acc)
 prev=${i + 1}
-acc=_accSet(ctx._fx,acc)
+{const at=ctx._fe??pos
+if(at>best){best=at;acc=undefined}
+if(at===best)acc=_accSet(ctx._fx,acc)}
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
 }`
@@ -1474,20 +1476,23 @@ ${emitRollback(p, L.buf, sinks)}
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
-acc=_accSet(ctx._fx,acc)
+{const at=ctx._fe??pos
+if(at>best){best=at;acc=undefined}
+if(at===best)acc=_accSet(ctx._fx,acc)}
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
-}else acc=_accSet(${expected[i]},acc)`).join('\n')
+}else if(best===pos)acc=_accSet(${expected[i]},acc)`).join('\n')
 
           return `${head}
 const c=lead(input,pos)
 ${emitMark(p, L.buf, sinks)}
 let acc
+let best=pos
 ${maskable ? `if(c<128){
 const bits=${maskName}[c<0?128:c]
 let prev=0
 ${maskArms}
-acc=${catchName}(${n},prev,acc)
+if(best===pos)acc=${catchName}(${n},prev,acc)
 ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL
 }

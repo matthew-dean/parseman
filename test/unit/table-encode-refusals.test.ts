@@ -782,8 +782,8 @@ describe('table failure reporting matches the interpreter and the compiled path'
     // behaviour, and each `interp`/`compiled` row is what it should be.
     //
     // WAS FOUR, THEN THREE, NOW NONE. The dispatched-choice miss went first — a
-    // choice now carries its own expected set and reports the union on every
-    // failing exit. `Min` was second: a list ending under `min` reports the ITEM,
+    // choice now carries its own expected set and reports its opener union when
+    // no arm claims the lead. `Min` was second: a list ending under `min` reports the ITEM,
     // which is what `failAt` (repeat.ts) and the source lowering's
     // `deriveExpectedArr([item])` both already reported. `Kw` and `Peek` went with the table-lowering flip:
     // `keywords()` now carries its own `['keyword']` label into the row instead of
@@ -826,20 +826,17 @@ describe('table failure reporting matches the interpreter and the compiled path'
       expect(run(engine as never, 'a').ok).toBe(false)
       expect(run(engine as never, 'a').expected).toEqual(['/[a-z]/'])
     }
-    // THE RESIDUE IS NOT A FAILURE-REPORTING DIVERGENCE. The note here used to
-    // call it furthest-failure merging; nothing in the library merges positionally
-    // on the `expected` path (`failAt`/`probeUpdate` are `_probe`-gated and surface
-    // as `RunResult.furthestFail`). All three drivers apply the SAME rule — a
-    // failing choice reports the arms it ATTEMPTED — and disagree about which arms
-    // those are.
+    // The residual offset-zero tie is a dispatch-metadata divergence. All drivers
+    // keep expectations from the deepest attempted arms, but they disagree about
+    // which arms are attempted when construction-time `ref()` first sets are stale.
     //
     // `jsonRules.Value` is `choice(g.Obj, …)`. Those `g.X` arms are `ref()` slots
     // still carrying `any()` when `choice()` runs (ref.ts:21 fills the meta in
     // place, afterwards), so `disjoint` freezes FALSE (choice.ts:35). The two
-    // engines read that flag and firstMatch all seven arms, concatenating seven
-    // sets; `encode.ts:439` recomputes from resolved classes and dispatches to
-    // one, so the table reports that one arm — `["}"]` for `{"a":`, which is
-    // exactly what the engines' OWN `Obj` arm returns inside their seven.
+    // engines read that flag and firstMatch all seven arms; `encode.ts:439`
+    // recomputes from resolved classes and dispatches to one. Structured failures
+    // advance inside that arm and now discard shallower sets, so only the bare
+    // offset-zero miss retains the seven-way tie.
     //
     // Pinned as a SUBSET relation, which is the true shape: the table's answer is
     // one of the engines' elements, never a token they did not name. A regression
@@ -856,13 +853,13 @@ describe('table failure reporting matches the interpreter and the compiled path'
       expect(fromCompiled.span, bad).toEqual({ start: 0, end: 0 })
       // THE THIRD ENGINE IS GONE. `compose()` now fuses to a TABLE, so `fromCompiled`
       // is table-backed and reports the dispatched arm exactly as `fromTable` does. The
-      // INTERPRETER remains the outlier: it reads the frozen `disjoint === false` flag
-      // and firstMatches all seven arms, concatenating seven sets.
-      expect(fromInterp.expected, bad).toHaveLength(7)
       expect(fromTable.expected, bad).toEqual([dispatched])
       expect(fromCompiled.expected, bad).toEqual(fromTable.expected)
-      expect(fromInterp.expected, `${bad}: the table's token is one of theirs`)
-        .toContain(dispatched)
+      if (bad === 'nope') {
+        expect(fromInterp.expected, bad).toHaveLength(7)
+        expect(fromInterp.expected, `${bad}: the table's token is one of theirs`)
+          .toContain(dispatched)
+      } else expect(fromInterp.expected, bad).toEqual(fromTable.expected)
     }
     // All three still REJECT — only the arm count in the report differs.
     for (const bad of ['[1,2,]', '{"a":', 'nope']) {

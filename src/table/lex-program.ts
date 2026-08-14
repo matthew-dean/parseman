@@ -150,7 +150,8 @@ function sequence5(
 }
 
 type ChoiceTail = (
-  input: string, pos: number, ctx: ParseContext, lead: number, acc: string[] | undefined,
+  input: string, pos: number, ctx: ParseContext, lead: number,
+  acc: string[] | undefined, best: number,
 ) => number
 
 function appendExpected(acc: string[] | undefined, values: readonly string[] | undefined): string[] | undefined {
@@ -181,24 +182,32 @@ function choiceNode(
   }
   for (let i = arms.length - 1; i >= 0; i--) {
     const arm = arms[i]!, cls = classes[i], staticExpected = armExpected[i]!, next = tail
-    tail = (input, pos, ctx, lead, acc) => {
+    tail = (input, pos, ctx, lead, acc, best) => {
       if (cls !== undefined && !classHas(cls, lead)) {
-        return next(input, pos, ctx, lead, appendExpected(acc, staticExpected))
+        return next(
+          input, pos, ctx, lead,
+          best === pos ? appendExpected(acc, staticExpected) : acc,
+          best,
+        )
       }
       ctx._fc = false
       const end = arm.run(input, pos, ctx)
       if (end >= 0) return end
-      const nextAcc = appendExpected(acc, ctx._fx)
+      const at = ctx._fe ?? pos
+      if (at > best) { best = at; acc = undefined }
+      const nextAcc = at === best ? appendExpected(acc, ctx._fx) : acc
       if (committed(ctx)) {
         if (nextAcc !== undefined) ctx._fx = nextAcc
         return -1
       }
-      return next(input, pos, ctx, lead, nextAcc)
+      return next(input, pos, ctx, lead, nextAcc, best)
     }
   }
   return {
     match: matchTail,
-    run: (input, pos, ctx) => tail(input, pos, ctx, pos < input.length ? input.codePointAt(pos)! : -1, undefined),
+    run: (input, pos, ctx) => tail(
+      input, pos, ctx, pos < input.length ? input.codePointAt(pos)! : -1, undefined, pos,
+    ),
   }
 }
 

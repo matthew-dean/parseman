@@ -1,6 +1,6 @@
 # Parseman 0.48 architecture and release specification
 
-- **Status:** frozen release architecture; remaining performance work moved to 0.49
+- **Status:** frozen release architecture; remaining performance work tracked internally
 - **Release branch:** `release/0.48.0`
 - **Primary performance architecture:** tokenized PEG over the canonical compact
   `TableProgram`
@@ -8,7 +8,7 @@
 [`derived-tokenization.md`](./derived-tokenization.md),
 [`RELEASE-0.48-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.48-TARGET.md), and
 [`TABLE-PERF-EXPERIMENTS-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/notes/TABLE-PERF-EXPERIMENTS-0.48.md).
-The accepted follow-up is [`RELEASE-0.49-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.49-TARGET.md).
+The remaining performance work is tracked internally.
 
 This is the canonical, frozen 0.48 design. The linked documents retain the full
 experiment history, measurements, rejected implementations, and longer-form
@@ -53,8 +53,8 @@ with literal full consumption and same-shape A/A processes, measured:
 Those gaps are disclosed release results, not parity claims. The owner accepted them
 for 0.48 after full correctness, package, supported-Node, CSP, differential, coverage,
 and external comparison gates passed. Pinned-0.46 parity, the same fail-closed timing
-protocol, and the remaining optimization ledger now belong to 0.49; see
-[`RELEASE-0.49-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.49-TARGET.md).
+protocol, and the remaining optimization ledger now belong to the internal
+engineering work queue.
 
 ## 2. Non-negotiable architecture
 
@@ -807,11 +807,11 @@ semantic risk, or a material regression elsewhere still rejects a candidate.
 ## 10. Release gates
 
 0.48 ships with one explicitly accepted performance waiver: the pinned-0.46 CSS and
-Less shelves above move intact to 0.49. It still cannot ship until all of the following
+Less shelves above remain in the internal engineering queue. It still cannot ship until all of the following
 non-waived gates are true:
 
 - the accepted 0.46 comparison is disclosed without claiming parity, and its exact
-  follow-up remains a 0.49 target rather than a lowered baseline;
+  follow-up remains an internal target rather than a lowered baseline;
 - actual Jess CSS and Less fully consume and preserve selected root-trivia maps;
 - interpreter, reference, closure, emitted, runtime compile, macro, compose/fuse,
   rule-map/linkable, run-tabled, folded, CST, tolerant, probe, coverage, and tracked
@@ -831,7 +831,7 @@ pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 
 Passing that command is necessary, not sufficient: the external Jess correctness and
 comparison-margin gates remain separate release blockers. Pinned-0.46 parity is no
-longer a 0.48 blocker; it is the primary 0.49 performance target.
+longer a 0.48 blocker; it is the primary internal performance target.
 
 ## 11. Evidence that motivates the cursor
 

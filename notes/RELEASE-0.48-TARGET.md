@@ -2,9 +2,8 @@
 
 > **Disposition (2026-08-14):** 0.48 retains the canonical TableProgram architecture
 > and ships with an explicit owner-approved performance carry-forward. The remaining
-> pinned-0.46 CSS/Less gap is now tracked in
-> [`RELEASE-0.49-TARGET.md`](./RELEASE-0.49-TARGET.md). This file is historical evidence,
-> not an active release blocker.
+> pinned-0.46 CSS/Less gap moved to the internal 0.49 work queue. This file is
+> historical evidence, not an active release blocker.
 
 This is the long-form release evidence register. It is not the current design or
 the active work queue:
@@ -502,20 +501,18 @@ field.
 
 ## 7. Expected-set granularity on rule refs
 
-**What.** A top-level `choice` of rule refs reports only the last-failing arm
-from the table, where the interpreter reports the union of every arm's first
-token. Pinned as a SUBSET relation (the table's set must be a non-empty subset
-of the interpreter's, and the position must not move) rather than adjudicated.
+**What.** A top-level `choice` of rule refs can still attempt a different arm
+count in the table and interpreter. After 0.48.1's deepest-arm diagnostic fix,
+the residual is limited to exact-offset ties such as a bare JSON keyword miss:
+the table selects one resolved arm while the interpreter tries all stale refs.
 
 **Why deferred.** Same root cause as §6 — it is arm COUNT, not failure
 reporting. It moves when §6 does.
 
-**Do not "fix" it by preserving the failing arm's `_fx`.** That was tried: it
-collapsed JSON `[1,2,]` from seven expected tokens to one. The rule all three
-engines actually apply is *a failing choice reports the arms it ATTEMPTED*
-(`choice.ts:105`, `:114-117`, `:145`; `codegen.ts:1985`). There is no positional
-furthest-failure merging on the `expected` path anywhere — that framing was
-wrong and was disproved with source evidence.
+**Superseded diagnostic policy.** 0.48.1 keeps expected sets from the deepest
+attempted arms and merges exact-depth ties. That makes structured failures such
+as `[1,2,]` agree without changing which arms each engine attempts. A pure
+offset-zero tie remains a subset relation until §6 is addressed.
 
 ---
 
