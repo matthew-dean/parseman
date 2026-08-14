@@ -123,6 +123,8 @@ describe('table assembler', () => {
     ).source
     expect(emittedChildSource).toContain('const flat=[]')
     expect(emittedChildSource).toContain('const captured=_capturedFlatChildren(flat)')
+    expect(emittedChildSource).toContain('else if(sCh!==undefined){')
+    expect(emittedChildSource).not.toContain('pushCstChild(ctx,nd,')
     // The direct collector uses split arrays, not `_cstBuf`; descendants must
     // therefore keep the generic collector test instead of taking the site's
     // buffer-only `_pushLeafBuf` shortcut.

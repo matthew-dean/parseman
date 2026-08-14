@@ -1819,9 +1819,20 @@ return nd
           && (flags === 2 || flags === 18 || flags === 34)) {
           const fields = flags === 18
           const collapseChildren = flags === 34
-          const raw = L.buf
-            ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
-            : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined||sRaw!==undefined?rawEntry(nd,input,pos,end):undefined)'
+          const publish = `if(sBuf!==undefined){
+if(sBuf.rawOnly!==true){
+if(sBuf.ch!==undefined)sBuf.ch.push(nd)
+else if(sBuf.single!==undefined){sBuf.ch=[sBuf.single,nd];sBuf.single=undefined}
+else sBuf.single=nd
+}
+const rawNd=rawEntry(nd,input,pos,end)
+if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
+else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
+else sBuf.rawSingle=rawNd
+}else if(sCh!==undefined){
+sCh.push(nd)
+if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
+}`
           return `${head}
 const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf,sFields=ctx._fields
@@ -1847,7 +1858,7 @@ const end=EC.e
 ${collapseChildren
     ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`
     : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`}
-${raw}
+${publish}
 EC.e=end
 return nd
 }`

@@ -37,6 +37,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   direct-source parser. Projecting the retained direct AST-child collectors into that
   same static assembly makes it a further 14.0% faster on CSS, 9.2% on benchmark Less,
   and 9.1% on generated Less in clean two-graph A/A-adjusted runs, for 3.5 KB packed.
+  Publishing those built nodes straight into their saved collector removes the residual
+  generic helper and improves another 4.4%, 6.3%, and 4.4%, respectively, for 666 packed
+  bytes.
 - Validate the final Jess-derived graphs against the CHARACTER oracle, reference table
   driver, closure assembler, and emitted assembly with full consumption and matching
   values, spans, expected sets, errors, and root trivia: 88 CSS inputs and 316 Less
