@@ -22,7 +22,7 @@ import {
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
-  OP_LEX_BODY,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { failAt } from '../combinators/probe.ts'
@@ -45,7 +45,7 @@ import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
   decodeClassSpec, expandCompact, resolveTable,
-  type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
+  type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { scalarTerminalNotChild } from './scalar-terminal.ts'
@@ -205,6 +205,7 @@ function makeDriver(
   disp: readonly ResolvedDispatch[],
   dsp: readonly ResolvedDispatchSpec[],
   lex: readonly ((input: string, pos: number) => number)[],
+  lexPrograms: ResolvedTable['lexPrograms'],
   trivia: readonly unknown[],
   triviaScan: readonly (FastTriviaScanner | null)[],
   triviaLabelled: readonly boolean[],
@@ -719,6 +720,15 @@ function makeDriver(
           ctx._fx = suffixExpected
           if (ctx._probe !== undefined) failAt(ctx, suffixExpected, end)
         }
+        const value = input.slice(pos, end)
+        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+        EC.e = end
+        return value
+      }
+
+      case OP_LEX_PROGRAM: {
+        const end = lexPrograms[code[ip + 1]!]!(input, pos, ctx)
+        if (end < 0) return FAIL
         const value = input.slice(pos, end)
         if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
         EC.e = end
@@ -1713,7 +1723,7 @@ export function execRules(
   const prog = expandCompact(source)
   const t = resolveTable(prog)
   const scan = opts.leafSwap === false ? t.triviaScan.map(() => null) : t.triviaScan
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.lex, t.trivia, scan, t.triviaLabelled, prog, newEndCell())
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.lex, t.lexPrograms, t.trivia, scan, t.triviaLabelled, prog, newEndCell())
   const names = Object.keys(prog.rules)
   const entries = names.map(n => prog.rules[n]!)
   let last: unknown

@@ -4,7 +4,7 @@ import {
   OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_LIVE, OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT,
   OP_PEEK, OP_REJECT, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX, OP_RX_TRACK, OP_SCAN,
   OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 
 /**
@@ -42,7 +42,7 @@ export function childSlots(code: ArrayLike<number>, ip: number, out: number[]): 
     // structure is a closure, so there is no successor row to reach.
     case OP_LIT: case OP_RX: case OP_LIT_TRACK: case OP_RX_TRACK: case OP_EMPTY:
     case OP_SCAN: case OP_LIT_CI: case OP_LIT_CI_TRACK:
-    case OP_GUARD: case OP_ADJ: case OP_LIVE: case OP_LEX_BODY:
+    case OP_GUARD: case OP_ADJ: case OP_LIVE: case OP_LEX_BODY: case OP_LEX_PROGRAM:
       return true
 
     // Single child at `ip + 1`. `OP_COV` is a wrapper on the same footing as the

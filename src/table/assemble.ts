@@ -87,7 +87,7 @@ import {
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
-  OP_LEX_BODY,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { failAt } from '../combinators/probe.ts'
@@ -1763,6 +1763,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
+      case OP_LEX_PROGRAM: {
+        const run = t.lexPrograms[code[ip + 1]!]!
+        return (input, pos, ctx) => {
+          const end = run(input, pos, ctx)
+          if (end < 0) return FAIL
+          const value = input.slice(pos, end)
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          EC.e = end
+          return value
+        }
+      }
+
       case OP_LEAF: {
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const child = link(code[ip + 2]!)
@@ -3290,7 +3302,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
       )
       emitReached = new Set(pre.reached)
     }
@@ -3371,7 +3383,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds,
+        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
       )
       emitReached = em.reached
     } catch (e) {

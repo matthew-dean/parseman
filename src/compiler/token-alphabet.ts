@@ -106,9 +106,34 @@ export type ExecutableTerminalLexBody = {
   readonly expected: readonly string[]
 }
 
+export type ExecutableOrdered4LexBody = {
+  readonly kind: 'ordered4-terminals'
+  readonly commonFirstSet: FirstSet
+  readonly commonMissExpected: readonly string[]
+  readonly expected: readonly string[]
+  readonly arms: readonly [
+    ExecutableTerminalLexBody,
+    ExecutableTerminalLexBody,
+    ExecutableTerminalLexBody,
+    ExecutableTerminalLexBody,
+  ]
+}
+
+export type ExecutableNot2LexBody = {
+  readonly kind: 'not2-ordered4-terminal'
+  readonly guard0Expected: readonly string[]
+  readonly guard1Expected: readonly string[]
+  readonly terminalExpected: readonly string[]
+  readonly guard0: ExecutableOrdered4LexBody['arms']
+  readonly guard1: ExecutableTerminalLexBody
+  readonly terminal: ExecutableTerminalLexBody
+}
+
 export type ExecutableLexBody =
   | ExecutableOptionalSuffixLexBody
   | ExecutableTerminalLexBody
+  | ExecutableOrdered4LexBody
+  | ExecutableNot2LexBody
 
 export type LexBodyCandidate =
   | { readonly strategy: 'character'; readonly estimatedOps: number }
@@ -246,11 +271,133 @@ export function directTerminalTokenBody(
   }
 }
 
+function directTerminalParser(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): Combinator<unknown> | undefined {
+  const seen = new Set<Combinator<unknown>>()
+  while (!seen.has(parser)) {
+    seen.add(parser)
+    const def = parser._def
+    if (def.tag === 'lazy') {
+      const target = resolvedLazyTarget(parser, resolve)
+      if (target === undefined) return undefined
+      parser = target
+      continue
+    }
+    if (def.tag === 'token') { parser = def.parser; continue }
+    // A grammar scope is not a recognition-only wrapper even when it clears
+    // trivia: it parses on a cloned context and owns line annotation plus
+    // failure-register publication. A childless composite body cannot erase
+    // that transaction. Keep the whole token on CHARACTER lowering instead.
+    if (def.tag === 'grammar') return undefined
+    return parser
+  }
+  return undefined
+}
+
+function directTerminalLexBody(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ExecutableTerminalLexBody | undefined {
+  const terminal = directTerminalParser(parser, resolve)
+  if (terminal === undefined) return undefined
+  const def = terminal._def
+  if (def.tag === 'regex') return {
+    kind: 'regex-terminal', source: def.source, flags: def.flags,
+    canMatchNewline: terminal._meta.canMatchNewline,
+    expected: directTerminalFailureExpected(def),
+  }
+  if (def.tag !== 'keywords') return undefined
+  const re = keywordsRegExp(def.words, def.boundary, def.caseInsensitive)
+  return {
+    kind: 'regex-terminal', source: re.source, flags: re.flags,
+    canMatchNewline: terminal._meta.canMatchNewline,
+    expected: directTerminalFailureExpected(def),
+  }
+}
+
+/** First composite selected body: the hot Less at-keyword choice. Keep this a
+ * fixed template, not a recursive lexical interpreter. Equal finite first sets
+ * are load-bearing: at a matching lead all four arms really run in source
+ * order, while an excluded lead contributes only the choice's static opener
+ * set and no probe event. */
+export function directOrdered4TokenBody(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ExecutableOrdered4LexBody | undefined {
+  const body = directTokenBodyParser(parser, resolve)
+  return body === undefined ? undefined : directOrdered4Body(body, resolve)
+}
+
+function directOrdered4Body(
+  body: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ExecutableOrdered4LexBody | undefined {
+  if (body === undefined) return undefined
+  const choice = body._def
+  if (choice.tag !== 'choice' || choice.parsers.length !== 4
+    || choice.strategy.tag !== 'firstMatch'
+    || choice.gates.some(gate => gate !== null)
+    || choice.autoNot.some(check => check !== null)) return undefined
+
+  const arms: ExecutableTerminalLexBody[] = []
+  let common: FirstSet | undefined
+  for (const arm of choice.parsers) {
+    const selected = directTerminalLexBody(arm, resolve)
+    if (selected === undefined) return undefined
+    if (selected.canMatchNewline) return undefined
+    const terminal = directTerminalParser(arm, resolve)!
+    const first = firstSetOf(terminal, new Set(), resolve)
+    if (first.kind !== 'ranges' || first.ranges.length === 0) return undefined
+    if (common === undefined) common = first
+    else if (JSON.stringify(common) !== JSON.stringify(first)) return undefined
+    arms.push(selected)
+  }
+  return {
+    kind: 'ordered4-terminals', commonFirstSet: common!,
+    commonMissExpected: deriveExpected(body),
+    expected: arms.flatMap(arm => arm.expected),
+    arms: arms as unknown as ExecutableOrdered4LexBody['arms'],
+  }
+}
+
+export function directNot2TokenBody(
+  parser: Combinator<unknown>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): ExecutableNot2LexBody | undefined {
+  const body = directTokenBodyParser(parser, resolve)
+  const sequence = body?._def
+  if (sequence?.tag !== 'sequence' || sequence.parsers.length !== 3) return undefined
+  const [guard0Parser, guard1Parser, terminalParser] = sequence.parsers
+  const guard0Def = guard0Parser?._def
+  const guard1Def = guard1Parser?._def
+  if (guard0Def?.tag !== 'not' || guard1Def?.tag !== 'not') return undefined
+  const ordered = directTokenBodyParser(guard0Def.parser, resolve)
+    ?? directTerminalParser(guard0Def.parser, resolve)
+  const guard0Body = ordered === undefined ? undefined : directOrdered4Body(ordered, resolve)
+  const guard1 = directTerminalLexBody(guard1Def.parser, resolve)
+  const terminal = terminalParser === undefined ? undefined : directTerminalLexBody(terminalParser, resolve)
+  if (guard0Body === undefined || guard1 === undefined || terminal === undefined
+    || guard1.canMatchNewline || terminal.canMatchNewline) return undefined
+  return {
+    kind: 'not2-ordered4-terminal',
+    guard0Expected: assertionFailureExpected(false, guard0Def.parser._tag),
+    guard1Expected: assertionFailureExpected(false, guard1Def.parser._tag),
+    terminalExpected: terminal.expected,
+    guard0: guard0Body.arms,
+    guard1, terminal,
+  }
+}
+
 export function directExecutableTokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableLexBody | undefined {
-  return directOptionalSuffixTokenBody(parser, resolve) ?? directTerminalTokenBody(parser, resolve)
+  return directOptionalSuffixTokenBody(parser, resolve)
+    ?? directTerminalTokenBody(parser, resolve)
+    ?? directOrdered4TokenBody(parser, resolve)
+    ?? directNot2TokenBody(parser, resolve)
 }
 
 /** One canonical recognizer spec, shared by every family with equal lexical IR. */

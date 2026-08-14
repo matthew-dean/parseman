@@ -6,12 +6,16 @@
 > historical evidence register.
 
 **Current status:** the broad derived scanner is **not wired into the canonical
-engine**. One deliberately narrow vertical slice is wired: a whole-program-complete
-`token(sequence(regex, optional(literal(one UTF-16 code unit))))`
-candidate may lower to childless `OP_LEX_BODY`. It exists to prove winner-only
-TableProgram serialization across every reader, not to claim that CSS or Less has
-been tokenized. Any other reachable capability gap keeps the entire program on the
-CHARACTER lowering, so the shipping Jess graphs still select zero lexical bodies.
+engine**. Two deliberately narrow vertical slices are wired. A whole-program-complete
+`token(sequence(regex, optional(literal(one UTF-16 code unit))))` candidate may lower
+to childless `OP_LEX_BODY`. Selected-only fixed composite programs may also lower an
+ordered four-terminal choice, or two negative terminal guards followed by a terminal,
+to childless `OP_LEX_PROGRAM`. These exist to prove winner-only TableProgram
+serialization, direct scalar closure/named bodies, and exact failure/probe effects
+across every reader. They are not a recursive lexical IR interpreter and do not walk
+child arrays at parse time. They also do not claim that CSS or Less has been tokenized.
+Any other reachable capability gap keeps the entire program on the CHARACTER lowering,
+so the shipping Jess graphs still select zero lexical bodies or programs.
 Newline-capable regexes use the same selected body; tracked variants publish the
 matched range into the canonical line index before the optional suffix's swallowed
 failure state, matching the CHARACTER transaction without a second recognizer.

@@ -300,6 +300,7 @@ function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOpt
     // exact failure the root-trivia work exists to prevent, one hop downstream.
     ...(prog.dsp.length === 0 ? [] : [`p:[${prog.dsp.map(emitDispatchSpec).join(',')}],`]),
     ...(prog.lex === undefined ? [] : [`lx:[${prog.lex.map(row => `[${row.join(',')}]`).join(',')}],`]),
+    ...(prog.lexPrograms === undefined ? [] : [`lp:[${prog.lexPrograms.map(row => `[${row.join(',')}]`).join(',')}],`]),
     ...(prog.labels === undefined ? [] : [`lb:[${prog.labels.map(jsString).join(',')}],`]),
     ...(prog.classified === 1 ? ['rc:1,'] : []),
     // Without this a recovery table's MODULE loads as a strict one: the extra

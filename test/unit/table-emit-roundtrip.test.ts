@@ -9,7 +9,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes } from '../../bench/table-grammars.ts'
-import { balanced, choice, literal, many, node, optional, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
+import { balanced, choice, keywords, literal, many, node, optional, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
 import type { TableProgram } from '../../src/table/program.ts'
 
 /**
@@ -77,6 +77,22 @@ describe('table lowering — the EMITTED module round-trips', () => {
     for (const input of ['word', 'call(', '9', '']) {
       expect(outcome(emitted.Root, input), input).toBe(outcome(reference.Root, input))
       expect(outcome(emitted.Root, input), input).toBe(outcome(source, input))
+    }
+  })
+
+  it('round-trips a selected composite lexical program through the emitted reader', async () => {
+    const source = token(choice(
+      keywords(['@media']), keywords(['@supports']), keywords(['@layer']),
+      regex(/@(?:-[a-z]+-)?keyframes/),
+    ))
+    const prog = encodeTable({ Root: source })
+    expect(emitTableOnly(prog)).toContain('lp:[')
+    const emitted = await loadEmitted(prog, 'lex-program', '', ASSEMBLE, 'tableRules')
+    const reference = execRules(prog)
+    const character = execRules(encodeTable({ Root: source, Gap: token(balanced('(', ')')) }))
+    for (const input of ['@media', '@supports', '@foo', '!']) {
+      expect(outcome(emitted.Root, input), input).toBe(outcome(reference.Root, input))
+      expect(outcome(emitted.Root, input), input).toBe(outcome(character.Root, input))
     }
   })
 

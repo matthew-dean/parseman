@@ -465,6 +465,8 @@ export const OP_SCOPE_PLAIN = 41
 /** `LEX_BODY body fx suffixFx lineFlags` — selected childless lexical body.
  * lineFlags bit 0 publishes the regex range; bit 1 publishes a matched suffix. */
 export const OP_LEX_BODY = 42
+/** `LEX_PROGRAM p` — selected fixed composite lexical body, childless. */
+export const OP_LEX_PROGRAM = 43
 /**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
@@ -498,4 +500,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_LIVE]: 'LIVE', [OP_ATTEMPT]: 'ATTEMPT', [OP_LABEL]: 'LABEL', [OP_COV]: 'COV',
   [OP_SCOPE_PLAIN]: 'SCOPE_PLAIN',
   [OP_LEX_BODY]: 'LEX_BODY',
+  [OP_LEX_PROGRAM]: 'LEX_PROGRAM',
 }

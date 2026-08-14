@@ -50,7 +50,7 @@ import {
   OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
-  OP_LEX_BODY,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { validateDispatchSpec, type ResolvedClass, type ResolvedTable, type TableProgram } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
@@ -111,6 +111,8 @@ export const EMITTED_PARAMS = [
   'commitTriviaScan', 'scanTriviaCompact', 'LEX',
   // Appended for old precompiled-factory ABI: old factories ignore it.
   'adjacencyHolds',
+  // Appended for selected composite lexical programs; old factories ignore it.
+  'LEXPROG',
 ] as const
 
 /**
@@ -1177,6 +1179,18 @@ ${(lineFlags & 1) !== 0 ? '_trackLines(ctx,input,sm?e-1:e)' : ''}
 ${hasSuffix ? 'ctx._fc=false' : ''}
 ${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
 ${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
+const v=input.slice(pos,e)
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+EC.e=e
+return v
+}`
+      }
+
+      case OP_LEX_PROGRAM: {
+        const run = hoist('lexProgram', `LEXPROG[${code[ip + 1]!}]`)
+        return `${head}
+const e=${run}(input,pos,ctx)
+if(e<0)return FAIL
 const v=input.slice(pos,e)
 if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
 EC.e=e

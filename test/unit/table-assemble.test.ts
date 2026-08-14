@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { balanced, choice, keywords, literal, many, node, notAdjacent, optional, parser, regex, sequence, token, transform, withCtx } from '../../src/index.ts'
+import { balanced, choice, keywords, literal, many, node, not, notAdjacent, optional, parser, regex, sequence, token, transform, withCtx } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules, AssemblyCache, cfgKey } from '../../src/table/assemble.ts'
@@ -13,7 +13,7 @@ import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
-import { OP_LEX_BODY, OP_LIT, OP_OPT, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
+import { OP_LEX_BODY, OP_LEX_PROGRAM, OP_LIT, OP_NOT, OP_OPT, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
 import { FAIL } from '../../src/table/cell.ts'
 
 /**
@@ -252,6 +252,143 @@ describe('table assembler', () => {
           expected: expected.expected, unconsumedFrom: expected.unconsumedFrom,
         })
       }
+    }
+  })
+
+  it('executes fixed composite lexical programs with exact choice and assertion diagnostics', () => {
+    const ordered = token(choice(
+      keywords(['@media']), keywords(['@supports']), keywords(['@layer']),
+      regex(/@(?:-[a-z]+-)?keyframes/),
+    ))
+    const guarded = token(sequence(
+      not(choice(
+        keywords(['@media']), keywords(['@supports']), keywords(['@layer']),
+        regex(/@(?:-[a-z]+-)?keyframes/),
+      )),
+      not(keywords(['@import'])),
+      regex(/@[a-z-]+/),
+    ))
+    const prog = encodeTable({ Ordered: ordered, Guarded: guarded })
+    expect(prog.code[prog.rules.Ordered!]).toBe(OP_LEX_PROGRAM)
+    expect(prog.code[prog.rules.Guarded!]).toBe(OP_LEX_PROGRAM)
+    expect(prog.lexPrograms).toHaveLength(2)
+    expect([...reachableIps(prog)].map(ip => prog.code[ip])).not.toEqual(
+      expect.arrayContaining([OP_TOKEN, OP_NOT, OP_RX]),
+    )
+
+    const readers = [
+      ['reference', execRules(prog)],
+      ['closure', tableRules({ ...prog, asm: [] })],
+      ['emitted', tableRules(prog)],
+    ] as const
+    const characterRules = execRules(encodeTable({
+      Ordered: ordered, Guarded: guarded, Gap: token(balanced('(', ')')),
+    }))
+    const cases = [
+      ['Ordered', ['@media', '@supports', '@foo', '!']],
+      ['Guarded', ['@media', '@import', '@foo', '!']],
+    ] as const
+    for (const [ruleName, inputs] of cases) {
+      for (const input of inputs) {
+        const expected = run(characterRules[ruleName]!, input)
+        for (const [readerName, rules] of readers) {
+          expect(digestValue(run(rules[ruleName]!, input)), `${readerName} ${ruleName} ${input}`)
+            .toBe(digestValue(expected))
+        }
+      }
+    }
+
+    const probeTable = (rule: ReturnType<typeof tableRules>[string], input: string) => {
+      const ctx = createParseContext() as ParseContext & {
+        _probe: { offset: number; best: import('../../src/types.ts').ParseFail | null }
+      }
+      ctx._probe = { offset: input.length, best: null }
+      rule!(input, 0, ctx)
+      return ctx._probe.best
+    }
+    const probeSource = (rule: Combinator<unknown>, input: string) => {
+      const ctx = createParseContext() as ParseContext & {
+        _probe: { offset: number; best: import('../../src/types.ts').ParseFail | null }
+      }
+      ctx._probe = { offset: input.length, best: null }
+      rule.parse(input, 0, ctx)
+      return ctx._probe.best
+    }
+    for (const [name, rules] of readers) {
+      expect(probeTable(rules.Ordered!, '@foo'), name).toEqual(probeTable(characterRules.Ordered!, '@foo'))
+      expect(probeTable(rules.Ordered!, '!'), name).toEqual(probeTable(characterRules.Ordered!, '!'))
+      expect(probeTable(rules.Guarded!, '@media'), name).toBeNull()
+      expect(probeTable(rules.Guarded!, '@import'), name).toBeNull()
+      expect(probeTable(rules.Guarded!, '!'), name).toEqual(probeSource(guarded, '!'))
+      const firstMiss = run(rules.Ordered!, '!')
+      firstMiss.expected!.push('MUTATED')
+      expect(run(rules.Ordered!, '!').expected, name).not.toContain('MUTATED')
+    }
+
+    const guardedRunner = resolveTable(prog).lexPrograms[1]!
+    for (const input of ['@media', '@import', '!', '@foo']) {
+      const ctx = createParseContext()
+      ctx._fc = true
+      guardedRunner(input, 0, ctx)
+      expect(ctx._fc, `commit clear ${input}`).toBe(false)
+    }
+
+    const refused = encodeTable({ Ordered: ordered, Gap: token(balanced('(', ')')) })
+    expect(refused.lexPrograms).toBeUndefined()
+    expect(refused.code[refused.rules.Ordered!]).toBe(OP_TOKEN)
+
+    const scoped = token(choice(
+      parser({ trivia: null }, regex(/@a/)), regex(/@b/), regex(/@c/), regex(/@d/),
+    ))
+    const scopedProgram = encodeTable({ Root: scoped })
+    expect(scopedProgram.lexPrograms).toBeUndefined()
+    expect(scopedProgram.code[scopedProgram.rules.Root!]).toBe(OP_TOKEN)
+    for (const input of ['@a', '@z']) {
+      expect(digestValue(run(tableRules(scopedProgram).Root!, input)), input)
+        .toBe(digestValue(run(scoped, input)))
+      const context = () => {
+        const ctx = createParseContext()
+        ctx.trackLines = true
+        ctx._lineStarts = [0]
+        ctx._lineScannedTo = 0
+        ctx._fe = 77
+        ctx._fx = ['sentinel']
+        ctx._fc = true
+        return ctx
+      }
+      const sourceCtx = context()
+      const sourceResult = scoped.parse(input, 0, sourceCtx)
+      expect(sourceResult.ok, input).toBe(input === '@a')
+      expect({ fe: sourceCtx._fe, fx: sourceCtx._fx, fc: sourceCtx._fc, lines: sourceCtx._lineStarts }, input)
+        .toEqual({ fe: 77, fx: ['sentinel'], fc: true, lines: [0] })
+    }
+
+    const badDigest = prog.lexPrograms![0]!.slice() as number[]
+    badDigest[1] = (badDigest[1] ?? 0) + 1
+    const detached = Object.fromEntries(Object.entries(prog)) as typeof prog
+    expect(() => resolveTable({ ...detached, lexPrograms: [badDigest as never] }))
+      .toThrow('semantic digest is inconsistent')
+    expect(() => resolveTable({ ...detached, lexPrograms: [[0, 0] as never] }))
+      .toThrow('invalid fixed body width')
+    expect(() => resolveTable({ ...detached, lexPrograms: [[2, 0] as never] }))
+      .toThrow('invalid fixed body width')
+  })
+
+  it('selects composite bodies through final named token bindings', () => {
+    // Mirrors the Jess topology: the outer token owns a choice whose named arms
+    // are themselves token boundaries. Those inner leaves are deliberately
+    // unobservable because the outer token cleared capture before recognition.
+    const grammar = rules((g: Record<string, Combinator<unknown>>) => ({
+      Root: token(choice(keywords(['@media']), g.Supports!, g.Layer!, g.Keyframes!)),
+      Supports: token(keywords(['@supports'])),
+      Layer: token(keywords(['@layer'])),
+      Keyframes: token(regex(/@(?:-[a-z]+-)?keyframes/)),
+    })) as Record<string, Combinator<unknown>>
+    const prog = encodeTable(grammar)
+    expect(prog.code[prog.rules.Root!]).toBe(OP_LEX_PROGRAM)
+    for (const input of ['@media', '@supports', '@layer', '@keyframes', '@foo']) {
+      expect(digestValue(run(tableRules(prog).Root!, input)), input)
+        .toBe(digestValue(run(grammar.Root!, input)))
     }
   })
 

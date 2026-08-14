@@ -14,14 +14,15 @@ import {
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_COV,
-  OP_LEX_BODY,
+  OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
 import { resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
 import { missingInferredType } from '../combinators/node.ts'
 import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
-import type { DispatchSpec, LexBodySpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
+import type { DispatchSpec, LexBodySpec, LexProgramSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
+import { lexProgramDigest } from './lex-program.ts'
 import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
@@ -132,6 +133,8 @@ class Encoder {
   dsp: DispatchSpec[] = []
   lex: LexBodySpec[] = []
   private lexIndex = new Map<string, number>()
+  lexPrograms: LexProgramSpec[] = []
+  private lexProgramIndex = new Map<string, number>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -204,16 +207,59 @@ class Encoder {
   }
 
   private lexicalBodySlot(p: Combinator<unknown>): {
+    kind: 'body'
     body: number
     expectedFx: number
     suffixFx: number
     lineFlags: number
-  } | undefined {
+  } | { kind: 'program'; program: number } | undefined {
     if (!this.selectLexicalBodies) return undefined
     const body = directExecutableTokenBody(p, name => this.winners?.[name])
     if (body === undefined) return undefined
     const tokenDef = p._def
     if (tokenDef.tag !== 'token') throw new Error('parseman: selected lexical body lost token boundary')
+    const matcher = (arm: Extract<typeof body, { kind: 'regex-terminal' }>): number => {
+      const flags = arm.flags.includes('y') ? arm.flags : `${arm.flags.replace(/g/g, '')}y`
+      const regex = this.constant(new RegExp(arm.source, flags))
+      const key = `${regex}:-1`
+      const prior = this.lexIndex.get(key)
+      if (prior !== undefined) return prior
+      const id = this.lex.length
+      this.lexIndex.set(key, id)
+      this.lex.push([regex, -1])
+      return id
+    }
+    if (body.kind === 'not2-ordered4-terminal') {
+      const words = [
+        ...body.guard0.map(matcher), this.expected(body.guard0Expected),
+        matcher(body.guard1), this.expected(body.guard1Expected),
+        matcher(body.terminal), this.expected(body.terminalExpected),
+      ]
+      const spec = [1, lexProgramDigest(words), ...words] as unknown as LexProgramSpec
+      const key = spec.join(',')
+      const prior = this.lexProgramIndex.get(key)
+      if (prior !== undefined) return { kind: 'program', program: prior }
+      const id = this.lexPrograms.length
+      this.lexProgramIndex.set(key, id)
+      this.lexPrograms.push(spec)
+      return { kind: 'program', program: id }
+    }
+    if (body.kind === 'ordered4-terminals') {
+      const commonClass = this.charClass(body.commonFirstSet)
+      if (commonClass < 0) return undefined
+      const words: number[] = [commonClass, this.expected(body.commonMissExpected)]
+      for (const arm of body.arms) {
+        words.push(matcher(arm), this.expected(arm.expected))
+      }
+      const spec = [0, lexProgramDigest(words), ...words] as unknown as LexProgramSpec
+      const key = spec.join(',')
+      const prior = this.lexProgramIndex.get(key)
+      if (prior !== undefined) return { kind: 'program', program: prior }
+      const id = this.lexPrograms.length
+      this.lexProgramIndex.set(key, id)
+      this.lexPrograms.push(spec)
+      return { kind: 'program', program: id }
+    }
     const expectedFx = this.expected(body.expected)
     const flags = body.flags.includes('y') ? body.flags : `${body.flags.replace(/g/g, '')}y`
     const regex = this.constant(new RegExp(body.source, flags))
@@ -227,11 +273,11 @@ class Encoder {
       ? (body.kind === 'regex-terminal' ? (body.canMatchNewline ? 1 : 0)
         : (body.baseCanMatchNewline ? 1 : 0) | (body.suffixCanMatchNewline ? 2 : 0) | 4)
       : body.kind === 'regex-terminal' ? 0 : 4
-    if (prior !== undefined) return { body: prior, expectedFx, suffixFx, lineFlags }
+    if (prior !== undefined) return { kind: 'body', body: prior, expectedFx, suffixFx, lineFlags }
     const id = this.lex.length
     this.lexIndex.set(key, id)
     this.lex.push([regex, suffix])
-    return { body: id, expectedFx, suffixFx, lineFlags }
+    return { kind: 'body', body: id, expectedFx, suffixFx, lineFlags }
   }
 
   private triviaSpecOf(t: Combinator<unknown>): TriviaSpec {
@@ -1129,6 +1175,7 @@ class Encoder {
       case 'token': {
         const selected = this.lexicalBodySlot(p)
         if (selected !== undefined) {
+          if (selected.kind === 'program') return this.emit(OP_LEX_PROGRAM, selected.program)
           return this.emit(
             OP_LEX_BODY, selected.body, selected.expectedFx,
             selected.suffixFx, selected.lineFlags,
@@ -1502,6 +1549,7 @@ class Encoder {
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
       ...(this.lex.length === 0 ? {} : { lex: this.lex }),
+      ...(this.lexPrograms.length === 0 ? {} : { lexPrograms: this.lexPrograms }),
       ...(this.labels === undefined ? {} : { labels: this.labels }),
       ...(this.classified ? { classified: 1 as const } : {}),
       ...(this.scanSkipSets.length === 0
