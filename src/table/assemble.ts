@@ -203,6 +203,10 @@ const NO_COVERAGE = (_id: string): void => {}
  * `{ value, end }` pair would be an allocation per row.
  */
 type Piece = (input: string, pos: number, ctx: ParseContext) => unknown
+type NodeBuilder = (
+  children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
+  rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
+) => unknown
 type ChoiceExpectedPrefix = (
   target: number, prev: number, acc: string[] | undefined,
 ) => string[] | undefined
@@ -484,6 +488,134 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function pushLeaf(ctx: ParseContext, value: string, s: number, e: number): void {
     const lf: Leaf = { _tag: 'leaf', value, span: { start: s, end: e } }
     pushCstLeaf(ctx, lf)
+  }
+
+  /**
+   * The three dominant AST node shapes, selected once while linking.
+   *
+   * The generic node body is necessarily broad: CST hosts, tracked spans,
+   * fields, trivia/state reads, structural hosts, projections, collapse and
+   * unwrap all share it. That made its one FunctionLiteral 1,100+ V8 bytecodes
+   * even for the ordinary AST builder that needs none of those branches. Jess's
+   * exact AST workloads execute the three shapes below 42k/66k/205k times per
+   * CSS/Less/generated parse. Keep their bodies scalar and keep every other
+   * shape on the generic oracle below.
+   */
+  function plainBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const buf: CstCaptureBuf = {}
+      ctx._cstBuf = buf
+      ctx._cstChildren = undefined
+      ctx._cstLeaves = undefined
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+      const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const span = { start: pos, end }
+      const node = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  function collapseBuildNode(child: Piece, build: NodeBuilder): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const buf: CstCaptureBuf = {}
+      ctx._cstBuf = buf
+      ctx._cstChildren = undefined
+      ctx._cstLeaves = undefined
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+      const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const span = { start: pos, end }
+      const node = kids.length === 1
+        ? kids[0]
+        : build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+      }
+      EC.e = end
+      return node
+    }
+  }
+
+  function plainProjectNode(child: Piece, projection: number, type: string): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      const buf: CstCaptureBuf = {}
+      ctx._cstBuf = buf
+      ctx._cstChildren = undefined
+      ctx._cstLeaves = undefined
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = undefined
+      const value = child(input, pos, ctx)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = projectChild(kids, projection, type)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+      }
+      EC.e = end
+      return node
+    }
   }
 
   /** Mirrors `exec.ts`'s `rollbackNeeded` — a runtime question about live sinks. */
@@ -3091,11 +3223,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // 145,512 executions per parse of `benchmark.less`. `cstOutputHost(ctx.build)`
         // is fixed by `run()` before the entry is called, so it selects the piece.
         const build = buildIdx >= 0
-          ? fns[buildIdx] as (
-            children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
-            rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
-          ) => unknown
+          ? fns[buildIdx] as NodeBuilder
           : undefined
+
+        // The common AST-only bodies are separate FunctionLiterals, not a mode
+        // branch in the generic node body. Their eligibility is entirely table
+        // data plus this assembly's fixed option set; direct/custom contexts and
+        // every richer node shape retain the generic implementation below.
+        if (!hostCst && !tracked) {
+          if (build !== undefined && proj < 0 && flags === 0) {
+            return plainBuildNode(child, build)
+          }
+          if (build !== undefined && proj < 0 && flags === 32) {
+            return collapseBuildNode(child, build)
+          }
+          if (build === undefined && proj >= 0 && flags === 0) {
+            return plainProjectNode(child, proj, type)
+          }
+        }
 
         // A STRUCTURAL node — no builder, no projection — is the only shape that
         // takes a per-node-type trivia-kind mask off the host (`node.ts:260`).

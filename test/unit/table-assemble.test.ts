@@ -13,7 +13,7 @@ import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
-import { OP_LEX_BODY, OP_LEX_PROGRAM, OP_LIT, OP_NOT, OP_OPT, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
+import { OP_LEX_BODY, OP_LEX_PROGRAM, OP_LIT, OP_NODE, OP_NOT, OP_OPT, OP_RX, OP_TOKEN } from '../../src/table/ops.ts'
 import { FAIL } from '../../src/table/cell.ts'
 
 /**
@@ -39,6 +39,49 @@ const g = rules((g: any) => ({
 })) as Record<string, import('../../src/types.ts').Combinator<unknown>>
 
 describe('table assembler', () => {
+  it('links the common plain, collapse, and projected AST node shapes to exact scalar bodies', () => {
+    const roots = {
+      Plain: node('Pair', sequence(literal('a'), literal('b')),
+        children => ({ kind: 'pair', children })),
+      Collapsed: node('Collapsed', sequence(literal('a')),
+        children => ({ kind: 'should-not-build', children }), { collapse: true }),
+      Projected: node('Paren', sequence(literal('('), literal('x'), literal(')')), { project: 1 }),
+    }
+
+    for (const [name, root] of Object.entries(roots)) {
+      const prog = encodeTable({ Root: root })
+      const closure = tableRules({ ...prog, asm: [] }).Root!
+      const reference = execRules(prog).Root!
+      const input = name === 'Plain' ? 'ab' : name === 'Collapsed' ? 'a' : '(x)'
+      expect(digestValue(run(closure, input)), name).toBe(digestValue(run(reference, input)))
+      expect(digestValue(run(closure, `${input}?`)), `${name} trailing`).toBe(
+        digestValue(run(reference, `${input}?`)),
+      )
+
+      const nodeIp = [...reachableIps(prog)].find(ip => prog.code[ip] === OP_NODE)
+      expect(nodeIp, `${name} node row`).toBeDefined()
+      const direct = { ...prog, rules: { Root: nodeIp! }, asm: [] }
+      const linked = assemble(resolveTable(direct), direct, {
+        hostCst: false, hostReadsChildren: true, trackLines: false,
+        tolerant: false, coverage: false, probe: false,
+      })
+      const source = Function.prototype.toString.call(linked.pieces.Root)
+      if (name === 'Plain') expect(source).toContain('build(kids, undefined, span, rawKids')
+      if (name === 'Collapsed') expect(source).toContain('kids.length === 1')
+      if (name === 'Projected') expect(source).toContain('kids, projection, type')
+    }
+
+    const plain = run(tableRules({ ...encodeTable({ Root: roots.Plain }), asm: [] }).Root!, 'ab').value as {
+      kind: string; children: Array<{ value: string }>
+    }
+    expect({ kind: plain.kind, children: plain.children.map(child => child.value) })
+      .toEqual({ kind: 'pair', children: ['a', 'b'] })
+    expect(run(tableRules({ ...encodeTable({ Root: roots.Collapsed }), asm: [] }).Root!, 'a').value)
+      .toMatchObject({ value: 'a' })
+    expect(run(tableRules({ ...encodeTable({ Root: roots.Projected }), asm: [] }).Root!, '(x)').value)
+      .toBe('x')
+  })
+
   it('binds arbitrary, adjacency, and recovery sequence terms without fixed child arrays', () => {
     const roots = [
       ['strict', sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e')), {}, 'abcde'],
