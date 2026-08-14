@@ -1800,6 +1800,26 @@ function decisionObligations(recognition: LexicalCapabilityStatus): LexicalCapab
   return tokenObligations(recognition)
 }
 
+/** A final decision does not own a token boundary or token materialization.
+ * Its executable projection is the existing canonical TableProgram row plus
+ * the already-validated fixed child/effect projections. */
+function executableDecisionObligations(
+  recognition: LexicalCapabilityStatus,
+  effects: LexicalCapabilityPhase,
+): LexicalCapabilityObligations {
+  const recognitionPhase = recognition.kind === 'complete'
+    ? COMPLETE_PHASE
+    : phaseGap(recognition, 'decision recognition authority is incomplete')
+  return {
+    recognition: recognitionPhase,
+    diagnostics: effects,
+    boundaryPlan: COMPLETE_PHASE,
+    materializationPlan: COMPLETE_PHASE,
+    supportedVariants: effects,
+    bindingAndReachability: effects,
+  }
+}
+
 type DecisionLead = {
   readonly parser: Combinator<unknown>
   readonly ir: LexicalIr
@@ -3623,7 +3643,7 @@ function lexicalCapabilityInventory(
     })
   const terminalProjectionBySiteId = new Map(terminalProjections.map(projection =>
     [projection.siteId, projection]))
-  const capabilities = preliminaryCapabilities.map((site): LexicalCapabilitySite => {
+  const terminalCapabilities = preliminaryCapabilities.map((site): LexicalCapabilitySite => {
     if (site.atom !== 'terminal') return site
     const projection = terminalProjectionBySiteId.get(site.id)
     if (projection === undefined) throw new Error('parseman: terminal capability lost its projection')
@@ -3636,6 +3656,18 @@ function lexicalCapabilityInventory(
   const decisionEffects = decisionEffectInventory(
     inventory.candidates, decisionInventory.decisions, bindingEdges, bindingProjections, resolve,
   )
+  const decisionEffectBySite = new Map(decisionEffects.decisionEffects.map(effect =>
+    [effect.decisionSiteId, effect]))
+  const capabilities = terminalCapabilities.map((site): LexicalCapabilitySite => {
+    if (site.atom !== 'choice' && site.atom !== 'dispatch') return site
+    const effect = decisionEffectBySite.get(site.id)
+    if (effect === undefined) throw new Error('parseman: decision capability lost its effect projection')
+    const obligations = executableDecisionObligations(
+      site.obligations.recognition.representation,
+      effect.phase,
+    )
+    return { ...site, obligations, status: derivedCapabilityStatus(obligations) }
+  })
   return {
     capabilities, languages, bindingEdges, bindingProjections, terminalProjections,
     decisionFamilies: decisionInventory.families,

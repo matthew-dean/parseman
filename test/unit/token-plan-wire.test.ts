@@ -27,12 +27,14 @@ describe('compact lexical token plan wire', () => {
       when(endsWith('('), literal('two')),
       otherwise(literal('other')),
     )
+    const unsupported = token(sequence(regex(/[0-9]+/), literal(')')))
 
-    const prog = encodeTable({ Root: sequence(first, duplicate) })
-    const alphabet = collectLexicalAlphabet([sequence(first, duplicate)])
+    const root = sequence(first, duplicate, unsupported)
+    const prog = encodeTable({ Root: root })
+    const alphabet = collectLexicalAlphabet([root])
     expect(alphabet.capabilityComplete).toBe(false)
     expect(alphabet.capabilities.filter(site => site.atom !== 'terminal').map(site => site.atom))
-      .toEqual(['dispatch', 'token', 'dispatch'])
+      .toEqual(['dispatch', 'token', 'dispatch', 'token'])
     expect('tokenPlan' in prog).toBe(false)
   })
 

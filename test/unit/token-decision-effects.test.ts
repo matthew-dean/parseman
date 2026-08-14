@@ -141,6 +141,9 @@ describe('token Stage C2 compiler-only decision effects', () => {
     expect(effectFor(inventory).phase.executableLowering).toEqual({
       kind: 'gap', reason: expect.stringContaining('classified transform'),
     })
+    expect(inventory.capabilities[0]!.status).toEqual({
+      kind: 'gap', reason: expect.stringContaining('classified transform'),
+    })
   })
 
   it('projects longest-literal order through all three readers before pricing', () => {
@@ -196,7 +199,7 @@ describe('token Stage C2 compiler-only decision effects', () => {
       effect.phase.representation.kind === 'complete')).toBe(true)
     expect(inventory.decisionEffectPlan.decisionEffects.every(effect =>
       effect.phase.executableLowering.kind === 'complete')).toBe(true)
-    expect(inventory.capabilityComplete).toBe(false)
+    expect(inventory.capabilityComplete).toBe(true)
     const program = encodeTable({ Entry: grammar }) as unknown as Record<string, unknown>
     expect(Object.keys(program).filter(key => /decision|choiceClass|classify/i.test(key))).toEqual([])
   })
