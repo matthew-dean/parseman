@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.48.0 — unreleased
+## 0.48.0 — 2026-08-13
 
 - **BREAKING:** ship one ESM implementation instead of duplicate ESM and CommonJS
   bundles. Both `import` and synchronous `require()` remain supported on the declared
@@ -11,6 +11,34 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   floor moves from 22.12 to 22.13, the first warning-free 22.x release for synchronous
   `require(esm)`. This also repairs `require('parseman/diagnostics')`, whose former
   CommonJS bundle could not load the ESM-only `linecraft` dependency.
+- Keep `TableProgram` as the single semantic parser authority while selecting direct,
+  childless lexical bodies for closed token graphs. Literal, regex, optional suffix,
+  composite choice/assertion, scanner, binding, decision-effect, line-tracking,
+  diagnostics, probe, and emitted/precompiled projections are validated together;
+  incomplete graphs fail closed to the ordinary table rows. Generated artifacts are
+  version-locked: rebuild generated, macro, composed, folded, and precompiled grammars
+  with Parseman 0.48.0.
+- Compact classified-trivia scans with no retained rows to a scalar result, avoiding
+  result objects and no-op commit closures while preserving the legacy emitted-factory
+  ABI. Across one CSS, benchmark Less, and generated Less parse this removes about
+  288,000 result objects and 83,000 no-op closures.
+- Select bounded direct closure bodies for common fixed sequences, scalar terminals,
+  lexical token programs, and AST nodes at assembly time. The retained AST-node tranche
+  is 2.45% faster on CSS, 1.29% faster on benchmark Less, and 5.71% faster on generated
+  Less in five-pass A/A-adjusted runs, without a second parser, parse-time IR loop, or
+  per-site generated factory.
+- Validate the final Jess-derived graphs against the CHARACTER oracle, reference table
+  driver, closure assembler, and emitted assembly with full consumption and matching
+  values, spans, expected sets, errors, and root trivia: 88 CSS inputs and 316 Less
+  inputs pass.
+- Restore small rows to every external comparison chart. In the three-round release
+  sweep Parseman is the fastest competitor-ranked JavaScript parser in every JSON, CSV,
+  GraphQL, and CST group. The tightest row is JSON-small at 0.894 microseconds versus
+  Chevrotain at 0.956 microseconds (1.07x, above the 1.05x floor) with 1.5% worst-case
+  live A/A control spread.
+- Removing duplicate CommonJS output and retaining the selected-body work leaves the
+  package at about 2.2 MB packed and 9.2 MB unpacked (389 files), down from the prior
+  dual-format 0.48 candidate's roughly 3.4 MB packed package.
 
 ## 0.47.1 — 2026-08-12
 
