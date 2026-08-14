@@ -7,6 +7,9 @@ projections. Choice/dispatch effects now also carry final winner/route authority
 exact child-binding projections, three reader templates, and a common semantic
 digest. The remaining composite token boundary, diagnostic, materialization,
 and supported-variant bodies still keep whole-program TOKEN selection closed.
+The first composite row also follows a sequence base through its final named
+regex winner: recognition, newline metadata, and failure expectations all come
+from that resolved winner, never from the stale lazy construction thunk.
 
 This addendum refines [parseman-0.48.md](./parseman-0.48.md) §§2–3. It does not
 relax whole-grammar capability closure, replacement-only selection, or direct

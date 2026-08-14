@@ -255,6 +255,37 @@ describe('table assembler', () => {
     }
   })
 
+  it('selects the same lexical body through a final named regex binding', () => {
+    const base = rules((g: any) => ({
+      Root: token(sequence(g.Word, optional(literal('(')))),
+      Word: regex(/old+/),
+    })) as Record<string, Combinator<unknown>>
+    const winner = regex(/[b\n]+/i)
+    const grammar = { ...base, ...rules(() => ({ Word: winner })) }
+    const source = parser({ trackLines: true }, token(sequence(
+      winner, optional(literal('(')),
+    )))
+    const prog = encodeTable(grammar, { trackLines: true })
+    expect(prog.code[prog.rules.Root!]).toBe(OP_LEX_BODY)
+    const selected = prog.lex![prog.code[prog.rules.Root! + 1]!]!
+    expect(prog.k[selected[0]]).toEqual(/[b\n]+/iy)
+    expect(prog.fx[prog.code[prog.rules.Root! + 2]!]).toEqual([String(/[b\n]+/)])
+
+    const entries = [
+      ['source', source],
+      ['reference', execRules(prog).Root!],
+      ['closure', tableRules({ ...prog, asm: [] }).Root!],
+      ['emitted', tableRules(prog).Root!],
+    ] as const
+    for (const input of ['bbb', 'BBB(', 'b\nb(', 'old(', '']) {
+      const expected = digestValue(run(source, input))
+      for (const [name, entry] of entries) {
+        expect(digestValue(run(entry, input)), `${name} ${JSON.stringify(input)}`)
+          .toBe(expected)
+      }
+    }
+  })
+
   it('replaces direct regex and keyword tokens without retaining a terminal child', () => {
     const sources = [
       token(regex(/[a-z\n]+/i)),

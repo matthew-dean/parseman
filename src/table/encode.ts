@@ -214,11 +214,7 @@ class Encoder {
     if (body === undefined) return undefined
     const tokenDef = p._def
     if (tokenDef.tag !== 'token') throw new Error('parseman: selected lexical body lost token boundary')
-    const expectedFx = this.expected(
-      body.kind === 'regex-terminal'
-        ? body.expected
-        : deriveExpected(tokenDef.parser),
-    )
+    const expectedFx = this.expected(body.expected)
     const flags = body.flags.includes('y') ? body.flags : `${body.flags.replace(/g/g, '')}y`
     const regex = this.constant(new RegExp(body.source, flags))
     const suffix = body.kind === 'regex-terminal' ? -1 : body.suffix.charCodeAt(0)

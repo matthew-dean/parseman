@@ -91,6 +91,9 @@ export type ExecutableOptionalSuffixLexBody = OptionalSuffixLexBody & {
   /** Match the two authored terminal line-publication points exactly. */
   readonly baseCanMatchNewline: boolean
   readonly suffixCanMatchNewline: boolean
+  /** Failure authority belongs to the resolved final regex, not the lazy
+   * construction thunk that originally named it. */
+  readonly expected: readonly string[]
 }
 
 /** A direct authored terminal under token(). The boundary shell still owns
@@ -185,7 +188,13 @@ export function directOptionalSuffixTokenBody(
   if (inner === undefined) return undefined
   const sequence = inner._def
   if (sequence.tag !== 'sequence' || sequence.parsers.length !== 2) return undefined
-  const base = sequence.parsers[0]?._def
+  let baseParser = sequence.parsers[0]
+  const seenBase = new Set<Combinator<unknown>>()
+  while (baseParser !== undefined && baseParser._def.tag === 'lazy' && !seenBase.has(baseParser)) {
+    seenBase.add(baseParser)
+    baseParser = resolvedLazyTarget(baseParser, resolve)
+  }
+  const base = baseParser?._def
   const optional = sequence.parsers[1]?._def
   if (base?.tag !== 'regex' || optional?.tag !== 'optional') return undefined
   const suffix = optional.parser._def
@@ -204,8 +213,9 @@ export function directOptionalSuffixTokenBody(
   })
   return selected.strategy === 'token' ? {
     ...selected.body,
-    baseCanMatchNewline: sequence.parsers[0]!._meta.canMatchNewline,
+    baseCanMatchNewline: baseParser!._meta.canMatchNewline,
     suffixCanMatchNewline: optional.parser._meta.canMatchNewline,
+    expected: directTerminalFailureExpected(base),
   } : undefined
 }
 

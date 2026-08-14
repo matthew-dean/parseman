@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertLexicalCapabilityClosure, collectAlphabet, collectLexicalAlphabet,
-  collectLexicalCapabilities, compatibleLexicalOutcomes, selectedLexicalOutcome, winnerWrapsReference,
+  collectLexicalCapabilities, compatibleLexicalOutcomes, directOptionalSuffixTokenBody,
+  selectedLexicalOutcome, winnerWrapsReference,
   type LexicalTokenClassifier,
 } from '../../src/compiler/token-alphabet.ts'
 import type { Combinator, ParseContext, ParseError, ParserDef } from '../../src/types.ts'
@@ -391,6 +392,49 @@ describe('derived lexical-token families', () => {
     // RED provenance: thunk-first resolution inventories `a` in both places,
     // even though final compose resolution selected `b`.
     expect(direct.capabilities).not.toContainEqual(expect.objectContaining({ semanticKey: 'L\u0000a\u0000' }))
+  })
+
+  it('selects an optional-suffix body from the final named regex winner only', () => {
+    const stale = ref<string>()
+    stale.define(regex(/a+/))
+    Object.defineProperty(stale, '_ruleName', { value: 'Word' })
+    const wrapped = token(sequence(stale, optional(literal('('))))
+    const winner = regex(/[b\n]+/i)
+    const resolve = (name: string): Combinator<unknown> | undefined =>
+      name === 'Word' ? winner : undefined
+    expect(directOptionalSuffixTokenBody(wrapped, resolve)).toMatchObject({
+      source: '[b\\n]+', flags: 'i', suffix: '(', baseCanMatchNewline: true,
+    })
+
+    // A transparent final wrapper around the same reference is recursion, not
+    // an override. It must fall back to the construction thunk instead of
+    // looping through the winner resolver.
+    const selfWrapped = parser({ trackLines: true }, stale)
+    expect(directOptionalSuffixTokenBody(wrapped, () => selfWrapped)).toMatchObject({
+      source: 'a+', suffix: '(', baseCanMatchNewline: false,
+    })
+
+    const nested = ref<string>()
+    nested.define(stale)
+    expect(directOptionalSuffixTokenBody(
+      token(sequence(nested, optional(literal('(')))),
+    )).toMatchObject({ source: 'a+', suffix: '(' })
+
+    const left = ref<string>()
+    const right = ref<string>()
+    left.define(right)
+    right.define(left)
+    expect(directOptionalSuffixTokenBody(
+      token(sequence(left, optional(literal('(')))),
+    )).toBeUndefined()
+
+    const unresolved = ref<string>()
+    expect(directOptionalSuffixTokenBody(
+      token(sequence(unresolved, optional(literal('(')))),
+    )).toBeUndefined()
+    expect(directOptionalSuffixTokenBody(wrapped, () => transform(regex(/b+/), value => value)))
+      .toBeUndefined()
+    expect(directOptionalSuffixTokenBody(wrapped, () => literal('b'))).toBeUndefined()
   })
 
   it('matches an explicit final-winner oracle after compose replaces a rule', () => {
