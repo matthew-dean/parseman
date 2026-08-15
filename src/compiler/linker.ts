@@ -281,8 +281,21 @@ function materializeDirectBuilders(ruleMap: ReadonlyArray<readonly [string, Comb
   const visit = (p: Combinator<unknown>): void => {
     if (seen.has(p)) return
     seen.add(p)
-    const d = p._def as { tag: string; build?: unknown; buildSrc?: string }
+    const d = p._def as { tag: string; type?: string; build?: unknown; buildSrc?: string; buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }> }
     if (d.tag === 'node' && typeof d.buildSrc === 'string') {
+      // FAIL CLOSED for the runtime fuse: a builder whose free names are module
+      // imports can be re-bound by the MACRO plugin (it re-emits the imports into the
+      // generated module), but an in-process `(0, eval)` here has no import to give it,
+      // so the builder would throw ReferenceError at parse time — wrong output deferred.
+      // Refuse now, with a message that points at the build-time path. The macro never
+      // reaches this function (it prints `buildSrc`, see the doc above).
+      if (d.buildImports !== undefined && d.buildImports.length > 0) {
+        throw new Error(
+          `IR direct node builder for ${d.type ?? '<anonymous>'} references module import(s) `
+          + `${d.buildImports.map(bi => bi.local).join(', ')} that a runtime compose() cannot supply; `
+          + `compose at build time via the parseman macro plugin, which re-emits the imports.`,
+        )
+      }
       try {
         // eslint-disable-next-line no-eval
         const fn = (0, eval)(`(${d.buildSrc})`) as unknown

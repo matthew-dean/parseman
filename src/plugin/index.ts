@@ -23,7 +23,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, propName, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
 import { compileRuleMap } from '../table/compile-rule-map.ts'
@@ -516,6 +516,7 @@ export function transformMacro(
     return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage)
   } finally {
     setReducerResolver(null)
+    setBuilderImportResolver(null)
     // Both are idempotent: on the success path the body already released them and these
     // are no-ops. On an aborted transform they are what stops the leak.
     for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
@@ -666,6 +667,10 @@ function transformMacroImpl(
    */
   const reducerResolver = createReducerResolver(id, body as unknown[], code)
   setReducerResolver(reducerResolver, code)
+  /* A direct builder's free name is rescuable when THIS module imported it — the
+   * artifact carries `{ source, imported }` and a downstream compose() re-emits the
+   * import (see the re-lower pass below). Module-private consts stay refusals. */
+  setBuilderImportResolver(name => importBindings.get(name) ?? null)
 
   const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
     for (const st of moduleBody) {
@@ -797,6 +802,30 @@ function transformMacroImpl(
    * at the end of this transform is what proves it was actually emitted.
    */
   let usedTableRuntime = false
+  /**
+   * `source` -> (local -> imported) for direct-builder free names that rode in on a
+   * carried piece's IR (a composed base grammar whose reducers call imported AST
+   * factories). Re-emitted as real imports into THIS module so the inlined builder
+   * source has bindings to resolve. A name this module already imports is skipped.
+   */
+  const pendingBuilderImports = new Map<string, Map<string, string>>()
+  const collectBuilderImports = (root: unknown): void => {
+    const seen = new Set<unknown>()
+    const walk = (v: unknown): void => {
+      if (v === null || typeof v !== 'object' || seen.has(v)) return
+      seen.add(v)
+      const def = (v as { _def?: { buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }> } })._def
+      for (const bi of def?.buildImports ?? []) {
+        let m = pendingBuilderImports.get(bi.source)
+        if (!m) { m = new Map(); pendingBuilderImports.set(bi.source, m) }
+        m.set(bi.local, bi.imported)
+      }
+      for (const child of Object.values(v as Record<string, unknown>)) {
+        if (Array.isArray(child)) { for (const c of child) walk(c) } else walk(child)
+      }
+    }
+    walk(root)
+  }
   /** Exported `rules()` factories, whose bodies are left verbatim. See the push site. */
   const exportedFactories: Array<{ name: string; pos: number }> = []
   let runtimeComposeFallback = false
@@ -1457,6 +1486,9 @@ function transformMacroImpl(
     const merged = mergedCarriedRules(carried)
     if (merged !== null) {
       if (composing) applyComposingTrivia(merged.rules, composing)
+      // Harvest the direct-builder import provenance carried on the merged graph so
+      // the re-lower pass at the end of this transform re-emits those imports.
+      for (const [, rule] of merged.rules) collectBuilderImports(rule)
       const refusals: string[] = []
       const compiled = compileRuleMap(merged.rules, {
         ...(composing ? { trivia: composing } : {}),
@@ -2186,6 +2218,19 @@ function transformMacroImpl(
   if (usedTableRuntime && applied.length > 0) {
     ms.prepend(`import { tableRules } from ${JSON.stringify(TABLE_RUNTIME_SPECIFIER)}\n`)
   }
+  /* Re-bind the direct-builder free names carried in on composed IR: a base
+   * grammar's reducer calls `dimension` from '@jesscss/core/ast', that provenance
+   * rode in on the carried piece, and the fused table inlines the reducer source
+   * here — so this module must import the same binding. Skipped for a name this
+   * module already imports itself (no duplicate import). */
+  if (applied.length > 0 && pendingBuilderImports.size > 0) {
+    for (const [source, locals] of pendingBuilderImports) {
+      const needed = [...locals].filter(([local]) => !importBindings.has(local))
+      if (needed.length === 0) continue
+      const specs = needed.map(([local, imported]) => imported === local ? local : `${imported} as ${local}`)
+      ms.prepend(`import { ${specs.join(', ')} } from ${JSON.stringify(source)}\n`)
+    }
+  }
   if (applied.length > 0) {
     ms.prepend(
       `// Generated by parseman v${PARSEMAN_VERSION} — DO NOT EDIT.\n` +
@@ -2259,6 +2304,7 @@ function transformMacroImpl(
   // caller's config does not break; it is now inert.
 
   setReducerResolver(null)
+  setBuilderImportResolver(null)
   // Every place the compiler chose a correct-but-slower path for this module. Reported
   // on the ordinary warning channel and greppable on `[parseman] degraded`, so a
   // consumer's build gate can assert zero of them the way jess's `check:macro` already

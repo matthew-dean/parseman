@@ -40,15 +40,46 @@ describe('expression forms the static builder check walks', () => {
   })
 })
 
+describe('block-statement and function-reducer bodies the check now walks', () => {
+  it('walks a block body instead of refusing it wholesale', () => {
+    // A block body is carried as source text and inlined verbatim downstream, so a
+    // statement inlines exactly as an expression does. `c` is the param; nothing free.
+    expect(scan('(c) => { return c }')).toEqual([])
+    expect(scan('(c) => { const n = c.length; return n }')).toEqual([])
+    // A free name read inside the block is still reported.
+    expect(scan('(c) => { return blockHelper(c) }')).toEqual(['blockHelper'])
+  })
+
+  it('walks a nested arrow with a block body', () => {
+    expect(scan('(c) => c.map(x => { return x })')).toEqual([])
+    expect(scan('(c) => c.map(x => { return nestedHelper(x) })')).toEqual(['nestedHelper'])
+  })
+
+  it('admits a resolved `function` reducer with an identifier param list', () => {
+    // A bare reference to a top-level `function foldOperation(…) {…}` resolves to a
+    // FunctionExpression here; it inlines just like the arrow the analyzer already ran.
+    expect(scan('function build(c) { return c }')).toEqual([])
+    // The function binds its own name inside its body (recursion) — self-contained.
+    expect(scan('function fold(c) { return c.length > 1 ? fold(c.slice(1)) : c[0] }')).toEqual([])
+    // Free reads inside a function body are still reported.
+    expect(scan('function build(c) { return fnHelper(c) }')).toEqual(['fnHelper'])
+  })
+
+  it('walks throw / for / for-of statements, reporting only genuinely free reads', () => {
+    // `throw new TypeError(...)` is admitted: intrinsic error constructors are static globals.
+    expect(scan('(c) => { if (c.length === 0) throw new TypeError("empty"); return c }')).toEqual([])
+    // A thrown custom (module-scope) error stays a free name.
+    expect(scan('(c) => { throw new CustomError("x") }')).toEqual(['CustomError'])
+    // A C-style for loop: its `index` binding does not leak, `push`-free body is analyzable.
+    expect(scan('(c) => { const out = []; for (let i = 0; i < c.length; i += 1) out.push(c[i]); return out }')).toEqual([])
+    // for-of binds the loop variable into the body only; the iterable is read outside.
+    expect(scan('(c) => { const parts = []; for (const child of c) parts.push(child); return parts }')).toEqual([])
+    // A free read inside the loop iterable is reported.
+    expect(scan('(c) => { for (const x of outerList) c.push(x); return c }')).toEqual(['outerList'])
+  })
+})
+
 describe('constructs the static builder check refuses', () => {
-  it('refuses a callback with a block body', () => {
-    expect(scan('(c) => { return c }')).toEqual(['unsupported BlockStatement'])
-  })
-
-  it('refuses a nested arrow with a block body', () => {
-    expect(scan('(c) => c.map(x => { return x })')).toEqual(['unsupported BlockStatement'])
-  })
-
   it('refuses a destructured parameter on the callback itself', () => {
     expect(scan('({ children }) => children')).toEqual(['unsupported parameter pattern'])
     expect(scan('([a]) => a')).toEqual(['unsupported parameter pattern'])
@@ -70,12 +101,32 @@ describe('constructs the static builder check refuses', () => {
     expect(scan('(c) => class {}')).toEqual(['unsupported ClassExpression'])
   })
 
-  it('refuses a callback that is not an arrow function at all', () => {
-    expect(scan('function build(c) { return c }')).toEqual(['unsupported callback shape'])
+  it('refuses a callback that is neither an arrow nor a function', () => {
     expect(scan('someHelper')).toEqual(['unsupported callback shape'])
+    expect(scan('42')).toEqual(['unsupported callback shape'])
   })
 
   it('reads a computed key expression as well as the value', () => {
     expect(scan('(c) => ({ [keyHelper]: c })')).toEqual(['keyHelper'])
+  })
+})
+
+describe('the refuse-boundary a lifted analyzer must still hold (fail closed)', () => {
+  it('refuses an async or generator reducer — not a pure synchronous builder', () => {
+    expect(scan('async (c) => c')).toEqual(['unsupported callback shape'])
+    expect(scan('async function build(c) { return c }')).toEqual(['unsupported callback shape'])
+    expect(scan('function* build(c) { return c }')).toEqual(['unsupported callback shape'])
+  })
+
+  it('refuses `this` and `arguments` — function-only bindings no import can supply', () => {
+    expect(scan('function build(c) { return this.value }')).toEqual(['unsupported ThisExpression'])
+    expect(scan('function build(c) { return arguments[0] }')).toEqual(['unsupported arguments'])
+  })
+
+  it('still refuses an un-modelled statement kind rather than waving it through', () => {
+    // `while` is not one of the walked statement kinds, so it fails closed.
+    expect(scan('(c) => { while (c.length) c.pop(); return c }')).toEqual(['unsupported WhileStatement'])
+    // A destructuring for-of target is not a single-identifier declaration.
+    expect(scan('(c) => { for (const [a] of c) c.pop(); return c }')).toEqual(['unsupported ArrayPattern'])
   })
 })

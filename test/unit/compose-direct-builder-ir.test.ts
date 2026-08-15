@@ -53,17 +53,53 @@ describe('compose over a macro-built direct node builder', () => {
     })
   })
 
-  it('rejects a real imported builder capture when compose re-lowers the macro artifact', () => {
+  it('carries an imported builder capture as import provenance, not a refusal', () => {
+    // `importedFactory` is an IMPORT of the authoring module, so it is rescuable: the
+    // carried IR records where it came from (`{ local, source, imported }`) instead of
+    // marking the builder un-fusible. A downstream macro compose re-emits that import.
     const captured = macroModule(`import { rules, literal, node } from 'parseman' with { type: 'macro' }
 import { importedFactory } from './ast-factory.ts'
 export const base = rules(g => ({
   Direct: node('Direct', literal('x'), () => importedFactory()),
 }))`).base as Record<string | symbol, unknown>
     const carried = captured[COMPOSED_PIECES] as Array<{ ir?: string }>
-    expect(carried[0]!.ir).toContain('["importedFactory"]')
+    expect(carried[0]!.ir).toContain('"local":"importedFactory"')
+    expect(carried[0]!.ir).toContain('"source":"./ast-factory.ts"')
+    // It is NOT recorded as a static-error refusal.
+    expect(carried[0]!.ir).not.toContain('["importedFactory"]')
+  })
+
+  it('fails a RUNTIME compose() closed — it cannot supply the module import in-process', () => {
+    // The provenance rescue is a BUILD-TIME (macro) mechanism: the plugin re-emits the
+    // import into the generated module. A runtime compose() builds live functions with
+    // no import to give, so it must refuse rather than defer a parse-time ReferenceError.
+    const captured = macroModule(`import { rules, literal, node } from 'parseman' with { type: 'macro' }
+import { importedFactory } from './ast-factory.ts'
+export const base = rules(g => ({
+  Direct: node('Direct', literal('x'), () => importedFactory()),
+}))`).base as Record<string | symbol, unknown>
     expect(() => parseman.compose([captured as never])).toThrow(
-      'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): importedFactory',
+      /references module import\(s\) importedFactory that a runtime compose\(\) cannot supply/,
     )
+  })
+
+  it('MACRO-fuses a compose over an imported builder, re-emitting the import (patch A)', () => {
+    // The decisive positive: a base grammar whose reducer calls an imported factory,
+    // composed downstream, fuses with NO interpreter fallback and re-emits the import
+    // into the consuming module so the inlined builder source binds.
+    const baseT = transformMacro(`import { rules, literal, node, regex, compose } from 'parseman' with { type: 'macro' }
+import { importedFactory } from './ast-factory.js'
+const ws = regex(/[ \\t\\n]*/)
+export const base = compose([rules({ trivia: ws }, g => ({
+  Direct: node('Direct', literal('x'), () => importedFactory()),
+}))])`, '/pkg/base.ts', new Set(['parseman']))!
+    expect(baseT.warnings).toEqual([])
+    // Fused (no runtime compose() left in the output, no interpreter parse marker).
+    expect(/\bcompose\s*\(/.test(baseT.code)).toBe(false)
+    expect(/_rp\[\d+\]\.parse\(/.test(baseT.code)).toBe(false)
+    // The builder source is inlined AND the import it needs is present.
+    expect(baseT.code).toContain('importedFactory()')
+    expect(/import \{[^}]*\bimportedFactory\b[^}]*\} from ["']\.\/ast-factory\.js["']/.test(baseT.code)).toBe(true)
   })
 
   it('reports lexical reads from Oxc AST, without mistaking keys or member names for bindings', () => {
