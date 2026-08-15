@@ -3,6 +3,26 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.49.0 — 2026-08-15
+
+- Lift the composed-builder static analyzer so a `node()` / reducer used under
+  `compose()` or `composeLeaf()` may reference an imported or free binding, use a
+  block-statement body (`throw`, `for`, `for…of`), and be written as a non-arrow
+  `function`. The analyzer previously accepted only a self-contained arrow
+  expression and failed every other builder closed — which forced a composable
+  grammar to inline each constructor and helper its reducers called before the
+  grammar could be fused. It now re-emits an imported binding through its import
+  provenance, so a builder that calls an imported constructor or a shared reducer
+  helper composes and macro-fuses statically, with no source copy of the callee.
+  The refusal boundary is unchanged for builders that are genuinely not statically
+  resolvable: `async` and generator reducers, `this` / `arguments`, and a name that
+  resolves to neither an import nor a module-local binding still fail closed to the
+  ordinary runtime `compose()` path.
+- Rebuild generated, macro, composed, folded, precompiled, and rule-map artifacts
+  with 0.49.0; Parseman artifacts are version-locked to their runtime.
+- Re-anchor the grammar-density and broad-workload perf gates to the 0.48.1 release
+  commit (`e6bd59e`), the stable base this release advances.
+
 ## 0.48.1 — 2026-08-14
 
 - Fix ordered-choice failure diagnostics to keep the expected tokens from the
