@@ -102,6 +102,97 @@ export const base = compose([rules({ trivia: ws }, g => ({
     expect(/import \{[^}]*\bimportedFactory\b[^}]*\} from ["']\.\/ast-factory\.js["']/.test(baseT.code)).toBe(true)
   })
 
+  it('MACRO-fuses a DOWNSTREAM compose over an imported ALREADY-COMPOSED base, re-emitting the base\'s imports (patch A, cross-module)', async () => {
+    // The dialect pattern the lift exists for, exercised ACROSS A MODULE BOUNDARY.
+    // The same-module test above never reaches the re-lower re-emit: the authoring
+    // module already imports the factory, so `pendingBuilderImports` is skipped. Here
+    // the base is COMPILED to its own file — its reducers' import provenance lives only
+    // in its serialized `composedPieces` IR — and a SEPARATE downstream module imports
+    // that base and composes a delta onto it. The downstream module does NOT import the
+    // base's helpers itself, so fusion is possible only if the macro reads the base's
+    // carried `buildImports` and re-emits those imports into the fused downstream module.
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-compose-imported-base-'))
+    try {
+      // The base: a composed grammar whose reducers call imported factories — an inline
+      // arrow (`Leaf`) and a block-statement body reaching two imports (`Pair`), plus an
+      // inherited-only rule (`Doc`). Its widened leaf `Leaf` is what the delta overrides.
+      const baseT = transformMacro(
+        `import { rules, node, regex, sequence, compose } from 'parseman' with { type: 'macro' }
+import { mkLeaf, mkPair } from './ast-factory.js'
+const ws = regex(/[ \\t\\n]*/)
+export const base = compose([rules({ trivia: ws }, g => ({
+  Leaf: node('Leaf', regex(/[a-z]+/), children => mkLeaf(children)),
+  Pair: node('Pair', sequence(g.Leaf, g.Leaf), children => {
+    const kids = [...children]
+    return mkPair(kids)
+  }),
+  Doc: node('Doc', g.Pair, children => children[0]),
+}))])`,
+        path.join(dir, 'base.ts'), new Set(['parseman']),
+      )!
+      expect(baseT.warnings).toEqual([])
+      // The base's import provenance survives ONLY in its carried IR (positional, escaped),
+      // never as a live import the downstream could copy by reading base.js's import lines.
+      expect(baseT.code).toContain('\\"local\\":\\"mkPair\\"')
+      fs.writeFileSync(path.join(dir, 'base.js'), baseT.code)
+      fs.writeFileSync(path.join(dir, 'ast-factory.js'),
+        'export const mkLeaf = (c) => ({ type: \'Leaf\', text: c[0]?.value })\n'
+        + 'export const mkPair = (c) => ({ type: \'Pair\', kids: c })\n')
+
+      // The downstream delta: override the ONE leaf `Leaf` (open-recursion widening),
+      // inherit `Pair` and `Doc` by name from the base. This module imports NEITHER
+      // `mkLeaf` nor `mkPair`; the inherited `Pair` reducer needs `mkPair` re-emitted.
+      const downT = transformMacro(
+        `import { rules, node, regex, choice, compose } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+const ws = regex(/[ \\t\\n]*/)
+export const parser = compose([base, rules({ trivia: ws }, g => ({
+  Leaf: node('Leaf', choice(regex(/[a-z]+/), regex(/%[a-z]+/)), children => ({ type: 'WideLeaf', text: children[0]?.value })),
+}))])`,
+        path.join(dir, 'down.ts'), new Set(['parseman']),
+      )!
+      // No refusal warning: not "bound by nothing", not "ref() used before .define()",
+      // not "falling back to runtime".
+      expect(downT.warnings).toEqual([])
+      // Fully fused: no runtime compose() left, no interpreter parse marker.
+      expect(/\bcompose\s*\(/.test(downT.code)).toBe(false)
+      expect(/_rp\[\d+\]\.parse\(/.test(downT.code)).toBe(false)
+      // The base's helper import used by an INHERITED rule (`mkPair`, via `Pair`) is
+      // re-emitted into the downstream module; `mkLeaf`, used only by the OVERRIDDEN
+      // `Leaf`, is not carried into the fused table and so is not re-emitted.
+      expect(/import \{[^}]*\bmkPair\b[^}]*\} from ["']\.\/ast-factory\.js["']/.test(downT.code)).toBe(true)
+      expect(/\bmkLeaf\b/.test(downT.code)).toBe(false)
+
+      // Behaviour: the fused downstream parses through the INHERITED `Doc`/`Pair` and the
+      // OVERRIDDEN `Leaf`, producing the widened leaf node — proof the re-emitted `mkPair`
+      // binds and open recursion routed the inherited parent at the delta's leaf.
+      const base = evalMacroExports(baseT.code, {
+        mkLeaf: (c: Array<{ value: unknown }>) => ({ type: 'Leaf', text: c[0]?.value }),
+        mkPair: (c: unknown[]) => ({ type: 'Pair', kids: c }),
+      }).base
+      const parser = evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(
+        downT.code, 'parser',
+        { base, mkPair: (c: unknown[]) => ({ type: 'Pair', kids: c }) },
+      )
+      const doc = parser.Doc!('foo bar', 0, {})
+      expect(doc.ok).toBe(true)
+      expect(doc.value).toEqual({
+        type: 'Pair',
+        kids: [
+          { type: 'WideLeaf', text: 'foo' },
+          { type: 'WideLeaf', text: 'bar' },
+        ],
+      })
+      // The widened leaf admits the placeholder token CSS's base leaf did not.
+      expect(parser.Leaf!('%ph', 0, {}).value).toEqual({ type: 'WideLeaf', text: '%ph' })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('reports lexical reads from Oxc AST, without mistaking keys or member names for bindings', () => {
     expect(directBuilderUnsupportedBindings(
       '(children, _fields, span) => ({ kind: "Direct", span, values: children.map(item => ({ item })) })',

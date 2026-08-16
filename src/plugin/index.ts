@@ -809,22 +809,61 @@ function transformMacroImpl(
    * source has bindings to resolve. A name this module already imports is skipped.
    */
   const pendingBuilderImports = new Map<string, Map<string, string>>()
-  const collectBuilderImports = (root: unknown): void => {
+  /**
+   * Harvest direct-builder import provenance off a MERGED rule graph so the re-lower
+   * pass re-emits those imports. `buildImports` rides on a `node()`'s `_def`, but a
+   * rule that ANOTHER rule references (`g.X`) is materialized in the evaluated map as
+   * a `lazy` proxy whose definition node sits behind `_def.thunk()` — never an own
+   * property. A generic `Object.values` descent therefore skips it entirely, silently
+   * dropping the imports of every cross-referenced rule (the css base's `VarCall`,
+   * referenced by its selector/value parents, is the canonical case: its `funcCall` /
+   * `isValueSlotValue` reads were lost and the fused downstream module threw "bound by
+   * nothing" / left a runtime compose()).
+   *
+   * The fused table encodes exactly the WINNER of each rule name and binds every
+   * reference BY NAME to that winner (`enc.winners`), so the imports it inlines are
+   * exactly the union over the winning rule bodies. Harvest that set: walk each rule
+   * entry's own body (following the entry lazy's thunk), and STOP at a named `lazy`
+   * reference inside a body — it resolves to a winner already covered as its own
+   * entry, so descending it would reach an OVERRIDDEN rule's shadowed original and
+   * re-emit a dead import. An anonymous `lazy` is inline recursion and is followed.
+   * One `seen` set is shared across every rule so a cyclic grammar terminates.
+   */
+  const collectBuilderImports = (ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): void => {
     const seen = new Set<unknown>()
     const walk = (v: unknown): void => {
       if (v === null || typeof v !== 'object' || seen.has(v)) return
       seen.add(v)
-      const def = (v as { _def?: { buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }> } })._def
+      const def = (v as { _def?: { tag?: string; thunk?: () => unknown; buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }> } })._def
       for (const bi of def?.buildImports ?? []) {
         let m = pendingBuilderImports.get(bi.source)
         if (!m) { m = new Map(); pendingBuilderImports.set(bi.source, m) }
         m.set(bi.local, bi.imported)
       }
+      // An ANONYMOUS lazy is inline recursion — follow the thunk. A NAMED lazy is a
+      // rule reference bound by name to a winner covered as its own entry; do not
+      // descend it (that path reaches an overridden rule's shadowed original).
+      if (def?.tag === 'lazy' && (v as { _ruleName?: string })._ruleName === undefined && typeof def.thunk === 'function') {
+        let target: unknown = null
+        try { target = def.thunk() } catch { /* external ref — no definition to walk */ }
+        walk(target)
+      }
       for (const child of Object.values(v as Record<string, unknown>)) {
         if (Array.isArray(child)) { for (const c of child) walk(c) } else walk(child)
       }
     }
-    walk(root)
+    for (const [, rule] of ruleMap) {
+      walk(rule)
+      // A referenced rule entry is a named lazy whose body node (with its builder
+      // imports) is behind the thunk; `walk` skips a named lazy's thunk, so follow
+      // the WINNER'S body explicitly here. A raw-node entry was already fully walked.
+      const def = rule._def as { tag?: string; thunk?: () => unknown }
+      if (def?.tag === 'lazy' && typeof def.thunk === 'function') {
+        let body: unknown = null
+        try { body = def.thunk() } catch { /* unresolved winner — nothing to walk */ }
+        walk(body)
+      }
+    }
   }
   /** Exported `rules()` factories, whose bodies are left verbatim. See the push site. */
   const exportedFactories: Array<{ name: string; pos: number }> = []
@@ -1488,7 +1527,7 @@ function transformMacroImpl(
       if (composing) applyComposingTrivia(merged.rules, composing)
       // Harvest the direct-builder import provenance carried on the merged graph so
       // the re-lower pass at the end of this transform re-emits those imports.
-      for (const [, rule] of merged.rules) collectBuilderImports(rule)
+      collectBuilderImports(merged.rules)
       const refusals: string[] = []
       const compiled = compileRuleMap(merged.rules, {
         ...(composing ? { trivia: composing } : {}),

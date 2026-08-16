@@ -18,6 +18,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   resolvable: `async` and generator reducers, `this` / `arguments`, and a name that
   resolves to neither an import nor a module-local binding still fail closed to the
   ordinary runtime `compose()` path.
+- Re-emit a composed base's builder imports when a DOWNSTREAM module composes an
+  already-compiled base plus a delta (`compose([importedBase, rules(delta)])`) — the
+  dialect pattern where a superset imports a base grammar and defines only its
+  overrides. The import-provenance harvest walked the merged rule graph by own
+  properties, which reached a builder's imports only when its rule was a bare `node`;
+  a rule that another rule references is materialized as a `lazy` proxy whose
+  definition sits behind the thunk, so the imports of every cross-referenced inherited
+  rule were silently dropped. The fused downstream module then read those names with
+  nothing to bind them — refused closed as "bound by nothing" (same package) or left a
+  runtime `compose()` that threw (cross package). The harvest now follows a rule
+  reference to its winning definition, matching what the fused table inlines: it
+  gathers exactly the imports of the winning rule bodies and re-emits them, so an
+  overridden rule's shadowed original contributes no dead import.
 - Rebuild generated, macro, composed, folded, precompiled, and rule-map artifacts
   with 0.49.0; Parseman artifacts are version-locked to their runtime.
 - Re-anchor the grammar-density and broad-workload perf gates to the 0.48.1 release
