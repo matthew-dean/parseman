@@ -2260,11 +2260,65 @@ function transformMacroImpl(
   /* Re-bind the direct-builder free names carried in on composed IR: a base
    * grammar's reducer calls `dimension` from '@jesscss/core/ast', that provenance
    * rode in on the carried piece, and the fused table inlines the reducer source
-   * here — so this module must import the same binding. Skipped for a name this
-   * module already imports itself (no duplicate import). */
+   * here — so this module must import the same binding.
+   *
+   * The inlined builder source spells the free name VERBATIM, so a re-emitted import
+   * cannot be aliased away: the local name is load-bearing. Two things therefore make
+   * a carried import unsatisfiable, and both are refused rather than silently mis-bound
+   * or emitted as a duplicate declaration:
+   *
+   *  - the name is ALREADY BOUND in this module to something else — a named import
+   *    from a DIFFERENT source/symbol (the inlined builder would call the wrong
+   *    binding), a default/namespace import, or a top-level const/function/class
+   *    (re-emitting the import would be a redeclaration `SyntaxError`). The
+   *    free-identifier net below cannot catch either: a wrong-binding read is bound,
+   *    and a redeclaration is the opposite of an unbound read.
+   *  - two DISTINCT carried sources need the SAME local name (the map is keyed by
+   *    source, so each would emit its own `import { X } from …`).
+   *
+   * A name this module already imports from the SAME source under the SAME symbol is
+   * the benign case — the exact import the builder needs is already present, so it is
+   * skipped (no duplicate). */
   if (applied.length > 0 && pendingBuilderImports.size > 0) {
+    // Every top-level binding of THIS module, not just its named imports.
+    const boundLocally = new Set<string>()
+    for (const stmt of body as Statement[]) {
+      if (stmt.type === 'ImportDeclaration') {
+        for (const sp of (stmt as unknown as ImportDeclaration).specifiers) boundLocally.add(sp.local.name)
+        continue
+      }
+      const decl = stmt.type === 'ExportNamedDeclaration'
+        ? ((stmt as unknown as ExportNamedDeclaration).declaration as unknown as AnyNode | undefined)
+        : (stmt as unknown as AnyNode)
+      if (decl?.type === 'FunctionDeclaration' || decl?.type === 'ClassDeclaration') {
+        const n = (decl as unknown as { id?: { name?: string } }).id?.name
+        if (n) boundLocally.add(n)
+        continue
+      }
+      const vd = unwrapVd(stmt)
+      for (const d of vd?.declarations ?? []) {
+        const n = (d.id as unknown as { name?: string }).name
+        if (n) boundLocally.add(n)
+      }
+    }
+    const emitted = new Set<string>()
     for (const [source, locals] of pendingBuilderImports) {
-      const needed = [...locals].filter(([local]) => !importBindings.has(local))
+      const needed: Array<[string, string]> = []
+      for (const [local, imported] of locals) {
+        const own = importBindings.get(local)
+        // Exact same import already present: the builder's need is satisfied. Skip.
+        if (own && own.source === source && own.imported === imported) continue
+        if (boundLocally.has(local) || emitted.has(local)) {
+          throw new Error(
+            `${id} — parseman will not emit this module: a fused builder needs \`${imported}\` from `
+            + `${JSON.stringify(source)} bound as \`${local}\`, but this module already binds \`${local}\` `
+            + `to something else. The inlined builder source names \`${local}\` verbatim, so the import `
+            + `cannot be aliased; rename the conflicting local binding so the builder's import can be re-emitted.`,
+          )
+        }
+        emitted.add(local)
+        needed.push([local, imported])
+      }
       if (needed.length === 0) continue
       const specs = needed.map(([local, imported]) => imported === local ? local : `${imported} as ${local}`)
       ms.prepend(`import { ${specs.join(', ')} } from ${JSON.stringify(source)}\n`)

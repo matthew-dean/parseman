@@ -403,3 +403,133 @@ export const parser = composeLeaf([syntax, rules({ trivia: whitespace }, g => ({
     }
   })
 })
+
+describe('builder-import provenance is scoped and collision-safe (P1 regressions)', () => {
+  it('does NOT record a same-named ENTRY import as a foreign NAMED reducer\'s provenance', async () => {
+    // Greptile P1 (evaluator provenance scope): a base module M exports a NAMED
+    // reducer whose body calls `dimension`, a helper M imports from `./ast-correct.js`.
+    // The consuming entry imports that reducer AND, coincidentally, a DIFFERENT
+    // `dimension` from `./ast-wrong.js`. The reducer runs as a live `f:[mk]` binding in
+    // M's own scope, so its body is never inlined here — resolving its free names
+    // against THIS module's imports recorded `./ast-wrong.js` as `dimension`'s
+    // provenance, which a downstream compose would then re-emit and bind the builder to
+    // the WRONG helper. The fix carries NO provenance for a non-inlined (named) body.
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-p1-provenance-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'm.ts'),
+        'import { dimension } from \'./ast-correct.js\'\n'
+        + 'export function mk(children) { return dimension(children[0]) }\n')
+      fs.writeFileSync(path.join(dir, 'ast-correct.js'), 'export const dimension = (x) => ({ tag: \'CORRECT\', x })\n')
+      fs.writeFileSync(path.join(dir, 'ast-wrong.js'), 'export const dimension = (x) => ({ tag: \'WRONG\', x })\n')
+      const out = transformMacro(
+        `import { rules, literal, node } from 'parseman' with { type: 'macro' }
+import { mk } from './m.ts'
+import { dimension } from './ast-wrong.js'
+export const grammar = rules(g => ({ X: node('X', literal('x'), mk) }))
+export const unused = dimension`,
+        path.join(dir, 'entry.ts'), new Set(['parseman']),
+      )!
+      expect(out.warnings).toEqual([])
+      // The carried IR must NOT bind `dimension` to the entry's wrong-source import.
+      // (escaped form is how a builder-import provenance is spelled inside the IR string)
+      expect(out.code).not.toContain('\\"local\\":\\"dimension\\"')
+      expect(out.code).not.toContain('\\"source\\":\\"./ast-wrong.js\\"')
+      // The named reducer is kept as a live binding that runs in M's own scope, so it
+      // reaches M's correct `dimension` at runtime.
+      expect(out.code).toMatch(/f:\[mk\]/)
+      expect(out.code).toContain("import { mk } from './m.ts'")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('REFUSES to re-emit a carried builder import that collides with a different same-named local import', async () => {
+    // Greptile P1 (re-emit filter) + CodeRabbit (duplicate local declaration): a base
+    // grammar's INLINE reducer calls `mkNode` from `./ast-a.js`. A downstream module
+    // inherits that rule (composes a delta on a DIFFERENT rule) while importing an
+    // UNRELATED `mkNode` from `./ast-b.js`. The old filter skipped the re-emit because
+    // the local name was already present, silently binding the inlined builder to
+    // ast-b's `mkNode`. The inlined source spells `mkNode` verbatim, so the import
+    // cannot be aliased — the collision is refused rather than mis-bound.
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-p1-collision-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'ast-a.js'), 'export const mkNode = (c) => ({ tag: \'A\', c })\n')
+      fs.writeFileSync(path.join(dir, 'ast-b.js'), 'export const mkNode = (c) => ({ tag: \'B\', c })\n')
+      const baseT = transformMacro(
+        `import { rules, node, regex, compose } from 'parseman' with { type: 'macro' }
+import { mkNode } from './ast-a.js'
+const ws = regex(/[ \\t]*/)
+export const base = compose([rules({ trivia: ws }, g => ({
+  Leaf: node('Leaf', regex(/[a-z]+/), children => mkNode([...children])),
+}))])`,
+        path.join(dir, 'base.ts'), new Set(['parseman']),
+      )!
+      expect(baseT.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, 'base.js'), baseT.code)
+
+      expect(() => transformMacro(
+        `import { rules, node, regex, compose } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+import { mkNode } from './ast-b.js'
+const ws = regex(/[ \\t]*/)
+export const parser = compose([base, rules({ trivia: ws }, g => ({
+  Tail: node('Tail', regex(/[0-9]+/), children => ({ tag: 'T', c: [...children] })),
+}))])
+export const unused = mkNode`,
+        path.join(dir, 'down.ts'), new Set(['parseman']),
+      )).toThrow(/already binds `mkNode`/)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still re-emits a carried builder import when the SAME import is already present (benign dedup)', async () => {
+    // The exact import the inherited builder needs is already imported by the
+    // downstream module (same source, same symbol): no collision, no duplicate — the
+    // existing import satisfies the need and fusion proceeds.
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-p1-dedup-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'ast.js'), 'export const mkNode = (c) => ({ tag: \'N\', c })\n')
+      const baseT = transformMacro(
+        `import { rules, node, regex, compose } from 'parseman' with { type: 'macro' }
+import { mkNode } from './ast.js'
+const ws = regex(/[ \\t]*/)
+export const base = compose([rules({ trivia: ws }, g => ({
+  Leaf: node('Leaf', regex(/[a-z]+/), children => mkNode([...children])),
+}))])`,
+        path.join(dir, 'base.ts'), new Set(['parseman']),
+      )!
+      expect(baseT.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, 'base.js'), baseT.code)
+
+      const downT = transformMacro(
+        `import { rules, node, regex, compose } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+import { mkNode } from './ast.js'
+const ws = regex(/[ \\t]*/)
+export const parser = compose([base, rules({ trivia: ws }, g => ({
+  Tail: node('Tail', regex(/[0-9]+/), children => mkNode([...children])),
+}))])`,
+        path.join(dir, 'down.ts'), new Set(['parseman']),
+      )!
+      expect(downT.warnings).toEqual([])
+      // Fully fused, and exactly ONE import of `mkNode` from `./ast.js` (no duplicate).
+      expect(/\bcompose\s*\(/.test(downT.code)).toBe(false)
+      expect((downT.code.match(/import \{[^}]*\bmkNode\b[^}]*\} from ["']\.\/ast\.js["']/g) ?? []).length).toBe(1)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

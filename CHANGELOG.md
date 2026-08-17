@@ -31,6 +31,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   reference to its winning definition, matching what the fused table inlines: it
   gathers exactly the imports of the winning rule bodies and re-emits them, so an
   overridden rule's shadowed original contributes no dead import.
+- Scope builder-import provenance to the module that authored the reducer body, and
+  carry it only for a body that is actually inlined. A `node(…, namedReducer)` whose
+  reducer is resolved to another module's source is emitted as a live binding that
+  runs in its own module's scope, so its body is never inlined here; the analyzer
+  previously resolved that body's free names against the CONSUMING module's imports
+  and, when a coincidental same-named import existed there, recorded the wrong import
+  as the builder's provenance — which a downstream compose would re-emit, binding the
+  builder to the wrong helper. Such a named reducer now carries no provenance (only an
+  inline builder body, whose source is what gets inlined, does), so the wrong-scope
+  binding can no longer be recorded.
+- Refuse, rather than silently mis-bind, a re-emitted builder import whose local name
+  collides with a different binding already present in the consuming module — a named
+  import of another source/symbol, a default or namespace import, a top-level
+  `const` / `function` / `class`, or a second carried source needing the same local
+  name. The inlined builder source spells the free name verbatim, so the import cannot
+  be aliased; the earlier filter only skipped re-emission when the name was already an
+  import, which bound the inlined builder to the unrelated same-named symbol (or, for a
+  non-import binding, emitted a duplicate declaration). An already-present import of the
+  exact same source and symbol is still the benign case and is deduplicated silently.
 - Rebuild generated, macro, composed, folded, precompiled, and rule-map artifacts
   with 0.49.0; Parseman artifacts are version-locked to their runtime.
 - Re-anchor the grammar-density and broad-workload perf gates to the 0.48.1 release

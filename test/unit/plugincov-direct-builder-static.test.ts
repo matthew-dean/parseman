@@ -9,7 +9,7 @@
  * it returns.
  */
 import { describe, it, expect } from 'vitest'
-import { directBuilderUnsupportedBindings } from '../../src/plugin/direct-builder-static.ts'
+import { directBuilderBindings, directBuilderUnsupportedBindings } from '../../src/plugin/direct-builder-static.ts'
 
 const scan = directBuilderUnsupportedBindings
 
@@ -128,5 +128,35 @@ describe('the refuse-boundary a lifted analyzer must still hold (fail closed)', 
     expect(scan('(c) => { while (c.length) c.pop(); return c }')).toEqual(['unsupported WhileStatement'])
     // A destructuring for-of target is not a single-identifier declaration.
     expect(scan('(c) => { for (const [a] of c) c.pop(); return c }')).toEqual(['unsupported ArrayPattern'])
+  })
+})
+
+describe('the structural/free split `directBuilderBindings` exposes', () => {
+  // `directBuilderUnsupportedBindings` is the FLATTENED `structural ++ free` view every
+  // legacy caller reads. The evaluator, though, keys its two outcomes off the SPLIT:
+  // a `free` name is rescuable (its import provenance can be carried and re-emitted),
+  // while a `structural` refusal is not. Lock that contract directly so a future change
+  // that reclassifies one as the other is caught here, not as a downstream mis-fusion.
+  it('routes a plain lexical read to `free`, leaving `structural` empty', () => {
+    expect(directBuilderBindings('(c) => importedFactory(c)')).toEqual({
+      structural: [], free: ['importedFactory'],
+    })
+  })
+
+  it('routes an un-modelled/function-only construct to `structural`, leaving `free` empty', () => {
+    expect(directBuilderBindings('function build(c) { return arguments[0] }')).toEqual({
+      structural: ['unsupported arguments'], free: [],
+    })
+    expect(directBuilderBindings('(c) => class {}')).toEqual({
+      structural: ['unsupported ClassExpression'], free: [],
+    })
+  })
+
+  it('keeps both when a builder mixes a refusal and a rescuable read', () => {
+    const r = directBuilderBindings('(c) => (c.length ? helper(c) : function () {})')
+    expect(r.free).toEqual(['helper'])
+    expect(r.structural).toEqual(['unsupported FunctionExpression'])
+    // The flattened view every existing caller reads is exactly `structural ++ free`.
+    expect(scan('(c) => (c.length ? helper(c) : function () {})')).toEqual([...r.structural, ...r.free])
   })
 })
