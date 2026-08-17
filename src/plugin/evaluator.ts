@@ -18,7 +18,7 @@ import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
 import { rules, type RulesOptions } from '../combinators/parser.ts'
 import * as parseman from '../index.ts'
-import { directBuilderUnsupportedBindings } from './direct-builder-static.ts'
+import { directBuilderBindings } from './direct-builder-static.ts'
 import type { ReducerResolver } from './reducer-resolver.ts'
 
 /**
@@ -122,6 +122,20 @@ let _entrySource: string | null = null
 export function setReducerResolver(r: ReducerResolver | null, entrySource: string | null = null): void {
   _reducers = r
   _entrySource = entrySource
+}
+
+/**
+ * Map a free lexical name read by a direct node builder to the import it came from
+ * in the AUTHORING module. A name that resolves is no longer a refusal — the node
+ * carries `{ source, imported }` provenance, and a downstream `compose()` re-binds
+ * it by re-emitting the same import into the consuming module. A name that does not
+ * resolve (a module-private const, a genuinely undefined read) stays a refusal.
+ */
+export type BuilderImportResolver = (name: string) => { source: string; imported: string } | null
+let _builderImports: BuilderImportResolver | null = null
+/** Install (or clear, with `null`) the import-provenance resolver for the module being transformed. */
+export function setBuilderImportResolver(r: BuilderImportResolver | null): void {
+  _builderImports = r
 }
 
 // ---------------------------------------------------------------------------
@@ -700,8 +714,42 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
           if (combi._def.buildArity === undefined && resolved.arity !== null) combi._def.buildArity = resolved.arity
           if (resolved.reason !== undefined) combi._def.buildArityUnresolved = resolved.reason
         }
-        const staticError = directBuilderUnsupportedBindings(buildSrc)
+        // Analyze the REDUCER BODY, not the call-site reference. A named `function`
+        // reducer (`node(..., foldOperation)`) arrives here as the bare identifier
+        // `foldOperation`, which the analyzer can only read as `unsupported callback
+        // shape`. `buildSigSrc` is the resolved declaration source (see the resolver
+        // above and `buildAnalysisSrc`), so preferring it lets the function-reducer
+        // lift walk the real body and report its real free names. An inline builder
+        // has no `buildSigSrc`, so this is exactly `buildSrc` for that case.
+        const analysisSrc = combi._def.buildSigSrc ?? buildSrc
+        const report = directBuilderBindings(analysisSrc)
+        // Import-provenance rescue and free-name refusals apply ONLY to an INLINE
+        // builder body, whose source (`buildSrc`) is exactly what the table inlines and
+        // a downstream compose re-emits verbatim. A NAMED reducer (`buildSigSrc` set —
+        // `node(..., foldOperation)`) is emitted as a live `f:[foldOperation]` binding
+        // that runs in ITS OWN module's scope; its body is never inlined here. So its
+        // body's free names are not this (entry) module's to resolve — doing so bound a
+        // coincidental same-named entry import to the wrong helper (wrong provenance) —
+        // and carrying their imports is dead: the emitted source is the NAME, not the
+        // body, so re-emitting those imports satisfies nothing. Analyse-only fields
+        // (`buildArity`/`buildSigSrc`) are already set above and are unaffected.
+        const isInlineBuilder = combi._def.buildSigSrc === undefined
+        // A free name that this module IMPORTED is not a refusal: carry its
+        // provenance so a downstream compose() re-emits the import. Only structural
+        // refusals and free names with NO import provenance become the fail-closed
+        // `buildStaticError` — which the runtime re-lowerer still throws on.
+        const carriedImports: Array<{ local: string; source: string; imported: string }> = []
+        const unresolved: string[] = []
+        if (isInlineBuilder) {
+          for (const name of report.free) {
+            const prov = _builderImports?.(name) ?? null
+            if (prov) carriedImports.push({ local: name, source: prov.source, imported: prov.imported })
+            else unresolved.push(name)
+          }
+        }
+        const staticError = [...report.structural, ...unresolved]
         if (staticError.length > 0) combi._def.buildStaticError = staticError
+        if (carriedImports.length > 0) combi._def.buildImports = carriedImports
       }
       return combi
     } catch { return null }

@@ -23,7 +23,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, propName, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
 import { compileRuleMap } from '../table/compile-rule-map.ts'
@@ -516,6 +516,7 @@ export function transformMacro(
     return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage)
   } finally {
     setReducerResolver(null)
+    setBuilderImportResolver(null)
     // Both are idempotent: on the success path the body already released them and these
     // are no-ops. On an aborted transform they are what stops the leak.
     for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
@@ -666,6 +667,10 @@ function transformMacroImpl(
    */
   const reducerResolver = createReducerResolver(id, body as unknown[], code)
   setReducerResolver(reducerResolver, code)
+  /* A direct builder's free name is rescuable when THIS module imported it — the
+   * artifact carries `{ source, imported }` and a downstream compose() re-emits the
+   * import (see the re-lower pass below). Module-private consts stay refusals. */
+  setBuilderImportResolver(name => importBindings.get(name) ?? null)
 
   const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
     for (const st of moduleBody) {
@@ -797,6 +802,69 @@ function transformMacroImpl(
    * at the end of this transform is what proves it was actually emitted.
    */
   let usedTableRuntime = false
+  /**
+   * `source` -> (local -> imported) for direct-builder free names that rode in on a
+   * carried piece's IR (a composed base grammar whose reducers call imported AST
+   * factories). Re-emitted as real imports into THIS module so the inlined builder
+   * source has bindings to resolve. A name this module already imports is skipped.
+   */
+  const pendingBuilderImports = new Map<string, Map<string, string>>()
+  /**
+   * Harvest direct-builder import provenance off a MERGED rule graph so the re-lower
+   * pass re-emits those imports. `buildImports` rides on a `node()`'s `_def`, but a
+   * rule that ANOTHER rule references (`g.X`) is materialized in the evaluated map as
+   * a `lazy` proxy whose definition node sits behind `_def.thunk()` — never an own
+   * property. A generic `Object.values` descent therefore skips it entirely, silently
+   * dropping the imports of every cross-referenced rule (the css base's `VarCall`,
+   * referenced by its selector/value parents, is the canonical case: its `funcCall` /
+   * `isValueSlotValue` reads were lost and the fused downstream module threw "bound by
+   * nothing" / left a runtime compose()).
+   *
+   * The fused table encodes exactly the WINNER of each rule name and binds every
+   * reference BY NAME to that winner (`enc.winners`), so the imports it inlines are
+   * exactly the union over the winning rule bodies. Harvest that set: walk each rule
+   * entry's own body (following the entry lazy's thunk), and STOP at a named `lazy`
+   * reference inside a body — it resolves to a winner already covered as its own
+   * entry, so descending it would reach an OVERRIDDEN rule's shadowed original and
+   * re-emit a dead import. An anonymous `lazy` is inline recursion and is followed.
+   * One `seen` set is shared across every rule so a cyclic grammar terminates.
+   */
+  const collectBuilderImports = (ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): void => {
+    const seen = new Set<unknown>()
+    const walk = (v: unknown): void => {
+      if (v === null || typeof v !== 'object' || seen.has(v)) return
+      seen.add(v)
+      const def = (v as { _def?: { tag?: string; thunk?: () => unknown; buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }> } })._def
+      for (const bi of def?.buildImports ?? []) {
+        let m = pendingBuilderImports.get(bi.source)
+        if (!m) { m = new Map(); pendingBuilderImports.set(bi.source, m) }
+        m.set(bi.local, bi.imported)
+      }
+      // An ANONYMOUS lazy is inline recursion — follow the thunk. A NAMED lazy is a
+      // rule reference bound by name to a winner covered as its own entry; do not
+      // descend it (that path reaches an overridden rule's shadowed original).
+      if (def?.tag === 'lazy' && (v as { _ruleName?: string })._ruleName === undefined && typeof def.thunk === 'function') {
+        let target: unknown = null
+        try { target = def.thunk() } catch { /* external ref — no definition to walk */ }
+        walk(target)
+      }
+      for (const child of Object.values(v as Record<string, unknown>)) {
+        if (Array.isArray(child)) { for (const c of child) walk(c) } else walk(child)
+      }
+    }
+    for (const [, rule] of ruleMap) {
+      walk(rule)
+      // A referenced rule entry is a named lazy whose body node (with its builder
+      // imports) is behind the thunk; `walk` skips a named lazy's thunk, so follow
+      // the WINNER'S body explicitly here. A raw-node entry was already fully walked.
+      const def = rule._def as { tag?: string; thunk?: () => unknown }
+      if (def?.tag === 'lazy' && typeof def.thunk === 'function') {
+        let body: unknown = null
+        try { body = def.thunk() } catch { /* unresolved winner — nothing to walk */ }
+        walk(body)
+      }
+    }
+  }
   /** Exported `rules()` factories, whose bodies are left verbatim. See the push site. */
   const exportedFactories: Array<{ name: string; pos: number }> = []
   let runtimeComposeFallback = false
@@ -1457,6 +1525,9 @@ function transformMacroImpl(
     const merged = mergedCarriedRules(carried)
     if (merged !== null) {
       if (composing) applyComposingTrivia(merged.rules, composing)
+      // Harvest the direct-builder import provenance carried on the merged graph so
+      // the re-lower pass at the end of this transform re-emits those imports.
+      collectBuilderImports(merged.rules)
       const refusals: string[] = []
       const compiled = compileRuleMap(merged.rules, {
         ...(composing ? { trivia: composing } : {}),
@@ -2186,6 +2257,73 @@ function transformMacroImpl(
   if (usedTableRuntime && applied.length > 0) {
     ms.prepend(`import { tableRules } from ${JSON.stringify(TABLE_RUNTIME_SPECIFIER)}\n`)
   }
+  /* Re-bind the direct-builder free names carried in on composed IR: a base
+   * grammar's reducer calls `dimension` from '@jesscss/core/ast', that provenance
+   * rode in on the carried piece, and the fused table inlines the reducer source
+   * here — so this module must import the same binding.
+   *
+   * The inlined builder source spells the free name VERBATIM, so a re-emitted import
+   * cannot be aliased away: the local name is load-bearing. Two things therefore make
+   * a carried import unsatisfiable, and both are refused rather than silently mis-bound
+   * or emitted as a duplicate declaration:
+   *
+   *  - the name is ALREADY BOUND in this module to something else — a named import
+   *    from a DIFFERENT source/symbol (the inlined builder would call the wrong
+   *    binding), a default/namespace import, or a top-level const/function/class
+   *    (re-emitting the import would be a redeclaration `SyntaxError`). The
+   *    free-identifier net below cannot catch either: a wrong-binding read is bound,
+   *    and a redeclaration is the opposite of an unbound read.
+   *  - two DISTINCT carried sources need the SAME local name (the map is keyed by
+   *    source, so each would emit its own `import { X } from …`).
+   *
+   * A name this module already imports from the SAME source under the SAME symbol is
+   * the benign case — the exact import the builder needs is already present, so it is
+   * skipped (no duplicate). */
+  if (applied.length > 0 && pendingBuilderImports.size > 0) {
+    // Every top-level binding of THIS module, not just its named imports.
+    const boundLocally = new Set<string>()
+    for (const stmt of body as Statement[]) {
+      if (stmt.type === 'ImportDeclaration') {
+        for (const sp of (stmt as unknown as ImportDeclaration).specifiers) boundLocally.add(sp.local.name)
+        continue
+      }
+      const decl = stmt.type === 'ExportNamedDeclaration'
+        ? ((stmt as unknown as ExportNamedDeclaration).declaration as unknown as AnyNode | undefined)
+        : (stmt as unknown as AnyNode)
+      if (decl?.type === 'FunctionDeclaration' || decl?.type === 'ClassDeclaration') {
+        const n = (decl as unknown as { id?: { name?: string } }).id?.name
+        if (n) boundLocally.add(n)
+        continue
+      }
+      const vd = unwrapVd(stmt)
+      for (const d of vd?.declarations ?? []) {
+        const n = (d.id as unknown as { name?: string }).name
+        if (n) boundLocally.add(n)
+      }
+    }
+    const emitted = new Set<string>()
+    for (const [source, locals] of pendingBuilderImports) {
+      const needed: Array<[string, string]> = []
+      for (const [local, imported] of locals) {
+        const own = importBindings.get(local)
+        // Exact same import already present: the builder's need is satisfied. Skip.
+        if (own && own.source === source && own.imported === imported) continue
+        if (boundLocally.has(local) || emitted.has(local)) {
+          throw new Error(
+            `${id} — parseman will not emit this module: a fused builder needs \`${imported}\` from `
+            + `${JSON.stringify(source)} bound as \`${local}\`, but this module already binds \`${local}\` `
+            + `to something else. The inlined builder source names \`${local}\` verbatim, so the import `
+            + `cannot be aliased; rename the conflicting local binding so the builder's import can be re-emitted.`,
+          )
+        }
+        emitted.add(local)
+        needed.push([local, imported])
+      }
+      if (needed.length === 0) continue
+      const specs = needed.map(([local, imported]) => imported === local ? local : `${imported} as ${local}`)
+      ms.prepend(`import { ${specs.join(', ')} } from ${JSON.stringify(source)}\n`)
+    }
+  }
   if (applied.length > 0) {
     ms.prepend(
       `// Generated by parseman v${PARSEMAN_VERSION} — DO NOT EDIT.\n` +
@@ -2259,6 +2397,7 @@ function transformMacroImpl(
   // caller's config does not break; it is now inert.
 
   setReducerResolver(null)
+  setBuilderImportResolver(null)
   // Every place the compiler chose a correct-but-slower path for this module. Reported
   // on the ordinary warning channel and greppable on `[parseman] degraded`, so a
   // consumer's build gate can assert zero of them the way jess's `check:macro` already

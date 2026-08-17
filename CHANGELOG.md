@@ -3,6 +3,58 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.49.0 — 2026-08-15
+
+- Lift the composed-builder static analyzer so a `node()` / reducer used under
+  `compose()` or `composeLeaf()` may reference an imported or free binding, use a
+  block-statement body (`throw`, `for`, `for…of`), and be written as a non-arrow
+  `function`. The analyzer previously accepted only a self-contained arrow
+  expression and failed every other builder closed — which forced a composable
+  grammar to inline each constructor and helper its reducers called before the
+  grammar could be fused. It now re-emits an imported binding through its import
+  provenance, so a builder that calls an imported constructor or a shared reducer
+  helper composes and macro-fuses statically, with no source copy of the callee.
+  The refusal boundary is unchanged for builders that are genuinely not statically
+  resolvable: `async` and generator reducers, `this` / `arguments`, and a name that
+  resolves to neither an import nor a module-local binding still fail closed to the
+  ordinary runtime `compose()` path.
+- Re-emit a composed base's builder imports when a DOWNSTREAM module composes an
+  already-compiled base plus a delta (`compose([importedBase, rules(delta)])`) — the
+  dialect pattern where a superset imports a base grammar and defines only its
+  overrides. The import-provenance harvest walked the merged rule graph by own
+  properties, which reached a builder's imports only when its rule was a bare `node`;
+  a rule that another rule references is materialized as a `lazy` proxy whose
+  definition sits behind the thunk, so the imports of every cross-referenced inherited
+  rule were silently dropped. The fused downstream module then read those names with
+  nothing to bind them — refused closed as "bound by nothing" (same package) or left a
+  runtime `compose()` that threw (cross package). The harvest now follows a rule
+  reference to its winning definition, matching what the fused table inlines: it
+  gathers exactly the imports of the winning rule bodies and re-emits them, so an
+  overridden rule's shadowed original contributes no dead import.
+- Scope builder-import provenance to the module that authored the reducer body, and
+  carry it only for a body that is actually inlined. A `node(…, namedReducer)` whose
+  reducer is resolved to another module's source is emitted as a live binding that
+  runs in its own module's scope, so its body is never inlined here; the analyzer
+  previously resolved that body's free names against the CONSUMING module's imports
+  and, when a coincidental same-named import existed there, recorded the wrong import
+  as the builder's provenance — which a downstream compose would re-emit, binding the
+  builder to the wrong helper. Such a named reducer now carries no provenance (only an
+  inline builder body, whose source is what gets inlined, does), so the wrong-scope
+  binding can no longer be recorded.
+- Refuse, rather than silently mis-bind, a re-emitted builder import whose local name
+  collides with a different binding already present in the consuming module — a named
+  import of another source/symbol, a default or namespace import, a top-level
+  `const` / `function` / `class`, or a second carried source needing the same local
+  name. The inlined builder source spells the free name verbatim, so the import cannot
+  be aliased; the earlier filter only skipped re-emission when the name was already an
+  import, which bound the inlined builder to the unrelated same-named symbol (or, for a
+  non-import binding, emitted a duplicate declaration). An already-present import of the
+  exact same source and symbol is still the benign case and is deduplicated silently.
+- Rebuild generated, macro, composed, folded, precompiled, and rule-map artifacts
+  with 0.49.0; Parseman artifacts are version-locked to their runtime.
+- Re-anchor the grammar-density and broad-workload perf gates to the 0.48.1 release
+  commit (`e6bd59e`), the stable base this release advances.
+
 ## 0.48.1 — 2026-08-14
 
 - Fix ordered-choice failure diagnostics to keep the expected tokens from the

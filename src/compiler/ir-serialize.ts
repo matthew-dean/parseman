@@ -179,8 +179,12 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     ;(l._def as { fnSrc?: string }).fnSrc = src
     return l as Comb
   }
-  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[], sigSrc?: string): Comb => {
+  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[], sigSrc?: string, buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }>): Comb => {
     if (staticError !== undefined && staticError.length > 0) {
+      // Fail closed: a builder with an un-rescuable binding is NOT fused. The
+      // plugin catches this and leaves the runtime compose() in place rather than
+      // shipping a fused table that would ReferenceError on import. Import-rescued
+      // free names never reach here — they ride in `buildImports`, not `staticError`.
       throw new Error(`IR direct node builder for ${type} must be macro-static and self-contained; unsupported binding(s): ${staticError.join(', ')}`)
     }
     // A serialized direct builder needs an inert sentinel as well as buildSrc.
@@ -196,6 +200,10 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     // re-lowered composed artifact silently re-acquires the fail-open capture cost the
     // authoring module had already resolved away.
     if (sigSrc !== undefined) (n._def as { buildSigSrc?: string }).buildSigSrc = sigSrc
+    // Re-attach the direct-builder import provenance so the plugin's re-lower pass
+    // can re-emit the imports into the consuming module. Plain data — this runtime
+    // module never resolves or emits imports itself.
+    if (buildImports !== undefined) (n._def as { buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }> }).buildImports = buildImports
     return n as Comb
   }
   // `_gch` rebuilds a GATED choice AND restores its `_def.gateSrcs` (parallel to the
@@ -569,11 +577,15 @@ class Serializer {
           // Trailing optionals, emitted only when present so an artifact that carries
           // neither is byte-identical to what previous versions produced.
           const tail: string[] = []
-          if (def.buildStaticError !== undefined || def.buildSigSrc !== undefined) {
+          // Positional args to `_nd`: (…, staticError, sigSrc, buildImports). A later
+          // arg being present forces the earlier ones to be emitted (as `undefined`)
+          // so the positions line up.
+          if (def.buildStaticError !== undefined || def.buildSigSrc !== undefined || def.buildImports !== undefined) {
             if (!opts) tail.push('undefined')
             tail.push(def.buildStaticError === undefined ? 'undefined' : JSON.stringify(def.buildStaticError))
           }
-          if (def.buildSigSrc !== undefined) tail.push(JSON.stringify(def.buildSigSrc))
+          if (def.buildSigSrc !== undefined || def.buildImports !== undefined) tail.push(def.buildSigSrc === undefined ? 'undefined' : JSON.stringify(def.buildSigSrc))
+          if (def.buildImports !== undefined) tail.push(JSON.stringify(def.buildImports))
           const trailing = tail.length > 0 ? `, ${tail.join(', ')}` : ''
           return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts}${trailing})`
         }
