@@ -156,9 +156,10 @@ function rollbackBufList(
     if (len === 0) b[keyMulti] = undefined
     else if (len === 1) { b[keySingle] = arr[0]; b[keyMulti] = undefined }
     // Guarded like every other truncation — see rollbackCstCapture. This is the
-    // buffered node-capture path, so it is reached only by the INTERPRETER (the
-    // compiled engine inlines its own capture and never calls here), and it is
-    // where the redundant-store rate is highest: over a backtracking fixture
+    // buffered node-capture path. `demoteCapturedToRaw` is its remaining caller;
+    // the table closure's fixed raw/child rollback fields stay inline so its hot
+    // speculative path does not rediscover them through dynamic property keys.
+    // This is where the redundant-store rate is highest: over a backtracking fixture
     // this branch ran 32,800 times and 31,198 of those — 95% — restored a
     // length that had not moved.
     else if (arr.length !== len) arr.length = len
@@ -238,8 +239,18 @@ export function rollbackCstCaptureAt(
   if (ctx._errors && errors !== undefined && ctx._errors.length !== errors) ctx._errors.length = errors
   const b = ctx._cstBuf
   if (b) {
-    rollbackBufList(b, 'raw', 'rawSingle', raw)
-    rollbackBufList(b, 'ch', 'single', leaves)
+    const rawList = b.raw
+    if (rawList) {
+      if (raw === 0) b.raw = undefined
+      else if (raw === 1) { b.rawSingle = rawList[0]; b.raw = undefined }
+      else if (rawList.length !== raw) rawList.length = raw
+    } else if (raw === 0) b.rawSingle = undefined
+    const childList = b.ch
+    if (childList) {
+      if (leaves === 0) b.ch = undefined
+      else if (leaves === 1) { b.single = childList[0]; b.ch = undefined }
+      else if (childList.length !== leaves) childList.length = leaves
+    } else if (leaves === 0) b.single = undefined
     if (b.tl) {
       if (tlog === 0) b.tl = undefined
       else if (b.tl.length !== tlog) b.tl.length = tlog
