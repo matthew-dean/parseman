@@ -1,5 +1,5 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { classifyFinalChoice, firstSetOf, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
+import { classifyFinalChoice, firstSetOf, fromChar, matchesEmpty, union, type RefResolver, type FinalChoiceClassification } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { capturesLeaf, mayLeavePartialCapture } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
@@ -22,7 +22,7 @@ import { resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
 import { missingInferredType } from '../combinators/node.ts'
 import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
-import type { DispatchSpec, LexBodySpec, LexProgramSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
+import type { ChoiceSecondScalarPlan, DispatchSpec, LexBodySpec, LexProgramSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 import {
   lexProgramDigest,
   LEX_NODE_CHOICE2, LEX_NODE_CHOICE4, LEX_NODE_CHOICE8,
@@ -143,6 +143,7 @@ class Encoder {
   lexPrograms: LexProgramSpec[] = []
   private lexProgramIndex = new Map<string, number>()
   private choiceRollbackMasks = new Map<number, number>()
+  private choiceSecondScalarPlans = new Map<number, ChoiceSecondScalarPlan>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -679,6 +680,116 @@ class Encoder {
     return i
   }
 
+  /** Does this compile-time first-set admit one ASCII scalar? */
+  private firstSetHas(fs: FirstSet, code: number): boolean {
+    if (fs.kind === 'any') return true
+    if (fs.kind === 'empty') return false
+    return fs.ranges.some(range => code >= range.lo && code <= range.hi)
+  }
+
+  /**
+   * A necessary second scalar inside the SAME atomic leading token. Keeping the
+   * proof inside that token preserves failure position and expected sets: a
+   * split `literal('@'), regex(name)` arm is intentionally unrestricted because
+   * its mismatch is reported at `pos + 1`, while an atomic `literal('@@')`
+   * mismatch remains at `pos` and can use the arm's static expected set.
+   */
+  private secondScalarSet(
+    p: Combinator<unknown>,
+    first: number,
+    seen = new Set<Combinator<unknown>>(),
+  ): FirstSet | undefined {
+    if (seen.has(p)) return undefined
+    seen.add(p)
+    try {
+      const d = p._def
+      switch (d.tag) {
+        case 'literal': {
+          if (d.caseInsensitive) return undefined
+          const chars = [...d.value]
+          if (chars.length < 2 || chars[0]!.codePointAt(0) !== first) return undefined
+          return fromChar(chars[1]!.codePointAt(0)!)
+        }
+        case 'sequence': {
+          const head = d.parsers[0]
+          if (head === undefined || matchesEmpty(head, new Set(), this.refResolver())) return undefined
+          return this.secondScalarSet(head, first, seen)
+        }
+        case 'choice': {
+          let out: FirstSet = { kind: 'empty' }
+          let found = false
+          for (let armId = 0; armId < d.parsers.length; armId++) {
+            const arm = d.parsers[armId]!
+            const armFirst = firstSetOf(arm, new Set(), this.refResolver())
+            if (!this.firstSetHas(armFirst, first)) continue
+            // A gated arm's predicate runs before its parser. Rejecting the
+            // enclosing arm from source bytes would skip that author callback.
+            if (d.gates[armId] !== null) return undefined
+            if (matchesEmpty(arm, new Set(), this.refResolver())) return undefined
+            const second = this.secondScalarSet(arm, first, seen)
+            if (second === undefined) return undefined
+            out = union(out, second)
+            found = true
+          }
+          return found && out.kind === 'ranges' && out.ranges.length > 0 ? out : undefined
+        }
+        case 'transform': case 'trivia': case 'token': case 'leaf': case 'label':
+        case 'field': case 'node': case 'attempt': case 'expect':
+          return this.secondScalarSet(d.parser, first, seen)
+        case 'grammar':
+          return d.clearTrivia === true || d.triviaParser === undefined
+            ? this.secondScalarSet(d.parser, first, seen)
+            : undefined
+        case 'lazy': {
+          const name = (p as unknown as { _ruleName?: string })._ruleName
+          const winner = name === undefined ? undefined : this.winners?.[name]
+          if (winner !== undefined && !winnerWrapsReference(winner, p)) {
+            return this.secondScalarSet(winner, first, seen)
+          }
+          try { return this.secondScalarSet(d.thunk(), first, seen) }
+          catch { return undefined }
+        }
+        default:
+          return undefined
+      }
+    } finally {
+      seen.delete(p)
+    }
+  }
+
+  /**
+   * Pick one high-value overlapping ASCII prefix for a choice. Requiring three
+   * viable arms avoids charging a second-scalar read to ordinary binary choices;
+   * requiring two distinct proven classes ensures the pretest can reject work.
+   */
+  private secondScalarPlan(
+    arms: readonly Combinator<unknown>[],
+    finalChoice: FinalChoiceClassification,
+    dynamicGates: readonly boolean[],
+  ): ChoiceSecondScalarPlan | undefined {
+    if (arms.length < 4 || arms.length > 32) return undefined
+    let best: { first: number; sets: Array<FirstSet | undefined>; score: number } | undefined
+    for (let first = 0; first < 128; first++) {
+      const viable = arms.flatMap((_, arm) =>
+        !finalChoice.nullable[arm] && this.firstSetHas(finalChoice.firstSets[arm]!, first) ? [arm] : [])
+      if (viable.length < 3) continue
+      const sets = arms.map((arm, index) => viable.includes(index) && !dynamicGates[index]
+        ? this.secondScalarSet(arm, first)
+        : undefined)
+      const known = viable.flatMap(index => sets[index] === undefined ? [] : [sets[index]!])
+      if (known.length < 2 || known.some(set => set.kind !== 'ranges' || set.ranges.length === 0)) continue
+      const distinct = new Set(known.map(set => encodeClassSpec((set as Extract<FirstSet, { kind: 'ranges' }>).ranges)))
+      if (distinct.size < 2) continue
+      const score = known.length * 100 + viable.length
+      if (best === undefined || score > best.score) best = { first, sets, score }
+    }
+    if (best === undefined) return undefined
+    return {
+      first: best.first,
+      armClasses: best.sets.map(set => set === undefined ? -1 : this.charClass(set)),
+    }
+  }
+
   /** Bind a guard only when its class is already part of the program. Repeat
    * gating must not grow the compact artifact merely to avoid a failed call. */
   private existingCharClass(fs: FirstSet): number {
@@ -1126,6 +1237,9 @@ class Encoder {
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
         const finalChoice = classifyFinalChoice(arms, rr)
+        const secondScalarPlan = this.secondScalarPlan(
+          arms, finalChoice, order.map(index => d.gates[index] !== null),
+        )
         const classes = arms.map((_, i) => finalChoice.nullable[i]
           ? -1 : this.charClass(finalChoice.firstSets[i]!))
         const dispIdx = this.disp.length
@@ -1160,6 +1274,7 @@ class Encoder {
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
+        if (secondScalarPlan !== undefined) this.choiceSecondScalarPlans.set(head, secondScalarPlan)
         return head
       }
       case 'many':
@@ -1719,7 +1834,7 @@ class Encoder {
       ...(this.rec ? { rec: 1 as const } : {}),
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
-    }, undefined, this.choiceRollbackMasks)
+    }, undefined, this.choiceRollbackMasks, this.choiceSecondScalarPlans)
   }
 }
 

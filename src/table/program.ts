@@ -493,7 +493,19 @@ type RuntimeTableProgram = TableProgram & {
   readonly [TABLE_RUNTIME]?: {
     resolved: ResolvedTable | undefined
     readonly choiceRollbackMasks?: ReadonlyMap<number, number>
+    readonly choiceSecondScalarPlans?: ReadonlyMap<number, ChoiceSecondScalarPlan>
   }
+}
+
+/**
+ * Compiler-only prefix authority for one ordered choice. When the first scalar
+ * equals `first`, a non-negative arm entry is a necessary class for the second
+ * scalar. `-1` keeps that arm unrestricted. This is a rejection proof only: it
+ * never consumes or publishes a token range.
+ */
+export type ChoiceSecondScalarPlan = {
+  readonly first: number
+  readonly armClasses: readonly number[]
 }
 
 /** Give an internally-created program its fixed-shape runtime owner. */
@@ -501,11 +513,16 @@ export function ownTableProgram(
   prog: TableProgram,
   resolved?: ResolvedTable,
   choiceRollbackMasks?: ReadonlyMap<number, number>,
+  choiceSecondScalarPlans?: ReadonlyMap<number, ChoiceSecondScalarPlan>,
 ): TableProgram {
-  const inherited = (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceRollbackMasks
+  const owner = (prog as RuntimeTableProgram)[TABLE_RUNTIME]
   return {
     ...prog,
-    [TABLE_RUNTIME]: { resolved, choiceRollbackMasks: choiceRollbackMasks ?? inherited },
+    [TABLE_RUNTIME]: {
+      resolved,
+      choiceRollbackMasks: choiceRollbackMasks ?? owner?.choiceRollbackMasks,
+      choiceSecondScalarPlans: choiceSecondScalarPlans ?? owner?.choiceSecondScalarPlans,
+    },
   } as RuntimeTableProgram
 }
 
@@ -513,6 +530,11 @@ export function ownTableProgram(
  * assembly and never serialized into the shipped table. */
 export function choiceRollbackMask(prog: TableProgram, ip: number): number | undefined {
   return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceRollbackMasks?.get(ip)
+}
+
+/** Compiler-only second-scalar rejection proof for a static assembly. */
+export function choiceSecondScalarPlan(prog: TableProgram, ip: number): ChoiceSecondScalarPlan | undefined {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceSecondScalarPlans?.get(ip)
 }
 
 /** A compiled entry, shaped exactly like a codegen rule function. */
