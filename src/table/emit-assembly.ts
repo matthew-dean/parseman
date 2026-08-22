@@ -147,8 +147,6 @@ let _pfTokValue
 let _pfTokDispatch=-1
 let _pfTokArm=-1
 let _pfTokEnd=-1
-let _pfLeadPos=-1
-let _pfLeadValue=-1
 function _asciiFoldCode(c){return c>=65&&c<=90?c+32:c}
 function _skipTrivia(input,cur,ctx){
 const s=_pfScan
@@ -1134,7 +1132,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
         const cls = hoist('cl', `CLS[${ci}][0]`)
         const xf = fxRef(code[ip + 3]!)
         return `${head}
-if(!classHas(${cls},pos===_pfLeadPos?_pfLeadValue:(_pfLeadPos=pos,_pfLeadValue=lead(input,pos)))){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+if(!classHas(${cls},lead(input,pos))){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 return ${child}(input,pos,ctx)
 }`
       }
@@ -1569,7 +1567,7 @@ return v
           // this unit exists to remove.
           const armSwitch = arms.map((a, i) => `case ${i}:v=${a}(input,pos,ctx);break`).join('\n')
           return `${head}
-const c=pos===_pfLeadPos?_pfLeadValue:(_pfLeadPos=pos,_pfLeadValue=lead(input,pos))
+const c=lead(input,pos)
 let arm=-1
 if(c>=0&&c<128){const a=${asc}[c];if(a!==0)arm=a-1}
 ${hiArr.length === 0 ? '' : `else if(c>=128){const h=${hoist('hi', `DISP[${di}].hi`)}
@@ -1692,7 +1690,7 @@ ${rollbackFor(i)}
           }).join('\n')
 
           return `${head}
-const c=pos===_pfLeadPos?_pfLeadValue:(_pfLeadPos=pos,_pfLeadValue=lead(input,pos))
+const c=lead(input,pos)
 ${hasRollback ? emitMark(p, L.buf, sinks) : ''}
 let acc
 let best=pos
@@ -1919,7 +1917,7 @@ const out=${collect ? '[]' : 'undefined'}
 ${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&!classHas(${itemCls},cur===_pfLeadPos?_pfLeadValue:(_pfLeadPos=cur,_pfLeadValue=lead(input,cur))))break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&!classHas(${itemCls},lead(input,cur)))break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
 ${markBody}
 let itemStart=cur
 let sepEnd=-1
@@ -1941,7 +1939,7 @@ itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(inp
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&!classHas(${itemCls},itemStart===_pfLeadPos?_pfLeadValue:(_pfLeadPos=itemStart,_pfLeadValue=lead(input,itemStart)))){
+${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&!classHas(${itemCls},lead(input,itemStart))){
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
@@ -2189,8 +2187,7 @@ ${choiceDefs.join('\n')}
 ${bodies.join('\n')}
 function _begin(ctx){
 const host=ctx.build
-if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e,_pfLeadPos,_pfLeadValue])
-_pfLeadPos=-1
+if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])
 _pfDepth++
 _pfScan=null
 _pfHost=host
@@ -2203,15 +2200,12 @@ _pfTokInput=undefined
 _pfTokBody=-1
 _pfTokValue=undefined
 _pfTokDispatch=-1
-_pfLeadPos=-1
 return
 }
 const prior=_pfFrames.pop()
 _pfScan=prior[0]
 _pfHost=prior[1]
 EC.e=prior[2]
-_pfLeadPos=prior[3]
-_pfLeadValue=prior[4]
 }
 return{
 pieces:{${ruleEntries.join(',')}},
