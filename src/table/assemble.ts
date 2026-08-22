@@ -3502,17 +3502,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // allocations a parse that the compiled engine (which inlines its own
           // capture prologue and epilogue) never makes.
           const sCh = ctx._cstChildren
-          const sLv = ctx._cstLeaves
-          const sRaw = ctx._cstRawChildren
-          const sTl = ctx._cstTriviaLog
           const sCap = ctx.captureTrivia
           const sBuf = ctx._cstBuf
           const buf: CstCaptureBuf = rawOnly ? { rawOnly: true } : {}
           ctx._cstBuf = buf
-          ctx._cstChildren = undefined
-          ctx._cstLeaves = undefined
-          ctx._cstRawChildren = undefined
-          ctx._cstTriviaLog = undefined
           // `begin` sets this true and the caller immediately cleared it when the
           // node does not capture wide. Net: the flag IS `captureWide`, a const.
           ctx.captureTrivia = captureWide
@@ -3537,10 +3530,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
           const tlog = buf.tl ?? EMPTY_TLOG
           ctx._cstBuf = sBuf
-          ctx._cstChildren = sCh
-          ctx._cstLeaves = sLv
-          ctx._cstRawChildren = sRaw
-          ctx._cstTriviaLog = sTl
           ctx.captureTrivia = sCap
           if (v === FAIL) return FAIL
           const end = EC.e
