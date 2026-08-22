@@ -136,6 +136,15 @@ let _pfScan=null
 let _pfHost
 let _pfDepth=0
 const _pfFrames=[]
+let _pfTokInput
+let _pfTokPos=-1
+let _pfTokBody=-1
+let _pfTokPacked=-1
+let _pfTokValue
+let _pfTokDispatch=-1
+let _pfTokArm=-1
+let _pfTokEnd=-1
+function _asciiFoldCode(c){return c>=65&&c<=90?c+32:c}
 function _skipTrivia(input,cur,ctx){
 const s=_pfScan
 if(s!==null&&ctx._triviaLog===undefined&&!(ctx.captureTrivia===true&&(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)))return s(input,cur)
@@ -505,6 +514,10 @@ export function emitAssemblySource(
   // the closure recognizer pool: distinct terminal rows sharing one spec share
   // both the recognizer and the ordinary-terminal lowering.
   const scalarSpecs = new Set<number>()
+  type TokenChoiceCandidate = { readonly arm: number; readonly dispatchIp: number }
+  const tokenChoiceCandidates = new Map<number, TokenChoiceCandidate>()
+  const tokenChoiceDispatches = new Set<number>()
+  const tokenChoiceBodies = new Set<number>()
   if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
     for (const ip of reachableSites(code, roots)) {
       if (code[ip] === OP_NODE) {
@@ -514,10 +527,36 @@ export function emitAssemblySource(
       }
       if (code[ip] !== OP_CHOICE || disp[code[ip + 1]!]!.exclusive) continue
       const n = code[ip + 2]!
-      if (n !== 2 && n !== 3) continue
       for (let i = 0; i < n; i++) {
-        const child = leadingScalarTerminal(code, code[ip + 4 + i]!)
-        if (child >= 0) scalarSpecs.add(code[child + 1]!)
+        if (n === 2 || n === 3) {
+          const child = leadingScalarTerminal(code, code[ip + 4 + i]!)
+          if (child >= 0) scalarSpecs.add(code[child + 1]!)
+        }
+      }
+
+      // A direct value-only transform around a dispatch cannot consume, branch,
+      // publish, or call author code before the dispatch selector. When that
+      // selector is one compiler-selected lexical body, the emitted choice may
+      // recognize and classify it before entering the arm, then hand the exact
+      // packed range and route to the ordinary LEX_BODY/DISPATCH readers. One
+      // candidate per ordered choice keeps source order authoritative: a second
+      // eligible arm leaves the whole site on the established PEG path.
+      let candidate: TokenChoiceCandidate | undefined
+      let ambiguous = false
+      for (let i = 0; i < n; i++) {
+        const armIp = code[ip + 4 + i]!
+        if (code[armIp] !== OP_XFORM) continue
+        const dispatchIp = code[armIp + 2]!
+        if (code[dispatchIp] !== OP_DISPATCH) continue
+        const selectorIp = code[dispatchIp + 1]!
+        if (code[selectorIp] !== OP_LEX_BODY) continue
+        if (candidate !== undefined) { ambiguous = true; break }
+        candidate = { arm: i, dispatchIp }
+      }
+      if (!ambiguous && candidate !== undefined) {
+        tokenChoiceCandidates.set(ip, candidate)
+        tokenChoiceDispatches.add(candidate.dispatchIp)
+        tokenChoiceBodies.add(code[code[candidate.dispatchIp + 1]! + 1]!)
       }
     }
   }
@@ -607,6 +646,102 @@ export function emitAssemblySource(
   /** A fresh local prefix, so two inlined marks in one body cannot collide. */
   let uid = 0
   const tmp = (): string => `_t${uid++}_`
+
+  /** One dispatch matcher as source, shared by the ordinary and token-first paths. */
+  const dispatchClaim = (m: readonly [number, string, string, number]): string => {
+    switch (m[0]) {
+      case 0: return `key.startsWith(${q(m[1])})`
+      case 1: return `key.endsWith(${q(m[1])})`
+      case 3: return `asciiFoldKey(key).startsWith(${q(m[1])})`
+      case 4: return `asciiFoldKey(key).endsWith(${q(m[1])})`
+      default: {
+        if (!m[2].includes('g') && !m[2].includes('y')) {
+          try {
+            // Validate without changing malformed-row error timing.
+            new RegExp(m[1], m[2])
+            return `${hoist('dm', `new RegExp(${q(m[1])},${q(m[2])})`)}.test(key)`
+          } catch {}
+        }
+        return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
+      }
+    }
+  }
+
+  type TokenDecisionRef = { readonly name: string; readonly expected: string }
+  const tokenDecisionRefs = new Map<number, TokenDecisionRef>()
+  function tokenDecisionFor(dispatchIp: number): TokenDecisionRef {
+    const prior = tokenDecisionRefs.get(dispatchIp)
+    if (prior !== undefined) return prior
+    const selectorIp = code[dispatchIp + 1]!
+    const body = code[selectorIp + 1]!
+    const lineFlags = code[selectorIp + 4]!
+    const hasSuffix = (lineFlags & 4) !== 0
+    const di = code[dispatchIp + 2]!
+    const spec = dsp[di]!
+    const n = code[dispatchIp + 5]!
+    validateDispatchSpec(spec, n, code[dispatchIp + 4]!)
+    const recognize = hoist('lex', `LEX[${body}]`)
+    const bk = hoist('bk', `DSP[${di}].byKey`)
+    const expected = hoist('dx', `DSP[${di}].expected`)
+    const fold = spec.byFold.size > 0
+      ? `if(arm===undefined)arm=${hoist('bf', `DSP[${di}].byFold`)}.get(asciiFoldKey(key))\n`
+      : ''
+    const chain = spec.match.length === 0
+      ? ''
+      : `if(arm===undefined){\n${spec.match.map((m, i) => `${i === 0 ? '' : 'else '}if(${dispatchClaim(m)})arm=${m[3]}`).join('\n')}\n}\n`
+    const foldedEntries = [...spec.byFold.entries()]
+    const fixedFunctionChoice = spec.byKey.size === 0
+      && foldedEntries.length === 1
+      && spec.match.length === 1
+      && spec.match[0]![0] === 2
+      && spec.match[0]![1] === '^(?!(?:url|calc)\\($).+\\($'
+      && spec.match[0]![2] === 'i'
+      && code[dispatchIp + 3]! < 0
+    const foldedRangeEquals = (value: string): string => {
+      const folded = value.replace(/[A-Z]/g, c => c.toLowerCase())
+      return `e-pos===${folded.length}&&${[...folded].map((c, i) => {
+        const cc = c.charCodeAt(0)
+        return `_asciiFoldCode(input.charCodeAt(pos+${i}))===${cc}`
+      }).join('&&')}`
+    }
+    const classify = fixedFunctionChoice
+      ? (() => {
+          const [exact, exactArm] = foldedEntries[0]!
+          const genericArm = spec.match[0]![3]
+          return `let arm
+if(${foldedRangeEquals(exact)})arm=${exactArm}
+else if(sm&&e>pos+1){
+let clean=true
+for(let i=pos;i<e;i++){const c=input.charCodeAt(i);if(c===10||c===13||c===0x2028||c===0x2029){clean=false;break}}
+if(clean&&!(${foldedRangeEquals('url(')})&&!(${foldedRangeEquals('calc(')}))arm=${genericArm}
+}`
+        })()
+      : `const key=input.slice(pos,e)
+let arm=${bk}.get(key)
+${fold}${chain}`
+    const name = `_td${tokenDecisionRefs.size}_`
+    choiceDefs.push(`function ${name}(input,pos){
+const r=${recognize}(input,pos)
+if(r<0)return -1
+const sm=${hasSuffix ? 'r%2===1' : 'false'},e=(r-(sm?1:0))/2
+${classify}
+if(arm===undefined){
+${code[dispatchIp + 3]! < 0 ? '_pfTokEnd=e;return 0' : `arm=${n}`}
+}
+${fixedFunctionChoice ? 'const key=input.slice(pos,e)' : ''}
+_pfTokInput=input
+_pfTokPos=pos
+_pfTokBody=${body}
+_pfTokPacked=r
+_pfTokValue=key
+_pfTokDispatch=${dispatchIp}
+_pfTokArm=arm
+return 1
+}`)
+    const made = { name, expected }
+    tokenDecisionRefs.set(dispatchIp, made)
+    return made
+  }
 
   /**
    * THE TRIVIA SCAN FOR ONE SITE LABEL.
@@ -1184,20 +1319,24 @@ return out
       }
 
       case OP_LEX_BODY: {
-        const recognize = hoist('lex', `LEX[${code[ip + 1]!}]`)
+        const body = code[ip + 1]!
+        const recognize = hoist('lex', `LEX[${body}]`)
         const expected = fxRef(code[ip + 2]!)
         const suffixExpected = fxRef(code[ip + 3]!)
         const lineFlags = code[ip + 4]!
         const hasSuffix = (lineFlags & 4) !== 0
+        const pending = tokenChoiceBodies.has(body)
         return `${head}
-const r=${recognize}(input,pos)
+${pending ? `const tp=_pfTokBody===${body}&&_pfTokInput===input&&_pfTokPos===pos
+const r=tp?_pfTokPacked:${recognize}(input,pos)` : `const r=${recognize}(input,pos)`}
 if(r<0){ctx._fe=pos;ctx._fx=${expected};if(ctx._probe!==undefined)failAt(ctx,${expected},pos);return FAIL}
 const sm=${hasSuffix ? 'r%2===1' : 'false'},e=(r-(sm?1:0))/2
 ${(lineFlags & 1) !== 0 ? '_trackLines(ctx,input,sm?e-1:e)' : ''}
 ${hasSuffix ? 'ctx._fc=false' : ''}
 ${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
 ${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
-const v=input.slice(pos,e)
+const v=${pending ? 'tp?_pfTokValue:' : ''}input.slice(pos,e)
+${pending ? 'if(tp){_pfTokBody=-1;_pfTokValue=undefined}' : ''}
 if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
 EC.e=e
 return v
@@ -1454,11 +1593,19 @@ return FAIL
           const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
           const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
-          const pretests = Array.from({ length: n }, (_, i): string | undefined => {
+          type ChoicePretest = {
+            readonly scalar?: string
+            readonly token?: TokenDecisionRef
+          }
+          const tokenCandidate = tokenChoiceCandidates.get(ip)
+          const pretests = Array.from({ length: n }, (_, i): ChoicePretest | undefined => {
+            if (tokenCandidate?.arm === i) {
+              return { token: tokenDecisionFor(tokenCandidate.dispatchIp) }
+            }
             if (n !== 2 && n !== 3) return undefined
             const terminal = leadingScalarTerminal(code, code[base + i]!)
             if (terminal < 0 || !scalarSpecs.has(code[terminal + 1]!)) return undefined
-            return recognizerRef(code[terminal + 1]!)
+            return { scalar: recognizerRef(code[terminal + 1]!) }
           })
           const maskable = n <= 32
           const maskName = maskable
@@ -1476,7 +1623,21 @@ return FAIL
             choiceDefs.push(`function ${catchName}(target,prev,acc){switch(prev){\n${catchCases}\n}return acc}`)
           }
           const maskArms = maskable ? arms.map((arm, i) => {
-            return `if((bits&${1 << i})!==0${pretests[i] === undefined ? '' : `&&${pretests[i]}(input,pos)>=0`}){
+            const pretest = pretests[i]
+            const decision = pretest?.token === undefined ? '' : tmp()
+            const condition = pretest?.token !== undefined
+              ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
+              : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
+            const routeMiss = pretest?.token === undefined ? '' : `
+if(${decision}===0){
+ctx._fc=false
+if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}
+{const at=_pfTokEnd
+if(at>best){best=at;acc=undefined}
+if(at===best)acc=_accSet(${pretest.token.expected},acc)}
+}`
+            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
@@ -1487,9 +1648,23 @@ if(at>best){best=at;acc=undefined}
 if(at===best)acc=_accSet(ctx._fx,acc)}
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
-}`
+}${routeMiss}`
           }).join('\n') : ''
-          const generalArms = arms.map((arm, i) => `if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${pretests[i] === undefined ? '' : `&&${pretests[i]}(input,pos)>=0`}){
+          const generalArms = arms.map((arm, i) => {
+            const pretest = pretests[i]
+            const decision = pretest?.token === undefined ? '' : tmp()
+            const condition = pretest?.token !== undefined
+              ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
+              : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
+            const miss = pretest?.token === undefined
+              ? `else if(best===pos)acc=_accSet(${expected[i]},acc)`
+              : `else if(${decision}===0){
+ctx._fc=false
+const at=_pfTokEnd
+if(at>best){best=at;acc=undefined}
+if(at===best)acc=_accSet(${pretest.token.expected},acc)
+}else if(best===pos)acc=_accSet(${expected[i]},acc)`
+            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
@@ -1498,7 +1673,8 @@ if(at>best){best=at;acc=undefined}
 if(at===best)acc=_accSet(ctx._fx,acc)}
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
-}else if(best===pos)acc=_accSet(${expected[i]},acc)`).join('\n')
+}${miss}`
+          }).join('\n')
 
           return `${head}
 const c=lead(input,pos)
@@ -1536,36 +1712,9 @@ return FAIL
         for (let i = 0; i < n; i++) arms.push(link(code[armBase + i]!))
         const bk = hoist('bk', `DSP[${di}].byKey`)
         const dx = hoist('dx', `DSP[${di}].expected`)
-        // THE MATCHER ARMS, AS SOURCE. `exec.ts`'s `linkMatcher` mints one
-        // closure per arm from four literals it already has in hand; the four
-        // are TABLE DATA, so here they are the test itself and no closure, no
-        // pool and no indexed call exist. Kinds are `matcherClaims`'s exactly
-        // — 0/1 raw prefix/suffix, 3/4 the pre-folded pair, anything else a
-        // regex. Public `matches()` refuses global/sticky patterns, so its
-        // RegExp can be compiled once into the assembly prelude. Hand-built
-        // low-level rows with g/y or invalid flags retain the old per-test
-        // construction and therefore the old `lastIndex`/throw behavior.
-        const claims = (m: readonly [number, string, string, number]): string => {
-          switch (m[0]) {
-            case 0: return `key.startsWith(${q(m[1])})`
-            case 1: return `key.endsWith(${q(m[1])})`
-            case 3: return `asciiFoldKey(key).startsWith(${q(m[1])})`
-            case 4: return `asciiFoldKey(key).endsWith(${q(m[1])})`
-            default: {
-              if (!m[2].includes('g') && !m[2].includes('y')) {
-                try {
-                  // Validate without changing malformed-row error timing.
-                  new RegExp(m[1], m[2])
-                  return `${hoist('dm', `new RegExp(${q(m[1])},${q(m[2])})`)}.test(key)`
-                } catch {}
-              }
-              return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
-            }
-          }
-        }
         const chain = spec.match.length === 0
           ? ''
-          : `if(arm===undefined){\n${spec.match.map((m, i) => `${i === 0 ? '' : 'else '}if(${claims(m)})arm=${m[3]}`).join('\n')}\n}\n`
+          : `if(arm===undefined){\n${spec.match.map((m, i) => `${i === 0 ? '' : 'else '}if(${dispatchClaim(m)})arm=${m[3]}`).join('\n')}\n}\n`
         const fold = spec.byFold.size > 0
           ? `if(arm===undefined)arm=${hoist('bf', `DSP[${di}].byFold`)}.get(asciiFoldKey(key))\n`
           : ''
@@ -1584,6 +1733,19 @@ break}`
         const fallbackCase = other === undefined ? '' : `default:${otherRouted
           ? routedCall(other)
           : plainCall(other)}`
+        const armSelection = tokenChoiceDispatches.has(ip)
+          ? `const tp=_pfTokDispatch===${ip}&&_pfTokInput===input&&_pfTokPos===pos
+let arm
+if(tp){
+arm=_pfTokArm
+_pfTokDispatch=-1
+_pfTokInput=undefined
+if(arm===${n})arm=undefined
+}else{
+arm=${bk}.get(key)
+${fold}${chain}}`
+          : `let arm=${bk}.get(key)
+${fold}${chain}`
         // THE SELECTOR RUNS ONCE and the key it returns picks the arm — that is
         // what `dispatch()` buys over a choice of arms that each re-parse the
         // opener. A routed arm rewinds the selector's trivia capture and gets
@@ -1594,8 +1756,7 @@ const sv=${selector}(input,pos,ctx)
 if(sv===FAIL)return FAIL
 const selEnd=EC.e
 const key=sv
-let arm=${bk}.get(key)
-${fold}${chain}
+${armSelection}
 if(arm===undefined){
 ${other === undefined ? `ctx._fe=selEnd;ctx._fx=${dx};return FAIL` : ''}
 }
@@ -2021,7 +2182,13 @@ _pfHost=host
 function _finish(){
 if(_pfDepth<=0)throw new Error('parseman emitted table assembly frame underflow')
 _pfDepth--
-if(_pfDepth===0)return
+if(_pfDepth===0){
+_pfTokInput=undefined
+_pfTokBody=-1
+_pfTokValue=undefined
+_pfTokDispatch=-1
+return
+}
 const prior=_pfFrames.pop()
 _pfScan=prior[0]
 _pfHost=prior[1]

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { attempt, choice, literal, regex, run, sequence, transform, type Combinator } from '../../src/index.ts'
+import {
+  attempt, choice, dispatch, literal, matches, optional, regex, run, sequence,
+  token, transform, when, type Combinator,
+} from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -11,7 +14,7 @@ import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../..
 type Entry = Parameters<typeof run>[0]
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
 
-function outcome(entry: Entry, input: string): unknown {
+function outcome(entry: Entry, input: string) {
   const result = run(entry, input)
   return {
     ok: result.ok,
@@ -25,6 +28,27 @@ function outcome(entry: Entry, input: string): unknown {
 function precompiled(prog: TableProgram): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
+  return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
+}
+
+function countedPrecompiled(
+  prog: TableProgram,
+  counter: { n: number },
+  plantDuplicateScan = false,
+): TableProgram {
+  const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
+  let source = emitted.source.replace(
+    /const (_lex\d+)=LEX\[(\d+)\]/g,
+    'const $1=((r)=>(input,pos)=>{COUNT_LEX.n++;return r(input,pos)})(LEX[$2])',
+  )
+  if (plantDuplicateScan) {
+    source = source.replace(/const r=tp\?_pfTokPacked:([^\n]+)/, 'const r=$1')
+  }
+  const compiled = new Function(
+    ...EMITTED_PARAMS, 'COUNT_LEX', source,
+  ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
+  const factory = ((...args: Parameters<PrecompiledAssembly['factory']>) =>
+    compiled(...args, counter)) as PrecompiledAssembly['factory']
   return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
@@ -80,5 +104,47 @@ describe('small-choice token predecision', () => {
     const grammar = choice(sequence(regex(/a/), literal('!')), sequence(regex(/a/), literal('?')))
     const source = expectIdentity(grammar, ['a!', 'a?', 'a:', 'x'])
     expect(source).not.toMatch(/&&_rec\d+_\(input,pos\)>=0/)
+  })
+
+  it('decides a wrapped dispatch from its token and reuses the recognized range', () => {
+    const functionOpen = token(sequence(
+      regex(/[A-Za-z]+/),
+      optional(literal('(')),
+    ))
+    const functionCall = dispatch(
+      functionOpen,
+      when('each(', literal('!')),
+      when(matches(/^(?!(?:url|calc)\($).+\($/i), literal('?')),
+    )
+    const grammar = choice(
+      transform(functionCall, value => value),
+      sequence(choice(literal('url('), literal('calc(')), literal(')')),
+      sequence(regex(/[A-Za-z]+/), literal(':')),
+    )
+
+    const source = expectIdentity(grammar, [
+      'each(!', 'thing(?', 'url()', 'calc()', 'bare:', 'url(', 'other(', 'x',
+    ])
+    expect(source).toMatch(/function _td\d+_\(input,pos\)/)
+    expect(source).toMatch(/const r=tp\?_pfTokPacked:/)
+    expect(source).toMatch(/_pfTokDispatch===\d+&&_pfTokInput===input/)
+
+    const prog = encodeTable({ Root: grammar })
+    const scans = { n: 0 }
+    const emitted = tableRules(countedPrecompiled(prog, scans)).Root! as Entry
+    for (const input of ['each(!', 'thing(?', 'url()']) {
+      scans.n = 0
+      expect(outcome(emitted, input).ok, input).toBe(true)
+      expect(scans.n, `${input}: token recognizer calls`).toBe(1)
+    }
+
+    const planted = tableRules(countedPrecompiled(prog, scans, true)).Root! as Entry
+    scans.n = 0
+    expect(outcome(planted, 'thing(?').ok).toBe(true)
+    expect(scans.n, 'sensitivity control: planted scan-then-rescan').toBe(2)
+
+    // The planted factory above is the RED control for the scan count. Removing
+    // `_pfTokEnd=e;return 0` separately makes `url(` rank at the choice start
+    // instead of the selector end, changing the identity assertion's expected set.
   })
 })
