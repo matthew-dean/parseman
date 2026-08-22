@@ -34,16 +34,36 @@ function functionCalls(body: () => void): number {
   return calls
 }
 
-describe('compiler-created tables use the canonical compact closure artifact', () => {
-  it('runtime compile has the same explicit empty inventory macro output carries', () => {
+/** Prove the live path degrades to closures when a CSP rejects construction. */
+function blockedFunctionCalls(body: () => void): number {
+  const real = globalThis.Function
+  let calls = 0
+  const blocked = (): never => {
+    calls++
+    throw new EvalError('Function constructor blocked by test CSP')
+  }
+  globalThis.Function = new Proxy(real, { construct: blocked, apply: blocked })
+  try {
+    body()
+  } finally {
+    globalThis.Function = real
+  }
+  return calls
+}
+
+describe('live compilation and serialized closure artifacts', () => {
+  it('specialises runtime compile once while keeping its printed artifact CSP-safe', () => {
     const compiled = compile(literal('ok'))
     expect(compiled.inlineExpression).toContain('a:[],')
+    expect(functionCalls(() => {
+      expect(compiled.parse('ok').ok).toBe(true)
+    })).toBe(1)
     expect(functionCalls(() => {
       expect(compiled.parse('ok').ok).toBe(true)
     })).toBe(0)
   })
 
-  it('both rule-map compiler entry points stamp their program before assembly', () => {
+  it('specialises live rule maps while returning closure-stamped wire programs', () => {
     const entries = [['Entry', literal('ok')]] as const
     const printable = compileRuleMap(entries)
     const runnable = compileRuleMapRunnable(entries)
@@ -57,6 +77,20 @@ describe('compiler-created tables use the canonical compact closure artifact', (
     expect(functionCalls(() => {
       expect((printable.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
       expect((runnable.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
+    })).toBe(2)
+    expect(functionCalls(() => {
+      expect((printable.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
+      expect((runnable.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
+    })).toBe(0)
+  })
+
+  it('falls back to closure assembly when a CSP blocks runtime construction', () => {
+    const compiled = compile(literal('ok'))
+    expect(blockedFunctionCalls(() => {
+      expect(compiled.parse('ok')).toMatchObject({ ok: true, span: { start: 0, end: 2 } })
+    })).toBe(1)
+    expect(functionCalls(() => {
+      expect(compiled.parse('ok').ok).toBe(true)
     })).toBe(0)
   })
 

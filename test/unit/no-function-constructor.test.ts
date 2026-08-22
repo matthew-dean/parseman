@@ -1,19 +1,16 @@
 /**
- * THE `Function` CONSTRUCTOR MUST NOT RUN AFTER THE MACRO.
+ * THE `Function` CONSTRUCTOR MUST NOT RUN AFTER THE MACRO OR ARTIFACT EMISSION.
  *
  * Two shipped statements say so, and until this file existed nothing decided
  * either of them:
  *
- *   docs/guide/modes.md      now promises one CSP-safe compact table artifact
- *                             for `compile()` and macro output.
- *   docs/reference/api.md    documents the same contract for `compile()` and
- *                             `compose()`.
+ *   docs/guide/modes.md      promises CSP-safe serialized table artifacts.
+ *   docs/reference/api.md    documents the same macro/artifact contract.
  *
- * They used to disagree: runtime `compile()` omitted `asm` and lazily constructed
- * emitted source with `new Function`, while macro output printed `a:[]` and used
- * closures. That made execution strategy depend on construction path. Every
- * compiler-created program now carries `a:[]`; the constructor is unreachable
- * from public compilation and macro routes.
+ * Live `compile()` deliberately specialises its in-memory table once when the
+ * environment permits it, with a closure fallback when construction is blocked.
+ * Printed and macro-produced programs carry `a:[]`, so importing or parsing one
+ * never constructs source at runtime.
  *
  * ── WHY A COUNTER AND NOT A SOURCE SCAN ─────────────────────────────────────
  *
@@ -43,6 +40,7 @@ import { foldPrograms, expandCompact, type CompactProgram } from '../../src/tabl
 import { tableVariants, variantNames } from '../../src/table/fold.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { compile } from '../../src/table/compile.ts'
+import { literal, sequence } from '../../src/index.ts'
 import { cssRules } from '../../examples/css/parser.ts'
 import { jsonDoc, unescapeJsonString, objectFromPairs } from '../../examples/json/parser.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
@@ -273,7 +271,7 @@ describe('the macro path never reaches the Function constructor', () => {
   })
 })
 
-describe('runtime compile and macro use one compact table artifact', () => {
+describe('runtime compile prints the same compact artifact the macro uses', () => {
   it('the actual macro transform serializes the same empty inventory and parses without Function', () => {
     const transformed = transformMacro(
       "import { literal } from 'parseman' with { type: 'macro' }\nexport const Entry = literal('yes')",
@@ -289,7 +287,7 @@ describe('runtime compile and macro use one compact table artifact', () => {
     expect(calls).toEqual([])
   })
 
-  it('runtime compile stamps the same empty assembly inventory and constructs no function', () => {
+  it('runtime compile may specialise once but stamps its printable artifacts with an empty inventory', () => {
     let compiled!: ReturnType<typeof compile>
     const calls = functionConstructorCalls(() => {
       compiled = compile(jsonDoc)
@@ -297,9 +295,30 @@ describe('runtime compile and macro use one compact table artifact', () => {
       if (!r.ok) throw new Error(`runtime compile failed — expected ${JSON.stringify(r.expected)}`)
     })
 
-    expect(calls).toEqual([])
+    // The ordinary suite takes the emitted path; the closure-engine matrix imports
+    // this file with PM_TABLE_EMIT=0. Both may assemble at most once, and the
+    // default-engine test pins the exact one-call route separately.
+    expect(calls.length).toBeLessThanOrEqual(1)
     expect(compiled.source).toContain('a:[],')
     expect(compiled.inlineExpression).toContain('a:[],')
+    expect(functionConstructorCalls(() => {
+      const r = compiled.parse('{"b":false}')
+      if (!r.ok) throw new Error(`runtime compile failed — expected ${JSON.stringify(r.expected)}`)
+    })).toEqual([])
+  })
+
+  it('keeps a four-term live sequence exact in both specialised and closure-fallback suites', () => {
+    const compiled = compile(sequence(
+      literal('a'), literal('b'), literal('c'), literal('d'),
+    ))
+    const calls = functionConstructorCalls(() => {
+      expect(compiled.parse('abcd')).toMatchObject({
+        ok: true,
+        value: ['a', 'b', 'c', 'd'],
+        span: { start: 0, end: 4 },
+      })
+    })
+    expect(calls.length).toBeLessThanOrEqual(1)
   })
 
   it('in-memory folded tables carry the same inventory as emitted folds', () => {
