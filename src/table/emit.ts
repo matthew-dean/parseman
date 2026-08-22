@@ -208,7 +208,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
     seen.add(key)
     let em
     try {
-      em = emitAssemblySource(t, prog, cfg, extraIps)
+      em = emitAssemblySource(t, prog, cfg, extraIps, true)
     } catch (e) {
       if (e instanceof Unemittable) continue
       throw e

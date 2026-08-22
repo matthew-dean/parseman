@@ -461,6 +461,11 @@ export function rebuildPools(
  * Throws `Unemittable` for any construct not lowered. It does NOT compile the
  * text — `assemble.ts` does — so a refusal and a compile failure stay two
  * distinguishable outcomes at the call site.
+ *
+ * `staticBuild` is true only when `emit.ts` embeds the returned source as an
+ * ordinary factory literal in a macro artifact. It permits macro-only code
+ * shaping without perturbing the runtime `compile()` emitter, whose generated
+ * parser must remain byte-identical when the optimization cannot affect it.
  */
 export function emitAssemblySource(
   t: ResolvedTable,
@@ -475,6 +480,7 @@ export function emitAssemblySource(
     probe: boolean
   },
   extraIps: readonly number[] = [],
+  staticBuild = false,
 ): EmitResult {
   const { code, k, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
@@ -1995,7 +2001,11 @@ const leaf={_tag:'leaf',value,span:{start:pos,end}}
 const kids=[leaf],rawKids=[leaf],span={start:pos,end}
 EC.e=end
 const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
-${L.buf ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))' : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
+${L.buf
+  ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
+  : staticBuild
+    ? 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(nd,input,pos,end):undefined)'
+    : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
 EC.e=end
 return nd
 }`
@@ -2151,7 +2161,9 @@ ${L.buf
   // The OUTER buffer, which this body saved into `sBuf` before opening its own —
   // so an in-node site's parent collector is present by the same fact.
   ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
-  : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
+  : staticBuild
+    ? 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined||sRaw!==undefined?rawEntry(nd,input,pos,end):undefined)'
+    : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
 EC.e=end
 return nd
 }`

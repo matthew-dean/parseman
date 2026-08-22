@@ -71,7 +71,9 @@ function expectAgreement(
 function precompiled(
   prog: TableProgram, mutate: (source: string) => string = source => source,
 ): { prog: TableProgram; calls: () => number } {
-  const em = emitAssemblySource(resolveTable(prog), prog, STRICT)
+  // This helper is the macro-artifact leg: `emit.ts` requests staticBuild so the
+  // factory it prints never relies on runtime source compilation.
+  const em = emitAssemblySource(resolveTable(prog), prog, STRICT, [], true)
   const source = mutate(em.source)
   const compiled = new Function(...EMITTED_PARAMS, source) as PrecompiledAssembly['factory']
   let calls = 0
@@ -88,8 +90,11 @@ function precompiled(
 function expectSpecial(prog: TableProgram): void {
   const ip = nodeIp(prog)
   expect(scalarTerminalNodeChild(prog.code, ip)).toBe(prog.code[ip + 2])
-  const source = emitAssemblySource(resolveTable(prog), prog, STRICT).source
+  const source = emitAssemblySource(resolveTable(prog), prog, STRICT, [], true).source
   expect(source).toContain('const kids=[leaf],rawKids=[leaf],span={start:pos,end}')
+  expect(source).toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
+  expect(emitAssemblySource(resolveTable(prog), prog, STRICT).source)
+    .not.toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
   expect(source).not.toContain('const sCh=ctx._cstChildren')
 }
 
@@ -211,6 +216,35 @@ describe('direct terminal-node scalar materialization', () => {
     es.precompiled = tableRules(pre.prog).Entry! as Entry
     expectDriversAgree(es, ['abc', '?', ''])
     expect(pre.calls()).toBe(1)
+  })
+
+  it('publishes raw node entries only when the outer static collector observes them', () => {
+    const semanticOnly = node('Doc', word(), children => ({ kind: 'doc', children }))
+    const readsRaw = node('Doc', word(), (children, _fields, _span, rawChildren) => ({
+      kind: 'doc', children, rawChildren,
+    }))
+
+    for (const grammar of [semanticOnly, readsRaw]) {
+      const prog = program(grammar)
+      const pre = precompiled(prog)
+      const es = drivers(prog, grammar)
+      es.precompiled = tableRules(pre.prog).Entry! as Entry
+      expectDriversAgree(es, ['abc', '?', ''])
+      expect(pre.calls()).toBe(1)
+    }
+
+    const rawProg = program(readsRaw)
+    const planted = precompiled(rawProg, source => {
+      const bad = source.replaceAll(
+        'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))',
+        'pushCstChild(ctx,nd,undefined)',
+      )
+      expect(bad).not.toBe(source)
+      return bad
+    })
+    const es = drivers(rawProg, readsRaw)
+    es.emitted = tableRules(planted.prog).Entry! as Entry
+    expect(() => expectDriversAgree(es, ['abc'])).toThrow()
   })
 
   it('has a semantic RED plant for leaf/raw materialization parity', () => {
