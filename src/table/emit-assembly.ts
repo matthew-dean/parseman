@@ -527,6 +527,19 @@ export function emitAssemblySource(
   const tokenChoiceCandidates = new Map<number, TokenChoiceCandidate>()
   const tokenChoiceDispatches = new Set<number>()
   const tokenChoiceBodies = new Set<number>()
+  const leadingTokenDispatch = (ip: number, arms: number): number => {
+    // The established shape: a value-only transform runs author code only after
+    // the dispatch succeeds, so a route miss may be decided outside it.
+    if (code[ip] === OP_XFORM) ip = code[ip + 2]!
+    // A bare dispatch is cheaper to enter, so predeciding it pays only where it
+    // can avoid a genuinely wide choice ladder. The Less census is decisive:
+    // its 20-arm site executes 1,390 times per benchmark parse, while the new
+    // 5/9/11-arm families execute 20/0/0 times and their emitted/JIT footprint
+    // erased the gain. Keep the threshold generic and table-shaped.
+    else if (arms < 12) return -1
+    if (code[ip] !== OP_DISPATCH) return -1
+    return code[code[ip + 1]!] === OP_LEX_BODY ? ip : -1
+  }
   if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
     for (const ip of reachableSites(code, roots)) {
       if (code[ip] === OP_NODE) {
@@ -543,22 +556,17 @@ export function emitAssemblySource(
         }
       }
 
-      // A direct value-only transform around a dispatch cannot consume, branch,
-      // publish, or call author code before the dispatch selector. When that
-      // selector is one compiler-selected lexical body, the emitted choice may
-      // recognize and classify it before entering the arm, then hand the exact
-      // packed range and route to the ordinary LEX_BODY/DISPATCH readers. One
-      // candidate per ordered choice keeps source order authoritative: a second
-      // eligible arm leaves the whole site on the established PEG path.
+      // A direct dispatch, or one behind only the wrappers proved above, can be
+      // classified before entering its choice arm. Hand the exact packed range
+      // and route to the ordinary LEX_BODY/DISPATCH readers. One candidate per
+      // ordered choice keeps source order authoritative: a second eligible arm
+      // leaves the whole site on the established PEG path.
       let candidate: TokenChoiceCandidate | undefined
       let ambiguous = false
       for (let i = 0; i < n; i++) {
         const armIp = code[ip + 4 + i]!
-        if (code[armIp] !== OP_XFORM) continue
-        const dispatchIp = code[armIp + 2]!
-        if (code[dispatchIp] !== OP_DISPATCH) continue
-        const selectorIp = code[dispatchIp + 1]!
-        if (code[selectorIp] !== OP_LEX_BODY) continue
+        const dispatchIp = leadingTokenDispatch(armIp, n)
+        if (dispatchIp < 0) continue
         if (candidate !== undefined) { ambiguous = true; break }
         candidate = { arm: i, dispatchIp }
       }
