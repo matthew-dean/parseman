@@ -127,7 +127,10 @@ describe('small-choice token predecision', () => {
     ])
     expect(source).toMatch(/function _td\d+_\(input,pos\)/)
     expect(source).toMatch(/const r=tp\?_pfTokPacked:/)
-    expect(source).toMatch(/_pfTokDispatch===\d+&&_pfTokInput===input/)
+    expect(source).toMatch(/const tp=_pfTokDispatch===\d+/)
+    expect(source).not.toContain('_pfTokInput')
+    expect(source).not.toContain('_pfTokPos')
+    expect(source).not.toContain('_pfTokBody')
 
     const prog = encodeTable({ Root: grammar })
     const scans = { n: 0 }
@@ -142,6 +145,15 @@ describe('small-choice token predecision', () => {
     scans.n = 0
     expect(outcome(planted, 'thing(?').ok).toBe(true)
     expect(scans.n, 'sensitivity control: planted scan-then-rescan').toBe(2)
+
+    // The pending dispatch id is cleared before a selected arm runs. Reusing the
+    // same dispatch later in one parse must perform a fresh scan at its new pos.
+    const chained = sequence(grammar, literal(';'), functionCall)
+    const chainedProg = encodeTable({ Root: chained })
+    const chainedScans = { n: 0 }
+    const chainedEntry = tableRules(countedPrecompiled(chainedProg, chainedScans)).Root! as Entry
+    expect(outcome(chainedEntry, 'each(!;thing(?').ok).toBe(true)
+    expect(chainedScans.n).toBe(2)
 
     // The planted factory above is the RED control for the scan count. Removing
     // `_pfTokEnd=e;return 0` separately makes `url(` rank at the choice start
