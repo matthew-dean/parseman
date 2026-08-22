@@ -1326,7 +1326,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const holder = { fwd, set: (p: Piece) => { target = p } }
     inFlight.set(ip, holder)
 
-    const piece = lower(ip)
+    const op = code[ip]
+    // Match the emitted assembly's label-proven scope alias: rule entries in a
+    // single ambient trivia scope otherwise reinstall and restore the exact
+    // same trivia, labels and scanner on every call. Install the forwarding
+    // holder first so a recursive child can still link back through this site.
+    const piece = (op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0))
+      && code[ip + 1]! >= 0
+      && closureLabels.at(ip).tri === code[ip + 1]!
+      ? link(code[ip + 2]!)
+      : lower(ip)
 
     inFlight.delete(ip)
     holder.set(piece)
