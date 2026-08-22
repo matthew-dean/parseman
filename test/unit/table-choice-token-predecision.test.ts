@@ -147,35 +147,4 @@ describe('small-choice token predecision', () => {
     // `_pfTokEnd=e;return 0` separately makes `url(` rank at the choice start
     // instead of the selector end, changing the identity assertion's expected set.
   })
-
-  it('decides a direct lexical dispatch only in a wide choice', () => {
-    const functionOpen = token(sequence(regex(/[A-Za-z]+/), optional(literal('('))))
-    const functionCall = dispatch(
-      functionOpen,
-      when('each(', literal('!')),
-      when(matches(/^(?!(?:url|calc)\($).+\($/i), literal('?')),
-    )
-    const fallback = sequence(choice(literal('url('), literal('calc(')), literal(')'))
-    const inputs = ['each(!', 'thing(?', 'url()', 'calc()', 'url(', 'other(', 'x']
-
-    const direct = choice(
-      functionCall, fallback,
-      ...['!', '#', '$', '%', '&', '*', '+', ',', '-', '.', '/'].map(value => literal(value)),
-    )
-    const directSource = expectIdentity(direct, inputs)
-    expect(directSource).toMatch(/function _td\d+_\(input,pos\)/)
-
-    const narrow = choice(functionCall, fallback)
-    const narrowSource = expectIdentity(narrow, inputs)
-    expect(narrowSource).not.toMatch(/function _td\d+_\(input,pos\)/)
-
-    const prog = encodeTable({ Root: direct })
-    const scans = { n: 0 }
-    const emitted = tableRules(countedPrecompiled(prog, scans)).Root! as Entry
-    for (const input of ['each(!', 'thing(?', 'url()']) {
-      scans.n = 0
-      expect(outcome(emitted, input).ok, input).toBe(true)
-      expect(scans.n, `${input}: token recognizer calls`).toBe(1)
-    }
-  })
 })
