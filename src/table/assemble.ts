@@ -129,7 +129,8 @@ import { reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
-  makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
+  leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
+  scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
 /**
@@ -2722,6 +2723,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (n === 2 || n === 3) {
           const a0 = link(code[base]!), a1 = link(code[base + 1]!)
           const a2 = n === 3 ? link(code[base + 2]!) : undefined
+          const predecide = !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines
+          const p0ip = predecide ? leadingScalarTerminal(code, code[base]!) : -1
+          const p1ip = predecide ? leadingScalarTerminal(code, code[base + 1]!) : -1
+          const p2ip = predecide && n === 3 ? leadingScalarTerminal(code, code[base + 2]!) : -1
+          const p0 = p0ip < 0 ? undefined : scalarFor(p0ip)
+          const p1 = p1ip < 0 ? undefined : scalarFor(p1ip)
+          const p2 = p2ip < 0 ? undefined : scalarFor(p2ip)
           const e0 = fx[code[base + n]!] as string[]
           const e1 = fx[code[base + n + 1]!] as string[]
           const e2 = n === 3 ? fx[code[base + n + 2]!] as string[] : undefined
@@ -2751,7 +2759,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             let acc: string[] | undefined
             let best = pos
             if (c < 128) {
-              const bits = mask[c < 0 ? 128 : c]!
+              let bits = mask[c < 0 ? 128 : c]!
+              if ((bits & 1) !== 0 && p0 !== undefined && p0(input, pos) < 0) bits &= ~1
+              if ((bits & 2) !== 0 && p1 !== undefined && p1(input, pos) < 0) bits &= ~2
+              if ((bits & 4) !== 0 && p2 !== undefined && p2(input, pos) < 0) bits &= ~4
               let prev = 0
               if ((bits & 1) !== 0) {
                 ctx._fc = false
@@ -2796,7 +2807,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
 
-            if (g0 === null || classHas(g0, c)) {
+            if ((g0 === null || classHas(g0, c)) && (p0 === undefined || p0(input, pos) >= 0)) {
               ctx._fc = false
               const v = a0(input, pos, ctx)
               if (v !== FAIL) return v
@@ -2806,7 +2817,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             } else if (best === pos) acc = accSet(e0, acc)
-            if (g1 === null || classHas(g1, c)) {
+            if ((g1 === null || classHas(g1, c)) && (p1 === undefined || p1(input, pos) >= 0)) {
               ctx._fc = false
               const v = a1(input, pos, ctx)
               if (v !== FAIL) return v
@@ -2817,7 +2828,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             } else if (best === pos) acc = accSet(e1, acc)
             if (n === 3) {
-              if (g2 === null || classHas(g2, c)) {
+              if ((g2 === null || classHas(g2, c)) && (p2 === undefined || p2(input, pos) >= 0)) {
                 ctx._fc = false
                 const v = a2!(input, pos, ctx)
                 if (v !== FAIL) return v
@@ -3619,6 +3630,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (child >= 0) {
             rawScalarSpecs.add(code[child + 1]!)
             scalarFor(child)
+          }
+        } else if (code[ip] === OP_CHOICE && !disp[code[ip + 1]!]!.exclusive) {
+          const n = code[ip + 2]!
+          if (n === 2 || n === 3) {
+            for (let i = 0; i < n; i++) {
+              const child = leadingScalarTerminal(code, code[ip + 4 + i]!)
+              if (child >= 0) scalarFor(child)
+            }
           }
         }
       }

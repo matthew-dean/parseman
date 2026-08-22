@@ -57,7 +57,9 @@ import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
-import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
+import {
+  leadingScalarTerminal, scalarTerminalNodeChild, scalarTerminalNotChild,
+} from './scalar-terminal.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -505,9 +507,18 @@ export function emitAssemblySource(
   const scalarSpecs = new Set<number>()
   if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
     for (const ip of reachableSites(code, roots)) {
-      if (code[ip] !== OP_NODE) continue
-      const child = scalarTerminalNodeChild(code, ip)
-      if (child >= 0) scalarSpecs.add(code[child + 1]!)
+      if (code[ip] === OP_NODE) {
+        const child = scalarTerminalNodeChild(code, ip)
+        if (child >= 0) scalarSpecs.add(code[child + 1]!)
+        continue
+      }
+      if (code[ip] !== OP_CHOICE || disp[code[ip + 1]!]!.exclusive) continue
+      const n = code[ip + 2]!
+      if (n !== 2 && n !== 3) continue
+      for (let i = 0; i < n; i++) {
+        const child = leadingScalarTerminal(code, code[ip + 4 + i]!)
+        if (child >= 0) scalarSpecs.add(code[child + 1]!)
+      }
     }
   }
 
@@ -1443,6 +1454,12 @@ return FAIL
           const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
           const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
+          const pretests = Array.from({ length: n }, (_, i): string | undefined => {
+            if (n !== 2 && n !== 3) return undefined
+            const terminal = leadingScalarTerminal(code, code[base + i]!)
+            if (terminal < 0 || !scalarSpecs.has(code[terminal + 1]!)) return undefined
+            return recognizerRef(code[terminal + 1]!)
+          })
           const maskable = n <= 32
           const maskName = maskable
             ? hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
@@ -1459,7 +1476,7 @@ return FAIL
             choiceDefs.push(`function ${catchName}(target,prev,acc){switch(prev){\n${catchCases}\n}return acc}`)
           }
           const maskArms = maskable ? arms.map((arm, i) => {
-            return `if((bits&${1 << i})!==0){
+            return `if((bits&${1 << i})!==0${pretests[i] === undefined ? '' : `&&${pretests[i]}(input,pos)>=0`}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
@@ -1472,7 +1489,7 @@ if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${emitRollback(p, L.buf, sinks)}
 }`
           }).join('\n') : ''
-          const generalArms = arms.map((arm, i) => `if(${gateRefs[i]}===null||classHas(${gateRefs[i]},c)){
+          const generalArms = arms.map((arm, i) => `if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${pretests[i] === undefined ? '' : `&&${pretests[i]}(input,pos)>=0`}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}

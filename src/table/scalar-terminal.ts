@@ -1,4 +1,8 @@
-import { OP_LIT, OP_NOT, OP_RX } from './ops.ts'
+import {
+  OP_ATTEMPT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_NODE, OP_NOT,
+  OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV,
+  OP_SEQX, OP_TOKEN, OP_XFORM,
+} from './ops.ts'
 
 /** Pure recognition only. Consumption owns value, CST, line, failure and cursor effects. */
 export type ScalarRecognizer = (input: string, pos: number, seed?: number) => number
@@ -48,4 +52,48 @@ export function scalarTerminalNotChild(code: ArrayLike<number>, ip: number): num
   const child = code[ip + 1]!
   const op = code[child]
   return op === OP_RX || op === OP_LIT ? child : -1
+}
+
+/**
+ * A direct scalar terminal that every successful execution of `ip` must match
+ * first, through wrappers that cannot consume or select before their child.
+ * Returns only after `minDepth` edges so a caller never duplicates recognition
+ * merely to avoid one already-cheap terminal call.
+ */
+export function leadingScalarTerminal(
+  code: ArrayLike<number>, ip: number, minDepth = 2,
+): number {
+  const seen = new Set<number>()
+  let at = ip
+  let depth = 0
+  while (!seen.has(at)) {
+    seen.add(at)
+    const op = code[at]
+    if (op === OP_LIT || op === OP_RX) return depth >= minDepth ? at : -1
+    if (op === OP_RULE || op === OP_ATTEMPT || op === OP_LABEL || op === OP_TOKEN) {
+      at = code[at + 1]!
+      depth++
+      continue
+    }
+    if (op === OP_GATE || op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN
+      || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || op === OP_LEAF) {
+      at = code[at + 2]!
+      depth++
+      continue
+    }
+    if (op === OP_SEQ || op === OP_SEQV) {
+      if (code[at + 1]! < 1) return -1
+      at = code[at + 2]!
+      depth++
+      continue
+    }
+    if (op === OP_SEQX) {
+      if (code[at + 2]! < 1) return -1
+      at = code[at + 3]!
+      depth++
+      continue
+    }
+    return -1
+  }
+  return -1
 }
