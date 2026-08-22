@@ -258,9 +258,3 @@ export function beginCompileDegradationDrain(): (report: boolean) => void {
 export function resetDegradationMemo(): void {
   _immediate.clear()
 }
-
-/** Test-only: is a sink open? Guards against a leaked capture between test files. */
-export function hasOpenDegradationSink(): boolean {
-  return _sinks.length > 0
-}
-
