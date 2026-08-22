@@ -155,6 +155,7 @@ const srcOf = (side) =>
 const IMPORT_ATTRIBUTE = /\s+(?:with|assert)\s*\{\s*type\s*:\s*['"][a-z]+['"]\s*,?\s*\}/g
 
 const PREFIX = 'pm-side:'
+const MACRO_LOWERING_EXPORT = '__parsemanBenchMacroLowering'
 
 /** The side and macro flag a URL carries, from its query alone. */
 function tagOf(url) {
@@ -255,7 +256,18 @@ export async function load(url, context, nextLoad) {
       const lowered = transformMacro(raw, path, new Set(['parseman']))
       const code = typeof lowered === 'string' ? lowered : lowered?.code
       if (!code) throw new Error(`macro lowering produced nothing for ${path} (side ${side})`)
-      const js = transformSync(code, { loader: 'ts', format: 'esm', target: 'es2022', sourcefile: path })
+      // Classify the ARTIFACT THAT WILL RUN, not the compiler generation. A table
+      // macro can carry either a static assembly factory (`a:[{...}]`) or the
+      // compact closure inventory (`a:[]`), and a compiler-generation heuristic
+      // cannot distinguish those two. Export the answer from this benchmark-only module
+      // graph so `ab.ts` can print the exact leg without building another graph.
+      const realized = /\ba:\s*\[\s*\{/.test(code)
+        ? 'macro→static-table-assembly'
+        : /\ba:\s*\[\s*\]/.test(code)
+          ? 'macro→closure-table'
+          : 'macro→source'
+      const taggedCode = `${code}\nexport const ${MACRO_LOWERING_EXPORT}=${JSON.stringify(realized)}`
+      const js = transformSync(taggedCode, { loader: 'ts', format: 'esm', target: 'es2022', sourcefile: path })
       return { format: 'module', source: js.code, shortCircuit: true }
     }
     IMPORT_ATTRIBUTE.lastIndex = 0
