@@ -53,7 +53,7 @@ import {
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import {
-  choiceRollbackMask, choiceSecondScalarPlan, validateDispatchSpec,
+  choiceRollbackMask, validateDispatchSpec,
   type ResolvedClass, type ResolvedTable, type TableProgram,
 } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
@@ -431,22 +431,6 @@ function maskForClassRow(gates: readonly (ResolvedClass | null)[]): Uint32Array 
     for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) m[c]! |= bit
   }
   return m
-}
-
-/** One exact scalar, where a generic resolved class collapses to equality. */
-function singletonClassCode(cls: ResolvedClass): number | undefined {
-  let found = -1
-  for (let code = 0; code < cls.ascii.length; code++) {
-    if (cls.ascii[code] !== 1) continue
-    if (found >= 0) return undefined
-    found = code
-  }
-  for (let i = 0; i < cls.hi.length; i += 2) {
-    const lo = cls.hi[i]!, hi = cls.hi[i + 1]!
-    if (lo !== hi || found >= 0) return undefined
-    found = lo
-  }
-  return found < 0 ? undefined : found
 }
 
 /**
@@ -1612,37 +1596,6 @@ return FAIL
           const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
           const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
-          const secondPlan = choiceSecondScalarPlan(prog, ip)
-          const secondValue = secondPlan === undefined ? '' : tmp()
-          let secondTests: Array<string | undefined> = Array.from({ length: n })
-          if (secondPlan !== undefined) {
-            if (secondPlan.armClasses.length !== n) {
-              throw new TypeError(`table emitter: choice ${ip} second-scalar plan has ${secondPlan.armClasses.length} arms, expected ${n}`)
-            }
-            const resolved = secondPlan.armClasses.map(index => {
-              if (index < 0) return null
-              const cls = t.cc[index]
-              if (cls === undefined) throw new TypeError(`table emitter: choice ${ip} second-scalar class ${index} is missing`)
-              return cls
-            })
-            const pooled = resolved.map(cls => cls === null || singletonClassCode(cls) !== undefined ? null : cls)
-            const pooledPlan = secondPlan.armClasses.map((index, i) => pooled[i] === null ? -1 : index)
-            const ci = pooled.some(cls => cls !== null) ? classes.push(pooled) - 1 : -1
-            if (ci >= 0) classPlan.push(pooledPlan)
-            secondTests = resolved.map((cls, i) => {
-              if (cls === null) return undefined
-              const singleton = singletonClassCode(cls)
-              return singleton === undefined
-                ? `classHas(${hoist('s2', `CLS[${ci}][${i}]`)},${secondValue})`
-                : `${secondValue}===${singleton}`
-            })
-          }
-          const secondCondition = (i: number): string => {
-            const test = secondTests[i]
-            return test === undefined || secondPlan === undefined
-              ? ''
-              : `&&(c!==${secondPlan.first}||${test})`
-          }
           type ChoicePretest = {
             readonly scalar?: string
             readonly token?: TokenDecisionRef
@@ -1688,7 +1641,6 @@ return FAIL
             const condition = pretest?.token !== undefined
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
               : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
-            const prefixCondition = secondCondition(i)
             const routeMiss = pretest?.token === undefined ? '' : `
 if(${decision}===0){
 ctx._fc=false
@@ -1698,7 +1650,7 @@ prev=${i + 1}
 if(at>best){best=at;acc=undefined}
 if(at===best)acc=_accSet(${pretest.token.expected},acc)}
 }`
-            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((bits&${1 << i})!==0${prefixCondition}${condition}){
+            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
@@ -1717,7 +1669,6 @@ ${rollbackFor(i)}
             const condition = pretest?.token !== undefined
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
               : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
-            const prefixCondition = secondCondition(i)
             const miss = pretest?.token === undefined
               ? `else if(best===pos)acc=_accSet(${expected[i]},acc)`
               : `else if(${decision}===0){
@@ -1726,7 +1677,7 @@ const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
 if(at===best)acc=_accSet(${pretest.token.expected},acc)
 }else if(best===pos)acc=_accSet(${expected[i]},acc)`
-            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${prefixCondition}${condition}){
+            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
@@ -1740,7 +1691,6 @@ ${rollbackFor(i)}
 
           return `${head}
 const c=lead(input,pos)
-${secondPlan === undefined ? '' : `const ${secondValue}=c===${secondPlan.first}?(input.codePointAt(pos+1)??-1):-1`}
 ${hasRollback ? emitMark(p, L.buf, sinks) : ''}
 let acc
 let best=pos
