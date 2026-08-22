@@ -139,6 +139,9 @@ let _pfScan=null
 let _pfHost
 let _pfDepth=0
 const _pfFrames=[]
+let _pfTokInput
+let _pfTokPos=-1
+let _pfTokBody=-1
 let _pfTokPacked=-1
 let _pfTokValue
 let _pfTokDispatch=-1
@@ -735,6 +738,9 @@ if(arm===undefined){
 ${code[dispatchIp + 3]! < 0 ? '_pfTokEnd=e;return 0' : `arm=${n}`}
 }
 ${fixedFunctionChoice ? 'const key=input.slice(pos,e)' : ''}
+_pfTokInput=input
+_pfTokPos=pos
+_pfTokBody=${body}
 _pfTokPacked=r
 _pfTokValue=key
 _pfTokDispatch=${dispatchIp}
@@ -1329,13 +1335,8 @@ return out
         const lineFlags = code[ip + 4]!
         const hasSuffix = (lineFlags & 4) !== 0
         const pending = tokenChoiceBodies.has(body)
-        // Candidate admission is exactly XFORM -> DISPATCH -> this selector.
-        // No author callback, consuming row, or re-entrant boundary exists
-        // between the decision and this read, so the live dispatch id is the
-        // complete pending identity. Input/position/body mirrors were redundant
-        // writes plus six comparisons on every admitted choice execution.
         return `${head}
-${pending ? `const tp=_pfTokDispatch>=0
+${pending ? `const tp=_pfTokBody===${body}&&_pfTokInput===input&&_pfTokPos===pos
 const r=tp?_pfTokPacked:${recognize}(input,pos)` : `const r=${recognize}(input,pos)`}
 if(r<0){ctx._fe=pos;ctx._fx=${expected};if(ctx._probe!==undefined)failAt(ctx,${expected},pos);return FAIL}
 const sm=${hasSuffix ? 'r%2===1' : 'false'},e=(r-(sm?1:0))/2
@@ -1344,6 +1345,7 @@ ${hasSuffix ? 'ctx._fc=false' : ''}
 ${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
 ${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
 const v=${pending ? 'tp?_pfTokValue:' : ''}input.slice(pos,e)
+${pending ? 'if(tp){_pfTokBody=-1;_pfTokValue=undefined}' : ''}
 if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
 EC.e=e
 return v
@@ -1751,12 +1753,12 @@ break}`
           ? routedCall(other)
           : plainCall(other)}`
         const armSelection = tokenChoiceDispatches.has(ip)
-          ? `const tp=_pfTokDispatch===${ip}
+          ? `const tp=_pfTokDispatch===${ip}&&_pfTokInput===input&&_pfTokPos===pos
 let arm
 if(tp){
 arm=_pfTokArm
 _pfTokDispatch=-1
-_pfTokValue=undefined
+_pfTokInput=undefined
 if(arm===${n})arm=undefined
 }else{
 arm=${bk}.get(key)
@@ -2206,6 +2208,8 @@ function _finish(){
 if(_pfDepth<=0)throw new Error('parseman emitted table assembly frame underflow')
 _pfDepth--
 if(_pfDepth===0){
+_pfTokInput=undefined
+_pfTokBody=-1
 _pfTokValue=undefined
 _pfTokDispatch=-1
 return
