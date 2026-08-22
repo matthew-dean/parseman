@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  cstBuildHost, literal, node, regex, rules, run, sequence,
+  cstBuildHost, literal, node, noTrivia, optional, regex, rules, run, sequence,
 } from '../../src/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { digestValue } from '../../src/oracle/index.ts'
@@ -11,7 +11,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { OP_NODE, OP_NODE_TRACK, OP_RX, OP_RX_TRACK } from '../../src/table/ops.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
-import { scalarTerminalNodeChild } from '../../src/table/scalar-terminal.ts'
+import { scalarSequenceNodeShape, scalarTerminalNodeChild } from '../../src/table/scalar-terminal.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
 
 type Entry = Parameters<typeof run>[0]
@@ -227,5 +227,53 @@ describe('direct terminal-node scalar materialization', () => {
     const es = drivers(prog, original)
     es.emitted = tableRules(planted.prog).Entry! as Entry
     expect(() => expectDriversAgree(es, ['abc'])).toThrow()
+  })
+})
+
+describe('direct scalar-sequence node materialization', () => {
+  const pair = (optionalTail = true): Combinator<unknown> => node(
+    'Pair',
+    noTrivia(sequence(regex(/[0-9]+/), optionalTail ? optional(regex(/[a-z]+/)) : literal('%'))),
+    children => ({ children }),
+  )
+
+  it('materializes glued required/optional leaves directly with all-engine parity', () => {
+    for (const [parser, inputs] of [
+      [pair(), ['12px', '12', '12 px', '?']],
+      [pair(false), ['12%', '12', '12 %', '?']],
+    ] as const) {
+      const prog = program(parser)
+      const ip = nodeIp(prog)
+      expect(scalarSequenceNodeShape(prog.code, ip)).toBeDefined()
+      expect(emitAssemblySource(resolveTable(prog), prog, STRICT).source)
+        .toContain('/* scalar-sequence-node */')
+      expectAgreement(prog, inputs, {}, parser)
+    }
+  })
+
+  it('has a test-local RED plant for the exact direct-sequence proof', () => {
+    const clean = program(pair())
+    const planted = { ...clean, code: [...clean.code] }
+    planted.code[nodeIp(planted) + 3] = 0 // builder may observe raw children
+    expect(scalarSequenceNodeShape(planted.code, nodeIp(planted))).toBeUndefined()
+    expect(emitAssemblySource(resolveTable(planted), planted, STRICT).source)
+      .not.toContain('/* scalar-sequence-node */')
+    expect(scalarSequenceNodeShape(clean.code, nodeIp(clean))).toBeDefined()
+  })
+
+  it('declines rich modes and non-glued sequences', () => {
+    const parser = pair()
+    const prog = program(parser)
+    for (const cfg of [
+      { ...STRICT, tolerant: true },
+      { ...STRICT, probe: true },
+      { ...STRICT, hostCst: true },
+      { ...STRICT, trackLines: true },
+    ]) {
+      expect(emitAssemblySource(resolveTable(prog), prog, cfg).source)
+        .not.toContain('/* scalar-sequence-node */')
+    }
+    const spaced = program(node('Pair', sequence(regex(/[0-9]+/), optional(regex(/[a-z]+/))), children => ({ children })))
+    expect(scalarSequenceNodeShape(spaced.code, nodeIp(spaced))).toBeUndefined()
   })
 })

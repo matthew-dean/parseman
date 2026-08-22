@@ -1,6 +1,6 @@
 import {
   OP_ATTEMPT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_NODE, OP_NOT,
-  OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV,
+  OP_OPT, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV,
   OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 
@@ -44,6 +44,43 @@ export function scalarTerminalNodeChild(code: ArrayLike<number>, ip: number): nu
   const child = code[ip + 2]!
   const op = code[child]
   return op === OP_RX || op === OP_LIT ? child : -1
+}
+
+export type ScalarSequenceNodeShape = {
+  readonly first: number
+  readonly second: number
+  readonly optionalSecond: boolean
+}
+
+/**
+ * Exact value-only node shape that can recognize and materialize two glued
+ * scalar leaves without opening the generic child-capture protocol.
+ *
+ * The local `SCOPE -1` is the encoded form of `noTrivia(...)`: it makes the
+ * terms adjacent and has no scanner/capture effect of its own. `flags === 2`
+ * proves the builder reads semantic children only (no raw children, fields,
+ * trivia, state, projection, collapse, or unwrap). Everything richer stays on
+ * the established node path.
+ */
+export function scalarSequenceNodeShape(
+  code: ArrayLike<number>, ip: number,
+): ScalarSequenceNodeShape | undefined {
+  if (code[ip] !== OP_NODE || code[ip + 1]! < 0 || code[ip + 3] !== 2 || code[ip + 4] !== -1) {
+    return undefined
+  }
+  const scope = code[ip + 2]!
+  if (code[scope] !== OP_SCOPE || code[scope + 1] !== -1 || code[scope + 3] !== 0) return undefined
+  const seq = code[scope + 2]!
+  if ((code[seq] !== OP_SEQ && code[seq] !== OP_SEQV) || code[seq + 1] !== 2) return undefined
+  const first = code[seq + 2]!
+  let second = code[seq + 3]!
+  const firstOp = code[first]
+  if (firstOp !== OP_RX && firstOp !== OP_LIT) return undefined
+  const optionalSecond = code[second] === OP_OPT
+  if (optionalSecond) second = code[second + 1]!
+  const secondOp = code[second]
+  if (secondOp !== OP_RX && secondOp !== OP_LIT) return undefined
+  return { first, second, optionalSecond }
 }
 
 /** Direct untracked terminal whose recognition `not()` can inspect without materializing it. */
