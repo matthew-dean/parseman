@@ -130,7 +130,7 @@ import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
   leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
-  scalarSequenceNodeShape, scalarTerminalNotChild, type ScalarRecognizer,
+  scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
 /**
@@ -607,53 +607,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       const node = build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
-      }
-      EC.e = end
-      return node
-    }
-  }
-
-  /** Two adjacent scalar leaves, materialized without opening capture sinks. */
-  function scalarSequenceBuildNode(
-    first: ScalarRecognizer,
-    second: ScalarRecognizer,
-    firstValue: string | undefined,
-    secondValue: string | undefined,
-    firstFx: string[],
-    secondFx: string[],
-    optionalSecond: boolean,
-    build: NodeBuilder,
-  ): Piece {
-    return (input, pos, ctx) => {
-      const firstEnd = first(input, pos)
-      if (firstEnd < 0) { ctx._fe = pos; ctx._fx = firstFx; return FAIL }
-      if (optionalSecond) ctx._fc = false
-      let end = second(input, firstEnd)
-      if (end < 0) {
-        ctx._fe = firstEnd
-        ctx._fx = secondFx
-        if (!optionalSecond) return FAIL
-        end = firstEnd
-      }
-      const firstLeaf = {
-        _tag: 'leaf',
-        value: firstValue ?? input.slice(pos, firstEnd),
-        span: { start: pos, end: firstEnd },
-      }
-      const kids: unknown[] = [firstLeaf]
-      if (end > firstEnd) {
-        kids.push({
-          _tag: 'leaf',
-          value: secondValue ?? input.slice(firstEnd, end),
-          span: { start: firstEnd, end },
-        })
-      }
-      EC.e = end
-      const node = build(kids, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
-      if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
-        pushCstChild(ctx, node, ctx._cstRawChildren !== undefined || ctx._cstBuf !== undefined
-          ? rawEntry(node, input, pos, end)
-          : undefined)
       }
       EC.e = end
       return node
@@ -3439,29 +3392,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
-        const scalarSequence = !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
-          ? scalarSequenceNodeShape(code, ip)
-          : undefined
-        if (scalarSequence !== undefined) {
-          const first = scalarFor(scalarSequence.first)!
-          const second = scalarFor(scalarSequence.second)!
-          const firstValue = code[scalarSequence.first] === OP_LIT
-            ? k[code[scalarSequence.first + 1]!] as string
-            : undefined
-          const secondValue = code[scalarSequence.second] === OP_LIT
-            ? k[code[scalarSequence.second + 1]!] as string
-            : undefined
-          return scalarSequenceBuildNode(
-            first,
-            second,
-            firstValue,
-            secondValue,
-            fx[code[scalarSequence.first + 2]!] as string[],
-            fx[code[scalarSequence.second + 2]!] as string[],
-            scalarSequence.optionalSecond,
-            fns[code[ip + 1]!] as NodeBuilder,
-          )
-        }
         const scalarChild = !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
           ? scalarTerminalNodeChild(code, ip)
           : -1
@@ -3732,13 +3662,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
         if (code[ip] === OP_NODE) {
-          const sequence = scalarSequenceNodeShape(code, ip)
-          if (sequence !== undefined) {
-            rawScalarSpecs.add(code[sequence.first + 1]!)
-            rawScalarSpecs.add(code[sequence.second + 1]!)
-            scalarFor(sequence.first)
-            scalarFor(sequence.second)
-          }
           const child = scalarTerminalNodeChild(code, ip)
           if (child >= 0) {
             rawScalarSpecs.add(code[child + 1]!)

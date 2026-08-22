@@ -61,7 +61,7 @@ import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import {
-  leadingScalarTerminal, scalarSequenceNodeShape, scalarTerminalNodeChild, scalarTerminalNotChild,
+  leadingScalarTerminal, scalarTerminalNodeChild, scalarTerminalNotChild,
 } from './scalar-terminal.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
@@ -524,11 +524,6 @@ export function emitAssemblySource(
   if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
     for (const ip of reachableSites(code, roots)) {
       if (code[ip] === OP_NODE) {
-        const sequence = scalarSequenceNodeShape(code, ip)
-        if (sequence !== undefined) {
-          scalarSpecs.add(code[sequence.first + 1]!)
-          scalarSpecs.add(code[sequence.second + 1]!)
-        }
         const child = scalarTerminalNodeChild(code, ip)
         if (child >= 0) scalarSpecs.add(code[child + 1]!)
         continue
@@ -1985,41 +1980,6 @@ return out
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
-        const scalarSequence = scalarSequenceNodeShape(code, ip)
-        if (scalarSequence !== undefined
-          && scalarSpecs.has(code[scalarSequence.first + 1]!)
-          && scalarSpecs.has(code[scalarSequence.second + 1]!)) {
-          const first = recognizerRef(code[scalarSequence.first + 1]!)
-          const second = recognizerRef(code[scalarSequence.second + 1]!)
-          const firstValue = code[scalarSequence.first] === OP_LIT
-            ? q(k[code[scalarSequence.first + 1]!] as string)
-            : 'input.slice(pos,firstEnd)'
-          const secondValue = code[scalarSequence.second] === OP_LIT
-            ? q(k[code[scalarSequence.second + 1]!] as string)
-            : 'input.slice(firstEnd,end)'
-          const firstFx = fxRef(code[scalarSequence.first + 2]!)
-          const secondFx = fxRef(code[scalarSequence.second + 2]!)
-          const build = fnRef(code[ip + 1]!)
-          const miss = scalarSequence.optionalSecond
-            ? 'end=firstEnd'
-            : 'return FAIL'
-          return `${head}
-/* scalar-sequence-node */
-const firstEnd=${first}(input,pos)
-if(firstEnd<0){ctx._fe=pos;ctx._fx=${firstFx};return FAIL}
-${scalarSequence.optionalSecond ? 'ctx._fc=false' : ''}
-let end=${second}(input,firstEnd)
-if(end<0){ctx._fe=firstEnd;ctx._fx=${secondFx};${miss}}
-const firstLeaf={_tag:'leaf',value:${firstValue},span:{start:pos,end:firstEnd}}
-const kids=[firstLeaf]
-if(end>firstEnd)kids.push({_tag:'leaf',value:${secondValue},span:{start:firstEnd,end}})
-EC.e=end
-const nd=${build}(kids,undefined,{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)
-${L.buf ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))' : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
-EC.e=end
-return nd
-}`
-        }
         const scalarChild = scalarTerminalNodeChild(code, ip)
         if (scalarChild >= 0 && scalarSpecs.has(code[scalarChild + 1]!)) {
           const recognize = recognizerRef(code[scalarChild + 1]!)
