@@ -8,7 +8,7 @@ turned into running code.
 | --- | --- | --- | --- |
 | **Interpreter** | None | Walks the combinator tree | Tests, REPLs, dynamic grammars, anywhere a bundler isn't around |
 | **Macro build** | Bundler plugin + `with { type: 'macro' }` — lowers at build time | Runs a table artifact through the shared table runtime; a large terminal `composeLeaf` also embeds one strict assembly | Production apps built with Vite/Rollup/webpack |
-| **`compile()`** | Call `compile()` — lowers once at runtime | Runs a specialised live table assembly, with a closure fallback | Grammars assembled dynamically at runtime |
+| **`compile()`** | Call `compile()` — lowers once at runtime | Runs the same compact table artifact through the shared table runtime | Grammars assembled dynamically at runtime |
 
 Most production use lands on one of the first two; `compile()` is there for dynamic
 grammars that need it.
@@ -70,23 +70,19 @@ compiled.inlineExpression                        // table expression (requires t
 ```
 
 ::: warning Content Security Policy
-Macro output and every artifact printed by `compile()` carry an explicit empty
-assembly inventory (`a:[]`), so importing and parsing those artifacts never calls
-`new Function`. A live parser returned directly by runtime `compile()` instead tries
-to specialise its table once with `new Function`; if the environment rejects that
-operation, Parseman catches the `EvalError` and uses the closure assembler. Runtime
-`compose()` follows the same rule. Both paths therefore parse under a strict
-[Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP), while
-the macro avoids even attempting runtime source construction.
+Compiler-created table artifacts never use `new Function` at build time or parse
+time. Runtime `compile()`, ordinary macro rules, and `compose()` carry an explicit
+empty assembly inventory (`a:[]`) and use the shared closure assembler. Terminal
+large `composeLeaf()` artifacts carry one ordinary function literal for their strict
+AST/no-lines assembly; it is emitted by the build, not constructed from source at runtime.
+Small leaves remain on the empty-inventory closure form. Both
+forms work under a strict [Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP).
 
-Terminal large `composeLeaf()` artifacts carry one ordinary function literal for their
-strict AST/no-lines assembly; it is emitted by the build, not constructed from source
-at runtime. Small leaves remain on the empty-inventory closure form.
-
-`test/unit/no-function-constructor.test.ts` proves the serialized and macro routes
-never reach `globalThis.Function`. `test/unit/canonical-closure-artifact.test.ts`
-separately proves one-time live specialisation, cache reuse, and the blocked-Function
-closure fallback.
+`test/unit/no-function-constructor.test.ts` proxies `globalThis.Function` across
+runtime compilation, macro output, rule-map compilation, and folded variants.
+That is the regression gate for this contract. Low-level hand-built table programs
+without an `asm` field are not compiler artifacts and may opt into experimental
+runtime source emission; public compiler APIs do not take that route.
 :::
 
 Compiling has a per-grammar cost (~75–650 µs depending on grammar size), so it pays off
@@ -100,7 +96,7 @@ when you parse many inputs with the same compiled parser.
 - **Writing tests, scripts, or a REPL?** Use the **interpreter**. It's the default and
   needs nothing.
 - **Building a grammar from user input or config at runtime?** Use **`compile()`**;
-  it specialises a live table when permitted and falls back automatically under CSP.
+  it creates the same CSP-safe compact table artifact as the macro.
 
 Because all three produce identical results, you can develop against the interpreter and
 switch on the macro for production without touching grammar code.

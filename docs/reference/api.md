@@ -840,10 +840,8 @@ run(g.Value, '12 x', { trivia: g.rw })  // unconsumedFrom → offset of 'x'
 Lower a combinator tree to the shared compact table runtime at runtime. Returns a
 [`CompiledParser`](./types#compiledparser) exposing `.parse()`, `.parseWithContext()`,
 `.parseWithErrors()`, plus the generated `.source` and `.inlineExpression` strings.
-The live parser specialises its table once with `new Function` when the environment
-permits it and otherwise falls back to closure assembly. Its printable `.source` and
-`.inlineExpression` retain the macro's explicit `a:[]` inventory and never require
-runtime source construction after import; see [The three modes](../guide/modes#compile-runtime-lowering).
+It uses the same explicit `a:[]` closure table artifact as macro output and does
+not require `new Function`; see [The three modes](../guide/modes#compile-runtime-lowering).
 
 ## Spec generation
 
@@ -942,9 +940,8 @@ already-compiled artifact.
 - **With the macro (build time):** `compose([...])` becomes a compact table program that
   imports the shared table runtime. **No `new Function`, no eval** in the emitted code or
   at parse time.
-- **Without the macro (runtime):** `compose([...])` specialises its live table once with
-  `new Function` when permitted, then caches that assembly. A CSP rejection falls back
-  to the closure assembler.
+- **Without the macro (runtime):** `compose([...])` lowers to the same compact closure
+  table program. It has the same CSP behavior and does not take a separate JIT path.
 
 ## Error recovery
 

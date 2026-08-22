@@ -156,16 +156,17 @@ function compileImpl<T>(
   // this is the same guard on the single-root entry point.
   const { prog, fnSrcs } = encodeTableProgram({ [ENTRY]: combinator as Combinator<unknown> }, settings)
   /**
-   * LIVE parsers may assemble the encoded program into specialised functions.
-   * `tableRules` falls back to closure assembly when dynamic construction is not
-   * available, so this remains runnable under a restrictive CSP.
+   * `compile()` and the macro must hand the driver the SAME artifact shape.
    *
-   * PRINTED artifacts are different: they must not require `new Function` after
-   * import. Give the emitters the canonical explicit-empty assembly inventory,
-   * while the parser returned by this call runs the raw program's fast path.
+   * An absent `asm` previously selected runtime `new Function` emission while
+   * macro output printed `a:[]` and selected closure assembly. That made one
+   * grammar have two normal execution paths. The compact table artifact is now
+   * canonical: both paths carry an explicit empty inventory and use the shared
+   * closure assembler. Static factories remain an opt-in experiment until they
+   * can satisfy both semantic identity and the size budget.
    */
   const artifact = closureArtifact(prog)
-  const entry = tableRules(prog)[ENTRY]!
+  const entry = tableRules(artifact)[ENTRY]!
 
   // Captured-first, supplied-as-fill-in. The encoder records a source per author
   // callback from the def (`fnSrc` / `buildSrc` / `predSrc` / `gateSrcs`), which the
