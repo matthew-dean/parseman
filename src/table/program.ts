@@ -490,12 +490,29 @@ export type ResolvedTable = {
  */
 const TABLE_RUNTIME = Symbol('parseman.tableRuntime')
 type RuntimeTableProgram = TableProgram & {
-  readonly [TABLE_RUNTIME]?: { resolved: ResolvedTable | undefined }
+  readonly [TABLE_RUNTIME]?: {
+    resolved: ResolvedTable | undefined
+    readonly choiceRollbackMasks?: ReadonlyMap<number, number>
+  }
 }
 
 /** Give an internally-created program its fixed-shape runtime owner. */
-export function ownTableProgram(prog: TableProgram, resolved?: ResolvedTable): TableProgram {
-  return { ...prog, [TABLE_RUNTIME]: { resolved } } as RuntimeTableProgram
+export function ownTableProgram(
+  prog: TableProgram,
+  resolved?: ResolvedTable,
+  choiceRollbackMasks?: ReadonlyMap<number, number>,
+): TableProgram {
+  const inherited = (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceRollbackMasks
+  return {
+    ...prog,
+    [TABLE_RUNTIME]: { resolved, choiceRollbackMasks: choiceRollbackMasks ?? inherited },
+  } as RuntimeTableProgram
+}
+
+/** Compiler-only choice rollback authority, consumed while printing a static
+ * assembly and never serialized into the shipped table. */
+export function choiceRollbackMask(prog: TableProgram, ip: number): number | undefined {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceRollbackMasks?.get(ip)
 }
 
 /** A compiled entry, shaped exactly like a codegen rule function. */

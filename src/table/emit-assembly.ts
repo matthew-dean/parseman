@@ -52,7 +52,10 @@ import {
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
-import { validateDispatchSpec, type ResolvedClass, type ResolvedTable, type TableProgram } from './program.ts'
+import {
+  choiceRollbackMask, validateDispatchSpec,
+  type ResolvedClass, type ResolvedTable, type TableProgram,
+} from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, computeSiteLabels, reachableSites, type SiteLabel,
@@ -1616,6 +1619,16 @@ return FAIL
           // cannot carry a second mutable answer for the arms' classes.
           if (maskable) maskPlan.push(~di)
           const p = tmp()
+          // This proof lives only on the compiler-created program while the
+          // precompiled assembly is printed. A hand-built or deserialized table
+          // has no authority and therefore keeps the established all-arm path.
+          const encodedRollbackMask = choiceRollbackMask(prog, ip) ?? -1
+          const rollbackMask = REC ? -1 : encodedRollbackMask
+          const hasRollback = rollbackMask !== 0
+          const rollbackFor = (i: number): string =>
+            rollbackMask === -1 || (rollbackMask & (1 << i)) !== 0
+              ? emitRollback(p, L.buf, sinks)
+              : ''
           const catchName = maskable ? `_cx${uid++}_` : ''
           if (maskable) {
             const catchCases = expected.map((e, i) =>
@@ -1647,7 +1660,7 @@ prev=${i + 1}
 if(at>best){best=at;acc=undefined}
 if(at===best)acc=_accSet(ctx._fx,acc)}
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p, L.buf, sinks)}
+${rollbackFor(i)}
 }${routeMiss}`
           }).join('\n') : ''
           const generalArms = arms.map((arm, i) => {
@@ -1672,13 +1685,13 @@ if(v!==FAIL)return v}
 if(at>best){best=at;acc=undefined}
 if(at===best)acc=_accSet(ctx._fx,acc)}
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p, L.buf, sinks)}
+${rollbackFor(i)}
 }${miss}`
           }).join('\n')
 
           return `${head}
 const c=lead(input,pos)
-${emitMark(p, L.buf, sinks)}
+${hasRollback ? emitMark(p, L.buf, sinks) : ''}
 let acc
 let best=pos
 ${maskable ? `if(c<128){

@@ -1,6 +1,7 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, firstSetOf, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
+import { capturesLeaf, mayLeavePartialCapture } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
@@ -141,6 +142,7 @@ class Encoder {
   private lexIndex = new Map<string, number>()
   lexPrograms: LexProgramSpec[] = []
   private lexProgramIndex = new Map<string, number>()
+  private choiceRollbackMasks = new Map<number, number>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -609,6 +611,56 @@ class Encoder {
   private refResolver(): RefResolver | undefined {
     const w = this.winners
     return w === undefined ? undefined : (name: string) => w[name]
+  }
+
+  /**
+   * Whether a failed ordered-choice arm can leave state that the enclosing
+   * choice must restore before trying its successor.
+   *
+   * `mayLeavePartialCapture` is the existing sound CST/trivia proof. The extra
+   * writer census covers the side sinks that proof deliberately does not model:
+   * fields, recovered errors, and interpreted scanners. Strict assemblies do
+   * not run repeat recovery, but these rows can still publish through a caller's
+   * context. Cycles are safe to stop: revisiting the same combinator cannot
+   * discover a writer the first traversal did not already reach.
+   */
+  private choiceArmNeedsRollback(
+    p: Combinator<unknown>,
+    autoNot: readonly AutoNotCheck[] | null | undefined,
+  ): boolean {
+    const refName = (p as unknown as { _ruleName?: string })._ruleName
+    const winner = refName === undefined ? undefined : this.winners?.[refName]
+    const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
+    const hasSideWriter = (
+      current: Combinator<unknown>,
+      seen = new Set<Combinator<unknown>>(),
+    ): boolean => {
+      if (seen.has(current)) return false
+      seen.add(current)
+      const def = current._def
+      switch (def.tag) {
+        case 'field':
+        case 'expect':
+        case 'recover':
+        case 'scanTo':
+        case 'unknown':
+          return true
+        case 'lazy': {
+          const name = (current as unknown as { _ruleName?: string })._ruleName
+          const resolvedWinner = name === undefined ? undefined : this.winners?.[name]
+          if (resolvedWinner !== undefined && !winnerWrapsReference(resolvedWinner, current)) {
+            return hasSideWriter(resolvedWinner, seen)
+          }
+          try { return hasSideWriter(def.thunk(), seen) }
+          catch { return true }
+        }
+        default:
+          return childrenOf(def).some(child => hasSideWriter(child, new Set(seen)))
+      }
+    }
+    return mayLeavePartialCapture(root, new Set(), true)
+      || hasSideWriter(root)
+      || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
   }
 
   /** A first set becomes a char class string, or −1 for `any`. */
@@ -1082,6 +1134,20 @@ class Encoder {
         // failure remains at the choice position, an arm declined by the driver's
         // char gate contributes the static opener set the interpreter would get by
         // entering it. A deeper dynamic arm failure discards those shallower sets.
+        // One compiler-only bit mask records which failed arms can actually
+        // dirty a rollback sink. It is consumed while printing emitted strict
+        // assemblies and never serialized; tolerant assemblies retain the
+        // universal rollback because repeat recovery can publish an error from
+        // inside any arm. Arity >31 falls back to -1 rather than truncating.
+        let rollbackMask = kids.length > 31 ? -1 : 0
+        if (rollbackMask === 0) {
+          for (let i = 0; i < arms.length; i++) {
+            const src = order[i]!
+            if (this.choiceArmNeedsRollback(arms[i]!, d.autoNot[src])) {
+              rollbackMask |= 1 << i
+            }
+          }
+        }
         const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
         this.code[head + 1] = dispIdx
         this.code[head + 2] = kids.length
@@ -1093,6 +1159,7 @@ class Encoder {
           this.code[head + 4 + i] = kids[i]!
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
+        this.choiceRollbackMasks.set(head, rollbackMask)
         return head
       }
       case 'many':
@@ -1652,7 +1719,7 @@ class Encoder {
       ...(this.rec ? { rec: 1 as const } : {}),
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
-    })
+    }, undefined, this.choiceRollbackMasks)
   }
 }
 
