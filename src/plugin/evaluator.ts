@@ -732,6 +732,9 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         if (!authorDeclaredBuildArity && confirmedBuildParamUnused(analysisSrc, 3)) {
           combi._def.buildRawUnused = true
         }
+        if (!authorDeclaredBuildArity && confirmedBuildParamUnused(analysisSrc, 4)) {
+          combi._def.buildTriviaUnused = true
+        }
         const report = directBuilderBindings(analysisSrc)
         // Import-provenance rescue and free-name refusals apply ONLY to an INLINE
         // builder body, whose source (`buildSrc`) is exactly what the table inlines and

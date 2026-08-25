@@ -146,3 +146,8 @@ export function tableKeepsTailCapture(code: string): boolean {
 export function tableOmitsRawCapture(code: string): boolean {
   return (onlyNodeFlags(code) & 2) !== 0
 }
+
+/** True when the macro table proved the direct builder's triviaLog value dead. */
+export function tableOmitsTriviaCapture(code: string): boolean {
+  return (onlyNodeFlags(code) & 4) === 0
+}

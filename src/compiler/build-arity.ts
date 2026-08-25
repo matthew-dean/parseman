@@ -366,6 +366,7 @@ export function buildReadsRaw(def: NodeDef): boolean {
 /** Build reads the 5th (triviaLog) arg? Unknown/unparseable → true (keep capture). */
 export function buildReadsTrivia(def: NodeDef): boolean {
   if (!def.build) return true // structural node: host may read trivia — keep capture
+  if (def.buildTriviaUnused === true) return false
   const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 5

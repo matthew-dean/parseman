@@ -31,6 +31,7 @@ import {
   evalMacroModule,
   tableKeepsTailCapture,
   tableOmitsRawCapture,
+  tableOmitsTriviaCapture,
 } from '../helpers/eval-macro-module.ts'
 
 type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
@@ -290,6 +291,28 @@ export const P = node('P', literal('a'),
 `, 'P')
 
     expect(tableOmitsRawCapture(source)).toBe(false)
+  })
+
+  it('macro proves an ignored triviaLog dead while later state remains live', () => {
+    const { fn, source } = macroParser(`
+import { literal, node } from 'parseman' with { type: 'macro' }
+export const P = node('P', literal('a'),
+  (children, fields, span, rawChildren, _triviaLog, state) => ({ children, fields, span, rawChildren, state }))
+`, 'P')
+
+    expect(tableOmitsTriviaCapture(source)).toBe(true)
+    expect(fn('a', 0, { state: { mode: 'x' } }).value).toMatchObject({ state: { mode: 'x' } })
+  })
+
+  it('does not infer triviaLog liveness through an explicit buildArity declaration', () => {
+    const { source } = macroParser(`
+import { literal, node } from 'parseman' with { type: 'macro' }
+export const P = node('P', literal('a'),
+  (children, fields, span, rawChildren, _triviaLog, state) => ({ children, fields, span, rawChildren, state }),
+  { buildArity: 6 })
+`, 'P')
+
+    expect(tableOmitsTriviaCapture(source)).toBe(false)
   })
 
   it('macro preserves node-local trivia capture without enabling it for the whole parser', () => {
