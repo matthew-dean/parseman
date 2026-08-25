@@ -667,35 +667,6 @@ describe('table assembler', () => {
     }
   })
 
-  it('inlines dense fixed lexical programs into static assembly', () => {
-    const roots = {
-      OptionalIdent: token(sequence(optional(literal('*')), regex(/[a-z]+/))),
-      GuardedCall: token(sequence(not(regex(/(?:calc\(|url\()/)), regex(/[a-z]+/), literal('('))),
-      Pseudo: token(sequence(
-        literal(':'), not(sequence(literal('extend'), literal('('))),
-        not(literal('nth')), regex(/[a-z]+/), optional(literal('(')),
-      )),
-    }
-    const prog = encodeTable(roots)
-    const emitted = emitAssemblySource(
-      resolveTable(prog), prog, defaultAssemblyCfgs(prog)[0]!, [],
-    )
-    expect(emitted.source).not.toContain('LEXPROG[')
-    const reference = execRules(prog)
-    const assembled = tableRules(prog)
-    const cases: Record<keyof typeof roots, readonly string[]> = {
-      OptionalIdent: ['*word', 'word', '*'],
-      GuardedCall: ['name(', 'calc(', 'name'],
-      Pseudo: [':name', ':name(', ':extend(', ':nth', ':extendx'],
-    }
-    for (const name of Object.keys(roots) as Array<keyof typeof roots>) {
-      for (const input of cases[name]) {
-        expect(digestValue(run(assembled[name]!, input)), `${name} ${input}`)
-          .toBe(digestValue(run(reference[name]!, input)))
-      }
-    }
-  })
-
   it('selects balanced tokens through the canonical scan pool', () => {
     const quoted = sequence(literal('"'), regex(/[^"\\]*(?:\\.[^"\\]*)*/), literal('"'))
     const curly = balanced('{', '}')

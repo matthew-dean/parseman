@@ -65,10 +65,6 @@ import {
   leadingScalarTerminal, scalarTerminalNodeChild, scalarTerminalNotChild,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
-import {
-  LEX_NODE_NOT, LEX_NODE_OPTIONAL, LEX_NODE_SEQUENCE2, LEX_NODE_SEQUENCE3,
-  LEX_NODE_SEQUENCE5, LEX_NODE_TERMINAL,
-} from './lex-program.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -1425,93 +1421,6 @@ return v
 
       case OP_LEX_PROGRAM: {
         const programId = code[ip + 1]!
-        const spec = t.prog.lexPrograms?.[programId]
-        if (spec?.[0] === 2) {
-          const words = spec.slice(2)
-          const lexAt = (at: number): string => hoist('lex', `LEX[${words[at]!}]`)
-          const fxAt = (at: number): string => fxRef(words[at]!)
-          const probeAt = (fx: string, at: string): string =>
-            cfg.probe ? `failAt(ctx,${fx},${at});` : ''
-          const trackAt = (at: number, end: string): string =>
-            words[at] === 1 ? `_trackLines(ctx,input,${end})` : ''
-          const publish = `const v=input.slice(pos,e)
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
-EC.e=e
-return v`
-
-          if (words.length === 10
-            && words[0] === LEX_NODE_TERMINAL && words[4] === LEX_NODE_OPTIONAL
-            && words[5] === LEX_NODE_TERMINAL && words[9] === LEX_NODE_SEQUENCE2) {
-            const m0 = lexAt(1), x0 = fxAt(2), m1 = lexAt(6), x1 = fxAt(7)
-            return `${head}
-ctx._fc=false
-const r0=${m0}(input,pos)
-let e=pos
-if(r0<0){ctx._fe=pos;ctx._fx=${x0};${probeAt(x0, 'pos')}}else{e=r0/2;${trackAt(3, 'e')}}
-ctx._fc=false
-const r1=${m1}(input,e)
-if(r1<0){ctx._fe=e;ctx._fx=${x1};${probeAt(x1, 'e')}return FAIL}
-e=r1/2
-${trackAt(8, 'e')}
-${publish}
-}`
-          }
-
-          if (words.length === 15
-            && words[0] === LEX_NODE_TERMINAL && words[4] === LEX_NODE_NOT
-            && words[6] === LEX_NODE_TERMINAL && words[10] === LEX_NODE_TERMINAL
-            && words[14] === LEX_NODE_SEQUENCE3) {
-            const m0 = lexAt(1), notFx = fxAt(5)
-            const m1 = lexAt(7), x1 = fxAt(8), m2 = lexAt(11), x2 = fxAt(12)
-            return `${head}
-if(${m0}(input,pos)>=0){ctx._fe=pos;ctx._fx=${notFx};return FAIL}
-ctx._fc=false
-const r1=${m1}(input,pos)
-if(r1<0){ctx._fe=pos;ctx._fx=${x1};${probeAt(x1, 'pos')}return FAIL}
-let e=r1/2
-${trackAt(9, 'e')}
-ctx._fc=false
-const r2=${m2}(input,e)
-if(r2<0){ctx._fe=e;ctx._fx=${x2};${probeAt(x2, 'e')}return FAIL}
-e=r2/2
-${trackAt(13, 'e')}
-${publish}
-}`
-          }
-
-          if (words.length === 31
-            && words[0] === LEX_NODE_TERMINAL && words[4] === LEX_NODE_TERMINAL
-            && words[8] === LEX_NODE_TERMINAL && words[12] === LEX_NODE_SEQUENCE2
-            && words[13] === LEX_NODE_NOT && words[15] === LEX_NODE_TERMINAL
-            && words[19] === LEX_NODE_NOT && words[21] === LEX_NODE_TERMINAL
-            && words[25] === LEX_NODE_TERMINAL && words[29] === LEX_NODE_OPTIONAL
-            && words[30] === LEX_NODE_SEQUENCE5) {
-            const ma = lexAt(1), xa = fxAt(2), mb = lexAt(5), mc = lexAt(9)
-            const notBcFx = fxAt(14), md = lexAt(16), notDFx = fxAt(20)
-            const me = lexAt(22), xe = fxAt(23), mf = lexAt(26), xf = fxAt(27)
-            return `${head}
-const ra=${ma}(input,pos)
-if(ra<0){ctx._fe=pos;ctx._fx=${xa};${probeAt(xa, 'pos')}return FAIL}
-let e=ra/2
-${trackAt(3, 'e')}
-ctx._fc=false
-const rb=${mb}(input,e)
-if(rb>=0&&${mc}(input,rb/2)>=0){ctx._fe=e;ctx._fx=${notBcFx};return FAIL}
-ctx._fc=false
-if(${md}(input,e)>=0){ctx._fe=e;ctx._fx=${notDFx};return FAIL}
-ctx._fc=false
-const re=${me}(input,e)
-if(re<0){ctx._fe=e;ctx._fx=${xe};${probeAt(xe, 'e')}return FAIL}
-e=re/2
-${trackAt(24, 'e')}
-ctx._fc=false
-ctx._fc=false
-const rf=${mf}(input,e)
-if(rf<0){ctx._fe=e;ctx._fx=${xf};${probeAt(xf, 'e')}}else{e=rf/2;${trackAt(28, 'e')}}
-${publish}
-}`
-          }
-        }
         const run = hoist('lexProgram', `LEXPROG[${programId}]`)
         const scanId = t.lexPrograms[programId]!.scan
         if (scanId !== undefined) return `${head}
