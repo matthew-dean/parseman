@@ -690,6 +690,25 @@ export function emitAssemblySource(
     const n = code[dispatchIp + 5]!
     validateDispatchSpec(spec, n, code[dispatchIp + 4]!)
     const recognize = hoist('lex', `LEX[${body}]`)
+    const lexSpec = prog.lex?.[body]
+    const lexRegex = lexSpec === undefined ? undefined : k[lexSpec[0]]
+    const lexShape = lexRegex instanceof RegExp
+      ? scanShapeFromRegex(lexRegex.source, lexRegex.flags)
+      : null
+    const directRecognition = (() => {
+      if (lexShape === null || lexSpec === undefined) return undefined
+      let n = 0
+      const p = tmp()
+      const match = emitShapeMatch(
+        lexShape, 'pos', (prefix = '_v') => `${p}${prefix}${n++}`, '', 'c',
+      )
+      const suffix = lexSpec[1]
+      return `${match.setup.join('\n')}
+if(!(${match.ok}))return -1
+let ${p}e=${match.end}
+const ${p}sm=${suffix < 0 ? 'false' : `input.charCodeAt(${p}e)===${suffix}`}
+${suffix < 0 ? '' : `if(${p}sm)${p}e++\n`}const r=${p}e*2+(${p}sm?1:0)`
+    })()
     const bk = hoist('bk', `DSP[${di}].byKey`)
     const expected = hoist('dx', `DSP[${di}].expected`)
     const fold = spec.byFold.size > 0
@@ -729,9 +748,8 @@ if(clean&&!(${foldedRangeEquals('url(')})&&!(${foldedRangeEquals('calc(')}))arm=
 let arm=${bk}.get(key)
 ${fold}${chain}`
     const name = `_td${tokenDecisionRefs.size}_`
-    choiceDefs.push(`function ${name}(input,pos){
-const r=${recognize}(input,pos)
-if(r<0)return -1
+    choiceDefs.push(`function ${name}(input,pos,c){
+${directRecognition ?? `const r=${recognize}(input,pos)\nif(r<0)return -1`}
 const sm=${hasSuffix ? 'r%2===1' : 'false'},e=(r-(sm?1:0))/2
 ${classify}
 if(arm===undefined){
@@ -1645,7 +1663,7 @@ return FAIL
             const pretest = pretests[i]
             const decision = pretest?.token === undefined ? '' : tmp()
             const condition = pretest?.token !== undefined
-              ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
+              ? `&&(${decision}=${pretest.token.name}(input,pos,c))>0`
               : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
             const routeMiss = pretest?.token === undefined ? '' : `
 if(${decision}===0){
@@ -1673,7 +1691,7 @@ ${rollbackFor(i)}
             const pretest = pretests[i]
             const decision = pretest?.token === undefined ? '' : tmp()
             const condition = pretest?.token !== undefined
-              ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
+              ? `&&(${decision}=${pretest.token.name}(input,pos,c))>0`
               : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
             const miss = pretest?.token === undefined
               ? `else if(best===pos)acc=_accSet(${expected[i]},acc)`
