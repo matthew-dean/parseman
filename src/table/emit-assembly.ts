@@ -1684,8 +1684,9 @@ return FAIL
             return { scalar: recognizerRef(code[terminal + 1]!) }
           })
           const maskable = n <= 32
+          const maskRow = maskable ? maskForClassRow(gates) : undefined
           const maskName = maskable
-            ? hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
+            ? hoist('mk', `MASK[${masks.push(maskRow!) - 1}]`)
             : ''
           // `~di` points back to the authoritative dispatch row. A precompiled
           // module reconstructs only the input-indexed mask from that row; it
@@ -1761,6 +1762,33 @@ if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
 }${miss}`
           }).join('\n')
+          const singletonArms = maskRow === undefined
+            ? []
+            : [...new Set(maskRow)].filter(bits => bits !== 0 && (bits & (bits - 1)) === 0)
+              .map(bits => ({ bits, arm: 31 - Math.clz32(bits) }))
+          const singletonCases = singletonArms.map(({ bits, arm }) =>
+            `case ${bits}:sa=${arm};sv=${arms[arm]}(input,pos,ctx);break`).join('\n')
+          const singletonRollbacks = singletonArms.map(({ arm }) => {
+            const rb = rollbackFor(arm)
+            return rb === '' ? '' : `case ${arm}:${rb};break`
+          }).filter(Boolean).join('\n')
+          const singletonPath = singletonArms.length === 0 ? '' : `let sa=-1,sv
+ctx._fc=false
+switch(bits){
+${singletonCases}
+}
+if(sa>=0){
+if(sv!==FAIL)return sv
+let sx
+const sat=ctx._fe??pos
+if(sat===pos){sx=${catchName}(sa,0,sx);sx=_accSet(ctx._fx,sx);sx=${catchName}(${n},sa+1,sx)}
+else sx=_accSet(ctx._fx,sx)
+if(ctx._fc===true){if(sx!==undefined)ctx._fx=sx;return FAIL}
+${singletonRollbacks === '' ? '' : `switch(sa){\n${singletonRollbacks}\n}`}
+ctx._fe=pos;ctx._fx=sx??${choiceFx}
+return FAIL
+}
+`
 
           return `${head}
 const c=lead(input,pos)
@@ -1769,6 +1797,7 @@ let acc
 let best=pos
 ${maskable ? `if(c<128){
 const bits=${maskName}[c<0?128:c]
+${singletonPath}
 let prev=0
 ${maskArms}
 if(best===pos)acc=${catchName}(${n},prev,acc)
