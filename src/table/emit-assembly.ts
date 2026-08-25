@@ -613,14 +613,15 @@ export function emitAssemblySource(
     }
   }
 
+  // Helpers are referenced by DESCENDANT publication/rollback sites, not only
+  // by the node row that opened the count-only buffer. A specialized no-raw node
+  // can contain a shared child whose merged label is unknown even though this
+  // occurrence emits `_pushNodeNoRawBuf`; the node flag is the conservative
+  // factory-level authority for including the tiny prelude.
   const needsNoRawPrelude = !hostCst && reachable.some(ip => {
     const op = code[ip]
-    if ((op !== OP_NODE && op !== OP_NODE_TRACK) || code[ip + 1]! < 0 || code[ip + 4]! >= 0) return false
-    const flags = code[ip + 3]!
-    if ((flags & 2) === 0) return false
-    if (op === OP_NODE && (flags === 2 || flags === 18 || flags === 34)) return false
-    const scalarChild = scalarTerminalNodeChild(code, ip)
-    return scalarChild < 0 || !scalarSpecs.has(code[scalarChild + 1]!)
+    return (op === OP_NODE || op === OP_NODE_TRACK)
+      && code[ip + 1]! >= 0 && code[ip + 4]! < 0 && (code[ip + 3]! & 2) !== 0
   })
 
   // THE SIDE-SINK FIXPOINT, over the same graph the labels walk. `OP_FIELD` is
