@@ -301,12 +301,10 @@ ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, 
  * than a per-parse guess, and it is why `assemble.ts`'s `nextTerm` still takes
  * all seven: it is the engine those constructs actually run in.
  *
- * The two sinks are passed differently because `rollbackCstCaptureAt` guards
- * them differently. `_errors` is guarded on `errors !== undefined`, so
- * `undefined` is its established "no mark taken" sentinel and is correct even
- * for a caller-supplied context that arrived with errors already on it.
- * `_fields` has no such guard — `length = undefined` would throw — so it takes
- * the literal `0` that a per-node `_fields` no `OP_FIELD` can push to always has.
+ * Both sinks use `undefined` as "no mark taken". A literal zero is not a safe
+ * substitute: a sink-free speculative subtree may run inside a node whose
+ * enclosing `_fields` already contains entries, and rolling that array back to
+ * zero would erase state the subtree did not create.
  */
 function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
   // `_rbBuf` is the `_cstBuf` arm of `rollbackCstCaptureAt` plus the two trivia
@@ -316,14 +314,13 @@ function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
   // The two side sinks stay OUT of `_rbBuf` rather than growing its parameter
   // list: they are absent from most tables, and a fixed seven-argument helper
   // would make every grammar pay the two extra pushes to serve the ones that
-  // carry a field. Guarded exactly as `rollbackCstCaptureAt:242,233` guards them
-  // — `_errors` on a defined mark, because `undefined` is its "no mark taken"
-  // sentinel, and `_fields` on the array alone.
+  // carry a field. Both are emitted only from a defined mark; the generic
+  // helper applies the same `undefined` sentinel when a site cannot write one.
   const fd = s.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${t}fd)ctx._fields.length=${t}fd` : ''
   const er = s.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${t}er)ctx._errors.length=${t}er` : ''
   if (buf) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
-  if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,0,undefined,${t}lg,${t}rt)`
-  return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : '0'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)}`
+  if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,undefined,undefined,${t}lg,${t}rt)`
+  return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)}`
 }
 
 /**
@@ -1852,7 +1849,7 @@ return [key,v]
         // non-loop marks. Before `OP_FIELD` and `OP_EXPECT` were emittable the
         // answer was "never"; it is now "per table", and a grammar with no field
         // still pays neither the two loads nor the two stores per item.
-        const pfd = sinks.fd ? `${p}fd` : '0'
+        const pfd = sinks.fd ? `${p}fd` : 'undefined'
         const per = sinks.er ? `${p}er` : 'undefined'
         const rb = L.buf
           ? `_rbBuf(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`

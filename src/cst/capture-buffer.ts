@@ -222,8 +222,8 @@ export function rollbackCstCaptureAt(
   raw: number,
   tlog: number,
   leaves: number,
-  fields: number,
-  errors: number,
+  fields: number | undefined,
+  errors: number | undefined,
 ): void {
   // Truncate the flat recovery-error sink alongside the CST, so a rolled-back
   // speculative branch leaves no ghost error (see saveCstMark). Guarded on a
@@ -255,13 +255,13 @@ export function rollbackCstCaptureAt(
       if (tlog === 0) b.tl = undefined
       else if (b.tl.length !== tlog) b.tl.length = tlog
     }
-    if (ctx._fields && ctx._fields.length !== fields) ctx._fields.length = fields
+    if (ctx._fields && fields !== undefined && ctx._fields.length !== fields) ctx._fields.length = fields
     return
   }
   if (ctx._cstRawChildren && ctx._cstRawChildren.length !== raw) ctx._cstRawChildren.length = raw
   if (ctx._cstTriviaLog && ctx._cstTriviaLog.length !== tlog) ctx._cstTriviaLog.length = tlog
   if (ctx._cstLeaves && ctx._cstLeaves.length !== leaves) ctx._cstLeaves.length = leaves
-  if (ctx._fields && ctx._fields.length !== fields) ctx._fields.length = fields
+  if (ctx._fields && fields !== undefined && ctx._fields.length !== fields) ctx._fields.length = fields
 }
 
 export function pushCstTriviaEntry(

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  choice, expect as recover, field, literal, node, optional, run, sequence, type Combinator,
+  choice, expect as recover, field, literal, node, optional, rules, run, sequence, type Combinator,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -113,5 +113,16 @@ describe('emitted ordered-choice rollback elision', () => {
     for (const input of ['', 'a', 'a!', 'b', 'b?', 'c', 'c#', 'a!b?c#']) {
       expect(projection(emitted, input), input).toEqual(projection(node('Root', sequence(plain, fields, errors)) as Entry, input))
     }
+
+    // A named rule is emitted from a TOP label because it can also be entered
+    // directly. When called from inside a field-reading node, its sink-free
+    // rollback must leave fields captured before the call untouched.
+    const named = rules((g: Record<string, Combinator<unknown>>) => ({
+      Root: node('NamedRoot', sequence(field('seed', literal('s')), g.Maybe!), (_children, captured) => captured),
+      Maybe: optional(sequence(literal('a'), literal('!'))),
+    })) as Record<string, Combinator<unknown>>
+    const namedProg = encodeTable(named)
+    expect(projection(precompiled(namedProg), 'sa')).toEqual(projection(named.Root! as Entry, 'sa'))
+    expect(run(precompiled(namedProg), 'sa').value).toMatchObject({ seed: { value: 's' } })
   })
 })
