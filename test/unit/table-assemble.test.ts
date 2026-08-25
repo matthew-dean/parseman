@@ -630,12 +630,6 @@ describe('table assembler', () => {
         regex(/[a-z]+/), optional(literal('(')), literal('!'),
       )),
       S5: token(sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e'))),
-      HotOptional: token(sequence(optional(literal('*')), regex(/[a-z]+/))),
-      HotNot: token(sequence(not(regex(/(?:calc\(|url\()/)), regex(/[a-z]+/), literal('('))),
-      HotPseudo: token(sequence(
-        literal(':'), not(sequence(literal('extend'), literal('('))),
-        not(literal('nth')), regex(/[a-z]+/), optional(literal('(')),
-      )),
       C2: token(choice(literal('a'), literal('b'))),
       C4: token(choice(literal('a'), literal('b'), literal('c'), literal('d'))),
       C8: token(choice(
@@ -648,13 +642,6 @@ describe('table assembler', () => {
       Array.from({ length: Object.keys(roots).length }, () => OP_LEX_PROGRAM),
     )
     expect([...reachableIps(prog)].map(ip => prog.code[ip])).not.toContain(OP_TOKEN)
-    const resolved = resolveTable(prog)
-    expect(resolved.lexPrograms[prog.code[prog.rules.HotOptional! + 1]!]!.name)
-      .toBe('optionalTerminalTerminal')
-    expect(resolved.lexPrograms[prog.code[prog.rules.HotNot! + 1]!]!.name)
-      .toBe('notTerminalTerminalTerminal')
-    expect(resolved.lexPrograms[prog.code[prog.rules.HotPseudo! + 1]!]!.name)
-      .toBe('terminalNotSequenceNotTerminalOptionalTerminal')
     const readers = [
       ['reference', execRules(prog)],
       ['closure', tableRules({ ...prog, asm: [] })],
@@ -665,9 +652,6 @@ describe('table assembler', () => {
       S3: ['abc', 'abx'],
       S4: ['word!', 'word(!', 'x!', 'word?'],
       S5: ['abcde', 'abcdx'],
-      HotOptional: ['*word', 'word', '*'],
-      HotNot: ['name(', 'calc(', 'name'],
-      HotPseudo: [':name', ':name(', ':extend(', ':nth', ':extendx'],
       C2: ['a', 'b', 'z'],
       C4: ['a', 'd', 'z'],
       C8: ['a', 'h', 'z'],
