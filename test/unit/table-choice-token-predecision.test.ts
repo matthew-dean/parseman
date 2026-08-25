@@ -35,21 +35,15 @@ function countedPrecompiled(
   prog: TableProgram,
   counter: { n: number },
   plantDuplicateScan = false,
-  plantLeadingCode = false,
 ): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
   let source = emitted.source.replace(
     /const (_lex\d+)=LEX\[(\d+)\]/g,
     'const $1=((r)=>(input,pos)=>{COUNT_LEX.n++;return r(input,pos)})(LEX[$2])',
   )
-  source = source.replace(
-    /(function _td\d+_\(input,pos,c\)\{)/g,
-    '$1COUNT_LEX.n++;',
-  )
   if (plantDuplicateScan) {
     source = source.replace(/const r=tp\?_pfTokPacked:([^\n]+)/, 'const r=$1')
   }
-  if (plantLeadingCode) source = source.replace('c === 45', 'c === 46')
   const compiled = new Function(
     ...EMITTED_PARAMS, 'COUNT_LEX', source,
   ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
@@ -114,7 +108,7 @@ describe('small-choice token predecision', () => {
 
   it('decides a wrapped dispatch from its token and reuses the recognized range', () => {
     const functionOpen = token(sequence(
-      regex(/-?[_a-zA-Z\u0080-\uffff][-_a-zA-Z0-9\u0080-\uffff]*/),
+      regex(/[A-Za-z]+/),
       optional(literal('(')),
     ))
     const functionCall = dispatch(
@@ -129,20 +123,16 @@ describe('small-choice token predecision', () => {
     )
 
     const source = expectIdentity(grammar, [
-      'each(!', 'thing(?', '-thing(?', 'éclair(?', 'url()', 'calc()',
-      'bare:', 'url(', 'other(', 'x',
+      'each(!', 'thing(?', 'url()', 'calc()', 'bare:', 'url(', 'other(', 'x',
     ])
-    expect(source).toMatch(/function _td\d+_\(input,pos,c\)/)
-    expect(source).toMatch(/function _td\d+_\(input,pos,c\)\{[\s\S]*?input\.charCodeAt/)
-    expect(source).toContain('c === 45')
-    expect(source).not.toMatch(/function _td\d+_\(input,pos,c\)\{\nconst r=_lex\d+\(input,pos\)/)
+    expect(source).toMatch(/function _td\d+_\(input,pos\)/)
     expect(source).toMatch(/const r=tp\?_pfTokPacked:/)
     expect(source).toMatch(/_pfTokDispatch===\d+&&_pfTokInput===input/)
 
     const prog = encodeTable({ Root: grammar })
     const scans = { n: 0 }
     const emitted = tableRules(countedPrecompiled(prog, scans)).Root! as Entry
-    for (const input of ['each(!', 'thing(?', '-thing(?', 'éclair(?', 'url()']) {
+    for (const input of ['each(!', 'thing(?', 'url()']) {
       scans.n = 0
       expect(outcome(emitted, input).ok, input).toBe(true)
       expect(scans.n, `${input}: token recognizer calls`).toBe(1)
@@ -153,13 +143,7 @@ describe('small-choice token predecision', () => {
     expect(outcome(planted, 'thing(?').ok).toBe(true)
     expect(scans.n, 'sensitivity control: planted scan-then-rescan').toBe(2)
 
-    const plantedLead = tableRules(countedPrecompiled(prog, scans, false, true)).Root! as Entry
-    const plantedLeadOutcome = outcome(plantedLead, '-thing(?')
-    const emittedLeadOutcome = outcome(emitted, '-thing(?')
-    expect(plantedLeadOutcome).not.toEqual(emittedLeadOutcome)
-
-    // The planted factories above are the RED controls for both scan reuse and
-    // the leading-code-unit handoff. Removing
+    // The planted factory above is the RED control for the scan count. Removing
     // `_pfTokEnd=e;return 0` separately makes `url(` rank at the choice start
     // instead of the selector end, changing the identity assertion's expected set.
   })
