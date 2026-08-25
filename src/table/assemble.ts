@@ -1795,17 +1795,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_XFORM: {
-        const reducer = code[ip + 1]!
+        const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const child = link(code[ip + 2]!)
-        if (reducer < 0) {
-          const projection = ~reducer
-          return (input, pos, ctx) => {
-            const v = child(input, pos, ctx)
-            if (v === FAIL) return FAIL
-            return (v as readonly unknown[])[projection]
-          }
-        }
-        const fn = fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
         return (input, pos, ctx) => {
           const v = child(input, pos, ctx)
           if (v === FAIL) return FAIL

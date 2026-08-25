@@ -53,9 +53,7 @@ export const OP_REPV = 7
  * `undefined` there turned a bare identifier into a call node with `args: undefined`.
  * The parse succeeded and only the tree moved. */
 export const OP_OPT = 8
-/** `XFORM f c` — non-negative `f` indexes the reducer and is called
- * `(value, span)`; negative `f` is `~index`, selecting an already-produced tuple
- * slot without a callback. */
+/** `XFORM f c` — `f` indexes the reducer; called `(value, span)`. */
 export const OP_XFORM = 9
 /**
  * `NODE b c flags proj type tags` — SEVEN words. `b` indexes the build reducer

@@ -1211,79 +1211,8 @@ return ${child}(input,pos,ctx)
       }
 
       case OP_XFORM: {
-        const reducer = code[ip + 1]!
-        const projection = reducer < 0 ? ~reducer : -1
-        const childIp = code[ip + 2]!
-        const child = link(childIp)
-
-        // A token-first ordered choice has already run the dispatch selector's
-        // lexical recognizer and classified its exact value. When the outer
-        // transform is merely `[key, armValue] -> armValue`, re-entering the
-        // selector, dispatch classifier, and reducer does no semantic work.
-        //
-        // Keep this continuation in the SHARED XFORM body. The earlier version
-        // cloned it into four Less choice shells, grew the assembly 0.533%, and
-        // lost despite eliminating the same calls. All-routed/no-fallback is
-        // the bounded case whose selector capture is rolled back completely by
-        // ordinary dispatch, so calling the chosen routed arm from the selector
-        // start is exactly the established protocol.
-        if (projection >= 0 && code[childIp] === OP_DISPATCH && tokenChoiceDispatches.has(childIp)) {
-          const selectorIp = code[childIp + 1]!
-          const lineFlags = code[selectorIp + 4]!
-          const spec = dsp[code[childIp + 2]!]!
-          const n = code[childIp + 5]!
-          const otherIp = code[childIp + 3]!
-          if (otherIp < 0 && spec.routed.length === n && spec.routed.every(r => r === 1)) {
-            const D = labels.at(childIp)
-            const dispatchSinks = sinksAt(childIp)
-            const mark = tmp()
-            const value = tmp()
-            const arms = Array.from({ length: n }, (_, i) => link(code[childIp + 6 + i]!))
-            const armCases = arms.map((arm, i) => `case ${i}:${value}=${arm}(input,pos,ctx);break`).join('\n')
-            const hasSuffix = (lineFlags & 4) !== 0
-            const suffixExpected = hasSuffix ? fxRef(code[selectorIp + 3]!) : ''
-            return `${head}
-if(_pfTokDispatch===${childIp}&&_pfTokInput===input&&_pfTokPos===pos){
-const tr=_pfTokPacked
-const sm=${hasSuffix ? 'tr%2===1' : 'false'},selEnd=(tr-(sm?1:0))/2
-const key=_pfTokValue,arm=_pfTokArm
-${(lineFlags & 1) !== 0 ? '_trackLines(ctx,input,sm?selEnd-1:selEnd)' : ''}
-${hasSuffix ? 'ctx._fc=false' : ''}
-${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,selEnd)' : ''}
-${hasSuffix ? `if(!sm){ctx._fe=selEnd;ctx._fx=${suffixExpected}}` : ''}
-_pfTokBody=-1
-_pfTokValue=undefined
-_pfTokDispatch=-1
-_pfTokInput=undefined
-${emitMark(mark, D.buf, D.raw, dispatchSinks)}
-const savedRouted=ctx._routed
-ctx._routed={value:key,span:{start:pos,end:selEnd}}
-let ${value}
-try{switch(arm){
-${armCases}
-default:${value}=FAIL
-}}finally{ctx._routed=savedRouted}
-if(${value}===FAIL){
-${emitRollback(mark, D.buf, D.raw, dispatchSinks)}
-ctx._fc=true
-return FAIL
-}
-return ${projection === 0 ? 'key' : value}
-}
-const v=${child}(input,pos,ctx)
-if(v===FAIL)return FAIL
-return v[${projection}]
-}`
-          }
-        }
-
-        if (projection >= 0) return `${head}
-const v=${child}(input,pos,ctx)
-if(v===FAIL)return FAIL
-return v[${projection}]
-}`
-
-        const fn = fnRef(reducer)
+        const fn = fnRef(code[ip + 1]!)
+        const child = link(code[ip + 2]!)
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL

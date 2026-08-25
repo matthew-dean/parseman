@@ -1240,20 +1240,7 @@ class Encoder {
           return head
         }
         const child = this.node(d.parser).ip
-        // `dispatch()` always returns `[selectorValue, armValue]`. Preserve the
-        // same direct-projection descriptor used by fused sequences so every
-        // engine can select an already-produced tuple slot without retaining or
-        // calling an author reducer. In the emitted engine this also gives a
-        // token-predecided dispatch one shared continuation instead of cloning a
-        // direct shell into each ordered-choice occurrence.
-        const projection = inner.tag === 'dispatch'
-          ? directArrayProjection(d.fn, d.fnSrc, 2)
-          : null
-        return this.emit(
-          OP_XFORM,
-          projection === null ? this.fn(d.fn, d.fnSrc ?? null) : ~projection,
-          child,
-        )
+        return this.emit(OP_XFORM, this.fn(d.fn, d.fnSrc ?? null), child)
       }
       case 'leaf': {
         const child = this.node(d.parser).ip
