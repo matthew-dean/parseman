@@ -349,6 +349,7 @@ export function confirmedArityForDef(def: NodeDef): number | null {
 /** Build reads its 1st (`children`) arg? Unknown/unparseable → true (keep capture). */
 export function buildReadsChildren(def: NodeDef): boolean {
   if (!def.build) return true // structural node: CST output always owns children
+  if (def.buildChildrenUnused === true) return false
   const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 1

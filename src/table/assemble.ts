@@ -651,6 +651,44 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
   }
 
+  /** Direct reducer proven unable to observe either semantic or raw children.
+   * Run the child with every CST sink closed; fields remain independently live. */
+  function capturelessBuildNode(child: Piece, build: NodeBuilder, fields: boolean): Piece {
+    return (input, pos, ctx) => {
+      const sCh = ctx._cstChildren
+      const sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren
+      const sTl = ctx._cstTriviaLog
+      const sCap = ctx.captureTrivia
+      const sBuf = ctx._cstBuf
+      const savedFields = ctx._fields
+      ctx._cstBuf = undefined
+      ctx._cstChildren = undefined
+      ctx._cstLeaves = undefined
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      ctx.captureTrivia = false
+      ctx._fields = fields ? [] : undefined
+      const value = child(input, pos, ctx)
+      const fieldMap = fields ? buildFieldMap(ctx._fields) : undefined
+      ctx._fields = savedFields
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      ctx.captureTrivia = sCap
+      if (value === FAIL) return FAIL
+      const end = EC.e
+      const node = build(EMPTY_CH, fieldMap, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      if (sBuf !== undefined || sCh !== undefined) {
+        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+      }
+      EC.e = end
+      return node
+    }
+  }
+
   function collapseBuildNode(child: Piece, build: NodeBuilder): Piece {
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
@@ -3463,6 +3501,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           if (build !== undefined && proj < 0 && flags === 18) {
             return childrenOnlyFieldsBuildNode(child, build)
+          }
+          if (build !== undefined && proj < 0 && flags === 258) {
+            return capturelessBuildNode(child, build, false)
+          }
+          if (build !== undefined && proj < 0 && flags === 274) {
+            return capturelessBuildNode(child, build, true)
           }
           if (build !== undefined && proj < 0 && flags === 32) {
             return collapseBuildNode(child, build)

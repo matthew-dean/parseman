@@ -159,6 +159,10 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
   }
   if (op === OP_NODE || op === OP_NODE_TRACK) {
     const flags = code[ip + 3]!
+    if (!hostCst && op === OP_NODE && code[ip + 1]! >= 0 && code[ip + 4]! < 0
+      && (flags === 258 || flags === 274)) {
+      return { tri: at.tri, buf: false, raw: RAW_UNKNOWN, cap: CAP_OFF }
+    }
     const directChildren = !hostCst && op === OP_NODE && code[ip + 1]! >= 0 && code[ip + 4]! < 0
       && (flags === 2 || flags === 18 || flags === 34)
     if (directChildren) {

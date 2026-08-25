@@ -618,7 +618,7 @@ export function emitAssemblySource(
     if ((op !== OP_NODE && op !== OP_NODE_TRACK) || code[ip + 1]! < 0 || code[ip + 4]! >= 0) return false
     const flags = code[ip + 3]!
     if ((flags & 2) === 0) return false
-    if (op === OP_NODE && (flags === 2 || flags === 18 || flags === 34)) return false
+    if (op === OP_NODE && (flags === 2 || flags === 18 || flags === 34 || flags === 258 || flags === 274)) return false
     const scalarChild = scalarTerminalNodeChild(code, ip)
     return scalarChild < 0 || !scalarSpecs.has(code[scalarChild + 1]!)
   })
@@ -2108,8 +2108,9 @@ return nd
         // assembly so a large composeLeaf artifact does not fall back to opening
         // the generic raw/trivia buffer that its reducer arity proved unread.
         if (!hostCst && !tracked && build !== undefined && proj < 0
-          && (flags === 2 || flags === 18 || flags === 34)) {
-          const fields = flags === 18
+          && (flags === 2 || flags === 18 || flags === 34 || flags === 258 || flags === 274)) {
+          const fields = flags === 18 || flags === 274
+          const captureless = flags === 258 || flags === 274
           const collapseChildren = flags === 34
           const publish = L.buf && L.raw === RAW_OMIT
             ? '_pushNodeNoRawBuf(ctx,nd)'
@@ -2146,16 +2147,16 @@ if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
           return `${head}
 const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf,sFields=ctx._fields
-const flat=[]
+${captureless ? '' : 'const flat=[]'}
 ctx._cstBuf=undefined
-ctx._cstChildren=flat
-ctx._cstLeaves=flat
+ctx._cstChildren=${captureless ? 'undefined' : 'flat'}
+ctx._cstLeaves=${captureless ? 'undefined' : 'flat'}
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined
 ctx.captureTrivia=false
 ctx._fields=${fields ? '[]' : 'undefined'}
 const v=${child}(input,pos,ctx)
-const captured=_capturedFlatChildren(flat)
+const captured=${captureless ? 'EMPTY_CH' : '_capturedFlatChildren(flat)'}
 ${fields ? 'const fieldMap=buildFieldMap(ctx._fields)\n' : ''}ctx._fields=sFields
 ctx._cstBuf=sBuf
 ctx._cstChildren=sCh

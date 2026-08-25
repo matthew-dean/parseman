@@ -30,6 +30,7 @@ import {
   assertMacroCompiled,
   evalMacroModule,
   tableKeepsTailCapture,
+  tableOmitsChildrenCapture,
   tableOmitsRawCapture,
 } from '../helpers/eval-macro-module.ts'
 
@@ -290,6 +291,18 @@ export const P = node('P', literal('a'),
 `, 'P')
 
     expect(tableOmitsRawCapture(source)).toBe(false)
+  })
+
+  it('macro proves ignored semantic and raw children dead while preserving span', () => {
+    const { fn, source } = macroParser(`
+import { literal, node } from 'parseman' with { type: 'macro' }
+export const P = node('P', literal('a'),
+  (_children, _fields, span, _rawChildren) => ({ span }))
+`, 'P')
+
+    expect(tableOmitsChildrenCapture(source)).toBe(true)
+    expect(tableOmitsRawCapture(source)).toBe(true)
+    expect(fn('a', 0, {}).value).toEqual({ span: { start: 0, end: 1 } })
   })
 
   it('macro preserves node-local trivia capture without enabling it for the whole parser', () => {

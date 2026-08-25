@@ -5,7 +5,7 @@ import { capturesLeaf, mayLeavePartialCapture } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
-import { buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
+import { buildReadsChildren, buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators/dispatch.ts'
 import {
@@ -1290,6 +1290,7 @@ class Encoder {
         // a `project` replaces the value outright.
         const noBuildCaptures = d.project === undefined
         const derivedTrivia = d.build !== undefined ? buildReadsTrivia(d) : noBuildCaptures
+        const omitsChildren = d.build !== undefined && !buildReadsChildren(d)
         const omitsRaw = d.build !== undefined && !buildReadsRaw(d)
         const derivedState = d.build !== undefined ? buildReadsState(d) : noBuildCaptures
         const derivedFields = d.build !== undefined ? buildReadsFields(d) : noBuildCaptures
@@ -1303,6 +1304,7 @@ class Encoder {
           | (d.collapse === true ? 32 : 0)
           | (d.unwrap === true ? 64 : 0)
           | (d.trailingTrivia === true ? 128 : 0)
+          | (!cstOut && omitsChildren ? 256 : 0)
           // Distinguish grammar-owned capture from a structural node's default
           // capture. A runtime host predicate may narrow only the latter.
           | (d.captureTrivia === true ? 1 : 0)
