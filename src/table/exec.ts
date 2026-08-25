@@ -1366,7 +1366,9 @@ function makeDriver(
       case OP_XFORM: {
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if (v === FAIL) return FAIL
-        const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+        const reducer = code[ip + 1]!
+        if (reducer < 0) return (v as readonly unknown[])[~reducer]
+        const fn = fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
         if (COUNT) siteFn('XFORM fn()', fn)
         return fn(v, { start: pos, end: EC.e })
       }
