@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
-  choice, expect as recover, field, literal, node, optional, rules, run, sequence, type Combinator,
+  attempt, choice, expect as recover, field, literal, node, optional, rules, run, sequence, type Combinator,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_CHOICE, OP_OPT } from '../../src/table/ops.ts'
+import { OP_ATTEMPT, OP_CHOICE, OP_OPT } from '../../src/table/ops.ts'
 import {
-  choiceRollbackMask, ownTableProgram, resolveTable,
+  choiceRollbackMask, failureRollbackClean, ownTableProgram, resolveTable,
   type PrecompiledAssembly, type TableProgram,
 } from '../../src/table/program.ts'
 
@@ -124,5 +124,44 @@ describe('emitted ordered-choice rollback elision', () => {
     const namedProg = encodeTable(named)
     expect(projection(precompiled(namedProg), 'sa')).toEqual(projection(named.Root! as Entry, 'sa'))
     expect(run(precompiled(namedProg), 'sa').value).toMatchObject({ seed: { value: 's' } })
+  })
+
+  it('omits optional and attempt marks when failed children own their capture', () => {
+    const contained = node('Contained', sequence(literal('a'), literal('!')))
+    const grammar = node('Root', sequence(optional(contained), attempt(contained), literal('?')))
+    const prog = encodeTable({ Root: grammar })
+    const optionalIp = [...reachableIps(prog)].find(ip => prog.code[ip] === OP_OPT)
+    const attemptIp = [...reachableIps(prog)].find(ip => prog.code[ip] === OP_ATTEMPT)
+    expect(optionalIp).toBeTypeOf('number')
+    expect(attemptIp).toBeTypeOf('number')
+    expect(failureRollbackClean(prog, optionalIp!)).toBe(true)
+    expect(failureRollbackClean(prog, attemptIp!)).toBe(true)
+
+    const source = emitAssemblySource(resolveTable(prog), prog, STRICT).source
+    expect(emittedBody(source, optionalIp!)).not.toMatch(/_rbBuf\(ctx/)
+    expect(emittedBody(source, attemptIp!)).not.toMatch(/_rbBuf\(ctx/)
+
+    const emitted = precompiled(prog)
+    for (const input of ['a!?', 'a!a!?', '?', 'a?']) {
+      expect(projection(emitted, input), input).toEqual(projection(grammar as Entry, input))
+    }
+  })
+
+  it('keeps optional rollback when a failed child can leak a captured prefix', () => {
+    const grammar = node('Root', sequence(
+      optional(sequence(literal('a'), literal('!'))),
+      literal('a'),
+    ))
+    const prog = encodeTable({ Root: grammar })
+    const optionalIp = [...reachableIps(prog)].find(ip => prog.code[ip] === OP_OPT)!
+    expect(failureRollbackClean(prog, optionalIp)).toBe(false)
+
+    const expected = projection(grammar as Entry, 'a')
+    expect(projection(precompiled(prog), 'a')).toEqual(expected)
+
+    // RED control: granting clean authority to a leaking child leaves the
+    // optional's failed prefix in the enclosing node before the final arm wins.
+    const planted = ownTableProgram(prog, undefined, undefined, new Set([optionalIp]))
+    expect(projection(precompiled(planted), 'a')).not.toEqual(expected)
   })
 })

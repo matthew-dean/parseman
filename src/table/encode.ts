@@ -143,6 +143,7 @@ class Encoder {
   lexPrograms: LexProgramSpec[] = []
   private lexProgramIndex = new Map<string, number>()
   private choiceRollbackMasks = new Map<number, number>()
+  private failureRollbackCleanSites = new Set<number>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -624,7 +625,7 @@ class Encoder {
    * context. Cycles are safe to stop: revisiting the same combinator cannot
    * discover a writer the first traversal did not already reach.
    */
-  private choiceArmNeedsRollback(
+  private failureNeedsRollback(
     p: Combinator<unknown>,
     autoNot: readonly AutoNotCheck[] | null | undefined,
   ): boolean {
@@ -1143,7 +1144,7 @@ class Encoder {
         if (rollbackMask === 0) {
           for (let i = 0; i < arms.length; i++) {
             const src = order[i]!
-            if (this.choiceArmNeedsRollback(arms[i]!, d.autoNot[src])) {
+            if (this.failureNeedsRollback(arms[i]!, d.autoNot[src])) {
               rollbackMask |= 1 << i
             }
           }
@@ -1210,8 +1211,11 @@ class Encoder {
           ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags, this.expected(deriveExpected(d.parser)))
           : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
       }
-      case 'optional':
-        return this.emit(OP_OPT, this.node(d.parser).ip)
+      case 'optional': {
+        const head = this.emit(OP_OPT, this.node(d.parser).ip)
+        if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(head)
+        return head
+      }
       case 'transform': {
         // Declared on the def and not lowered here. Refuse rather than assume it is
         // inert: a recognition-only transform suppresses its value, and a table that
@@ -1511,6 +1515,7 @@ class Encoder {
       // lowering was correct only for a choice arm.
       case 'attempt': {
         const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip)
+        if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(inner)
         // THE FIRST-SET FAIL-FAST GUARD, lowered as the `OP_GATE` row the `node()`
         // case already uses — it is the same guard, written twice in the
         // interpreter (`attempt.ts:22`, `node.ts:239`). It is NOT merely an
@@ -1719,7 +1724,7 @@ class Encoder {
       ...(this.rec ? { rec: 1 as const } : {}),
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
-    }, undefined, this.choiceRollbackMasks)
+    }, undefined, this.choiceRollbackMasks, this.failureRollbackCleanSites)
   }
 }
 

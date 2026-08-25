@@ -53,7 +53,7 @@ import {
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import {
-  choiceRollbackMask, validateDispatchSpec,
+  choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
   type ResolvedClass, type ResolvedTable, type TableProgram,
 } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
@@ -1471,12 +1471,13 @@ return v
 
       case OP_ATTEMPT: {
         const child = link(code[ip + 1]!)
+        const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, L.raw, sinks)}
+${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-${emitRollback(p, L.buf, L.raw, sinks)}
+${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
 if(ctx._fc===true)return FAIL
 ctx._fe=pos
 return FAIL
@@ -1526,14 +1527,15 @@ return null
 
       case OP_OPT: {
         const child = link(code[ip + 1]!)
+        const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, L.raw, sinks)}
+${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
 if(ctx._fc===true)return FAIL
-${emitRollback(p, L.buf, L.raw, sinks)}
+${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
 EC.e=pos
 return null
 }

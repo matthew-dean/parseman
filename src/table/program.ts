@@ -493,6 +493,7 @@ type RuntimeTableProgram = TableProgram & {
   readonly [TABLE_RUNTIME]?: {
     resolved: ResolvedTable | undefined
     readonly choiceRollbackMasks?: ReadonlyMap<number, number>
+    readonly failureRollbackCleanSites?: ReadonlySet<number>
   }
 }
 
@@ -501,11 +502,16 @@ export function ownTableProgram(
   prog: TableProgram,
   resolved?: ResolvedTable,
   choiceRollbackMasks?: ReadonlyMap<number, number>,
+  failureRollbackCleanSites?: ReadonlySet<number>,
 ): TableProgram {
-  const inherited = (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceRollbackMasks
+  const runtime = (prog as RuntimeTableProgram)[TABLE_RUNTIME]
   return {
     ...prog,
-    [TABLE_RUNTIME]: { resolved, choiceRollbackMasks: choiceRollbackMasks ?? inherited },
+    [TABLE_RUNTIME]: {
+      resolved,
+      choiceRollbackMasks: choiceRollbackMasks ?? runtime?.choiceRollbackMasks,
+      failureRollbackCleanSites: failureRollbackCleanSites ?? runtime?.failureRollbackCleanSites,
+    },
   } as RuntimeTableProgram
 }
 
@@ -513,6 +519,13 @@ export function ownTableProgram(
  * assembly and never serialized into the shipped table. */
 export function choiceRollbackMask(prog: TableProgram, ip: number): number | undefined {
   return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceRollbackMasks?.get(ip)
+}
+
+/** Compiler-only authority that a failed transactional child cannot leak any
+ * capture, trivia, field, or error sink. Static assembly consumes it to omit the
+ * enclosing mark and rollback; it is never serialized into the shipped table. */
+export function failureRollbackClean(prog: TableProgram, ip: number): boolean {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.failureRollbackCleanSites?.has(ip) === true
 }
 
 /** A compiled entry, shaped exactly like a codegen rule function. */
