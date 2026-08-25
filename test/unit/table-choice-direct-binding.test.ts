@@ -226,6 +226,15 @@ describe('direct-bound choice topology', () => {
     }
   })
 
+  it('reads ASCII choice gates directly while preserving astral code-point dispatch', () => {
+    const grammar = choice(literal('a'), literal('\u{1f600}'))
+    const prog = program(grammar)
+    expectIdentity(engines(grammar, prog), ['a', '\u{1f600}', 'x', ''])
+
+    const source = emitAssemblySource(resolveTable(prog), prog, STRICT).source
+    expect(source).toMatch(/const u=input\.charCodeAt\(pos\)\nconst c=u<128\?u:lead\(input,pos\)/)
+  })
+
   it('keeps only the deepest failed-arm expectations and merges exact-depth ties in every engine', () => {
     const cases: Array<{ grammar: Combinator<unknown>; input: string; expected: string[] }> = [
       {
