@@ -17,9 +17,21 @@ import { describe, it, expect } from 'vitest'
 import { node, sequence, regex, literal, parser, parse, triviaEntries, cstBuildHost } from '../../src/index.ts'
 import type { ParserDef } from '../../src/index.ts'
 import { compile } from '../../src/table/compile.ts'
-import { confirmedBuildArity, buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
+import {
+  confirmedBuildArity,
+  confirmedBuildParamUnused,
+  buildReadsChildren,
+  buildReadsRaw,
+  buildReadsTrivia,
+  buildReadsState,
+} from '../../src/compiler/build-arity.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { assertMacroCompiled, evalMacroModule, tableKeepsTailCapture } from '../helpers/eval-macro-module.ts'
+import {
+  assertMacroCompiled,
+  evalMacroModule,
+  tableKeepsTailCapture,
+  tableOmitsRawCapture,
+} from '../helpers/eval-macro-module.ts'
 
 type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
 
@@ -87,6 +99,28 @@ describe('confirmedBuildArity — conservative null (keep capture)', () => {
   for (const src of nulls) {
     it(`${JSON.stringify(src)} → null`, () => expect(confirmedBuildArity(src)).toBeNull())
   }
+})
+
+describe('confirmedBuildParamUnused — conservative reducer liveness', () => {
+  it('proves an ignored rawChildren formal dead while later trivia/state remain live', () => {
+    expect(confirmedBuildParamUnused(
+      '(children, fields, span, _rawChildren, triviaLog, state) => reduce(children, fields, triviaLog, state)',
+      3,
+    )).toBe(true)
+  })
+
+  it.each([
+    ['direct read', '(children, fields, span, rawChildren, triviaLog, state) => rawChildren.length'],
+    ['nested closure', '(children, fields, span, rawChildren, triviaLog, state) => () => rawChildren'],
+    ['object shorthand', '(children, fields, span, rawChildren, triviaLog, state) => ({ rawChildren })'],
+    ['arguments', 'function (children, fields, span, rawChildren, triviaLog, state) { return arguments[3] }'],
+    ['eval', '(children, fields, span, rawChildren, triviaLog, state) => eval(source)'],
+    ['Function constructor', '(children, fields, span, rawChildren, triviaLog, state) => Function(source)()'],
+    ['destructuring', '(children, fields, span, { length }, triviaLog, state) => length'],
+    ['default', '(children, fields, span, rawChildren = [], triviaLog, state) => state'],
+  ])('declines %s', (_label, src) => {
+    expect(confirmedBuildParamUnused(src, 3)).toBe(false)
+  })
 })
 
 describe('build capture arity gates off buildSrc (typed)', () => {
@@ -247,14 +281,26 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
     })
   })
 
+  it('does not reinterpret an author-declared buildArity as a liveness hint', () => {
+    const { source } = macroParser(`
+import { literal, node } from 'parseman' with { type: 'macro' }
+export const P = node('P', literal('a'),
+  (children, _fields, _span, _rawChildren, _triviaLog, state) => ({ children, state }),
+  { buildArity: 6 })
+`, 'P')
+
+    expect(tableOmitsRawCapture(source)).toBe(false)
+  })
+
   it('macro preserves node-local trivia capture without enabling it for the whole parser', () => {
-    const { fn } = macroParser(`
+    const { fn, source } = macroParser(`
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
 export const P = node('P', parser({ trivia: regex(/ +/) }, sequence(literal('a'), literal('b'))),
   (_children, _fields, _span, _rawChildren, triviaLog) => ({ triviaLog: [...triviaLog] }),
   { captureTrivia: true })
 `, 'P')
 
+    expect(tableOmitsRawCapture(source)).toBe(true)
     const value = fn('a b', 0, {}).value as { triviaLog: readonly number[] }
     expect(value).toEqual({ triviaLog: [1, 2, 1] })
     expect(triviaEntries(value.triviaLog, undefined, { nodeLog: true }).insertIndex(0)).toBe(1)

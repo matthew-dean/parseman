@@ -6,6 +6,10 @@ export type CstCaptureBuf = {
   /** Table-host specialisation: collect source-order raw entries without the
    * duplicate semantic children view. Selected once for the enclosing node. */
   rawOnly?: true | undefined
+  /** Direct reducer proved `rawChildren` unobservable. Preserve only the source-order
+   * COUNT needed by trivia insertion/rollback; never retain raw entry values. */
+  noRaw?: true | undefined
+  rawLen?: number | undefined
   single?: unknown | undefined
   ch?: unknown[] | undefined
   rawSingle?: unknown | undefined
@@ -54,7 +58,9 @@ export function finishCstBuf(buf: CstCaptureBuf | undefined): {
 } {
   if (!buf) return { children: EMPTY, rawChildren: EMPTY, triviaLog: EMPTY_TL }
   const children = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY)
-  const rawChildren = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY)
+  const rawChildren = buf.noRaw === true
+    ? EMPTY
+    : buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY)
   const triviaLog = buf.tl ?? EMPTY_TL
   return { children, rawChildren, triviaLog }
 }
@@ -94,7 +100,8 @@ export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknow
       else b.single = built
     }
 
-    if (b.raw) b.raw.push(rawEntry)
+    if (b.noRaw === true) b.rawLen = (b.rawLen ?? 0) + 1
+    else if (b.raw) b.raw.push(rawEntry)
     else if (b.rawSingle !== undefined) { b.raw = [b.rawSingle, rawEntry]; b.rawSingle = undefined }
     else b.rawSingle = rawEntry
     return
@@ -107,6 +114,7 @@ export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknow
 export function cstRawLen(ctx: ParseContext): number {
   const b = ctx._cstBuf
   if (b) {
+    if (b.noRaw === true) return b.rawLen ?? 0
     if (b.raw) return b.raw.length
     return b.rawSingle !== undefined ? 1 : 0
   }
@@ -239,12 +247,16 @@ export function rollbackCstCaptureAt(
   if (ctx._errors && errors !== undefined && ctx._errors.length !== errors) ctx._errors.length = errors
   const b = ctx._cstBuf
   if (b) {
-    const rawList = b.raw
-    if (rawList) {
-      if (raw === 0) b.raw = undefined
-      else if (raw === 1) { b.rawSingle = rawList[0]; b.raw = undefined }
-      else if (rawList.length !== raw) rawList.length = raw
-    } else if (raw === 0) b.rawSingle = undefined
+    if (b.noRaw === true) {
+      if (b.rawLen !== raw) b.rawLen = raw
+    } else {
+      const rawList = b.raw
+      if (rawList) {
+        if (raw === 0) b.raw = undefined
+        else if (raw === 1) { b.rawSingle = rawList[0]; b.raw = undefined }
+        else if (rawList.length !== raw) rawList.length = raw
+      } else if (raw === 0) b.rawSingle = undefined
+    }
     const childList = b.ch
     if (childList) {
       if (leaves === 0) b.ch = undefined

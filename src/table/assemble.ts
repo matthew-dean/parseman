@@ -829,7 +829,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       // has no single form. `rollbackNeeded` short-circuits true on a live buffer,
       // so the other seven sinks are not consulted — as before.
       const raw = b.raw
-      MRAW = raw !== undefined ? raw.length : b.rawSingle !== undefined ? 1 : 0
+      MRAW = b.noRaw === true
+        ? b.rawLen ?? 0
+        : raw !== undefined ? raw.length : b.rawSingle !== undefined ? 1 : 0
       const ch = b.ch
       MLV = ch !== undefined ? ch.length : b.single !== undefined ? 1 : 0
       const tl = b.tl
@@ -3490,6 +3492,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // grammar collapse form and the host collapse predicate.
         const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
         const rawOnly = !keepChildren
+        const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         return (input, pos, ctx) => {
           const host = HOST
           // `beginCstNodeCapture`/`endCstNodeCapture` INLINED, and the two objects
@@ -3504,7 +3507,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const sCh = ctx._cstChildren
           const sCap = ctx.captureTrivia
           const sBuf = ctx._cstBuf
-          const buf: CstCaptureBuf = rawOnly ? { rawOnly: true } : {}
+          const buf: CstCaptureBuf = rawOnly
+            ? { rawOnly: true }
+            : omitsRaw ? { noRaw: true, rawLen: 0 } : {}
           ctx._cstBuf = buf
           // `begin` sets this true and the caller immediately cleared it when the
           // node does not capture wide. Net: the flag IS `captureWide`, a const.
@@ -3527,7 +3532,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (structural) ctx._triviaCaptureMask = savedMask
           const kids = rawOnly ? EMPTY_CH : buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
           const hostKids = kids
-          const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
+          const rawKids = omitsRaw
+            ? EMPTY_CH
+            : buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
           const tlog = buf.tl ?? EMPTY_TLOG
           ctx._cstBuf = sBuf
           ctx.captureTrivia = sCap

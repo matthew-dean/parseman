@@ -58,7 +58,8 @@ import {
 } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
-  CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, computeSiteLabels, reachableSites, type SiteLabel,
+  CAP_OFF, CAP_ON, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
+  computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import {
   leadingScalarTerminal, scalarTerminalNodeChild, scalarTerminalNotChild,
@@ -215,6 +216,42 @@ if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTrivi
 }
 `
 
+/** Printed only into assemblies that open a count-only raw buffer. */
+const NO_RAW_RUNTIME_PRELUDE = `
+function _pushLeafNoRawBuf(ctx,value,s,e){
+const l={_tag:'leaf',value,span:{start:s,end:e}}
+const b=ctx._cstBuf
+if(b.ch!==undefined)b.ch.push(l)
+else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
+else b.single=l
+b.rawLen++
+}
+function _pushNodeNoRawBuf(ctx,value){
+const b=ctx._cstBuf
+if(b.ch!==undefined)b.ch.push(value)
+else if(b.single!==undefined){b.ch=[b.single,value];b.single=undefined}
+else b.single=value
+b.rawLen++
+}
+function _rbNoRawBuf(ctx,raw,tl,lv,lg,rt){
+const b=ctx._cstBuf
+if(b.rawLen!==raw)b.rawLen=raw
+const ch=b.ch
+if(ch!==undefined){
+if(lv===0)b.ch=undefined
+else if(lv===1){b.single=ch[0];b.ch=undefined}
+else if(ch.length!==lv)ch.length=lv
+}else if(lv===0)b.single=undefined
+const bt=b.tl
+if(bt!==undefined){
+if(tl===0)b.tl=undefined
+else if(bt.length!==tl)bt.length=tl
+}
+if(ctx._triviaLog!==undefined&&ctx._triviaLog.length!==lg)ctx._triviaLog.length=lg
+if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTriviaLog.length=rt
+}
+`
+
 function q(s: string): string {
   return JSON.stringify(s)
 }
@@ -255,7 +292,7 @@ function sinkReads(t: string, s: Sinks): string {
   return `${s.fd ? `\n${t}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${s.er ? `\n${t}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
 }
 
-function emitMark(t: string, buf: boolean, s: Sinks = NO_SINKS, decl = true): string {
+function emitMark(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SINKS, decl = true): string {
   // THE SITE IS INSIDE A NODE. `OP_NODE` opens `ctx._cstBuf` unconditionally and
   // closes it on the way out, so the whole discriminating chain below — which
   // sink is live, and whether a mark is needed at all — has ONE answer here, and
@@ -264,8 +301,13 @@ function emitMark(t: string, buf: boolean, s: Sinks = NO_SINKS, decl = true): st
   // `decl === false` RE-TAKES a mark into locals that already exist —
   // `OP_DISPATCH` marks, rolls back to the selector's mark, and marks again.
   if (buf) {
+    const raw = rawMode === RAW_OMIT
+      ? `${t}raw=b.rawLen`
+      : rawMode === RAW_CAPTURE
+        ? `const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0`
+        : `const r=b.raw;${t}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)`
     return `${decl ? `let ${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : ''}{const b=ctx._cstBuf
-const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+${raw}
 const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${t}tl=l!==undefined?l.length:0
 ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
@@ -273,7 +315,7 @@ ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, 
   }
   return `${decl ? `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : `${t}n=false\n`}{const b=ctx._cstBuf
 if(b!==undefined){
-const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+const r=b.raw;${t}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)
 const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${t}tl=l!==undefined?l.length:0
 ${t}n=true
@@ -306,7 +348,7 @@ ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, 
  * enclosing `_fields` already contains entries, and rolling that array back to
  * zero would erase state the subtree did not create.
  */
-function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
+function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SINKS): string {
   // `_rbBuf` is the `_cstBuf` arm of `rollbackCstCaptureAt` plus the two trivia
   // truncations, with the sink discrimination the label already answered removed.
   // It takes no piece, so the header's sharing rule admits it.
@@ -318,7 +360,9 @@ function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
   // helper applies the same `undefined` sentinel when a site cannot write one.
   const fd = s.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${t}fd)ctx._fields.length=${t}fd` : ''
   const er = s.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${t}er)ctx._errors.length=${t}er` : ''
-  if (buf) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
+  if (buf && rawMode === RAW_OMIT) return `_rbNoRawBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
+  if (buf && rawMode === RAW_CAPTURE) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
+  if (buf) return `rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)`
   if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,undefined,undefined,${t}lg,${t}rt)`
   return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)}`
 }
@@ -516,6 +560,7 @@ export function emitAssemblySource(
   // pool's `extraIps` — and each starts at `TOP`, because a caller outside the
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
+  const reachable = [...reachableSites(code, roots)]
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -526,7 +571,7 @@ export function emitAssemblySource(
   const tokenChoiceDispatches = new Set<number>()
   const tokenChoiceBodies = new Set<number>()
   if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
-    for (const ip of reachableSites(code, roots)) {
+    for (const ip of reachable) {
       if (code[ip] === OP_NODE) {
         const child = scalarTerminalNodeChild(code, ip)
         if (child >= 0) scalarSpecs.add(code[child + 1]!)
@@ -568,6 +613,16 @@ export function emitAssemblySource(
     }
   }
 
+  const needsNoRawPrelude = !hostCst && reachable.some(ip => {
+    const op = code[ip]
+    if ((op !== OP_NODE && op !== OP_NODE_TRACK) || code[ip + 1]! < 0 || code[ip + 4]! >= 0) return false
+    const flags = code[ip + 3]!
+    if ((flags & 2) === 0) return false
+    if (op === OP_NODE && (flags === 2 || flags === 18 || flags === 34)) return false
+    const scalarChild = scalarTerminalNodeChild(code, ip)
+    return scalarChild < 0 || !scalarSpecs.has(code[scalarChild + 1]!)
+  })
+
   // THE SIDE-SINK FIXPOINT, over the same graph the labels walk. `OP_FIELD` is
   // the only direct `_fields` writer and `OP_EXPECT` the only direct `_errors`
   // writer. A tolerant repetition can also write `_errors` through recoverScan.
@@ -587,7 +642,7 @@ export function emitAssemblySource(
   //
   // Any future row whose child is not an offset in `code` belongs here for the
   // same reason. `OP_LIVE` is the other such row, and it is unemittable.
-  const sinkSites = [...reachableSites(code, roots)]
+  const sinkSites = reachable
   const sinkBits = new Map<number, number>()
   for (const ip of sinkSites) {
     const op = code[ip]
@@ -977,7 +1032,9 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
      * `trackLines` is `RunCfg`, and an open `_cstBuf` is the label. `_pushLeafBuf`
      * is that pair with both branches taken, and it takes no piece.
      */
-    const pushLeaf = L.buf && !cfg.trackLines ? '_pushLeafBuf' : '_pushLeaf'
+    const pushLeaf = L.buf && !cfg.trackLines
+      ? L.raw === RAW_OMIT ? '_pushLeafNoRawBuf' : L.raw === RAW_CAPTURE ? '_pushLeafBuf' : '_pushLeaf'
+      : '_pushLeaf'
     const captureLeaf = (value: string): string => {
       const call = `${pushLeaf}(ctx,${value},pos,e)`
       return L.buf ? call : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${call}`
@@ -1415,10 +1472,10 @@ return v
         const child = link(code[ip + 1]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, sinks)}
+${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-${emitRollback(p, L.buf, sinks)}
+${emitRollback(p, L.buf, L.raw, sinks)}
 if(ctx._fc===true)return FAIL
 ctx._fe=pos
 return FAIL
@@ -1442,9 +1499,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, sinks)}
+${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
-${emitRollback(p, L.buf, sinks)}
+${emitRollback(p, L.buf, L.raw, sinks)}
 if(v===FAIL){EC.e=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
@@ -1457,9 +1514,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, sinks)}
+${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
-${emitRollback(p, L.buf, sinks)}
+${emitRollback(p, L.buf, L.raw, sinks)}
 if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 EC.e=pos
 return null
@@ -1470,12 +1527,12 @@ return null
         const child = link(code[ip + 1]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, sinks)}
+${emitMark(p, L.buf, L.raw, sinks)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
 if(ctx._fc===true)return FAIL
-${emitRollback(p, L.buf, sinks)}
+${emitRollback(p, L.buf, L.raw, sinks)}
 EC.e=pos
 return null
 }
@@ -1642,7 +1699,7 @@ return FAIL
           const hasRollback = rollbackMask !== 0
           const rollbackFor = (i: number): string =>
             rollbackMask === -1 || (rollbackMask & (1 << i)) !== 0
-              ? emitRollback(p, L.buf, sinks)
+              ? emitRollback(p, L.buf, L.raw, sinks)
               : ''
           const catchName = maskable ? `_cx${uid++}_` : ''
           if (maskable) {
@@ -1706,7 +1763,7 @@ ${rollbackFor(i)}
 
           return `${head}
 const c=lead(input,pos)
-${hasRollback ? emitMark(p, L.buf, sinks) : ''}
+${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
 let acc
 let best=pos
 ${maskable ? `if(c<128){
@@ -1749,8 +1806,8 @@ return FAIL
         const m1 = tmp()
         const m2 = tmp()
         const routedCall = (target: string): string => `{const savedRouted=ctx._routed
-${emitRollback(m1, L.buf, sinks)}
-${emitMark(m2, L.buf, sinks, false)}
+${emitRollback(m1, L.buf, L.raw, sinks)}
+${emitMark(m2, L.buf, L.raw, sinks, false)}
 ctx._routed={value:key,span:{start:pos,end:selEnd}}
 try{v=${target}(input,pos,ctx)}finally{ctx._routed=savedRouted}
 break}`
@@ -1779,7 +1836,7 @@ ${fold}${chain}`
         // opener. A routed arm rewinds the selector's trivia capture and gets
         // the token handed to it (`OP_ROUTED`) instead of re-matching it.
         return `${head}
-${emitMark(m1, L.buf, sinks)}
+${emitMark(m1, L.buf, L.raw, sinks)}
 const sv=${selector}(input,pos,ctx)
 if(sv===FAIL)return FAIL
 const selEnd=EC.e
@@ -1788,14 +1845,14 @@ ${armSelection}
 if(arm===undefined){
 ${other === undefined ? `ctx._fe=selEnd;ctx._fx=${dx};return FAIL` : ''}
 }
-${emitMark(m2, L.buf, sinks)}
+${emitMark(m2, L.buf, L.raw, sinks)}
 let v
 switch(arm){
 ${armCases}
 ${fallbackCase}
 }
 if(v===FAIL){
-${emitRollback(m2, L.buf, sinks)}
+${emitRollback(m2, L.buf, L.raw, sinks)}
 ctx._fc=true
 return FAIL
 }
@@ -1851,13 +1908,21 @@ return [key,v]
         // still pays neither the two loads nor the two stores per item.
         const pfd = sinks.fd ? `${p}fd` : 'undefined'
         const per = sinks.er ? `${p}er` : 'undefined'
-        const rb = L.buf
-          ? `_rbBuf(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
+        const rbHelper = L.raw === RAW_OMIT ? '_rbNoRawBuf' : '_rbBuf'
+        const rb = L.buf && L.raw !== 0
+          ? `${rbHelper}(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
+          : L.buf
+            ? `rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
           : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
         const markSinks = `${sinks.fd ? `\n${p}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${sinks.er ? `\n${p}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
+        const markRaw = L.raw === RAW_OMIT
+          ? `${p}raw=b.rawLen`
+          : L.raw === RAW_CAPTURE
+            ? `const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0`
+            : `const r=b.raw;${p}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)`
         const markBody = L.buf
           ? `const b=ctx._cstBuf
-const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+${markRaw}
 const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${p}tl=l!==undefined?l.length:0
 ${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
@@ -1865,7 +1930,7 @@ ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}`
           : `if(needMark){
 const b=ctx._cstBuf
 if(b!==undefined){
-const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+const r=b.raw;${p}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)
 const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${p}tl=l!==undefined?l.length:0
 }else{
@@ -2010,10 +2075,12 @@ const leaf={_tag:'leaf',value,span:{start:pos,end}}
 const kids=[leaf],rawKids=[leaf],span={start:pos,end}
 EC.e=end
 const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
-${L.buf
-  ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
+${L.buf && L.raw === RAW_OMIT
+  ? '_pushNodeNoRawBuf(ctx,nd)'
+  : L.buf && L.raw === RAW_CAPTURE
+    ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
   : staticBuild
-    ? 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(nd,input,pos,end):undefined)'
+    ? 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,ctx._cstBuf!==undefined&&ctx._cstBuf.noRaw===true?undefined:ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(nd,input,pos,end):undefined)'
     : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
 EC.e=end
 return nd
@@ -2044,7 +2111,9 @@ return nd
           && (flags === 2 || flags === 18 || flags === 34)) {
           const fields = flags === 18
           const collapseChildren = flags === 34
-          const publish = `if(sBuf!==undefined){
+          const publish = L.buf && L.raw === RAW_OMIT
+            ? '_pushNodeNoRawBuf(ctx,nd)'
+            : L.buf && L.raw === RAW_CAPTURE ? `if(sBuf!==undefined){
 if(sBuf.rawOnly!==true){
 if(sBuf.ch!==undefined)sBuf.ch.push(nd)
 else if(sBuf.single!==undefined){sBuf.ch=[sBuf.single,nd];sBuf.single=undefined}
@@ -2054,6 +2123,22 @@ const rawNd=rawEntry(nd,input,pos,end)
 if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
 else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
 else sBuf.rawSingle=rawNd
+}else if(sCh!==undefined){
+sCh.push(nd)
+if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
+}` : `if(sBuf!==undefined){
+if(sBuf.noRaw===true)_pushNodeNoRawBuf(ctx,nd)
+else{
+if(sBuf.rawOnly!==true){
+if(sBuf.ch!==undefined)sBuf.ch.push(nd)
+else if(sBuf.single!==undefined){sBuf.ch=[sBuf.single,nd];sBuf.single=undefined}
+else sBuf.single=nd
+}
+const rawNd=rawEntry(nd,input,pos,end)
+if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
+else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
+else sBuf.rawSingle=rawNd
+}
 }else if(sCh!==undefined){
 sCh.push(nd)
 if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
@@ -2098,6 +2183,7 @@ return nd
           ? !structural || grammarCapture || hostCapturesThisType !== false
           : hostCapturesThisType === true
         const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
+        const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         const ty = q(type)
         const stArg = readsState ? 'st' : '(ctx.state!==undefined?Object.assign({},ctx.state):undefined)'
         const hostCall = `_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,${stArg},${tags})`
@@ -2116,7 +2202,14 @@ return nd
         // HOST COLLAPSE applies wherever the node's VALUE comes from the host —
         // any node under a CST host, not only the builder-less ones.
         const collapsible = keepChildren && (hostCst || (build === undefined && proj < 0))
-        const openCapture = keepChildren
+        const openCapture = omitsRaw
+          ? `const buf={noRaw:true,rawLen:0}
+ctx._cstBuf=buf
+ctx._cstChildren=undefined
+ctx._cstLeaves=undefined
+ctx._cstRawChildren=undefined
+ctx._cstTriviaLog=undefined`
+          : keepChildren
           ? `const buf={}
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
@@ -2129,7 +2222,12 @@ ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
-        const finishCapture = keepChildren
+        const finishCapture = omitsRaw
+          ? `const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
+const hostKids=kids
+const rawKids=EMPTY_CH
+const tlog=buf.tl??EMPTY_TLOG`
+          : keepChildren
           ? `const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
 const hostKids=kids
 const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
@@ -2166,12 +2264,14 @@ const st=${readsState ? '(ctx.state!==undefined?Object.assign({},ctx.state):unde
 let nd
 ${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]
 else ` : ''}{${value}}
-${L.buf
+${L.buf && L.raw === RAW_OMIT
+  ? '_pushNodeNoRawBuf(ctx,nd)'
+  : L.buf && L.raw === RAW_CAPTURE
   // The OUTER buffer, which this body saved into `sBuf` before opening its own —
   // so an in-node site's parent collector is present by the same fact.
   ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
   : staticBuild
-    ? 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined||sRaw!==undefined?rawEntry(nd,input,pos,end):undefined)'
+    ? 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined?(sBuf.noRaw===true?undefined:rawEntry(nd,input,pos,end)):sRaw!==undefined?rawEntry(nd,input,pos,end):undefined)'
     : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
 EC.e=end
 return nd
@@ -2201,7 +2301,7 @@ return nd
   // are `function` declarations, so a body may call one that is textually below
   // it, but the `const _ts<N>` each one reads must be initialised before any
   // parse runs, not merely before the declaration is evaluated.
-  const source = `${RUNTIME_PRELUDE}
+  const source = `${RUNTIME_PRELUDE}${needsNoRawPrelude ? NO_RAW_RUNTIME_PRELUDE : ''}
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${choiceDefs.join('\n')}

@@ -18,6 +18,7 @@ import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
 import { rules, type RulesOptions } from '../combinators/parser.ts'
 import * as parseman from '../index.ts'
+import { confirmedBuildParamUnused } from '../compiler/build-arity.ts'
 import { directBuilderBindings } from './direct-builder-static.ts'
 import type { ReducerResolver } from './reducer-resolver.ts'
 
@@ -674,6 +675,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)
         : parseman.node(inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)
       if (combi._def.tag === 'node' && buildSrc !== undefined) {
+        const authorDeclaredBuildArity = opts?.buildArity !== undefined
         combi._def.buildSrc = buildSrc
         // The type argument's IDENTIFIER, when it was written as one. A `node(type, …)`
         // inside a factory resolves `type` to a string here, which loses the fact that
@@ -722,6 +724,14 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         // lift walk the real body and report its real free names. An inline builder
         // has no `buildSigSrc`, so this is exactly `buildSrc` for that case.
         const analysisSrc = combi._def.buildSigSrc ?? buildSrc
+        // Arity answers which positional slots the author/compiler promises to
+        // supply; reducer liveness answers whether one of those values is actually
+        // observable. Only macro-resolved source can establish the latter. An
+        // explicit buildArity remains authority: it is a user declaration, not a
+        // compiler invitation to reinterpret the callback body.
+        if (!authorDeclaredBuildArity && confirmedBuildParamUnused(analysisSrc, 3)) {
+          combi._def.buildRawUnused = true
+        }
         const report = directBuilderBindings(analysisSrc)
         // Import-provenance rescue and free-name refusals apply ONLY to an INLINE
         // builder body, whose source (`buildSrc`) is exactly what the table inlines and
