@@ -237,12 +237,184 @@ function optionalNode(body: BuiltLexNode): BuiltLexNode {
   }
 }
 
+/** Whole-tree templates for the fixed lexical shapes that otherwise build a
+ * ladder of terminal/optional/not/sequence closures. Selection happens once
+ * while the table resolves; the returned parse function calls only the pooled
+ * recognizers on its successful path. */
+function flatFixedTreeRunner(
+  words: readonly number[],
+  matchers: readonly LexBodyRecognizer[],
+  expected: readonly (readonly string[])[],
+): LexProgramRunner | undefined {
+  if (words.length === 10
+    && words[0] === LEX_NODE_TERMINAL
+    && words[4] === LEX_NODE_OPTIONAL
+    && words[5] === LEX_NODE_TERMINAL
+    && words[9] === LEX_NODE_SEQUENCE2) {
+    const m0 = matchers[words[1]!], x0 = expected[words[2]!], t0 = words[3]
+    const m1 = matchers[words[6]!], x1 = expected[words[7]!], t1 = words[8]
+    if (m0 === undefined || x0 === undefined || (t0 !== 0 && t0 !== 1)
+      || m1 === undefined || x1 === undefined || (t1 !== 0 && t1 !== 1)) {
+      throw new TypeError('table lexical tree terminal references an invalid pool entry')
+    }
+    return function optionalTerminalTerminal(input, pos, ctx) {
+      ctx._fc = false
+      const r0 = m0(input, pos)
+      let end = pos
+      if (r0 < 0) {
+        ctx._fe = pos
+        ctx._fx = x0 as string[]
+        if (ctx._probe !== undefined) failAt(ctx, ctx._fx, pos)
+      } else {
+        end = r0 / 2
+        if (t0 === 1) trackLexLines(ctx, input, end)
+      }
+      ctx._fc = false
+      const r1 = m1(input, end)
+      if (r1 < 0) {
+        ctx._fe = end
+        ctx._fx = x1 as string[]
+        if (ctx._probe !== undefined) failAt(ctx, ctx._fx, end)
+        return -1
+      }
+      end = r1 / 2
+      if (t1 === 1) trackLexLines(ctx, input, end)
+      return end
+    }
+  }
+
+  if (words.length === 15
+    && words[0] === LEX_NODE_TERMINAL
+    && words[4] === LEX_NODE_NOT
+    && words[6] === LEX_NODE_TERMINAL
+    && words[10] === LEX_NODE_TERMINAL
+    && words[14] === LEX_NODE_SEQUENCE3) {
+    const m0 = matchers[words[1]!], x0 = expected[words[2]!], t0 = words[3]
+    const notFx = expected[words[5]!]
+    const m1 = matchers[words[7]!], x1 = expected[words[8]!], t1 = words[9]
+    const m2 = matchers[words[11]!], x2 = expected[words[12]!], t2 = words[13]
+    if (m0 === undefined || x0 === undefined || (t0 !== 0 && t0 !== 1) || notFx === undefined
+      || m1 === undefined || x1 === undefined || (t1 !== 0 && t1 !== 1)
+      || m2 === undefined || x2 === undefined || (t2 !== 0 && t2 !== 1)) {
+      throw new TypeError('table lexical tree terminal references an invalid pool entry')
+    }
+    return function notTerminalTerminalTerminal(input, pos, ctx) {
+      if (m0(input, pos) >= 0) {
+        ctx._fe = pos
+        ctx._fx = notFx as string[]
+        return -1
+      }
+      ctx._fc = false
+      const r1 = m1(input, pos)
+      if (r1 < 0) {
+        ctx._fe = pos
+        ctx._fx = x1 as string[]
+        if (ctx._probe !== undefined) failAt(ctx, ctx._fx, pos)
+        return -1
+      }
+      let end = r1 / 2
+      if (t1 === 1) trackLexLines(ctx, input, end)
+      ctx._fc = false
+      const r2 = m2(input, end)
+      if (r2 < 0) {
+        ctx._fe = end
+        ctx._fx = x2 as string[]
+        if (ctx._probe !== undefined) failAt(ctx, ctx._fx, end)
+        return -1
+      }
+      end = r2 / 2
+      if (t2 === 1) trackLexLines(ctx, input, end)
+      return end
+    }
+  }
+
+  if (words.length === 31
+    && words[0] === LEX_NODE_TERMINAL
+    && words[4] === LEX_NODE_TERMINAL
+    && words[8] === LEX_NODE_TERMINAL
+    && words[12] === LEX_NODE_SEQUENCE2
+    && words[13] === LEX_NODE_NOT
+    && words[15] === LEX_NODE_TERMINAL
+    && words[19] === LEX_NODE_NOT
+    && words[21] === LEX_NODE_TERMINAL
+    && words[25] === LEX_NODE_TERMINAL
+    && words[29] === LEX_NODE_OPTIONAL
+    && words[30] === LEX_NODE_SEQUENCE5) {
+    const ma = matchers[words[1]!], xa = expected[words[2]!], ta = words[3]
+    const mb = matchers[words[5]!], xb = expected[words[6]!], tb = words[7]
+    const mc = matchers[words[9]!], xc = expected[words[10]!], tc = words[11]
+    const notBcFx = expected[words[14]!]
+    const md = matchers[words[16]!], xd = expected[words[17]!], td = words[18]
+    const notDFx = expected[words[20]!]
+    const me = matchers[words[22]!], xe = expected[words[23]!], te = words[24]
+    const mf = matchers[words[26]!], xf = expected[words[27]!], tf = words[28]
+    if (ma === undefined || xa === undefined || (ta !== 0 && ta !== 1)
+      || mb === undefined || xb === undefined || (tb !== 0 && tb !== 1)
+      || mc === undefined || xc === undefined || (tc !== 0 && tc !== 1) || notBcFx === undefined
+      || md === undefined || xd === undefined || (td !== 0 && td !== 1) || notDFx === undefined
+      || me === undefined || xe === undefined || (te !== 0 && te !== 1)
+      || mf === undefined || xf === undefined || (tf !== 0 && tf !== 1)) {
+      throw new TypeError('table lexical tree terminal references an invalid pool entry')
+    }
+    return function terminalNotSequenceNotTerminalOptionalTerminal(input, pos, ctx) {
+      const ra = ma(input, pos)
+      if (ra < 0) {
+        ctx._fe = pos
+        ctx._fx = xa as string[]
+        if (ctx._probe !== undefined) failAt(ctx, ctx._fx, pos)
+        return -1
+      }
+      let end = ra / 2
+      if (ta === 1) trackLexLines(ctx, input, end)
+      ctx._fc = false
+      const rb = mb(input, end)
+      if (rb >= 0 && mc(input, rb / 2) >= 0) {
+        ctx._fe = end
+        ctx._fx = notBcFx as string[]
+        return -1
+      }
+      ctx._fc = false
+      if (md(input, end) >= 0) {
+        ctx._fe = end
+        ctx._fx = notDFx as string[]
+        return -1
+      }
+      ctx._fc = false
+      const re = me(input, end)
+      if (re < 0) {
+        ctx._fe = end
+        ctx._fx = xe as string[]
+        if (ctx._probe !== undefined) failAt(ctx, ctx._fx, end)
+        return -1
+      }
+      end = re / 2
+      if (te === 1) trackLexLines(ctx, input, end)
+      ctx._fc = false
+      ctx._fc = false
+      const rf = mf(input, end)
+      if (rf < 0) {
+        ctx._fe = end
+        ctx._fx = xf as string[]
+        if (ctx._probe !== undefined) failAt(ctx, ctx._fx, end)
+        return end
+      }
+      end = rf / 2
+      if (tf === 1) trackLexLines(ctx, input, end)
+      return end
+    }
+  }
+
+  return undefined
+}
+
 function fixedTreeRunner(
   words: readonly number[],
   matchers: readonly LexBodyRecognizer[],
   classes: readonly ResolvedClass[],
   expected: readonly (readonly string[])[],
 ): LexProgramRunner {
+  const flat = flatFixedTreeRunner(words, matchers, expected)
+  if (flat !== undefined) return flat
   const stack: BuiltLexNode[] = []
   const pop = (): BuiltLexNode => {
     const value = stack.pop()
