@@ -676,11 +676,7 @@ export function emitAssemblySource(
     }
   }
 
-  type TokenDecisionRef = {
-    readonly name: string
-    readonly expected: string
-    readonly dispatchIp: number
-  }
+  type TokenDecisionRef = { readonly name: string; readonly expected: string }
   const tokenDecisionRefs = new Map<number, TokenDecisionRef>()
   function tokenDecisionFor(dispatchIp: number): TokenDecisionRef {
     const prior = tokenDecisionRefs.get(dispatchIp)
@@ -751,7 +747,7 @@ _pfTokDispatch=${dispatchIp}
 _pfTokArm=arm
 return 1
 }`)
-    const made = { name, expected, dispatchIp }
+    const made = { name, expected }
     tokenDecisionRefs.set(dispatchIp, made)
     return made
   }
@@ -1639,38 +1635,6 @@ return FAIL
             rollbackMask === -1 || (rollbackMask & (1 << i)) !== 0
               ? emitRollback(p, L.buf, sinks)
               : ''
-          const tokenAttempt = (token: TokenDecisionRef, armIndex: number): string | undefined => {
-            const dispatchIp = token.dispatchIp
-            const dn = code[dispatchIp + 5]!
-            const spec = dsp[code[dispatchIp + 2]!]!
-            if (code[dispatchIp + 3]! >= 0 || code[dispatchIp + 4]! !== 0
-              || spec.routed.length !== dn || spec.routed.some(r => r !== 1)) return undefined
-            const targets = Array.from({ length: dn }, (_, j) => link(code[dispatchIp + 6 + j]!))
-            const xformIp = code[base + armIndex]!
-            if (code[xformIp] !== OP_XFORM || code[xformIp + 2]! !== dispatchIp) return undefined
-            const fn = fnRef(code[xformIp + 1]!)
-            const D = labels.at(dispatchIp)
-            const m = tmp(), v = tmp()
-            const cases = targets.map((target, j) => `case ${j}:${v}=${target}(input,pos,ctx);break`).join('\n')
-            return `let ${v}
-const tr=_pfTokPacked
-const selEnd=(tr-(tr%2))/2,key=_pfTokValue,arm=_pfTokArm
-_pfTokBody=-1
-_pfTokValue=undefined
-_pfTokDispatch=-1
-_pfTokInput=undefined
-const savedRouted=ctx._routed
-${emitMark(m, D.buf, sinks)}
-ctx._routed={value:key,span:{start:pos,end:selEnd}}
-try{switch(arm){
-${cases}
-}}finally{ctx._routed=savedRouted}
-if(${v}===FAIL){
-${emitRollback(m, D.buf, sinks)}
-ctx._fc=true
-}else ${v}=${fn}([key,${v}],{start:pos,end:EC.e})
-if(${v}!==FAIL)return ${v}`
-          }
           const catchName = maskable ? `_cx${uid++}_` : ''
           if (maskable) {
             const catchCases = expected.map((e, i) =>
@@ -1680,7 +1644,6 @@ if(${v}!==FAIL)return ${v}`
           const maskArms = maskable ? arms.map((arm, i) => {
             const pretest = pretests[i]
             const decision = pretest?.token === undefined ? '' : tmp()
-            const direct = pretest?.token === undefined ? undefined : tokenAttempt(pretest.token, i)
             const condition = pretest?.token !== undefined
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
               : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
@@ -1695,7 +1658,8 @@ if(at===best)acc=_accSet(${pretest.token.expected},acc)}
 }`
             return `${decision === '' ? '' : `let ${decision}=-1\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
-${direct ?? `{const v=${arm}(input,pos,ctx)\nif(v!==FAIL)return v}`}
+{const v=${arm}(input,pos,ctx)
+if(v!==FAIL)return v}
 if(best===pos)acc=${catchName}(${i},prev,acc)
 prev=${i + 1}
 {const at=ctx._fe??pos

@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   attempt, choice, dispatch, literal, matches, optional, regex, run, sequence,
-  routed, token, transform, when, type Combinator,
+  token, transform, when, type Combinator,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_CHOICE, OP_DISPATCH, OP_XFORM } from '../../src/table/ops.ts'
+import { OP_CHOICE } from '../../src/table/ops.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
 
 type Entry = Parameters<typeof run>[0]
@@ -27,17 +27,7 @@ function outcome(entry: Entry, input: string) {
 
 function precompiled(prog: TableProgram): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
-  const factory = new Function(
-    ...EMITTED_PARAMS, `'use strict';\n${emitted.source}`,
-  ) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
-}
-
-function editedPrecompiled(prog: TableProgram, edit: (source: string) => string): TableProgram {
-  const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
-  const factory = new Function(
-    ...EMITTED_PARAMS, `'use strict';\n${edit(emitted.source)}`,
-  ) as PrecompiledAssembly['factory']
+  const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
   return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
@@ -52,12 +42,10 @@ function countedPrecompiled(
     'const $1=((r)=>(input,pos)=>{COUNT_LEX.n++;return r(input,pos)})(LEX[$2])',
   )
   if (plantDuplicateScan) {
-    const recognizer = source.match(/function _td\d+_\(input,pos\)\{\nconst r=(_lex\d+)\(input,pos\)/)?.[1]
-    if (recognizer === undefined) throw new Error('missing token-decision recognizer')
-    source = source.replace('const tr=_pfTokPacked', `const tr=_pfTokPacked\n${recognizer}(input,pos)`)
+    source = source.replace(/const r=tp\?_pfTokPacked:([^\n]+)/, 'const r=$1')
   }
   const compiled = new Function(
-    ...EMITTED_PARAMS, 'COUNT_LEX', `'use strict';\n${source}`,
+    ...EMITTED_PARAMS, 'COUNT_LEX', source,
   ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
   const factory = ((...args: Parameters<PrecompiledAssembly['factory']>) =>
     compiled(...args, counter)) as PrecompiledAssembly['factory']
@@ -125,8 +113,8 @@ describe('small-choice token predecision', () => {
     ))
     const functionCall = dispatch(
       functionOpen,
-      when('each(', sequence(routed(), literal('!'))),
-      when(matches(/^(?!(?:url|calc)\($).+\($/i), sequence(routed(), literal('?'))),
+      when('each(', literal('!')),
+      when(matches(/^(?!(?:url|calc)\($).+\($/i), literal('?')),
     )
     const grammar = choice(
       transform(functionCall, value => value),
@@ -142,25 +130,6 @@ describe('small-choice token predecision', () => {
     expect(source).toMatch(/_pfTokDispatch===\d+&&_pfTokInput===input/)
 
     const prog = encodeTable({ Root: grammar })
-    const reachable = [...reachableIps(prog)]
-    const xformIp = reachable.find(ip =>
-      prog.code[ip] === OP_XFORM && prog.code[prog.code[ip + 2]!] === OP_DISPATCH,
-    )!
-    const dispatchIp = prog.code[xformIp + 2]!
-    const selectorIp = prog.code[dispatchIp + 1]!
-    const choiceIp = reachable.find(ip => {
-      if (prog.code[ip] !== OP_CHOICE) return false
-      const n = prog.code[ip + 2]!
-      return Array.from({ length: n }, (_, i) => prog.code[ip + 4 + i]).includes(xformIp)
-    })!
-    const choiceStart = source.indexOf(`function _pf${choiceIp}(input,pos,ctx){`)
-    const choiceEnd = source.indexOf('\nfunction ', choiceStart + 1)
-    const choiceSource = source.slice(choiceStart, choiceEnd)
-    expect(choiceStart).toBeGreaterThanOrEqual(0)
-    expect(choiceSource.match(new RegExp(`_pf${xformIp}\\(input,pos,ctx\\)`, 'g'))).toHaveLength(1)
-    expect(choiceSource).not.toContain(`_pf${selectorIp}(input,pos,ctx)`)
-    expect(choiceSource).toContain('const selEnd=(tr-(tr%2))/2,key=_pfTokValue,arm=_pfTokArm')
-
     const scans = { n: 0 }
     const emitted = tableRules(countedPrecompiled(prog, scans)).Root! as Entry
     for (const input of ['each(!', 'thing(?', 'url()']) {
@@ -174,22 +143,7 @@ describe('small-choice token predecision', () => {
     expect(outcome(planted, 'thing(?').ok).toBe(true)
     expect(scans.n, 'sensitivity control: planted scan-then-rescan').toBe(2)
 
-    const bypassed = tableRules(editedPrecompiled(prog, source => source.replace(
-      `function _pf${xformIp}(input,pos,ctx){`,
-      `function _pf${xformIp}(input,pos,ctx){throw new Error('unfused token arm entered')\n`,
-    ))).Root! as Entry
-    expect(outcome(bypassed, 'each(!').ok).toBe(true)
-    expect(outcome(bypassed, 'thing(?').ok).toBe(true)
-
-    const misrouted = tableRules(editedPrecompiled(prog, source => source.replace(
-      'const selEnd=(tr-(tr%2))/2,key=_pfTokValue,arm=_pfTokArm',
-      'const selEnd=(tr-(tr%2))/2,key=_pfTokValue,arm=1-_pfTokArm',
-    ))).Root! as Entry
-    expect(outcome(misrouted, 'each(!')).not.toEqual(outcome(emitted, 'each(!'))
-    expect(outcome(misrouted, 'thing(?')).not.toEqual(outcome(emitted, 'thing(?'))
-
-    // The planted factories above are RED controls for scan reuse and the direct
-    // routed-arm selection. Removing
+    // The planted factory above is the RED control for the scan count. Removing
     // `_pfTokEnd=e;return 0` separately makes `url(` rank at the choice start
     // instead of the selector end, changing the identity assertion's expected set.
   })
