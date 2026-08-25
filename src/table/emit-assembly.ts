@@ -1582,8 +1582,7 @@ return v
           // this unit exists to remove.
           const armSwitch = arms.map((a, i) => `case ${i}:v=${a}(input,pos,ctx);break`).join('\n')
           return `${head}
-const u=input.charCodeAt(pos)
-const c=u<128?u:lead(input,pos)
+const c=lead(input,pos)
 let arm=-1
 if(c>=0&&c<128){const a=${asc}[c];if(a!==0)arm=a-1}
 ${hiArr.length === 0 ? '' : `else if(c>=128){const h=${hoist('hi', `DISP[${di}].hi`)}
@@ -1706,8 +1705,7 @@ ${rollbackFor(i)}
           }).join('\n')
 
           return `${head}
-const u=input.charCodeAt(pos)
-const c=u<128?u:lead(input,pos)
+const c=lead(input,pos)
 ${hasRollback ? emitMark(p, L.buf, sinks) : ''}
 let acc
 let best=pos
