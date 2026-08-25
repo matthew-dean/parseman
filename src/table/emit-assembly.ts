@@ -1904,6 +1904,7 @@ return [key,v]
         const skip = skipFor(L)
         const knownTrivia = L.tri === TRI_NONE ? false : L.tri !== TRI_UNKNOWN ? true : undefined
         const hasTrivia = knownTrivia === undefined ? 'hasTrivia' : String(knownTrivia)
+        const clean = !REC && sepIp < 0 && L.tri === TRI_NONE && failureRollbackClean(prog, ip)
         // THE `_fields` AND `_errors` MARKS ARE TAKEN ONLY WHERE THE TABLE HAS A
         // WRITER, which is the same emit-time census `emitMark` applies to the
         // non-loop marks. Before `OP_FIELD` and `OP_EXPECT` were emittable the
@@ -1912,7 +1913,7 @@ return [key,v]
         const pfd = sinks.fd ? `${p}fd` : 'undefined'
         const per = sinks.er ? `${p}er` : 'undefined'
         const rbHelper = L.raw === RAW_OMIT ? '_rbNoRawBuf' : '_rbBuf'
-        const rb = L.buf && L.raw !== 0
+        const rb = clean ? '' : L.buf && L.raw !== 0
           ? `${rbHelper}(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
           : L.buf
             ? `rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
@@ -1923,7 +1924,7 @@ return [key,v]
           : L.raw === RAW_CAPTURE
             ? `const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0`
             : `const r=b.raw;${p}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)`
-        const markBody = L.buf
+        const markBody = clean ? '' : L.buf
           ? `const b=ctx._cstBuf
 ${markRaw}
 const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
@@ -1997,11 +1998,10 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${clean || L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&!classHas(${itemCls},lead(input,cur)))break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
-${markBody}
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&!classHas(${itemCls},lead(input,cur)))break\n` : ''}${clean ? '' : `let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}\n${markBody}\n`}
 let itemStart=cur
 let sepEnd=-1
 ${sep !== undefined ? `if(count>0){
