@@ -151,7 +151,9 @@ describe('small-choice token predecision', () => {
     const xformSource = source.slice(xformStart, xformEnd)
     expect(xformStart).toBeGreaterThanOrEqual(0)
     expect(xformSource).not.toContain(`_pf${selectorIp}(input,pos,ctx)`)
-    expect(xformSource).toContain('const tr=_pfTokPacked')
+    const dispatchStart = source.indexOf(`function _pf${dispatchIp}(input,pos,ctx){`)
+    const dispatchEnd = source.indexOf('\nfunction ', dispatchStart + 1)
+    expect(source.slice(dispatchStart, dispatchEnd)).toContain('const tr=_pfTokPacked')
 
     const scans = { n: 0 }
     const emittedEntry = tableRules(countedPrecompiled(prog, scans)).Root! as Entry
