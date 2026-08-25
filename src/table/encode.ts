@@ -1167,8 +1167,7 @@ class Encoder {
       case 'oneOrMore': {
         const child = this.node(d.parser).ip
         const rr = this.refResolver()
-        const nullable = matchesEmpty(d.parser, new Set(), rr)
-        const itemClass = nullable
+        const itemClass = matchesEmpty(d.parser, new Set(), rr)
           ? -1
           : this.existingCharClass(firstSetOf(d.parser, new Set(), rr))
         const op = d.valueUnused ? OP_REPV : OP_REP
@@ -1178,13 +1177,9 @@ class Encoder {
         // recovery table, where the resync error's payload has to be the ITEM's
         // set — `deriveExpected(combinator)` in repeat.ts:170, and
         // `deriveExpectedArr([def.parser])` in codegen's emitMany.
-        const head = this.rec
+        return this.rec
           ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), itemClass)
           : this.emit(op, child, min, d.max ?? -1, -1, 0)
-        if (!nullable && !this.failureNeedsRollback(d.parser, undefined)) {
-          this.failureRollbackCleanSites.add(head)
-        }
-        return head
       }
       case 'sepBy': {
         const child = this.node(d.parser).ip

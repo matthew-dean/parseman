@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, expect as recover, field, literal, many, node, noTrivia, optional, rules, run, sequence, type Combinator,
+  attempt, choice, expect as recover, field, literal, node, optional, rules, run, sequence, type Combinator,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_ATTEMPT, OP_CHOICE, OP_OPT, OP_REP } from '../../src/table/ops.ts'
+import { OP_ATTEMPT, OP_CHOICE, OP_OPT } from '../../src/table/ops.ts'
 import {
   choiceRollbackMask, failureRollbackClean, ownTableProgram, resolveTable,
   type PrecompiledAssembly, type TableProgram,
@@ -163,20 +163,5 @@ describe('emitted ordered-choice rollback elision', () => {
     // optional's failed prefix in the enclosing node before the final arm wins.
     const planted = ownTableProgram(prog, undefined, undefined, new Set([optionalIp]))
     expect(projection(precompiled(planted), 'a')).not.toEqual(expected)
-  })
-
-  it('omits repeat marks for non-nullable clean items with no separator or trivia', () => {
-    const contained = node('Contained', sequence(literal('a'), literal('!')))
-    const grammar = node('Root', noTrivia(sequence(many(contained), literal('?'))))
-    const prog = encodeTable({ Root: grammar })
-    const repeatIp = [...reachableIps(prog)].find(ip => prog.code[ip] === OP_REP)!
-    expect(failureRollbackClean(prog, repeatIp)).toBe(true)
-
-    const body = emittedBody(emitAssemblySource(resolveTable(prog), prog, STRICT).source, repeatIp)
-    expect(body).not.toMatch(/_rbBuf\(ctx/)
-    const emitted = precompiled(prog)
-    for (const input of ['?', 'a!?', 'a!a!?', 'a?']) {
-      expect(projection(emitted, input), input).toEqual(projection(grammar as Entry, input))
-    }
   })
 })
