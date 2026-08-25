@@ -1651,24 +1651,24 @@ return FAIL
             if (code[xformIp] !== OP_XFORM || code[xformIp + 2]! !== dispatchIp) return undefined
             const fn = fnRef(code[xformIp + 1]!)
             const D = labels.at(dispatchIp)
-            const m1 = tmp(), m2 = tmp(), v = tmp()
+            const m = tmp(), v = tmp()
             const cases = targets.map((target, j) => `case ${j}:${v}=${target}(input,pos,ctx);break`).join('\n')
             return `let ${v}
-${emitMark(m1, D.buf, sinks)}
+${emitMark(m, D.buf, sinks)}
 const sv=${selector}(input,pos,ctx)
 if(sv===FAIL){${v}=FAIL}else{
 const selEnd=EC.e,key=sv,arm=_pfTokArm
 _pfTokDispatch=-1
 _pfTokInput=undefined
 const savedRouted=ctx._routed
-${emitRollback(m1, D.buf, sinks)}
-${emitMark(m2, D.buf, sinks)}
+${emitRollback(m, D.buf, sinks)}
+${emitMark(m, D.buf, sinks, false)}
 ctx._routed={value:key,span:{start:pos,end:selEnd}}
 try{switch(arm){
 ${cases}
 }}finally{ctx._routed=savedRouted}
 if(${v}===FAIL){
-${emitRollback(m2, D.buf, sinks)}
+${emitRollback(m, D.buf, sinks)}
 ctx._fc=true
 }else ${v}=${fn}([key,${v}],{start:pos,end:EC.e})
 }
