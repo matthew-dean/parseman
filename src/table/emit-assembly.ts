@@ -1662,7 +1662,7 @@ _pfTokDispatch=-1
 _pfTokInput=undefined
 const savedRouted=ctx._routed
 ${emitRollback(m1, D.buf, sinks)}
-${emitMark(m2, D.buf, sinks, false)}
+${emitMark(m2, D.buf, sinks)}
 ctx._routed={value:key,span:{start:pos,end:selEnd}}
 try{switch(arm){
 ${cases}

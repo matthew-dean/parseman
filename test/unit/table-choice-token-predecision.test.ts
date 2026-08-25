@@ -27,14 +27,16 @@ function outcome(entry: Entry, input: string) {
 
 function precompiled(prog: TableProgram): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
-  const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
+  const factory = new Function(
+    ...EMITTED_PARAMS, `'use strict';\n${emitted.source}`,
+  ) as PrecompiledAssembly['factory']
   return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
 function editedPrecompiled(prog: TableProgram, edit: (source: string) => string): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const factory = new Function(
-    ...EMITTED_PARAMS, edit(emitted.source),
+    ...EMITTED_PARAMS, `'use strict';\n${edit(emitted.source)}`,
   ) as PrecompiledAssembly['factory']
   return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
@@ -53,7 +55,7 @@ function countedPrecompiled(
     source = source.replace(/const r=tp\?_pfTokPacked:([^\n]+)/, 'const r=$1')
   }
   const compiled = new Function(
-    ...EMITTED_PARAMS, 'COUNT_LEX', source,
+    ...EMITTED_PARAMS, 'COUNT_LEX', `'use strict';\n${source}`,
   ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
   const factory = ((...args: Parameters<PrecompiledAssembly['factory']>) =>
     compiled(...args, counter)) as PrecompiledAssembly['factory']
