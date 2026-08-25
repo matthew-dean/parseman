@@ -67,13 +67,14 @@ function terminalNode(
   return {
     match,
     run: (input, pos, ctx) => {
-      const end = match(input, pos)
-      if (end < 0) {
+      const result = matcher(input, pos)
+      if (result < 0) {
         ctx._fe = pos
         ctx._fx = failure as string[]
         if (ctx._probe !== undefined) failAt(ctx, ctx._fx, pos)
         return -1
       }
+      const end = result / 2
       if (tracksLines) trackLexLines(ctx, input, end)
       return end
     },
