@@ -65,8 +65,7 @@ export const OP_XFORM = 9
  * `rawChildren`, bit 2 (`&4`) = the builder reads
  * `triviaLog`, bit 3 (`&8`) = it reads `ctx.state`, bit 4 (`&16`) = the node has
  * read fields, bit 5 (`&32`) = `collapse`, bit 6 (`&64`) = `unwrap`, bit 7
- * (`&128`) = `trailingTrivia`, bit 8 (`&256`) = a direct builder is proven not
- * to read semantic `children`. Bit 0 distinguishes capture a host may not
+ * (`&128`) = `trailingTrivia`. Bit 0 distinguishes capture a host may not
  * suppress from a structural node's default capture. Bits 2 and 3 are resolved at ENCODE time
  * from the reducer's declared arity by the same analysis codegen runs, and
  * forced on under `hostMode: 'cst'`. The driver reads the bits and re-derives

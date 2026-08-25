@@ -179,7 +179,7 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     ;(l._def as { fnSrc?: string }).fnSrc = src
     return l as Comb
   }
-  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[], sigSrc?: string, buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }>, rawUnused?: true, childrenUnused?: true): Comb => {
+  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[], sigSrc?: string, buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }>, rawUnused?: true): Comb => {
     if (staticError !== undefined && staticError.length > 0) {
       // Fail closed: a builder with an un-rescuable binding is NOT fused. The
       // plugin catches this and leaves the runtime compose() in place rather than
@@ -201,7 +201,6 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     // authoring module had already resolved away.
     if (sigSrc !== undefined) (n._def as { buildSigSrc?: string }).buildSigSrc = sigSrc
     if (rawUnused === true) (n._def as { buildRawUnused?: true }).buildRawUnused = true
-    if (childrenUnused === true) (n._def as { buildChildrenUnused?: true }).buildChildrenUnused = true
     // Re-attach the direct-builder import provenance so the plugin's re-lower pass
     // can re-emit the imports into the consuming module. Plain data — this runtime
     // module never resolves or emits imports itself.
@@ -582,14 +581,13 @@ class Serializer {
           // Positional args to `_nd`: (…, staticError, sigSrc, buildImports). A later
           // arg being present forces the earlier ones to be emitted (as `undefined`)
           // so the positions line up.
-          if (def.buildStaticError !== undefined || def.buildSigSrc !== undefined || def.buildImports !== undefined || def.buildRawUnused === true || def.buildChildrenUnused === true) {
+          if (def.buildStaticError !== undefined || def.buildSigSrc !== undefined || def.buildImports !== undefined || def.buildRawUnused === true) {
             if (!opts) tail.push('undefined')
             tail.push(def.buildStaticError === undefined ? 'undefined' : JSON.stringify(def.buildStaticError))
           }
-          if (def.buildSigSrc !== undefined || def.buildImports !== undefined || def.buildRawUnused === true || def.buildChildrenUnused === true) tail.push(def.buildSigSrc === undefined ? 'undefined' : JSON.stringify(def.buildSigSrc))
-          if (def.buildImports !== undefined || def.buildRawUnused === true || def.buildChildrenUnused === true) tail.push(def.buildImports === undefined ? 'undefined' : JSON.stringify(def.buildImports))
-          if (def.buildRawUnused === true || def.buildChildrenUnused === true) tail.push(def.buildRawUnused === true ? 'true' : 'undefined')
-          if (def.buildChildrenUnused === true) tail.push('true')
+          if (def.buildSigSrc !== undefined || def.buildImports !== undefined || def.buildRawUnused === true) tail.push(def.buildSigSrc === undefined ? 'undefined' : JSON.stringify(def.buildSigSrc))
+          if (def.buildImports !== undefined || def.buildRawUnused === true) tail.push(def.buildImports === undefined ? 'undefined' : JSON.stringify(def.buildImports))
+          if (def.buildRawUnused === true) tail.push('true')
           const trailing = tail.length > 0 ? `, ${tail.join(', ')}` : ''
           return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts}${trailing})`
         }

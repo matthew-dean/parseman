@@ -256,7 +256,6 @@ export function rebuildCombinator(
         out = d.type === undefined
           ? (d.build === undefined ? node(one(d.parser), opts) : node(one(d.parser), d.build))
           : node(d.type, one(d.parser), d.build, opts)
-        if (d.buildChildrenUnused === true && out._def.tag === 'node') out._def.buildChildrenUnused = true
         if (d.buildRawUnused === true && out._def.tag === 'node') out._def.buildRawUnused = true
         break
       }

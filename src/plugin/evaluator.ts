@@ -729,9 +729,6 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         // observable. Only macro-resolved source can establish the latter. An
         // explicit buildArity remains authority: it is a user declaration, not a
         // compiler invitation to reinterpret the callback body.
-        if (!authorDeclaredBuildArity && confirmedBuildParamUnused(analysisSrc, 0)) {
-          combi._def.buildChildrenUnused = true
-        }
         if (!authorDeclaredBuildArity && confirmedBuildParamUnused(analysisSrc, 3)) {
           combi._def.buildRawUnused = true
         }
