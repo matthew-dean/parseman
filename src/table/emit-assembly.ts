@@ -63,6 +63,7 @@ import {
 import {
   leadingScalarTerminal, scalarTerminalNodeChild, scalarTerminalNotChild,
 } from './scalar-terminal.ts'
+import { childSlots } from './child-slots.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -570,10 +571,12 @@ export function emitAssemblySource(
     }
   }
 
-  // THE SIDE-SINK CENSUS, over the same reachable set the labels are computed
-  // from. `OP_FIELD` is the only ROW that writes `_fields` and `OP_EXPECT` the
-  // only emittable row that writes `_errors` — `recoverScan` is the other, and a
-  // recovery assembly is refused above. A table with neither pays for neither.
+  // THE SIDE-SINK FIXPOINT, over the same graph the labels walk. `OP_FIELD` is
+  // the only direct `_fields` writer and `OP_EXPECT` the only direct `_errors`
+  // writer. A tolerant repetition can also write `_errors` through recoverScan.
+  // Propagating those two bits through the child graph gives every speculative
+  // site the exact side sinks its subtree can mutate, including through cyclic
+  // OP_RULE edges.
   //
   // `OP_SCAN` RAISES BOTH, and that is not caution — it is a measured defect.
   // The row runs an INTERPRETED combinator (`scanTo`/`balanced`, rebuilt by
@@ -587,26 +590,34 @@ export function emitAssemblySource(
   //
   // Any future row whose child is not an offset in `code` belongs here for the
   // same reason. `OP_LIVE` is the other such row, and it is unemittable.
-  const sinks: Sinks = (() => {
-    let fd = false
-    // A RECOVERY ASSEMBLY IS AN `_errors` WRITER EVERYWHERE. `recoverScan` pushes
-    // through `captureError` from inside any `OP_REP` that recovers, and the
-    // recovering row is the repetition itself rather than a distinguishable
-    // opcode — so there is no site to census and the answer is the assembly's.
-    //
-    // This is the `OP_SCAN` lesson applied before it costs anything rather than
-    // after: that row raised both sinks because its interior is not in `code`,
-    // and the defect it was raised for was precisely an `_errors` rollback the
-    // two engines disagreed on while matching byte for byte on the tree.
-    let er = REC
-    for (const ip of reachableSites(code, roots)) {
-      const op = code[ip]
-      if (op === OP_SCAN) { fd = true; er = true; break }
-      if (op === OP_FIELD) fd = true
-      else if (op === OP_EXPECT) er = true
+  const sinkSites = [...reachableSites(code, roots)]
+  const sinkBits = new Map<number, number>()
+  for (const ip of sinkSites) {
+    const op = code[ip]
+    sinkBits.set(ip,
+      op === OP_SCAN ? 3
+        : (op === OP_FIELD ? 1 : 0)
+          | (op === OP_EXPECT || (REC && (op === OP_REP || op === OP_REPV)) ? 2 : 0))
+  }
+  const sinkKids: number[] = []
+  let sinkChanged = true
+  while (sinkChanged) {
+    sinkChanged = false
+    for (const ip of sinkSites) {
+      let bits = sinkBits.get(ip) ?? 0
+      sinkKids.length = 0
+      childSlots(code, ip, sinkKids)
+      for (let i = 0; i < sinkKids.length; i++) bits |= sinkBits.get(sinkKids[i]!) ?? 0
+      if (bits !== sinkBits.get(ip)) {
+        sinkBits.set(ip, bits)
+        sinkChanged = true
+      }
     }
-    return { fd, er }
-  })()
+  }
+  const sinksAt = (ip: number): Sinks => {
+    const bits = sinkBits.get(ip) ?? 0
+    return bits === 0 ? NO_SINKS : { fd: (bits & 1) !== 0, er: (bits & 2) !== 0 }
+  }
 
   const bodies: string[] = []
   const byIp = new Map<number, string>()
@@ -951,6 +962,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     const op = code[ip]
     const head = `function ${fname}(input,pos,ctx){`
     const L = labels.at(ip)
+    const sinks = sinksAt(ip)
     /**
      * THE LEAF CAPTURE TEST, and only the test.
      *

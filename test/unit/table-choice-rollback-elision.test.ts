@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { choice, literal, node, run, sequence, type Combinator } from '../../src/index.ts'
+import {
+  choice, expect as recover, field, literal, node, optional, run, sequence, type Combinator,
+} from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_CHOICE } from '../../src/table/ops.ts'
+import { OP_CHOICE, OP_OPT } from '../../src/table/ops.ts'
 import {
   choiceRollbackMask, ownTableProgram, resolveTable,
   type PrecompiledAssembly, type TableProgram,
@@ -38,6 +40,13 @@ function projection(entry: Entry, input: string): unknown {
     expected: result.expected,
     unconsumedFrom: result.unconsumedFrom,
   }
+}
+
+function emittedBody(source: string, ip: number): string {
+  const start = source.indexOf(`function _pf${ip}(`)
+  if (start < 0) throw new TypeError(`missing emitted body for table ip ${ip}`)
+  const end = source.indexOf('\nfunction ', start + 1)
+  return source.slice(start, end < 0 ? source.length : end)
 }
 
 describe('emitted ordered-choice rollback elision', () => {
@@ -82,5 +91,27 @@ describe('emitted ordered-choice rollback elision', () => {
     const grammar = choice(...arms as [Combinator<unknown>, ...Combinator<unknown>[]])
     const prog = encodeTable({ Root: grammar })
     expect(choiceRollbackMask(prog, choiceIp(prog))).toBe(-1)
+  })
+
+  it('marks only the side sinks reachable from each speculative subtree', () => {
+    const plain = optional(sequence(literal('a'), literal('!')))
+    const fields = optional(field('value', sequence(literal('b'), literal('?'))))
+    const errors = optional(recover(sequence(literal('c'), literal('#'))))
+    const prog = encodeTable({ Root: node('Root', sequence(plain, fields, errors)) })
+    const optionals = [...reachableIps(prog)].filter(ip => prog.code[ip] === OP_OPT).sort((a, b) => a - b)
+    expect(optionals).toHaveLength(3)
+
+    const source = emitAssemblySource(resolveTable(prog), prog, STRICT).source
+    const [plainBody, fieldBody, errorBody] = optionals.map(ip => emittedBody(source, ip))
+    expect(plainBody).not.toMatch(/_fd\b|_er\b/)
+    expect(fieldBody).toMatch(/_fd\b/)
+    expect(fieldBody).not.toMatch(/_er\b/)
+    expect(errorBody).not.toMatch(/_fd\b/)
+    expect(errorBody).toMatch(/_er\b/)
+
+    const emitted = precompiled(prog)
+    for (const input of ['', 'a', 'a!', 'b', 'b?', 'c', 'c#', 'a!b?c#']) {
+      expect(projection(emitted, input), input).toEqual(projection(node('Root', sequence(plain, fields, errors)) as Entry, input))
+    }
   })
 })
