@@ -52,7 +52,9 @@ function countedPrecompiled(
     'const $1=((r)=>(input,pos)=>{COUNT_LEX.n++;return r(input,pos)})(LEX[$2])',
   )
   if (plantDuplicateScan) {
-    source = source.replace(/const r=tp\?_pfTokPacked:([^\n]+)/, 'const r=$1')
+    const recognizer = source.match(/function _td\d+_\(input,pos\)\{\nconst r=(_lex\d+)\(input,pos\)/)?.[1]
+    if (recognizer === undefined) throw new Error('missing token-decision recognizer')
+    source = source.replace('const tr=_pfTokPacked', `const tr=_pfTokPacked\n${recognizer}(input,pos)`)
   }
   const compiled = new Function(
     ...EMITTED_PARAMS, 'COUNT_LEX', `'use strict';\n${source}`,
@@ -144,6 +146,8 @@ describe('small-choice token predecision', () => {
     const xformIp = reachable.find(ip =>
       prog.code[ip] === OP_XFORM && prog.code[prog.code[ip + 2]!] === OP_DISPATCH,
     )!
+    const dispatchIp = prog.code[xformIp + 2]!
+    const selectorIp = prog.code[dispatchIp + 1]!
     const choiceIp = reachable.find(ip => {
       if (prog.code[ip] !== OP_CHOICE) return false
       const n = prog.code[ip + 2]!
@@ -154,7 +158,8 @@ describe('small-choice token predecision', () => {
     const choiceSource = source.slice(choiceStart, choiceEnd)
     expect(choiceStart).toBeGreaterThanOrEqual(0)
     expect(choiceSource.match(new RegExp(`_pf${xformIp}\\(input,pos,ctx\\)`, 'g'))).toHaveLength(1)
-    expect(choiceSource).toContain('const selEnd=EC.e,key=sv,arm=_pfTokArm')
+    expect(choiceSource).not.toContain(`_pf${selectorIp}(input,pos,ctx)`)
+    expect(choiceSource).toContain('const selEnd=(tr-(tr%2))/2,key=_pfTokValue,arm=_pfTokArm')
 
     const scans = { n: 0 }
     const emitted = tableRules(countedPrecompiled(prog, scans)).Root! as Entry
@@ -177,8 +182,8 @@ describe('small-choice token predecision', () => {
     expect(outcome(bypassed, 'thing(?').ok).toBe(true)
 
     const misrouted = tableRules(editedPrecompiled(prog, source => source.replace(
-      'const selEnd=EC.e,key=sv,arm=_pfTokArm',
-      'const selEnd=EC.e,key=sv,arm=1-_pfTokArm',
+      'const selEnd=(tr-(tr%2))/2,key=_pfTokValue,arm=_pfTokArm',
+      'const selEnd=(tr-(tr%2))/2,key=_pfTokValue,arm=1-_pfTokArm',
     ))).Root! as Entry
     expect(outcome(misrouted, 'each(!')).not.toEqual(outcome(emitted, 'each(!'))
     expect(outcome(misrouted, 'thing(?')).not.toEqual(outcome(emitted, 'thing(?'))

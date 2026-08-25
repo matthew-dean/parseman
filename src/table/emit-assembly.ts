@@ -1645,7 +1645,6 @@ return FAIL
             const spec = dsp[code[dispatchIp + 2]!]!
             if (code[dispatchIp + 3]! >= 0 || code[dispatchIp + 4]! !== 0
               || spec.routed.length !== dn || spec.routed.some(r => r !== 1)) return undefined
-            const selector = link(code[dispatchIp + 1]!)
             const targets = Array.from({ length: dn }, (_, j) => link(code[dispatchIp + 6 + j]!))
             const xformIp = code[base + armIndex]!
             if (code[xformIp] !== OP_XFORM || code[xformIp + 2]! !== dispatchIp) return undefined
@@ -1654,15 +1653,14 @@ return FAIL
             const m = tmp(), v = tmp()
             const cases = targets.map((target, j) => `case ${j}:${v}=${target}(input,pos,ctx);break`).join('\n')
             return `let ${v}
-${emitMark(m, D.buf, sinks)}
-const sv=${selector}(input,pos,ctx)
-if(sv===FAIL){${v}=FAIL}else{
-const selEnd=EC.e,key=sv,arm=_pfTokArm
+const tr=_pfTokPacked
+const selEnd=(tr-(tr%2))/2,key=_pfTokValue,arm=_pfTokArm
+_pfTokBody=-1
+_pfTokValue=undefined
 _pfTokDispatch=-1
 _pfTokInput=undefined
 const savedRouted=ctx._routed
-${emitRollback(m, D.buf, sinks)}
-${emitMark(m, D.buf, sinks, false)}
+${emitMark(m, D.buf, sinks)}
 ctx._routed={value:key,span:{start:pos,end:selEnd}}
 try{switch(arm){
 ${cases}
@@ -1671,7 +1669,6 @@ if(${v}===FAIL){
 ${emitRollback(m, D.buf, sinks)}
 ctx._fc=true
 }else ${v}=${fn}([key,${v}],{start:pos,end:EC.e})
-}
 if(${v}!==FAIL)return ${v}`
           }
           const catchName = maskable ? `_cx${uid++}_` : ''
