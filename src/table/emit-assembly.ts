@@ -150,6 +150,7 @@ let _pfTokValue
 let _pfTokDispatch=-1
 let _pfTokArm=-1
 let _pfTokEnd=-1
+const _accOwned=new WeakSet()
 function _asciiFoldCode(c){return c>=65&&c<=90?c+32:c}
 function _skipTrivia(input,cur,ctx){
 const s=_pfScan
@@ -178,9 +179,23 @@ return first===children.length?EMPTY_CH:children.slice(first)
 }
 function _accSet(ax,acc){
 if(ax===undefined||ax.length===0)return acc
-if(acc===undefined)return ax.slice()
+if(acc===undefined){
+acc=ax.slice()
+_accOwned.add(acc)
+return acc
+}
+if(!_accOwned.has(acc)){
+acc=acc.concat(ax)
+_accOwned.add(acc)
+return acc
+}
 for(const s of ax)acc.push(s)
 return acc
+}
+function _accDyn(ax,acc){
+if(ax===undefined||ax.length===0)return acc
+if(acc===undefined)return ax
+return _accSet(ax,acc)
 }
 function _trackLines(ctx,input,end){
 const from=ctx._lineScannedTo??0
@@ -1738,6 +1753,8 @@ return FAIL
               `case ${i}:if(target<=${i})return acc;acc=_accSet(${e},acc)`).join('\n')
             choiceDefs.push(`function ${catchName}(target,prev,acc){switch(prev){\n${catchCases}\n}return acc}`)
           }
+          const addDynamic = (value: string): string =>
+            `acc=_accDyn(${value},acc)`
           const maskArms = maskable ? arms.map((arm, i) => {
             const pretest = pretests[i]
             const decision = pretest?.token === undefined ? '' : tmp()
@@ -1751,7 +1768,7 @@ ${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
 prev=${i + 1}`}
 {const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)}
+if(at===best${startFailureExact ? '&&at>pos' : ''})${addDynamic(pretest.token.expected)}}
 }`
             return `${decision === '' ? '' : `let ${decision}=-1\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
@@ -1761,8 +1778,8 @@ ${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
 prev=${i + 1}`}
 {const at=ctx._fe??pos
 if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
-if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
+if(at===best${startFailureExact ? '&&at>pos' : ''})${addDynamic('ctx._fx')}}
+if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);${addDynamic('ctx._fx')}}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
 }${routeMiss}`
           }).join('\n') : ''
@@ -1778,7 +1795,7 @@ ${rollbackFor(i)}
 ctx._fc=false
 const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)
+if(at===best${startFailureExact ? '&&at>pos' : ''})${addDynamic(pretest.token.expected)}
 }${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
             return `${decision === '' ? '' : `let ${decision}=-1\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
 ctx._fc=false
@@ -1786,8 +1803,8 @@ ctx._fc=false
 if(v!==FAIL)return v}
 {const at=ctx._fe??pos
 if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
-if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
+if(at===best${startFailureExact ? '&&at>pos' : ''})${addDynamic('ctx._fx')}}
+if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);${addDynamic('ctx._fx')}}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
 }${miss}`
           }).join('\n')
