@@ -161,6 +161,23 @@ describe('emitted ordered-choice rollback elision', () => {
     expect(projection(precompiled(planted), 'a?')).not.toEqual(expected)
   })
 
+  it('gates a non-nullable attempt arm without making the choice exclusive', () => {
+    const grammar = choice(
+      attempt(sequence(literal('a'), literal('!'))),
+      sequence(literal('a'), literal('?')),
+      literal('b'),
+    )
+    const prog = encodeTable({ Root: grammar })
+    const ip = choiceIp(prog)
+    const dispatch = resolveTable(prog).disp[prog.code[ip + 1]!]!
+
+    expect(dispatch.exclusive).toBe(false)
+    expect(dispatch.armCls[0]).not.toBeNull()
+    for (const input of ['a!', 'a?', 'ax', 'b', 'x']) {
+      expect(projection(precompiled(prog), input)).toEqual(projection(grammar as Entry, input))
+    }
+  })
+
   it('keeps the mask conservative beyond the 31-bit arm boundary', () => {
     const arms: Combinator<unknown>[] = Array.from({ length: 32 }, (_, i) =>
       literal(String.fromCharCode(33 + i)))

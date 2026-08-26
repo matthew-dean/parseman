@@ -1,5 +1,5 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { classifyFinalChoice, firstSetOf, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
+import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { capturesLeaf, mayLeavePartialCapture } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
@@ -1127,8 +1127,33 @@ class Encoder {
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
         const finalChoice = classifyFinalChoice(arms, rr)
-        const classes = arms.map((_, i) => finalChoice.nullable[i]
-          ? -1 : this.charClass(finalChoice.firstSets[i]!))
+        // attempt() preserves its child's success language, but the broad
+        // classifier deliberately treats the transaction as nullable/unknown so
+        // it can never by itself authorize exclusive one-arm selection. Recover
+        // only the narrower fact needed by an ORDERED choice: a non-nullable
+        // child can receive an individual rejection gate. Keep that authority
+        // out if it would make an otherwise open site fully disjoint, preserving
+        // the transaction's standing exclusion from exclusive dispatch.
+        const transactionalFirst = arms.map((arm, i): FirstSet | undefined => {
+          if (!finalChoice.nullable[i]) return undefined
+          const def = arm._def as ParserDef
+          if (def.tag !== 'attempt' || matchesEmpty(def.parser, new Set(), rr)) return undefined
+          return firstSetOf(def.parser, new Set(), rr)
+        })
+        const gateFirst = finalChoice.firstSets.map((first, i) => transactionalFirst[i] ?? first)
+        const classes = gateFirst.map((first, i) => finalChoice.nullable[i] && transactionalFirst[i] === undefined
+          ? -1 : this.charClass(first))
+        if (transactionalFirst.some(first => first !== undefined) && classes.every(cls => cls >= 0)) {
+          let overlap = false
+          for (let i = 0; i < gateFirst.length && !overlap; i++) {
+            for (let j = i + 1; j < gateFirst.length; j++) {
+              if (intersects(gateFirst[i]!, gateFirst[j]!)) { overlap = true; break }
+            }
+          }
+          if (!overlap) for (let i = 0; i < classes.length; i++) {
+            if (transactionalFirst[i] !== undefined) classes[i] = -1
+          }
+        }
         const dispIdx = this.disp.length
         this.disp.push(classes)
         // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. While the best
