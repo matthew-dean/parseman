@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  assertLexicalCapabilityClosure, collectAlphabet, collectLexicalAlphabet,
+  assertLexicalCapabilityClosure, assertLexicalCapabilityOccurrenceBijection,
+  assertLexicalCapabilityProductionBijection,
+  collectAlphabet, collectLexicalAlphabet,
   collectLexicalCapabilities, compatibleLexicalOutcomes, directOptionalSuffixTokenBody,
   selectedLexicalOutcome, winnerWrapsReference,
   type LexicalTokenClassifier,
@@ -278,6 +280,95 @@ describe('derived lexical-token families', () => {
       .toThrow('lexical capability census is incomplete')
     // RED provenance: before obligation records were part of the stable
     // signature, changing one obligation silently passed the closure check.
+  })
+
+  it('fails the one-pass closure receipt for every derived-table mutation class', () => {
+    const selector = token(regex(/[a-z]+/))
+    const root = parser({ trivia: regex(/ +/) }, sequence(
+      literal('!'),
+      choice(selector, token(literal('word'))),
+      dispatch(selector, otherwise(literal('?'))),
+    ))
+    const inventory = collectLexicalCapabilities([root])
+    expect(() => assertLexicalCapabilityOccurrenceBijection([root], inventory)).not.toThrow()
+    const capability = inventory.capabilities[0]!
+    const edge = inventory.bindingEdges[0]!
+    const projection = inventory.bindingProjections[0]!
+    const language = inventory.capabilityLanguages[0]!
+    const decision = inventory.decisions[0]!
+    const context = inventory.contextSnapshots[0]!
+    const plants = [
+      { ...inventory, capabilities: inventory.capabilities.slice(1) },
+      { ...inventory, bindingEdges: inventory.bindingEdges.slice(1) },
+      { ...inventory, capabilities: inventory.capabilities.map(site => site !== capability ? site : ({
+        ...site, semanticKey: `${site.semanticKey}:plant`,
+      })) },
+      { ...inventory, capabilities: inventory.capabilities.map(site => site !== capability ? site : ({
+        ...site,
+        obligations: {
+          ...site.obligations,
+          diagnostics: {
+            ...site.obligations.diagnostics,
+            representation: { kind: 'gap', reason: 'plant' } as const,
+          },
+        },
+      })) },
+      { ...inventory, capabilities: inventory.capabilities.map(site => site !== capability ? site : ({
+        ...site, contextSnapshotId: site.contextSnapshotId + 1,
+      })) },
+      { ...inventory, capabilities: inventory.capabilities.map(site => site !== capability ? site : ({
+        ...site, status: { kind: 'gap', reason: 'plant' } as const,
+      })) },
+      { ...inventory, bindingEdges: inventory.bindingEdges.map(entry => entry !== edge ? entry : ({
+        ...entry, contextKey: `${entry.contextKey}:plant`,
+      })) },
+      { ...inventory, bindingEdges: inventory.bindingEdges.map(entry => entry !== edge ? entry : ({
+        ...entry, status: { kind: 'gap', reason: 'plant' } as const,
+      })) },
+      { ...inventory, bindingProjections: inventory.bindingProjections.map(entry =>
+        entry !== projection ? entry : ({ ...entry, semanticDigest: entry.semanticDigest ^ 1 })) },
+      { ...inventory, bindingProjections: [...inventory.bindingProjections, {
+        ...projection, id: inventory.bindingProjections.length,
+      }] },
+      { ...inventory, capabilityLanguages: [...inventory.capabilityLanguages, {
+        ...language, id: inventory.capabilityLanguages.length,
+      }] },
+      { ...inventory, decisions: [...inventory.decisions, {
+        ...decision, id: inventory.decisions.length,
+      }] },
+      { ...inventory, contextSnapshots: [...inventory.contextSnapshots, {
+        ...context, id: inventory.contextSnapshots.length,
+      }] },
+    ]
+    for (const planted of plants) {
+      expect(() => assertLexicalCapabilityOccurrenceBijection([root], planted))
+        .toThrow('occurrence/derived bijection is incomplete')
+    }
+
+    // Production-seam RED: make the post-derivation snapshot from an already
+    // dropped table. Deep equality is deliberately green; only the immutable
+    // raw occurrence/edge receipt can catch these deterministic drops.
+    for (const planted of [
+      { ...inventory, capabilities: inventory.capabilities.slice(1) },
+      {
+        ...inventory,
+        bindingEdges: inventory.bindingEdges.slice(1),
+        bindingProjections: inventory.bindingProjections.slice(1),
+      },
+      {
+        ...inventory,
+        bindingProjections: inventory.bindingProjections.map(entry =>
+          entry !== projection ? entry : ({ ...entry, semanticDigest: entry.semanticDigest ^ 1 })),
+      },
+    ]) {
+      expect(() => assertLexicalCapabilityProductionBijection([root], planted))
+        .toThrow('occurrence/derived bijection is incomplete (raw)')
+    }
+
+    // Deliberate RED for the session-local production guard. Every plant above
+    // passed the occurrence-only U104 guard even though the old independent
+    // closure assertion rejected it. The corrected receipt must preserve exact
+    // field values and row multiplicity across every derived table.
   })
 
   it('keeps context occurrences and fixed incoming binding edges independent', () => {

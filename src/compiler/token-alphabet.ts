@@ -2313,6 +2313,7 @@ function familyHasContextFreeFiniteEnd(
 function compatibleLanguageViews(
   arm: LexicalIr,
   family: LexicalIr,
+  coversContinuation: (family: LexicalIr, boundary: string) => boolean = boundaryCoversContinuation,
 ): ReadonlyArray<{ readonly ir: LexicalIr; readonly relation: 'equal' | 'prefix' }> | undefined {
   if (JSON.stringify(arm) === JSON.stringify(family)) return [{ ir: arm, relation: 'equal' }]
   const values = finiteLexicalValues(arm)
@@ -2332,7 +2333,7 @@ function compatibleLanguageViews(
       ? [value] : asciiCaseVariants(value, armCaseInsensitive)
     const endIsTotal = spellings !== undefined
       && (familyHasContextFreeFiniteEnd(family, spellings)
-        || armBoundary !== undefined && boundaryCoversContinuation(family, armBoundary))
+        || armBoundary !== undefined && coversContinuation(family, armBoundary))
     if (endIsTotal && spellings !== undefined
       && spellings.every(spelling => lexicalIrAcceptsExact(family, spelling))) {
       relation = 'equal'
@@ -2463,18 +2464,45 @@ function ownedScanConsumers(
   return out
 }
 
-function containsDynamicScanConsumer(
-  root: Combinator<unknown>,
+/**
+ * Whether each parser can reach a dynamic scan consumer.
+ *
+ * This is reverse reachability rather than one DFS per decision/arm. Starting
+ * from scan consumers and walking parents is cycle-safe by construction: every
+ * node in an SCC that can reach a consumer is eventually marked, without the
+ * false negative a recursive "currently visiting" memo creates.
+ */
+function dynamicScanReachability(
+  roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
-  seen = new Set<Combinator<unknown>>(),
-): boolean {
-  if (seen.has(root)) return false
-  if (balancedSpecOf(root) !== undefined || root._def.tag === 'scanTo') return true
-  seen.add(root)
-  for (const child of tokenChildren(root, resolve)) {
-    if (containsDynamicScanConsumer(child, resolve, seen)) return true
+): ReadonlySet<Combinator<unknown>> {
+  const parents = new Map<Combinator<unknown>, Set<Combinator<unknown>>>()
+  const nodes: Combinator<unknown>[] = []
+  const seen = new Set<Combinator<unknown>>()
+  const walk = (parser: Combinator<unknown>): void => {
+    if (seen.has(parser)) return
+    seen.add(parser)
+    nodes.push(parser)
+    for (const child of tokenChildren(parser, resolve)) {
+      let owners = parents.get(child)
+      if (owners === undefined) parents.set(child, owners = new Set())
+      owners.add(parser)
+      walk(child)
+    }
   }
-  return false
+  for (const root of roots) walk(root)
+
+  const reachable = new Set(nodes.filter(parser =>
+    parser._def.tag === 'scanTo' || balancedSpecOf(parser) !== undefined))
+  const queue = [...reachable]
+  for (let index = 0; index < queue.length; index++) {
+    for (const parent of parents.get(queue[index]!) ?? []) {
+      if (reachable.has(parent)) continue
+      reachable.add(parent)
+      queue.push(parent)
+    }
+  }
+  return reachable
 }
 
 function predicateViews(def: Extract<ParserDef, { tag: 'dispatch' }>): Array<{
@@ -2543,6 +2571,248 @@ type BindingEdgeCandidate = Omit<
   readonly parentBodyId: number
   readonly childBodyId: number
   readonly childOrdinal: number
+}
+
+type LexicalCapabilityRawReceipt = Readonly<{
+  capabilities: readonly Readonly<Pick<CapabilityCandidate,
+    'bodyId' | 'parser' | 'atom' | 'path' | 'context' | 'contextKey' | 'recognitionContextKey'>>[]
+  bindingEdges: readonly Readonly<BindingEdgeCandidate>[]
+  parserAuthorities: readonly Combinator<unknown>[]
+}>
+
+function capabilityOccurrenceReceipt(inventory: {
+  candidates: readonly CapabilityCandidate[]
+  bindingEdges: readonly BindingEdgeCandidate[]
+}): LexicalCapabilityRawReceipt {
+  const parserAuthorities: Combinator<unknown>[] = []
+  const parserAuthoritySet = new Set<Combinator<unknown>>()
+  const addParserAuthority = (parser: Combinator<unknown> | undefined): void => {
+    if (parser === undefined || parserAuthoritySet.has(parser)) return
+    parserAuthoritySet.add(parser)
+    parserAuthorities.push(parser)
+  }
+  for (const candidate of inventory.candidates) {
+    addParserAuthority(candidate.parser)
+    addParserAuthority(candidate.context.trivia)
+    for (const parser of candidate.context.scanSkip) addParserAuthority(parser)
+  }
+  return Object.freeze({
+    capabilities: Object.freeze(inventory.candidates.map(candidate => Object.freeze({
+      bodyId: candidate.bodyId,
+      parser: candidate.parser,
+      atom: candidate.atom,
+      path: candidate.path,
+      context: candidate.context,
+      contextKey: candidate.contextKey,
+      recognitionContextKey: candidate.recognitionContextKey,
+    }))),
+    bindingEdges: Object.freeze(inventory.bindingEdges.map(edge => Object.freeze({ ...edge }))),
+    parserAuthorities: Object.freeze(parserAuthorities),
+  })
+}
+
+type LexicalCapabilityClosureTables = Readonly<{
+  capabilities: readonly LexicalCapabilitySite[]
+  languages: readonly LexicalCapabilityLanguage[]
+  bindingEdges: readonly LexicalBindingEdge[]
+  bindingProjections: readonly LexicalBindingProjection[]
+  terminalProjections: readonly LexicalTerminalProjection[]
+  decisionFamilies: readonly LexicalDecisionFamily[]
+  decisionOutcomes: readonly LexicalDecisionOutcome[]
+  decisions: readonly LexicalDecisionSite[]
+  decisionEffectPlan: LexicalDecisionEffectInventory
+  transitionDiagnostics: readonly LexicalTransitionDiagnosticPlan[]
+  controlPlans: readonly LexicalControlPlan[]
+  boundaryPlans: readonly LexicalBoundaryPlan[]
+  materializationPlans: readonly LexicalMaterializationPlan[]
+  grammarWrapperSpecs: readonly LexicalGrammarWrapperSpec[]
+  grammarCaptureTriviaKinds: readonly (readonly string[])[]
+  boundaryTopologies: readonly LexicalBoundaryTopology[]
+  contextSnapshots: readonly LexicalContextSnapshot[]
+  ownSkipPlans: readonly LexicalOwnSkipPlan[]
+  scanConsumerPolicies: readonly LexicalScanConsumerPolicy[]
+}>
+
+type LexicalCapabilityClosureReceipt = Readonly<{
+  raw: LexicalCapabilityRawReceipt
+  callbacks: readonly LexicalDecisionCallbackAuthority['callback'][]
+  snapshot: LexicalCapabilityClosureTables
+}>
+
+function lexicalClosureSnapshotValue(
+  value: unknown,
+  parserAuthorities: ReadonlySet<Combinator<unknown>>,
+  seen: Set<object> = new Set(),
+): unknown {
+  if (value === null || typeof value !== 'object') return value
+  if (parserAuthorities.has(value as Combinator<unknown>)) return value
+  if (seen.has(value)) throw new Error('parseman: cyclic lexical closure receipt value')
+  seen.add(value)
+  let result: unknown
+  if (Array.isArray(value)) {
+    result = Object.freeze(value.map(entry => lexicalClosureSnapshotValue(
+      entry, parserAuthorities, seen,
+    )))
+  } else {
+    result = Object.freeze(Object.fromEntries(Object.keys(value).map(key => [
+      key, lexicalClosureSnapshotValue(
+        (value as Record<string, unknown>)[key], parserAuthorities, seen,
+      ),
+    ])))
+  }
+  seen.delete(value)
+  return result
+}
+
+function lexicalClosureSnapshot(
+  tables: LexicalCapabilityClosureTables,
+  raw: LexicalCapabilityRawReceipt,
+): LexicalCapabilityClosureTables {
+  return lexicalClosureSnapshotValue(
+    tables, new Set(raw.parserAuthorities),
+  ) as LexicalCapabilityClosureTables
+}
+
+function lexicalClosureValuesEqual(
+  expected: unknown,
+  actual: unknown,
+  parserAuthorities: ReadonlySet<Combinator<unknown>>,
+): boolean {
+  if (Object.is(expected, actual)) return true
+  if (expected === null || actual === null || typeof expected !== typeof actual) return false
+  if (typeof expected === 'function') return false
+  if (typeof expected !== 'object' || typeof actual !== 'object') return false
+  if (parserAuthorities.has(expected as Combinator<unknown>)) return false
+  if (Array.isArray(expected) || Array.isArray(actual)) {
+    return Array.isArray(expected) && Array.isArray(actual)
+      && expected.length === actual.length
+      && expected.every((entry, index) => lexicalClosureValuesEqual(
+        entry, actual[index], parserAuthorities,
+      ))
+  }
+  const expectedKeys = Object.keys(expected)
+  const actualKeys = Object.keys(actual)
+  return expectedKeys.length === actualKeys.length
+    && expectedKeys.every(key => Object.hasOwn(actual, key)
+      && lexicalClosureValuesEqual(
+        (expected as Record<string, unknown>)[key],
+        (actual as Record<string, unknown>)[key],
+        parserAuthorities,
+      ))
+}
+
+function lexicalCapabilityClosureReceipt(
+  raw: LexicalCapabilityRawReceipt,
+  tables: LexicalCapabilityClosureTables,
+): LexicalCapabilityClosureReceipt {
+  const callbacks = Object.freeze(tables.decisionEffectPlan.decisionCallbackAuthorities
+    .map(authority => authority.callback))
+  return Object.freeze({
+    raw,
+    callbacks,
+    snapshot: lexicalClosureSnapshot(tables, raw),
+  })
+}
+
+function closureTablesFromInventory(
+  alphabet: Omit<LexicalCapabilityInventory, 'capabilityComplete'>,
+): LexicalCapabilityClosureTables {
+  const { capabilityLanguages: languages, ...tables } = alphabet
+  return { ...tables, languages }
+}
+
+function rawLexicalClosureMatches(
+  raw: LexicalCapabilityRawReceipt,
+  alphabet: Omit<LexicalCapabilityInventory, 'capabilityComplete'>,
+): boolean {
+  if (raw.capabilities.length !== alphabet.capabilities.length
+    || raw.bindingEdges.length !== alphabet.bindingEdges.length
+    || raw.bindingEdges.length !== alphabet.bindingProjections.length) return false
+  const snapshotIdByKey = new Map(alphabet.contextSnapshots.map(snapshot => [snapshot.key, snapshot.id]))
+  const parserAuthorities = new Set(raw.parserAuthorities)
+  for (let id = 0; id < raw.capabilities.length; id++) {
+    const expected = raw.capabilities[id]!
+    const actual = alphabet.capabilities[id]
+    if (actual === undefined
+      || actual.id !== id
+      || actual.bodyId !== expected.bodyId
+      || actual.parser !== expected.parser
+      || actual.atom !== expected.atom
+      || actual.path !== expected.path
+      || actual.contextKey !== expected.contextKey
+      || actual.contextSnapshotId !== snapshotIdByKey.get(expected.contextKey)
+      || actual.recognitionContextKey !== expected.recognitionContextKey
+      || !lexicalClosureValuesEqual(expected.context, actual.context, parserAuthorities)) return false
+  }
+  for (let id = 0; id < raw.bindingEdges.length; id++) {
+    const expected = raw.bindingEdges[id]!
+    const actual = alphabet.bindingEdges[id]
+    const expectedProjection = fixedBindingProjection(expected, id, id)
+    const actualProjection = alphabet.bindingProjections[id]
+    const complete = expectedProjection.readerMask === ALL_BINDING_READERS
+      && expectedProjection.variantMask === ALL_BINDING_VARIANTS
+    const expectedStatus = complete ? COMPLETE_CAPABILITY : gap(FIXED_TUPLE_BINDING_GAP)
+    if (actual === undefined || actualProjection === undefined
+      || actual.id !== id
+      || actual.path !== expected.path
+      || actual.contextKey !== expected.contextKey
+      || actual.childContextKey !== expected.childContextKey
+      || actual.contextSnapshotId !== snapshotIdByKey.get(expected.contextKey)
+      || actual.parentTag !== expected.parentTag
+      || actual.childTag !== expected.childTag
+      || actual.projectionId !== id
+      || !lexicalClosureValuesEqual(expectedStatus, actual.status, parserAuthorities)
+      || !lexicalClosureValuesEqual(expectedProjection, actualProjection, parserAuthorities)) return false
+  }
+  return true
+}
+
+function lexicalClosureFailure(detail: string): never {
+  throw new Error(
+    `parseman: lexical capability census is incomplete: occurrence/derived bijection is incomplete (${detail})`,
+  )
+}
+
+function assertLexicalCapabilityBijection(
+  receipt: LexicalCapabilityClosureReceipt,
+  alphabet: Omit<LexicalCapabilityInventory, 'capabilityComplete'>,
+): void {
+  if (!rawLexicalClosureMatches(receipt.raw, alphabet)) lexicalClosureFailure('raw')
+  const actual = closureTablesFromInventory(alphabet)
+  const parserAuthorities = new Set(receipt.raw.parserAuthorities)
+  const failedTable = (Object.keys(receipt.snapshot) as (keyof LexicalCapabilityClosureTables)[])
+    .find(key => !lexicalClosureValuesEqual(
+      receipt.snapshot[key], actual[key], parserAuthorities,
+    ))
+  if (failedTable !== undefined) lexicalClosureFailure(failedTable)
+}
+
+/** Test-only production-seam model: snapshot the supplied derived tables while
+ * retaining a raw graph receipt captured before derivation. A dropped raw
+ * occurrence must fail even though the post-derivation snapshot agrees. */
+export function assertLexicalCapabilityProductionBijection(
+  roots: ReadonlyArray<Combinator<unknown>>,
+  alphabet: Omit<LexicalCapabilityInventory, 'capabilityComplete'>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): void {
+  const raw = capabilityOccurrenceReceipt(lexicalCapabilityCandidates(roots, resolve))
+  const receipt = lexicalCapabilityClosureReceipt(raw, closureTablesFromInventory(alphabet))
+  assertLexicalCapabilityBijection(receipt, alphabet)
+}
+
+/**
+ * Test/diagnostic entry for the one-pass production closure guard. This helper
+ * deliberately rebuilds the expected inventory for a supplied test artifact;
+ * production consumes the session-local raw receipt and never walks the graph
+ * or recomputes lexical analyses a second time.
+ */
+export function assertLexicalCapabilityOccurrenceBijection(
+  roots: ReadonlyArray<Combinator<unknown>>,
+  alphabet: Omit<LexicalCapabilityInventory, 'capabilityComplete'>,
+  resolve?: (name: string) => Combinator<unknown> | undefined,
+): void {
+  const expected = lexicalCapabilityInventory(roots, resolve)
+  assertLexicalCapabilityBijection(expected.closureReceipt, alphabet)
 }
 
 type CapabilityContext = LexicalCapabilityContext
@@ -2687,6 +2957,7 @@ function decisionViewKey(view: LexicalDecisionOutcomeView): string {
 function lexicalDecisionInventory(
   candidates: readonly CapabilityCandidate[],
   contextSnapshotIdByKey: ReadonlyMap<string, number>,
+  dynamicScanConsumers: ReadonlySet<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): {
   families: LexicalDecisionFamily[]
@@ -2697,6 +2968,15 @@ function lexicalDecisionInventory(
   const familyIrByKey = new Map<string, LexicalIr>()
   const viewsByKey = new Map<string, PendingDecisionView>()
   const pending: PendingDecisionSite[] = []
+  const boundaryCoverage = new Map<string, boolean>()
+  const coversContinuation = (family: LexicalIr, boundary: string): boolean => {
+    const key = `${JSON.stringify(family)}\u0000${boundary}`
+    const prior = boundaryCoverage.get(key)
+    if (prior !== undefined) return prior
+    const covered = boundaryCoversContinuation(family, boundary)
+    boundaryCoverage.set(key, covered)
+    return covered
+  }
   const addFamily = (lead: DecisionLead): string => {
     if (!familyIrByKey.has(lead.key)) familyIrByKey.set(lead.key, lead.ir)
     return lead.key
@@ -2717,7 +2997,7 @@ function lexicalDecisionInventory(
       pure = []
     }
     for (let armId = 0; armId < arms.length; armId++) {
-      if (!containsDynamicScanConsumer(arms[armId]!, resolve)) {
+      if (!dynamicScanConsumers.has(arms[armId]!)) {
         pure.push(armId)
         continue
       }
@@ -2747,8 +3027,8 @@ function lexicalDecisionInventory(
     const contextSnapshotId = contextSnapshotIdByKey.get(candidate.contextKey)
     if (contextSnapshotId === undefined) throw new Error('parseman: decision occurrence lost its context snapshot')
     const dynamicScan = candidate.atom === 'dispatch' && def.tag === 'dispatch'
-      ? containsDynamicScanConsumer(def.selector, resolve)
-      : containsDynamicScanConsumer(candidate.parser, resolve)
+      ? dynamicScanConsumers.has(def.selector)
+      : dynamicScanConsumers.has(candidate.parser)
     if (dynamicScan) {
       precisionNotes.push('dynamic scan consumer forbids pending range reuse')
     }
@@ -2904,7 +3184,7 @@ function lexicalDecisionInventory(
           && !intersects(armFirst, familyFirst)) {
           return { armId, acceptance: { kind: 'impossible' }, usesRouted: false, dynamicGate }
         }
-        const compatible = compatibleLanguageViews(lead.ir, familyIr)
+        const compatible = compatibleLanguageViews(lead.ir, familyIr, coversContinuation)
         if (compatible !== undefined) {
           if (compatible.every(view => view.relation === 'equal')
             && familyPredicates.length > 0
@@ -3294,6 +3574,7 @@ function lexicalCapabilityInventory(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): {
+  closureReceipt: LexicalCapabilityClosureReceipt
   capabilities: LexicalCapabilitySite[]
   languages: LexicalCapabilityLanguage[]
   bindingEdges: LexicalBindingEdge[]
@@ -3315,6 +3596,11 @@ function lexicalCapabilityInventory(
   decisionEffectPlan: LexicalDecisionEffectInventory
 } {
   const inventory = lexicalCapabilityCandidates(roots, resolve)
+  // Capture graph occurrence, context, and fixed-edge identity before any
+  // language/decision/effect derivation. The final closure transcript below is
+  // canonicalized independently against this immutable authority.
+  const rawClosureReceipt = capabilityOccurrenceReceipt(inventory)
+  const dynamicScanConsumers = dynamicScanReachability(roots, resolve)
   const occurrenceContexts = new Map<Combinator<unknown>, Set<string>>()
   for (const candidate of inventory.candidates) {
     let contexts = occurrenceContexts.get(candidate.parser)
@@ -3350,7 +3636,7 @@ function lexicalCapabilityInventory(
     }))
   const contextSnapshotIdByKey = new Map(contextSnapshots.map(snapshot => [snapshot.key, snapshot.id]))
   const decisionInventory = lexicalDecisionInventory(
-    inventory.candidates, contextSnapshotIdByKey, resolve,
+    inventory.candidates, contextSnapshotIdByKey, dynamicScanConsumers, resolve,
   )
   const transitionDiagnostics: LexicalTransitionDiagnosticPlan[] = []
   const transitionDiagnosticIdByKey = new Map<string, number>()
@@ -3805,7 +4091,11 @@ function lexicalCapabilityInventory(
     )
     return { ...site, obligations, status: derivedCapabilityStatus(obligations) }
   })
-  return {
+  const boundaryPlans: LexicalBoundaryPlan[] = boundaryTopologies.length === 0
+    ? [] : [{ id: 0, kind: 'token-context-transaction' }]
+  const materializationPlans: LexicalMaterializationPlan[] = boundaryTopologies.length === 0
+    ? [] : [{ id: 0, kind: 'token-source-range' }]
+  const closureTables = {
     capabilities, languages, bindingEdges, bindingProjections, terminalProjections,
     decisionFamilies: decisionInventory.families,
     decisionOutcomes: decisionInventory.outcomes,
@@ -3813,16 +4103,18 @@ function lexicalCapabilityInventory(
     decisionEffectPlan: decisionEffects,
     transitionDiagnostics,
     controlPlans,
-    boundaryPlans: boundaryTopologies.length === 0
-      ? [] : [{ id: 0, kind: 'token-context-transaction' }],
-    materializationPlans: boundaryTopologies.length === 0
-      ? [] : [{ id: 0, kind: 'token-source-range' }],
+    boundaryPlans,
+    materializationPlans,
     grammarWrapperSpecs,
     grammarCaptureTriviaKinds,
     boundaryTopologies,
     contextSnapshots,
     ownSkipPlans,
     scanConsumerPolicies,
+  }
+  return {
+    closureReceipt: lexicalCapabilityClosureReceipt(rawClosureReceipt, closureTables),
+    ...closureTables,
   }
 }
 
@@ -3941,17 +4233,19 @@ export function collectLexicalCapabilities(
   roots: ReadonlyArray<Combinator<unknown>>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): LexicalCapabilityInventory {
-  const inventory = lexicalCapabilityInventory(roots, resolve)
-  const { languages: capabilityLanguages, ...fields } = inventory
-  return {
+  const built = lexicalCapabilityInventory(roots, resolve)
+  const { closureReceipt, languages: capabilityLanguages, ...fields } = built
+  const inventory: LexicalCapabilityInventory = {
     ...fields,
     capabilityLanguages,
-    capabilityComplete: inventory.capabilities.every(site => site.status.kind !== 'gap')
-      && inventory.bindingEdges.every(edge => edge.status.kind !== 'gap')
-      && inventory.decisionEffectPlan.decisionEffects.every(effect =>
+    capabilityComplete: built.capabilities.every(site => site.status.kind !== 'gap')
+      && built.bindingEdges.every(edge => edge.status.kind !== 'gap')
+      && built.decisionEffectPlan.decisionEffects.every(effect =>
         effect.phase.executableLowering.kind !== 'gap')
-      && inventory.scanConsumerPolicies.every(policy => policy.status.kind !== 'gap'),
+      && built.scanConsumerPolicies.every(policy => policy.status.kind !== 'gap'),
   }
+  assertLexicalCapabilityBijection(closureReceipt, inventory)
+  return inventory
 }
 
 function tokenBoundary(

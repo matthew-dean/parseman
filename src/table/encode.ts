@@ -34,7 +34,7 @@ import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
-  assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
+  collectLexicalCapabilities, winnerWrapsReference,
 } from '../compiler/token-capability.ts'
 import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
 
@@ -1849,7 +1849,6 @@ export function encodeTableProgram(
   const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
   const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
   const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
-  assertLexicalCapabilityClosure(lexicalRoots, capabilities, resolveLexical)
   const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
