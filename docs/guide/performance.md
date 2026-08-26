@@ -1,28 +1,33 @@
 # Performance
 
-Parséman is fast by default — the [macro build](./macro-mode) beats hand-tuned generators
-on the benchmarks — but grammar authoring still has one dominant lever. This page covers
-the technique that matters most, plus how to measure.
+Parséman is fast by default — the [macro build](./macro-mode) beats hand-tuned parser
+generators on the benchmarks. But how you write your grammar still matters more than
+anything the compiler does for you. This page covers the one technique that matters most,
+and how to measure your own grammar.
 
 ::: info What "the compiler" means on this page
-In 0.48, "the compiler" means the canonical **`TableProgram` lowering** used by both
-`compile()` and the [macro build](./macro-mode). The macro serializes the table and may
-materialize one strict assembly for a sufficiently large terminal `composeLeaf`; it does
-not restore the removed direct-source parser. Historical numbers below describe their
-named checkpoint and should not be read as current 0.48 release measurements.
+As of 0.48, "the compiler" means the **`TableProgram` lowering** that both `compile()`
+and the [macro build](./macro-mode) share. The macro build serializes that table, and for
+a large enough terminal (a `composeLeaf`) it may also materialize one strict assembly —
+but it no longer restores the old direct-source parser, which has been removed. So treat
+the historical numbers below as snapshots from the checkpoint they were measured at, not
+as current 0.48 figures.
 :::
 
 ## The one rule: fewer combinator boundaries
 
-The single biggest grammar-level perf lever is **the number of combinator boundaries on
-the hot path**. Every `sequence` / `regex` / `oneOrMore` step is a function call plus a
-result-object allocation plus — in a `node()` rule — a leaf push. Fewer, fatter
-combinators beat many thin ones.
+The single biggest grammar-level performance lever is the number of combinator boundaries
+on your hot path. In the interpreter, and for a `regex` the compiler doesn't lower away,
+every `sequence` / `regex` / `oneOrMore` step costs a function call and a result-object
+allocation. Inside a `node()` rule, it also costs a leaf push. Fewer, fatter combinators
+beat many thin ones — and the compiler still lowers a fair number of `regex` terminals
+into a direct `charCodeAt` loop on its own (see [regex lowering](./regex-lowering)), so
+this rule matters most for the boundaries that don't get lowered for you.
 
 ## Collapse opaque shapes into one regex
 
-Measured on a repeated 3-shape group (`name1 1px #111 …`, ~29 KB), parsing the same
-content three ways:
+Here's a measurement on a repeated 3-shape group (`name1 1px #111 …`, about 29 KB), parsed
+three different ways:
 
 | Approach | Interpreted | Compiled |
 | --- | --- | --- |
@@ -32,102 +37,105 @@ content three ways:
 
 Two takeaways:
 
-- **For a bare terminal, shared combinator ref vs. an inline `regex(…)` literal is not a
-  useful speed lever.** The final graph retains one terminal recognizer either way. Factor
-  shared terminals for readability; optimize the semantic boundaries, not object spelling.
+- Whether a bare terminal is a shared combinator reference or an inline `regex(…)`
+  literal doesn't matter for speed. Either way, the final graph keeps one terminal
+  recognizer. Factor out shared terminals for readability, not performance — the
+  boundaries worth optimizing are semantic ones, not how the object happens to be spelled.
 
-  This is a statement about *terminals*, not sharing in general. Multiply referenced and
-  recursive subtrees remain named linkage boundaries in the final `TableProgram`, so a
-  shared subtree and a copy-pasted subtree are not interchangeable for topology or size.
-- **Collapsing a fixed multi-token shape into a single `regex` is 4–5× faster** in both
-  the interpreter and compiled output, because it erases the per-step call + allocation
-  overhead. `compile()` is a real but smaller win (~1.7×) and **stacks** with collapsing.
+  That's a statement about *terminals* specifically, not sharing in general. A subtree
+  that's referenced more than once, or is recursive, stays a named linkage boundary in the
+  compiled table — so a shared subtree and a copy-pasted one aren't interchangeable in
+  size or shape.
+- Collapsing a fixed multi-token shape into a single `regex` is **4–5× faster**, in both
+  the interpreter and compiled output, because it erases the per-step call-and-allocation
+  overhead. `compile()` on its own is a smaller but real win (about 1.7×), and it stacks
+  with collapsing.
 
 ### When to collapse
 
-Only where the CST treats the group as opaque text — a dimension `\d+px`, a hex color, an
-`nth` expression, a simple ident-run. A single regex yields **one leaf**, not structured
-sub-nodes.
+Collapse only where your CST already treats the group as opaque text — a dimension like
+`\d+px`, a hex color, an `nth` expression, a simple identifier run. A single regex gives
+you one leaf, not structured sub-nodes.
 
-If the shape is easier to write as combinators but should still be one source token, wrap
-it in [`token()`](../reference/api#token-combinator). `token()` clears internal trivia,
-returns the matched source text, and contributes one CST leaf inside `node()`. The compiler
-can collapse safe nullable terminal runs inside it (`many`, `optional`, `sepBy` over
-literals/regexes) to one regex. That is an optimization opportunity, not a promise that
-retrofitting `token()` onto an already tuned grammar will make it faster — benchmark the
-actual grammar.
+If a shape is easier to write with combinators but should still end up as one source
+token, wrap it in [`token()`](../reference/api#token-combinator) instead. `token()` clears
+internal trivia, returns the matched source text, and contributes a single CST leaf inside
+`node()`. The compiler can then collapse safe nullable terminal runs inside it — `many`,
+`optional`, `sepBy` over literals or regexes — into one regex. That's an opportunity, not
+a guarantee: retrofitting `token()` onto an already-tuned grammar won't automatically make
+it faster. Benchmark it.
 
 ### When *not* to collapse
 
-Keep the parts as separate combinators wherever the builder needs them as distinct CST
-children:
+Keep the parts as separate combinators wherever your builder needs them as distinct CST
+children — for a named value or span consumed by `field(name, parser)`, for trivia
+recovered *between* the parts, or for distinct typed nodes.
 
-- for named values/spans consumed by a builder (`field(name, parser)`),
-- for trivia recovered *between* the parts,
-- for distinct typed nodes.
-
-Correctness first; collapse only the genuinely opaque runs.
+Correctness comes first. Collapse only the runs that are genuinely opaque.
 
 ::: tip Not to be confused with node unwrap or CST wrapper collapse
-This is a *performance* technique — folding an opaque source token into one matcher. It is
-separate from `node(…, { unwrap: true })`, which changes **AST/value shape**, from
-`node(..., { collapse: true })`, which changes one grammar wrapper's **CST-like shape**,
-and from `cstBuildHost({ collapse })`, which changes **public CST shape**. See
-[CST / AST nodes](./ast#unwrapping-and-collapsing-wrapper-rules).
+This is a *performance* technique — folding an opaque source token into one matcher. Don't
+confuse it with `node(…, { unwrap: true })`, which changes the AST/value shape;
+`node(..., { collapse: true })`, which changes one wrapper's CST-like shape; or
+`cstBuildHost({ collapse })`, which changes the public CST shape. See
+[CST / AST nodes](./ast#unwrapping-and-collapsing-wrapper-rules) for those.
 :::
 
 ## `compile()` stacks on top
 
-Collapsing reduces the *number* of combinators; [`compile()`](./modes#compile-runtime-jit)
-(or the macro build) makes remaining boundaries cheaper by assembling direct bodies for
-proven shapes. The two compound. Use the macro build for production so construction and
-linking happen at build/import time rather than on the first runtime compile.
+Collapsing reduces the *number* of combinators. [`compile()`](./modes#compile-runtime-jit)
+(or the macro build) makes the boundaries that remain cheaper, by assembling direct bodies
+for shapes it can prove. The two effects compound. Use the macro build in production, so
+construction and linking happen at build/import time instead of on the first runtime
+compile.
 
 ## Shared broad openers: prefer `dispatch`
 
-Keep using [`choice`](../reference/api#choiceargs) for literal alternatives and
-branches with disjoint first sets. The compiler already turns those into cheap
-first-char dispatch, longest-literal checks, greedy classification, or shared-prefix
-code where that is the better shape.
+Keep using [`choice`](../reference/api#choiceargs) for literal alternatives and branches
+with disjoint first sets. The compiler already turns those into cheap first-char dispatch,
+longest-literal checks, greedy classification, or shared-prefix code — whichever shape
+fits.
 
-When several branches first recognize the same broad token and only then differ by that
-token's value, a plain `choice` can be correct but still do repeated opener checks. CSS
-at-rules are the easy example: exact arms for `@media`, `@supports`, `@property`, plus a
-generic `@anything;` fallback all begin with `@`.
+But sometimes several branches all start by recognizing the same broad token, and only
+differ once you look at that token's value. A plain `choice` is still correct there, but
+it repeats the same opener check on every branch. CSS at-rules are the easy example: exact
+arms for `@media`, `@supports`, `@property`, plus a generic `@anything;` fallback, all
+begin with `@`.
 
-Use [`dispatch`](../reference/api#dispatch-combinator-when-otherwise) for that shape:
-parse the at-keyword once, route exact names with `when(...)`, and keep the generic
-continuation in `otherwise(...)`. The grammar says what is happening and the compiled
-parser avoids rechecking the shared opener for late/generic arms.
+That's the shape [`dispatch`](../reference/api#dispatch-combinator-when-otherwise) is for:
+parse the at-keyword once, route the exact names with `when(...)`, and keep the generic
+continuation in `otherwise(...)`. The grammar reads the way the language actually works,
+and the compiled parser doesn't recheck the shared opener for every late or generic arm.
 
-This is also the scannerless story in miniature. Parséman does not need a separate lexer
-to freeze every token kind before the grammar sees it, and it still keeps token-style
-routing where it matters: parse the meaningful shared prefix once, then choose the
-continuation by the returned value or the next structural marker. CSS function values,
-SCSS/Jess `@supports`/`@media` overlaps with interpolation and dialect-specific routes,
-and same-opener node arms such as identifier-or-function values all fit this shape. A
-sibling `choice(...)` may be correct, but `dispatch(...)` expresses the route the language
-actually takes and lets the selected branch own the routed value with `routed()`.
+This is the scannerless story in miniature. Parséman doesn't need a separate lexer to
+freeze every token kind before the grammar even sees it — but it still gets token-style
+routing where that helps: parse the meaningful shared prefix once, then choose the
+continuation from the value you got back or the next structural marker. CSS function
+values, a CSS-superset dialect's `@supports`/`@media` overlapping with interpolation, and
+same-opener node arms like identifier-or-function values all fit this shape. A sibling
+`choice(...)` might also be correct, but `dispatch(...)` expresses the route the language
+actually takes, and lets the chosen branch own its value with `routed()`.
 
-`pnpm bench:dispatch` keeps small proof fixtures for this recommendation. It includes the
-same-opener at-rule case, broad identifier/function node arms where both the function arm
-and keyword arm begin by parsing an identifier, and a `matches(...)` route. These are
-intentionally not literal-vs-literal comparisons, because that is a good `choice(...)`
-case.
+`pnpm bench:dispatch` keeps small proof fixtures for this recommendation: the same-opener
+at-rule case, broad identifier/function node arms where both the function arm and the
+keyword arm start by parsing an identifier, and a `matches(...)` route. None of these are
+literal-vs-literal comparisons on purpose — that's a case where plain `choice(...)`
+already wins.
 
 The benchmark prints current medians for each workload. Expect the broad-opener advantage
-to shrink as nearly every item takes the same specialized route; the main win is avoiding
-repeated broad opener parsing and fallback backtracking. Keep `choice(...)` for literal
-or first-set-disjoint arms, closed sets with no generic broad fallback, and cases where
-the first arm dominates and the rejected tails are cheap.
+to shrink as more items take the same specialized route — the real win is avoiding
+repeated opener parsing and fallback backtracking, not raw speed on any one item. Stick
+with `choice(...)` for literal or first-set-disjoint arms, for closed sets with no generic
+fallback, and for cases where one arm dominates and the rejected tails are cheap.
 
-`matches(...)` dispatch arms are included as generated-code coverage for matcher routing.
-They are tracked, not treated as a speed gate: the regex predicate itself is real work,
-so small wins can fall inside run-to-run noise.
+`matches(...)` dispatch arms are included for generated-code coverage of matcher routing.
+They're tracked, not treated as a speed gate — the regex predicate itself does real work,
+so small wins can get lost in run-to-run noise.
 
-That is a directional benchmark artifact, not a hard release gate: absolute timings move
-with the machine, and the normal suite only asserts that the two grammars are equivalent
-and exercise the intended diagnostic paths. Opt into the timing check with:
+Treat this as a directional signal, not a hard release gate — absolute timings move with
+the machine you're on. The normal test suite only checks that the two grammars are
+equivalent and exercise the paths they're meant to. Opt into the timing check yourself
+with:
 
 ```bash
 PARSEMAN_PERF=1 pnpm vitest run --config vitest.perf.config.ts test/perf/dispatch-vs-choice.test.ts
@@ -148,39 +156,41 @@ pnpm perf:guard             # fast pre-commit CSS speed regression check
 node --import tsx bench/compose-dispatch.ts   # composed-grammar first-char dispatch A/B
 ```
 
-See [Benchmarks → Refreshing the charts](./benchmarks#refreshing-the-charts) for when to
-use `bench:svg` vs the full `bench` suite.
+See [Benchmarks → Refreshing the charts](./benchmarks#refreshing-the-charts) for when
+`bench:svg` is enough and when you need the full `bench` suite.
 
 ### Composed grammars
 
-The cross-parser charts measure **single** grammars compiled whole. A grammar built by
-[`compose([...])`](./extending) gets first-char dispatch across artifacts too (see
-[macro mode](./macro-mode#what-gets-emitted)) — `bench/compose-dispatch.ts` isolates that:
-a CSS-value-shaped composed grammar whose `value` is a `choice` over many cross-rule ref
-arms. With fuse-time dispatch the compiled parser skips arms whose first char can't match
-instead of trying each per token. Check it out across a change to A/B it — the win scales
-with arm count and how many `choice` rules a grammar has (a real stylesheet grammar, with
-a 15-arm value rule plus many selector choices, sees appreciably more than one 6-arm
-choice in isolation).
+The cross-parser charts measure single grammars compiled as a whole. A grammar built with
+[`compose([...])`](./extending) also gets first-char dispatch across its combined
+artifacts (see [macro mode](./macro-mode#what-gets-emitted)), and
+`bench/compose-dispatch.ts` isolates that effect: a CSS-value-shaped composed grammar
+whose `value` rule is a `choice` over many cross-rule arms. With dispatch applied at fuse
+time, the compiled parser skips arms whose first character can't match instead of trying
+each one per token. Run it before and after a change to A/B it yourself — the win scales
+with how many arms and `choice` rules a grammar has. A real stylesheet grammar, with a
+15-arm value rule plus many selector choices, sees appreciably more benefit than one
+isolated 6-arm choice.
 
-The benchmark reports each grammar's median µs/op interpreted and compiled, with a delta
-against the committed baseline — so a regression shows up immediately. See
-[Benchmarks](./benchmarks) for the full parser comparison charts (JSON, CSV, GraphQL).
+The benchmark reports each grammar's median microseconds per op, interpreted and compiled,
+with a delta against the committed baseline — so a regression shows up immediately. See
+[Benchmarks](./benchmarks) for the full parser comparison charts across JSON, CSV, and
+GraphQL.
 
 ## Library-level ideas
 
-The lever above is what *grammar authors* control. Below the grammar, the compiler also
-lowers many `regex(…)` terminals into `charCodeAt` scan loops — see
-[Under the hood: regex lowering](./regex-lowering) for what gets lowered, into what, and how
-it's kept correct and fast.
+Everything above is what *you*, the grammar author, control. Below the grammar, the
+compiler also lowers many `regex(…)` terminals into `charCodeAt` scan loops on its own —
+see [Under the hood: regex lowering](./regex-lowering) for what gets lowered, into what,
+and how it stays correct and fast.
 
-Node capture is arity-driven: a direct AST `build` that doesn't declare
-`children`, `rawChildren`, `triviaLog`, or `state` pays nothing to collect them;
-an injected `ctx.build` host keeps the complete CST contract. This is often a
-large slice of parse time on value-dense grammars. See
+Node capture is also driven by arity: a direct AST `build` that doesn't declare
+`children`, `rawChildren`, `triviaLog`, or `state` pays nothing to collect them, while an
+injected `ctx.build` host keeps the full CST contract. On value-dense grammars, that
+difference is often a large slice of total parse time. See
 [Capture follows your `build`'s arity](./ast#capture-follows-arity).
 
-For the full catalog of library-level codegen and macro optimizations (choice fast-paths,
-trivia loop specialization, transform/build inlining, and more), see
+For the full catalog of library-level codegen and macro optimizations — choice
+fast-paths, trivia loop specialization, transform/build inlining, and more — see
 [`notes/PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/notes/PERF_IDEAS.md)
 in the repo.

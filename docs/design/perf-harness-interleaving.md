@@ -2,7 +2,7 @@
 
 ## 0.50 macro-architecture experiment protocol
 
-The high-ceiling 0.50 programs in [`notes/PERF_IDEAS.md`](../../notes/PERF_IDEAS.md)
+The high-ceiling 0.50 programs in [`notes/PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/notes/PERF_IDEAS.md)
 U-57…U-61 use the existing Jess macro A/B path as their production decision
 instrument. A number counts only when both legs are ordinary shipping macro
 artifacts, the banner identifies the realized engine and source realpath, the

@@ -1,25 +1,25 @@
 # What is Parséman?
 
-Parséman is a parser-combinator library for TypeScript. You describe a grammar by
-composing small functions — `literal`, `choice`, `sequence`, `many`, and friends —
-and get back a parser you can run on any string.
+Parséman is a parser-combinator library for TypeScript. You build a grammar out of small
+functions — `literal`, `choice`, `sequence`, `many`, and friends — and get back a parser
+you can run on any string. No grammar file, no code generator, no build step you have to
+remember to run.
 
 > **How should I pronounce "Parséman"?**
 >
 > Say *parmesan* out loud, then swap the "m" and the "s".
 
-What sets Parséman apart is *how* it runs. The **same combinator code** works three
-ways:
+The interesting part is *how* it runs. The **same combinator code** works three ways:
 
-- **Interpreted** — zero setup, runs anywhere (including tests and REPLs).
-- **Compiled at build time** — a bundler plugin evaluates your grammar and replaces
-  it with an optimized `TableProgram` artifact. The macro'd combinator import vanishes;
-  the result uses the shared `parseman/table` runtime and you still call `run`/`parse`.
-- **Compiled at runtime** — `compile()` runs the same optimizer on demand, for
-  grammars assembled dynamically.
+- **Interpreted** — zero setup, runs anywhere. This is what your tests use.
+- **Compiled at build time** — a bundler plugin evaluates your grammar and swaps it for an
+  optimized table artifact. The combinator import disappears entirely; you still call
+  `parse()`.
+- **Compiled at runtime** — `compile()` runs the same optimizer on demand, for grammars you
+  assemble on the fly.
 
-No grammar files. No generated parser to check into source control. No DSL to learn
-beyond ordinary function calls. See [The three modes](./modes) for how to choose.
+Nothing generated gets checked into source control, and there's no DSL to learn beyond
+ordinary function calls. See [The three modes](./modes) for how to pick one.
 
 ## Install
 
@@ -39,13 +39,13 @@ yarn add parseman
 
 :::
 
-Parséman ships one ESM implementation plus TypeScript declarations. Supported Node
-versions can load the same implementation through either `import` or `require()`.
-There is no required runtime configuration — import and go.
+One ESM implementation, plus TypeScript declarations. Supported Node versions can load it
+through either `import` or `require()`. There's nothing to configure — import and go.
 
 ## Quick start
 
-Here's a parser for an HTTP request line, built from five combinators:
+Here's a parser for an HTTP request line — the first line of every web request you've ever
+made — built from five combinators:
 
 ```ts
 import { literal, sequence, choice, regex, transform, parse } from 'parseman'
@@ -63,17 +63,18 @@ parse(requestLine, 'GET /api/v1 HTTP/1.1')
 // { ok: true, value: { verb: 'GET', path: '/api/v1', version: 'HTTP/1.1' }, span: … }
 ```
 
-A few things to notice:
+Four things worth noticing:
 
-- **`choice`** tries alternatives in order (PEG semantics — first match wins).
-- **`sequence`** matches each term in turn and returns a tuple of their values.
-- **`transform`** maps that tuple into whatever shape you want — here a plain object.
-- **`parse`** runs a combinator against an input string and returns a
+- **`choice`** tries alternatives in order and takes the first that matches. No
+  backtracking to find a "better" one — first match wins, and that's the whole rule.
+- **`sequence`** matches each term in turn and hands back a tuple of their values.
+- **`transform`** reshapes that tuple into whatever you actually want. Here, an object.
+- **`parse`** runs a combinator against a string and returns a
   [`ParseResult`](../reference/types#parseresult).
 
 ## Reading a result
 
-Every parse returns a discriminated union. Check `ok` before touching `value`:
+Every parse hands back a discriminated union, so check `ok` before you touch `value`:
 
 ```ts
 const r = parse(requestLine, 'GET /api/v1 HTTP/1.1')
@@ -87,21 +88,21 @@ if (r.ok) {
 }
 ```
 
-For richer document-level control — whitespace skipping, line/column tracking, a
-reusable `.parse(input)` method — wrap your root combinator with
-[`parser()`](./trivia). For grammars that build a syntax tree, reach for
+That's the whole surface for a small parser. When you want document-level conveniences —
+skipping whitespace, tracking line and column, a reusable `.parse(input)` method — wrap
+your root combinator in [`parser()`](./trivia). When you want a real syntax tree, reach for
 [`node()`](./ast).
 
 ## Where to go next
 
-- **[The three modes](./modes)** — interpreter vs. macro vs. `compile()`, and when
-  each matters.
-- **[Combinators](./combinators)** — the full building-block vocabulary.
-- **[Macro mode](./macro-mode)** — add the plugin and move compilation to build time.
-- **[Error recovery](./error-recovery)** — keep parsing (and reporting) on broken
-  input.
-- **[Editor / language-server integration](./editor-integration)** — recovery,
-  completions, and diagnostics for an LSP, over a grammar that stays pure.
+- **[The three modes](./modes)** — interpreter, macro, or `compile()`, and when each one
+  earns its keep.
+- **[Combinators](./combinators)** — the full vocabulary of building blocks.
+- **[Macro mode](./macro-mode)** — add the plugin, move compilation to build time.
+- **[Error recovery](./error-recovery)** — keep parsing, and keep reporting, on input
+  that's half-typed or plain broken.
+- **[Editor / language-server integration](./editor-integration)** — completions and
+  diagnostics for an LSP, over a grammar that never learns the editor exists.
 
 ## Developing Parséman itself
 

@@ -5,11 +5,12 @@ parseman diagnose src/grammar.ts
 parseman fix src/grammar.ts --corpus test/fixtures
 ```
 
-Compiling a grammar prints nothing — a diagnostic is a deliberate act, not a side effect
-of producing an artifact. This is how you ask.
+Compiling a grammar prints nothing on its own — running a diagnostic is something you ask
+for, not a side effect of building an artifact. This page is how you ask.
 
-Captured output for every command is in [`docs/samples/cli-output.md`](../samples/cli-output.md),
-verbatim and non-TTY.
+You can see captured output for every command in
+[`docs/samples/cli-output.md`](../samples/cli-output.md) — verbatim, and captured outside
+a terminal (no TTY), so it's exactly what you'd get piped into a log or CI.
 
 ## Exit codes
 
@@ -19,8 +20,9 @@ verbatim and non-TTY.
 | `1`  | analysed; blocking findings — the gate fails |
 | `2`  | **could not analyse** — bad usage, unloadable grammar, unreadable corpus, I/O failure |
 
-`2` is the one that matters. A tool that cannot measure must not exit `0`; this project
-has already shipped a coverage report claiming 100% over zero analysable input.
+`2` is the one to watch for. A tool that can't measure something must never exit `0` as if
+it did — this project has, in fact, shipped a coverage report that claimed 100% over zero
+analyzable input.
 
 One CI line:
 
@@ -30,10 +32,10 @@ One CI line:
 
 ## `diagnose`
 
-Static analysis of the grammar: which choices gate on their first character, which do
-not and why, and which arms are spelled in a way that defeats the analysis parseman
-would otherwise do for free. It is the `diagnoseGrammar()` surface with a rendering on
-top.
+`diagnose` runs static analysis on your grammar: which choices gate on their first
+character, which don't (and why), and which arms are spelled in a way that defeats
+analysis parseman would otherwise do for free. It's the `diagnoseGrammar()` surface with a
+rendering on top.
 
 ```sh
 parseman diagnose examples/css/parser.ts --export Stylesheet
@@ -42,9 +44,9 @@ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures/c
 
 ### The second world
 
-`--corpus` adds the input side. A type error has one source to point at; a grammar
-finding has two — the ordered choice whose arms cost the time, and the input that pays
-for it — and relating them is the diagnostic:
+`--corpus` adds the input side. A type error has one place to point at; a grammar finding
+has two — the ordered choice whose arms cost time, and the input that pays for it.
+Relating those two is the whole diagnostic:
 
 ```text
   value   81 corpus positions can enter it
@@ -60,12 +62,12 @@ for it — and relating them is the diagnostic:
      ╰─
 ```
 
-The count is a count of CHARACTERS in the corpus whose value some arm accepts. It is an
-upper bound on how often the choice is entered, not a measurement of how often it was —
-a choice nested three rules deep is reached far less often than its first characters
-occur. It is reported as exactly that and never as "this choice ran N times". What it
-does settle exactly: an arm whose first set is `ANY` is entered at every one of those
-positions, because no first character can exclude it.
+That count is characters in the corpus whose value some arm accepts. It's an upper bound
+on how often the choice is entered, not a measurement of how often it actually was — a
+choice nested three rules deep gets reached far less often than its first characters
+occur. It's reported as exactly that, never as "this choice ran N times." What it does
+settle for certain: an arm whose first set is `ANY` gets entered at every one of those
+positions, because no first character can rule it out.
 
 ## `fix`
 
@@ -76,10 +78,10 @@ parseman fix src/grammar.ts --corpus test/fixtures --apply  # write it
 
 ### Why these rewrites can be trusted
 
-rustc can tell you a suggestion is machine-applicable. It cannot tell you the suggestion
-is *correct*, because there is no cheap oracle for "this rewrite of your program means
-the same thing". A parser generator has one — a grammar's whole observable behaviour is
-the tree it produces:
+rustc can tell you a suggestion is machine-applicable. It can't tell you the suggestion is
+*correct* — there's no cheap oracle for "this rewrite of your program means the same
+thing" in a general-purpose language. A parser generator has one, though: a grammar's
+entire observable behavior is the tree it produces:
 
 ```text
 propose  →  apply  →  recompile  →  compare parse output
@@ -87,29 +89,29 @@ propose  →  apply  →  recompile  →  compare parse output
                                      changed   → WRONG; discard, never show it
 ```
 
-Every rewrite `fix` offers went through that loop, on every available engine, over your
-corpus. That is both engines whenever the grammar compiles; a grammar that does not
-compile is verified on the interpreted engine alone, and the report names the engines it
-actually used.
-The evidence prints beside it:
+Every rewrite `fix` offers has gone through that loop, on every available engine, over
+your corpus. That means both engines when the grammar compiles; if it doesn't compile,
+the rewrite is verified on the interpreted engine alone, and the report names whichever
+engines it actually used. The evidence prints right beside it:
 
 ```text
   proven  applied, recompiled, 3 sample(s) re-parsed on interpreted + compiled — output identical
 ```
 
-`--corpus` is **required**. With no corpus there is no evidence, so nothing is offered
-and the command exits `2`.
+`--corpus` is required. With no corpus there's no evidence, so nothing is offered and the
+command exits `2`.
 
 ### What "proven" means, exactly
 
-Proven over the corpus you supplied. A corpus that never reaches the rewritten arm
-proves nothing about it, which is why the sample and byte counts are always printed.
+Proven over the corpus you supplied — nothing more. A corpus that never reaches the
+rewritten arm proves nothing about it, which is why the sample and byte counts always
+print alongside the result.
 
-Two deliberate exclusions from the comparison: failure `expected` LABELS are compared as
-position only, not text (a keyword rewrite changes `/if/` to `keyword` by design — that
-is diagnostic text, not parse output), and the rebuilder itself is checked before it is
-used, by rebuilding with no substitution and requiring identical output. If any part of
-the rebuild is unfaithful, no fix is offered at all.
+Two things are deliberately excluded from the comparison. Failure `expected` labels are
+compared by position only, not text — a keyword rewrite changing `/if/` to `keyword` is
+diagnostic text changing by design, not parse output changing. And the rebuilder itself
+gets checked before it's trusted, by rebuilding with no substitution and requiring
+identical output. If any part of the rebuild isn't faithful, no fix gets offered at all.
 
 ### Two states, never a third
 
@@ -118,54 +120,56 @@ the rebuild is unfaithful, no fix is offered at all.
 | `ACTIONABLE` | here is the rewrite, its evidence, and the measured benefit |
 | `LOCATED` | here is the exact site and the exact reason no rewrite can be offered |
 
-There is no "consider refactoring". A verified rewrite that removes no ungated choice and
-no anti-pattern is not offered either — output-neutral and pointless is still pointless.
+There's no "consider refactoring" middle ground. A verified rewrite that removes no
+ungated choice and no anti-pattern isn't offered either — being output-neutral doesn't
+save a change that's simply pointless.
 
 ### `--apply` and source edits
 
-The diff is the primary interface; `--apply` is an explicit second step. An edit is
-offered only when the site's spelling occurs **exactly once** in the source file: the
-loop proves a *graph* rewrite is output-neutral, and a text edit is only that rewrite if
-the text really is the site. Ambiguity declines, with the rewrite printed for you to
-apply by hand. An edit applied to the wrong site is worse than no `--apply` at all.
+The diff is the primary interface. `--apply` is a deliberate second step, and it only
+offers an edit when the site's spelling occurs exactly once in the source file. The loop
+proves a *graph* rewrite is output-neutral — a text edit is only that same rewrite if the
+text really is the site. When it's ambiguous, `fix` declines and prints the rewrite for
+you to apply by hand instead. An edit landing on the wrong site is worse than no `--apply`
+at all.
 
 ## `--json`
 
-The same structured object the human rendering is derived from — machine-first, not a
-stringified render. With a path it writes the file; with no path it goes to stdout and
-the human report moves to stderr, so stdout stays one parseable document.
+`--json` gives you the same structured object the human rendering is derived from — it's
+machine-first, not a stringified version of the report. Pass a path and it writes the
+file; leave it off and the JSON goes to stdout while the human report moves to stderr, so
+stdout stays one clean, parseable document.
 
-Both documents are deterministic: stable ordering, no timings, no dates, no absolute
-paths. A diagnosis can be committed and diffed.
+Both forms are deterministic: stable ordering, no timings, no dates, no absolute paths.
+That means a diagnosis can be committed to your repo and diffed like any other file.
 
 ## Reading the output
 
-Findings are grouped by CAUSE. Each cause is explained once, given a glyph, and followed
-by the choices that have it; the first is expanded with its full alternative ordering and
-a frame showing a real place in your corpus. The last line is a one-line summary carrying
-the tally and what the exit code means.
+Findings are grouped by cause. Each cause is explained once, given a glyph, and followed
+by every choice that has it. The first is expanded in full — its alternative ordering, and
+a frame showing a real place in your corpus. The last line summarizes the tally and what
+the exit code means.
 
-A finding marked 🔧 has a rewrite that parseman has **already proved**: it applied the
-change, rebuilt the parser, re-parsed your corpus and got identical output. The wrench
-never appears otherwise — not for a candidate it rejected, and not at all without
-`--corpus`, because there would be nothing to prove it against.
+A finding marked 🔧 has a rewrite that parseman has already proved: it applied the change,
+rebuilt the parser, re-parsed your corpus, and got identical output. The wrench never
+shows up otherwise — not for a candidate it rejected, and never at all without `--corpus`,
+since there'd be nothing to prove it against.
 
 ## Rendering
 
-Output goes through [linecraft](https://www.npmjs.com/package/linecraft) (pinned
-`0.2.6`, the same version jess pins), so a caret and a file link look the same in
-parseman and in jess. Code frames are linecraft's `CodeDebug`, the component jess renders
-compiler errors with.
+Output goes through [linecraft](https://www.npmjs.com/package/linecraft), so a caret, a
+code frame, and a file link look the way they do in every other compiler you've squinted
+at on a Tuesday.
 
-Every `file:line:col` is a clickable OSC-8 hyperlink on a terminal that supports one;
+Every `file:line:col` is a clickable OSC-8 hyperlink on a terminal that supports it;
 `--no-links` turns them off. Links are zero-width and wrap only the visible text, so
-column alignment is identical with and without them.
+column alignment stays identical whether they're on or off.
 
-The renderers emit lines of spans — text plus a semantic style — and never an escape byte
-themselves. Without colour the output is those rows' own text, so the plain form cannot
-drift from the styled one, and there is nothing to strip. Width is pinned to 80 off-TTY,
-which is why a piped run is byte-identical regardless of the terminal it was piped
-from.
+Under the hood, the renderer emits lines of spans — text plus a semantic style — and never
+writes an escape byte itself. Without color, the output is just those spans' own text, so
+the plain form can't drift from the styled one; there's nothing to strip. Width is pinned
+to 80 columns off a TTY, which is why a piped run comes out byte-identical no matter which
+terminal it was piped from.
 
 ## Options
 
@@ -183,14 +187,14 @@ from.
 | `--no-links` | do not emit OSC-8 file hyperlinks (for terminals that show them as junk) |
 | `--width <n>` | render width; default the terminal's when colouring, else 80 |
 
-A `.ts` grammar needs `tsx` installed; parseman registers it when it is resolvable and
-says so plainly when it is not.
+A `.ts` grammar needs `tsx` installed. parseman registers it automatically when it can
+resolve it, and says so plainly when it can't.
 
 ## Using it as a library
 
-Everything the CLI does is available at `parseman/diagnostics` — a separate entry point,
-because the verification loop reaches the compiler and no consumer who only wanted to
-parse something should carry codegen on its account.
+Everything the CLI does is also available at `parseman/diagnostics` — a separate entry
+point, because the verification loop reaches into the compiler, and nobody who just wants
+to parse something should have to carry codegen along for the ride.
 
 ```ts
 import { proposeFixes, renderFixReport } from 'parseman/diagnostics'

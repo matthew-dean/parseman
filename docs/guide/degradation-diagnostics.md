@@ -1,13 +1,14 @@
 # Degradation diagnostics
 
-Parseman sometimes cannot do the fast thing. A reducer's parameter list may be
-unreadable, an artifact may be opaque, a regex may not lower to a `charCodeAt` scan.
-Falling back is correct — the parse result is the same either way. Falling back
-**silently** is the defect: a build that is quietly paying 5× looks exactly like a build
-that is working properly, and the only way to find out is to read the generated
-artifact.
+Parseman can't always do the fast thing. A reducer's parameter list might be
+unreadable, an artifact might be opaque, a regex might not lower to a
+`charCodeAt` scan. Falling back is the correct move — the parse result comes
+out the same either way. Falling back **silently** is the defect: a build
+quietly paying 5x looks exactly like a build that's working fine, and the
+only way to tell the difference is to go read the generated artifact
+yourself.
 
-Every such path reports on one channel.
+So every fallback path reports on one channel.
 
 ## The format
 
@@ -27,9 +28,9 @@ declares would be captured (arity >= 1 children, >= 2 fields, >= 4 raw, >= 5 tri
 >= 6 state)
 ```
 
-Each line names **the rule**, **the reducer or input**, **what parseman did instead**,
-and **what it would have done otherwise**. A diagnostic that only says "fallback" is not
-actionable and is not worth printing.
+Each line names the rule, the reducer or input responsible, what parseman did
+instead, and what it would have done otherwise. A diagnostic that just says
+"fallback" isn't actionable, and isn't worth printing.
 
 ## Levels
 
@@ -41,39 +42,41 @@ PARSEMAN_DEGRADATION=warn    # default — print
 PARSEMAN_DEGRADATION=error   # fail the build
 ```
 
-Under the macro plugin the findings arrive as ordinary bundler warnings (Vite/Rollup
-`this.warn`), anchored to the module, and `error` throws once at the end of the module
-with every finding listed. A runtime `compile()` drains at the end of that compile: at
-`warn` it prints one aggregated block, at `error` it throws once with every finding
-listed.
+Under the macro plugin, findings arrive as ordinary bundler warnings
+(Vite/Rollup's `this.warn`), anchored to the module, and `error` throws once
+at the end of the module with every finding listed. A runtime `compile()`
+drains at the end of the compile instead: at `warn` it prints one aggregated
+block, at `error` it throws once with every finding listed.
 
 ::: tip Both modes honour `error`
-Before 0.45.0 `error` was inert for a runtime `compile()`: the drain that threw lived
-only in the macro plugin, so library users got `warn` behaviour from a setting documented
-as "fail the build".
+Before 0.45.0, `error` was inert for a runtime `compile()` — the drain that
+threw lived only in the macro plugin, so library users got `warn` behavior
+from a setting documented as "fail the build."
 :::
 
 ::: warning This channel is NOT like the gating diagnostic
-0.45.0 moved the [first-char gating](/guide/first-char-gating) advice out of the compile
-path entirely — `compile()` produces an artifact and says nothing, and you ask for a
-diagnosis with `diagnoseGrammar()`. This channel deliberately did **not** follow it.
+0.45.0 moved the [first-char gating](/guide/first-char-gating) advice out of
+the compile path entirely: `compile()` now produces an artifact and says
+nothing, and you ask for a diagnosis with `diagnoseGrammar()`. This channel
+deliberately did not follow suit.
 
-Gating advice is advice: the build did what you asked, and here are some notes. A
-degradation is parseman telling you it **could not do what you asked** — and the whole
-point of this release is that such a thing must not be silent. So it stays default-on, on
-both paths.
+Gating advice is just advice — the build did what you asked, and here are
+some notes. A degradation is parseman telling you it **could not** do what
+you asked, and the whole point of this release is that such a thing must
+never be silent. So it stays default-on, on both paths.
 
-What DID change is the shape on the runtime path. It used to print one full line per site
-as each was discovered — 31 near-identical ~500-character lines for a single code in one
-benchmark run, while the macro path had always aggregated. Now both drain the same way,
-so the eight-site cap and the counted summary below apply everywhere.
+What did change is the shape on the runtime path. It used to print one full
+line per site as each was discovered — 31 near-identical ~500-character
+lines for a single code in one benchmark run, while the macro path had
+always aggregated. Now both drain the same way, so the eight-site cap and
+the counted summary below apply everywhere.
 :::
 
 ## Asserting zero degradations
 
-The message is greppable on the literal `[parseman] degraded`, so a consumer's build
-gate can assert there are none — the same shape as grepping build output for
-`falling back to runtime`:
+The message is greppable on the literal `[parseman] degraded`, so a build
+gate can assert there are none — the same shape you'd use to grep build
+output for `falling back to runtime`:
 
 ```sh
 pnpm build 2>&1 | tee build.log
@@ -82,15 +85,16 @@ pnpm build 2>&1 | tee build.log
 
 or, equivalently, set `PARSEMAN_DEGRADATION=error` and let the build fail.
 
-A degradation recorded by an **analysis** rather than a compile — an opaque contributing
-artifact, say — is also returned structurally, on `diagnoseGrammar(g).degradations`, and
-becomes a finding in that report. That is the machine-readable route: `d.ok` covers it,
-no grepping.
+A degradation recorded by an analysis rather than a compile — an opaque
+contributing artifact, say — also comes back structurally, on
+`diagnoseGrammar(g).degradations`, as a finding in that report. That's the
+machine-readable route: `d.ok` covers it, no grepping required.
 
 ## Aggregation
 
-A diagnostic that fires on every rule gets filtered out, and filtered-out is the same as
-silent. Above eight sites per code, the remainder collapses to one counted line:
+A diagnostic that fires on every rule would get filtered out — and filtered-out
+is just silent by another name. So instead, past eight sites per code, the
+remainder collapses into one counted line:
 
 ```text
 [parseman] degraded [build-arity-unconfirmed] +12 more site(s) not listed (20 total).
@@ -101,15 +105,15 @@ Set PARSEMAN_DEGRADATION=error to fail the build on these.
 
 | Code | What was lost | Usual fix |
 | --- | --- | --- |
-| `build-arity-unconfirmed` | The node's build could not be reduced to a parameter list, so all five capture tiers stay on. | See [below](#reducer-arity) — usually a rest parameter or a reassigned binding. Declare it with `node(..., { buildArity: n })`. |
+| `build-arity-unconfirmed` | Parseman couldn't work out the build's parameter list, so all five capture tiers stay on. | See [below](#reducer-arity) — usually a rest parameter or a reassigned binding. Declare it with `node(..., { buildArity: n })`. |
 | `mk-inline-missed` | A reducer looks like an `mk(...)` wrapper but did not match the shape, so each match pays a call instead of an inlined object literal. | Use `(children, fields, span, rawChildren, triviaLog) => mk(type, children, rawChildren, span, triviaLog)` with the node's own type. |
 
 ## Reducer arity {#reducer-arity}
 
-A node's build receives `(children, fields, span, rawChildren, triviaLog, state)`.
-Collecting a facility the build never declares is dead work — and the trivia log's
-per-token push alone dominates real parses. Parseman therefore works out the build's
-declared arity and elides every tier above it:
+A node's build receives `(children, fields, span, rawChildren, triviaLog,
+state)`. Collecting an argument the build never declares is wasted work —
+and the trivia log's per-token push alone dominates real parses. So parseman
+works out the build's declared arity and elides every tier above it:
 
 | Arity | Enables |
 | --- | --- |
@@ -121,9 +125,9 @@ declared arity and elides every tier above it:
 
 ### What the macro resolves
 
-An inline arrow is self-describing. Everything else is a **name**, and the macro plugin
-runs at `enforce: 'pre'` with the module AST and the filesystem available, so it resolves
-the name rather than giving up on it:
+An inline arrow function describes itself. Everything else is just a name,
+and the macro plugin runs at `enforce: 'pre'` with the module AST and the
+filesystem available — so it resolves the name rather than giving up on it:
 
 ```ts
 const foldOperation = children => ({ … })
@@ -142,18 +146,19 @@ export { fold } from './impl.ts'                       // ✓ re-exports, includ
 const fold = foldOperation                             // ✓ alias chains
 ```
 
-Resolution is real lexical scope analysis, so **shadowing is decided rather than feared**:
-a `foldOperation` declared inside some other function does not affect a call site where
-the module-scope one is in scope, and a call site where an inner binding *does* shadow
-resolves to that inner binding.
+This is real lexical scope analysis, so shadowing gets decided rather than
+feared: a `foldOperation` declared inside some other function doesn't affect
+a call site where the module-scope one is in scope, and a call site where an
+inner binding really does shadow it resolves to that inner binding instead.
 
-Parameter lists are read from the AST, so a **default** or a **destructured** parameter
-counts positionally like any other — `(c, f = undefined, s, r)` is arity 4.
+Parameter lists are read straight from the AST, so a default or destructured
+parameter counts positionally like any other — `(c, f = undefined, s, r)` is
+arity 4.
 
 ### What genuinely cannot be resolved
 
-These are undecidable rather than merely unread, and they fail open (full capture) and
-report `build-arity-unconfirmed`:
+These aren't just unread — they're genuinely undecidable — so parseman fails
+open (full capture) and reports `build-arity-unconfirmed`:
 
 - a **rest parameter** — `(...args) => …` declares an unbounded arity
 - a body that references **`arguments`**
@@ -163,16 +168,18 @@ report `build-arity-unconfirmed`:
 
 ### Declaring the arity yourself
 
-Fail-open is safe but permanent: the node pays for every tier on every match, forever.
-`buildArity` is the escape hatch.
+Fail-open is safe, but it's permanent — the node pays for every tier on
+every match, forever. `buildArity` is the escape hatch.
 
 ```ts
 node('Fold', body, fold, { buildArity: 1 })
 ```
 
-You are asserting the highest positional argument the reducer reads. Parseman then elides
-everything above it exactly as if it had read the parameter list, and the diagnostic goes
-away. A declaration is authoritative — it wins over anything the source appears to say.
+You're asserting the highest positional argument the reducer actually reads.
+Parseman then elides everything above it, exactly as if it had read the
+parameter list itself, and the diagnostic goes away. A declaration is
+authoritative — it wins over anything the source appears to say.
 
-**Declaring too low under-captures.** The reducer will receive an empty `rawChildren` /
-`triviaLog` or an absent `state` rather than a wrong value. Count the parameters.
+**Declaring too low under-captures.** The reducer gets an empty
+`rawChildren` / `triviaLog` or an absent `state`, rather than a wrong value.
+So count the parameters carefully.

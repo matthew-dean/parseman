@@ -1,6 +1,6 @@
 # Types
 
-Every type exported from `parseman`. Import them with `import type`:
+Every type `parseman` exports. Import them with `import type`:
 
 ```ts
 import type { Combinator, ParseResult, Span, NodeLike } from 'parseman'
@@ -110,19 +110,25 @@ type NodeOptions = {
 ```
 
 `unwrap` is for AST/value wrapper rules: when exactly one child is captured, `build` is
-skipped and a captured leaf becomes its string value. `collapse` is for structural/CST
-wrapper rules: when exactly one child is captured, `build` is skipped and that child is
-returned exactly. `project` is for AST/value rules whose semantic value is one fixed captured
-child by index; projected leaves become strings, projected sub-nodes are returned as-is, and
-`hostMode: 'cst'` still gives the CST host the full node frame. `project` cannot be combined
-with `build`, `unwrap`, or `collapse`. `captureTrivia` owns interior trivia. `trailingTrivia`
-is for a repeating document root at EOF: it commits the active terminal trivia to that node's
-log; blocks with a closing delimiter do not need it. `tags` declares grammar-level CST
-categories used by `createVisitor(grammar, { tag: … })`; tags are stored in grammar
-reflection, and are not copied onto CST nodes by default. Use
-`cstBuildHost({ tags: true })` to materialize them on produced CST nodes. Set at most one of `unwrap` and
+skipped and a captured leaf becomes its string value.
+
+`collapse` is for structural/CST wrapper rules: when exactly one child is captured,
+`build` is skipped and that child is returned exactly. Set at most one of `unwrap` and
 `collapse`. See
 [unwrapping and collapsing wrapper rules](../guide/ast#unwrapping-and-collapsing-wrapper-rules).
+
+`project` is for AST/value rules whose semantic value is one fixed captured child by
+index; projected leaves become strings, projected sub-nodes are returned as-is, and
+`hostMode: 'cst'` still gives the CST host the full node frame. `project` cannot be
+combined with `build`, `unwrap`, or `collapse`.
+
+`captureTrivia` owns interior trivia. `trailingTrivia` is for a repeating document root at
+EOF: it commits the active terminal trivia to that node's log; blocks with a closing
+delimiter don't need it.
+
+`tags` declares grammar-level CST categories used by `createVisitor(grammar, { tag: … })`.
+Tags are stored in grammar reflection and aren't copied onto CST nodes by default — use
+`cstBuildHost({ tags: true })` to materialize them on produced CST nodes.
 
 `node(..., { project: index })` also exports the narrower options helper type used by the
 projection overload:

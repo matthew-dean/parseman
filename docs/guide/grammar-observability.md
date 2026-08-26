@@ -1,19 +1,18 @@
 # Grammar observability
 
-Parséman has two opt-in grammar-observability modes. Interpreter coverage uses
-the selected start-rule closure; a coverage-enabled macro grammar map carries
-the stable IDs emitted for that compiled map, including final composed winners.
+Parséman has two opt-in modes for watching a grammar work: coverage and trace.
 
-- Coverage answers “which rules, choice arms, dispatch arms, and labels succeeded?”
-- Trace answers “what did this parse try, select, fail, and backtrack through?”
+- **Coverage** answers "which rules, choice arms, dispatch arms, and labels actually fired?"
+- **Trace** answers "what did this parse try, pick, fail at, and back out of?"
 
-Neither mode changes ordinary interpreter parsing or ordinary macro output.
+Both are off by default, and turning them on never changes what a parse
+returns — you just get more information alongside the normal result.
 
 ## Coverage
 
-Use coverage when a test should prove that a grammar exercised a particular
-semantic branch. A run returns the normal `RunResult` plus an immutable coverage
-snapshot.
+Use coverage when a test needs to prove a grammar actually exercised some
+branch, not just that it returned the right answer. A run returns the normal
+`RunResult` plus an immutable coverage snapshot.
 
 ```ts
 import { choice, literal, runWithGrammarCoverage } from 'parseman'
@@ -26,16 +25,18 @@ console.log(coverage.hits)   // ['choice:entry/arm:1']
 console.log(coverage.unhit)  // ['choice:entry/arm:0']
 ```
 
-Pass one collector explicitly to merge several inputs. CI thresholds should use
-the boolean hit set and an explicit required-ID list.
+Reuse the same collector across several inputs to merge their coverage
+together. For a CI threshold, check the boolean hit set against an explicit
+list of required IDs.
 
 ### Vitest with a macro grammar
 
-Enable instrumentation only in the test build, then give `run()` the collector
-and (optionally) the trace sink. Coverage-enabled macro grammar maps carry their
-own immutable definition list; this is what makes the reported percentage
-truthful for the generated grammar rather than a count of whichever events a
-test happened to observe.
+Turn on instrumentation only in your test build, then pass `run()` the
+collector and, if you want one, a trace sink. A coverage-enabled macro grammar
+carries its own list of everything it could hit — every rule, arm, and label.
+That list is what keeps the percentage honest: it's measured against
+everything the grammar can do, not against whatever a test happened to
+touch.
 
 ```ts
 // vitest.config.ts
@@ -71,18 +72,19 @@ const coverage = collector.snapshot()
 expect(coverage.ratio).toBe(1) // 100% of structural definitions in this corpus
 ```
 
-`ratio` is `hits.length / definitions.length`: it counts successful named rules,
-choice arms, dispatch arms, and labels in the coverage-enabled generated
-grammar map. It is not V8 line coverage, statement coverage, or a claim that
-every invalid input has been tested. Macro output without
-`grammarCoverage: true` intentionally has no definition metadata or hooks;
-production parsing stays unchanged.
+`ratio` is `hits.length / definitions.length` — the share of named rules,
+choice arms, dispatch arms, and labels that actually succeeded. It isn't V8
+line coverage or statement coverage, and hitting 100% doesn't mean you've
+tested every invalid input — only every structural branch. Build without
+`grammarCoverage: true` and none of this exists: no definition metadata, no
+hooks, and production parsing untouched.
 
 ## Trace
 
-Trace is intentionally more verbose. It records lifecycle events with the same
-IDs: rule entry/success/failure, choice-arm attempt/failure/backtrack/selection,
-dispatch-arm attempt/selection/success/failure, and successful labels.
+Trace is the more verbose sibling. It logs every lifecycle event using the
+same IDs coverage uses: a rule entering, succeeding, or failing; a choice arm
+being attempted, failing, backtracking, or winning; a dispatch arm attempted,
+chosen, succeeding, or failing; and each successful label.
 
 ```ts
 import { createGrammarTraceSink, runWithGrammarCoverage } from 'parseman'
@@ -93,23 +95,24 @@ runWithGrammarCoverage(parser, 'no', { trace })
 console.log(trace.snapshot().events)
 ```
 
-The sink retains the first `capacity` events. It detaches when full, when a
-stream callback returns `false`, or when that callback throws. Its snapshot
-reports `truncated` and `dropped`; detachment never changes parse results.
+The sink keeps the first `capacity` events, then detaches — also if a stream
+callback returns `false` or throws. Its snapshot reports how much got
+`truncated` and `dropped`. Either way, detaching a trace never changes the
+parse result; it only stops watching.
 
-`dispatch` traces only the selected route. Arms excluded by the returned string
-do not emit attempts or backtracks; they were never parsed. If a selected tail
-fails, the dispatch arm emits `failure` and the parse failure is committed.
-Branches that use `routed()` still report the dispatch start offset, so the
-trace stays about the grammar route rather than the branch's internal ownership
-mechanics.
+`dispatch` only traces the route it actually took. An arm the returned string
+ruled out never shows an attempt or a backtrack, because it was never parsed.
+If the chosen tail then fails, the dispatch arm reports `failure` and that's
+final. Branches using `routed()` still report the dispatch's start offset, so
+the trace reads as the grammar's path through the input, not as one branch's
+internal bookkeeping.
 
 ## Macro mode
 
-Static combinators, `ref()` entries, and `rules(...)` maps can also emit
-instrumentation. This includes a terminal `composeLeaf(...)`, which uses its
-post-compose winner plan rather than imported-piece identities.
-Enable it only in a test/debug build:
+Static combinators, `ref()` entries, and `rules(...)` maps can emit
+instrumentation too, including a terminal `composeLeaf(...)` — which reports
+the plan it settled on after composing, not the identities of the pieces that
+went into it. Turn this on only in a test or debug build:
 
 ```ts
 import parseman from 'parseman/plugin'
@@ -119,10 +122,11 @@ export default {
 }
 ```
 
-With this option off, the macro emits its normal parser source: no collector,
-trace sink, helper, or observability identifier is present. With it on, the
-generated parser reads the dedicated coverage/trace context supplied by its test
-harness. Use the typed helper rather than constructing internal context fields:
+With the option off, the macro emits its normal parser source — no collector,
+trace sink, or observability code anywhere in it. With it on, the generated
+parser reads a coverage/trace context that your test harness supplies. Build
+that context with the typed helper below rather than constructing the
+internal fields yourself:
 
 ```ts
 import {
@@ -142,11 +146,12 @@ run(grammar.Entry, 'yes', { instrumentation: context })
 
 ## CI artifacts
 
-The canonical result is the in-memory snapshot. A CI job may serialize that
-snapshot as stable JSON after its tests finish, sorted by grammar ID, and compare
-required IDs plus a per-grammar minimum ratio. Keep this separate from line
-coverage: grammar coverage changes when branch topology changes, while V8 line
-coverage answers a different question.
+The in-memory snapshot is the source of truth. A CI job can serialize it to
+stable JSON once tests finish — sorted by grammar ID — and check it against a
+list of required IDs plus a minimum ratio per grammar. Keep this separate
+from line coverage: grammar coverage tracks branch topology, and V8 line
+coverage answers a different question entirely.
 
-For composed grammars always select an explicit start rule. IDs come from the
-final composed winner graph; an overridden rule does not retain a second ID.
+For a composed grammar, always pick an explicit start rule. IDs are assigned
+from the final composed graph, so a rule you've overridden doesn't keep a
+second ID from before the override.

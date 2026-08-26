@@ -1,26 +1,28 @@
 # First-char gating — making the compiler dispatch your choices
 
-The single biggest hot-path lever in a Parséman grammar is whether each `choice`
-**first-char-gates**: when every arm starts with a disjoint character, the `choice`
-becomes an O(1) character dispatch, so a non-matching position is rejected with one
-comparison. When it doesn't, the `choice` falls back to ordered first-match: **every**
-position speculatively ENTERS each arm in turn (context save/restore, a child array, the
-recognizer, then rollback) until one matches or all fail.
+The single biggest lever on parse speed in a Parséman grammar is whether each `choice`
+**first-char-gates**. When every arm starts with a different character, the compiler
+turns the whole `choice` into an O(1) dispatch: check one character, and you already know
+which arm to try. A non-matching position gets rejected with a single comparison.
 
-Gating is decided by the shared first-set analysis, so **both** run paths benefit: the
-interpreter dispatches through a prebuilt ASCII lookup table
-(`src/combinators/choice.ts`), and the compiled `TableProgram` links an indexed dispatch
-body instead of speculatively entering every arm. The diagnostics below report the gating
-decision itself, which is a property of the grammar, not of how you run it.
+When it doesn't gate, you're back to ordered first-match. Every position speculatively
+enters each arm in turn — saving context, allocating a child array, running the
+recognizer, rolling back — until one matches or all of them fail.
 
-Here's the trap: **PEG grammars are correct regardless of whether a choice gates.** An
-ungated hot choice passes every test and produces the right tree — it just does a lot
-more work per input character. The only symptom is a CPU profile, and the stakes are
-large: on real Parséman grammars, fixing the single arm that breaks a hot choice's
-dispatch is worth 25–48% of total parse time. None of that requires profiling to find —
-the compiler can tell statically which choices don't gate, and why.
+Gating comes from a shared first-set analysis, so it pays off no matter how you run the
+grammar. The interpreter dispatches through a prebuilt ASCII lookup table
+(`src/combinators/choice.ts`); the compiled `TableProgram` links an indexed dispatch body
+instead of trying each arm in turn. The diagnostics below report on the gating decision
+itself — a property of the grammar, not of how you run it.
 
-So Parséman will tell you — **when you ask**.
+Here's the trap: a PEG grammar is correct whether or not a choice gates. An ungated hot
+choice passes every test and builds the right tree — it just does far more work per
+character. The only symptom shows up in a CPU profile, and the cost is real: on real
+Parséman grammars, fixing the one arm that breaks a hot choice's dispatch is worth
+25–48% of total parse time. You don't need a profiler to find it, though — the compiler
+already knows statically which choices don't gate, and why.
+
+So Parséman will tell you — when you ask.
 
 ## Ask for it: `diagnoseGrammar()`
 
@@ -41,11 +43,11 @@ formatGrammarDiagnosis(d)[0]
 // → 'parseman: grammar NOT OK — 1 blocking finding(s) over 1 examined choice(s).'
 ```
 
-`diagnoseGrammar` takes **any** grammar shape — a bare combinator, an array of
+`diagnoseGrammar` takes any grammar shape — a bare combinator, an array of
 `[name, combinator]` entries, a `rules()` map, or a `compose()` result — and returns a
 plain, JSON-serializable [`GrammarDiagnosis`](../reference/api#diagnosegrammar-grammar-opts-grammardiagnosis).
-`formatGrammarDiagnosis(d)` renders it for a human, with the offending arm, the cause,
-and the fix inline:
+`formatGrammarDiagnosis(d)` renders it for a human: the offending arm, the cause, and the
+fix, all inline.
 
 ```text
 parseman: grammar NOT OK — 1 blocking finding(s) over 1 examined choice(s).
@@ -59,33 +61,33 @@ parseman: grammar NOT OK — 1 blocking finding(s) over 1 examined choice(s).
     intentional? add to the gating snapshot: { accept: ['value'] }
 ```
 
-It is **precise, not spammy**: it fires only on choices that genuinely can't dispatch —
-never on a `recoverable` choice (one that looks ungated at construction because its arms
-are `ref()`s, but whose deep/fuse-resolved first-sets are actually disjoint, so the
-compiled code still guards each arm).
+It's precise, not spammy. It fires only on choices that genuinely can't dispatch — never
+on a `recoverable` choice, one that looks ungated at construction because its arms are
+`ref()`s, but whose first-sets turn out disjoint once fusing resolves them. The compiled
+code still guards each arm there.
 
 ### Why this is not a compile-time warning
 
 It used to be. `compile()` ran the analysis by default and printed it through
-`console.warn`, so importing one example grammar emitted **51 lines** of advice before a
-single byte was parsed. The advice was correct and nobody read it: it arrived unasked, in
-the middle of an unrelated build log, on a build that had not gone wrong.
+`console.warn`, so importing one example grammar emitted 51 lines of advice before a
+single byte was parsed. The advice was correct, and nobody read it — it showed up
+unasked, buried in an unrelated build log, on a build that hadn't gone wrong.
 
-Since **0.45.0** the two acts are separate. `compile()`, `compileRuleMap()`, `compose()`
-and the macro transform produce an artifact and say **nothing** — there is no `gating`
-compile option, no `PARSEMAN_GATING` env var, and no `CompiledParser.gating` field.
-Diagnosing is `diagnoseGrammar()`, and you run it where a diagnosis belongs: a test, a
-lint script, a CI job.
+Since 0.45.0 the two jobs are separate. `compile()`, `compileRuleMap()`, `compose()`, and
+the macro transform produce an artifact and say nothing — there's no `gating` compile
+option, no `PARSEMAN_GATING` env var, no `CompiledParser.gating` field. Diagnosing is
+`diagnoseGrammar()`'s job, and you run it where a diagnosis belongs: a test, a lint
+script, a CI job.
 
-(This does **not** apply to the `[parseman] degraded` channel, which stays default-on —
-see [Degradation diagnostics](./degradation-diagnostics). A degradation is not advice:
-it is parseman reporting that it could not do what you asked for.)
+(This doesn't apply to the `[parseman] degraded` channel, which stays on by default — see
+[Degradation diagnostics](./degradation-diagnostics). A degradation isn't advice; it's
+Parséman telling you it couldn't do what you asked.)
 
 ## What poisons a first-set
 
 A choice gates only when the compiler can prove each arm's set of possible first
-characters is disjoint from the others and finite. These are the things that widen an
-arm's first-set to `any` (or make two arms overlap) and break that proof:
+characters is finite and disjoint from every other arm's. Here's what widens an arm's
+first-set to `any` — or makes two arms overlap — and breaks that proof:
 
 | Poison | Why | Fix |
 | --- | --- | --- |
@@ -132,24 +134,24 @@ diagnostic is that you don't have to remember them; one call names them.
 
 ## Accepting an intentional ungated choice (the snapshot allowlist)
 
-Not every choice is hot. A top-level statement dispatcher with a broad error-recovery arm
-*should* fall through arm by arm. Rather than a per-node marker, there is **one**
-suppression mechanism: list the choice's stable `id` in the gating snapshot's `accept`
-allowlist. The `id` is the finding's `id` — for `statement` here it is `statement` (or
-`statement#0`, `statement#1`, … when a rule holds several choices), and
-`diagnosis.acceptSnapshot` hands you the whole list ready to paste.
+Not every choice needs to be hot. A top-level statement dispatcher with a broad
+error-recovery arm should fall through arm by arm — that's the point of it. Rather than a
+per-node marker, there's one suppression mechanism: list the choice's stable `id` in the
+gating snapshot's `accept` allowlist. The `id` is the finding's `id` — for `statement`
+here that's `statement` (or `statement#0`, `statement#1`, … when a rule holds several
+choices) — and `diagnosis.acceptSnapshot` hands you the whole list, ready to paste.
 
 ```ts
 const ACCEPTED = ['statement', 'value#1']   // ideally kept with a reason per entry
 const d = diagnoseGrammar(grammar, { accept: ACCEPTED })
 ```
 
-An accepted choice is excluded from `ok`; any ungated choice NOT in `accept` still blocks.
-Stale entries come back as advisory `stale-accept` findings (and in
-`d.gating.acceptedUnused`), so a stale allowlist is easy to prune. **Prefer fixing the
-gating** (a concrete leading terminal, `word()`/`keywords()`, reordering a leading `not`)
-over accepting it; the allowlist is for the genuinely-unavoidable cases (recovery
-fallbacks), not the default.
+An accepted choice is excluded from `ok`; any ungated choice not in `accept` still blocks
+the build. Stale entries come back as advisory `stale-accept` findings (also in
+`d.gating.acceptedUnused`), so a stale allowlist is easy to prune. Prefer fixing the
+gating — a concrete leading terminal, `word()`/`keywords()`, reordering a leading `not` —
+over accepting it. The allowlist is for genuinely unavoidable cases like recovery
+fallbacks, not the default move.
 
 ## Shared shapes: the verdict belongs to the fuse
 
@@ -164,13 +166,13 @@ export const shape = rules(g => ({
 }))
 ```
 
-Does `Term` gate? **The shape cannot know.** `g.Value` has no body here, so its first-set
-reads `any` — and whether the arms collide depends entirely on what a consumer binds. The
-shape module is never executed as a parser, and its author has nothing to fix.
+Does `Term` gate? The shape can't know. `g.Value` has no body here, so its first-set
+reads `any`, and whether the arms collide depends entirely on what a consumer binds
+later. The shape module is never run as a parser, so its author has nothing to fix.
 
-So the shape has no finding to give. Such a choice is `deferred`: excluded from `ok`,
-counted in `d.summary.deferred`, and visible programmatically as `d.gating.deferred`. Ask
-the question again of the **fused** grammar, where the hole is bound:
+So the shape has no finding to give. A choice like this comes back `deferred` —
+excluded from `ok`, counted in `d.summary.deferred`, visible as `d.gating.deferred`. Ask
+the question again of the fused grammar, where the hole gets bound:
 
 ```ts
 diagnoseGrammar(compose([shape, rules(_g => ({ Value: regex(/[0-9]+/) }))]))    // ✅ '0'-'9' vs '@' — gates
@@ -178,9 +180,9 @@ diagnoseGrammar(compose([shape, rules(_g => ({ Value: regex(/@[0-9]+/) }))]))   
 //                                                                      arm[0] ∩ arm[1] overlap on '@'
 ```
 
-The finding lands on the artifact that can act on it, and names the real cause — a
-concrete overlap on `'@'`, not "unresolved ref `g.Value`". Fix it where you'd expect: bind
-a narrower `Value`, or left-factor the shape's arms.
+The finding lands on the artifact that can actually act on it, and it names the real
+cause — a concrete overlap on `'@'`, not "unresolved ref `g.Value`." Fix it where you'd
+expect: bind a narrower `Value`, or left-factor the shape's arms.
 
 ### Asking a composed grammar directly
 
@@ -194,26 +196,27 @@ const report = analyzeGrammarGating(myComposedGrammar)
 if (report.unanalysable.length > 0) throw new Error('gating report is PARTIAL')
 ```
 
-Do not reach for `analyzeGatingRules(Object.entries(composed))` instead. A `compose()`
-result is a map of **fused rule functions** — fusion lowers each rule to executable code,
-so there is no combinator graph left in that map to walk. `analyzeGrammarGating` recovers
-the graph from the composition's carried IR first.
+Don't reach for `analyzeGatingRules(Object.entries(composed))` instead. A `compose()`
+result is a map of fused rule functions — fusion lowers each rule to executable code, so
+there's no combinator graph left in that map to walk. `analyzeGrammarGating` recovers the
+graph from the composition's carried IR first.
 
-Two things this buys you over analyzing a contributing `rules()` map on its own: the
-cross-artifact holes are **bound**, so choices that were `deferred` resolve to a real
-verdict; and you see the **union** of every contributing grammar's rules, which no single
-`rules()` map contains.
+Two things this buys you over analyzing a single contributing `rules()` map on its own.
+The cross-artifact holes are bound, so choices that were `deferred` resolve to a real
+verdict. And you see the union of every contributing grammar's rules — something no
+single `rules()` map contains.
 
-Always check `report.unanalysable` before reading `report.ungated` as a pass. It is
-non-empty when part of the grammar could not be examined — for instance a contributing
-piece that is an opaque precompiled artifact — and an empty `ungated` then means "nothing
-was looked at", not "nothing is wrong".
+Always check `report.unanalysable` before reading `report.ungated` as a pass. It's
+non-empty when part of the grammar couldn't be examined — a contributing piece that's an
+opaque precompiled artifact, say — and in that case an empty `ungated` means "nothing was
+looked at," not "nothing is wrong."
 
 ## CI: one call, one exit code
 
-`d.ok` is the whole contract — it is false when there is any **blocking** finding, and an
-analysis that could not run counts as blocking. Keep an `accept` allowlist of the choice
-ids you've reviewed, so a refactor that ungates a NEW hot choice fails the build:
+`d.ok` is the whole contract. It's false when there's any blocking finding, and an
+analysis that couldn't run counts as blocking too. Keep an `accept` allowlist of the
+choice ids you've already reviewed, so a refactor that ungates a new hot choice fails the
+build:
 
 ```ts
 // scripts/check-gating.ts
@@ -228,26 +231,26 @@ if (!d.ok) {
 }
 ```
 
-It **fails closed**: `ok` is false when part of the grammar could not be examined (an
-opaque precompiled contributing artifact, a value that is not a combinator, an analysis
-that threw), so an empty `ungated` can never be mistaken for "nothing is wrong". Write
-`JSON.stringify(d.findings)` to a committed file if you want a diffable snapshot — the
-findings are sorted, so two runs over the same grammar are byte-identical.
+It fails closed: `ok` is false whenever part of the grammar couldn't be examined — an
+opaque precompiled artifact, a value that isn't a combinator, an analysis that threw — so
+an empty `ungated` can never be mistaken for "nothing is wrong." Write
+`JSON.stringify(d.findings)` to a committed file if you want a diffable snapshot; findings
+are sorted, so two runs over the same grammar come out byte-identical.
 
 ## Why this is implicit in Parséman (the Chevrotain contrast)
 
-A tokenizing parser like Chevrotain forces you to declare dispatch: the lexer assigns each
-input a token *type*, and the parser branches on that type. You **cannot** forget to
-dispatch — the cliff is impossible to hit — but you also can't do scannerless things
-(overlapping tokens, per-position re-lexing, context-dependent tokenization).
+A tokenizing parser like Chevrotain forces you to declare dispatch: the lexer assigns
+each input a token type, and the parser branches on that type. You can't forget to
+dispatch — that cliff is impossible to hit — but you also lose the scannerless tricks:
+overlapping tokens, per-position re-lexing, context-dependent tokenization.
 
-Parséman is scannerless: dispatch is *implicit in first-sets*, computed from the
-combinators themselves. That's more flexible — no lexer, tokens can overlap, a rule can
-mean different things in different positions — but it hides the cliff, because a choice
-that doesn't dispatch is still correct. `diagnoseGrammar()` buys back Chevrotain's "you
-can't forget to dispatch" guarantee **without** the lexer: the compiler already knows
-which choices dispatch and, for the ones that don't, exactly which arm to fix — wire the
-call into CI and forgetting becomes a failed build rather than a silent tax.
+Parséman is scannerless: dispatch is implicit in first-sets, computed straight from the
+combinators. That's more flexible — no lexer, tokens can overlap, a rule can mean
+different things in different positions — but it hides the cliff, because a choice that
+doesn't dispatch is still correct. `diagnoseGrammar()` buys back Chevrotain's "you can't
+forget to dispatch" guarantee without the lexer: the compiler already knows which choices
+dispatch, and for the ones that don't, exactly which arm to fix. Wire the call into CI,
+and forgetting becomes a failed build instead of a silent tax.
 
 ## See also
 
