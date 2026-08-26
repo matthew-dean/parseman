@@ -154,6 +154,19 @@ because neither removed the nested NODE calls. Per-NODE pasting and a large
 recognizer beside each NODE are the rejected placements—not large trace roots
 categorically.
 
+**Third ceiling result (iteration 61): broad NODE-inline compaction rejected.**
+Cold-extracting only inherited-buffer publication cut direct-builder NODE
+bytecode from 472/490/493 B to 324/342/343 B and made TurboFan recursively inline
+previously refused NODE chains. It activated 213 Less sites, shrank the macro
+artifact 2.93%, passed 314/314 corpus identity and cold-buffer RED tests, and put
+no replacement helper on the ordinary flat-array success path. Yet the adjacent
+control normalized runtime to **+2.9%/+2.5% slower**, with zero winning rounds.
+The old cutoff was protective: recursively copying the full capture/context
+protocol increased optimized-code pressure. A smaller NODE is useful only when
+inlining is leaf-local, or when a fused scalar/tape trace deletes those repeated
+frames rather than copying them. Source shrink and confirmed inlining are not
+performance evidence by themselves.
+
 ### U-58. Make derived tokens the primary control-flow currency — `ACTIVE`
 
 Today token information often acts as an advisory pretest, after which the
@@ -1203,7 +1216,7 @@ siblings landed appears here once, for its unlanded part only.
 | U-54 | gate the three silent-wrong-output surfaces (`OP_ADJ`, capture-reachability, site-attribute record) by whole-object parity | `UNMEASURED` |
 | U-55 | put `expected` in the identity digest (six divergences hid behind its absence during 0.47) | `QUEUED` |
 | U-56 | re-tag the 39,718 mislabelled `"engine":"table"` rows in `notes/results/parse-consumed.jsonl`, and land `lane/name-collision`'s legend + the `CHANGELOG.md:756-762` / `canonical-fixture-benchmark.md` correction banners on the release tip | `QUEUED` |
-| U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (per-NODE placements rejected; inlineable NODEs and true recursive rule traces next) |
+| U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (broad recursive NODE inlining rejected; leaf-local or protocol-deleting rule traces next) |
 | U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `ACTIVE` |
 | U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE` |
 | U-60 | recognition event tape followed by selective exact construction | `ACTIVE` |
