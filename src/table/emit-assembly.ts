@@ -567,6 +567,12 @@ export function emitAssemblySource(
   // the closure recognizer pool: distinct terminal rows sharing one spec share
   // both the recognizer and the ordinary-terminal lowering.
   const scalarSpecs = new Set<number>()
+  // Large choices are different: admitting every wrapped scalar would add a
+  // recognizer call to many arms whose one-character gate already did all the
+  // useful work. A multi-character literal can still refine an overlapping
+  // first-character mask (`@@` beside `@name`) without changing the ordinary
+  // terminal's inline lowering, so keep that narrower inventory separate.
+  const largeChoiceScalarSpecs = new Set<number>()
   type TokenChoiceCandidate = { readonly arm: number; readonly dispatchIp: number }
   const tokenChoiceCandidates = new Map<number, TokenChoiceCandidate>()
   const tokenChoiceDispatches = new Set<number>()
@@ -581,9 +587,15 @@ export function emitAssemblySource(
       if (code[ip] !== OP_CHOICE || disp[code[ip + 1]!]!.exclusive) continue
       const n = code[ip + 2]!
       for (let i = 0; i < n; i++) {
+        const child = leadingScalarTerminal(code, code[ip + 4 + i]!, 2, true, true)
+        if (child < 0) continue
         if (n === 2 || n === 3) {
-          const child = leadingScalarTerminal(code, code[ip + 4 + i]!, 2, true, true)
-          if (child >= 0) scalarSpecs.add(code[child + 1]!)
+          scalarSpecs.add(code[child + 1]!)
+          continue
+        }
+        const spec = k[code[child + 1]!]
+        if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
+          largeChoiceScalarSpecs.add(code[child + 1]!)
         }
       }
 
@@ -1681,10 +1693,11 @@ return FAIL
             if (tokenCandidate?.arm === i) {
               return { token: tokenDecisionFor(tokenCandidate.dispatchIp) }
             }
-            if (n !== 2 && n !== 3) return undefined
             const terminal = leadingScalarTerminal(code, code[base + i]!, 2, true, true)
-            if (terminal < 0 || !scalarSpecs.has(code[terminal + 1]!)) return undefined
-            return { scalar: recognizerRef(code[terminal + 1]!) }
+            if (terminal < 0) return undefined
+            const spec = code[terminal + 1]!
+            if (!(n === 2 || n === 3 ? scalarSpecs : largeChoiceScalarSpecs).has(spec)) return undefined
+            return { scalar: recognizerRef(spec) }
           })
           const maskable = n <= 32
           const maskName = maskable
