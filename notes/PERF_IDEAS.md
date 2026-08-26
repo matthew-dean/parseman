@@ -229,7 +229,7 @@ Jess `pm-macro:`/`bench:jess:ab` loaders and their printed artifact paths. The
 synthetic workload censuses below remain architecture evidence only until their
 mechanism activates on that shipping macro path.
 
-### U-58. Make derived tokens the primary control-flow currency — `ACTIVE`
+### U-58. Make derived tokens the primary control-flow currency — `MEASURED-NEGATIVE` standalone / `ACTIVE ONLY INSIDE U-61`
 
 Today token information often acts as an advisory pretest, after which the
 selected arm re-enters ordinary PEG machinery and reconstructs facts already
@@ -322,6 +322,18 @@ supplement to ordinary PEG continuations. Residual authority now enters only as
 part of a fused scalar trace where the derivative transition itself consumes the
 terminal and advances the local cursor; a separate cached predecision is retired.
 
+Iteration 76 rejects broad token-primary control as a standalone macro vertical
+before code. De-overlapped TableProgram attribution removed only 8.84%/10.75% of
+Less control rows and 10.26% of CSS; even adding accepted choice-root equivalents
+reached only 11.37%/13.43%/14.15%. Challenging the largest `unrestricted` holes—a
+nullable Less assertion residual that rescans trivia and CSS routed continuations
+under an existing token—raised the optimistic row-equivalent ceiling to
+17.87%/18.74%/17.00%, but only by counting classifier work as free. The compact
+machinery itself was already 19–22% of the existing artifact and the earlier Value
+tape lost while deleting 5–8% of rows. Preserve the nullable-assertion and routed
+continuation authority, but consume it as local control inside U-61 rather than
+shipping another scanner/choice layer.
+
 ### U-60. Recognition tape followed by selective construction — `MEASURED-NEGATIVE` for bounded choice; broad-region replacement is U-65
 
 Split recognition from object/tree construction without parsing twice. The hot
@@ -394,7 +406,7 @@ route helper, and event replay. The integer representation was cheap; its extra
 boundaries were not. U-61 now admits only a whole-region lowering that deletes the
 generic ABI and capture machinery on the supported trace.
 
-### U-63. TableProgram named-rule/SCC supercompiler — `ACTIVE`
+### U-63. TableProgram named-rule/SCC supercompiler — `RETAINED MODEST WIN / ACTIVE SUBSTRATE`
 
 Recover the useful topology of 0.45 without recovering a second semantic engine.
 The canonical TableProgram remains the only IR and oracle; a macro-only backend
@@ -418,7 +430,49 @@ that survive TurboFan, and price source plus optimized code before timing. A
 vertical must use TableProgram structure only, preserve exact diagnostics/effects,
 and outline before V8 instruction-cache growth erases the saved calls.
 
-### U-64. Static reducer/factory specialization and capture authority — `ACTIVE`
+**Retained result (iteration 79): the generic Entry/SCC vertical is a modest
+runtime win and a high-coverage substrate.** Frozen experiment SHA
+`6b6f99b40772a2d44a188ad6a05b7f5a3855aa58` is the same code tree now present
+in release commit `04ca3c9`. It parses the canonical static assembly, builds the
+actual emitted `_pf` ownership/SCC graph, and absorbs only uniquely owned private
+bodies into structured labelled blocks. Public/scan roots, shared joins,
+recursive SCCs, ATTEMPT/SCAN effects, function-value references, non-direct call
+shapes, `arguments`/`this`/`new.target`/`var`, async/generator bodies,
+noncanonical parameters, syntax/relink failures, and source/bytecode budgets stay
+outlined. Oxc is plugin/build-only; the emitted parser has no runtime
+`eval`/`Function`/`new Function`, and `parseman/table`'s public API/runtime bundle
+is unchanged.
+
+The structural deletion is broad and genuinely crosses NODE+REPV capture
+protocol. Less falls 2,118→1,266 functions and 494,033→322,049 generated-body
+entries (−34.8%) at +1.74% assembly source; CSS falls 1,282→736 functions and
+270,056→129,216 entries (−52.2%) at +1.77%. Less has 247 NODE regions, 83 REPV
+regions, and 22 containing both; CSS has 135/30/13. Largest source regions are
+22,693 B and 13,457 B. V8 bytecode is 14,043 B for hot Less `_pf4946` (Maglev
+optimized) and 5,445 B for CSS `_pf4569` (cold on benchmark.css), both below the
+61,440 B cap. Full fixture/EOF parity, the 314-file Less and 87-file CSS corpora,
+deliberate RED plants, and strict differentials pass with zero new divergence.
+
+**Do not turn those 34.8%/52.2% entry counts into a runtime claim.** All timing
+used the same ordinary macro engine, two graphs, 12×2 samples, seven timed plus
+five warmup rounds, full-result requirements, printed exact paths, and both head
+directions with adjacent identical-code controls. Normalize candidate-head as
+A/B ÷ candidate self, reversed base-head as base self ÷ base/candidate A/B, then
+take the geometric mean:
+
+- benchmark Less: `sqrt((.992/1.011)*(.991/1.029)) = .9721` — about **2.8% faster**;
+- generated Less: `sqrt((.990/1.011)*(.998/1.011)) = .9832` — about **1.7% faster**;
+- CSS: `sqrt((.978/.977)*(.993/1.023)) = .9857` — about **1.4% faster**.
+
+Their geometric mean is `.9803`, about **2.0% faster**. Load windows are retained
+in canonical iteration 79 but are not part of the verdict because identical-code
+load legs moved materially and in different directions. U-63 is retained for
+this modest measured win and as the generic effect-safe vertical on which U-61's
+scalar ABI, U-62's diagnostic deletion, derived-token authority, and broader
+capture/control fusion can remove more work. The next step is work *inside* the
+admitted regions, not another auxiliary scanner, tape, or runtime engine.
+
+### U-64. Static reducer/factory specialization and capture authority — `MEASURED-NEGATIVE` on real Jess macro
 
 The synthetic runtime-compile Less/CSS workloads encode every direct-builder NODE
 with the same wide `flags=4` capture plan: 31/31 Less definitions and 18/18 CSS
@@ -442,6 +496,16 @@ then census dynamic raw/trivia/field/state operations and allocations that the
 analysis proves removable on both broad Less and CSS. Do not build or time unless
 the exact whole-workload ceiling is at least 15%; builder-call removal alone was
 historically only a single-digit bucket.
+
+Iteration 74 rejects this mechanism on the actual shipping macro before code. The
+synthetic workloads' length-only factory shape does not occur in Jess: across 255
+Less and 138 CSS NODE sites, zero reducer consumes raw or trivia only through
+`.length`. Remaining wide reducers use token/span content or semantic trivia
+gaps; callback source availability does not prove imported AST helpers pure.
+Existing authority already removes raw content from 231/255 Less and 115/138 CSS
+sites. The trivially pure direct-object subset executed 11 times on
+`benchmark.less` and zero times on generated Less. Keep reducer liveness as an
+input to U-61 barriers, but do not revive the synthetic partial evaluator.
 
 ### U-65. Broad construction-region arena — `MEASURED-NEGATIVE` on synthetic runtime workloads; no macro claim
 
@@ -468,7 +532,7 @@ before any removable NODE/capture work. This result is useful denominator eviden
 but `perf:workloads` is runtime compile and therefore carries no shipping-macro
 priority. A macro arena now requires U-64 purity/effect authority on real Jess.
 
-### U-62. Success-only fast artifact with cold exact diagnostic replay — `MEASURED COMPONENT`
+### U-62. Success-only fast artifact with cold exact diagnostic replay — `MEASURED-NEGATIVE` standalone / retained local win `806cdfa`
 
 Stop maintaining a rich farthest-failure result during every successful parse.
 Emit two static entry paths in the ordinary macro artifact. The hot path preserves
@@ -547,17 +611,29 @@ expected-set ordering fix; the retained result passed the 314-file Less sweep,
 full tests, build, typecheck, lint, invariants, and static-artifact checks. There
 is no replay, runtime `eval`, or runtime `new Function`.
 
+Iteration 77 closes the standalone cold-replay route on the real macro. After
+`806cdfa`, successful benchmark/generated Less and CSS still execute
+228,574/623,253/86,050 diagnostic operations, but exact cold replay would cross
+42,978/126,531/35,624 arbitrary callback results. Reinvoking those callbacks is
+observably wrong; eagerly logging sufficient results is equivalent work and
+collapses toward the losing U-60 tape. Duplicating exact and diagnostic-dead
+bodies adds about 83.2% source, while the stronger zero-overhead diagnostic-dead
+ceiling already measured only 4.6–6.3%. Semantic commit writes remain recognition
+state. Retain `806cdfa`'s local effect-safe cold merges; remove further diagnostic
+protocol only as dead state proven inside U-61 regions.
+
 ### Orchestration order and combination
 
-The bounded U-58/U-60 combination is now falsified. Run U-63, U-64, and U-65 as
-independent broad ceiling probes before combining them. The likely combined
-architecture, if they validate, is: one TableProgram supercompiler selects a
-named-rule/SCC region; derived-token authority drives its bounded decisions;
-specialized reducer authority narrows its output contract; the region executes
-under the scalar ABI and tapes only rollback-heavy construction; cold opaque PEG
-continuations retain the existing exact engine. Each boundary must justify itself
-by dynamic frequency, surviving machine calls, and emitted-byte cost. Retain and
-commit only macro-runtime wins to `feature/0.50.0`, one measured win per commit.
+The bounded U-58/U-60 combination and standalone U-62/U-64/U-65 routes are now
+falsified. U-63 is retained as the one generic region substrate. The active
+combination is U-61 memory-SSA inside those already joined bodies: promote
+region-private cursor, diagnostic, capture, trivia, and rollback state to locals;
+use derived-token residual authority only where it replaces local CHOICE control;
+flush/reload exact observable state only at outlined callback/effect boundaries.
+Cold opaque PEG continuations retain the existing engine. Each boundary must
+justify itself by dynamic frequency, surviving machine work, and emitted-byte
+cost. Retain and commit only macro-runtime wins to `feature/0.50.0`, one measured
+win per commit.
 
 ---
 
@@ -1492,13 +1568,13 @@ named in the marker.
 | U-55 | put `expected` in the identity digest (six divergences hid behind its absence during 0.47) | `QUEUED` |
 | U-56 | re-tag the 39,718 mislabelled `"engine":"table"` rows in `notes/results/parse-consumed.jsonl`, and land `lane/name-collision`'s legend + the `CHANGELOG.md:756-762` / `canonical-fixture-benchmark.md` correction banners on the release tip | `QUEUED` |
 | U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (wrapper fusion lost; the generic replacement must cross nested NODE/REPV boundaries and delete capture protocol) |
-| U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `ACTIVE ONLY INSIDE A FULL TRACE` (ordinary choice-shell publication was falsified) |
+| U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `MEASURED-NEGATIVE` standalone (iteration 76); preserve nullable/routed authority only inside U-61 |
 | U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE ONLY INSIDE A FULL TRACE` (ordinary continuation helpers retained too much protocol) |
 | U-60 | recognition event tape followed by selective exact construction | `MEASURED-NEGATIVE` for the bounded Value-choice form (`cd6a717`: normalized +4.1%/+9.7% slower; iteration 69); broad construction regions remain U-65 |
 | U-61 | scalar parse ABI with packed rollback/capture state | `ACTIVE` only when it replaces a whole construction region; the Value-choice scalar ABI lost with U-60 |
-| U-62 | success-only fast macro artifact with cold exact diagnostic replay | `MEASURED COMPONENT` |
-| U-63 | TableProgram Entry/SCC supercompiler: emit structured static regions from the one canonical IR, restoring 0.45's monolithic topology without restoring a second semantic engine | `ACTIVE ON REAL JESS MACRO`; synthetic node-root and runtime-workload seams rejected |
-| U-64 | macro-time reducer/factory partial evaluation: recover per-node capture plans hidden by generic closures/dispatch, including length-only raw/trivia use | `ACTIVE ON REAL JESS MACRO`; synthetic runtime ceiling preserved as low-priority evidence only |
+| U-62 | success-only fast macro artifact with cold exact diagnostic replay | `MEASURED-NEGATIVE` standalone (iteration 77); retained local exact cold-merge win is `806cdfa` |
+| U-63 | TableProgram Entry/SCC supercompiler: emit structured static regions from the one canonical IR, restoring 0.45's monolithic topology without restoring a second semantic engine | `RETAINED MODEST WIN / ACTIVE SUBSTRATE`; iteration 79 normalizes to ~2.8% benchmark Less, ~1.7% generated Less, ~1.4% CSS; 34.8%/52.2% entry deletion is structural, not runtime |
+| U-64 | macro-time reducer/factory partial evaluation: recover per-node capture plans hidden by generic closures/dispatch, including length-only raw/trivia use | `MEASURED-NEGATIVE` on real Jess macro (iteration 74: zero length-only sites) |
 | U-65 | broad construction-region arena: recognize maximal pure NODE/REPV regions into scalar offsets/events, then build exact public values once at a semantic barrier | `MEASURED-NEGATIVE` on synthetic runtime workloads (10.1%/12.2% protocol); no macro claim |
 
 ---
