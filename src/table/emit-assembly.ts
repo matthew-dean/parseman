@@ -63,7 +63,8 @@ import {
   computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import {
-  leadingLiteralFamily, leadingScalarTerminal, scalarTerminalNodeChild, scalarTerminalNotChild,
+  leadingLiteralFamily, leadingScalarSequence, leadingScalarTerminal,
+  scalarTerminalNodeChild, scalarTerminalNotChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
 
@@ -150,6 +151,7 @@ let _pfTokValue
 let _pfTokDispatch=-1
 let _pfTokArm=-1
 let _pfTokEnd=-1
+let _pfSeqEnd=-1
 function _asciiFoldCode(c){return c>=65&&c<=90?c+32:c}
 function _skipTrivia(input,cur,ctx){
 const s=_pfScan
@@ -574,6 +576,7 @@ export function emitAssemblySource(
   // terminal's inline lowering, so keep that narrower inventory separate.
   const largeChoiceScalarSpecs = new Set<number>()
   const largeChoiceLiteralFamilies = new Map<number, readonly number[]>()
+  const largeChoiceScalarSequences = new Map<number, LeadingScalarSequence>()
   type TokenChoiceCandidate = { readonly arm: number; readonly dispatchIp: number }
   const tokenChoiceCandidates = new Map<number, TokenChoiceCandidate>()
   const tokenChoiceDispatches = new Set<number>()
@@ -607,6 +610,14 @@ export function emitAssemblySource(
           return typeof value === 'string' && value.length >= 2
         })) {
           largeChoiceLiteralFamilies.set(armIp, family)
+        }
+        const sequence = leadingScalarSequence(code, armIp)
+        // A labelled trivia scanner is still recognition authority here. This
+        // pretest is pure: on a miss the ordinary arm's trivia log would have
+        // been rolled back, while on a hit the arm runs and records it normally.
+        if (sequence !== undefined && (sequence.trivia < 0
+          || (swapLegal && t.triviaScan[sequence.trivia] != null))) {
+          largeChoiceScalarSequences.set(armIp, sequence)
         }
       }
 
@@ -731,6 +742,27 @@ export function emitAssemblySource(
   const fxRef = (i: number): string => hoist('fx', `FX[${i}]`)
   const fnRef = (i: number): string => hoist('fn', `FNS[${i}]`)
   const recognizerRef = (i: number): string => hoist('rec', `RECOG[${i}]`)
+  type ScalarSequenceRef = { readonly name: string; readonly expected: readonly string[] }
+  const scalarSequenceRefs = new Map<string, ScalarSequenceRef>()
+  const scalarSequenceRef = (sequence: LeadingScalarSequence): ScalarSequenceRef => {
+    const key = `${sequence.trivia}:${sequence.terminals.map(terminal => code[terminal + 1]!).join(',')}`
+    const prior = scalarSequenceRefs.get(key)
+    if (prior !== undefined) return prior
+    const recognizers = sequence.terminals.map(terminal => recognizerRef(code[terminal + 1]!))
+    const expected = sequence.terminals.map(terminal => fxRef(code[terminal + 2]!))
+    const scan = sequence.trivia < 0 ? undefined : hoist('ts', `TRIVIASCAN[${sequence.trivia}]`)
+    const name = `_sd${scalarSequenceRefs.size}_`
+    const steps = recognizers.map((recognize, i) => `${i === 0 ? 'let ' : ''}at=${i === 0 ? 'pos' : scan === undefined ? 'cur' : `${scan}(input,cur)`}
+${i === 0 ? 'let ' : ''}cur=${recognize}(input,at)
+if(cur<0){_pfSeqEnd=at;return ${~i}}`).join('\n')
+    choiceDefs.push(`function ${name}(input,pos){
+${steps}
+return cur
+}`)
+    const made = { name, expected }
+    scalarSequenceRefs.set(key, made)
+    return made
+  }
   /**
    * The sync sentinel for a char-class index, hoisted once per class.
    *
@@ -1697,6 +1729,7 @@ return FAIL
           const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
           type ChoicePretest = {
             readonly scalar?: readonly string[]
+            readonly sequence?: ScalarSequenceRef
             readonly token?: TokenDecisionRef
           }
           const tokenCandidate = tokenChoiceCandidates.get(ip)
@@ -1712,9 +1745,11 @@ return FAIL
               }
             }
             const family = largeChoiceLiteralFamilies.get(code[base + i]!)
-            return family === undefined
-              ? undefined
-              : { scalar: family.map(member => recognizerRef(code[member + 1]!)) }
+            if (family !== undefined) {
+              return { scalar: family.map(member => recognizerRef(code[member + 1]!)) }
+            }
+            const sequence = largeChoiceScalarSequences.get(code[base + i]!)
+            return sequence === undefined ? undefined : { sequence: scalarSequenceRef(sequence) }
           })
           const maskable = n <= 32
           const maskName = maskable
@@ -1770,14 +1805,16 @@ return FAIL
           }
           const maskArms = maskable ? arms.map((arm, i) => {
             const pretest = pretests[i]
-            const decision = pretest?.token === undefined ? '' : tmp()
+            const decision = pretest?.token === undefined && pretest?.sequence === undefined ? '' : tmp()
             const scalarCondition = pretest?.scalar === undefined ? ''
               : pretest.scalar.length === 1
                 ? `&&${pretest.scalar[0]}(input,pos)>=0`
                 : `&&(${pretest.scalar.map(recognize => `${recognize}(input,pos)>=0`).join('||')})`
+            const sequenceCondition = pretest?.sequence === undefined ? ''
+              : `&&(${decision}=${pretest.sequence.name}(input,pos))>=0`
             const condition = pretest?.token !== undefined
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
-              : scalarCondition
+              : scalarCondition || sequenceCondition
             const routeMiss = pretest?.token === undefined ? '' : `
 if(${decision}===0){
 ctx._fc=false
@@ -1787,7 +1824,16 @@ prev=${i + 1}`}
 if(at>best){best=at;acc=undefined}
 if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)}
 }`
-            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((bits&${1 << i})!==0${condition}){
+            const sequenceMiss = pretest?.sequence === undefined ? '' : `
+else if((bits&${1 << i})!==0&&${decision}<0){
+ctx._fc=false
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}`}
+{const at=_pfSeqEnd
+if(at>best){best=at;acc=undefined}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},acc)}
+}`
+            return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
@@ -1798,27 +1844,36 @@ if(at>best){best=at;acc=undefined}
 if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
 if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
-}${routeMiss}`
+}${routeMiss}${sequenceMiss}`
           }).join('\n') : ''
           const generalArms = arms.map((arm, i) => {
             const pretest = pretests[i]
-            const decision = pretest?.token === undefined ? '' : tmp()
+            const decision = pretest?.token === undefined && pretest?.sequence === undefined ? '' : tmp()
             const scalarCondition = pretest?.scalar === undefined ? ''
               : pretest.scalar.length === 1
                 ? `&&${pretest.scalar[0]}(input,pos)>=0`
                 : `&&(${pretest.scalar.map(recognize => `${recognize}(input,pos)>=0`).join('||')})`
+            const sequenceCondition = pretest?.sequence === undefined ? ''
+              : `&&(${decision}=${pretest.sequence.name}(input,pos))>=0`
             const condition = pretest?.token !== undefined
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
-              : scalarCondition
-            const miss = pretest?.token === undefined
-              ? startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`
-              : `else if(${decision}===0){
+              : scalarCondition || sequenceCondition
+            const miss = pretest?.sequence !== undefined
+              ? `else if(${decision}<0){
+ctx._fc=false
+const at=_pfSeqEnd
+if(at>best){best=at;acc=undefined}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},acc)
+}${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
+              : pretest?.token === undefined
+                ? startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`
+                : `else if(${decision}===0){
 ctx._fc=false
 const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
 if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)
 }${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
-            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
+            return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}

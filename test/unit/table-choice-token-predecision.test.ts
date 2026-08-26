@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, dispatch, literal, matches, optional, peek, regex, run, sequence,
+  attempt, choice, dispatch, literal, matches, noTrivia, optional, peek, regex, rules, run, sequence,
   token, transform, when, type Combinator,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
@@ -144,6 +144,31 @@ describe('small-choice token predecision', () => {
       '@{-name', '@{name', '${name', '@name', '$name', '%name', '@{', '@:', 'x',
     ])
     expect(source).toMatch(/&&\(_rec\d+\(input,pos\)>=0\|\|_rec\d+\(input,pos\)>=0\)/)
+  })
+
+  it('rejects a scoped three-terminal prefix before a larger ordered-choice arm', () => {
+    const spaces = regex(/[ \t\n\r\f]+/)
+    const scoped = rules({ trivia: spaces }, self => ({
+      Colon: transform(sequence(
+        literal('('), regex(/[a-z]+/), regex(/: */), literal('x'),
+      ), () => 'colon'),
+      Paren: noTrivia(transform(sequence(
+        literal('('), regex(/[a-z]+/), literal(')'),
+      ), () => 'paren')),
+      Root: noTrivia(choice(
+        self.Colon,
+        self.Paren,
+        transform(sequence(literal('$'), regex(/[a-z]+/)), () => 'dollar'),
+        transform(sequence(literal('%'), regex(/[a-z]+/)), () => 'percent'),
+      )),
+    }))
+    const grammar = scoped.Root
+
+    const source = expectIdentity(grammar, [
+      '(name:x', '( name : x', '(name)', '( name )', '$name', '%name', '(name:', '(9', '(', 'x',
+    ])
+    expect(source).toMatch(/=_sd\d+_\(input,pos\)\)>=0/)
+    expect(source.match(/function _sd/g)).toHaveLength(1)
   })
 
   it('does not add a predecision to a direct terminal choice', () => {

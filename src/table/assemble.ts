@@ -129,7 +129,7 @@ import { computeSiteLabels, reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
-  leadingLiteralFamily, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
+  leadingLiteralFamily, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
   scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
@@ -3696,6 +3696,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return typeof value === 'string' && value.length >= 2
             })) {
               for (const terminal of family) scalarFor(terminal)
+            }
+            const sequence = leadingScalarSequence(code, armIp)
+            if (sequence !== undefined && (sequence.trivia < 0
+              || triviaScan[sequence.trivia] != null)) {
+              for (const terminal of sequence.terminals) scalarFor(terminal)
             }
           }
         }

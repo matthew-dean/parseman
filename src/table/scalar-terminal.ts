@@ -108,6 +108,93 @@ export function leadingScalarTerminal(
   return -1
 }
 
+export type LeadingScalarSequence = {
+  readonly terminals: readonly number[]
+  /** The explicit ambient trivia slot between terms; -1 means no trivia. */
+  readonly trivia: number
+}
+
+/**
+ * The first three complete scalar terms of a sequence under an explicit trivia
+ * scope. Unlike `leadingScalarTerminal`, each returned terminal is the WHOLE
+ * corresponding sequence term: recognizing it therefore identifies the exact
+ * position at which the enclosing sequence would scan trivia for the next one.
+ *
+ * This is rejection authority only. Gates, attempts, transforms and builders
+ * may still make the arm fail after the prefix matched, so callers must enter
+ * the ordinary arm on a positive result and may only skip it on a miss.
+ */
+export function leadingScalarSequence(
+  code: ArrayLike<number>, ip: number,
+): LeadingScalarSequence | undefined {
+  const wholeScalar = (start: number): number => {
+    const seen = new Set<number>()
+    let at = start
+    while (!seen.has(at)) {
+      seen.add(at)
+      const op = code[at]
+      if (op === OP_LIT || op === OP_RX) return at
+      if (op === OP_RULE || op === OP_TOKEN || op === OP_ATTEMPT) {
+        at = code[at + 1]!
+        continue
+      }
+      if (op === OP_GATE || op === OP_SCOPE_PLAIN
+        || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || op === OP_LEAF) {
+        at = code[at + 2]!
+        continue
+      }
+      if (op === OP_SEQ || op === OP_SEQV) {
+        if (code[at + 1] !== 1) return -1
+        at = code[at + 2]!
+        continue
+      }
+      if (op === OP_SEQX) {
+        if (code[at + 2] !== 1) return -1
+        at = code[at + 3]!
+        continue
+      }
+      return -1
+    }
+    return -1
+  }
+
+  const seen = new Set<number>()
+  let at = ip
+  let ambientTrivia: number | undefined
+  while (!seen.has(at)) {
+    seen.add(at)
+    const op = code[at]
+    if (op === OP_RULE) {
+      at = code[at + 1]!
+      continue
+    }
+    if (op === OP_SCOPE_PLAIN) {
+      ambientTrivia = code[at + 1]!
+      at = code[at + 2]!
+      continue
+    }
+    if (op === OP_GATE || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || op === OP_LEAF) {
+      at = code[at + 2]!
+      continue
+    }
+
+    const n = op === OP_SEQ || op === OP_SEQV
+      ? code[at + 1]!
+      : op === OP_SEQX ? code[at + 2]! : 0
+    if (n < 3 || ambientTrivia === undefined) return undefined
+    const base = op === OP_SEQX ? at + 3 : at + 2
+    const terminals = [
+      wholeScalar(code[base]!),
+      wholeScalar(code[base + 1]!),
+      wholeScalar(code[base + 2]!),
+    ]
+    return terminals.every(terminal => terminal >= 0)
+      ? { terminals, trivia: ambientTrivia }
+      : undefined
+  }
+  return undefined
+}
+
 /**
  * A bounded union of literal prefixes that every successful execution of `ip`
  * must enter through. Unlike `leadingScalarTerminal`, this may cross nested
