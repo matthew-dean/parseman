@@ -225,6 +225,17 @@ implementation is rejected. The next probe must keep the same recognition
 authority in one compact scanner plus centralized packed residual/continuation
 dispatch, with a strict source/bytecode budget.
 
+The compact follow-up also lost, which narrows the architecture further. It
+replaced 135 cloned states with 22 tiny 53–54-byte recognizer helpers, zero cloned
+wrapper bodies, choice-local scalar registers, and only 0.358% artifact growth.
+V8 explicitly inlined the helpers. The program avoided 24,348 selected-terminal
+rescans and 10,372 original arm calls while retaining 314/314 exact corpus
+identity. Controlled timing nevertheless normalized to flat benchmark Less and
+**+2.3% slower generated Less**, where it lost every round. Token recognition
+cannot be an extra pretest/cache layer, even a compact inlined one. The next U-58
+shape must replace ordinary terminal recognition and branch control inside the
+same scalar region, with no assembly-scope publication or duplicate family scan.
+
 ### U-59. PEG residual/derivative decision DAG — `ACTIVE`
 
 Treat each hot choice as a language-state problem. Compute a bounded residual
@@ -260,6 +271,12 @@ representation variable directly: one compact transition machine and one small
 continuation dispatcher versus a bounded generated switch, with no duplicated
 wrapper spine. State minimization must include continuation topology and emitted
 machine footprint, not only residual-language equivalence.
+
+Iteration 64 additionally rejects a compact cached-helper residual handoff. Its
+language-state representation was small, but it still ran token recognizers as a
+supplement to ordinary PEG continuations. Residual authority now enters only as
+part of a fused scalar trace where the derivative transition itself consumes the
+terminal and advances the local cursor; a separate cached predecision is retired.
 
 ### U-60. Recognition tape followed by selective construction — `QUEUED`
 
