@@ -30,6 +30,7 @@ import { compileRuleMap } from '../table/compile-rule-map.ts'
 import { compileLinkableTable } from '../compiler/compile-linkable-table.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
+import { supercompileRuleMapReplacement } from './entry-supercompiler.ts'
 import {
   beginDegradationCapture, endDegradationCapture, formatDegradation, formatDegradations,
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
@@ -1696,9 +1697,12 @@ function transformMacroImpl(
         if (compiled !== null) {
           usedTableRuntime = true
           return {
-            replacement: compiled.replacementWithMetadata(
-              staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
-              { precompileDefault: true },
+            replacement: supercompileRuleMapReplacement(
+              compiled.prog,
+              compiled.replacementWithMetadata(
+                staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
+                { precompileDefault: true },
+              ),
             ),
             ...(importedFactories.length ? { importedFactories } : {}),
           }

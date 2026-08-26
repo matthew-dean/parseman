@@ -6,7 +6,7 @@ Interpreter-side ideas are split out to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRE
 
 ---
 
-## STATUS CONVENTION AND COUNTS (updated 2026-08-07)
+## STATUS CONVENTION AND COUNTS (updated 2026-08-26)
 
 One marker per item, across this file and its four siblings
 (`INTERPRETER_PERF_IDEAS.md`, `REVIEW-parseman-perf-proposals.md`,
@@ -25,9 +25,11 @@ One marker per item, across this file and its four siblings
 **THE COUNT, which is the thing this file exists to make answerable:**
 
 > ## **56 untried items.**
-> **[§ Untried index](#untried-index-queued--unmeasured) is the authoritative list — one row each, no prose to read.**
-> Of the 56: **22 `QUEUED`** (decided, not done) and **34 `UNMEASURED`** (nobody has tried or costed it).
-> **26 of the 56 came out of the 2026-08 measurement batch** (U-31…U-56).
+> **[§ Optimization index](#optimization-index-queued-active-and-measured-architecture-work) is the authoritative list — one row each, no prose to read.**
+> Of its 65 total rows, **22 are `QUEUED`** (decided, not done) and **34 are
+> `UNMEASURED`** (nobody has tried or costed them), for **56 untried items**.
+> U-57 onward records active and measured architecture programs alongside the
+> untried backlog so completed negative work is not proposed again.
 
 Everything else, for orientation:
 
@@ -39,20 +41,21 @@ Everything else, for orientation:
 | `REFERENCE` | data, protocol, invariant, design guidance — not work items | 12 |
 
 Compound items carry one marker per part and are counted once per marker, so
-these totals exceed the 41 headings in the file. The untried count does **not**
-double-count: it is exactly the number of rows in the untried index.
+these totals exceed the 46 work-item headings in the file. The untried count does
+**not** double-count: it is exactly the `QUEUED` plus `UNMEASURED` rows in the
+optimization index.
 
 **Scope of the 56: this file only.** Each sibling carries its own count at its own
 top, under the same convention. Repo-wide, deduplicated:
 
 | file | items | untried | notes |
 |---|---:|---:|---|
-| `PERF_IDEAS.md` (this file) | 41 headings + 18 landed bullets | **56** | the U-index |
+| `PERF_IDEAS.md` (this file) | 46 headings + 18 landed bullets | **61** | the U-index |
 | `INTERPRETER_PERF_IDEAS.md` | 26 | **3** | no commit SHA appears anywhere in it |
 | `REVIEW-parseman-perf-proposals.md` | 8 | **3** (1 net new — 2 are U-29 / U-30) | rigorous code citations, zero measurement provenance |
 | `CODEGEN-FAST-PATHS.md` | 16 | **2** (both file-local) | **describes an engine deleted at the 0.47 cutover** |
 | `RELEASE-0.48-TARGET.md` | 30 | **11** | not a backlog — four kinds of content interleaved |
-| | | **= 73 distinct** | |
+| | | **= 78 distinct** | |
 
 **Two files resisted classification and are marked as resisting, not forced.**
 `CODEGEN-FAST-PATHS.md` needed a state none of the six markers covers —
@@ -62,6 +65,685 @@ interleaves deferred work, retracted figures, hygiene rules and disclosed
 defects, and its two ownerless known-broken defects (§10.2, §10.3) are
 `UNCLASSIFIABLE` — nobody decided to do them, nobody rejected them, and they are
 not ideas. Read both files' headers before their bodies.
+
+---
+
+## 2026-08-25/26 — radical macro-runtime programs and post-U-63 closure
+
+U-57…U-61 are the five high-ceiling programs selected after the 0.50
+optimization loop found that local choice predecisions made the current macro
+artifact roughly 17–22% faster than released 0.49, but still left a broad
+architectural gap to 0.45. U-63 is the one retained realization. The later
+U-80…U-96 experiment identifiers are successor probes against that retained
+baseline; they are summarized here by architectural frontier rather than added
+as a second raw backlog. They are deliberately not another list of opcode
+peepholes.
+
+**Scope contract for every result in this section:** it counts only when run
+through ordinary macro-built shipping output. Build-time generation may use
+dynamic evaluation; the emitted parser may not use `eval` or `new Function` at
+runtime. Use the existing Jess macro A/B harness, a nearby clean worktree of the
+comparison commit, interleaved candidate/reference rounds, full-consumption and
+value/parity checks, and an adjacent identical-code control. Do not promote a
+wall-clock result whose effect does not clear the control spread. Generated JS
+size, per-body bytecode size around V8's measured 460-byte inlining limit, and
+hot-site execution coverage are co-equal outputs—not afterthoughts.
+
+The common thesis is that Parseman still executes too much *generic parser
+machinery* after the grammar has become static. A macro compiler should partially
+evaluate the grammar into a small number of deterministic source-recognition
+regions and keep PEG fallback, semantic branching, diagnostics, and tree
+construction only at the boundaries that truly require them.
+
+### Current orchestration after retained U-63
+
+The executable baseline is U-63 (`6b6f99b`, retained in `04ca3c9` and later
+release heads): a modest measured win of about 2.8% on benchmark Less, 1.7% on
+generated Less, and 1.4% on CSS, plus a generic structured region substrate. Its
+34.8%/52.2% generated-entry deletion is topology, not a corresponding runtime
+gain. Post-U-63 work has closed four broad standalone frontiers:
+
+- **Shared and recursive control is not waiting on one more cloning pass.** U-80's
+  safe memoization removed only 0.124%/0.009%/0.192% of broad Less/generated
+  Less/CSS entries; even its impossible unrestricted ceiling was only
+  2.73%/1.28%/0.43%. U-81 showed that an illegal fixture-profiled clone selector
+  could remove 31.19% of Less and 35.03% of CSS entries within budget, but the
+  legal static fan-in/protocol/SCC selector removed only 1.28%/2.16%. U-88's
+  recursive pushdown covered 25.52%/20.48% of V8-surviving calls, but the hottest
+  Less SCC alone was 799,061 source bytes and a switch destroyed the optimizable
+  topology; chunking restored the calls. U-92 then proved that incidental
+  anonymous sharing was tiny: occurrence-preserving cloning fit the source cap
+  but could remove only 1.22%/1.45%/3.04% dynamically. Reopen this frontier only
+  with a new portable ownership/hotness signal that changes those static
+  economics, not fixture profiles, names, IPs, or source fragments.
+
+- **Capture/value ABI thinning does not win by itself.** Iteration 078 measured
+  both U-61 post-fusion variants. The allocating parked-collector form regressed
+  benchmark/generated Less by 7.56%/8.50%. The allocation-free discriminant
+  deleted 472,828/1,340,300/237,990 context operations on Less/generated
+  Less/CSS, shrank Less source 3.19% and bytecode 8.05%, yet still regressed the
+  two Less fixtures by 8.42%/5.98%; the buffer/helper topology, not merely its
+  allocation, was the cost. U-83 found U-63-local fixed-cardinality capture
+  coverage of only 0.045% of Less entries and 8.27% of CSS; broader scalar
+  capture therefore needs the same cross-boundary ABI already falsified by
+  U-61. U-87's connected value-dead scalar-return components were 23.28%/22.55%/
+  40.36% gross, but adapters consumed 17.72%/17.36%/33.41%, leaving only
+  11.50%/10.94%/21.90% definite EC/array work. U-90 halved parameter/source
+  traffic but increased bytecode 15.76%/16.87% by replacing register arguments
+  with closure loads. Do not queue another packed/scalar ABI unless it removes
+  the surrounding calls, buffers, adapters, and construction protocol as one
+  different topology.
+
+- **Reducer authority, lexical fusion, and V8 layout have sub-threshold Less
+  ceilings.** U-82/U-84 found direct reducer deforestation below 12% on both
+  Less fixtures; transitive helper source already cost 2.32% on Less and added
+  no child-array eliminations. U-85's post-U-63 profile put required CST
+  publication at 10.8%/14.0%/14.7%, terminal/trivia scanning at
+  7.4%/11.1%/6.3%, and the remaining shared/SCC control behind U-81's selector
+  limit; the apparent full-channel opportunity overlaps the measured-negative
+  U-61 parked collector. U-86's exact trivia→terminal pairing reduced a generous
+  fused-transducer ceiling to 13.71%/12.52% on Less (CSS 26.77%). U-89 found
+  truly never-TurboFan work of only 1.40%/0.37%/0.38%, and U-93 found exception
+  protection at only 0.57–1.10% CPU. U-95's impossible removal of all lexical
+  owners and helpers was still only 14.62%/14.05%/15.95%, before its 2.66–5.43%
+  source and 1.35–5.5 MB tape costs. These are useful components only inside a
+  new full-control design; none is a standalone successor.
+
+- **The historical target and broad-workload labels are now bounded.** U-94
+  compared the closest available historical Jess artifacts and found
+  byte-identical serialized fields on three fixtures, but 0.45 returns a plain
+  object while U-63 returns a `RunResultRecord`; therefore it is topology-only
+  attribution, not a timing verdict. Contrary to the allocation hypothesis,
+  0.45 allocated 1.756×/1.777×/1.066× as much on Less/generated Less/CSS, while
+  U-63 had more V8 inline pairs and fewer deopts; cross-assembly linking had a
+  0% parse-path ceiling. U-96 found **no existing GraphQL or JSON ordinary macro
+  harness at all**: `perf:workloads`, `bench:parseman`, charts, and example
+  parsers use runtime `compile()`, and the old `parseman-macro` chart label was a
+  runtime-compile mislabel. Under the no-new-harness constraint, the valid
+  shipping-macro target and measurement surface is Jess Less+CSS; the 0.45
+  GraphQL/JSON macro gap and U-63 activation there are unknown/N/A, not zero.
+
+**U-91 explicit collector ABI — `MEASURED-NEGATIVE / REJECTED BEFORE TIMING`
+(iteration 097).** The broad form was semantically unsafe: an explicit `ch`
+parameter can become stale whenever an author transform, nested node builder,
+scanner/sentinel callback, or live/inherited trivia path observes or replaces the
+active context collector. Deliberate RED probes caught all four observer classes;
+recursive SCCs and tolerant recovery also had to retain the canonical ABI. The
+final greatest-closed-set admission therefore left 269/279 Less callsites
+(96.4%) and 101/102 CSS callsites (99.0%) as adapters. Dynamic adapter/propagated
+calls were 10,814/3,877 on benchmark Less, 22,085/10,138 on generated Less, and
+7,655/24 on CSS. Executed bytecode grew 0.285%/0.187% on Less/CSS, while the hot
+representative bodies were byte-for-byte unchanged; there was no credible 15%
+ceiling to time.
+
+The bounded candidate nevertheless passed exact 314-file Less and 87-file CSS
+AST parity, all three full-EOF fixture digests, 21 focused tests, 4,150 full-suite
+tests, six strict differential plants, typecheck, lint, invariants, build, and
+the callback/trivia/reentry/throw-restoration RED gates, with no runtime dynamic
+evaluation. The causal lesson is architectural: collector traffic can be removed
+only inside a closed no-observer/no-mutator region, but real Jess's surviving
+U-63 edges cross precisely those authority boundaries. Passing a collector as an
+argument merely moves the context reload into an adapter and grows the executed
+machine; preserve candidate `aaa913b` as evidence, not shipping code.
+
+### U-57. Deterministic-region fusion and size-budgeted superinstructions — `ACTIVE`
+
+Compile maximal deterministic regions—not individual combinators—into
+straight-line JS. A region starts where the active grammar state is known and
+continues through terminals, trivia, fixed sequences, bounded repetitions, and
+uniquely predicted choices until it reaches a genuine ambiguity, semantic gate,
+recursive boundary, recovery point, or output barrier. Its hot success trace is
+one function with local scalar cursor/capture variables and direct cold exits;
+there is no per-combinator call/return, FAIL sentinel traffic, or repeated
+save/install/restore protocol inside the region.
+
+This is closer to instruction selection and trace formation than to regex
+fusion. Build a grammar CFG, annotate edges with FIRST/nullability, capture and
+rollback effects, then form single-entry regions whose success path is unique.
+Lower recurring region fragments as *generated* superinstructions. There are
+**two size regimes**, not one universal 460-byte cap: keep a leaf region below
+the measured threshold when its value depends on inlining into a parent; allow a
+hot trace-root region to exceed it deliberately when the region has deleted the
+internal calls and optimizes as a standalone function. The 0.45 direct source
+emitter is the topology proof: it recursively emitted combinator logic inside
+named parser bodies, so those bodies did not need to inline into another parser
+to avoid internal call traffic. Cold ambiguity/failure continuations may remain
+ordinary piece calls. The compiler should choose a Pareto point from `{executed
+calls, emitted bytes, estimated bytecode size, caller-inline value}`, rather than
+maximizing fusion, sharing, or inlining in isolation.
+
+First falsification experiment: fuse one high-coverage Less value/declaration
+region end-to-end while leaving its cold exits on existing code. Require a
+double-digit isolated-site reduction and a credible whole-Less ceiling of at
+least 15%; reject a shape that merely trades calls for >10% artifact growth.
+Crossing 460 bytes is a cost only if current profile/inlining evidence says the
+region's caller needs that body to inline; it is not grounds to reject a
+standalone hot trace. Prove rollback/CST/diagnostic parity by forcing every cold
+exit, not only the success corpus.
+
+**First ceiling result (iteration 59): per-NODE placement rejected, region
+formation still active.** A generic macro-only probe activated 54 Less
+`NODE -> SCOPE -> SEQV/REPV` regions and deleted 147 private generated functions.
+It removed 88,617/260,867 dynamic generic calls on benchmark/generated Less
+(about 16% of counted rows) while growing the 1.93 MB artifact only 0.161%, and
+passed exact digest/full-consumption parity plus forced rollback/commit/throw
+exits. Nevertheless, the adjacent two-graph control normalized runtime to
+**+3.4%/+2.5% slower**. The placement had enlarged representative hot NODE
+bytecode from 467 B to about 1.45 KB and mixed recognition loops with
+capture/build logic. Later TurboFan tracing sharpened the interpretation: this
+probe still stopped at every nested NODE call. It pasted SCOPE/SEQ work that V8
+already inlined while retaining the actual 467–490 B NODE refusal boundaries,
+so it did **not** test the recursively emitted 0.45 named-rule topology.
+
+**Second ceiling result (iteration 60): coarse standalone scalar placement also
+rejected.** Moving the same 54 regions into dedicated end/failure recognizers
+restored the representative NODE to 466 B, retained all 88,617/260,867 counted
+call deletions, and grew source only 0.353%. The recognizers themselves were
+roughly 0.8–2.5 KB of V8 bytecode, however, and controlled runtime regressed
+**+4.4%/+5.8%**; generated Less lost every paired round. Thus counted table-row
+calls are not evidence of machine calls—TurboFan already inlines the small
+SCOPE/SEQ baseline topology. The remaining region experiments target the
+boundaries the trace proved real: either compact flags-2 NODEs below the inline
+cutoff, or form a genuinely vertical named-rule trace that fuses **through**
+eligible nested NODE/REPV construction instead of stopping at it. The latter may
+remain a large standalone trace, as 0.45 did; iterations 59–60 do not falsify it
+because neither removed the nested NODE calls. Per-NODE pasting and a large
+recognizer beside each NODE are the rejected placements—not large trace roots
+categorically.
+
+**Third ceiling result (iteration 61): broad NODE-inline compaction rejected.**
+Cold-extracting only inherited-buffer publication cut direct-builder NODE
+bytecode from 472/490/493 B to 324/342/343 B and made TurboFan recursively inline
+previously refused NODE chains. It activated 213 Less sites, shrank the macro
+artifact 2.93%, passed 314/314 corpus identity and cold-buffer RED tests, and put
+no replacement helper on the ordinary flat-array success path. Yet the adjacent
+control normalized runtime to **+2.9%/+2.5% slower**, with zero winning rounds.
+The old cutoff was protective: recursively copying the full capture/context
+protocol increased optimized-code pressure. A smaller NODE is useful only when
+inlining is leaf-local, or when a fused scalar/tape trace deletes those repeated
+frames rather than copying them. Source shrink and confirmed inlining are not
+performance evidence by themselves.
+
+**Fourth ceiling result (iteration 63): leaf-only NODE compaction rejected;
+`ValueSequence` selected as the vertical trace.** Only 40/213 direct-builder
+NODEs are leaf-only, and TurboFan would actually inline just five unique sites
+covering 1,432/1,540 benchmark/generated entries. One representative successful
+inline grew its caller's optimized instructions from 1,056 B to 2,024 B, while
+the hot `Dimension` body remained standalone and machine-code-identical. There is
+no credible whole-Less ceiling, so the leaf probe stops without code or timing.
+
+The stack-attributed trace instead finds 129,846/340,580 entries under the single
+`ValueSequence` root: 26.3%/24.2% of every emitted-body entry. That region contains
+32,943/91,755 NODE and 16,657/38,832 REPV entries. The active U-57 vertical probe
+must delete at least 40k/100k of those internal calls and their repeated frames,
+cover at least 80% of `ValueSequence` roots, add no more than 18 KB source, and
+keep the optimized root below 40 KB. Its supported trace uses scalar cursor/
+failure/commit locals, one compact action/end tape, token-derived choice admission,
+and post-order builder replay; it contains no generic NODE, REPV, SCOPE, or SEQ
+call. Unsupported/effectful paths fall back before mutation.
+
+**Fifth result (iteration 67): decisive vertical-trace ceiling; production-
+ineligible pending generic derivation.** Experiment `0ac9bf4` emits one standalone
+`ValueSequence` trace for the Dimension route. It recognizes the sticky
+NumberToken/DimensionUnit pair into scalar locals, records a compact numeric
+action/end tape, and replays audited reducers in post-order; the supported body
+contains no generic NODE, REPV, SCOPE, SEQ, or choice call. Unsupported or
+effectful paths fall back before mutation. Admission covered only 1,532/3,532
+benchmark roots (43.4%) and 4,186/8,385 generated roots (49.9%), below the
+optional 80% coverage route, but deleted 55,300/117,208 internal entries and
+therefore cleared the alternative 40k/100k preregistered bar. Full macro source
+grew just 536 bytes (0.017%); trace bytecode grew 414→1,107 bytes while optimized
+instructions shrank 9,932→9,552 bytes, below the 40 KB standalone ceiling. The
+adjacent identical-code control read 0.994/1.006 and the candidate 0.916/0.938,
+normalizing benchmark/generated Less to **0.9215/0.9324** (about **7.9%/6.8%
+faster**), with 20/20 winning rounds on both. Exact 314-file parity, a deliberately
+RED differential, full tests, strict differentials, build, typecheck, lint, and
+invariants passed; emitted runtime uses no `eval` or `new Function`.
+
+This validates the architecture, not the implementation. The probe hardcodes
+Jess grammar/source signatures (`ValueSequence`, `Dimension`, `NumberToken`,
+`DimensionUnit`, and reducer source fragments), so it is not a general Parseman
+compiler transform and cannot ship. The temporary release commit `0949b86` was
+reverted by `d88acb5`; the clean experiment remains at `0ac9bf4`. The generic
+U-58/U-60 derivation must reproduce the same trace admission, recognizer tape,
+reducer replay, and cold fallback mechanically from grammar IR while preserving
+this size/performance shape.
+
+**CORRECTION — iteration 68 measured runtime `compile()`, not the macro.** The
+five-workload gate compared clean release head
+`f28d447` with exact 0.45 `7d1817f`, immediately after an identical-code control.
+The control's workload centers stayed within -0.8%..+0.9%, its worst absolute
+single-pass swing was 3.63%, and neither load window moved adversely. Current is
+already 15.4% faster than 0.45 on GraphQL, while JSON's +1.5% sits inside that
+control floor. The remaining gap is sharply consistent across CSS-shaped rows:
+Less stylesheet +84.0%, Less mixins +86.5%, and independent CSS +86.5%, with
+current losing all 12 adjacent pairs for each. But `bench/workloads/index.ts`
+imports raw combinators and calls runtime `compile(c)` in every `make()`; neither
+leg is an ordinary macro-built shipping artifact. Those numbers are valid only
+for the low-priority runtime compiler and **must not localize or rank the macro
+gap**. For this program, macro performance evidence comes from the existing real
+Jess `pm-macro:`/`bench:jess:ab` loaders and their printed artifact paths. The
+synthetic workload censuses below remain architecture evidence only until their
+mechanism activates on that shipping macro path.
+
+### U-58. Make derived tokens the primary control-flow currency — `MEASURED-NEGATIVE` standalone / `ACTIVE ONLY INSIDE U-61`
+
+Today token information often acts as an advisory pretest, after which the
+selected arm re-enters ordinary PEG machinery and reconstructs facts already
+known. Replace that handoff with a compact scalar token result such as
+`kind | route | flags | end`, held in locals or packed integers. A decision site
+consumes the token directly: it jumps to a route, adopts the known end offset,
+and materializes text only if a reducer requests it. Same-family arms share the
+recognition once; prefix-compatible arms receive a residual token state rather
+than rescan source. There should be no token object, general token buffer, string
+classifier, or context-level pending-result protocol on the hot path.
+
+The scanner is grammar-derived and mode-aware, not a traditional independent
+lexer. Its state is the current viable terminal family plus lexical/context
+bits, so it can preserve scannerless PEG semantics where token boundaries depend
+on the production. Token recognition and branch choice become one generated
+operation. Cache only where dynamic traces prove reuse across decision sites;
+otherwise keep the packed result in the current region's locals.
+
+First falsification experiment: on Less's hottest unrestricted `Value` family,
+generate a route table from the full viable-arm set and delete the selected
+arm's duplicate selector, regex/literal scan, and wrapper entry. Instrument
+scans and executed arms to prove work disappeared. The earlier one-slot pending
+handoff was slightly slower; this program succeeds only if the token is the
+control flow itself and no generic handoff state remains. Target ≥15% whole-Less
+ceiling before generalizing.
+
+The first full `Value` probe proved the authority and rejected the emitted
+shape. It covered 19/20 arms with 23 bounded terminal leaves and never fell back
+to the untouched choice on the two large successful fixtures. It deleted 34,720
+of 36,772 original arm entries, including all 13,876 failed entries, 125,038
+failed bytecode rows, and 20,844 selected-terminal rescans. Exactness passed the
+314-file Less corpus and deliberate continuation/cut/cache RED plants. But 135
+cloned residual states grew the macro assembly 6.05%, and adjacent controlled
+timing normalized to **+2.9% slower** on benchmark Less and **+0.7%** on generated
+Less. Derived-token control is therefore still active, but the cloned-wrapper
+implementation is rejected. The next probe must keep the same recognition
+authority in one compact scanner plus centralized packed residual/continuation
+dispatch, with a strict source/bytecode budget.
+
+The compact follow-up also lost, which narrows the architecture further. It
+replaced 135 cloned states with 22 tiny 53–54-byte recognizer helpers, zero cloned
+wrapper bodies, choice-local scalar registers, and only 0.358% artifact growth.
+V8 explicitly inlined the helpers. The program avoided 24,348 selected-terminal
+rescans and 10,372 original arm calls while retaining 314/314 exact corpus
+identity. Controlled timing nevertheless normalized to flat benchmark Less and
+**+2.3% slower generated Less**, where it lost every round. Token recognition
+cannot be an extra pretest/cache layer, even a compact inlined one. The next U-58
+shape must replace ordinary terminal recognition and branch control inside the
+same scalar region, with no assembly-scope publication or duplicate family scan.
+
+### U-59. PEG residual/derivative decision DAG — `ACTIVE`
+
+Treat each hot choice as a language-state problem. Compute a bounded residual
+of the ordered PEG expression after each observed character/token: the state is
+the remaining viable arms, their ordered-commit relation, nullable/accepting
+status, and the capture/semantic actions deferred at that point. Hash-cons
+equivalent residuals into a decision DAG. At runtime, a table or generated
+switch advances the state until it reaches a unique continuation, then jumps
+directly into the residual grammar rather than restarting an original arm.
+
+This is not a DFA conversion that discards PEG priority. Ordered choice is part
+of the state: an earlier arm may shadow a later accepting arm, and semantic
+predicates or unbounded context create explicit opaque transitions back to the
+normal engine. Use derivatives only over the regular/token-recognizable prefix;
+attach deferred capture actions to edges or accepting states. Bound state count,
+lookahead depth, and emitted bytes, falling back per site when construction
+explodes. Minimize states after capture-equivalence partitioning, not only
+language equivalence.
+
+First falsification experiment: build the residual DAG for the hot Less Value
+and selector families and report `(original decisions, residual states, unique
+continuations, fallback rate, emitted bytes, dynamic avoided arm entries)` before
+timing. If the state graph does not collapse substantially or covers too little
+dynamic traffic for a ≥15% ceiling, reject it there. If it does, compare a packed
+transition table against generated nested switches; JS engine behavior, not
+aesthetic preference, picks the representation.
+
+The first comparison picked neither representation cleanly: it hash-consed the
+language states, but cloned 135 structural continuation bodies around them. The
+runtime consequently paid a larger instruction/JIT footprint even though the
+measured failed PEG work disappeared. The next comparison must isolate the
+representation variable directly: one compact transition machine and one small
+continuation dispatcher versus a bounded generated switch, with no duplicated
+wrapper spine. State minimization must include continuation topology and emitted
+machine footprint, not only residual-language equivalence.
+
+Iteration 64 additionally rejects a compact cached-helper residual handoff. Its
+language-state representation was small, but it still ran token recognizers as a
+supplement to ordinary PEG continuations. Residual authority now enters only as
+part of a fused scalar trace where the derivative transition itself consumes the
+terminal and advances the local cursor; a separate cached predecision is retired.
+
+Iteration 76 rejects broad token-primary control as a standalone macro vertical
+before code. De-overlapped TableProgram attribution removed only 8.84%/10.75% of
+Less control rows and 10.26% of CSS; even adding accepted choice-root equivalents
+reached only 11.37%/13.43%/14.15%. Challenging the largest `unrestricted` holes—a
+nullable Less assertion residual that rescans trivia and CSS routed continuations
+under an existing token—raised the optimistic row-equivalent ceiling to
+17.87%/18.74%/17.00%, but only by counting classifier work as free. The compact
+machinery itself was already 19–22% of the existing artifact and the earlier Value
+tape lost while deleting 5–8% of rows. Preserve the nullable-assertion and routed
+continuation authority, but consume it as local control inside U-61 rather than
+shipping another scanner/choice layer.
+
+### U-60. Recognition tape followed by selective construction — `MEASURED-NEGATIVE` for bounded choice; broad-region replacement is U-65
+
+Split recognition from object/tree construction without parsing twice. The hot
+recognizer writes a compact event tape—production/action id plus source offsets
+and only the few scalar values that cannot be reconstructed cheaply—into reusable
+numeric storage. It performs no node allocation, child-array construction,
+builder dispatch, source slicing, or trivia object work. A second linear pass
+replays successful events into the exact public CST/host value. Failed speculative
+paths rewind a numeric tape cursor instead of undoing several heterogeneous
+collector arrays and context fields.
+
+This is valuable only if the tape is cheaper than the current interleaved capture
+protocol. Prefer struct-of-arrays or packed 32-bit words with geometric reuse;
+avoid per-event objects and callbacks. Allow a hybrid: directly build leaf/simple
+regions where that is cheaper, and tape only rollback-heavy or host-heavy
+regions. Reducers that affect future recognition remain eager semantic actions;
+pure constructors move to replay. Trivia and spans can be represented as source
+ranges and expanded only when demanded by the output contract.
+
+First falsification experiment: tape one complete hot Less subtree and replay it
+through the unchanged builder contract. Compare parse-only, replay-only,
+parse+replay, allocation, and peak tape words. Require total macro parse+build to
+beat the current interleaved engine by enough to imply ≥15% whole-Less upside;
+recognizer-only speed is not a win. Verify exact AST/CST/trivia identity and force
+speculative rollback paths.
+
+**Bounded generic result (iteration 69): reject the Value-choice tape.** Commit
+`cd6a717` derived 19 static routes mechanically, completed 3,745/3,865 dynamic
+attempts on the fast path, reduced suffix capture adapters from 5,050 to 1,476,
+and needed only 25 peak tape words. It had no grammar/type/name/source allowlist,
+preserved 314/314 Less corpus digests, passed deliberate suffix/fallback/rollback
+RED plants, emitted no runtime dynamic evaluation, and grew full Less macro source
+by 1.089%. The topology was nevertheless slower. A stable identical-code control
+read 1.009/0.993 (benchmark/generated); the adjacent candidate/base comparison
+read 1.050/1.089 with the candidate losing all 20 rounds on both. Normalized, the
+candidate was **4.1% and 9.7% slower**. Scanner, tape, replay, route helpers, and
+the 1,476 remaining barriers cost more than bypassing the ordinary choice/terminal/
+node shells. Do not retry a tape around one bounded choice. A tape remains viable
+only if U-65 removes the whole construction protocol across a broad region.
+
+### U-61. Scalar parse ABI and packed rollback/capture machine — `MEASURED-NEGATIVE` variants; scalar `_ee` foundation unproven alone
+
+Replace the generic `value | FAIL` calling convention and mutable ParseContext
+protocol inside compiled regions with a scalar ABI. A recognizer returns an end
+offset (negative encodes failure/commit class); semantic values travel through
+statically assigned local/result slots only where demanded. Cursor, farthest
+failure, commit bits, capture tops, and tape tops are numeric locals. A rollback
+point is a fixed-width record in a reusable numeric stack or a compile-time set
+of locals, not repeated snapshots of independent arrays. Cross-region calls use
+a small number of arity-specialized signatures rather than one universal object
+context.
+
+Exploit JS/V8 deliberately: keep hot numeric locals as Smis where practical;
+avoid polymorphic return shapes, exceptions, destructuring, rest parameters,
+and property churn; preserve direct named calls; keep callees below the measured
+inlining threshold; use typed arrays only after plain packed arrays are measured,
+because bounds checks and numeric conversion can lose. Emit separate ABIs for
+recognizer-only, scalar-value, and structural actions so unused output channels
+do not survive as runtime branches.
+
+First falsification experiment: lower a vertically complete Less region to the
+integer-return ABI with a fixed capture/rollback frame, including one committed
+failure, one speculative rollback, and one value-producing exit. Inspect actual
+V8 bytecode and deopts as well as wall time. The result must remove measurable
+loads/stores/calls and show a ≥15% whole-workload ceiling; a context object merely
+hidden behind helper accessors is not this design.
+
+Iteration 69 also rejected a scalar ABI used merely to connect a token classifier,
+route helper, and event replay. Iteration 078 then measured the post-U-63 forms.
+The `_ee` assembly-local scalar cursor foundation (`07ddbbec`) preserved exact
+reentry but was not timed alone. The allocating parked-collector form (`7213ce6`)
+regressed benchmark/generated Less by 7.56%/8.50%. Its allocation-free direct
+discriminant successor (`fa5174b`) removed 472,828/1,340,300/237,990 context
+operations on Less/generated Less/CSS, shrank Less source 3.19% and bytecode
+8.05%, and retained exact parity, but still regressed the two Less fixtures by
+8.42%/5.98%, losing every sample. This falsifies both measured collector forms:
+buffer/helper indirection outweighed the removed allocation and protocol. The
+scalar `_ee` foundation remains an unmeasured implementation fact, not an active
+performance claim. Do not queue another U-61 variant unless a new architecture
+deletes the entire surrounding call/capture/construction topology rather than
+repacking it. U-91/iteration 097 reinforces this boundary from the explicit-
+parameter side: exact observer safety made 96.4% of Less and 99.0% of CSS static
+calls adapters, so moving the collector out of `ctx` did not create a viable
+cross-boundary scalar region.
+
+### U-63. TableProgram named-rule/SCC supercompiler — `RETAINED MODEST WIN / ACTIVE SUBSTRATE`
+
+Recover the useful topology of 0.45 without recovering a second semantic engine.
+The canonical TableProgram remains the only IR and oracle; a macro-only backend
+emits one structured static body per named rule or profitable SCC instead of one
+`_pf` function per combinator row. It recursively schedules SEQ/CHOICE/REP/SCOPE/
+NODE control, keeps cursors and rollback marks in locals, and outlines only cold,
+shared, recursive, or bytecode-budgeted continuations. The emitted artifact is
+ordinary source fixed at build time—never runtime `eval`/`new Function`.
+
+Why this remains the leading macro hypothesis: exact real-Jess 0.45 Less/CSS
+artifacts had 256/176 `_r` rule functions plus 20/24 helpers, while the current
+real-Jess macro artifacts expose about 2,071/1,180 private `_pf` functions.
+Earlier NODE→SCOPE→SEQ wrapper fusion deleted
+147 source functions yet regressed because TurboFan had already inlined those
+small wrappers. U-63 must cross the surviving 467–796-byte NODE/REPV boundaries,
+not paste already-inlined wrappers into a larger function.
+
+First gate: identify generic named-rule regions whose dynamic NODE/REPV/capture
+protocol covers at least 15% of broad Less and CSS, show the exact baseline calls
+that survive TurboFan, and price source plus optimized code before timing. A
+vertical must use TableProgram structure only, preserve exact diagnostics/effects,
+and outline before V8 instruction-cache growth erases the saved calls.
+
+**Retained result (iteration 79): the generic Entry/SCC vertical is a modest
+runtime win and a high-coverage substrate.** Frozen experiment SHA
+`6b6f99b40772a2d44a188ad6a05b7f5a3855aa58` is the same code tree now present
+in release commit `04ca3c9`. It parses the canonical static assembly, builds the
+actual emitted `_pf` ownership/SCC graph, and absorbs only uniquely owned private
+bodies into structured labelled blocks. Public/scan roots, shared joins,
+recursive SCCs, ATTEMPT/SCAN effects, function-value references, non-direct call
+shapes, `arguments`/`this`/`new.target`/`var`, async/generator bodies,
+noncanonical parameters, syntax/relink failures, and source/bytecode budgets stay
+outlined. Oxc is plugin/build-only; the emitted parser has no runtime
+`eval`/`Function`/`new Function`, and `parseman/table`'s public API/runtime bundle
+is unchanged.
+
+The structural deletion is broad and genuinely crosses NODE+REPV capture
+protocol. Less falls 2,118→1,266 functions and 494,033→322,049 generated-body
+entries (−34.8%) at +1.74% assembly source; CSS falls 1,282→736 functions and
+270,056→129,216 entries (−52.2%) at +1.77%. Less has 247 NODE regions, 83 REPV
+regions, and 22 containing both; CSS has 135/30/13. Largest source regions are
+22,693 B and 13,457 B. V8 bytecode is 14,043 B for hot Less `_pf4946` (Maglev
+optimized) and 5,445 B for CSS `_pf4569` (cold on benchmark.css), both below the
+61,440 B cap. Full fixture/EOF parity, the 314-file Less and 87-file CSS corpora,
+deliberate RED plants, and strict differentials pass with zero new divergence.
+
+**Do not turn those 34.8%/52.2% entry counts into a runtime claim.** All timing
+used the same ordinary macro engine, two graphs, 12×2 samples, seven timed plus
+five warmup rounds, full-result requirements, printed exact paths, and both head
+directions with adjacent identical-code controls. Normalize candidate-head as
+A/B ÷ candidate self, reversed base-head as base self ÷ base/candidate A/B, then
+take the geometric mean:
+
+- benchmark Less: `sqrt((.992/1.011)*(.991/1.029)) = .9721` — about **2.8% faster**;
+- generated Less: `sqrt((.990/1.011)*(.998/1.011)) = .9832` — about **1.7% faster**;
+- CSS: `sqrt((.978/.977)*(.993/1.023)) = .9857` — about **1.4% faster**.
+
+Their geometric mean is `.9803`, about **2.0% faster**. Load windows are retained
+in canonical iteration 79 but are not part of the verdict because identical-code
+load legs moved materially and in different directions. U-63 is retained for
+this modest measured win and as the generic effect-safe vertical on which U-61's
+scalar ABI, U-62's diagnostic deletion, derived-token authority, and broader
+capture/control fusion can remove more work. The next step is work *inside* the
+admitted regions, not another auxiliary scanner, tape, or runtime engine.
+
+### U-64. Static reducer/factory specialization and capture authority — `MEASURED-NEGATIVE` on real Jess macro
+
+The synthetic runtime-compile Less/CSS workloads encode every direct-builder NODE
+with the same wide `flags=4` capture plan: 31/31 Less definitions and 18/18 CSS
+definitions. Their imported `mk` reducers use child content and spans, but use raw
+children and trivia only through `.length`; that supports a count-only capture
+experiment, not a shipping claim. The workload is low-priority runtime compile.
+U-64 remains active only if the same generic authority clears the ceiling on real
+Jess macro reducers. Generic reducer factories and dispatch helpers can hide that
+a particular node site never consumes raw children, trivia, fields, or state, so
+codegen maintains buffers and raw entries based on a conservative outer signature.
+
+At macro time, partially evaluate only statically resolved reducer/factory source
+and bindings. Compute a per-site use/effect summary, propagate constants through
+closure construction and finite dispatch, and emit the narrow capture flags plus a
+direct specialized reducer expression. Opaque calls or escaping values retain the
+existing wide path exactly. This is generic interprocedural analysis—no CSS/Less
+type list, rule name, IP, or source-fragment allowlist.
+
+First gate: deliberately break one inferred read so whole-object parity goes RED,
+then census dynamic raw/trivia/field/state operations and allocations that the
+analysis proves removable on both broad Less and CSS. Do not build or time unless
+the exact whole-workload ceiling is at least 15%; builder-call removal alone was
+historically only a single-digit bucket.
+
+Iteration 74 rejects this mechanism on the actual shipping macro before code. The
+synthetic workloads' length-only factory shape does not occur in Jess: across 255
+Less and 138 CSS NODE sites, zero reducer consumes raw or trivia only through
+`.length`. Remaining wide reducers use token/span content or semantic trivia
+gaps; callback source availability does not prove imported AST helpers pure.
+Existing authority already removes raw content from 231/255 Less and 115/138 CSS
+sites. The trivially pure direct-object subset executed 11 times on
+`benchmark.less` and zero times on generated Less. Keep reducer liveness as an
+input to U-61 barriers, but do not revive the synthetic partial evaluator.
+
+### U-65. Broad construction-region arena — `MEASURED-NEGATIVE` on synthetic runtime workloads; no macro claim
+
+Replace the failed choice-local tape with maximal pure construction regions. A
+region recognizes with scalar cursor/commit/failure locals and appends only the
+source offsets and action ids needed for exact construction. It crosses nested
+NODE and flattened REPV control; rollback is one tape-top reset. At a semantic-use
+barrier it replays once into the unchanged public builder/CST/trivia contract.
+Unknown callbacks, state-dependent recognition, recovery, or escaping intermediate
+values split or reject the region.
+
+The admission difference from U-60 is load-bearing: a region must delete capture
+frame install/restore, raw/trivia/leaf publication, value|FAIL traffic, and generic
+NODE/REPV calls across at least 15% of total broad-workload execution. Merely
+deferring callbacks, wrapping each opcode in an event helper, or routing one hot
+choice has already been falsified. Require <=5% ceiling-source growth before the
+vertical and <=2% for a production candidate.
+
+The corrected synthetic census rejected this before timing: after moving the
+counter from semantic `node.parse` entry to the compiled first-set-gated NODE-body
+boundary, complete regions covered only 10.1% of Less and 12.2% of CSS construction
+protocol. The earlier 41.4% Less estimate counted calls the compiled engine rejects
+before any removable NODE/capture work. This result is useful denominator evidence,
+but `perf:workloads` is runtime compile and therefore carries no shipping-macro
+priority. A macro arena now requires U-64 purity/effect authority on real Jess.
+
+### U-62. Success-only fast artifact with cold exact diagnostic replay — `MEASURED-NEGATIVE` standalone / retained local win `806cdfa`
+
+Stop maintaining a rich farthest-failure result during every successful parse.
+Emit two static entry paths in the ordinary macro artifact. The hot path preserves
+recognition, commit, state, captures, builders, CST/trivia, and the public success
+value, but represents ordinary failure only as a negative scalar/bit. It does not
+write `_fe`/`_fx`, merge expected arrays, preserve losing-arm diagnostic payloads,
+or execute completion/recovery machinery. If and only if that path fails, call the
+existing exact emitted parser from the original input position and return its
+unchanged diagnostic. There is no runtime code generation: both paths are emitted
+at macro build time.
+
+Cold replay must not call an effectful author callback twice. There are three sound
+admission shapes: the compiler proves every callback reached before failure pure;
+the fast path defers callbacks on U-60's action tape and replays them only after
+success; or it records and reuses the exact callback results/effects during the
+diagnostic walk. An unstated "Jess builders are pure" assumption is acceptable only
+for a clearly labelled ceiling ablation, never for retained Parseman output. A
+general fast path that eagerly builds and then blindly reparses is wrong even when
+its final error object matches, because callback count and external side effects are
+observable.
+
+This deliberately trades up to two parses on invalid input for less work on the
+production success path. The fast path cannot omit effects whose rollback or
+commit changes recognition, and it cannot serve tolerant recovery, completion
+probes, coverage, or incremental diagnostic entrypoints; those select the exact
+path immediately. Successful AST/CST output must remain byte-identical. A fast-path
+failure followed by exact replay must match the baseline failure's span, expected
+set, committed flag, errors, and consumption, including throwing builders and
+stateful gates. The emitted-size budget is controlled by sharing pools/builders and
+generating the fast variant only for dynamically hot reachable bodies.
+
+First falsification experiment: use the existing TableProgram liveness graph to
+emit a diagnostic-dead macro variant for ordinary AST parsing, then count dynamic
+failure-state writes/merges and inspect source/V8 size before timing. Force the fast
+leg wrong once so the cold exact replay differential goes RED. The initial
+diagnostic-dead Jess probe may use an explicit build-time purity assumption to
+measure the ceiling, but must not be retained. Require enough deleted success-path
+work for a ≥15% whole-Less ceiling; otherwise reject before duplicating the full
+artifact or integrating the action tape. This is distinct from current `recordFail`
+liveness: that suppresses swallowed failures locally, while ordered choices still
+preserve and merge exact losing-arm diagnostics throughout successful parses.
+
+The first ceiling probe found a real but bounded prize. On the shipping Less macro
+artifact, the fully diagnostic-dead variant removed 2,021 farthest-position writes,
+2,937 expected-set writes, 1,785 choice accumulators, and 124 choice catch helpers;
+the generated factory shrank 2,790,047→2,321,762 bytes (-16.8%). All successful
+public values stayed exact across the 314-file corpus; the seven divergences were
+the deliberately missing failure spans/expected sets. Against a nearby identical-
+code control, controlled timing normalized to roughly **-4.6% benchmark Less** and
+**-6.3% generated Less**.
+
+The split identifies the actual mechanism. Omitting terminal/leaf `_fe`/`_fx`
+writes alone stayed inside the control floor on benchmark Less and was only about
+1% on generated. Omitting ordered-choice `best`/`acc`/`_accSet`/catch aggregation
+while retaining child writes delivered about **-4.2%/-5.0%**, winning 20/20 rounds
+on both fixtures. U-62 is therefore rejected as a standalone route to the 15%
+bar, but retained as a measured component of U-57/U-60: the scalar success trace
+must make ordered choice a cheap branch/failure-scalar operation, with exact cold
+diagnostic replay supplied by the deferred-action/effect-safe path. Do not spend
+complexity merely suppressing individual terminal writes.
+
+**Retained production result (iteration 66, `806cdfa`).** Exact cold replay was
+not required to capture most of that prize. The encoder already proves choices
+whose losing arms cannot commit; for the dynamically nontrivial subset, the macro
+now snapshots each arm's scalar failure offset and expected-array reference but
+does no `best`/`acc`/`_accSet` merge when a later arm succeeds. Only total choice
+failure enters one shared cold straight-line merge. Exact start-failure choices
+keep the existing zero-merge path, and potentially committing arms keep the old
+engine. This preserves exact diagnostics and invokes every callback exactly once.
+The Less assembly shrank 1,922,999→1,887,192 bytes (-1.86%); `_accSet` references
+fell 1,791→1,445 and emitted catch helpers 123→73. After dividing the candidate's
+raw 0.980/0.973 ratios by the immediately adjacent identical-code control's
+1.040/1.043 ratios, benchmark/generated Less normalized to **0.9423/0.9329**
+(about **5.8%/6.7% faster**). The focused differential was forced RED before the
+expected-set ordering fix; the retained result passed the 314-file Less sweep,
+full tests, build, typecheck, lint, invariants, and static-artifact checks. There
+is no replay, runtime `eval`, or runtime `new Function`.
+
+Iteration 77 closes the standalone cold-replay route on the real macro. After
+`806cdfa`, successful benchmark/generated Less and CSS still execute
+228,574/623,253/86,050 diagnostic operations, but exact cold replay would cross
+42,978/126,531/35,624 arbitrary callback results. Reinvoking those callbacks is
+observably wrong; eagerly logging sufficient results is equivalent work and
+collapses toward the losing U-60 tape. Duplicating exact and diagnostic-dead
+bodies adds about 83.2% source, while the stronger zero-overhead diagnostic-dead
+ceiling already measured only 4.6–6.3%. Semantic commit writes remain recognition
+state. Retain `806cdfa`'s local effect-safe cold merges; remove further diagnostic
+protocol only as dead state proven inside U-61 regions.
+
+### Orchestration order and combination
+
+The bounded U-58/U-60 combination and standalone U-62/U-64/U-65 routes are now
+falsified. U-63 is retained as the one generic region substrate. The active
+combination is U-61 memory-SSA inside those already joined bodies: promote
+region-private cursor, diagnostic, capture, trivia, and rollback state to locals;
+use derived-token residual authority only where it replaces local CHOICE control;
+flush/reload exact observable state only at outlined callback/effect boundaries.
+Cold opaque PEG continuations retain the existing engine. Each boundary must
+justify itself by dynamic frequency, surviving machine work, and emitted-byte
+cost. Retain and commit only macro-runtime wins to `feature/0.50.0`, one measured
+win per commit.
 
 ---
 
@@ -928,12 +1610,16 @@ this during 0.47. A gate defect, currently unassigned.
 
 ---
 
-## Untried index (`QUEUED` + `UNMEASURED`)
+## Optimization index (`QUEUED`, active, and measured architecture work)
 
-**56 items — 22 `QUEUED`, 34 `UNMEASURED`.** The count at the top of this file is
-this table's length. U-01…U-30 are the pre-existing backlog; U-31…U-56 came out
-of the 2026-08 measurement batch. Nothing is counted twice: an item whose
-siblings landed appears here once, for its unlanded part only.
+**65 total rows.** This table includes the 56 untried items plus active and
+measured architecture work. The untried count at the top is the sum of rows
+marked `QUEUED` or `UNMEASURED`, not this table's total length.
+U-01…U-30 are the pre-existing backlog; U-31…U-56 came out of the 2026-08
+measurement batch; U-57 onward are the radical macro-runtime programs selected
+from 2026-08-25. Measured negative architecture probes stay in this index so a
+later agent cannot mistake them for untried work; their replacement topology is
+named in the marker.
 
 | # | item | marker |
 |---|---|---|
@@ -977,7 +1663,7 @@ siblings landed appears here once, for its unlanded part only.
 | U-38 | the owed `shared`-arm throughput timing (prediction: ≈ 91 ns/op) | `QUEUED` |
 | U-39 | the time axis of the mixture Pareto curve | `QUEUED` |
 | U-40 | rename `fixture.ts`'s mislabelled engine columns | `QUEUED` |
-| U-41 | the cause of the ~29% shipping-artifact gap | `UNMEASURED` |
+| U-41 | the cause of the shipping macro-artifact gap (runtime `perf:workloads` is not evidence) | `UNMEASURED` |
 | U-42 | `grammar.ts:103`'s mid-parse `opts.trackLines ?? _ctx?.trackLines` | `UNMEASURED` |
 | U-43 | the per-term `ctx.trivia === undefined` branch inside the emitted sequence-term prologue | `UNMEASURED` |
 | U-44 | print per-site named declarations at macro time; retire `assemble.ts:2550`'s `new Function` | `QUEUED` |
@@ -993,6 +1679,15 @@ siblings landed appears here once, for its unlanded part only.
 | U-54 | gate the three silent-wrong-output surfaces (`OP_ADJ`, capture-reachability, site-attribute record) by whole-object parity | `UNMEASURED` |
 | U-55 | put `expected` in the identity digest (six divergences hid behind its absence during 0.47) | `QUEUED` |
 | U-56 | re-tag the 39,718 mislabelled `"engine":"table"` rows in `notes/results/parse-consumed.jsonl`, and land `lane/name-collision`'s legend + the `CHANGELOG.md:756-762` / `canonical-fixture-benchmark.md` correction banners on the release tip | `QUEUED` |
+| U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (wrapper fusion lost; the generic replacement must cross nested NODE/REPV boundaries and delete capture protocol) |
+| U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `MEASURED-NEGATIVE` standalone (iteration 76); preserve nullable/routed authority only inside U-61 |
+| U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE ONLY INSIDE A FULL TRACE` (ordinary continuation helpers retained too much protocol) |
+| U-60 | recognition event tape followed by selective exact construction | `MEASURED-NEGATIVE` for the bounded Value-choice form (`cd6a717`: normalized +4.1%/+9.7% slower; iteration 69); broad construction regions remain U-65 |
+| U-61 | scalar parse ABI with packed rollback/capture state | `MEASURED-NEGATIVE` variants (iteration 078: allocating parked collector +7.56%/+8.50%; allocation-free discriminant +8.42%/+5.98% on the two Less fixtures); U-91 explicit parameter ABI rejected before timing at 96.4%/99.0% adapter callsites; `_ee` foundation unproven alone |
+| U-62 | success-only fast macro artifact with cold exact diagnostic replay | `MEASURED-NEGATIVE` standalone (iteration 77); retained local exact cold-merge win is `806cdfa` |
+| U-63 | TableProgram Entry/SCC supercompiler: emit structured static regions from the one canonical IR, restoring 0.45's monolithic topology without restoring a second semantic engine | `RETAINED MODEST WIN / ACTIVE SUBSTRATE`; iteration 79 normalizes to ~2.8% benchmark Less, ~1.7% generated Less, ~1.4% CSS; 34.8%/52.2% entry deletion is structural, not runtime |
+| U-64 | macro-time reducer/factory partial evaluation: recover per-node capture plans hidden by generic closures/dispatch, including length-only raw/trivia use | `MEASURED-NEGATIVE` on real Jess macro (iteration 74: zero length-only sites) |
+| U-65 | broad construction-region arena: recognize maximal pure NODE/REPV regions into scalar offsets/events, then build exact public values once at a semantic barrier | `MEASURED-NEGATIVE` on synthetic runtime workloads (10.1%/12.2% protocol); no macro claim |
 
 ---
 

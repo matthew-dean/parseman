@@ -27,8 +27,9 @@ export const OP_SEQ = 3
 /** `SEQV n c1 … cn` — `SEQ` with `valueUnused`: terms run, no tuple is built. */
 export const OP_SEQV = 4
 /**
- * `CHOICE d n fx c1 … cn` — `d` indexes a dispatch table (or −1 for ordered
- * try); `fx` indexes the choice's OWN expected set.
+ * `CHOICE d n fx c1 … cn e1 … en` — `d` indexes a dispatch table (or −1 for
+ * ordered try); `fx` indexes the choice's OWN expected set and each `e` is one
+ * arm's set. Compiler-only rollback authority is deliberately not on the wire.
  *
  * Ordered failure keeps the expected sets at the deepest arm offset, merging
  * exact ties in source order. Exclusive dispatch propagates its sole selected

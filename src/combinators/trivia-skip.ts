@@ -90,8 +90,8 @@ export function rollbackTriviaAt(
   raw: number,
   tlog: number,
   leaves: number,
-  fields: number,
-  errors: number,
+  fields: number | undefined,
+  errors: number | undefined,
   log: number,
   rootLog: number,
 ): void {

@@ -315,6 +315,7 @@ const normEngine = (e: string): Engine => (e === 'codegen' ? 'macro' : e) as Eng
 
 type Entry = Parameters<typeof run>[0]
 type Runner = (entry: Entry, input: string) => ReturnType<typeof run>
+const MACRO_LOWERING_EXPORT = '__parsemanBenchMacroLowering'
 
 /**
  * `provenance` is not decoration — it is the only thing that can distinguish a
@@ -362,9 +363,9 @@ type Leg = {
 /**
  * The macro's realised lowering for one `src/`, from the FILE that decides it.
  *
- * `src/compiler/codegen.ts` is the source lowerer. Its presence is the whole
- * discriminator, and it is checked on the side's own tree rather than inferred
- * from a version string, because a `--ref=<sha>` may sit anywhere in the stack.
+ * This is only the non-macro fallback. Macro legs carry their exact realized
+ * artifact kind from `ab-hooks.mjs`, which sees the transformed source and can
+ * distinguish a static table assembly from an `a:[]` closure table.
  */
 function loweringOf(engine: Engine, src: string): string {
   if (engine !== 'macro') return engine
@@ -446,7 +447,11 @@ async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: str
     const mod = await import(`pm-side:${side}:macro:${grammarPath}`) as Record<string, Record<string, unknown>>
     const entry = mod[name]?.[ENTRY] as Entry
     if (typeof entry !== 'function') throw new Error(`${side} macro: not a function — the macro did not run`)
-    return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry), lowering }
+    const realized = mod[MACRO_LOWERING_EXPORT]
+    if (typeof realized !== 'string') {
+      throw new Error(`${side} macro: benchmark loader did not report the realized lowering`)
+    }
+    return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry), lowering: realized }
   }
 
   const mod = await import(`pm-side:${side}:${grammarPath}`) as Record<string, Record<string, unknown>>

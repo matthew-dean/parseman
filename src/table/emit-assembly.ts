@@ -45,6 +45,7 @@
  * what `encode.ts:1208-1213` refuses to allow for `OP_LIVE`.
  */
 import type { ParseContext } from '../types.ts'
+import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
   OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
@@ -52,12 +53,20 @@ import {
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
-import { validateDispatchSpec, type ResolvedClass, type ResolvedTable, type TableProgram } from './program.ts'
+import {
+  choiceCannotCommit, choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
+  type ResolvedClass, type ResolvedTable, type TableProgram,
+} from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
-  CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, computeSiteLabels, reachableSites, type SiteLabel,
+  CAP_OFF, CAP_ON, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
+  computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
-import { scalarTerminalNodeChild, scalarTerminalNotChild } from './scalar-terminal.ts'
+import {
+  leadingLiteralFamily, leadingScalarSequence, leadingScalarTerminal,
+  scalarTerminalNodeChild, scalarTerminalNotChild, type LeadingScalarSequence,
+} from './scalar-terminal.ts'
+import { childSlots } from './child-slots.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -134,6 +143,16 @@ let _pfScan=null
 let _pfHost
 let _pfDepth=0
 const _pfFrames=[]
+let _pfTokInput
+let _pfTokPos=-1
+let _pfTokBody=-1
+let _pfTokPacked=-1
+let _pfTokValue
+let _pfTokDispatch=-1
+let _pfTokArm=-1
+let _pfTokEnd=-1
+let _pfSeqEnd=-1
+function _asciiFoldCode(c){return c>=65&&c<=90?c+32:c}
 function _skipTrivia(input,cur,ctx){
 const s=_pfScan
 if(s!==null&&ctx._triviaLog===undefined&&!(ctx.captureTrivia===true&&(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)))return s(input,cur)
@@ -200,6 +219,42 @@ if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTrivi
 }
 `
 
+/** Printed only into assemblies that open a count-only raw buffer. */
+const NO_RAW_RUNTIME_PRELUDE = `
+function _pushLeafNoRawBuf(ctx,value,s,e){
+const l={_tag:'leaf',value,span:{start:s,end:e}}
+const b=ctx._cstBuf
+if(b.ch!==undefined)b.ch.push(l)
+else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
+else b.single=l
+b.rawLen++
+}
+function _pushNodeNoRawBuf(ctx,value){
+const b=ctx._cstBuf
+if(b.ch!==undefined)b.ch.push(value)
+else if(b.single!==undefined){b.ch=[b.single,value];b.single=undefined}
+else b.single=value
+b.rawLen++
+}
+function _rbNoRawBuf(ctx,raw,tl,lv,lg,rt){
+const b=ctx._cstBuf
+if(b.rawLen!==raw)b.rawLen=raw
+const ch=b.ch
+if(ch!==undefined){
+if(lv===0)b.ch=undefined
+else if(lv===1){b.single=ch[0];b.ch=undefined}
+else if(ch.length!==lv)ch.length=lv
+}else if(lv===0)b.single=undefined
+const bt=b.tl
+if(bt!==undefined){
+if(tl===0)b.tl=undefined
+else if(bt.length!==tl)bt.length=tl
+}
+if(ctx._triviaLog!==undefined&&ctx._triviaLog.length!==lg)ctx._triviaLog.length=lg
+if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTriviaLog.length=rt
+}
+`
+
 function q(s: string): string {
   return JSON.stringify(s)
 }
@@ -240,7 +295,7 @@ function sinkReads(t: string, s: Sinks): string {
   return `${s.fd ? `\n${t}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${s.er ? `\n${t}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
 }
 
-function emitMark(t: string, buf: boolean, s: Sinks = NO_SINKS, decl = true): string {
+function emitMark(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SINKS, decl = true): string {
   // THE SITE IS INSIDE A NODE. `OP_NODE` opens `ctx._cstBuf` unconditionally and
   // closes it on the way out, so the whole discriminating chain below — which
   // sink is live, and whether a mark is needed at all — has ONE answer here, and
@@ -249,8 +304,13 @@ function emitMark(t: string, buf: boolean, s: Sinks = NO_SINKS, decl = true): st
   // `decl === false` RE-TAKES a mark into locals that already exist —
   // `OP_DISPATCH` marks, rolls back to the selector's mark, and marks again.
   if (buf) {
+    const raw = rawMode === RAW_OMIT
+      ? `${t}raw=b.rawLen`
+      : rawMode === RAW_CAPTURE
+        ? `const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0`
+        : `const r=b.raw;${t}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)`
     return `${decl ? `let ${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : ''}{const b=ctx._cstBuf
-const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+${raw}
 const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${t}tl=l!==undefined?l.length:0
 ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
@@ -258,7 +318,7 @@ ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, 
   }
   return `${decl ? `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : `${t}n=false\n`}{const b=ctx._cstBuf
 if(b!==undefined){
-const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+const r=b.raw;${t}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)
 const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${t}tl=l!==undefined?l.length:0
 ${t}n=true
@@ -286,14 +346,12 @@ ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, 
  * than a per-parse guess, and it is why `assemble.ts`'s `nextTerm` still takes
  * all seven: it is the engine those constructs actually run in.
  *
- * The two sinks are passed differently because `rollbackCstCaptureAt` guards
- * them differently. `_errors` is guarded on `errors !== undefined`, so
- * `undefined` is its established "no mark taken" sentinel and is correct even
- * for a caller-supplied context that arrived with errors already on it.
- * `_fields` has no such guard — `length = undefined` would throw — so it takes
- * the literal `0` that a per-node `_fields` no `OP_FIELD` can push to always has.
+ * Both sinks use `undefined` as "no mark taken". A literal zero is not a safe
+ * substitute: a sink-free speculative subtree may run inside a node whose
+ * enclosing `_fields` already contains entries, and rolling that array back to
+ * zero would erase state the subtree did not create.
  */
-function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
+function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SINKS): string {
   // `_rbBuf` is the `_cstBuf` arm of `rollbackCstCaptureAt` plus the two trivia
   // truncations, with the sink discrimination the label already answered removed.
   // It takes no piece, so the header's sharing rule admits it.
@@ -301,14 +359,15 @@ function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
   // The two side sinks stay OUT of `_rbBuf` rather than growing its parameter
   // list: they are absent from most tables, and a fixed seven-argument helper
   // would make every grammar pay the two extra pushes to serve the ones that
-  // carry a field. Guarded exactly as `rollbackCstCaptureAt:242,233` guards them
-  // — `_errors` on a defined mark, because `undefined` is its "no mark taken"
-  // sentinel, and `_fields` on the array alone.
+  // carry a field. Both are emitted only from a defined mark; the generic
+  // helper applies the same `undefined` sentinel when a site cannot write one.
   const fd = s.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${t}fd)ctx._fields.length=${t}fd` : ''
   const er = s.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${t}er)ctx._errors.length=${t}er` : ''
-  if (buf) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
-  if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,0,undefined,${t}lg,${t}rt)`
-  return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : '0'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)}`
+  if (buf && rawMode === RAW_OMIT) return `_rbNoRawBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
+  if (buf && rawMode === RAW_CAPTURE) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
+  if (buf) return `rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)`
+  if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,undefined,undefined,${t}lg,${t}rt)`
+  return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)}`
 }
 
 /**
@@ -447,6 +506,11 @@ export function rebuildPools(
  * Throws `Unemittable` for any construct not lowered. It does NOT compile the
  * text — `assemble.ts` does — so a refusal and a compile failure stay two
  * distinguishable outcomes at the call site.
+ *
+ * `staticBuild` is true only when `emit.ts` embeds the returned source as an
+ * ordinary factory literal in a macro artifact. It permits macro-only code
+ * shaping without perturbing the runtime `compile()` emitter, whose generated
+ * parser must remain byte-identical when the optimization cannot affect it.
  */
 export function emitAssemblySource(
   t: ResolvedTable,
@@ -461,8 +525,9 @@ export function emitAssemblySource(
     probe: boolean
   },
   extraIps: readonly number[] = [],
+  staticBuild = false,
 ): EmitResult {
-  const { code, k, disp, dsp, triviaLabelled } = t
+  const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
   const hostCst = cfg.hostCst
 
@@ -498,23 +563,108 @@ export function emitAssemblySource(
   // pool's `extraIps` — and each starts at `TOP`, because a caller outside the
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
+  const reachable = [...reachableSites(code, roots)]
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
   // both the recognizer and the ordinary-terminal lowering.
   const scalarSpecs = new Set<number>()
+  // Large choices are different: admitting every wrapped scalar would add a
+  // recognizer call to many arms whose one-character gate already did all the
+  // useful work. A multi-character literal can still refine an overlapping
+  // first-character mask (`@@` beside `@name`) without changing the ordinary
+  // terminal's inline lowering, so keep that narrower inventory separate.
+  const largeChoiceScalarSpecs = new Set<number>()
+  const largeChoiceLiteralFamilies = new Map<number, readonly number[]>()
+  const largeChoiceScalarSequences = new Map<number, LeadingScalarSequence>()
+  type TokenChoiceCandidate = { readonly arm: number; readonly dispatchIp: number }
+  const tokenChoiceCandidates = new Map<number, TokenChoiceCandidate>()
+  const tokenChoiceDispatches = new Set<number>()
+  const tokenChoiceBodies = new Set<number>()
   if (!hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
-    for (const ip of reachableSites(code, roots)) {
-      if (code[ip] !== OP_NODE) continue
-      const child = scalarTerminalNodeChild(code, ip)
-      if (child >= 0) scalarSpecs.add(code[child + 1]!)
+    for (const ip of reachable) {
+      if (code[ip] === OP_NODE) {
+        const child = scalarTerminalNodeChild(code, ip)
+        if (child >= 0) scalarSpecs.add(code[child + 1]!)
+        continue
+      }
+      if (code[ip] !== OP_CHOICE || disp[code[ip + 1]!]!.exclusive) continue
+      const n = code[ip + 2]!
+      for (let i = 0; i < n; i++) {
+        const armIp = code[ip + 4 + i]!
+        const child = leadingScalarTerminal(code, armIp, 2, true, true)
+        if (n === 2 || n === 3) {
+          if (child >= 0) scalarSpecs.add(code[child + 1]!)
+          continue
+        }
+        if (child >= 0) {
+          const spec = k[code[child + 1]!]
+          if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
+            largeChoiceScalarSpecs.add(code[child + 1]!)
+            continue
+          }
+        }
+        const family = leadingLiteralFamily(code, k, armIp)
+        if (family !== undefined && family.length >= 2 && family.every(terminal => {
+          const value = k[code[terminal + 1]!]
+          return typeof value === 'string' && value.length >= 2
+        })) {
+          largeChoiceLiteralFamilies.set(armIp, family)
+        }
+        const sequence = leadingScalarSequence(code, armIp)
+        // A labelled trivia scanner is still recognition authority here. This
+        // pretest is pure: on a miss the ordinary arm's trivia log would have
+        // been rolled back, while on a hit the arm runs and records it normally.
+        if (sequence !== undefined && (sequence.trivia < 0
+          || (swapLegal && t.triviaScan[sequence.trivia] != null))) {
+          largeChoiceScalarSequences.set(armIp, sequence)
+        }
+      }
+
+      // A direct value-only transform around a dispatch cannot consume, branch,
+      // publish, or call author code before the dispatch selector. When that
+      // selector is one compiler-selected lexical body, the emitted choice may
+      // recognize and classify it before entering the arm, then hand the exact
+      // packed range and route to the ordinary LEX_BODY/DISPATCH readers. One
+      // candidate per ordered choice keeps source order authoritative: a second
+      // eligible arm leaves the whole site on the established PEG path.
+      let candidate: TokenChoiceCandidate | undefined
+      let ambiguous = false
+      for (let i = 0; i < n; i++) {
+        const armIp = code[ip + 4 + i]!
+        if (code[armIp] !== OP_XFORM) continue
+        const dispatchIp = code[armIp + 2]!
+        if (code[dispatchIp] !== OP_DISPATCH) continue
+        const selectorIp = code[dispatchIp + 1]!
+        if (code[selectorIp] !== OP_LEX_BODY) continue
+        if (candidate !== undefined) { ambiguous = true; break }
+        candidate = { arm: i, dispatchIp }
+      }
+      if (!ambiguous && candidate !== undefined) {
+        tokenChoiceCandidates.set(ip, candidate)
+        tokenChoiceDispatches.add(candidate.dispatchIp)
+        tokenChoiceBodies.add(code[code[candidate.dispatchIp + 1]! + 1]!)
+      }
     }
   }
 
-  // THE SIDE-SINK CENSUS, over the same reachable set the labels are computed
-  // from. `OP_FIELD` is the only ROW that writes `_fields` and `OP_EXPECT` the
-  // only emittable row that writes `_errors` — `recoverScan` is the other, and a
-  // recovery assembly is refused above. A table with neither pays for neither.
+  // Helpers are referenced by DESCENDANT publication/rollback sites, not only
+  // by the node row that opened the count-only buffer. A specialized no-raw node
+  // can contain a shared child whose merged label is unknown even though this
+  // occurrence emits `_pushNodeNoRawBuf`; the node flag is the conservative
+  // factory-level authority for including the tiny prelude.
+  const needsNoRawPrelude = !hostCst && reachable.some(ip => {
+    const op = code[ip]
+    return (op === OP_NODE || op === OP_NODE_TRACK)
+      && code[ip + 1]! >= 0 && code[ip + 4]! < 0 && (code[ip + 3]! & 2) !== 0
+  })
+
+  // THE SIDE-SINK FIXPOINT, over the same graph the labels walk. `OP_FIELD` is
+  // the only direct `_fields` writer and `OP_EXPECT` the only direct `_errors`
+  // writer. A tolerant repetition can also write `_errors` through recoverScan.
+  // Propagating those two bits through the child graph gives every speculative
+  // site the exact side sinks its subtree can mutate, including through cyclic
+  // OP_RULE edges.
   //
   // `OP_SCAN` RAISES BOTH, and that is not caution — it is a measured defect.
   // The row runs an INTERPRETED combinator (`scanTo`/`balanced`, rebuilt by
@@ -528,26 +678,34 @@ export function emitAssemblySource(
   //
   // Any future row whose child is not an offset in `code` belongs here for the
   // same reason. `OP_LIVE` is the other such row, and it is unemittable.
-  const sinks: Sinks = (() => {
-    let fd = false
-    // A RECOVERY ASSEMBLY IS AN `_errors` WRITER EVERYWHERE. `recoverScan` pushes
-    // through `captureError` from inside any `OP_REP` that recovers, and the
-    // recovering row is the repetition itself rather than a distinguishable
-    // opcode — so there is no site to census and the answer is the assembly's.
-    //
-    // This is the `OP_SCAN` lesson applied before it costs anything rather than
-    // after: that row raised both sinks because its interior is not in `code`,
-    // and the defect it was raised for was precisely an `_errors` rollback the
-    // two engines disagreed on while matching byte for byte on the tree.
-    let er = REC
-    for (const ip of reachableSites(code, roots)) {
-      const op = code[ip]
-      if (op === OP_SCAN) { fd = true; er = true; break }
-      if (op === OP_FIELD) fd = true
-      else if (op === OP_EXPECT) er = true
+  const sinkSites = reachable
+  const sinkBits = new Map<number, number>()
+  for (const ip of sinkSites) {
+    const op = code[ip]
+    sinkBits.set(ip,
+      op === OP_SCAN ? 3
+        : (op === OP_FIELD ? 1 : 0)
+          | (op === OP_EXPECT || (REC && (op === OP_REP || op === OP_REPV)) ? 2 : 0))
+  }
+  const sinkKids: number[] = []
+  let sinkChanged = true
+  while (sinkChanged) {
+    sinkChanged = false
+    for (const ip of sinkSites) {
+      let bits = sinkBits.get(ip) ?? 0
+      sinkKids.length = 0
+      childSlots(code, ip, sinkKids)
+      for (let i = 0; i < sinkKids.length; i++) bits |= sinkBits.get(sinkKids[i]!) ?? 0
+      if (bits !== sinkBits.get(ip)) {
+        sinkBits.set(ip, bits)
+        sinkChanged = true
+      }
     }
-    return { fd, er }
-  })()
+  }
+  const sinksAt = (ip: number): Sinks => {
+    const bits = sinkBits.get(ip) ?? 0
+    return bits === 0 ? NO_SINKS : { fd: (bits & 1) !== 0, er: (bits & 2) !== 0 }
+  }
 
   const bodies: string[] = []
   const byIp = new Map<number, string>()
@@ -584,6 +742,27 @@ export function emitAssemblySource(
   const fxRef = (i: number): string => hoist('fx', `FX[${i}]`)
   const fnRef = (i: number): string => hoist('fn', `FNS[${i}]`)
   const recognizerRef = (i: number): string => hoist('rec', `RECOG[${i}]`)
+  type ScalarSequenceRef = { readonly name: string; readonly expected: readonly string[] }
+  const scalarSequenceRefs = new Map<string, ScalarSequenceRef>()
+  const scalarSequenceRef = (sequence: LeadingScalarSequence): ScalarSequenceRef => {
+    const key = `${sequence.trivia}:${sequence.terminals.map(terminal => code[terminal + 1]!).join(',')}`
+    const prior = scalarSequenceRefs.get(key)
+    if (prior !== undefined) return prior
+    const recognizers = sequence.terminals.map(terminal => recognizerRef(code[terminal + 1]!))
+    const expected = sequence.terminals.map(terminal => fxRef(code[terminal + 2]!))
+    const scan = sequence.trivia < 0 ? undefined : hoist('ts', `TRIVIASCAN[${sequence.trivia}]`)
+    const name = `_sd${scalarSequenceRefs.size}_`
+    const steps = recognizers.map((recognize, i) => `${i === 0 ? 'let ' : ''}at=${i === 0 ? 'pos' : scan === undefined ? 'cur' : `${scan}(input,cur)`}
+${i === 0 ? 'let ' : ''}cur=${recognize}(input,at)
+if(cur<0){_pfSeqEnd=at;return ${~i}}`).join('\n')
+    choiceDefs.push(`function ${name}(input,pos){
+${steps}
+return cur
+}`)
+    const made = { name, expected }
+    scalarSequenceRefs.set(key, made)
+    return made
+  }
   /**
    * The sync sentinel for a char-class index, hoisted once per class.
    *
@@ -596,6 +775,105 @@ export function emitAssemblySource(
   /** A fresh local prefix, so two inlined marks in one body cannot collide. */
   let uid = 0
   const tmp = (): string => `_t${uid++}_`
+
+  /** One dispatch matcher as source, shared by the ordinary and token-first paths. */
+  const dispatchClaim = (m: readonly [number, string, string, number]): string => {
+    switch (m[0]) {
+      case 0: return `key.startsWith(${q(m[1])})`
+      case 1: return `key.endsWith(${q(m[1])})`
+      case 3: return `asciiFoldKey(key).startsWith(${q(m[1])})`
+      case 4: return `asciiFoldKey(key).endsWith(${q(m[1])})`
+      default: {
+        if (!m[2].includes('g') && !m[2].includes('y')) {
+          try {
+            // Validate without changing malformed-row error timing.
+            new RegExp(m[1], m[2])
+            return `${hoist('dm', `new RegExp(${q(m[1])},${q(m[2])})`)}.test(key)`
+          } catch {}
+        }
+        return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
+      }
+    }
+  }
+
+  type TokenDecisionRef = { readonly name: string; readonly expected: string }
+  const tokenDecisionRefs = new Map<number, TokenDecisionRef>()
+  function tokenDecisionFor(dispatchIp: number): TokenDecisionRef {
+    const prior = tokenDecisionRefs.get(dispatchIp)
+    if (prior !== undefined) return prior
+    const selectorIp = code[dispatchIp + 1]!
+    const body = code[selectorIp + 1]!
+    const lineFlags = code[selectorIp + 4]!
+    const hasSuffix = (lineFlags & 4) !== 0
+    const di = code[dispatchIp + 2]!
+    const spec = dsp[di]!
+    const n = code[dispatchIp + 5]!
+    validateDispatchSpec(spec, n, code[dispatchIp + 4]!)
+    const recognize = hoist('lex', `LEX[${body}]`)
+    const bk = hoist('bk', `DSP[${di}].byKey`)
+    const expected = hoist('dx', `DSP[${di}].expected`)
+    const fold = spec.byFold.size > 0
+      ? `if(arm===undefined)arm=${hoist('bf', `DSP[${di}].byFold`)}.get(asciiFoldKey(key))\n`
+      : ''
+    const chain = spec.match.length === 0
+      ? ''
+      : `if(arm===undefined){\n${spec.match.map((m, i) => `${i === 0 ? '' : 'else '}if(${dispatchClaim(m)})arm=${m[3]}`).join('\n')}\n}\n`
+    const foldedEntries = [...spec.byFold.entries()]
+    // Exact, fail-closed shape of Jess Less's function-token dispatch. Keep the
+    // source+flags check explicit: changing that grammar matcher must disable
+    // this hand-lowered classifier until its url(/calc( exclusions are reviewed.
+    const fixedFunctionChoice = spec.byKey.size === 0
+      && foldedEntries.length === 1
+      && spec.match.length === 1
+      && spec.match[0]![0] === 2
+      && spec.match[0]![1] === '^(?!(?:url|calc)\\($).+\\($'
+      && spec.match[0]![2] === 'i'
+      && code[dispatchIp + 3]! < 0
+    const foldedRangeEquals = (value: string): string => {
+      const folded = value.replace(/[A-Z]/g, c => c.toLowerCase())
+      return `e-pos===${folded.length}&&${[...folded].map((c, i) => {
+        const cc = c.charCodeAt(0)
+        return `_asciiFoldCode(input.charCodeAt(pos+${i}))===${cc}`
+      }).join('&&')}`
+    }
+    const classify = fixedFunctionChoice
+      ? (() => {
+          const [exact, exactArm] = foldedEntries[0]!
+          const genericArm = spec.match[0]![3]
+          return `let arm
+if(${foldedRangeEquals(exact)})arm=${exactArm}
+else if(sm&&e>pos+1){
+let clean=true
+for(let i=pos;i<e;i++){const c=input.charCodeAt(i);if(c===10||c===13||c===0x2028||c===0x2029){clean=false;break}}
+if(clean&&!(${foldedRangeEquals('url(')})&&!(${foldedRangeEquals('calc(')}))arm=${genericArm}
+}`
+        })()
+      : `const key=input.slice(pos,e)
+let arm=${bk}.get(key)
+${fold}${chain}`
+    const name = `_td${tokenDecisionRefs.size}_`
+    choiceDefs.push(`function ${name}(input,pos){
+const r=${recognize}(input,pos)
+if(r<0)return -1
+const sm=${hasSuffix ? 'r%2===1' : 'false'},e=(r-(sm?1:0))/2
+${classify}
+if(arm===undefined){
+${code[dispatchIp + 3]! < 0 ? '_pfTokEnd=e;return 0' : `arm=${n}`}
+}
+${fixedFunctionChoice ? 'const key=input.slice(pos,e)' : ''}
+_pfTokInput=input
+_pfTokPos=pos
+_pfTokBody=${body}
+_pfTokPacked=r
+_pfTokValue=key
+_pfTokDispatch=${dispatchIp}
+_pfTokArm=arm
+return 1
+}`)
+    const made = { name, expected }
+    tokenDecisionRefs.set(dispatchIp, made)
+    return made
+  }
 
   /**
    * THE TRIVIA SCAN FOR ONE SITE LABEL.
@@ -796,6 +1074,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     const op = code[ip]
     const head = `function ${fname}(input,pos,ctx){`
     const L = labels.at(ip)
+    const sinks = sinksAt(ip)
     /**
      * THE LEAF CAPTURE TEST, and only the test.
      *
@@ -813,7 +1092,9 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
      * `trackLines` is `RunCfg`, and an open `_cstBuf` is the label. `_pushLeafBuf`
      * is that pair with both branches taken, and it takes no piece.
      */
-    const pushLeaf = L.buf && !cfg.trackLines ? '_pushLeafBuf' : '_pushLeaf'
+    const pushLeaf = L.buf && !cfg.trackLines
+      ? L.raw === RAW_OMIT ? '_pushLeafNoRawBuf' : L.raw === RAW_CAPTURE ? '_pushLeafBuf' : '_pushLeaf'
+      : '_pushLeaf'
     const captureLeaf = (value: string): string => {
       const call = `${pushLeaf}(ctx,${value},pos,e)`
       return L.buf ? call : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${call}`
@@ -1173,20 +1454,24 @@ return out
       }
 
       case OP_LEX_BODY: {
-        const recognize = hoist('lex', `LEX[${code[ip + 1]!}]`)
+        const body = code[ip + 1]!
+        const recognize = hoist('lex', `LEX[${body}]`)
         const expected = fxRef(code[ip + 2]!)
         const suffixExpected = fxRef(code[ip + 3]!)
         const lineFlags = code[ip + 4]!
         const hasSuffix = (lineFlags & 4) !== 0
+        const pending = tokenChoiceBodies.has(body)
         return `${head}
-const r=${recognize}(input,pos)
+${pending ? `const tp=_pfTokBody===${body}&&_pfTokInput===input&&_pfTokPos===pos
+const r=tp?_pfTokPacked:${recognize}(input,pos)` : `const r=${recognize}(input,pos)`}
 if(r<0){ctx._fe=pos;ctx._fx=${expected};if(ctx._probe!==undefined)failAt(ctx,${expected},pos);return FAIL}
 const sm=${hasSuffix ? 'r%2===1' : 'false'},e=(r-(sm?1:0))/2
 ${(lineFlags & 1) !== 0 ? '_trackLines(ctx,input,sm?e-1:e)' : ''}
 ${hasSuffix ? 'ctx._fc=false' : ''}
 ${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
 ${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
-const v=input.slice(pos,e)
+const v=${pending ? 'tp?_pfTokValue:' : ''}input.slice(pos,e)
+${pending ? 'if(tp){_pfTokBody=-1;_pfTokValue=undefined}' : ''}
 if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
 EC.e=e
 return v
@@ -1245,12 +1530,13 @@ return v
 
       case OP_ATTEMPT: {
         const child = link(code[ip + 1]!)
+        const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, sinks)}
+${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-${emitRollback(p, L.buf, sinks)}
+${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
 if(ctx._fc===true)return FAIL
 ctx._fe=pos
 return FAIL
@@ -1274,9 +1560,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, sinks)}
+${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
-${emitRollback(p, L.buf, sinks)}
+${emitRollback(p, L.buf, L.raw, sinks)}
 if(v===FAIL){EC.e=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
@@ -1289,9 +1575,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, sinks)}
+${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
-${emitRollback(p, L.buf, sinks)}
+${emitRollback(p, L.buf, L.raw, sinks)}
 if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 EC.e=pos
 return null
@@ -1300,14 +1586,15 @@ return null
 
       case OP_OPT: {
         const child = link(code[ip + 1]!)
+        const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, sinks)}
+${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
 if(ctx._fc===true)return FAIL
-${emitRollback(p, L.buf, sinks)}
+${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
 EC.e=pos
 return null
 }
@@ -1443,6 +1730,30 @@ return FAIL
           const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
           const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
+          type ChoicePretest = {
+            readonly scalar?: readonly string[]
+            readonly sequence?: ScalarSequenceRef
+            readonly token?: TokenDecisionRef
+          }
+          const tokenCandidate = tokenChoiceCandidates.get(ip)
+          const pretests = Array.from({ length: n }, (_, i): ChoicePretest | undefined => {
+            if (tokenCandidate?.arm === i) {
+              return { token: tokenDecisionFor(tokenCandidate.dispatchIp) }
+            }
+            const terminal = leadingScalarTerminal(code, code[base + i]!, 2, true, true)
+            if (terminal >= 0) {
+              const spec = code[terminal + 1]!
+              if ((n === 2 || n === 3 ? scalarSpecs : largeChoiceScalarSpecs).has(spec)) {
+                return { scalar: [recognizerRef(spec)] }
+              }
+            }
+            const family = largeChoiceLiteralFamilies.get(code[base + i]!)
+            if (family !== undefined) {
+              return { scalar: family.map(member => recognizerRef(code[member + 1]!)) }
+            }
+            const sequence = largeChoiceScalarSequences.get(code[base + i]!)
+            return sequence === undefined ? undefined : { sequence: scalarSequenceRef(sequence) }
+          })
           const maskable = n <= 32
           const maskName = maskable
             ? hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
@@ -1452,53 +1763,222 @@ return FAIL
           // cannot carry a second mutable answer for the arms' classes.
           if (maskable) maskPlan.push(~di)
           const p = tmp()
-          const catchName = maskable ? `_cx${uid++}_` : ''
-          if (maskable) {
+          // This proof lives only on the compiler-created program while the
+          // precompiled assembly is printed. A hand-built or deserialized table
+          // has no authority and therefore keeps the established all-arm path.
+          const encodedRollbackMask = choiceRollbackMask(prog, ip) ?? -1
+          const rollbackMask = REC ? -1 : encodedRollbackMask
+          const hasRollback = rollbackMask !== 0
+          // An always-consuming leading scalar makes a failure at `pos`
+          // statically exact: it is the arm's derived opener set, and the
+          // choice's own `choiceFx` already concatenates every such set in
+          // source order. Defer array merging until an arm reaches deeper input
+          // so a later successful arm pays no diagnostic-allocation tax.
+          //
+          // attempt() is a hard boundary: it can fail deeper and deliberately
+          // re-anchor `_fe` at `pos` while keeping the inner dynamic expected
+          // set. A zero-width regex has the same ambiguity, so neither qualifies.
+          const startFailureExact = arms.every((_arm, i) => {
+            const terminal = leadingScalarTerminal(code, code[base + i]!, 0, false)
+            if (terminal < 0) return false
+            const op = code[terminal]
+            const spec = k[code[terminal + 1]!]
+            // Recognition shape is not diagnostic authority. word() is one
+            // important counterexample: its terminal reports `keyword`, while
+            // deriveExpected at an enclosing choice names the concrete word.
+            // Substituting choiceFx for the dynamic terminal set is sound only
+            // when both encoded authorities agree byte-for-byte, including
+            // duplicates and source order.
+            const terminalFx = fx[code[terminal + 2]!]!
+            const armFx = fx[code[base + n + i]!]!
+            if (terminalFx.length !== armFx.length
+              || terminalFx.some((expected, at) => expected !== armFx[at])) return false
+            if (op === OP_LIT) return typeof spec === 'string' && spec.length > 0
+            return op === OP_RX && spec instanceof RegExp && !regexCanMatchEmpty(spec.source)
+          })
+          const rollbackFor = (i: number): string =>
+            rollbackMask === -1 || (rollbackMask & (1 << i)) !== 0
+              ? emitRollback(p, L.buf, L.raw, sinks)
+              : ''
+          if (choiceCannotCommit(prog, ip) && !startFailureExact) {
+            // A successful ordered choice does not expose any losing arm's
+            // diagnostic. Snapshot each entered arm's failure in scalar locals;
+            // choose the deepest set and concatenate ties on the cold TOTAL-
+            // failure exit. This is the direct-emitter topology from 0.45,
+            // restored without changing the table wire format.
+            const deepAt = Array.from({ length: n }, () => tmp())
+            const deepFx = Array.from({ length: n }, () => tmp())
+            const remember = (i: number, at: string, expectedSet: string): string =>
+              `${deepAt[i]}=${at};${deepFx[i]}=${expectedSet}`
+            const lazyArms = (ascii: boolean): string => arms.map((arm, i) => {
+              const pretest = pretests[i]
+              const decision = pretest?.token === undefined && pretest?.sequence === undefined ? '' : tmp()
+              const scalarCondition = pretest?.scalar === undefined ? ''
+                : pretest.scalar.length === 1
+                  ? `&&${pretest.scalar[0]}(input,pos)>=0`
+                  : `&&(${pretest.scalar.map(recognize => `${recognize}(input,pos)>=0`).join('||')})`
+              const sequenceCondition = pretest?.sequence === undefined ? ''
+                : `&&(${decision}=${pretest.sequence.name}(input,pos))>=0`
+              const condition = pretest?.token !== undefined
+                ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
+                : scalarCondition || sequenceCondition
+              const gate = ascii
+                ? `(bits&${1 << i})!==0${condition}`
+                : `(${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}`
+              const routeMiss = pretest?.token === undefined ? '' : `
+if(${decision}===0){
+ctx._fc=false
+{const at=_pfTokEnd
+${remember(i, 'at', pretest.token.expected)}}
+}`
+              const sequenceMiss = pretest?.sequence === undefined ? '' : `
+else if(${ascii ? `(bits&${1 << i})!==0&&` : ''}${decision}<0){
+ctx._fc=false
+{const at=_pfSeqEnd
+${remember(i, 'at', pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('') + pretest.sequence.expected.at(-1))}}
+}`
+              return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if(${gate}){
+ctx._fc=false
+{const v=${arm}(input,pos,ctx)
+if(v!==FAIL)return v}
+{const at=ctx._fe??pos
+${remember(i, 'at', 'ctx._fx')}}
+${rollbackFor(i)}
+}${routeMiss}${sequenceMiss}`
+            }).join('\n')
+            const merge = deepAt.map((at, i) => `{const at=${at}??pos
+const ex=${at}===undefined?${expected[i]}:${deepFx[i]}
+if(at>best){best=at;acc=_accSet(ex,undefined)}
+else if(at===best)acc=_accSet(ex,acc)
+}`).join('\n')
+            const finish = `let best=pos,acc
+${merge}
+ctx._fe=pos;ctx._fx=acc??${choiceFx}
+return FAIL`
+            return `${head}
+const c=lead(input,pos)
+${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
+${deepAt.map((at, i) => `let ${at},${deepFx[i]}`).join('\n')}
+${maskable ? `if(c<128){
+const bits=${maskName}[c<0?128:c]
+if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
+${lazyArms(true)}
+}else{
+${lazyArms(false)}
+}
+` : lazyArms(false)}
+${finish}
+}`
+          }
+          const needsCatch = maskable || startFailureExact
+          const catchName = needsCatch ? `_cx${uid++}_` : ''
+          if (needsCatch) {
             const catchCases = expected.map((e, i) =>
               `case ${i}:if(target<=${i})return acc;acc=_accSet(${e},acc)`).join('\n')
             choiceDefs.push(`function ${catchName}(target,prev,acc){switch(prev){\n${catchCases}\n}return acc}`)
           }
           const maskArms = maskable ? arms.map((arm, i) => {
-            return `if((bits&${1 << i})!==0){
+            const pretest = pretests[i]
+            const decision = pretest?.token === undefined && pretest?.sequence === undefined ? '' : tmp()
+            const scalarCondition = pretest?.scalar === undefined ? ''
+              : pretest.scalar.length === 1
+                ? `&&${pretest.scalar[0]}(input,pos)>=0`
+                : `&&(${pretest.scalar.map(recognize => `${recognize}(input,pos)>=0`).join('||')})`
+            const sequenceCondition = pretest?.sequence === undefined ? ''
+              : `&&(${decision}=${pretest.sequence.name}(input,pos))>=0`
+            const condition = pretest?.token !== undefined
+              ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
+              : scalarCondition || sequenceCondition
+            const routeMiss = pretest?.token === undefined ? '' : `
+if(${decision}===0){
 ctx._fc=false
-{const v=${arm}(input,pos,ctx)
-if(v!==FAIL)return v}
-if(best===pos)acc=${catchName}(${i},prev,acc)
-prev=${i + 1}
-{const at=ctx._fe??pos
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}`}
+{const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
-if(at===best)acc=_accSet(ctx._fx,acc)}
-if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p, L.buf, sinks)}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)}
 }`
+            const sequenceMiss = pretest?.sequence === undefined ? '' : `
+else if((bits&${1 << i})!==0&&${decision}<0){
+ctx._fc=false
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}`}
+{const at=_pfSeqEnd
+if(at>best){best=at;acc=undefined}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},acc)}
+}`
+            return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((bits&${1 << i})!==0${condition}){
+ctx._fc=false
+{const v=${arm}(input,pos,ctx)
+if(v!==FAIL)return v}
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}`}
+{const at=ctx._fe??pos
+if(at>best){best=at;acc=undefined}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
+if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
+${rollbackFor(i)}
+}${routeMiss}${sequenceMiss}`
           }).join('\n') : ''
-          const generalArms = arms.map((arm, i) => `if(${gateRefs[i]}===null||classHas(${gateRefs[i]},c)){
+          const generalArms = arms.map((arm, i) => {
+            const pretest = pretests[i]
+            const decision = pretest?.token === undefined && pretest?.sequence === undefined ? '' : tmp()
+            const scalarCondition = pretest?.scalar === undefined ? ''
+              : pretest.scalar.length === 1
+                ? `&&${pretest.scalar[0]}(input,pos)>=0`
+                : `&&(${pretest.scalar.map(recognize => `${recognize}(input,pos)>=0`).join('||')})`
+            const sequenceCondition = pretest?.sequence === undefined ? ''
+              : `&&(${decision}=${pretest.sequence.name}(input,pos))>=0`
+            const condition = pretest?.token !== undefined
+              ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
+              : scalarCondition || sequenceCondition
+            const miss = pretest?.sequence !== undefined
+              ? `else if(${decision}<0){
+ctx._fc=false
+const at=_pfSeqEnd
+if(at>best){best=at;acc=undefined}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},acc)
+}${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
+              : pretest?.token === undefined
+                ? startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`
+                : `else if(${decision}===0){
+ctx._fc=false
+const at=_pfTokEnd
+if(at>best){best=at;acc=undefined}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)
+}${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
+            return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
 {const at=ctx._fe??pos
 if(at>best){best=at;acc=undefined}
-if(at===best)acc=_accSet(ctx._fx,acc)}
-if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p, L.buf, sinks)}
-}else if(best===pos)acc=_accSet(${expected[i]},acc)`).join('\n')
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
+if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
+${rollbackFor(i)}
+}${miss}`
+          }).join('\n')
 
+          // A zero compatible-arm mask is stronger than a speculative miss: no
+          // arm can run, so the choice's encoded flat expected set is already
+          // the exact result. Do not walk the arm ladder merely to rebuild it.
           return `${head}
 const c=lead(input,pos)
-${emitMark(p, L.buf, sinks)}
+${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
 let acc
 let best=pos
 ${maskable ? `if(c<128){
 const bits=${maskName}[c<0?128:c]
-let prev=0
+if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
+${startFailureExact ? '' : 'let prev=0'}
 ${maskArms}
-if(best===pos)acc=${catchName}(${n},prev,acc)
-ctx._fe=pos;ctx._fx=acc??${choiceFx}
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${n},prev,acc)`}
+ctx._fe=pos;ctx._fx=${startFailureExact ? `best===pos?${choiceFx}:acc??${choiceFx}` : `acc??${choiceFx}`}
 return FAIL
 }
 ` : ''}
 ${generalArms}
-ctx._fe=pos;ctx._fx=acc??${choiceFx}
+ctx._fe=pos;ctx._fx=${startFailureExact ? `best===pos?${choiceFx}:acc??${choiceFx}` : `acc??${choiceFx}`}
 return FAIL
 }`
         }
@@ -1519,44 +1999,17 @@ return FAIL
         for (let i = 0; i < n; i++) arms.push(link(code[armBase + i]!))
         const bk = hoist('bk', `DSP[${di}].byKey`)
         const dx = hoist('dx', `DSP[${di}].expected`)
-        // THE MATCHER ARMS, AS SOURCE. `exec.ts`'s `linkMatcher` mints one
-        // closure per arm from four literals it already has in hand; the four
-        // are TABLE DATA, so here they are the test itself and no closure, no
-        // pool and no indexed call exist. Kinds are `matcherClaims`'s exactly
-        // — 0/1 raw prefix/suffix, 3/4 the pre-folded pair, anything else a
-        // regex. Public `matches()` refuses global/sticky patterns, so its
-        // RegExp can be compiled once into the assembly prelude. Hand-built
-        // low-level rows with g/y or invalid flags retain the old per-test
-        // construction and therefore the old `lastIndex`/throw behavior.
-        const claims = (m: readonly [number, string, string, number]): string => {
-          switch (m[0]) {
-            case 0: return `key.startsWith(${q(m[1])})`
-            case 1: return `key.endsWith(${q(m[1])})`
-            case 3: return `asciiFoldKey(key).startsWith(${q(m[1])})`
-            case 4: return `asciiFoldKey(key).endsWith(${q(m[1])})`
-            default: {
-              if (!m[2].includes('g') && !m[2].includes('y')) {
-                try {
-                  // Validate without changing malformed-row error timing.
-                  new RegExp(m[1], m[2])
-                  return `${hoist('dm', `new RegExp(${q(m[1])},${q(m[2])})`)}.test(key)`
-                } catch {}
-              }
-              return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
-            }
-          }
-        }
         const chain = spec.match.length === 0
           ? ''
-          : `if(arm===undefined){\n${spec.match.map((m, i) => `${i === 0 ? '' : 'else '}if(${claims(m)})arm=${m[3]}`).join('\n')}\n}\n`
+          : `if(arm===undefined){\n${spec.match.map((m, i) => `${i === 0 ? '' : 'else '}if(${dispatchClaim(m)})arm=${m[3]}`).join('\n')}\n}\n`
         const fold = spec.byFold.size > 0
           ? `if(arm===undefined)arm=${hoist('bf', `DSP[${di}].byFold`)}.get(asciiFoldKey(key))\n`
           : ''
         const m1 = tmp()
         const m2 = tmp()
         const routedCall = (target: string): string => `{const savedRouted=ctx._routed
-${emitRollback(m1, L.buf, sinks)}
-${emitMark(m2, L.buf, sinks, false)}
+${emitRollback(m1, L.buf, L.raw, sinks)}
+${emitMark(m2, L.buf, L.raw, sinks, false)}
 ctx._routed={value:key,span:{start:pos,end:selEnd}}
 try{v=${target}(input,pos,ctx)}finally{ctx._routed=savedRouted}
 break}`
@@ -1567,29 +2020,41 @@ break}`
         const fallbackCase = other === undefined ? '' : `default:${otherRouted
           ? routedCall(other)
           : plainCall(other)}`
+        const armSelection = tokenChoiceDispatches.has(ip)
+          ? `const tp=_pfTokDispatch===${ip}&&_pfTokInput===input&&_pfTokPos===pos
+let arm
+if(tp){
+arm=_pfTokArm
+_pfTokDispatch=-1
+_pfTokInput=undefined
+if(arm===${n})arm=undefined
+}else{
+arm=${bk}.get(key)
+${fold}${chain}}`
+          : `let arm=${bk}.get(key)
+${fold}${chain}`
         // THE SELECTOR RUNS ONCE and the key it returns picks the arm — that is
         // what `dispatch()` buys over a choice of arms that each re-parse the
         // opener. A routed arm rewinds the selector's trivia capture and gets
         // the token handed to it (`OP_ROUTED`) instead of re-matching it.
         return `${head}
-${emitMark(m1, L.buf, sinks)}
+${emitMark(m1, L.buf, L.raw, sinks)}
 const sv=${selector}(input,pos,ctx)
 if(sv===FAIL)return FAIL
 const selEnd=EC.e
 const key=sv
-let arm=${bk}.get(key)
-${fold}${chain}
+${armSelection}
 if(arm===undefined){
 ${other === undefined ? `ctx._fe=selEnd;ctx._fx=${dx};return FAIL` : ''}
 }
-${emitMark(m2, L.buf, sinks)}
+${emitMark(m2, L.buf, L.raw, sinks)}
 let v
 switch(arm){
 ${armCases}
 ${fallbackCase}
 }
 if(v===FAIL){
-${emitRollback(m2, L.buf, sinks)}
+${emitRollback(m2, L.buf, L.raw, sinks)}
 ctx._fc=true
 return FAIL
 }
@@ -1643,15 +2108,23 @@ return [key,v]
         // non-loop marks. Before `OP_FIELD` and `OP_EXPECT` were emittable the
         // answer was "never"; it is now "per table", and a grammar with no field
         // still pays neither the two loads nor the two stores per item.
-        const pfd = sinks.fd ? `${p}fd` : '0'
+        const pfd = sinks.fd ? `${p}fd` : 'undefined'
         const per = sinks.er ? `${p}er` : 'undefined'
-        const rb = L.buf
-          ? `_rbBuf(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
+        const rbHelper = L.raw === RAW_OMIT ? '_rbNoRawBuf' : '_rbBuf'
+        const rb = L.buf && L.raw !== 0
+          ? `${rbHelper}(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
+          : L.buf
+            ? `rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
           : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
         const markSinks = `${sinks.fd ? `\n${p}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${sinks.er ? `\n${p}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
+        const markRaw = L.raw === RAW_OMIT
+          ? `${p}raw=b.rawLen`
+          : L.raw === RAW_CAPTURE
+            ? `const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0`
+            : `const r=b.raw;${p}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)`
         const markBody = L.buf
           ? `const b=ctx._cstBuf
-const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+${markRaw}
 const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${p}tl=l!==undefined?l.length:0
 ${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
@@ -1659,7 +2132,7 @@ ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}`
           : `if(needMark){
 const b=ctx._cstBuf
 if(b!==undefined){
-const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+const r=b.raw;${p}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)
 const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${p}tl=l!==undefined?l.length:0
 }else{
@@ -1804,7 +2277,13 @@ const leaf={_tag:'leaf',value,span:{start:pos,end}}
 const kids=[leaf],rawKids=[leaf],span={start:pos,end}
 EC.e=end
 const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
-${L.buf ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))' : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
+${L.buf && L.raw === RAW_OMIT
+  ? '_pushNodeNoRawBuf(ctx,nd)'
+  : L.buf && L.raw === RAW_CAPTURE
+    ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
+  : staticBuild
+    ? 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,ctx._cstBuf!==undefined&&ctx._cstBuf.noRaw===true?undefined:ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(nd,input,pos,end):undefined)'
+    : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
 EC.e=end
 return nd
 }`
@@ -1834,7 +2313,9 @@ return nd
           && (flags === 2 || flags === 18 || flags === 34)) {
           const fields = flags === 18
           const collapseChildren = flags === 34
-          const publish = `if(sBuf!==undefined){
+          const publish = L.buf && L.raw === RAW_OMIT
+            ? '_pushNodeNoRawBuf(ctx,nd)'
+            : L.buf && L.raw === RAW_CAPTURE ? `if(sBuf!==undefined){
 if(sBuf.rawOnly!==true){
 if(sBuf.ch!==undefined)sBuf.ch.push(nd)
 else if(sBuf.single!==undefined){sBuf.ch=[sBuf.single,nd];sBuf.single=undefined}
@@ -1844,6 +2325,22 @@ const rawNd=rawEntry(nd,input,pos,end)
 if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
 else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
 else sBuf.rawSingle=rawNd
+}else if(sCh!==undefined){
+sCh.push(nd)
+if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
+}` : `if(sBuf!==undefined){
+if(sBuf.noRaw===true)_pushNodeNoRawBuf(ctx,nd)
+else{
+if(sBuf.rawOnly!==true){
+if(sBuf.ch!==undefined)sBuf.ch.push(nd)
+else if(sBuf.single!==undefined){sBuf.ch=[sBuf.single,nd];sBuf.single=undefined}
+else sBuf.single=nd
+}
+const rawNd=rawEntry(nd,input,pos,end)
+if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
+else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
+else sBuf.rawSingle=rawNd
+}
 }else if(sCh!==undefined){
 sCh.push(nd)
 if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
@@ -1888,6 +2385,7 @@ return nd
           ? !structural || grammarCapture || hostCapturesThisType !== false
           : hostCapturesThisType === true
         const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
+        const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         const ty = q(type)
         const stArg = readsState ? 'st' : '(ctx.state!==undefined?Object.assign({},ctx.state):undefined)'
         const hostCall = `_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,${stArg},${tags})`
@@ -1906,7 +2404,14 @@ return nd
         // HOST COLLAPSE applies wherever the node's VALUE comes from the host —
         // any node under a CST host, not only the builder-less ones.
         const collapsible = keepChildren && (hostCst || (build === undefined && proj < 0))
-        const openCapture = keepChildren
+        const openCapture = omitsRaw
+          ? `const buf={noRaw:true,rawLen:0}
+ctx._cstBuf=buf
+ctx._cstChildren=undefined
+ctx._cstLeaves=undefined
+ctx._cstRawChildren=undefined
+ctx._cstTriviaLog=undefined`
+          : keepChildren
           ? `const buf={}
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
@@ -1919,7 +2424,12 @@ ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
-        const finishCapture = keepChildren
+        const finishCapture = omitsRaw
+          ? `const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
+const hostKids=kids
+const rawKids=EMPTY_CH
+const tlog=buf.tl??EMPTY_TLOG`
+          : keepChildren
           ? `const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
 const hostKids=kids
 const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
@@ -1956,11 +2466,15 @@ const st=${readsState ? '(ctx.state!==undefined?Object.assign({},ctx.state):unde
 let nd
 ${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]
 else ` : ''}{${value}}
-${L.buf
+${L.buf && L.raw === RAW_OMIT
+  ? '_pushNodeNoRawBuf(ctx,nd)'
+  : L.buf && L.raw === RAW_CAPTURE
   // The OUTER buffer, which this body saved into `sBuf` before opening its own —
   // so an in-node site's parent collector is present by the same fact.
   ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
-  : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
+  : staticBuild
+    ? 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined?(sBuf.noRaw===true?undefined:rawEntry(nd,input,pos,end)):sRaw!==undefined?rawEntry(nd,input,pos,end):undefined)'
+    : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
 EC.e=end
 return nd
 }`
@@ -1989,7 +2503,7 @@ return nd
   // are `function` declarations, so a body may call one that is textually below
   // it, but the `const _ts<N>` each one reads must be initialised before any
   // parse runs, not merely before the declaration is evaluated.
-  const source = `${RUNTIME_PRELUDE}
+  const source = `${RUNTIME_PRELUDE}${needsNoRawPrelude ? NO_RAW_RUNTIME_PRELUDE : ''}
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${choiceDefs.join('\n')}
@@ -2004,7 +2518,13 @@ _pfHost=host
 function _finish(){
 if(_pfDepth<=0)throw new Error('parseman emitted table assembly frame underflow')
 _pfDepth--
-if(_pfDepth===0)return
+if(_pfDepth===0){
+_pfTokInput=undefined
+_pfTokBody=-1
+_pfTokValue=undefined
+_pfTokDispatch=-1
+return
+}
 const prior=_pfFrames.pop()
 _pfScan=prior[0]
 _pfHost=prior[1]

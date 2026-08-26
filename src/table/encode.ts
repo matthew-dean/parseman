@@ -1,6 +1,7 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { classifyFinalChoice, firstSetOf, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
+import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
+import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
@@ -33,7 +34,7 @@ import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
-  assertLexicalCapabilityClosure, collectLexicalCapabilities, winnerWrapsReference,
+  collectLexicalCapabilities, winnerWrapsReference,
 } from '../compiler/token-capability.ts'
 import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
 
@@ -141,6 +142,9 @@ class Encoder {
   private lexIndex = new Map<string, number>()
   lexPrograms: LexProgramSpec[] = []
   private lexProgramIndex = new Map<string, number>()
+  private choiceRollbackMasks = new Map<number, number>()
+  private nonCommittingChoiceSites = new Set<number>()
+  private failureRollbackCleanSites = new Set<number>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -611,6 +615,77 @@ class Encoder {
     return w === undefined ? undefined : (name: string) => w[name]
   }
 
+  /**
+   * Whether a failed ordered-choice arm can leave state that the enclosing
+   * choice must restore before trying its successor.
+   *
+   * `mayLeavePartialCapture` is the existing sound CST/trivia proof. The extra
+   * writer census covers the side sinks that proof deliberately does not model:
+   * fields, recovered errors, and interpreted scanners. Strict assemblies do
+   * not run repeat recovery, but these rows can still publish through a caller's
+   * context. Cycles are safe to stop: revisiting the same combinator cannot
+   * discover a writer the first traversal did not already reach.
+   */
+  private failureNeedsRollback(
+    p: Combinator<unknown>,
+    autoNot: readonly AutoNotCheck[] | null | undefined,
+  ): boolean {
+    const refName = (p as unknown as { _ruleName?: string })._ruleName
+    const winner = refName === undefined ? undefined : this.winners?.[refName]
+    const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
+    const sideWriterMemo = new Map<Combinator<unknown>, boolean>()
+    const hasSideWriter = (
+      current: Combinator<unknown>,
+      seen = new Set<Combinator<unknown>>(),
+    ): { found: boolean; complete: boolean } => {
+      const cached = sideWriterMemo.get(current)
+      if (cached !== undefined) return { found: cached, complete: true }
+      if (seen.has(current)) return { found: false, complete: false }
+      const next = new Set(seen)
+      next.add(current)
+      const def = current._def
+      let result: { found: boolean; complete: boolean }
+      switch (def.tag) {
+        case 'field':
+        case 'expect':
+        case 'recover':
+        case 'scanTo':
+        case 'unknown':
+          result = { found: true, complete: true }
+          break
+        case 'lazy': {
+          const name = (current as unknown as { _ruleName?: string })._ruleName
+          const resolvedWinner = name === undefined ? undefined : this.winners?.[name]
+          if (resolvedWinner !== undefined && !winnerWrapsReference(resolvedWinner, current)) {
+            result = hasSideWriter(resolvedWinner, next)
+            break
+          }
+          try { result = hasSideWriter(def.thunk(), next) }
+          catch { result = { found: true, complete: true } }
+          break
+        }
+        default: {
+          let complete = true
+          result = { found: false, complete: true }
+          for (const child of childrenOf(def)) {
+            const childResult = hasSideWriter(child, next)
+            if (childResult.found) {
+              result = { found: true, complete: true }
+              break
+            }
+            complete &&= childResult.complete
+          }
+          if (!result.found) result = { found: false, complete }
+        }
+      }
+      if (result.found || result.complete) sideWriterMemo.set(current, result.found)
+      return result
+    }
+    return mayLeavePartialCapture(root, new Set(), true)
+      || hasSideWriter(root).found
+      || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
+  }
+
   /** A first set becomes a char class string, or −1 for `any`. */
   private charClass(fs: FirstSet): number {
     if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
@@ -1074,14 +1149,53 @@ class Encoder {
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
         const finalChoice = classifyFinalChoice(arms, rr)
-        const classes = arms.map((_, i) => finalChoice.nullable[i]
-          ? -1 : this.charClass(finalChoice.firstSets[i]!))
+        // attempt() preserves its child's success language, but the broad
+        // classifier deliberately treats the transaction as nullable/unknown so
+        // it can never by itself authorize exclusive one-arm selection. Recover
+        // only the narrower fact needed by an ORDERED choice: a non-nullable
+        // child can receive an individual rejection gate. Keep that authority
+        // out if it would make an otherwise open site fully disjoint, preserving
+        // the transaction's standing exclusion from exclusive dispatch.
+        const transactionalFirst = arms.map((arm, i): FirstSet | undefined => {
+          if (!finalChoice.nullable[i]) return undefined
+          const def = arm._def as ParserDef
+          if (def.tag !== 'attempt' || matchesEmpty(def.parser, new Set(), rr)) return undefined
+          return firstSetOf(def.parser, new Set(), rr)
+        })
+        const gateFirst = finalChoice.firstSets.map((first, i) => transactionalFirst[i] ?? first)
+        const classes = gateFirst.map((first, i) => finalChoice.nullable[i] && transactionalFirst[i] === undefined
+          ? -1 : this.charClass(first))
+        if (transactionalFirst.some(first => first !== undefined) && classes.every(cls => cls >= 0)) {
+          let overlap = false
+          for (let i = 0; i < gateFirst.length && !overlap; i++) {
+            for (let j = i + 1; j < gateFirst.length; j++) {
+              if (intersects(gateFirst[i]!, gateFirst[j]!)) { overlap = true; break }
+            }
+          }
+          if (!overlap) for (let i = 0; i < classes.length; i++) {
+            if (transactionalFirst[i] !== undefined) classes[i] = -1
+          }
+        }
         const dispIdx = this.disp.length
         this.disp.push(classes)
         // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. While the best
         // failure remains at the choice position, an arm declined by the driver's
         // char gate contributes the static opener set the interpreter would get by
         // entering it. A deeper dynamic arm failure discards those shallower sets.
+        // One compiler-only bit mask records which failed arms can actually
+        // dirty a rollback sink. It is consumed while printing emitted strict
+        // assemblies and never serialized; tolerant assemblies retain the
+        // universal rollback because repeat recovery can publish an error from
+        // inside any arm. Arity >31 falls back to -1 rather than truncating.
+        let rollbackMask = kids.length > 31 ? -1 : 0
+        if (rollbackMask === 0) {
+          for (let i = 0; i < arms.length; i++) {
+            const src = order[i]!
+            if (this.failureNeedsRollback(arms[i]!, d.autoNot[src])) {
+              rollbackMask |= 1 << i
+            }
+          }
+        }
         const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
         this.code[head + 1] = dispIdx
         this.code[head + 2] = kids.length
@@ -1092,6 +1206,10 @@ class Encoder {
         for (let i = 0; i < kids.length; i++) {
           this.code[head + 4 + i] = kids[i]!
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
+        }
+        this.choiceRollbackMasks.set(head, rollbackMask)
+        if (arms.every(arm => !mayCommitFailure(arm, new Set(), rr))) {
+          this.nonCommittingChoiceSites.add(head)
         }
         return head
       }
@@ -1143,8 +1261,11 @@ class Encoder {
           ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags, this.expected(deriveExpected(d.parser)))
           : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
       }
-      case 'optional':
-        return this.emit(OP_OPT, this.node(d.parser).ip)
+      case 'optional': {
+        const head = this.emit(OP_OPT, this.node(d.parser).ip)
+        if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(head)
+        return head
+      }
       case 'transform': {
         // Declared on the def and not lowered here. Refuse rather than assume it is
         // inert: a recognition-only transform suppresses its value, and a table that
@@ -1444,6 +1565,7 @@ class Encoder {
       // lowering was correct only for a choice arm.
       case 'attempt': {
         const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip)
+        if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(inner)
         // THE FIRST-SET FAIL-FAST GUARD, lowered as the `OP_GATE` row the `node()`
         // case already uses — it is the same guard, written twice in the
         // interpreter (`attempt.ts:22`, `node.ts:239`). It is NOT merely an
@@ -1652,6 +1774,10 @@ class Encoder {
       ...(this.rec ? { rec: 1 as const } : {}),
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
+    }, undefined, {
+      choiceRollbackMasks: this.choiceRollbackMasks,
+      failureRollbackCleanSites: this.failureRollbackCleanSites,
+      nonCommittingChoiceSites: this.nonCommittingChoiceSites,
     })
   }
 }
@@ -1748,7 +1874,6 @@ export function encodeTableProgram(
   const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
   const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
   const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
-  assertLexicalCapabilityClosure(lexicalRoots, capabilities, resolveLexical)
   const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete)
   enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)

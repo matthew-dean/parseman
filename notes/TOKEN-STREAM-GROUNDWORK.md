@@ -1,5 +1,14 @@
 # Token cursor groundwork: static evidence and shipping gaps
 
+> **0.50 successor:** [`PERF_IDEAS.md`](./PERF_IDEAS.md) U-58 and U-59 now own
+> the high-ceiling token work. The target is no longer “scan, publish a pending
+> range on context, then let the ordinary arm consume it.” That bounded handoff
+> was measured slightly slower on hot Less. The promoted design makes a packed
+> `kind/route/end` the control flow itself and can carry a PEG residual state so
+> the chosen continuation neither re-enters its original shell nor rescans the
+> recognized prefix. This note remains authoritative for prior scanner defects,
+> semantic traps, and vocabulary, but not for the current implementation ceiling.
+
 > **Authority/status (2026-08-08): evidence companion, not design authority.**
 > This note records the static probe made on `lane/tokenstream` from
 > `release/0.47.0` (`90e115c`) and the defects found in the unused token modules.

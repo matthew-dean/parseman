@@ -119,7 +119,7 @@ const OP_NODE = 10
 const OP_NODE_TRACK = 19
 const TAIL_CAPTURE_BITS = 4 | 8
 
-export function tableKeepsTailCapture(code: string): boolean {
+function onlyNodeFlags(code: string): number {
   const cm = /\bc:\[([-\d,]+)\]/.exec(code)
   const rm = /\br:(\{[^}]*\})/.exec(code)
   if (!cm || !rm) throw new Error('no table program in the emitted artifact — did the grammar fail to lower?')
@@ -135,5 +135,14 @@ export function tableKeepsTailCapture(code: string): boolean {
   // entries, so a row is a row.
   const rows = [...reachableIps(prog)].filter(ip => prog.code[ip] === OP_NODE || prog.code[ip] === OP_NODE_TRACK)
   if (rows.length !== 1) throw new Error(`expected exactly one node row, found ${rows.length}`)
-  return (prog.code[rows[0]! + 3]! & TAIL_CAPTURE_BITS) !== 0
+  return prog.code[rows[0]! + 3]!
+}
+
+export function tableKeepsTailCapture(code: string): boolean {
+  return (onlyNodeFlags(code) & TAIL_CAPTURE_BITS) !== 0
+}
+
+/** True when the macro table proved the direct builder's rawChildren value dead. */
+export function tableOmitsRawCapture(code: string): boolean {
+  return (onlyNodeFlags(code) & 2) !== 0
 }

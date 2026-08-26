@@ -60,6 +60,9 @@ const NATIVE_CODE_RE = /\{\s*\[native code\]\s*\}/
 /** Identifier head of a formal param, with its optional `?`. */
 const PARAM_HEAD_RE = /^[A-Za-z_$][\w$]*\s*\??\s*/
 
+/** Same accepted identifier head, captured for parameter-liveness analysis. */
+const PARAM_NAME_RE = /^([A-Za-z_$][\w$]*)\s*\??\s*/
+
 /**
  * Confirmed count of simple formal parameters the build declares, or `null` when the
  * source can't be parsed into a plain identifier list (→ caller keeps full capture).
@@ -96,6 +99,52 @@ export function confirmedBuildArity(src: string): number | null {
   }
 
   return parts.length
+}
+
+/**
+ * Prove that one simple positional formal is never referenced by a reducer.
+ *
+ * This deliberately answers a BOOLEAN rather than `boolean | null`: `false` means
+ * either "used" OR "not provably unused", and callers keep capture in both cases.
+ * The proof accepts only the same plain-parameter shapes as arity analysis and then
+ * counts exact identifier tokens across the whole source. The declaration is the one
+ * permitted occurrence; any second occurrence — including a comment, string, shadowed
+ * binding, or nested closure — conservatively keeps the value.
+ *
+ * Dynamic name lookup is an unconditional refusal. `eval`, `Function`, `with`, and
+ * `arguments` can observe a value without leaving a statically attributable identifier
+ * read. False positives merely retain work; a false negative would change a builder's
+ * input, so there is no speculative branch here.
+ */
+export function confirmedBuildParamUnused(src: string, index: number): boolean {
+  if (!Number.isInteger(index) || index < 0) return false
+  const s = src.trim()
+  if (NATIVE_CODE_RE.test(s) || /\b(?:arguments|eval|Function)\b/.test(s) || /\bwith\s*\(/.test(s)) return false
+
+  let names: string[]
+  const single = /^([A-Za-z_$][\w$]*)\s*=>/.exec(s)
+  if (single) {
+    names = [single[1]!]
+  } else {
+    const inner = paramListText(s)
+    if (inner === null || inner.trim() === '') return false
+    const parts = splitTopLevel(inner)
+    if (parts === null) return false
+    names = []
+    for (const part of parts) {
+      const trimmed = part.trim()
+      if (!isConfirmableParam(trimmed)) return false
+      const name = PARAM_NAME_RE.exec(trimmed)?.[1]
+      if (name === undefined) return false
+      names.push(name)
+    }
+  }
+
+  const name = names[index]
+  if (name === undefined) return false
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const uses = s.match(new RegExp(`(^|[^A-Za-z0-9_$])${escaped}(?=$|[^A-Za-z0-9_$])`, 'g'))
+  return uses?.length === 1
 }
 
 /**
@@ -308,6 +357,7 @@ export function buildReadsChildren(def: NodeDef): boolean {
 /** Build reads its 4th (`rawChildren`) arg? Unknown/unparseable → true (keep capture). */
 export function buildReadsRaw(def: NodeDef): boolean {
   if (!def.build) return true // structural node: host/default CST may read raw children
+  if (def.buildRawUnused === true) return false
   const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 4

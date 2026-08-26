@@ -125,11 +125,12 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { reachableSites } from './site-labels.ts'
+import { computeSiteLabels, reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
-  makeScalarRecognizer, scalarTerminalNodeChild, scalarTerminalNotChild, type ScalarRecognizer,
+  leadingLiteralFamily, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
+  scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
 /**
@@ -482,6 +483,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return recognize
   }
 
+  const labelExtraIps: number[] = []
+  for (const s of prog.scans ?? []) {
+    for (const r of s.skip) labelExtraIps.push(r[0])
+    if (s.sentinel !== undefined) labelExtraIps.push(s.sentinel[0])
+  }
+  for (const set of prog.scanSkip ?? []) for (const r of set) labelExtraIps.push(r[0])
+  const closureLabels = computeSiteLabels(
+    code, [...Object.values(prog.rules), ...labelExtraIps], hostCst,
+  )
+
   /**
    * The INSTALLED trivia scanner for the scope currently running.
    *
@@ -818,7 +829,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       // has no single form. `rollbackNeeded` short-circuits true on a live buffer,
       // so the other seven sinks are not consulted — as before.
       const raw = b.raw
-      MRAW = raw !== undefined ? raw.length : b.rawSingle !== undefined ? 1 : 0
+      MRAW = b.noRaw === true
+        ? b.rawLen ?? 0
+        : raw !== undefined ? raw.length : b.rawSingle !== undefined ? 1 : 0
       const ch = b.ch
       MLV = ch !== undefined ? ch.length : b.single !== undefined ? 1 : 0
       const tl = b.tl
@@ -1001,6 +1014,33 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // The term matched nothing, so the trivia in front of it was never consumed
     // by anything — unrecord it and leave the cursor where it was.
     if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
+    return cur
+  }
+
+  /** A non-first term at a site proven to run under an open node capture buffer. */
+  function nextTermBuffered(child: Piece, input: string, cur: number, ctx: ParseContext): number {
+    if (ctx.trivia === undefined) {
+      const v = child(input, cur, ctx)
+      if (v === FAIL) return -1
+      TERMV = v
+      return EC.e
+    }
+    const before = ctx._cstBuf!
+    const beforeTl = before.tl
+    const mTl = beforeTl === undefined ? 0 : beforeTl.length
+    const mLog = ctx._triviaLog?.length ?? 0
+    const mRoot = ctx._rootTriviaLog?.length ?? 0
+    const scanEnd = skipTrivia(input, cur, ctx)
+    const scanned = ctx._cstBuf!
+    const scannedTl = scanned.tl
+    const scanTl = scannedTl === undefined ? 0 : scannedTl.length
+    const scanLog = ctx._triviaLog?.length ?? 0
+    const scanRoot = ctx._rootTriviaLog?.length ?? 0
+    const v = child(input, scanEnd, ctx)
+    if (v === FAIL) return -1
+    TERMV = v
+    if (EC.e > scanEnd) return EC.e
+    rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
     return cur
   }
 
@@ -1288,7 +1328,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const holder = { fwd, set: (p: Piece) => { target = p } }
     inFlight.set(ip, holder)
 
-    const piece = lower(ip)
+    const op = code[ip]
+    // Match the emitted assembly's label-proven scope alias: rule entries in a
+    // single ambient trivia scope otherwise reinstall and restore the exact
+    // same trivia, labels and scanner on every call. Install the forwarding
+    // holder first so a recursive child can still link back through this site.
+    const piece = (op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0))
+      && code[ip + 1]! >= 0
+      && closureLabels.at(ip).tri === code[ip + 1]!
+      ? link(code[ip + 2]!)
+      : lower(ip)
 
     inFlight.delete(ip)
     holder.set(piece)
@@ -2148,6 +2197,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const fn = fused && projection < 0
           ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           : undefined
+        const step = closureLabels.at(ip).buf ? nextTermBuffered : nextTerm
 
         const runnerBlock = (
           count: number,
@@ -2255,7 +2305,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const kid = link(kidIp)
               return (input, cur, ctx, inherited) => {
                 ctx._sync = sync ?? inherited
-                return nextTerm(kid, input, cur, ctx)
+                return step(kid, input, cur, ctx)
               }
             }
             const negated = code[kidIp + 1] === 1
@@ -2328,7 +2378,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
-              return (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
+              return (input, cur, ctx) => step(kid, input, cur, ctx)
             }
             const negated = code[kidIp + 1] === 1
             const ki = code[kidIp + 2]!
@@ -2436,7 +2486,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              const cur = nextTerm(k1, input, EC.e, ctx)
+              const cur = step(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
               return projection === 0 ? v0
@@ -2448,7 +2498,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              const cur = nextTerm(k1, input, EC.e, ctx)
+              const cur = step(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
               return [v0, TERMV]
@@ -2457,7 +2507,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           return (input, pos, ctx) => {
             const v0 = k0(input, pos, ctx)
             if (v0 === FAIL) return FAIL
-            const cur = nextTerm(k1, input, EC.e, ctx)
+            const cur = step(k1, input, EC.e, ctx)
             if (cur < 0) return FAIL
             EC.e = cur
             return undefined
@@ -2470,10 +2520,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              let cur = nextTerm(k1, input, EC.e, ctx)
+              let cur = step(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               const v1 = TERMV
-              cur = nextTerm(k2, input, cur, ctx)
+              cur = step(k2, input, cur, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
               return projection === 0 ? v0
@@ -2486,10 +2536,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              let cur = nextTerm(k1, input, EC.e, ctx)
+              let cur = step(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               const v1 = TERMV
-              cur = nextTerm(k2, input, cur, ctx)
+              cur = step(k2, input, cur, ctx)
               if (cur < 0) return FAIL
               EC.e = cur
               return [v0, v1, TERMV]
@@ -2498,9 +2548,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           return (input, pos, ctx) => {
             const v0 = k0(input, pos, ctx)
             if (v0 === FAIL) return FAIL
-            let cur = nextTerm(k1, input, EC.e, ctx)
+            let cur = step(k1, input, EC.e, ctx)
             if (cur < 0) return FAIL
-            cur = nextTerm(k2, input, cur, ctx)
+            cur = step(k2, input, cur, ctx)
             if (cur < 0) return FAIL
             EC.e = cur
             return undefined
@@ -2516,43 +2566,43 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           next: SequenceTermBlock | undefined,
         ): SequenceTermBlock => {
           if (count === 1) return (input, cur, ctx, values) => {
-            cur = nextTerm(k0, input, cur, ctx)
+            cur = step(k0, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
             return next === undefined ? cur : next(input, cur, ctx, values)
           }
           if (count === 2) return (input, cur, ctx, values) => {
-            cur = nextTerm(k0, input, cur, ctx)
+            cur = step(k0, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
-            cur = nextTerm(k1, input, cur, ctx)
+            cur = step(k1, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
             return next === undefined ? cur : next(input, cur, ctx, values)
           }
           if (count === 3) return (input, cur, ctx, values) => {
-            cur = nextTerm(k0, input, cur, ctx)
+            cur = step(k0, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
-            cur = nextTerm(k1, input, cur, ctx)
+            cur = step(k1, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
-            cur = nextTerm(k2, input, cur, ctx)
+            cur = step(k2, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
             return next === undefined ? cur : next(input, cur, ctx, values)
           }
           return (input, cur, ctx, values) => {
-            cur = nextTerm(k0, input, cur, ctx)
+            cur = step(k0, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
-            cur = nextTerm(k1, input, cur, ctx)
+            cur = step(k1, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
-            cur = nextTerm(k2, input, cur, ctx)
+            cur = step(k2, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
-            cur = nextTerm(k3, input, cur, ctx)
+            cur = step(k3, input, cur, ctx)
             if (cur < 0) return -1
             if (values !== undefined) values.push(TERMV)
             return next === undefined ? cur : next(input, cur, ctx, values)
@@ -2722,6 +2772,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (n === 2 || n === 3) {
           const a0 = link(code[base]!), a1 = link(code[base + 1]!)
           const a2 = n === 3 ? link(code[base + 2]!) : undefined
+          const predecide = !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines
+          const p0ip = predecide ? leadingScalarTerminal(code, code[base]!, 2, true, true) : -1
+          const p1ip = predecide ? leadingScalarTerminal(code, code[base + 1]!, 2, true, true) : -1
+          const p2ip = predecide && n === 3 ? leadingScalarTerminal(code, code[base + 2]!, 2, true, true) : -1
+          const p0 = p0ip < 0 ? undefined : scalarFor(p0ip)
+          const p1 = p1ip < 0 ? undefined : scalarFor(p1ip)
+          const p2 = p2ip < 0 ? undefined : scalarFor(p2ip)
           const e0 = fx[code[base + n]!] as string[]
           const e1 = fx[code[base + n + 1]!] as string[]
           const e2 = n === 3 ? fx[code[base + n + 2]!] as string[] : undefined
@@ -2751,7 +2808,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             let acc: string[] | undefined
             let best = pos
             if (c < 128) {
-              const bits = mask[c < 0 ? 128 : c]!
+              let bits = mask[c < 0 ? 128 : c]!
+              if ((bits & 1) !== 0 && p0 !== undefined && p0(input, pos) < 0) bits &= ~1
+              if ((bits & 2) !== 0 && p1 !== undefined && p1(input, pos) < 0) bits &= ~2
+              if ((bits & 4) !== 0 && p2 !== undefined && p2(input, pos) < 0) bits &= ~4
               let prev = 0
               if ((bits & 1) !== 0) {
                 ctx._fc = false
@@ -2796,7 +2856,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
 
-            if (g0 === null || classHas(g0, c)) {
+            if ((g0 === null || classHas(g0, c)) && (p0 === undefined || p0(input, pos) >= 0)) {
               ctx._fc = false
               const v = a0(input, pos, ctx)
               if (v !== FAIL) return v
@@ -2806,7 +2866,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             } else if (best === pos) acc = accSet(e0, acc)
-            if (g1 === null || classHas(g1, c)) {
+            if ((g1 === null || classHas(g1, c)) && (p1 === undefined || p1(input, pos) >= 0)) {
               ctx._fc = false
               const v = a1(input, pos, ctx)
               if (v !== FAIL) return v
@@ -2817,7 +2877,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             } else if (best === pos) acc = accSet(e1, acc)
             if (n === 3) {
-              if (g2 === null || classHas(g2, c)) {
+              if ((g2 === null || classHas(g2, c)) && (p2 === undefined || p2(input, pos) >= 0)) {
                 ctx._fc = false
                 const v = a2!(input, pos, ctx)
                 if (v !== FAIL) return v
@@ -3432,6 +3492,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // grammar collapse form and the host collapse predicate.
         const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
         const rawOnly = !keepChildren
+        const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         return (input, pos, ctx) => {
           const host = HOST
           // `beginCstNodeCapture`/`endCstNodeCapture` INLINED, and the two objects
@@ -3444,17 +3505,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // allocations a parse that the compiled engine (which inlines its own
           // capture prologue and epilogue) never makes.
           const sCh = ctx._cstChildren
-          const sLv = ctx._cstLeaves
-          const sRaw = ctx._cstRawChildren
-          const sTl = ctx._cstTriviaLog
           const sCap = ctx.captureTrivia
           const sBuf = ctx._cstBuf
-          const buf: CstCaptureBuf = rawOnly ? { rawOnly: true } : {}
+          const buf: CstCaptureBuf = rawOnly
+            ? { rawOnly: true }
+            : omitsRaw ? { noRaw: true, rawLen: 0 } : {}
           ctx._cstBuf = buf
-          ctx._cstChildren = undefined
-          ctx._cstLeaves = undefined
-          ctx._cstRawChildren = undefined
-          ctx._cstTriviaLog = undefined
           // `begin` sets this true and the caller immediately cleared it when the
           // node does not capture wide. Net: the flag IS `captureWide`, a const.
           ctx.captureTrivia = captureWide
@@ -3476,13 +3532,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (structural) ctx._triviaCaptureMask = savedMask
           const kids = rawOnly ? EMPTY_CH : buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
           const hostKids = kids
-          const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
+          const rawKids = omitsRaw
+            ? EMPTY_CH
+            : buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
           const tlog = buf.tl ?? EMPTY_TLOG
           ctx._cstBuf = sBuf
-          ctx._cstChildren = sCh
-          ctx._cstLeaves = sLv
-          ctx._cstRawChildren = sRaw
-          ctx._cstTriviaLog = sTl
           ctx.captureTrivia = sCap
           if (v === FAIL) return FAIL
           const end = EC.e
@@ -3619,6 +3673,35 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (child >= 0) {
             rawScalarSpecs.add(code[child + 1]!)
             scalarFor(child)
+          }
+        } else if (code[ip] === OP_CHOICE && !disp[code[ip + 1]!]!.exclusive) {
+          const n = code[ip + 2]!
+          for (let i = 0; i < n; i++) {
+            const armIp = code[ip + 4 + i]!
+            const child = leadingScalarTerminal(code, armIp, 2, true, true)
+            if (n === 2 || n === 3) {
+              if (child >= 0) scalarFor(child)
+              continue
+            }
+            if (child >= 0) {
+              const spec = k[code[child + 1]!]
+              if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
+                scalarFor(child)
+                continue
+              }
+            }
+            const family = leadingLiteralFamily(code, k, armIp)
+            if (family !== undefined && family.length >= 2 && family.every(terminal => {
+              const value = k[code[terminal + 1]!]
+              return typeof value === 'string' && value.length >= 2
+            })) {
+              for (const terminal of family) scalarFor(terminal)
+            }
+            const sequence = leadingScalarSequence(code, armIp)
+            if (sequence !== undefined && (sequence.trivia < 0
+              || triviaScan[sequence.trivia] != null)) {
+              for (const terminal of sequence.terminals) scalarFor(terminal)
+            }
           }
         }
       }

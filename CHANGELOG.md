@@ -3,6 +3,38 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.0 — 2026-08-26
+
+- Specialize the live table returned by runtime `compile()` and runtime `compose()`
+  once, then cache the resulting assembly. Environments that reject dynamic source
+  construction fall back on `EvalError` to the exact closure assembler. Printable
+  artifacts and ordinary macro output retain an explicit empty assembly inventory,
+  so importing or parsing emitted code never requires `new Function`.
+- Specialize hot macro assemblies at build time across token decisions, scalar
+  terminals, choice rollback and diagnostics, direct capture sinks, and uniquely
+  owned entry regions. The retained entry-region pass removes 34.8% of generated
+  Piece entries on benchmark Less and 52.2% on CSS while preserving full result
+  identity; order-normalized timing retains a modest ~2% three-workload parse win.
+- Eliminate repeated lexical-capability inventory work during grammar encoding.
+  Each compilation now builds one immutable occurrence-to-derived closure receipt,
+  computes dynamic-scan reachability once per graph, and memoizes exact continuation
+  boundaries. Independent adjacent controls preserve byte-identical TablePrograms
+  while reducing construction time by 15–30% on CSS and 59–71% on Less.
+- Preserve ordered-choice expected-token depth, routed rollback state, unmarked field
+  captures, token-family diagnostics, and CSP fallback behavior across the new fast
+  paths. Six planted differential defects, 4,146 unit/parity tests, the coverage
+  ratchet, and the Jess CSS/Less corpora exercise the retained boundaries.
+- Rebuild generated, macro, composed, folded, precompiled, and rule-map artifacts
+  with 0.50.0; Parseman artifacts remain version-locked to their runtime.
+- Regenerate all four public comparison SVGs on Node 25.9.0. Runtime-compiled
+  Parseman remains the fastest compared JavaScript parser on every JSON, CSV,
+  GraphQL, and CST row. The tightest fresh row is JSON-small at 0.57 microseconds
+  versus Chevrotain at 1.00 microsecond (1.75x); the large JSON, CSV, GraphQL, and
+  CST leads are 2.02x, 5.73x, 3.08x, and 3.94x respectively.
+- Re-anchor the grammar-density and broad-workload performance gates to the 0.49.0
+  release commit (`53683e0`) and publish a 2.3 MB packed / 10.0 MB unpacked package
+  containing 395 files.
+
 ## 0.49.0 — 2026-08-15
 
 - Lift the composed-builder static analyzer so a `node()` / reducer used under

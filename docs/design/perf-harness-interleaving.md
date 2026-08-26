@@ -1,5 +1,40 @@
 # Single-process interleaving, and when it lies
 
+## 0.50 macro-architecture experiment protocol
+
+The high-ceiling 0.50 programs in [`notes/PERF_IDEAS.md`](../../notes/PERF_IDEAS.md)
+U-57…U-61 use the existing Jess macro A/B path as their production decision
+instrument. A number counts only when both legs are ordinary shipping macro
+artifacts, the banner identifies the realized engine and source realpath, the
+input is fully consumed, and successful output identity is checked. Build-time
+dynamic generation is allowed; neither emitted leg may call `eval` or
+`new Function` at parse time.
+
+Keep the reference in a nearby worktree and run candidate/reference legs in
+alternating, adjacent rounds. Run an identical-code worktree comparison in the
+same load window and normalize the candidate result against it. This is required
+even for a large apparent win: background load on this machine can create stable
+within-run bias rather than ordinary zero-centered noise.
+
+Architectural lanes may analyze and compile in parallel, but **production timing
+is serialized**. Two agents benchmarking at once are not independent evidence;
+they are each other's workload. Before retaining a result, repeat it with no
+other lane compiling or timing, record load at both ends, and use the existing
+two-graph/interleaved harness rather than constructing a new benchmark wrapper.
+Macro source size, npm-pack size where relevant, and the bytecode size of hot
+bodies around V8's measured 460-byte inlining cutoff travel with the timing.
+The cutoff is boundary-specific, not a universal maximum: it matters when a
+callee is expected to inline into its caller. A large standalone trace that has
+deleted its internal calls may be the winning shape even though it cannot inline
+again; record that topology instead of rejecting it mechanically.
+
+The purpose of an early ceiling probe is falsification, not release readiness.
+It may temporarily suppress or replace work to price an architecture, but it
+must preserve successful parse value and consumption before its speed is
+interpretable, must say which contracts it intentionally omits, and must be
+reverted if the ceiling cannot plausibly produce a 15% whole-workload gain. Only
+a semantically complete version may be committed as a retained win.
+
 `pnpm perf:guard:grammars` loads both sides of its A/B into ONE process and
 interleaves them. That is deliberate, and [perf-gates.md](./perf-gates.md)
 explains why: it removes the cross-machine term entirely, which is the term that

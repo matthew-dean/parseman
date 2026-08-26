@@ -17,6 +17,7 @@
  * the machinery.
  */
 import type { Combinator, ParserDef } from '../types.ts'
+import type { RefResolver } from '../combinators/first-set.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import { childrenOf } from './gating.ts'
 
@@ -435,7 +436,11 @@ export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<u
 }
 
 /** True when `p` can report a committed failure through emitFallible's failure channel. */
-export function mayCommitFailure(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function mayCommitFailure(
+  p: Combinator<unknown>,
+  seen: Set<Combinator<unknown>> = new Set(),
+  resolve?: RefResolver,
+): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
@@ -444,7 +449,7 @@ export function mayCommitFailure(p: Combinator<unknown>, seen: Set<Combinator<un
       return true
     case 'choice':
     case 'sequence':
-      return d.parsers.some(x => mayCommitFailure(x, seen))
+      return d.parsers.some(x => mayCommitFailure(x, seen, resolve))
     case 'many':
     case 'oneOrMore':
     case 'optional':
@@ -454,18 +459,24 @@ export function mayCommitFailure(p: Combinator<unknown>, seen: Set<Combinator<un
     case 'field':
     case 'grammar':
     case 'node':
-      return mayCommitFailure(d.parser, seen)
+      return mayCommitFailure(d.parser, seen, resolve)
     case 'sepBy':
-      return mayCommitFailure(d.parser, seen) || mayCommitFailure(d.separator, seen)
+      return mayCommitFailure(d.parser, seen, resolve) || mayCommitFailure(d.separator, seen, resolve)
     case 'token':
     case 'leaf':
-      return mayCommitFailure(d.parser, seen)
+      return mayCommitFailure(d.parser, seen, resolve)
     case 'withCtx':
-      return mayCommitFailure(d.parser, seen)
+      return mayCommitFailure(d.parser, seen, resolve)
     case 'scanTo':
-      return mayCommitFailure(d.sentinel, seen) || d.skip.some(x => mayCommitFailure(x, seen))
+      return mayCommitFailure(d.sentinel, seen, resolve)
+        || d.skip.some(x => mayCommitFailure(x, seen, resolve))
     case 'lazy': {
-      try { return mayCommitFailure(d.thunk(), seen) } catch { return true }
+      try { return mayCommitFailure(d.thunk(), seen, resolve) }
+      catch {
+        const name = (p as unknown as { _ruleName?: string })._ruleName
+        const target = name === undefined ? undefined : resolve?.(name)
+        return target === undefined ? true : mayCommitFailure(target, seen, resolve)
+      }
     }
     case 'unknown':
       return true

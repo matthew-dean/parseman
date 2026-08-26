@@ -6,6 +6,10 @@ export type CstCaptureBuf = {
   /** Table-host specialisation: collect source-order raw entries without the
    * duplicate semantic children view. Selected once for the enclosing node. */
   rawOnly?: true | undefined
+  /** Direct reducer proved `rawChildren` unobservable. Preserve only the source-order
+   * COUNT needed by trivia insertion/rollback; never retain raw entry values. */
+  noRaw?: true | undefined
+  rawLen?: number | undefined
   single?: unknown | undefined
   ch?: unknown[] | undefined
   rawSingle?: unknown | undefined
@@ -54,7 +58,9 @@ export function finishCstBuf(buf: CstCaptureBuf | undefined): {
 } {
   if (!buf) return { children: EMPTY, rawChildren: EMPTY, triviaLog: EMPTY_TL }
   const children = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY)
-  const rawChildren = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY)
+  const rawChildren = buf.noRaw === true
+    ? EMPTY
+    : buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY)
   const triviaLog = buf.tl ?? EMPTY_TL
   return { children, rawChildren, triviaLog }
 }
@@ -94,7 +100,8 @@ export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknow
       else b.single = built
     }
 
-    if (b.raw) b.raw.push(rawEntry)
+    if (b.noRaw === true) b.rawLen = (b.rawLen ?? 0) + 1
+    else if (b.raw) b.raw.push(rawEntry)
     else if (b.rawSingle !== undefined) { b.raw = [b.rawSingle, rawEntry]; b.rawSingle = undefined }
     else b.rawSingle = rawEntry
     return
@@ -107,6 +114,7 @@ export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknow
 export function cstRawLen(ctx: ParseContext): number {
   const b = ctx._cstBuf
   if (b) {
+    if (b.noRaw === true) return b.rawLen ?? 0
     if (b.raw) return b.raw.length
     return b.rawSingle !== undefined ? 1 : 0
   }
@@ -156,9 +164,10 @@ function rollbackBufList(
     if (len === 0) b[keyMulti] = undefined
     else if (len === 1) { b[keySingle] = arr[0]; b[keyMulti] = undefined }
     // Guarded like every other truncation — see rollbackCstCapture. This is the
-    // buffered node-capture path, so it is reached only by the INTERPRETER (the
-    // compiled engine inlines its own capture and never calls here), and it is
-    // where the redundant-store rate is highest: over a backtracking fixture
+    // buffered node-capture path. `demoteCapturedToRaw` is its remaining caller;
+    // the table closure's fixed raw/child rollback fields stay inline so its hot
+    // speculative path does not rediscover them through dynamic property keys.
+    // This is where the redundant-store rate is highest: over a backtracking fixture
     // this branch ran 32,800 times and 31,198 of those — 95% — restored a
     // length that had not moved.
     else if (arr.length !== len) arr.length = len
@@ -221,8 +230,8 @@ export function rollbackCstCaptureAt(
   raw: number,
   tlog: number,
   leaves: number,
-  fields: number,
-  errors: number,
+  fields: number | undefined,
+  errors: number | undefined,
 ): void {
   // Truncate the flat recovery-error sink alongside the CST, so a rolled-back
   // speculative branch leaves no ghost error (see saveCstMark). Guarded on a
@@ -238,19 +247,33 @@ export function rollbackCstCaptureAt(
   if (ctx._errors && errors !== undefined && ctx._errors.length !== errors) ctx._errors.length = errors
   const b = ctx._cstBuf
   if (b) {
-    rollbackBufList(b, 'raw', 'rawSingle', raw)
-    rollbackBufList(b, 'ch', 'single', leaves)
+    if (b.noRaw === true) {
+      if (b.rawLen !== raw) b.rawLen = raw
+    } else {
+      const rawList = b.raw
+      if (rawList) {
+        if (raw === 0) b.raw = undefined
+        else if (raw === 1) { b.rawSingle = rawList[0]; b.raw = undefined }
+        else if (rawList.length !== raw) rawList.length = raw
+      } else if (raw === 0) b.rawSingle = undefined
+    }
+    const childList = b.ch
+    if (childList) {
+      if (leaves === 0) b.ch = undefined
+      else if (leaves === 1) { b.single = childList[0]; b.ch = undefined }
+      else if (childList.length !== leaves) childList.length = leaves
+    } else if (leaves === 0) b.single = undefined
     if (b.tl) {
       if (tlog === 0) b.tl = undefined
       else if (b.tl.length !== tlog) b.tl.length = tlog
     }
-    if (ctx._fields && ctx._fields.length !== fields) ctx._fields.length = fields
+    if (ctx._fields && fields !== undefined && ctx._fields.length !== fields) ctx._fields.length = fields
     return
   }
   if (ctx._cstRawChildren && ctx._cstRawChildren.length !== raw) ctx._cstRawChildren.length = raw
   if (ctx._cstTriviaLog && ctx._cstTriviaLog.length !== tlog) ctx._cstTriviaLog.length = tlog
   if (ctx._cstLeaves && ctx._cstLeaves.length !== leaves) ctx._cstLeaves.length = leaves
-  if (ctx._fields && ctx._fields.length !== fields) ctx._fields.length = fields
+  if (ctx._fields && fields !== undefined && ctx._fields.length !== fields) ctx._fields.length = fields
 }
 
 export function pushCstTriviaEntry(

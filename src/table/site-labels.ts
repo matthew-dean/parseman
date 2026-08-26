@@ -79,6 +79,13 @@ export const CAP_OFF = 1
 /** `ctx.captureTrivia === true` is guaranteed here. */
 export const CAP_ON = 2
 
+/** Buffer raw-entry mode is not provable at this site. */
+export const RAW_UNKNOWN = 0
+/** Buffer retains raw entry values. */
+export const RAW_CAPTURE = 1
+/** Buffer retains only a raw source-order count. */
+export const RAW_OMIT = 2
+
 export type SiteLabel = {
   /** `TRI_UNKNOWN`, `TRI_NONE`, or the trivia slot the enclosing scope installed. */
   readonly tri: number
@@ -87,19 +94,22 @@ export type SiteLabel = {
    * asymmetry note in this file's header. Never read as "guaranteed absent".
    */
   readonly buf: boolean
+  /** `RAW_UNKNOWN` / `RAW_CAPTURE` / `RAW_OMIT`. */
+  readonly raw: number
   /** `CAP_UNKNOWN` / `CAP_OFF` / `CAP_ON`. */
   readonly cap: number
 }
 
 /** The lattice's top: every entry point starts here. */
-export const TOP: SiteLabel = { tri: TRI_UNKNOWN, buf: false, cap: CAP_UNKNOWN }
+export const TOP: SiteLabel = { tri: TRI_UNKNOWN, buf: false, raw: RAW_UNKNOWN, cap: CAP_UNKNOWN }
 
 function meet(a: SiteLabel, b: SiteLabel): SiteLabel {
   const tri = a.tri === b.tri ? a.tri : TRI_UNKNOWN
   const buf = a.buf && b.buf
+  const raw = a.raw === b.raw ? a.raw : RAW_UNKNOWN
   const cap = a.cap === b.cap ? a.cap : CAP_UNKNOWN
-  if (tri === a.tri && buf === a.buf && cap === a.cap) return a
-  return { tri, buf, cap }
+  if (tri === a.tri && buf === a.buf && raw === a.raw && cap === a.cap) return a
+  return { tri, buf, raw, cap }
 }
 
 /**
@@ -145,7 +155,7 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
     // (`encode.ts:1153-1158`), so it can only ever raise `cap` to `CAP_ON`.
     const cap = op === OP_SCOPE_CAP ? CAP_ON : at.cap
     if (tri === at.tri && cap === at.cap) return at
-    return { tri, buf: at.buf, cap }
+    return { tri, buf: at.buf, raw: at.raw, cap }
   }
   if (op === OP_NODE || op === OP_NODE_TRACK) {
     const flags = code[ip + 3]!
@@ -156,14 +166,17 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
       // arrays instead of a CstCaptureBuf. Descendants still capture, but they
       // must take the generic collector branch rather than dereference `_cstBuf`.
       // False means UNKNOWN in this lattice, which is exactly the safe answer.
-      return { tri: at.tri, buf: false, cap: CAP_OFF }
+      return { tri: at.tri, buf: false, raw: RAW_UNKNOWN, cap: CAP_OFF }
     }
     // `ctx._cstBuf = buf` and `ctx.captureTrivia = <literal>`, both unconditional
     // — `emit-assembly.ts`'s `OP_NODE` body opens the buffer before it descends
     // and closes it after, whatever the host mode is.
     const cap = ((flags & 4) !== 0 || hostCst) ? CAP_ON : CAP_OFF
-    if (at.buf && cap === at.cap) return at
-    return { tri: at.tri, buf: true, cap }
+    const raw = !hostCst && code[ip + 1]! >= 0 && code[ip + 4]! < 0 && (flags & 2) !== 0
+      ? RAW_OMIT
+      : RAW_CAPTURE
+    if (at.buf && raw === at.raw && cap === at.cap) return at
+    return { tri: at.tri, buf: true, raw, cap }
   }
   // THE TWO BOUNDARIES clear every capture sink for their child and contribute
   // ONE leaf for the whole match; `token()` clears `ctx.trivia` as well. So a
@@ -178,11 +191,11 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
   // an option.
   if (op === OP_TOKEN) {
     if (at.tri === TRI_NONE && !at.buf) return at
-    return { tri: TRI_NONE, buf: false, cap: at.cap }
+    return { tri: TRI_NONE, buf: false, raw: RAW_UNKNOWN, cap: at.cap }
   }
   if (op === OP_LEAF) {
     if (!at.buf) return at
-    return { tri: at.tri, buf: false, cap: at.cap }
+    return { tri: at.tri, buf: false, raw: RAW_UNKNOWN, cap: at.cap }
   }
   return at
 }

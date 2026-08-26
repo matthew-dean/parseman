@@ -490,12 +490,53 @@ export type ResolvedTable = {
  */
 const TABLE_RUNTIME = Symbol('parseman.tableRuntime')
 type RuntimeTableProgram = TableProgram & {
-  readonly [TABLE_RUNTIME]?: { resolved: ResolvedTable | undefined }
+  readonly [TABLE_RUNTIME]?: {
+    resolved: ResolvedTable | undefined
+    readonly choiceRollbackMasks?: ReadonlyMap<number, number>
+    readonly nonCommittingChoiceSites?: ReadonlySet<number>
+    readonly failureRollbackCleanSites?: ReadonlySet<number>
+  }
 }
 
 /** Give an internally-created program its fixed-shape runtime owner. */
-export function ownTableProgram(prog: TableProgram, resolved?: ResolvedTable): TableProgram {
-  return { ...prog, [TABLE_RUNTIME]: { resolved } } as RuntimeTableProgram
+export function ownTableProgram(
+  prog: TableProgram,
+  resolved?: ResolvedTable,
+  caches: {
+    readonly choiceRollbackMasks?: ReadonlyMap<number, number>
+    readonly failureRollbackCleanSites?: ReadonlySet<number>
+    readonly nonCommittingChoiceSites?: ReadonlySet<number>
+  } = {},
+): TableProgram {
+  const runtime = (prog as RuntimeTableProgram)[TABLE_RUNTIME]
+  return {
+    ...prog,
+    [TABLE_RUNTIME]: {
+      resolved,
+      choiceRollbackMasks: caches.choiceRollbackMasks ?? runtime?.choiceRollbackMasks,
+      nonCommittingChoiceSites: caches.nonCommittingChoiceSites ?? runtime?.nonCommittingChoiceSites,
+      failureRollbackCleanSites: caches.failureRollbackCleanSites ?? runtime?.failureRollbackCleanSites,
+    },
+  } as RuntimeTableProgram
+}
+
+/** Compiler-only choice rollback authority, consumed while printing a static
+ * assembly and never serialized into the shipped table. */
+export function choiceRollbackMask(prog: TableProgram, ip: number): number | undefined {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceRollbackMasks?.get(ip)
+}
+
+/** Compiler-only proof that no arm at this choice can raise a committed
+ * failure. Static assembly may defer its diagnostic merge until total failure. */
+export function choiceCannotCommit(prog: TableProgram, ip: number): boolean {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.nonCommittingChoiceSites?.has(ip) === true
+}
+
+/** Compiler-only authority that a failed transactional child cannot leak any
+ * capture, trivia, field, or error sink. Static assembly consumes it to omit the
+ * enclosing mark and rollback; it is never serialized into the shipped table. */
+export function failureRollbackClean(prog: TableProgram, ip: number): boolean {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.failureRollbackCleanSites?.has(ip) === true
 }
 
 /** A compiled entry, shaped exactly like a codegen rule function. */

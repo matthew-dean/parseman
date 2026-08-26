@@ -116,16 +116,17 @@ export type CompiledRuleMapTable = {
   hostBranchElided: boolean
   reflection: GrammarReflection
   /**
-   * The RUNNABLE map, which the source lowering has no counterpart for — it
+   * The LIVE RUNNABLE map, which the source lowering has no counterpart for — it
    * hands back text and nothing else, because its artifact only exists once the
    * emitted source is evaluated. A table exists as data before it is printed, so
    * the same call that produces the replacement can also hand back the parser.
-   * That is what makes a differential against the interpreter possible without
-   * `eval`, and it is why the table-vs-interpreter test can compare `expected`
-   * sets rather than only accept/reject.
+   * It may use runtime assembly specialisation; `prog` and `replacement` remain
+   * serialized closure artifacts. That is what makes a differential against the
+   * interpreter possible without `eval`, and it is why the table-vs-interpreter
+   * test can compare `expected` sets rather than only accept/reject.
    */
   rules: Record<string, TableRule>
-  /** The encoded program, for a caller that wants to fold or inspect it. */
+  /** The closure-stamped wire program, for a caller that wants to fold or inspect it. */
   prog: TableProgram
   /**
    * The coverage DENOMINATOR — every id this map can hit — present only under
@@ -237,7 +238,7 @@ export function compileRuleMapRunnable(
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    rules: tableRules(artifact),
+    rules: tableRules(prog),
     prog: artifact,
   }
 }
@@ -348,7 +349,7 @@ export function compileRuleMap(
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    rules: tableRules(artifact),
+    rules: tableRules(prog),
     prog: artifact,
   }
 }
