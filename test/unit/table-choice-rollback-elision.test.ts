@@ -126,6 +126,28 @@ describe('emitted ordered-choice rollback elision', () => {
       .toEqual(projection(keywordChoice as Entry, '@charset'))
   })
 
+  it('defers dynamic arm diagnostics until the whole non-committing choice fails', () => {
+    const grammar = choice(
+      attempt(sequence(literal('a'), literal('!'))),
+      attempt(sequence(literal('a'), literal('?'))),
+      attempt(sequence(literal('a'), literal('.'))),
+    )
+    const prog = encodeTable({ Root: grammar })
+    const merges = { n: 0 }
+    const emitted = precompiledCountingExpectedMerges(prog, merges)
+
+    // The first arm fails with a dynamic suffix expectation at the re-anchored
+    // choice position. A later success must not materialize or concatenate it.
+    expect(projection(emitted, 'a?')).toEqual(projection(grammar as Entry, 'a?'))
+    expect(merges.n).toBe(0)
+
+    // Total failure is the cold exit: it performs the deferred merge and keeps
+    // the exact source-ordered dynamic suffix diagnostics.
+    merges.n = 0
+    expect(projection(emitted, 'a:')).toEqual(projection(grammar as Entry, 'a:'))
+    expect(merges.n).toBeGreaterThan(0)
+  })
+
   it('omits the outer mark when every arm contains its own failed capture', () => {
     const grammar = choice(
       node('Bang', sequence(literal('a'), literal('!'))),

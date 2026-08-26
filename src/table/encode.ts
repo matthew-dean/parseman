@@ -1,7 +1,7 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
-import { capturesLeaf, mayLeavePartialCapture } from '../analysis/commitment.ts'
+import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
@@ -143,6 +143,7 @@ class Encoder {
   lexPrograms: LexProgramSpec[] = []
   private lexProgramIndex = new Map<string, number>()
   private choiceRollbackMasks = new Map<number, number>()
+  private nonCommittingChoiceSites = new Set<number>()
   private failureRollbackCleanSites = new Set<number>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
@@ -1186,6 +1187,9 @@ class Encoder {
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
+        if (arms.every(arm => !mayCommitFailure(arm))) {
+          this.nonCommittingChoiceSites.add(head)
+        }
         return head
       }
       case 'many':
@@ -1749,7 +1753,7 @@ class Encoder {
       ...(this.rec ? { rec: 1 as const } : {}),
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
-    }, undefined, this.choiceRollbackMasks, this.failureRollbackCleanSites)
+    }, undefined, this.choiceRollbackMasks, this.failureRollbackCleanSites, this.nonCommittingChoiceSites)
   }
 }
 

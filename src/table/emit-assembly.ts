@@ -54,7 +54,7 @@ import {
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import {
-  choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
+  choiceCannotCommit, choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
   type ResolvedClass, type ResolvedTable, type TableProgram,
 } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
@@ -1797,6 +1797,76 @@ return FAIL
             rollbackMask === -1 || (rollbackMask & (1 << i)) !== 0
               ? emitRollback(p, L.buf, L.raw, sinks)
               : ''
+          if (choiceCannotCommit(prog, ip) && !startFailureExact) {
+            // A successful ordered choice does not expose any losing arm's
+            // diagnostic. Snapshot each entered arm's failure in scalar locals;
+            // choose the deepest set and concatenate ties on the cold TOTAL-
+            // failure exit. This is the direct-emitter topology from 0.45,
+            // restored without changing the table wire format.
+            const deepAt = Array.from({ length: n }, () => tmp())
+            const deepFx = Array.from({ length: n }, () => tmp())
+            const remember = (i: number, at: string, expectedSet: string): string =>
+              `${deepAt[i]}=${at};${deepFx[i]}=${expectedSet}`
+            const lazyArms = (ascii: boolean): string => arms.map((arm, i) => {
+              const pretest = pretests[i]
+              const decision = pretest?.token === undefined && pretest?.sequence === undefined ? '' : tmp()
+              const scalarCondition = pretest?.scalar === undefined ? ''
+                : pretest.scalar.length === 1
+                  ? `&&${pretest.scalar[0]}(input,pos)>=0`
+                  : `&&(${pretest.scalar.map(recognize => `${recognize}(input,pos)>=0`).join('||')})`
+              const sequenceCondition = pretest?.sequence === undefined ? ''
+                : `&&(${decision}=${pretest.sequence.name}(input,pos))>=0`
+              const condition = pretest?.token !== undefined
+                ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
+                : scalarCondition || sequenceCondition
+              const gate = ascii
+                ? `(bits&${1 << i})!==0${condition}`
+                : `(${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}`
+              const routeMiss = pretest?.token === undefined ? '' : `
+if(${decision}===0){
+ctx._fc=false
+{const at=_pfTokEnd
+${remember(i, 'at', pretest.token.expected)}}
+}`
+              const sequenceMiss = pretest?.sequence === undefined ? '' : `
+else if(${ascii ? `(bits&${1 << i})!==0&&` : ''}${decision}<0){
+ctx._fc=false
+{const at=_pfSeqEnd
+${remember(i, 'at', pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('') + pretest.sequence.expected.at(-1))}}
+}`
+              return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if(${gate}){
+ctx._fc=false
+{const v=${arm}(input,pos,ctx)
+if(v!==FAIL)return v}
+{const at=ctx._fe??pos
+${remember(i, 'at', 'ctx._fx')}}
+${rollbackFor(i)}
+}${routeMiss}${sequenceMiss}`
+            }).join('\n')
+            const merge = deepAt.map((at, i) => `{const at=${at}??pos
+const ex=${at}===undefined?${expected[i]}:${deepFx[i]}
+if(at>best){best=at;acc=_accSet(ex,undefined)}
+else if(at===best)acc=_accSet(ex,acc)
+}`).join('\n')
+            const finish = `let best=pos,acc
+${merge}
+ctx._fe=pos;ctx._fx=acc??${choiceFx}
+return FAIL`
+            return `${head}
+const c=lead(input,pos)
+${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
+${deepAt.map((at, i) => `let ${at},${deepFx[i]}`).join('\n')}
+${maskable ? `if(c<128){
+const bits=${maskName}[c<0?128:c]
+if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
+${lazyArms(true)}
+}else{
+${lazyArms(false)}
+}
+` : lazyArms(false)}
+${finish}
+}`
+          }
           const catchName = maskable ? `_cx${uid++}_` : ''
           if (maskable) {
             const catchCases = expected.map((e, i) =>

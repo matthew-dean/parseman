@@ -493,6 +493,7 @@ type RuntimeTableProgram = TableProgram & {
   readonly [TABLE_RUNTIME]?: {
     resolved: ResolvedTable | undefined
     readonly choiceRollbackMasks?: ReadonlyMap<number, number>
+    readonly nonCommittingChoiceSites?: ReadonlySet<number>
     readonly failureRollbackCleanSites?: ReadonlySet<number>
   }
 }
@@ -503,6 +504,7 @@ export function ownTableProgram(
   resolved?: ResolvedTable,
   choiceRollbackMasks?: ReadonlyMap<number, number>,
   failureRollbackCleanSites?: ReadonlySet<number>,
+  nonCommittingChoiceSites?: ReadonlySet<number>,
 ): TableProgram {
   const runtime = (prog as RuntimeTableProgram)[TABLE_RUNTIME]
   return {
@@ -510,6 +512,7 @@ export function ownTableProgram(
     [TABLE_RUNTIME]: {
       resolved,
       choiceRollbackMasks: choiceRollbackMasks ?? runtime?.choiceRollbackMasks,
+      nonCommittingChoiceSites: nonCommittingChoiceSites ?? runtime?.nonCommittingChoiceSites,
       failureRollbackCleanSites: failureRollbackCleanSites ?? runtime?.failureRollbackCleanSites,
     },
   } as RuntimeTableProgram
@@ -519,6 +522,12 @@ export function ownTableProgram(
  * assembly and never serialized into the shipped table. */
 export function choiceRollbackMask(prog: TableProgram, ip: number): number | undefined {
   return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceRollbackMasks?.get(ip)
+}
+
+/** Compiler-only proof that no arm at this choice can raise a committed
+ * failure. Static assembly may defer its diagnostic merge until total failure. */
+export function choiceCannotCommit(prog: TableProgram, ip: number): boolean {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.nonCommittingChoiceSites?.has(ip) === true
 }
 
 /** Compiler-only authority that a failed transactional child cannot leak any
