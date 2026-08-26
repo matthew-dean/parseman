@@ -194,7 +194,20 @@ handoff was slightly slower; this program succeeds only if the token is the
 control flow itself and no generic handoff state remains. Target ≥15% whole-Less
 ceiling before generalizing.
 
-### U-59. PEG residual/derivative decision DAG — `QUEUED`
+The first full `Value` probe proved the authority and rejected the emitted
+shape. It covered 19/20 arms with 23 bounded terminal leaves and never fell back
+to the untouched choice on the two large successful fixtures. It deleted 34,720
+of 36,772 original arm entries, including all 13,876 failed entries, 125,038
+failed bytecode rows, and 20,844 selected-terminal rescans. Exactness passed the
+314-file Less corpus and deliberate continuation/cut/cache RED plants. But 135
+cloned residual states grew the macro assembly 6.05%, and adjacent controlled
+timing normalized to **+2.9% slower** on benchmark Less and **+0.7%** on generated
+Less. Derived-token control is therefore still active, but the cloned-wrapper
+implementation is rejected. The next probe must keep the same recognition
+authority in one compact scanner plus centralized packed residual/continuation
+dispatch, with a strict source/bytecode budget.
+
+### U-59. PEG residual/derivative decision DAG — `ACTIVE`
 
 Treat each hot choice as a language-state problem. Compute a bounded residual
 of the ordered PEG expression after each observed character/token: the state is
@@ -220,6 +233,15 @@ timing. If the state graph does not collapse substantially or covers too little
 dynamic traffic for a ≥15% ceiling, reject it there. If it does, compare a packed
 transition table against generated nested switches; JS engine behavior, not
 aesthetic preference, picks the representation.
+
+The first comparison picked neither representation cleanly: it hash-consed the
+language states, but cloned 135 structural continuation bodies around them. The
+runtime consequently paid a larger instruction/JIT footprint even though the
+measured failed PEG work disappeared. The next comparison must isolate the
+representation variable directly: one compact transition machine and one small
+continuation dispatcher versus a bounded generated switch, with no duplicated
+wrapper spine. State minimization must include continuation topology and emitted
+machine footprint, not only residual-language equivalence.
 
 ### U-60. Recognition tape followed by selective construction — `QUEUED`
 
