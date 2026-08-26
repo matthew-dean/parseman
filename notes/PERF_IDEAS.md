@@ -185,6 +185,33 @@ failure/commit locals, one compact action/end tape, token-derived choice admissi
 and post-order builder replay; it contains no generic NODE, REPV, SCOPE, or SEQ
 call. Unsupported/effectful paths fall back before mutation.
 
+**Fifth result (iteration 67): decisive vertical-trace ceiling; production-
+ineligible pending generic derivation.** Experiment `0ac9bf4` emits one standalone
+`ValueSequence` trace for the Dimension route. It recognizes the sticky
+NumberToken/DimensionUnit pair into scalar locals, records a compact numeric
+action/end tape, and replays audited reducers in post-order; the supported body
+contains no generic NODE, REPV, SCOPE, SEQ, or choice call. Unsupported or
+effectful paths fall back before mutation. Admission covered only 1,532/3,532
+benchmark roots (43.4%) and 4,186/8,385 generated roots (49.9%), below the
+optional 80% coverage route, but deleted 55,300/117,208 internal entries and
+therefore cleared the alternative 40k/100k preregistered bar. Full macro source
+grew just 536 bytes (0.017%); trace bytecode grew 414→1,107 bytes while optimized
+instructions shrank 9,932→9,552 bytes, below the 40 KB standalone ceiling. The
+adjacent identical-code control read 0.994/1.006 and the candidate 0.916/0.938,
+normalizing benchmark/generated Less to **0.9215/0.9324** (about **7.9%/6.8%
+faster**), with 20/20 winning rounds on both. Exact 314-file parity, a deliberately
+RED differential, full tests, strict differentials, build, typecheck, lint, and
+invariants passed; emitted runtime uses no `eval` or `new Function`.
+
+This validates the architecture, not the implementation. The probe hardcodes
+Jess grammar/source signatures (`ValueSequence`, `Dimension`, `NumberToken`,
+`DimensionUnit`, and reducer source fragments), so it is not a general Parseman
+compiler transform and cannot ship. The temporary release commit `0949b86` was
+reverted by `d88acb5`; the clean experiment remains at `0ac9bf4`. The generic
+U-58/U-60 derivation must reproduce the same trace admission, recognizer tape,
+reducer replay, and cold fallback mechanically from grammar IR while preserving
+this size/performance shape.
+
 ### U-58. Make derived tokens the primary control-flow currency — `ACTIVE`
 
 Today token information often acts as an advisory pretest, after which the
