@@ -331,7 +331,7 @@ V8 bytecode and deopts as well as wall time. The result must remove measurable
 loads/stores/calls and show a ≥15% whole-workload ceiling; a context object merely
 hidden behind helper accessors is not this design.
 
-### U-62. Success-only fast artifact with cold exact diagnostic replay — `ACTIVE`
+### U-62. Success-only fast artifact with cold exact diagnostic replay — `MEASURED COMPONENT`
 
 Stop maintaining a rich farthest-failure result during every successful parse.
 Emit two static entry paths in the ordinary macro artifact. The hot path preserves
@@ -373,6 +373,25 @@ work for a ≥15% whole-Less ceiling; otherwise reject before duplicating the fu
 artifact or integrating the action tape. This is distinct from current `recordFail`
 liveness: that suppresses swallowed failures locally, while ordered choices still
 preserve and merge exact losing-arm diagnostics throughout successful parses.
+
+The first ceiling probe found a real but bounded prize. On the shipping Less macro
+artifact, the fully diagnostic-dead variant removed 2,021 farthest-position writes,
+2,937 expected-set writes, 1,785 choice accumulators, and 124 choice catch helpers;
+the generated factory shrank 2,790,047→2,321,762 bytes (-16.8%). All successful
+public values stayed exact across the 314-file corpus; the seven divergences were
+the deliberately missing failure spans/expected sets. Against a nearby identical-
+code control, controlled timing normalized to roughly **-4.6% benchmark Less** and
+**-6.3% generated Less**.
+
+The split identifies the actual mechanism. Omitting terminal/leaf `_fe`/`_fx`
+writes alone stayed inside the control floor on benchmark Less and was only about
+1% on generated. Omitting ordered-choice `best`/`acc`/`_accSet`/catch aggregation
+while retaining child writes delivered about **-4.2%/-5.0%**, winning 20/20 rounds
+on both fixtures. U-62 is therefore rejected as a standalone route to the 15%
+bar, but retained as a measured component of U-57/U-60: the scalar success trace
+must make ordered choice a cheap branch/failure-scalar operation, with exact cold
+diagnostic replay supplied by the deferred-action/effect-safe path. Do not spend
+complexity merely suppressing individual terminal writes.
 
 ### Orchestration order and combination
 
@@ -1322,7 +1341,7 @@ siblings landed appears here once, for its unlanded part only.
 | U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE` |
 | U-60 | recognition event tape followed by selective exact construction | `ACTIVE` |
 | U-61 | scalar parse ABI with packed rollback/capture state | `ACTIVE` |
-| U-62 | success-only fast macro artifact with cold exact diagnostic replay | `ACTIVE` |
+| U-62 | success-only fast macro artifact with cold exact diagnostic replay | `MEASURED COMPONENT` |
 
 ---
 
