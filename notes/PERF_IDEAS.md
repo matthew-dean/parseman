@@ -6,7 +6,7 @@ Interpreter-side ideas are split out to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRE
 
 ---
 
-## STATUS CONVENTION AND COUNTS (updated 2026-08-25)
+## STATUS CONVENTION AND COUNTS (updated 2026-08-26)
 
 One marker per item, across this file and its four siblings
 (`INTERPRETER_PERF_IDEAS.md`, `REVIEW-parseman-perf-proposals.md`,
@@ -66,12 +66,16 @@ not ideas. Read both files' headers before their bodies.
 
 ---
 
-## 2026-08-25 — radical macro-runtime programs (U-57…U-61)
+## 2026-08-25/26 — radical macro-runtime programs and post-U-63 closure
 
-These are the five high-ceiling programs selected after the 0.50 optimization
-loop found that local choice predecisions made the current macro artifact
-roughly 17–22% faster than released 0.49, but still left a broad architectural
-gap to 0.45. They are deliberately not another list of opcode peepholes.
+U-57…U-61 are the five high-ceiling programs selected after the 0.50
+optimization loop found that local choice predecisions made the current macro
+artifact roughly 17–22% faster than released 0.49, but still left a broad
+architectural gap to 0.45. U-63 is the one retained realization. The later
+U-80…U-96 experiment identifiers are successor probes against that retained
+baseline; they are summarized here by architectural frontier rather than added
+as a second raw backlog. They are deliberately not another list of opcode
+peepholes.
 
 **Scope contract for every result in this section:** it counts only when run
 through ordinary macro-built shipping output. Build-time generation may use
@@ -88,6 +92,97 @@ machinery* after the grammar has become static. A macro compiler should partiall
 evaluate the grammar into a small number of deterministic source-recognition
 regions and keep PEG fallback, semantic branching, diagnostics, and tree
 construction only at the boundaries that truly require them.
+
+### Current orchestration after retained U-63
+
+The executable baseline is U-63 (`6b6f99b`, retained in `04ca3c9` and later
+release heads): a modest measured win of about 2.8% on benchmark Less, 1.7% on
+generated Less, and 1.4% on CSS, plus a generic structured region substrate. Its
+34.8%/52.2% generated-entry deletion is topology, not a corresponding runtime
+gain. Post-U-63 work has closed four broad standalone frontiers:
+
+- **Shared and recursive control is not waiting on one more cloning pass.** U-80's
+  safe memoization removed only 0.124%/0.009%/0.192% of broad Less/generated
+  Less/CSS entries; even its impossible unrestricted ceiling was only
+  2.73%/1.28%/0.43%. U-81 showed that an illegal fixture-profiled clone selector
+  could remove 31.19% of Less and 35.03% of CSS entries within budget, but the
+  legal static fan-in/protocol/SCC selector removed only 1.28%/2.16%. U-88's
+  recursive pushdown covered 25.52%/20.48% of V8-surviving calls, but the hottest
+  Less SCC alone was 799,061 source bytes and a switch destroyed the optimizable
+  topology; chunking restored the calls. U-92 then proved that incidental
+  anonymous sharing was tiny: occurrence-preserving cloning fit the source cap
+  but could remove only 1.22%/1.45%/3.04% dynamically. Reopen this frontier only
+  with a new portable ownership/hotness signal that changes those static
+  economics, not fixture profiles, names, IPs, or source fragments.
+
+- **Capture/value ABI thinning does not win by itself.** Iteration 078 measured
+  both U-61 post-fusion variants. The allocating parked-collector form regressed
+  benchmark/generated Less by 7.56%/8.50%. The allocation-free discriminant
+  deleted 472,828/1,340,300/237,990 context operations on Less/generated
+  Less/CSS, shrank Less source 3.19% and bytecode 8.05%, yet still regressed the
+  two Less fixtures by 8.42%/5.98%; the buffer/helper topology, not merely its
+  allocation, was the cost. U-83 found U-63-local fixed-cardinality capture
+  coverage of only 0.045% of Less entries and 8.27% of CSS; broader scalar
+  capture therefore needs the same cross-boundary ABI already falsified by
+  U-61. U-87's connected value-dead scalar-return components were 23.28%/22.55%/
+  40.36% gross, but adapters consumed 17.72%/17.36%/33.41%, leaving only
+  11.50%/10.94%/21.90% definite EC/array work. U-90 halved parameter/source
+  traffic but increased bytecode 15.76%/16.87% by replacing register arguments
+  with closure loads. Do not queue another packed/scalar ABI unless it removes
+  the surrounding calls, buffers, adapters, and construction protocol as one
+  different topology.
+
+- **Reducer authority, lexical fusion, and V8 layout have sub-threshold Less
+  ceilings.** U-82/U-84 found direct reducer deforestation below 12% on both
+  Less fixtures; transitive helper source already cost 2.32% on Less and added
+  no child-array eliminations. U-85's post-U-63 profile put required CST
+  publication at 10.8%/14.0%/14.7%, terminal/trivia scanning at
+  7.4%/11.1%/6.3%, and the remaining shared/SCC control behind U-81's selector
+  limit; the apparent full-channel opportunity overlaps the measured-negative
+  U-61 parked collector. U-86's exact trivia→terminal pairing reduced a generous
+  fused-transducer ceiling to 13.71%/12.52% on Less (CSS 26.77%). U-89 found
+  truly never-TurboFan work of only 1.40%/0.37%/0.38%, and U-93 found exception
+  protection at only 0.57–1.10% CPU. U-95's impossible removal of all lexical
+  owners and helpers was still only 14.62%/14.05%/15.95%, before its 2.66–5.43%
+  source and 1.35–5.5 MB tape costs. These are useful components only inside a
+  new full-control design; none is a standalone successor.
+
+- **The historical target and broad-workload labels are now bounded.** U-94
+  compared the closest available historical Jess artifacts and found
+  byte-identical serialized fields on three fixtures, but 0.45 returns a plain
+  object while U-63 returns a `RunResultRecord`; therefore it is topology-only
+  attribution, not a timing verdict. Contrary to the allocation hypothesis,
+  0.45 allocated 1.756×/1.777×/1.066× as much on Less/generated Less/CSS, while
+  U-63 had more V8 inline pairs and fewer deopts; cross-assembly linking had a
+  0% parse-path ceiling. U-96 found **no existing GraphQL or JSON ordinary macro
+  harness at all**: `perf:workloads`, `bench:parseman`, charts, and example
+  parsers use runtime `compile()`, and the old `parseman-macro` chart label was a
+  runtime-compile mislabel. Under the no-new-harness constraint, the valid
+  shipping-macro target and measurement surface is Jess Less+CSS; the 0.45
+  GraphQL/JSON macro gap and U-63 activation there are unknown/N/A, not zero.
+
+**U-91 explicit collector ABI — `MEASURED-NEGATIVE / REJECTED BEFORE TIMING`
+(iteration 097).** The broad form was semantically unsafe: an explicit `ch`
+parameter can become stale whenever an author transform, nested node builder,
+scanner/sentinel callback, or live/inherited trivia path observes or replaces the
+active context collector. Deliberate RED probes caught all four observer classes;
+recursive SCCs and tolerant recovery also had to retain the canonical ABI. The
+final greatest-closed-set admission therefore left 269/279 Less callsites
+(96.4%) and 101/102 CSS callsites (99.0%) as adapters. Dynamic adapter/propagated
+calls were 10,814/3,877 on benchmark Less, 22,085/10,138 on generated Less, and
+7,655/24 on CSS. Executed bytecode grew 0.285%/0.187% on Less/CSS, while the hot
+representative bodies were byte-for-byte unchanged; there was no credible 15%
+ceiling to time.
+
+The bounded candidate nevertheless passed exact 314-file Less and 87-file CSS
+AST parity, all three full-EOF fixture digests, 21 focused tests, 4,150 full-suite
+tests, six strict differential plants, typecheck, lint, invariants, build, and
+the callback/trivia/reentry/throw-restoration RED gates, with no runtime dynamic
+evaluation. The causal lesson is architectural: collector traffic can be removed
+only inside a closed no-observer/no-mutator region, but real Jess's surviving
+U-63 edges cross precisely those authority boundaries. Passing a collector as an
+argument merely moves the context reload into an adapter and grows the executed
+machine; preserve candidate `aaa913b` as evidence, not shipping code.
 
 ### U-57. Deterministic-region fusion and size-budgeted superinstructions — `ACTIVE`
 
@@ -374,7 +469,7 @@ the 1,476 remaining barriers cost more than bypassing the ordinary choice/termin
 node shells. Do not retry a tape around one bounded choice. A tape remains viable
 only if U-65 removes the whole construction protocol across a broad region.
 
-### U-61. Scalar parse ABI and packed rollback/capture machine — `QUEUED`
+### U-61. Scalar parse ABI and packed rollback/capture machine — `MEASURED-NEGATIVE` variants; scalar `_ee` foundation unproven alone
 
 Replace the generic `value | FAIL` calling convention and mutable ParseContext
 protocol inside compiled regions with a scalar ABI. A recognizer returns an end
@@ -401,10 +496,23 @@ V8 bytecode and deopts as well as wall time. The result must remove measurable
 loads/stores/calls and show a ≥15% whole-workload ceiling; a context object merely
 hidden behind helper accessors is not this design.
 
-Iteration 69 also rejects a scalar ABI used merely to connect a token classifier,
-route helper, and event replay. The integer representation was cheap; its extra
-boundaries were not. U-61 now admits only a whole-region lowering that deletes the
-generic ABI and capture machinery on the supported trace.
+Iteration 69 also rejected a scalar ABI used merely to connect a token classifier,
+route helper, and event replay. Iteration 078 then measured the post-U-63 forms.
+The `_ee` assembly-local scalar cursor foundation (`07ddbbec`) preserved exact
+reentry but was not timed alone. The allocating parked-collector form (`7213ce6`)
+regressed benchmark/generated Less by 7.56%/8.50%. Its allocation-free direct
+discriminant successor (`fa5174b`) removed 472,828/1,340,300/237,990 context
+operations on Less/generated Less/CSS, shrank Less source 3.19% and bytecode
+8.05%, and retained exact parity, but still regressed the two Less fixtures by
+8.42%/5.98%, losing every sample. This falsifies both measured collector forms:
+buffer/helper indirection outweighed the removed allocation and protocol. The
+scalar `_ee` foundation remains an unmeasured implementation fact, not an active
+performance claim. Do not queue another U-61 variant unless a new architecture
+deletes the entire surrounding call/capture/construction topology rather than
+repacking it. U-91/iteration 097 reinforces this boundary from the explicit-
+parameter side: exact observer safety made 96.4% of Less and 99.0% of CSS static
+calls adapters, so moving the collector out of `ctx` did not create a viable
+cross-boundary scalar region.
 
 ### U-63. TableProgram named-rule/SCC supercompiler — `RETAINED MODEST WIN / ACTIVE SUBSTRATE`
 
@@ -1571,7 +1679,7 @@ named in the marker.
 | U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `MEASURED-NEGATIVE` standalone (iteration 76); preserve nullable/routed authority only inside U-61 |
 | U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE ONLY INSIDE A FULL TRACE` (ordinary continuation helpers retained too much protocol) |
 | U-60 | recognition event tape followed by selective exact construction | `MEASURED-NEGATIVE` for the bounded Value-choice form (`cd6a717`: normalized +4.1%/+9.7% slower; iteration 69); broad construction regions remain U-65 |
-| U-61 | scalar parse ABI with packed rollback/capture state | `ACTIVE` only when it replaces a whole construction region; the Value-choice scalar ABI lost with U-60 |
+| U-61 | scalar parse ABI with packed rollback/capture state | `MEASURED-NEGATIVE` variants (iteration 078: allocating parked collector +7.56%/+8.50%; allocation-free discriminant +8.42%/+5.98% on the two Less fixtures); U-91 explicit parameter ABI rejected before timing at 96.4%/99.0% adapter callsites; `_ee` foundation unproven alone |
 | U-62 | success-only fast macro artifact with cold exact diagnostic replay | `MEASURED-NEGATIVE` standalone (iteration 77); retained local exact cold-merge win is `806cdfa` |
 | U-63 | TableProgram Entry/SCC supercompiler: emit structured static regions from the one canonical IR, restoring 0.45's monolithic topology without restoring a second semantic engine | `RETAINED MODEST WIN / ACTIVE SUBSTRATE`; iteration 79 normalizes to ~2.8% benchmark Less, ~1.7% generated Less, ~1.4% CSS; 34.8%/52.2% entry deletion is structural, not runtime |
 | U-64 | macro-time reducer/factory partial evaluation: recover per-node capture plans hidden by generic closures/dispatch, including length-only raw/trivia use | `MEASURED-NEGATIVE` on real Jess macro (iteration 74: zero length-only sites) |
