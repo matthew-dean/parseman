@@ -15,10 +15,10 @@ output shape, context-sensitive grammars, incremental re-parse, error recovery �
 Measured on Apple M4 Pro with Node 25.9.0. Bars show µs per parse — shorter is faster.
 
 ::: info Basis for every timing on this page
-The Parséman compiled bars measure the 0.48 canonical `TableProgram` produced by runtime
+The Parséman compiled bars measure the 0.50 canonical `TableProgram` produced by runtime
 `compile()`, not the removed direct-source parser and not a separately named macro leg.
-Every number below is transcribed from `assets/bench-*.svg`, regenerated for **0.48.0 on
-2026-08-14** by `pnpm bench:svg`. Each parser bar runs in its own process and each group is
+Every number below is transcribed from `assets/bench-*.svg`, regenerated for **0.50.0 on
+2026-08-26** by `pnpm bench:svg`. Each parser bar runs in its own process and each group is
 measured in three rotated rounds. If a table and chart disagree, the chart is the source.
 :::
 
@@ -77,14 +77,14 @@ library at every fixture size in the charts above:
 
 | Fixture | Parséman compiled | [Peggy](https://peggyjs.org/) | [Chevrotain](https://chevrotain.io/) | Native |
 | --- | --- | --- | --- | --- |
-| JSON small (52 B) | **0.94 µs** | 2.58 | 0.99 | `JSON.parse` 0.20 µs |
-| JSON medium (1.8 kB) | **27.5 µs** | 64.9 | 29.7 | `JSON.parse` 4.27 µs |
-| JSON large (11.9 kB) | **223 µs** | 455 | 238 | `JSON.parse` 50.3 µs |
-| CSV small (54 B) | **0.66 µs** | 1.89 | 5.30 | — |
-| CSV large (14.5 kB) | **114 µs** | 422 | 1,029 | — |
-| GraphQL small (27 B) | **1.04 µs** | 2.08 | 2.11 | — |
-| GraphQL medium (336 B) | **7.72 µs** | 14.2 | 12.4 | — |
-| GraphQL large (7.7 kB) | **188 µs** | 323 | 328 | — |
+| JSON small (52 B) | **0.57 µs** | 2.55 | 1.00 | `JSON.parse` 0.21 µs |
+| JSON medium (1.8 kB) | **15.69 µs** | 64.40 | 29.57 | `JSON.parse` 4.41 µs |
+| JSON large (11.9 kB) | **121.50 µs** | 451.40 | 245.15 | `JSON.parse` 51.70 µs |
+| CSV small (54 B) | **0.41 µs** | 1.93 | 5.31 | — |
+| CSV large (14.5 kB) | **74.32 µs** | 425.53 | 1,050.49 | — |
+| GraphQL small (27 B) | **0.61 µs** | 2.10 | 2.15 | — |
+| GraphQL medium (336 B) | **5.03 µs** | 14.74 | 12.64 | — |
+| GraphQL large (7.7 kB) | **108.18 µs** | 332.98 | 334.17 | — |
 
 The zero-setup **interpreter** remains competitive with no compile step. It is the fastest
 option after compiled Parseman on CSV, ahead of Peggy on JSON, and in the leading group on
@@ -102,17 +102,17 @@ span capture). Measured on the same JSON fixtures (`pnpm bench:svg`, tree-buildi
 
 | Parser | small (52 B) | medium (1.8 kB) | large (11.9 kB) | Output |
 | --- | --- | --- | --- | --- |
-| **Parséman CST (runtime compile)** | **0.92 µs** | **28.0 µs** | **242 µs** | object tree + spans |
-| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.18 µs | 66.8 µs | 570 µs | compact buffer tree |
-| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.53 µs | 76.3 µs | 654 µs | compact buffer tree |
-| Parséman CST (interpreter) | 1.96 µs | 71.1 µs | 464 µs | object tree + spans |
-| [Chevrotain](https://chevrotain.io/) CST | 7.62 µs | 241 µs | 1.85 ms | object CST |
+| **Parséman CST (runtime compile)** | **0.59 µs** | **18.18 µs** | **153.12 µs** | object tree + spans |
+| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.25 µs | 69.33 µs | 603.50 µs | compact buffer tree |
+| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.60 µs | 79.03 µs | 681.03 µs | compact buffer tree |
+| Parséman CST (interpreter) | 1.82 µs | 63.55 µs | 449.12 µs | object tree + spans |
+| [Chevrotain](https://chevrotain.io/) CST | 7.74 µs | 249.73 µs | 1.96 ms | object CST |
 
 **Runtime compile** = construct the canonical compiled table once, then time parsing.
 **Interpreter** = default combinator runtime, no `compile()` or macro. The chart shows both
 against Lezer and Chevrotain; it does not label the macro as a third warm engine.
 
-**Compiled Parséman CST beats Lezer at every fixture size on this chart** — ~2.4× at large
+**Compiled Parséman CST beats Lezer at every fixture size on this chart** — ~3.9× at large
 — while building a directly-usable object tree with per-node spans. Optional
 [`captureTrivia`](./trivia) (`parser({ captureTrivia: true })`) also logs whitespace
 between tokens for formatters — it adds ~5% on this fixture, so it isn't a separate bar.
@@ -121,8 +121,8 @@ editor pipeline; Parséman emits JS objects ready for formatters and refactors w
 second walk. Pick the output your consumer actually needs.
 
 Even the zero-setup **interpreter** CST holds its own against a purpose-built incremental
-generator: it is faster than Lezer parse-only at small and large inputs (1.96 vs 2.18 µs;
-464 vs 570 µs) while building a richer object tree, and **about 3.9–4.0× faster than
+generator: it is faster than Lezer parse-only at small and large inputs (1.82 vs 2.25 µs;
+449 vs 604 µs) while building a richer object tree, and **about 4.3–4.4× faster than
 Chevrotain** throughout. Compile it and it moves ahead of Lezer outright.
 
 ## Incremental re-parse
