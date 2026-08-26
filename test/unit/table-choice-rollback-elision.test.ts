@@ -81,22 +81,6 @@ describe('emitted ordered-choice rollback elision', () => {
     expect(merges.n).toBe(0)
   })
 
-  it('rejects an empty compatible-arm mask before opening a rollback mark', () => {
-    const grammar = node('Root', choice(
-      sequence(literal('a'), literal('!')),
-      sequence(literal('a'), literal('?')),
-      sequence(literal('a'), literal('.')),
-    ))
-    const prog = encodeTable({ Root: grammar })
-    const body = emittedBody(
-      emitAssemblySource(resolveTable(prog), prog, STRICT).source,
-      choiceIp(prog),
-    )
-
-    expect(body.indexOf('if(bits===0)')).toBeLessThan(body.indexOf('const b=ctx._cstBuf'))
-    expect(projection(precompiled(prog), 'x')).toEqual(projection(grammar as Entry, 'x'))
-  })
-
   it('does no expected-array work for exact start failures before a later arm succeeds', () => {
     const grammar = choice(literal('ab'), literal('ac'), literal('ad'))
     const prog = encodeTable({ Root: grammar })

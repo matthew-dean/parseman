@@ -1794,16 +1794,15 @@ ${rollbackFor(i)}
 
           // A zero compatible-arm mask is stronger than a speculative miss: no
           // arm can run, so the choice's encoded flat expected set is already
-          // the exact result. Decide that before taking a rollback mark: no arm
-          // means no speculative mutation exists to snapshot or restore.
+          // the exact result. Do not walk the arm ladder merely to rebuild it.
           return `${head}
 const c=lead(input,pos)
-${maskable ? `const bits=c<128?${maskName}[c<0?128:c]:-1
-if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
-` : ''}${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
+${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
 let acc
 let best=pos
 ${maskable ? `if(c<128){
+const bits=${maskName}[c<0?128:c]
+if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
 ${startFailureExact ? '' : 'let prev=0'}
 ${maskArms}
 ${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${n},prev,acc)`}
