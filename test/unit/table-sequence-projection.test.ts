@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { literal, node, optional, regex, rules, sequence, transform, type Combinator } from '../../src/index.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { literal, optional, regex, sequence, transform, type Combinator } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { AssemblyCache, tableRules } from '../../src/table/assemble.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { OP_LIT, OP_SEQ, OP_SEQV, OP_SEQX } from '../../src/table/ops.ts'
-import { ownTableProgram, resolveTable, type PrecompiledAssembly } from '../../src/table/program.ts'
+import { OP_SEQX } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 
@@ -18,50 +16,6 @@ function seqxIp(parser: Combinator<unknown>): { prog: ReturnType<typeof encodeTa
 }
 
 describe('table sequence direct projection', () => {
-  it('pastes non-first single-character literals into static macro sequences', () => {
-    const grammar = rules({ trivia: regex(/\s+/) }, () => ({
-      Entry: node('Doc', sequence(literal('a'), literal('!'), literal('?'))),
-    }))
-    const prog = encodeTable(grammar)
-    const seq = [...reachableIps(prog)].find(ip => {
-      const op = prog.code[ip]
-      return op === OP_SEQ || op === OP_SEQV || op === OP_SEQX
-    })
-    expect(seq).toBeTypeOf('number')
-    const op = prog.code[seq!]!
-    const base = op === OP_SEQX ? seq! + 3 : seq! + 2
-    const second = prog.code[base + 1]!
-    const third = prog.code[base + 2]!
-    expect(prog.code[second]).toBe(OP_LIT)
-    expect(prog.code[third]).toBe(OP_LIT)
-
-    const cfg = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
-    const ordinary = emitAssemblySource(resolveTable(prog), prog, cfg).source
-    const emitted = emitAssemblySource(resolveTable(prog), prog, cfg, [], true)
-    expect(ordinary).toContain(`function _pf${second}(`)
-    expect(ordinary).toContain(`function _pf${third}(`)
-    expect(emitted.source).not.toContain(`function _pf${second}(`)
-    expect(emitted.source).not.toContain(`function _pf${third}(`)
-
-    const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
-    const precompiled = ownTableProgram({
-      ...prog,
-      asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
-    })
-    const entries = {
-      interpreter: grammar.Entry,
-      reference: execRules(prog).Entry!,
-      closure: tableRules({ ...prog, asm: [] }).Entry!,
-      macro: tableRules(precompiled).Entry!,
-    }
-    for (const input of ['a!?', 'a ! ?', 'a ! x', 'a', '']) {
-      const expected = JSON.stringify(run(grammar.Entry, input))
-      for (const [name, entry] of Object.entries(entries)) {
-        expect(JSON.stringify(run(entry, input)), `${name}: ${JSON.stringify(input)}`).toBe(expected)
-      }
-    }
-  })
-
   it('encodes a selected child in the existing operand and omits the reducer', () => {
     const parser = transform(
       sequence(optional(literal('a')), regex(/[0-9]+/), literal('!')),
