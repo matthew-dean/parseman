@@ -296,16 +296,48 @@ V8 bytecode and deopts as well as wall time. The result must remove measurable
 loads/stores/calls and show a ≥15% whole-workload ceiling; a context object merely
 hidden behind helper accessors is not this design.
 
+### U-62. Success-only fast artifact with cold exact diagnostic replay — `ACTIVE`
+
+Stop maintaining a rich farthest-failure result during every successful parse.
+Emit two static entry paths in the ordinary macro artifact. The hot path preserves
+recognition, commit, state, captures, builders, CST/trivia, and the public success
+value, but represents ordinary failure only as a negative scalar/bit. It does not
+write `_fe`/`_fx`, merge expected arrays, preserve losing-arm diagnostic payloads,
+or execute completion/recovery machinery. If and only if that path fails, call the
+existing exact emitted parser from the original input position and return its
+unchanged diagnostic. There is no runtime code generation: both paths are emitted
+at macro build time.
+
+This deliberately trades up to two parses on invalid input for less work on the
+production success path. The fast path cannot omit effects whose rollback or
+commit changes recognition, and it cannot serve tolerant recovery, completion
+probes, coverage, or incremental diagnostic entrypoints; those select the exact
+path immediately. Successful AST/CST output must remain byte-identical. A fast-path
+failure followed by exact replay must match the baseline failure's span, expected
+set, committed flag, errors, and consumption, including throwing builders and
+stateful gates. The emitted-size budget is controlled by sharing pools/builders and
+generating the fast variant only for dynamically hot reachable bodies.
+
+First falsification experiment: use the existing TableProgram liveness graph to
+emit a diagnostic-dead macro variant for ordinary AST parsing, then count dynamic
+failure-state writes/merges and inspect source/V8 size before timing. Force the fast
+leg wrong once so the cold exact replay differential goes RED. Require enough
+deleted success-path work for a ≥15% whole-Less ceiling; otherwise reject before
+duplicating the full artifact. This is distinct from current `recordFail` liveness:
+that suppresses swallowed failures locally, while ordered choices still preserve
+and merge exact losing-arm diagnostics throughout successful parses.
+
 ### Orchestration order and combination
 
-Run U-57, U-58/U-59, and U-60/U-61 as independent ceiling probes first. Do not
-prematurely force them into one implementation. The likely combined architecture,
-if the probes validate it, is: a residual/token predictor selects a deterministic
-region; the region executes under the scalar ABI; rollback-heavy structural
-actions append to a tape; cold opaque PEG continuations retain the existing
-engine. Each boundary must justify itself by dynamic frequency and emitted-byte
-cost. Retain and commit only macro-runtime wins to `feature/0.50.0`, one measured
-win per commit.
+Run U-57, U-58/U-59, U-60/U-61, and U-62 as independent ceiling probes first. Do
+not prematurely force them into one implementation. The likely combined
+architecture, if the probes validate it, is: a residual/token predictor selects a
+deterministic region; the region executes under the scalar ABI; rollback-heavy
+structural actions append to a tape; cold opaque PEG continuations retain the
+existing engine. U-62 can wrap that entire success engine and invoke the exact
+diagnostic engine only on failure. Each boundary must justify itself by dynamic
+frequency and emitted-byte cost. Retain and commit only macro-runtime wins to
+`feature/0.50.0`, one measured win per commit.
 
 ---
 
@@ -1243,6 +1275,7 @@ siblings landed appears here once, for its unlanded part only.
 | U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE` |
 | U-60 | recognition event tape followed by selective exact construction | `ACTIVE` |
 | U-61 | scalar parse ABI with packed rollback/capture state | `ACTIVE` |
+| U-62 | success-only fast macro artifact with cold exact diagnostic replay | `ACTIVE` |
 
 ---
 
