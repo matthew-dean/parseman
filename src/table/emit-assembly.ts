@@ -582,7 +582,7 @@ export function emitAssemblySource(
       const n = code[ip + 2]!
       for (let i = 0; i < n; i++) {
         if (n === 2 || n === 3) {
-          const child = leadingScalarTerminal(code, code[ip + 4 + i]!)
+          const child = leadingScalarTerminal(code, code[ip + 4 + i]!, 2, true, true)
           if (child >= 0) scalarSpecs.add(code[child + 1]!)
         }
       }
@@ -1682,7 +1682,7 @@ return FAIL
               return { token: tokenDecisionFor(tokenCandidate.dispatchIp) }
             }
             if (n !== 2 && n !== 3) return undefined
-            const terminal = leadingScalarTerminal(code, code[base + i]!)
+            const terminal = leadingScalarTerminal(code, code[base + i]!, 2, true, true)
             if (terminal < 0 || !scalarSpecs.has(code[terminal + 1]!)) return undefined
             return { scalar: recognizerRef(code[terminal + 1]!) }
           })

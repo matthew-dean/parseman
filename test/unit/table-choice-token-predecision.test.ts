@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, dispatch, literal, matches, optional, regex, run, sequence,
+  attempt, choice, dispatch, literal, matches, optional, peek, regex, run, sequence,
   token, transform, when, type Combinator,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
@@ -100,6 +100,21 @@ describe('small-choice token predecision', () => {
       attempt(transform(sequence(regex(/a/), literal('.')), () => 'dot')),
     )
     expectIdentity(grammar, ['a!', 'a?', 'a.', 'a:', 'x'])
+  })
+
+  it('rejects a wrapped positive-lookahead miss before entering its arm', () => {
+    const grammar = choice(
+      transform(sequence(
+        peek(regex(/[^:;{}]*[@$]\{/)),
+        regex(/[^:]+/),
+        literal(':'),
+      ), () => 'interpolated'),
+      regex(/[a-z-]+/),
+      literal(';'),
+    )
+
+    const source = expectIdentity(grammar, ['color', 'x@{y}:', 'x:', ';'])
+    expect(source).toMatch(/&&_rec\d+\(input,pos\)>=0/)
   })
 
   it('does not add a predecision to a direct terminal choice', () => {

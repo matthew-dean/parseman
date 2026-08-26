@@ -2773,9 +2773,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const a0 = link(code[base]!), a1 = link(code[base + 1]!)
           const a2 = n === 3 ? link(code[base + 2]!) : undefined
           const predecide = !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines
-          const p0ip = predecide ? leadingScalarTerminal(code, code[base]!) : -1
-          const p1ip = predecide ? leadingScalarTerminal(code, code[base + 1]!) : -1
-          const p2ip = predecide && n === 3 ? leadingScalarTerminal(code, code[base + 2]!) : -1
+          const p0ip = predecide ? leadingScalarTerminal(code, code[base]!, 2, true, true) : -1
+          const p1ip = predecide ? leadingScalarTerminal(code, code[base + 1]!, 2, true, true) : -1
+          const p2ip = predecide && n === 3 ? leadingScalarTerminal(code, code[base + 2]!, 2, true, true) : -1
           const p0 = p0ip < 0 ? undefined : scalarFor(p0ip)
           const p1 = p1ip < 0 ? undefined : scalarFor(p1ip)
           const p2 = p2ip < 0 ? undefined : scalarFor(p2ip)
@@ -3678,7 +3678,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const n = code[ip + 2]!
           if (n === 2 || n === 3) {
             for (let i = 0; i < n; i++) {
-              const child = leadingScalarTerminal(code, code[ip + 4 + i]!)
+              const child = leadingScalarTerminal(code, code[ip + 4 + i]!, 2, true, true)
               if (child >= 0) scalarFor(child)
             }
           }

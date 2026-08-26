@@ -1,6 +1,6 @@
 import {
   OP_ATTEMPT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_NODE, OP_NOT,
-  OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV,
+  OP_PEEK, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV,
   OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 
@@ -61,7 +61,7 @@ export function scalarTerminalNotChild(code: ArrayLike<number>, ip: number): num
  * merely to avoid one already-cheap terminal call.
  */
 export function leadingScalarTerminal(
-  code: ArrayLike<number>, ip: number, minDepth = 2, throughAttempt = true,
+  code: ArrayLike<number>, ip: number, minDepth = 2, throughAttempt = true, throughPeek = false,
 ): number {
   const seen = new Set<number>()
   let at = ip
@@ -71,6 +71,16 @@ export function leadingScalarTerminal(
     const op = code[at]
     if (op === OP_LIT || op === OP_RX) return depth >= minDepth ? at : -1
     if (op === OP_RULE || op === OP_LABEL || op === OP_TOKEN || (throughAttempt && op === OP_ATTEMPT)) {
+      at = code[at + 1]!
+      depth++
+      continue
+    }
+    // A positive lookahead has exactly its child's success language and no
+    // effects on success. Choice predecisions may therefore execute a scalar
+    // child to reject the enclosing arm early. This is opt-in because callers
+    // that require a CONSUMING opener (notably exact start-failure diagnostics)
+    // must continue to treat peek() as zero-width.
+    if (throughPeek && op === OP_PEEK) {
       at = code[at + 1]!
       depth++
       continue
