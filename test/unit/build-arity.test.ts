@@ -77,6 +77,7 @@ describe('confirmedBuildArity — TypeScript annotations (the regression)', () =
     ['(a: Map<K, V>, b: Array<[string, number]>, c) => a', 3],
     ['(a: { x: number, y: number }, b) => a', 2],
     ['(cb: (a: A, b: B) => C, x: Set<D>, y) => x', 3],
+    ["(kind: 'x,y', value: string) => value", 2],
   ]
   for (const [src, expected] of cases) {
     it(`${JSON.stringify(src)} → ${expected}`, () => expect(confirmedBuildArity(src)).toBe(expected))
