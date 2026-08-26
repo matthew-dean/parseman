@@ -1,20 +1,20 @@
 # Recursive rules
 
-Real grammars are recursive: a JSON value contains arrays, which contain values. To let
-combinators reference each other by name — including before they're defined — use
-`rules()`.
+Real grammars are recursive: a JSON value can contain arrays, and arrays contain more
+values. To let combinators reference each other by name — even before they're defined —
+use `rules()`.
 
 ## `rules()`
 
 Pass a factory that receives all rule names as ready-to-use references and returns the
-definitions. Any rule can reference any other through the `g` argument, regardless of
-declaration order.
+definitions. Any rule can reference any other through the `g` argument, no matter what
+order they're declared in.
 
 > **Rule names must be valid JavaScript identifiers** (`Value`, `valueList`, `$foo_1`).
 > They compile to `_r_<Name>` functions and cross-artifact dispatch guards, so a
-> non-identifier key like `'my-rule'` is rejected at compile time with a clear error
-> rather than silently mangled. (This is about the *grammar's* rule names — not the
-> text your grammar parses, which can be anything.)
+> non-identifier key like `'my-rule'` is rejected at compile time with a clear error,
+> rather than silently mangled. (This is about the *grammar's* rule names — not the text
+> your grammar parses, which can be anything.)
 
 ```ts
 import { rules, parser, choice, sequence, literal, sepBy, transform, trivia, regex } from 'parseman'
@@ -49,23 +49,23 @@ export const jsonParser = parser({ trivia: ws }, value)
 jsonParser.parse('{ "a": 1 }')
 ```
 
-`g.value` is a reference that works anywhere inside the factory regardless of order.
+`g.value` is a reference that works anywhere inside the factory, regardless of order.
 
 ### Which rules go in the returned object?
 
 - **Local helpers** that don't need to be cross-referenced (`comma`, `pair`, `object`
-  above) can be plain `const`.
-- **Only put a rule in the returned object** if other rules need to reach it as `g.xxx`,
-  or if you'll call it directly (e.g. as a start rule, or as an entry in the registry for
-  [incremental re-parsing](./incremental)).
+  above) can stay plain `const`s.
+- **Put a rule in the returned object** only if other rules need to reach it as `g.xxx`, or
+  you'll call it directly — say, as a start rule, or as an entry in the registry for
+  [incremental re-parsing](./incremental).
 
 Each rule returned from the factory is independently callable — that returned object *is*
-the "rule registry" that incremental re-parsing needs.
+the "rule registry" incremental re-parsing needs.
 
 ## Grammar-level options — `rules(options, factory)`
 
 Pass an **options object first** — mirroring `parser({ trivia }, combinator)` — to set
-options **once for the whole grammar**, instead of wrapping rules individually.
+options once for the whole grammar, instead of wrapping every rule individually.
 
 ```ts
 const rw = trivia(oneOrMore(choice(ws, comment)))
@@ -77,17 +77,17 @@ const grammar = rules({ trivia: rw }, (g) => ({
 }))
 ```
 
-Every rule skips `rw` between its terms — the rule you start at and every rule it reaches —
-and a single rule parsed on its own (`run(grammar.Rule, …)`) skips it too. To use *different*
-trivia in one region, wrap it with `parser({ trivia })` or `noTrivia` — see
+Every rule skips `rw` between its terms — the rule you start at, and every rule it reaches
+— and a single rule parsed on its own (`run(grammar.Rule, …)`) skips it too. To use
+different trivia in one region, wrap it with `parser({ trivia })` or `noTrivia` — see
 [Whitespace & trivia → local overrides](./trivia#local-overrides).
 
-`rules()` and `parser({ trivia }, combinator)` take the same option; `rules()` applies it to
-the whole grammar, `parser()` to the one combinator it wraps.
+`rules()` and `parser({ trivia }, combinator)` take the same option; `rules()` applies it
+across the whole grammar, `parser()` to the one combinator it wraps.
 
-It's fine to return your trivia rule itself from the factory (e.g. `rw`, so a driver can
-reach it as `g.rw`): a `trivia()` rule is automatically **excluded** from the grammar-level
-trivia, so it never recursively skips filler within itself.
+It's fine to return your trivia rule itself from the factory (say, `rw`, so a driver can
+reach it as `g.rw`): a `trivia()` rule is automatically excluded from the grammar-level
+trivia, so it never ends up recursively skipping filler within itself.
 
 The grammar-wide options are:
 
@@ -98,29 +98,29 @@ The grammar-wide options are:
 | `trackLines` | Populate `startLine` / `startColumn` / `endLine` / `endColumn` on spans produced by this grammar. See [Line/column spans](./ast#linecolumn-spans). |
 | `hostMode` | Compile-time AST-vs-CST mode for grammars with direct `node(..., build)` callbacks. See [When the grammar has its OWN builders](./ast#host-mode). |
 
-`trackLines` is opt-in because offset-only spans are the fast default. When it is enabled
-on `rules({ trackLines: true }, factory)`, CST nodes built by that grammar receive
-line/column fields in their `span` objects as they are created; consumers do not need to
-run a separate tree annotation pass.
+`trackLines` is opt-in because offset-only spans are the fast default. Turn it on with
+`rules({ trackLines: true }, factory)`, and CST nodes built by that grammar get line/column
+fields in their `span` objects as they're created — consumers don't need a separate
+tree-annotation pass.
 
 ## `rules()` and the macro
 
 The plugin fully compiles `rules()` factories, **including recursive ones**. Each rule
-becomes a named function derived from its rule name (`_r_<Name>`) and mutual references
-are direct calls to those names, so the cycle is broken with zero dispatch. Add
-`with { type: 'macro' }` to your import and the entire grammar — recursive rules
-included — is inlined at build time. Both binding forms compile:
+becomes a named function derived from its rule name (`_r_<Name>`), and mutual references
+become direct calls to those names — so the cycle is broken with zero dispatch cost. Add
+`with { type: 'macro' }` to your import, and the entire grammar, recursive rules included,
+gets inlined at build time. Both binding forms compile:
 
 ```ts
 const { value } = rules(…)   // each rule becomes a top-level function
 const grammar   = rules(…)   // an object literal of compiled rules; grammar.value(…) works
 ```
 
-If the plugin meets a macro-imported declaration it can't compile statically (it closes
-over a runtime value, or isn't a recognized combinator shape), it leaves that
+If the plugin meets a macro-imported declaration it can't compile statically — it closes
+over a runtime value, say, or isn't a recognized combinator shape — it leaves that
 declaration for the interpreter, strips the `with { type: 'macro' }` attribute so the
-import stays valid, and emits a build **warning** pointing at it — so a silent fallback
-never goes unnoticed. See [Macro mode](./macro-mode).
+import stays valid, and emits a build **warning** pointing at it. A silent fallback never
+goes unnoticed. See [Macro mode](./macro-mode).
 
 ### One factory, several macro artifacts
 
@@ -137,16 +137,16 @@ export const grammarWithLines = rules({ trivia: rw, trackLines: true }, grammarF
 export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, grammarFactory)
 ```
 
-That pattern is useful for packages that need an evaluation parser and a language-service
-parser from one source. The imported factory is build-time input only: when it is static
-and source-private, the macro inlines it into each output and the generated grammar file
-does not need the factory import at runtime.
+That pattern is useful for packages that need both an evaluation parser and a
+language-service parser from one source. The imported factory is build-time input only:
+when it's static and source-private, the macro inlines it into each output, and the
+generated grammar file doesn't need the factory import at runtime.
 
 ## `ref<T>()` — the low-level primitive
 
-`rules()` handles forward references automatically. `ref<T>()` is the lower-level
-primitive it uses internally, exposed for the rare case where you need a single forward
-slot outside a `rules()` call:
+`rules()` handles forward references automatically. `ref<T>()` is the lower-level primitive
+it uses internally, exposed for the rare case where you need a single forward slot outside
+a `rules()` call:
 
 ```ts
 import { ref, choice } from 'parseman'
@@ -156,15 +156,15 @@ const value = ref<JSON>()
 value.define(choice(object, array, str, num, bool, nil))
 ```
 
-Prefer `rules()` in almost all cases — it's clearer and it's what the macro is tuned to
+Prefer `rules()` in almost all cases — it's clearer, and it's what the macro is tuned to
 compile.
 
 ## Reusing one factory with different config
 
-This is a different lever from [extending a grammar](./extending): there you take an
+This is a different lever from [extending a grammar](./extending): there, you take an
 existing grammar and **override its rules by name** with `compose()`. Here you have a
-*single* factory you want to reuse with a different setting (trivia, document shape) —
-don't copy it, export what stays the same and pass in (or wrap) what changes. The
+*single* factory you want to reuse with a different setting — trivia, document shape.
+Don't copy it: export what stays the same, and pass in (or wrap) what changes. The
 `examples/json/` directory is the template:
 
 | File | What changes |

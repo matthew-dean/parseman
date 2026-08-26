@@ -5,8 +5,8 @@ either succeeds (returning a value) or fails. You compose them with `sequence`,
 `choice`, `many`, and so on to express parsing decisions. That composition *is* your
 grammar.
 
-Every example on this page is executed by `scripts/verify-doc-examples.mjs` and the
-`// →` outputs are pasted from the real run — if the engine changes, the check fails.
+Every example on this page actually runs. A script executes each one and pastes in
+the real output, so if the engine's behavior ever changes, the check fails.
 
 ## Terminology
 
@@ -128,8 +128,9 @@ parse(literal('HELLO', { caseInsensitive: true }), 'hello').value
 
 ### `regex`
 
-Match a pattern at the current position (compiled to a sticky `/…/y` regex). For
-genuine *patterns* — numbers, identifiers, escapes — not for keywords.
+Matches a pattern at the current position, compiled internally to a sticky
+`/…/y` regex. Reach for it with genuine patterns — numbers, identifiers,
+escape sequences — not for keywords.
 
 ```ts
 // [verify]
@@ -265,44 +266,49 @@ parse(shadowed, 'instanceof x').value
 ```
 
 ::: tip Bare literals are reordered for you
-When **every** arm is a plain `literal()`, the compiler recognizes the shape and
-sorts the arms longest-first (`literalsLongestFirst` — see
-[Literal-heavy choices](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)),
-so `choice(literal('in'), literal('instanceof'))` still yields `'instanceof'`. The
-shadowing above needs `regex()` arms precisely because that rewrite no longer
-applies. Don't rely on it: add one non-literal arm and ordering matters again.
+When every arm is a plain `literal()`, the compiler notices and sorts them
+longest-first (`literalsLongestFirst` — see
+[Literal-heavy choices](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)).
+That's why `choice(literal('in'), literal('instanceof'))` still returns
+`'instanceof'`, even with the short arm listed first.
+
+The shadowing example above needs `regex()` arms because that rewrite only
+applies to plain literals. Don't rely on it: add one non-literal arm and
+ordering matters again.
 :::
 
-When the arms start with disjoint characters the whole `choice` becomes a single O(1)
-character dispatch — a lookup table in the interpreter and a direct indexed body in the
-compiled `TableProgram`. See
+When the arms start with disjoint characters, the whole `choice` collapses into a
+single O(1) character dispatch — a lookup table in the interpreter, a direct
+indexed body in the compiled `TableProgram`. See
 [First-char gating](./first-char-gating).
 
-When alternatives begin by recognizing the same lexical family and then diverge
-by the value already read, prefer [`dispatch`](#dispatch). A shape like
-`choice(specialFunction, genericFunction, keyword)` usually means the grammar is
-speculatively parsing the same opener more than once. `dispatch(combinator,
-when(...), otherwise(...))` parses that opener once, routes by its returned
-string value, and keeps the selected branch committed. If the selected branch
-node should include that already-consumed opener in its children, use
-[`routed()`](#routed) inside the branch.
+When alternatives start by recognizing the same lexical family and only diverge
+once you know the value, reach for [`dispatch`](#dispatch) instead. A shape like
+`choice(specialFunction, genericFunction, keyword)` is usually a sign the grammar
+is parsing the same opener more than once just to find out which branch to take.
+
+`dispatch(combinator, when(...), otherwise(...))` parses that opener exactly
+once, routes on its returned value, and commits to the branch it picks. If the
+selected branch's node should include that already-consumed opener in its
+children, use [`routed()`](#routed) inside it.
 
 ### `dispatch`
 
-Token-once routing by a parsed string value. Use it when one broad routing
-combinator is valid generally, and selected values have specialized continuation
-grammars. Think "parse one command name, then pick that command's argument
-grammar" or "parse one name-or-call opener, then pick the specialized call body."
+Routing by a value you've already parsed, without parsing it twice. Reach for
+`dispatch` when one broad combinator can recognize a whole family, and specific
+values within that family need their own continuation grammar. Think "parse
+one command name, then pick that command's argument grammar," or "parse one
+name-or-call opener, then pick the right call body."
 
-The `when(...)` keys are exact full values returned by the first `dispatch`
-argument, not prefixes and not tokens parsed after it. `when(key, tail,
-{ caseInsensitive: true })` folds ASCII case for the comparison only; the
-returned value remains the authored source value. A matched key's bad tail is
-an error.
+A `when(...)` key has to be an exact match for the value the first `dispatch`
+argument returned — not a prefix, and not a token parsed afterward.
+`when(key, tail, { caseInsensitive: true })` folds ASCII case only for that
+comparison; the value you get back is still the original source text. Once a
+key matches, a bad tail is a hard error, not a chance to try another arm.
 
-For a grammar that starts with one known keyword, use `word()` or a `makeWord()`
-factory. For `dispatch`, keep the routing combinator broad enough to recognize
-the whole family being routed.
+If your grammar starts with one known keyword, reach for `word()` or a
+`makeWord()` factory instead. For `dispatch`, keep the routing combinator
+broad enough to recognize the whole family you're routing over.
 
 ```ts
 // [verify]
@@ -334,10 +340,10 @@ parse(statement, 'set count').ok
 // → false
 ```
 
-The returned value is `[headValue, tailValue]`: the dispatch head is captured once,
-and the selected tail is parsed after it. A fallback should be a real fallback
-grammar for that family, not a throwaway token. If the head belongs inside a branch
-node, use [`routed()`](#routed) in that branch.
+The result is `[headValue, tailValue]` — the head is captured once, and the
+selected tail is parsed after it. Make the fallback a real grammar for that
+family, not a throwaway token. If the head belongs inside a branch node, use
+[`routed()`](#routed) in that branch.
 
 Use `makeWhen()` when a table has the same arm options throughout:
 
@@ -366,10 +372,10 @@ parse(statement, 'Print count').value
 // → ['Print', [' ', 'count']]
 ```
 
-A common dispatch shape is "name or call opener": the same lexical family can be
-a bare name, a known call, or a generic call. Consume the source-shaped head once
--- either the bare identifier or the glued `name(` opener -- then route by the
-value it returned:
+A common dispatch shape is "name or call opener": the same lexical family might
+turn out to be a bare name, a known call, or a generic call. Parse the head
+once — either the bare identifier or the glued `name(` opener — then route on
+the value it returned:
 
 ```ts
 // [verify]
@@ -442,40 +448,43 @@ grammar expression. Use tail-only branches when the routed value belongs to an
 outer category node; use `routed()` inside branch nodes when each selected form
 should own that same source span.
 
-`routed()` is forwarding-only: without a routed value at the selector position,
-it fails. Use `routed(head)` only when the same production is deliberately used
-both from a selected `dispatch` arm and directly. In a dispatch arm it forwards
-the already-consumed head; used directly, it parses `head` in place. This removes
-a duplicated `Original`/`RoutedOriginal` production without re-scanning the
-selector in the dispatched case.
+`routed()` only forwards — without a routed value at the selector position, it
+fails. Use `routed(head)` when the same production needs to work both as a
+`dispatch` arm and standalone: inside a dispatch arm it forwards the
+already-consumed head, and used directly it parses `head` in place. That lets
+one production serve both cases without splitting into a duplicated
+`Original`/`RoutedOriginal` pair, and without re-scanning the selector in the
+dispatched case.
 
-If the first parser fails, an enclosing `choice` can still try a later arm. If
-the first parser succeeds and a `when` key matches, that tail is committed: its
-failure is returned immediately and neither `otherwise` nor an outer fallback is
-attempted.
-Duplicate keys, including duplicates across grouped `when([keyA, keyB], tail)`
-arms, fail at grammar construction time. Case-insensitive arms also reject any
-other key that could match the same returned value.
+If the head parser itself fails, an enclosing `choice` can still try a later
+arm. But once the head succeeds and a `when` key matches, that tail is
+committed: its failure is returned immediately, and neither `otherwise` nor an
+outer fallback gets a turn.
 
-In macro-compiled `rules()` factories, `when()` and `otherwise()` arms can be
-bound to local `const`s and passed by name. Put the generic continuation in
-`otherwise(...)`. Macro lowering expects explicit arm arguments.
+Duplicate keys — including duplicates spread across grouped
+`when([keyA, keyB], tail)` arms — fail at grammar construction time.
+Case-insensitive arms also reject any other key that could match the same
+returned value.
+
+Inside macro-compiled `rules()` factories, `when()` and `otherwise()` arms can
+be bound to local `const`s and passed by name — just put the generic
+continuation in `otherwise(...)`. Macro lowering expects explicit arm
+arguments.
 
 ### `attempt`
 
-A transaction boundary for a composite parser. On success, it returns the inner
-parser's result. On a non-committed failure, it restores Parseman's capture and
-recovery sinks and reports the failure at the attempt's entry offset while keeping
-the inner `expected` tokens.
+A transaction boundary around a composite parser. On success it just returns
+the inner result. On a failure that wasn't already committed, it rolls back
+Parseman's capture and recovery state and reports the failure at the attempt's
+own starting offset — while still keeping the inner `expected` tokens.
 
 You rarely need this around an ordinary `choice()` arm: `choice`, `many`,
 `optional`, and `sepBy` already roll back their own rejected speculative paths.
 Use `attempt()` when you want to expose a larger parser as an all-or-nothing unit,
 or when custom composition should not let callers observe partial progress.
 
-Its unique public job is failure re-anchoring for a composite parser: keep the
-inner expectation, but report the failure at the boundary where that composite
-started.
+Its real job is re-anchoring the failure: keep the inner expectation, but
+report it at the boundary where the composite started.
 
 ```ts
 // [verify]
@@ -507,8 +516,9 @@ common option combinations, and the options are available on all of them.
 | plain | `many(item, opts?)` | `oneOrMore(item, opts?)` |
 | separated | `sepBy(item, sep, opts?)` | `oneOrMoreSep(item, sep, opts?)` |
 
-`oneOrMore(x)` **is** `many(x, { min: 1 })` and `oneOrMoreSep(i, s)` **is**
-`sepBy(i, s, { min: 1 })` — the same combinator, not a lookalike.
+`oneOrMore(x)` is exactly `many(x, { min: 1 })`, and `oneOrMoreSep(i, s)` is
+exactly `sepBy(i, s, { min: 1 })` — the same combinator under a shorter name,
+not a lookalike.
 
 ### `many` and `oneOrMore`
 
@@ -536,7 +546,7 @@ parse(many(digit, { min: 3 }), '51').ok
 // → false
 ```
 
-**Gating:** `many` is **nullable** — a `many`-led choice arm matches at every
+**Gating:** `many` is nullable — a `many`-led choice arm matches at every
 position and disables the choice's first-char dispatch. `oneOrMore` / `{ min: 1 }` is
 non-nullable and carries the item's first-set. `max` never affects nullability.
 
@@ -568,19 +578,20 @@ parse(sepBy(ident, comma, { trailing: 'allow' }), 'a,b,').span
 // → { start: 0, end: 4 }
 ```
 
-**Gating:** the single most consequential nullability in the library. An argument
-list, parameter list, selector list, or CSV row that requires at least one item
-should use `oneOrMoreSep`. Plain `sepBy` is for the genuinely-optional list.
+**Gating:** this is the single most consequential nullability call in the
+library. An argument list, parameter list, selector list, or CSV row that
+needs at least one item should use `oneOrMoreSep`. Plain `sepBy` is for lists
+that can genuinely be empty.
 
-**Children: items only.** A list contributes the ITEMS of the list and nothing
-else. Under a `node()`, `sepBy(ident, comma)` over `a,b,c` contributes three
-children — not five with commas at the odd indices. `many` and `oneOrMore` always
-behaved this way; `sepBy` was the outlier until 0.47.0, and the mismatch between
-"a flat item list" and what `children[1]` actually held is the single most
-expensive documentation defect this library has shipped.
+**Children: items only.** A list contributes just its items, nothing else.
+Under a `node()`, `sepBy(ident, comma)` over `a,b,c` gives you three children
+— not five, with commas sitting at the odd indices. `many` and `oneOrMore`
+always worked this way; `sepBy` was the outlier until 0.47.0. The gap between
+"a flat item list" and what `children[1]` actually held was the most
+expensive documentation mistake this library has shipped.
 
-The separator is still consumed, and it is still in `rawChildren` in source order
-— the same channel trivia uses. Nothing is lost.
+The separator isn't discarded, either — it's still in `rawChildren`, in
+source order, the same channel trivia uses. Nothing is lost.
 
 ```ts
 // [verify]
@@ -661,10 +672,11 @@ parse(not(literal('#')), 'abc')
 // → { ok: true, value: null, span: { start: 0, end: 0 } }
 ```
 
-**Gating:** `not()`'s first-set is `any` — it cannot know what it forbids. Keep it as
-a **trailing** boundary; leading an arm with it poisons the whole choice's dispatch
-(the diagnostic reports `leading-not`). For a keyword boundary reach for
-[`word`](#word-and-keywords) instead, which does this with an exact first-set.
+**Gating:** `not()` has an `any` first-set — it can't know what it's excluding.
+Keep it as a trailing boundary only; leading an arm with it poisons the whole
+choice's dispatch (the diagnostic reports `leading-not`). Need a keyword
+boundary instead? Reach for [`word`](#word-and-keywords) — it does the same
+job with an exact first-set.
 
 ### `peek`
 
@@ -687,8 +699,9 @@ parse(peek(literal('$')), '$count').span
 // → { start: 0, end: 0 }
 ```
 
-**Gating — this is why `peek` exists.** Unlike `not`, `peek` knows what it requires,
-so it carries its body's first-set and a **leading** `peek()` *narrows* the arm:
+**Gating:** this is why `peek` exists. Unlike `not`, `peek` knows what it
+requires, so it carries its body's first-set — and a leading `peek()`
+*narrows* the arm:
 
 ```ts
 // [verify]
@@ -902,16 +915,16 @@ compiled.parse('b').value
 // → 'b'
 ```
 
-`compile()` produces an artifact and reports **nothing**. Since 0.45.0 the
-[gating diagnostic](./first-char-gating#why-this-is-not-a-compile-time-warning) is not on
-the compile path — ask for it explicitly with
+`compile()` produces an artifact and reports nothing on its own. Since 0.45.0,
+the [gating diagnostic](./first-char-gating#why-this-is-not-a-compile-time-warning)
+isn't on the compile path — ask for it explicitly with
 [`diagnoseGrammar()`](../reference/api#diagnosegrammar-grammar-opts-grammardiagnosis).
 
 ## Context and assertions
 
 ### `gate` and `withCtx`
 
-`gate(predicate)` is a zero-width ASSERT on `ctx.state`; `withCtx(extra, c)` merges
+`gate(predicate)` is a zero-width ASSERT on `ctx.state`. `withCtx(extra, c)` merges
 values into that state for the duration of `c`. See [Context](./context).
 
 ```ts
@@ -937,7 +950,7 @@ parse(withCtx({ inFunction: false }, returnStmt), 'return 1').ok
 
 **Gating:** `gate()`'s first-set is `any`. Use it only *after* a concrete leading
 terminal inside a `sequence` — never as a leading arm term. To pick a branch by
-state, use the gated-arm **field** instead:
+state, use the gated-arm *field* instead:
 [gated arm vs `gate()`](#selecting-vs-asserting-on-context-gated-arm-vs-gate).
 
 ### `adjacent` and `notAdjacent`
@@ -1071,8 +1084,8 @@ opaque regions by default — `scanTo` two kinds, `balanced` one:
 
 - **Ambient trivia** *(`scanTo` only)*. Whatever `trivia` the grammar declares
   (whitespace, comments) is skipped during the scan, so a sentinel hidden in a
-  comment is never matched. `balanced` deliberately does **not** consult trivia —
-  its delimiters are structural, and a bracket is a bracket whether or not a
+  comment is never matched. `balanced` skips this check on purpose — its
+  delimiters are structural, and a bracket is a bracket whether or not a
   comment sits beside it.
 - **Ambient `scanSkip`.** Opaque *non-trivia* units — strings, `balanced` brackets —
   declared once at the grammar level:
@@ -1098,7 +1111,7 @@ opaque regions by default — `scanTo` two kinds, `balanced` one:
 
 | Option | Effect |
 | --- | --- |
-| `skip: [...]` | Extra opaque units for THIS call. **Extends** (does not replace) what the combinator already skips ambiently — trivia + `scanSkip` for `scanTo`, `scanSkip` alone for `balanced`. |
+| `skip: [...]` | Extra opaque units for *this* call. **Extends** (doesn't replace) what the combinator already skips ambiently — trivia + `scanSkip` for `scanTo`, `scanSkip` alone for `balanced`. |
 | `raw: true` | Hard opt-out: skip nothing ambiently — the pre-ambient raw byte walk. |
 | `orEOF: true` | *(scanTo only)* Reaching end-of-input without the sentinel succeeds, returning everything consumed. |
 
@@ -1243,7 +1256,7 @@ import { attempt, peek, literal, parse } from 'parseman'
 | `choice({ gate, combinator }, …)` | **SELECT** a branch by a cheap state predicate | ✅ preserved (arm keeps its own first-set) |
 | `gate(predicate)` inside `sequence` | **ASSERT** a state predicate mid-sequence | ⚠️ poisons dispatch if used as a leading arm term (first-set `any`) |
 
-Both read `ctx.state`. The arm **field** keeps the choice gating; the **combinator**
+Both read `ctx.state`. The arm **field** keeps the choice gating; the *combinator*
 is a zero-width assertion for use after a concrete leading terminal. See
 [Context](./context).
 

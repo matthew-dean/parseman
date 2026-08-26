@@ -1,13 +1,13 @@
 # Choice, dispatch & keywords
 
-`choice()` uses PEG ordered-choice semantics: **first match wins**. That single rule has
-two consequences you have to design around — keyword/identifier collisions and
-shared prefixes. `dispatch()` is the companion for the common case where several forms
-start by reading the same token family and only diverge after that token's value is known.
+`choice()` uses PEG ordered-choice semantics: **first match wins**. That single rule leads
+to two things you have to design around — keyword/identifier collisions, and shared
+prefixes. `dispatch()` is the companion for the common case where several forms start by
+reading the same token family and only diverge once that token's value is known.
 
-This page is the decision guide. The [Combinators](./combinators#choice-and-dispatch)
-page gives the full API examples; [First-char gating](./first-char-gating) explains the
-performance diagnostic that tells you when a hot choice stopped dispatching.
+This page is the decision guide. The [Combinators](./combinators#choice-and-dispatch) page
+has the full API examples; [First-char gating](./first-char-gating) explains the
+performance diagnostic that tells you when a hot choice has stopped dispatching.
 
 ## Which shape should I use?
 
@@ -18,7 +18,7 @@ performance diagnostic that tells you when a hot choice stopped dispatching.
 | `dispatch(head, when(...), otherwise(...))` | Every branch starts by parsing the same broad family: command names, name-or-call openers, contextual keywords, at-keywords. | The shared head parses once; the route table decides the specialized tail; `routed()` lets a branch node own that head. |
 | `attempt(composite)` | You need a larger parser's failure reported at the composite's entry, not at the inner token that failed. | It is the public failure re-anchoring boundary for composite parsers; ordinary rejected `choice` arms already roll back. |
 
-The smell to watch for is a `choice` where two or more arms begin with the same broad
+The smell to watch for is a `choice` where two or more arms start with the same broad
 recognizer:
 
 ```ts
@@ -30,15 +30,15 @@ dispatch(commandName, when('set', setTail), when('print', printTail), otherwise(
 ```
 
 Keep `choice` for genuinely different leading shapes. Reach for `dispatch` when the
-branches are "same opener, different continuation." If the opener belongs inside
-the selected branch's CST/AST node, put `routed()` in that branch; the
-[Combinators dispatch section](./combinators#dispatch) shows both tail-only and
+branches are "same opener, different continuation." If the opener belongs inside the
+selected branch's CST/AST node, put `routed()` in that branch — the
+[Combinators dispatch section](./combinators#dispatch) shows both the tail-only and
 `routed()` forms.
 
 ## Order matters
 
-When alternatives share a prefix, put the longer one first, or the shorter one will
-match and the longer one will never be reached:
+When alternatives share a prefix, put the longer one first — otherwise the shorter one
+matches and the longer one never gets a turn:
 
 ```ts
 // [verify]
@@ -54,25 +54,25 @@ parse(shadowed, 'instanceof x').value
 // → 'in'
 ```
 
-Two shapes are exceptions, and both resolve by longest match rather than by position —
-in the interpreter and the compiled parser alike:
+Two shapes are exceptions to this, and both resolve by longest match instead of by
+position — in the interpreter and the compiled parser alike:
 
 - **Every arm is a bare `literal()`**
   ([`literalsLongestFirst`](./natural-grammars#the-one-place-order-defers-to-length)), so
-  an all-literal `choice` is order-insensitive.
-- **One regex arm provably subsumes every other arm, and the rest are literals**
-  ([`greedyClassify`](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)) —
-  the regex runs once and the matched text is classified by string equality, so the
-  keywords win over the general token whichever order they are written in.
+  an all-literal `choice` doesn't care about order.
+- **One regex arm provably covers every other arm, and the rest are literals**
+  ([`greedyClassify`](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)) — the
+  regex runs once, and the matched text is classified by string equality, so keywords win
+  over the general token no matter what order you wrote them in.
 
 Both detections are conservative. Mix in a `sequence()` or `word()` arm, or add a second
-regex, and neither applies — ordering is load-bearing again. Write the long arm first
-regardless, and don't make a grammar's correctness depend on a rewrite applying.
+regex, and neither one applies — ordering is load-bearing again. Write the long arm first
+regardless, and don't build a grammar whose correctness depends on a rewrite kicking in.
 
-You rarely need `attempt()` just to make an ordinary `choice()` safe: rejected
-choice arms already roll back Parseman's capture and recovery sinks. Reach for
-`attempt()` when the user-facing failure should be anchored at a larger parser's
-entry while preserving the inner expected token.
+You rarely need `attempt()` just to make an ordinary `choice()` safe — rejected choice arms
+already roll back Parseman's capture and recovery sinks. Reach for `attempt()` when a
+failure should be anchored at a larger parser's entry point while still preserving the
+inner expected token:
 
 ```ts
 import { attempt, literal, sequence } from 'parseman'
@@ -82,9 +82,9 @@ const value = sequence(literal('x'), attempt(sequence(literal('a'), literal('b')
 
 ## Keyword vs. identifier boundaries
 
-The classic hazard: `if` should not match the `if` at the start of `ifdef`. A bare
-`literal('if')` happily matches that prefix. Use the **`word`** combinator, which adds a
-trailing word-boundary guard.
+Here's the classic hazard: `if` shouldn't match the `if` at the start of `ifdef`. A bare
+`literal('if')` will happily match that prefix. Use the **`word`** combinator instead — it
+adds a trailing word-boundary guard.
 
 ```ts
 import { word, makeWord, choice, regex } from 'parseman'
@@ -104,15 +104,16 @@ const token = choice(
 )
 ```
 
-The **boundary** is the character class that must *not* follow the match. Pass it per
-call to `word`, or bake it into a factory with `makeWord`. `makeWord` can also carry
-the same `caseInsensitive` option as `word`; omitting it keeps the shared
-case-sensitive default.
+The boundary is the character class that must *not* follow the match. Pass it per call to
+`word`, or bake it into a factory with `makeWord`. `makeWord` can carry the same
+`caseInsensitive` option as `word` — omit it and you keep the shared case-sensitive
+default.
 
 ## Matching many keywords at once
 
-When you have a whole set of keywords, `keywords()` matches one of many — longest-first,
-compiled into a single sticky regex — with the same boundary and case-folding options:
+When you have a whole set of keywords, `keywords()` matches any one of them — longest-
+first, compiled into a single sticky regex — with the same boundary and case-folding
+options:
 
 ```ts
 import { keywords } from 'parseman'
@@ -122,12 +123,13 @@ const cssAtRule = keywords(['media', 'supports', 'keyframes'], { boundary: 'A-Za
 const caseless  = keywords(['true', 'false'], { caseInsensitive: true })
 ```
 
-This is both faster and clearer than a hand-written `choice` of `word`s when the set is
+This is both faster and clearer than hand-writing a `choice` of `word`s when the set is
 large.
 
 ## Rolling the guard by hand
 
-If you need something the boundary class can't express, build the guard with `not()`:
+If you need something the boundary class can't express, build the guard yourself with
+`not()`:
 
 ```ts
 import { not, sequence, literal, regex, transform, choice } from 'parseman'
@@ -144,14 +146,15 @@ const token = choice(
 )
 ```
 
-`not(wordChar)` succeeds only when the next character is *not* a word character,
-consuming nothing — so `keyword('if')` matches `if` but rejects the `if` in `ifdef`.
+`not(wordChar)` succeeds only when the next character isn't a word character, and it
+consumes nothing — so `keyword('if')` matches `if` but rejects the `if` inside `ifdef`.
 
 ## Gated alternatives
 
 `choice` arms can be **gated** on the parse context — an arm is only tried when its gate
-predicate returns true. This is the choice-level companion to [`gate`](./context) — the
-arm field SELECTS a branch (keeping dispatch), the `gate()` combinator ASSERTS mid-sequence:
+predicate returns true. This is the choice-level companion to [`gate`](./context): the arm
+field *selects* a branch and keeps dispatch, while the `gate()` combinator *asserts* a
+predicate mid-sequence:
 
 ```ts
 import { choice } from 'parseman'

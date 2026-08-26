@@ -1,7 +1,7 @@
 # API reference
 
-Every value exported from `parseman`. Types are listed separately in
-[Types](./types). Import anything from the package root:
+Every value `parseman` exports, in one place. Types live separately in
+[Types](./types). Import anything you need from the package root:
 
 ```ts
 import { literal, choice, sequence, node, parse /* … */ } from 'parseman'
@@ -85,8 +85,8 @@ choice compiles to an O(1) first-char dispatch — gated arms included, so gatin
 rare-token alternative (like `&`) stays O(1) rather than dropping the whole choice to a
 linear scan. (A nullable or overlapping arm forces the linear path.)
 
-Use `choice(...)` for literal-to-literal alternatives and other branches whose first
-sets are naturally disjoint. Those are already the compiler's fast path.
+Reach for `choice(...)` when the alternatives are literal-to-literal or otherwise
+naturally disjoint — that's already the compiler's fast path.
 
 When several arms first parse the same broad token family and then branch by the
 string that token returned, use [`dispatch`](#dispatchcombinator-when-otherwise)
@@ -285,9 +285,8 @@ rejected speculative paths. Use `attempt()` when you want to expose a larger
 parser as one all-or-nothing unit, or when custom composition should not let
 callers observe partial progress.
 
-The user-visible capability other combinators do not provide is failure
-re-anchoring for a composite parser: the failure reports at the composite's entry
-while preserving the inner `expected` token.
+No other combinator does this: it re-anchors the failure to the composite's entry
+while still preserving the inner `expected` token.
 
 ```ts
 const value = sequence(literal('x'), attempt(sequence(literal('a'), literal('b'))))
@@ -447,31 +446,31 @@ export const lines      = rules({ trivia: rw, trackLines: true }, factory)
 export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, factory)
 ```
 
-Note that `factory` is a plain `const` and is **not exported** — that is required, not
-stylistic. Lowering erases the `rules(factory)` call sites and removes the macro import,
-so the factory body would survive verbatim in the artifact naming `node`/`sequence`/…
-that nothing imports. A local `const` is dead code the bundler drops; an `export` cannot
-be dropped, and would ship a binding that throws `ReferenceError` the first time a
-consumer called it. Exporting one is a compile-time error.
+`factory` must be a plain `const`, and it must not be exported — that's a requirement,
+not a style preference. Lowering erases the `rules(factory)` call sites and removes the
+macro import, so the factory body would survive verbatim in the emitted artifact,
+naming `node`/`sequence`/… that nothing there imports. A local `const` is dead code the
+bundler drops; an exported one can't be dropped, and would ship a binding that throws
+`ReferenceError` the first time a consumer called it. So exporting `factory` is a
+compile-time error.
 
-That check reads the `export` prefix on the declaration, and it is not the only way to
-make the binding undroppable — a separate `export { factory }` does the same thing. So
-underneath it, parseman scope-analyses the module it is about to emit and **refuses to
-emit any module that reads an identifier nothing binds**, whatever route the name took.
+That check isn't just looking for the `export` keyword — `export { factory }` trips it
+too. Underneath, parseman scope-analyses the module it's about to emit and refuses to
+emit any module that reads an identifier nothing binds, whatever route the name took.
 The error lists each one with a `file:line:column` in the emitted module and the
-declaration it sits in. Two things are deliberately allowed: a name your SOURCE already
-left free — the module expects its host to supply it, and parseman had no part in that —
-and an unreferenced local function-valued `const`, which is the dead-code case above.
+declaration it sits in. Two things are allowed on purpose: a name your source already
+left free (the module expects its host to supply it, and parseman had no part in that),
+and an unreferenced local function-valued `const` — the dead-code case above.
 
-Three call sites over one shared factory (a factory may be passed by name, as here). The
+Three call sites, one shared factory — a factory can be passed by name, as here. The
 macro emits independent top-level artifacts, so each bundle tree-shakes away the one
-it does not import — your compiler ships the AST image, your language service ships the
-CST image, and neither pays the other's cost.
+it doesn't import: your compiler ships the AST image, your language service ships the
+CST image, and neither pays for the other.
 
-This is deliberately two compilations rather than one switchable artifact. `hostMode`
-does not only choose a build expression; it decides what each node CAPTURES. A per-parse
-choice would keep every collector live on both paths, so an AST parse would pay CST
-capture cost it can never use.
+That's two compilations on purpose, not one switchable artifact. `hostMode` doesn't just
+pick a build expression — it decides what each node captures. A per-parse choice would
+keep every collector live on both paths, so an AST parse would pay a CST capture cost it
+can never use.
 
 An artifact and its host must agree, and a mismatch throws once per parse rather than
 producing a degraded tree — an `'ast'` artifact given a positioned-CST host would
@@ -507,18 +506,17 @@ Every item before the final local map must prove recognition-only. `composeLeaf`
 is terminal: it cannot be fed into another `compose()`/`composeLeaf()` call.
 
 Once its canonical table reaches 1,024 instruction words, the default AST/no-lines leaf
-embeds one strict TableProgram assembly at build time. Smaller leaves stay compact. The
-assembly increases that generated grammar artifact in exchange for faster parsing; tracked
-and CST leaf variants remain compact closure tables. It is a static function
-literal and remains CSP-safe—no runtime source generation or second parser is involved.
+embeds one strict TableProgram assembly at build time; smaller leaves stay compact. The
+assembly grows the generated grammar artifact in exchange for faster parsing — tracked
+and CST leaf variants remain compact closure tables. It's a static function literal and
+stays CSP-safe: no runtime source generation, no second parser.
 
-**Build it with the macro.** The macro is the only supported way to produce a leaf
-grammar: it lowers the call to static fused source, and a call it cannot fuse is a
-build error (`composeLeaf() must macro-fuse`), never a silent fallback. An unlowered
-runtime call does not produce that artifact — it yields Parseman's internal
-interpreted fuse, which exists for diagnostics and differential harnesses. That is a
-different engine, not a different grammar, and it is not a supported way to ship a
-parser.
+**Build it with the macro.** That's the only supported way to produce a leaf grammar: it
+lowers the call to static fused source, and a call it can't fuse is a build error
+(`composeLeaf() must macro-fuse`), never a silent fallback. An unlowered runtime call
+doesn't produce that artifact at all — it falls back to Parseman's internal interpreted
+fuse, which exists for diagnostics and differential harnesses. That's a different engine,
+not a different grammar, and not a supported way to ship a parser.
 
 Because both paths are real, `composeLeaf` returns `Record<string, Runnable>`, not
 `Record<string, FusedRule>`. `Runnable` is "a compiled rule *or* a combinator", which
@@ -656,10 +654,11 @@ labeled trivia kinds. Unknown names are ignored; without a label table the helpe
 
 ## Tree traversal
 
-The tree a grammar produces is plain objects, so you can recurse it yourself. For
-typed CST traversal, use `createVisitor(grammar, spec)`. The grammar may be an
-interpreted `rules()` result or a compiled/macro/`compose()` grammar; Parseman reads
-the same reflection metadata either way. See [Walking the tree](../guide/ast#walking-the-tree).
+A grammar's tree is plain objects, so you're free to recurse it yourself. For typed CST
+traversal, reach for `createVisitor(grammar, spec)` instead — it works the same whether
+the grammar is an interpreted `rules()` result or a compiled/macro/`compose()` grammar,
+since Parseman reads the same reflection metadata either way. See
+[Walking the tree](../guide/ast#walking-the-tree).
 
 ### `createVisitor(grammar, spec)`
 
@@ -804,9 +803,10 @@ offsets.
 ### `run(entry, input, opts?)`
 
 Run a grammar **entry** — a rule function from a `compose()` / `compile()` map, or an
-interpreter combinator — against `input`, threading the standard ctx (trivia log,
-`recover`/`expect` errors, the `ctx.build` host, grammar state) so a tool doesn't hand-build
-it or branch on function-vs-combinator. Returns a [`RunResult`](./types#runresult):
+interpreter combinator — against `input`. It threads the standard ctx (trivia log,
+`recover`/`expect` errors, the `ctx.build` host, grammar state) for you, so a tool never
+has to hand-build it or branch on function-vs-combinator. Returns a
+[`RunResult`](./types#runresult):
 `{ ok, value, span, expected, errors, rootTrivia?, unconsumedFrom }`.
 Pass `opts.build` for a
 [CST host](#cstbuildhost), `opts.state` for initial grammar state, and `opts.trivia`
@@ -911,11 +911,13 @@ value the former can survive.
 
 ### What is NOT here
 
-Walking a corpus, folding per-entry digests into an aggregate, three-way verdicts and report
-formatting — once `loadCorpus`, `digestCorpus`, `compareReports` and `formatComparison` —
-are a consumer's regression-suite plumbing, not something that helps anyone build or diagnose
-a grammar, so they live with the suite that needs them. jess's is
-`packages/syntax/less/less-parser/test/identity-oracle/` and is a reasonable model to copy.
+Walking a corpus, folding per-entry digests into an aggregate, three-way verdicts, report
+formatting — these used to live here as `loadCorpus`, `digestCorpus`, `compareReports`, and
+`formatComparison`. They're a consumer's regression-suite plumbing, not something that
+helps anyone build or diagnose a grammar, so now they live with the suite that needs them.
+A folder like
+`test/identity-oracle/`, holding a baseline file and a small runner, is a reasonable
+shape to copy.
 Keep the `OK:`/`ERR:` prefixes, and keep "the grammar rejected this input" and "the digest
 could not be computed" on separate channels: the second is a fact about the tool, and
 reporting it as the first is how a gate lies.
@@ -928,8 +930,9 @@ reporting it as the first is how a gate lies.
 
 ## Composing grammars
 
-Fuse grammars into one parser, with override, à la carte selection, and no base-grammar
-source required. See [Extending grammars](../guide/extending).
+Fuse grammars into one parser. Rules can override each other, you can pick pieces à la
+carte, and you never need the base grammar's source. See
+[Extending grammars](../guide/extending).
 
 ### `compose(items)`
 
@@ -950,14 +953,14 @@ already-compiled artifact.
 
 ### Tolerant lists (`run(entry, input, { tolerant: true })`)
 
-Activates list recovery. With `tolerant` set, `many` / `oneOrMore` / `sepBy` recover from a
-failed element — skip to a sync point, emit a [`ParseError`](./types#parseerror) over the
-skipped span (collected in `errors`), and keep parsing the list — instead of stopping at
-the first bad element. The sync point is **inferred from grammar structure** (a `sepBy`'s
-separator; a list's enclosing `sequence(open, …, close)` delimiter) — the grammar carries
-**no** recovery annotation. Omit `tolerant` for the strict "one clean error and stop"
-behavior, byte-identical to a parser with no recovery. See
-[Tolerant lists](../guide/error-recovery#tolerant-lists).
+Activates list recovery. With `tolerant` set, `many` / `oneOrMore` / `sepBy` no longer stop
+at the first bad element: they recover from a failed one by skipping to a sync point,
+emitting a [`ParseError`](./types#parseerror) over the skipped span (collected in
+`errors`), and continuing to parse the list. The sync point is **inferred from grammar
+structure** — a `sepBy`'s separator, or a list's enclosing `sequence(open, …, close)`
+delimiter — so the grammar itself carries **no** recovery annotation. Omit `tolerant` for
+the strict "one clean error and stop" behavior, byte-identical to a parser with no
+recovery. See [Tolerant lists](../guide/error-recovery#tolerant-lists).
 
 ```ts
 const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
