@@ -212,17 +212,22 @@ U-58/U-60 derivation must reproduce the same trace admission, recognizer tape,
 reducer replay, and cold fallback mechanically from grammar IR while preserving
 this size/performance shape.
 
-**Broad-gap localization after the retained win (iteration 68): target the
-CSS/CST family.** The existing five-workload gate compared clean release head
+**CORRECTION — iteration 68 measured runtime `compile()`, not the macro.** The
+five-workload gate compared clean release head
 `f28d447` with exact 0.45 `7d1817f`, immediately after an identical-code control.
 The control's workload centers stayed within -0.8%..+0.9%, its worst absolute
 single-pass swing was 3.63%, and neither load window moved adversely. Current is
 already 15.4% faster than 0.45 on GraphQL, while JSON's +1.5% sits inside that
 control floor. The remaining gap is sharply consistent across CSS-shaped rows:
 Less stylesheet +84.0%, Less mixins +86.5%, and independent CSS +86.5%, with
-current losing all 12 adjacent pairs for each. U-57/U-60 should therefore optimize
-the shared CST/trivia/node-construction protocol first. Extra value-only
-GraphQL/JSON work has no priority unless it falls out of the same generic change.
+current losing all 12 adjacent pairs for each. But `bench/workloads/index.ts`
+imports raw combinators and calls runtime `compile(c)` in every `make()`; neither
+leg is an ordinary macro-built shipping artifact. Those numbers are valid only
+for the low-priority runtime compiler and **must not localize or rank the macro
+gap**. For this program, macro performance evidence comes from the existing real
+Jess `pm-macro:`/`bench:jess:ab` loaders and their printed artifact paths. The
+synthetic workload censuses below remain architecture evidence only until their
+mechanism activates on that shipping macro path.
 
 ### U-58. Make derived tokens the primary control-flow currency — `ACTIVE`
 
@@ -399,11 +404,10 @@ NODE control, keeps cursors and rollback marks in locals, and outlines only cold
 shared, recursive, or bytecode-budgeted continuations. The emitted artifact is
 ordinary source fixed at build time—never runtime `eval`/`new Function`.
 
-Why this is now the leading broad hypothesis: exact 0.45 CSS output had 27 rule
-functions plus 8 private functions, while current CSS has 341 private `_pf`
-functions per assembly; Less currently has 636. Current is already at the 0.45
-target on GraphQL/JSON but is about 86% slower on Less/CSS, matching this
-construction-heavy topology split. Earlier NODE→SCOPE→SEQ wrapper fusion deleted
+Why this remains the leading macro hypothesis: exact real-Jess 0.45 Less/CSS
+artifacts had 256/176 `_r` rule functions plus 20/24 helpers, while the current
+real-Jess macro artifacts expose about 2,071/1,180 private `_pf` functions.
+Earlier NODE→SCOPE→SEQ wrapper fusion deleted
 147 source functions yet regressed because TurboFan had already inlined those
 small wrappers. U-63 must cross the surviving 467–796-byte NODE/REPV boundaries,
 not paste already-inlined wrappers into a larger function.
@@ -416,12 +420,15 @@ and outline before V8 instruction-cache growth erases the saved calls.
 
 ### U-64. Static reducer/factory specialization and capture authority — `ACTIVE`
 
-The current broad Less/CSS TablePrograms encode every direct-builder NODE with the
-same wide `flags=4` capture plan: 31/31 Less definitions and 18/18 CSS definitions.
-That is an authority failure until proven otherwise. Generic reducer factories and
-dispatch helpers can hide that a particular node site never consumes raw children,
-trivia, fields, or state, so codegen maintains buffers and raw entries based on a
-conservative outer signature.
+The synthetic runtime-compile Less/CSS workloads encode every direct-builder NODE
+with the same wide `flags=4` capture plan: 31/31 Less definitions and 18/18 CSS
+definitions. Their imported `mk` reducers use child content and spans, but use raw
+children and trivia only through `.length`; that supports a count-only capture
+experiment, not a shipping claim. The workload is low-priority runtime compile.
+U-64 remains active only if the same generic authority clears the ceiling on real
+Jess macro reducers. Generic reducer factories and dispatch helpers can hide that
+a particular node site never consumes raw children, trivia, fields, or state, so
+codegen maintains buffers and raw entries based on a conservative outer signature.
 
 At macro time, partially evaluate only statically resolved reducer/factory source
 and bindings. Compute a per-site use/effect summary, propagate constants through
@@ -436,7 +443,7 @@ analysis proves removable on both broad Less and CSS. Do not build or time unles
 the exact whole-workload ceiling is at least 15%; builder-call removal alone was
 historically only a single-digit bucket.
 
-### U-65. Broad construction-region arena — `ACTIVE`
+### U-65. Broad construction-region arena — `MEASURED-NEGATIVE` on synthetic runtime workloads; no macro claim
 
 Replace the failed choice-local tape with maximal pure construction regions. A
 region recognizes with scalar cursor/commit/failure locals and appends only the
@@ -452,6 +459,14 @@ NODE/REPV calls across at least 15% of total broad-workload execution. Merely
 deferring callbacks, wrapping each opcode in an event helper, or routing one hot
 choice has already been falsified. Require <=5% ceiling-source growth before the
 vertical and <=2% for a production candidate.
+
+The corrected synthetic census rejected this before timing: after moving the
+counter from semantic `node.parse` entry to the compiled first-set-gated NODE-body
+boundary, complete regions covered only 10.1% of Less and 12.2% of CSS construction
+protocol. The earlier 41.4% Less estimate counted calls the compiled engine rejects
+before any removable NODE/capture work. This result is useful denominator evidence,
+but `perf:workloads` is runtime compile and therefore carries no shipping-macro
+priority. A macro arena now requires U-64 purity/effect authority on real Jess.
 
 ### U-62. Success-only fast artifact with cold exact diagnostic replay — `MEASURED COMPONENT`
 
@@ -1460,7 +1475,7 @@ named in the marker.
 | U-38 | the owed `shared`-arm throughput timing (prediction: ≈ 91 ns/op) | `QUEUED` |
 | U-39 | the time axis of the mixture Pareto curve | `QUEUED` |
 | U-40 | rename `fixture.ts`'s mislabelled engine columns | `QUEUED` |
-| U-41 | the cause of the ~29% shipping-artifact gap | `UNMEASURED` |
+| U-41 | the cause of the shipping macro-artifact gap (runtime `perf:workloads` is not evidence) | `UNMEASURED` |
 | U-42 | `grammar.ts:103`'s mid-parse `opts.trackLines ?? _ctx?.trackLines` | `UNMEASURED` |
 | U-43 | the per-term `ctx.trivia === undefined` branch inside the emitted sequence-term prologue | `UNMEASURED` |
 | U-44 | print per-site named declarations at macro time; retire `assemble.ts:2550`'s `new Function` | `QUEUED` |
@@ -1482,9 +1497,9 @@ named in the marker.
 | U-60 | recognition event tape followed by selective exact construction | `MEASURED-NEGATIVE` for the bounded Value-choice form (`cd6a717`: normalized +4.1%/+9.7% slower; iteration 69); broad construction regions remain U-65 |
 | U-61 | scalar parse ABI with packed rollback/capture state | `ACTIVE` only when it replaces a whole construction region; the Value-choice scalar ABI lost with U-60 |
 | U-62 | success-only fast macro artifact with cold exact diagnostic replay | `MEASURED COMPONENT` |
-| U-63 | TableProgram named-rule/SCC supercompiler: emit structured static rule bodies from the one canonical IR, restoring 0.45's monolithic topology without restoring a second semantic engine | `ACTIVE` |
-| U-64 | macro-time reducer/factory partial evaluation: recover per-node capture plans hidden by generic closures/dispatch and elide provably unread raw/trivia/field/state protocol | `ACTIVE` |
-| U-65 | broad construction-region arena: recognize maximal pure NODE/REPV regions into scalar offsets/events, then build exact public values once at a semantic barrier | `ACTIVE` |
+| U-63 | TableProgram Entry/SCC supercompiler: emit structured static regions from the one canonical IR, restoring 0.45's monolithic topology without restoring a second semantic engine | `ACTIVE ON REAL JESS MACRO`; synthetic node-root and runtime-workload seams rejected |
+| U-64 | macro-time reducer/factory partial evaluation: recover per-node capture plans hidden by generic closures/dispatch, including length-only raw/trivia use | `ACTIVE ON REAL JESS MACRO`; synthetic runtime ceiling preserved as low-priority evidence only |
+| U-65 | broad construction-region arena: recognize maximal pure NODE/REPV regions into scalar offsets/events, then build exact public values once at a semantic barrier | `MEASURED-NEGATIVE` on synthetic runtime workloads (10.1%/12.2% protocol); no macro claim |
 
 ---
 
