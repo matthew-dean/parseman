@@ -326,6 +326,16 @@ existing exact emitted parser from the original input position and return its
 unchanged diagnostic. There is no runtime code generation: both paths are emitted
 at macro build time.
 
+Cold replay must not call an effectful author callback twice. There are three sound
+admission shapes: the compiler proves every callback reached before failure pure;
+the fast path defers callbacks on U-60's action tape and replays them only after
+success; or it records and reuses the exact callback results/effects during the
+diagnostic walk. An unstated "Jess builders are pure" assumption is acceptable only
+for a clearly labelled ceiling ablation, never for retained Parseman output. A
+general fast path that eagerly builds and then blindly reparses is wrong even when
+its final error object matches, because callback count and external side effects are
+observable.
+
 This deliberately trades up to two parses on invalid input for less work on the
 production success path. The fast path cannot omit effects whose rollback or
 commit changes recognition, and it cannot serve tolerant recovery, completion
@@ -339,11 +349,13 @@ generating the fast variant only for dynamically hot reachable bodies.
 First falsification experiment: use the existing TableProgram liveness graph to
 emit a diagnostic-dead macro variant for ordinary AST parsing, then count dynamic
 failure-state writes/merges and inspect source/V8 size before timing. Force the fast
-leg wrong once so the cold exact replay differential goes RED. Require enough
-deleted success-path work for a ≥15% whole-Less ceiling; otherwise reject before
-duplicating the full artifact. This is distinct from current `recordFail` liveness:
-that suppresses swallowed failures locally, while ordered choices still preserve
-and merge exact losing-arm diagnostics throughout successful parses.
+leg wrong once so the cold exact replay differential goes RED. The initial
+diagnostic-dead Jess probe may use an explicit build-time purity assumption to
+measure the ceiling, but must not be retained. Require enough deleted success-path
+work for a ≥15% whole-Less ceiling; otherwise reject before duplicating the full
+artifact or integrating the action tape. This is distinct from current `recordFail`
+liveness: that suppresses swallowed failures locally, while ordered choices still
+preserve and merge exact losing-arm diagnostics throughout successful parses.
 
 ### Orchestration order and combination
 
