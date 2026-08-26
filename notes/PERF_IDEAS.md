@@ -89,7 +89,7 @@ evaluate the grammar into a small number of deterministic source-recognition
 regions and keep PEG fallback, semantic branching, diagnostics, and tree
 construction only at the boundaries that truly require them.
 
-### U-57. Deterministic-region fusion and size-budgeted superinstructions — `QUEUED`
+### U-57. Deterministic-region fusion and size-budgeted superinstructions — `ACTIVE`
 
 Compile maximal deterministic regions—not individual combinators—into
 straight-line JS. A region starts where the active grammar state is known and
@@ -124,7 +124,22 @@ region's caller needs that body to inline; it is not grounds to reject a
 standalone hot trace. Prove rollback/CST/diagnostic parity by forcing every cold
 exit, not only the success corpus.
 
-### U-58. Make derived tokens the primary control-flow currency — `QUEUED`
+**First ceiling result (iteration 59): all-in-NODE placement rejected, region
+formation still active.** A generic macro-only probe activated 54 Less
+`NODE -> SCOPE -> SEQV/REPV` regions and deleted 147 private generated functions.
+It removed 88,617/260,867 dynamic generic calls on benchmark/generated Less
+(about 16% of counted rows) while growing the 1.93 MB artifact only 0.161%, and
+passed exact digest/full-consumption parity plus forced rollback/commit/throw
+exits. Nevertheless, the adjacent two-graph control normalized runtime to
+**+3.4%/+2.5% slower**. The placement had enlarged representative hot NODE
+bytecode from 467 B to about 1.45 KB and mixed recognition loops with
+capture/build logic. This falsifies “paste the whole region into its builder,”
+not the region ceiling. The next form preserves the small NODE and replaces its
+scope/sequence/repeat chain with one standalone scalar recognizer returning an
+end/failure code; that combines U-57's region selection with U-61's ABI without
+requiring the builder and recognizer to share one JIT unit.
+
+### U-58. Make derived tokens the primary control-flow currency — `ACTIVE`
 
 Today token information often acts as an advisory pretest, after which the
 selected arm re-enters ordinary PEG machinery and reconstructs facts already
@@ -1173,11 +1188,11 @@ siblings landed appears here once, for its unlanded part only.
 | U-54 | gate the three silent-wrong-output surfaces (`OP_ADJ`, capture-reachability, site-attribute record) by whole-object parity | `UNMEASURED` |
 | U-55 | put `expected` in the identity digest (six divergences hid behind its absence during 0.47) | `QUEUED` |
 | U-56 | re-tag the 39,718 mislabelled `"engine":"table"` rows in `notes/results/parse-consumed.jsonl`, and land `lane/name-collision`'s legend + the `CHANGELOG.md:756-762` / `canonical-fixture-benchmark.md` correction banners on the release tip | `QUEUED` |
-| U-57 | deterministic-region fusion and size-budgeted superinstructions | `QUEUED` |
-| U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `QUEUED` |
-| U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `QUEUED` |
-| U-60 | recognition event tape followed by selective exact construction | `QUEUED` |
-| U-61 | scalar parse ABI with packed rollback/capture state | `QUEUED` |
+| U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (all-in-NODE placement rejected; standalone scalar region next) |
+| U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `ACTIVE` |
+| U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE` |
+| U-60 | recognition event tape followed by selective exact construction | `ACTIVE` |
+| U-61 | scalar parse ABI with packed rollback/capture state | `ACTIVE` |
 
 ---
 
