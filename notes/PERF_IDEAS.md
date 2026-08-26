@@ -393,6 +393,23 @@ must make ordered choice a cheap branch/failure-scalar operation, with exact col
 diagnostic replay supplied by the deferred-action/effect-safe path. Do not spend
 complexity merely suppressing individual terminal writes.
 
+**Retained production result (iteration 66, `806cdfa`).** Exact cold replay was
+not required to capture most of that prize. The encoder already proves choices
+whose losing arms cannot commit; for the dynamically nontrivial subset, the macro
+now snapshots each arm's scalar failure offset and expected-array reference but
+does no `best`/`acc`/`_accSet` merge when a later arm succeeds. Only total choice
+failure enters one shared cold straight-line merge. Exact start-failure choices
+keep the existing zero-merge path, and potentially committing arms keep the old
+engine. This preserves exact diagnostics and invokes every callback exactly once.
+The Less assembly shrank 1,922,999→1,887,192 bytes (-1.86%); `_accSet` references
+fell 1,791→1,445 and emitted catch helpers 123→73. After dividing the candidate's
+raw 0.980/0.973 ratios by the immediately adjacent identical-code control's
+1.040/1.043 ratios, benchmark/generated Less normalized to **0.9423/0.9329**
+(about **5.8%/6.7% faster**). The focused differential was forced RED before the
+expected-set ordering fix; the retained result passed the 314-file Less sweep,
+full tests, build, typecheck, lint, invariants, and static-artifact checks. There
+is no replay, runtime `eval`, or runtime `new Function`.
+
 ### Orchestration order and combination
 
 Run U-57, U-58/U-59, U-60/U-61, and U-62 as independent ceiling probes first. Do
