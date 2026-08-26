@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, expect as recover, field, literal, node, optional, rules, run, sequence, type Combinator,
+  attempt, choice, expect as recover, field, label, literal, node, optional, rules, run, sequence, type Combinator, word,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -86,6 +86,30 @@ describe('emitted ordered-choice rollback elision', () => {
     const unsafe = choice(attempt(sequence(literal('a'), literal('!'))), literal('ab'))
     expect(projection(precompiled(encodeTable({ Root: unsafe })), 'ax'))
       .toEqual(projection(unsafe as Entry, 'ax'))
+
+    // label() replaces its child's failure set even when the child fails at
+    // the choice start. The scalar opener remains useful for recognition, but
+    // it cannot authorize the static choice expectation set.
+    const labelled = rules((g: Record<string, Combinator<unknown>>) => ({
+      Root: choice(g.Supports!, g.Media!, g.Container!, literal(';')),
+      Supports: label('keyword', literal('@supports')),
+      Media: label('keyword', literal('@media')),
+      Container: label('keyword', literal('@container')),
+    })) as Record<string, Combinator<unknown>>
+    expect(projection(precompiled(encodeTable(labelled)), '@charset'))
+      .toEqual(projection(labelled.Root! as Entry, '@charset'))
+
+    // word() deliberately reports its token-family label while deriveExpected
+    // names the literal at the enclosing choice. A scalar-start proof must
+    // compare those two authorities before substituting one for the other.
+    const boundary = '-_a-zA-Z0-9\\u0080-\\uFFFF'
+    const keywordChoice = choice(
+      sequence(word('@supports', boundary, { caseInsensitive: true }), literal('{')),
+      sequence(word('@media', boundary, { caseInsensitive: true }), literal('{')),
+      sequence(word('@container', boundary, { caseInsensitive: true }), literal('{')),
+    )
+    expect(projection(precompiled(encodeTable({ Root: keywordChoice })), '@charset'))
+      .toEqual(projection(keywordChoice as Entry, '@charset'))
   })
 
   it('omits the outer mark when every arm contains its own failed capture', () => {

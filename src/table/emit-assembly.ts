@@ -525,7 +525,7 @@ export function emitAssemblySource(
   extraIps: readonly number[] = [],
   staticBuild = false,
 ): EmitResult {
-  const { code, k, disp, dsp, triviaLabelled } = t
+  const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
   const hostCst = cfg.hostCst
 
@@ -1715,6 +1715,16 @@ return FAIL
             if (terminal < 0) return false
             const op = code[terminal]
             const spec = k[code[terminal + 1]!]
+            // Recognition shape is not diagnostic authority. word() is one
+            // important counterexample: its terminal reports `keyword`, while
+            // deriveExpected at an enclosing choice names the concrete word.
+            // Substituting choiceFx for the dynamic terminal set is sound only
+            // when both encoded authorities agree byte-for-byte, including
+            // duplicates and source order.
+            const terminalFx = fx[code[terminal + 2]!]!
+            const armFx = fx[code[base + n + i]!]!
+            if (terminalFx.length !== armFx.length
+              || terminalFx.some((expected, at) => expected !== armFx[at])) return false
             if (op === OP_LIT) return typeof spec === 'string' && spec.length > 0
             return op === OP_RX && spec instanceof RegExp && !regexCanMatchEmpty(spec.source)
           })
