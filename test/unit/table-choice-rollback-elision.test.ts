@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, expect as recover, field, label, literal, node, optional, rules, run, sequence, type Combinator, word,
+  attempt, choice, expect as recover, field, label, literal, node, optional, regex, rules, run, sequence, type Combinator, word,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -79,6 +79,21 @@ describe('emitted ordered-choice rollback elision', () => {
 
     expect(projection(emitted, 'x')).toEqual(projection(grammar as Entry, 'x'))
     expect(merges.n).toBe(0)
+  })
+
+  it('omits mask and scalar dispatch for an entirely unrestricted choice', () => {
+    const grammar = choice(regex(/./s), regex(/[\s\S]/))
+    const prog = encodeTable({ Root: grammar })
+    const body = emittedBody(
+      emitAssemblySource(resolveTable(prog), prog, STRICT).source,
+      choiceIp(prog),
+    )
+
+    expect(body).not.toContain('lead(input,pos)')
+    expect(body).not.toContain('classHas(')
+    for (const input of ['', 'x', '\n']) {
+      expect(projection(precompiled(prog), input)).toEqual(projection(grammar as Entry, input))
+    }
   })
 
   it('does no expected-array work for exact start failures before a later arm succeeds', () => {

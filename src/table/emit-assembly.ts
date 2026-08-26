@@ -1671,7 +1671,7 @@ return FAIL
           const di = code[ip + 1]!
           const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
-          const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
+          const gateRefs = gates.map((gate, i) => gate === null ? '' : hoist('g', `DISP[${di}].armCls[${i}]`))
           type ChoicePretest = {
             readonly scalar?: string
             readonly token?: TokenDecisionRef
@@ -1686,9 +1686,15 @@ return FAIL
             if (terminal < 0 || !scalarSpecs.has(code[terminal + 1]!)) return undefined
             return { scalar: recognizerRef(code[terminal + 1]!) }
           })
-          const maskable = n <= 32
+          const maskRow = n <= 32 ? maskForClassRow(gates) : undefined
+          const fullMask = 2 ** n - 1
+          // A row made entirely of the full arm mask proves that every gate is
+          // open for every scalar (including EOF). Indexing it cannot reject an
+          // arm, so emitting the mask path only adds lead/mask/bit work to the
+          // canonical ordered choice.
+          const maskable = maskRow !== undefined && maskRow.some(bits => bits !== fullMask)
           const maskName = maskable
-            ? hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
+            ? hoist('mk', `MASK[${masks.push(maskRow) - 1}]`)
             : ''
           // `~di` points back to the authoritative dispatch row. A precompiled
           // module reconstructs only the input-indexed mask from that row; it
@@ -1769,6 +1775,7 @@ ${rollbackFor(i)}
           const generalArms = arms.map((arm, i) => {
             const pretest = pretests[i]
             const decision = pretest?.token === undefined ? '' : tmp()
+            const gate = gates[i] === null ? 'true' : `classHas(${gateRefs[i]},c)`
             const condition = pretest?.token !== undefined
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
               : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
@@ -1780,7 +1787,7 @@ const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
 if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)
 }${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
-            return `${decision === '' ? '' : `let ${decision}=-1\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
+            return `${decision === '' ? '' : `let ${decision}=-1\n`}if(${gate}${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
@@ -1796,7 +1803,7 @@ ${rollbackFor(i)}
           // arm can run, so the choice's encoded flat expected set is already
           // the exact result. Do not walk the arm ladder merely to rebuild it.
           return `${head}
-const c=lead(input,pos)
+${maskable || gates.some(gate => gate !== null) ? 'const c=lead(input,pos)\n' : ''}
 ${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
 let acc
 let best=pos
