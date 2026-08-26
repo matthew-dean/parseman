@@ -133,11 +133,21 @@ passed exact digest/full-consumption parity plus forced rollback/commit/throw
 exits. Nevertheless, the adjacent two-graph control normalized runtime to
 **+3.4%/+2.5% slower**. The placement had enlarged representative hot NODE
 bytecode from 467 B to about 1.45 KB and mixed recognition loops with
-capture/build logic. This falsifies “paste the whole region into its builder,”
-not the region ceiling. The next form preserves the small NODE and replaces its
-scope/sequence/repeat chain with one standalone scalar recognizer returning an
-end/failure code; that combines U-57's region selection with U-61's ABI without
-requiring the builder and recognizer to share one JIT unit.
+capture/build logic.
+
+**Second ceiling result (iteration 60): coarse standalone scalar placement also
+rejected.** Moving the same 54 regions into dedicated end/failure recognizers
+restored the representative NODE to 466 B, retained all 88,617/260,867 counted
+call deletions, and grew source only 0.353%. The recognizers themselves were
+roughly 0.8–2.5 KB of V8 bytecode, however, and controlled runtime regressed
+**+4.4%/+5.8%**; generated Less lost every paired round. Thus counted table-row
+calls are not evidence of machine calls—TurboFan likely already inlines much of
+the small baseline topology. The remaining region experiment must first inspect
+actual optimized inlining boundaries, then form branch-light sub-460-byte
+superinstructions that demonstrably inline across a boundary baseline V8 leaves
+intact. Both “paste everything into NODE” and “one large recognizer beside NODE”
+are now rejected placements; region formation remains active only in the
+size-budgeted, optimized-topology form.
 
 ### U-58. Make derived tokens the primary control-flow currency — `ACTIVE`
 
@@ -1188,7 +1198,7 @@ siblings landed appears here once, for its unlanded part only.
 | U-54 | gate the three silent-wrong-output surfaces (`OP_ADJ`, capture-reachability, site-attribute record) by whole-object parity | `UNMEASURED` |
 | U-55 | put `expected` in the identity digest (six divergences hid behind its absence during 0.47) | `QUEUED` |
 | U-56 | re-tag the 39,718 mislabelled `"engine":"table"` rows in `notes/results/parse-consumed.jsonl`, and land `lane/name-collision`'s legend + the `CHANGELOG.md:756-762` / `canonical-fixture-benchmark.md` correction banners on the release tip | `QUEUED` |
-| U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (all-in-NODE placement rejected; standalone scalar region next) |
+| U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (large NODE and standalone placements rejected; traced inlineable regions next) |
 | U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `ACTIVE` |
 | U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE` |
 | U-60 | recognition event tape followed by selective exact construction | `ACTIVE` |
