@@ -129,7 +129,7 @@ import { computeSiteLabels, reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
-  leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
+  leadingLiteralFamily, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
   scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
@@ -3677,14 +3677,26 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         } else if (code[ip] === OP_CHOICE && !disp[code[ip + 1]!]!.exclusive) {
           const n = code[ip + 2]!
           for (let i = 0; i < n; i++) {
-            const child = leadingScalarTerminal(code, code[ip + 4 + i]!, 2, true, true)
-            if (child < 0) continue
+            const armIp = code[ip + 4 + i]!
+            const child = leadingScalarTerminal(code, armIp, 2, true, true)
             if (n === 2 || n === 3) {
-              scalarFor(child)
+              if (child >= 0) scalarFor(child)
               continue
             }
-            const spec = k[code[child + 1]!]
-            if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) scalarFor(child)
+            if (child >= 0) {
+              const spec = k[code[child + 1]!]
+              if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
+                scalarFor(child)
+                continue
+              }
+            }
+            const family = leadingLiteralFamily(code, k, armIp)
+            if (family !== undefined && family.length >= 2 && family.every(terminal => {
+              const value = k[code[terminal + 1]!]
+              return typeof value === 'string' && value.length >= 2
+            })) {
+              for (const terminal of family) scalarFor(terminal)
+            }
           }
         }
       }

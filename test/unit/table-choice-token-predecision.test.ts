@@ -129,6 +129,23 @@ describe('small-choice token predecision', () => {
     expect(source).toMatch(/&&_rec\d+\(input,pos\)>=0/)
   })
 
+  it('rejects a nested multi-character literal family in a larger ordered choice', () => {
+    const grammar = choice(
+      attempt(transform(sequence(
+        choice(literal('@{-'), literal('@{'), literal('${')),
+        regex(/[a-z]+/),
+      ), () => 'interpolation')),
+      transform(sequence(literal('@'), regex(/[a-z]+/)), () => 'variable'),
+      transform(sequence(literal('$'), regex(/[a-z]+/)), () => 'dollar'),
+      transform(sequence(literal('%'), regex(/[a-z]+/)), () => 'percent'),
+    )
+
+    const source = expectIdentity(grammar, [
+      '@{-name', '@{name', '${name', '@name', '$name', '%name', '@{', '@:', 'x',
+    ])
+    expect(source).toMatch(/&&\(_rec\d+\(input,pos\)>=0\|\|_rec\d+\(input,pos\)>=0\)/)
+  })
+
   it('does not add a predecision to a direct terminal choice', () => {
     const grammar = choice(sequence(regex(/a/), literal('!')), sequence(regex(/a/), literal('?')))
     const source = expectIdentity(grammar, ['a!', 'a?', 'a:', 'x'])

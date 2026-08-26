@@ -1,5 +1,5 @@
 import {
-  OP_ATTEMPT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_NODE, OP_NOT,
+  OP_ATTEMPT, OP_CHOICE, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_NODE, OP_NOT,
   OP_PEEK, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV,
   OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
@@ -106,4 +106,71 @@ export function leadingScalarTerminal(
     return -1
   }
   return -1
+}
+
+/**
+ * A bounded union of literal prefixes that every successful execution of `ip`
+ * must enter through. Unlike `leadingScalarTerminal`, this may cross nested
+ * choices, but only when EVERY arm yields literal authority. Longer literals
+ * covered by a shorter prefix are removed (`@{-}` is already covered by `@{`).
+ */
+export function leadingLiteralFamily(
+  code: ArrayLike<number>, constants: readonly unknown[], ip: number,
+  minDepth = 2, limit = 4,
+): readonly number[] | undefined {
+  const active = new Set<number>()
+
+  const walk = (at: number, depth: number): number[] | undefined => {
+    if (active.has(at)) return undefined
+    active.add(at)
+    try {
+      const op = code[at]
+      if (op === OP_LIT) {
+        const value = constants[code[at + 1]!]
+        return depth >= minDepth && typeof value === 'string' && value.length > 0 ? [at] : undefined
+      }
+      if (op === OP_RULE || op === OP_LABEL || op === OP_TOKEN || op === OP_ATTEMPT || op === OP_PEEK) {
+        return walk(code[at + 1]!, depth + 1)
+      }
+      if (op === OP_GATE || op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN
+        || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || op === OP_LEAF) {
+        return walk(code[at + 2]!, depth + 1)
+      }
+      if (op === OP_SEQ || op === OP_SEQV) {
+        return code[at + 1]! < 1 ? undefined : walk(code[at + 2]!, depth + 1)
+      }
+      if (op === OP_SEQX) {
+        return code[at + 2]! < 1 ? undefined : walk(code[at + 3]!, depth + 1)
+      }
+      if (op !== OP_CHOICE) return undefined
+
+      const n = code[at + 2]!
+      if (n < 1) return undefined
+      const out: number[] = []
+      for (let i = 0; i < n; i++) {
+        const branch = walk(code[at + 4 + i]!, depth + 1)
+        if (branch === undefined) return undefined
+        for (const terminal of branch) {
+          const value = constants[code[terminal + 1]!] as string
+          let covered = false
+          for (let j = 0; j < out.length; j++) {
+            const prior = constants[code[out[j]! + 1]!] as string
+            if (value.startsWith(prior)) { covered = true; break }
+          }
+          if (covered) continue
+          for (let j = out.length - 1; j >= 0; j--) {
+            const prior = constants[code[out[j]! + 1]!] as string
+            if (prior.startsWith(value)) out.splice(j, 1)
+          }
+          out.push(terminal)
+          if (out.length > limit) return undefined
+        }
+      }
+      return out
+    } finally {
+      active.delete(at)
+    }
+  }
+
+  return walk(ip, 0)
 }

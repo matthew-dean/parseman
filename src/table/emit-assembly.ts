@@ -63,7 +63,7 @@ import {
   computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import {
-  leadingScalarTerminal, scalarTerminalNodeChild, scalarTerminalNotChild,
+  leadingLiteralFamily, leadingScalarTerminal, scalarTerminalNodeChild, scalarTerminalNotChild,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
 
@@ -573,6 +573,7 @@ export function emitAssemblySource(
   // first-character mask (`@@` beside `@name`) without changing the ordinary
   // terminal's inline lowering, so keep that narrower inventory separate.
   const largeChoiceScalarSpecs = new Set<number>()
+  const largeChoiceLiteralFamilies = new Map<number, readonly number[]>()
   type TokenChoiceCandidate = { readonly arm: number; readonly dispatchIp: number }
   const tokenChoiceCandidates = new Map<number, TokenChoiceCandidate>()
   const tokenChoiceDispatches = new Set<number>()
@@ -587,15 +588,25 @@ export function emitAssemblySource(
       if (code[ip] !== OP_CHOICE || disp[code[ip + 1]!]!.exclusive) continue
       const n = code[ip + 2]!
       for (let i = 0; i < n; i++) {
-        const child = leadingScalarTerminal(code, code[ip + 4 + i]!, 2, true, true)
-        if (child < 0) continue
+        const armIp = code[ip + 4 + i]!
+        const child = leadingScalarTerminal(code, armIp, 2, true, true)
         if (n === 2 || n === 3) {
-          scalarSpecs.add(code[child + 1]!)
+          if (child >= 0) scalarSpecs.add(code[child + 1]!)
           continue
         }
-        const spec = k[code[child + 1]!]
-        if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
-          largeChoiceScalarSpecs.add(code[child + 1]!)
+        if (child >= 0) {
+          const spec = k[code[child + 1]!]
+          if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
+            largeChoiceScalarSpecs.add(code[child + 1]!)
+            continue
+          }
+        }
+        const family = leadingLiteralFamily(code, k, armIp)
+        if (family !== undefined && family.length >= 2 && family.every(terminal => {
+          const value = k[code[terminal + 1]!]
+          return typeof value === 'string' && value.length >= 2
+        })) {
+          largeChoiceLiteralFamilies.set(armIp, family)
         }
       }
 
@@ -1685,7 +1696,7 @@ return FAIL
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
           const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
           type ChoicePretest = {
-            readonly scalar?: string
+            readonly scalar?: readonly string[]
             readonly token?: TokenDecisionRef
           }
           const tokenCandidate = tokenChoiceCandidates.get(ip)
@@ -1694,10 +1705,16 @@ return FAIL
               return { token: tokenDecisionFor(tokenCandidate.dispatchIp) }
             }
             const terminal = leadingScalarTerminal(code, code[base + i]!, 2, true, true)
-            if (terminal < 0) return undefined
-            const spec = code[terminal + 1]!
-            if (!(n === 2 || n === 3 ? scalarSpecs : largeChoiceScalarSpecs).has(spec)) return undefined
-            return { scalar: recognizerRef(spec) }
+            if (terminal >= 0) {
+              const spec = code[terminal + 1]!
+              if ((n === 2 || n === 3 ? scalarSpecs : largeChoiceScalarSpecs).has(spec)) {
+                return { scalar: [recognizerRef(spec)] }
+              }
+            }
+            const family = largeChoiceLiteralFamilies.get(code[base + i]!)
+            return family === undefined
+              ? undefined
+              : { scalar: family.map(member => recognizerRef(code[member + 1]!)) }
           })
           const maskable = n <= 32
           const maskName = maskable
@@ -1754,9 +1771,13 @@ return FAIL
           const maskArms = maskable ? arms.map((arm, i) => {
             const pretest = pretests[i]
             const decision = pretest?.token === undefined ? '' : tmp()
+            const scalarCondition = pretest?.scalar === undefined ? ''
+              : pretest.scalar.length === 1
+                ? `&&${pretest.scalar[0]}(input,pos)>=0`
+                : `&&(${pretest.scalar.map(recognize => `${recognize}(input,pos)>=0`).join('||')})`
             const condition = pretest?.token !== undefined
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
-              : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
+              : scalarCondition
             const routeMiss = pretest?.token === undefined ? '' : `
 if(${decision}===0){
 ctx._fc=false
@@ -1782,9 +1803,13 @@ ${rollbackFor(i)}
           const generalArms = arms.map((arm, i) => {
             const pretest = pretests[i]
             const decision = pretest?.token === undefined ? '' : tmp()
+            const scalarCondition = pretest?.scalar === undefined ? ''
+              : pretest.scalar.length === 1
+                ? `&&${pretest.scalar[0]}(input,pos)>=0`
+                : `&&(${pretest.scalar.map(recognize => `${recognize}(input,pos)>=0`).join('||')})`
             const condition = pretest?.token !== undefined
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
-              : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
+              : scalarCondition
             const miss = pretest?.token === undefined
               ? startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`
               : `else if(${decision}===0){
