@@ -146,6 +146,32 @@ async function realModuleEntry(prog: TableProgram): Promise<Entry> {
 }
 
 describe('artifact-neutral synthetic trivia scopes', () => {
+  it('aliases a nested noTrivia scope when trivia is already disabled', () => {
+    const grammar = {
+      Root: noTrivia(sequence(
+        literal('a'),
+        noTrivia(sequence(literal('b'), literal('c'))),
+        literal('d'),
+      )),
+    }
+    const prog = encodeTable(grammar)
+    const scopes = [...reachableIps(prog)].filter(ip => prog.code[ip] === OP_SCOPE)
+    expect(scopes).toHaveLength(2)
+    const inner = scopes.find(ip => ip !== prog.rules.Root)
+    expect(inner).toBeTypeOf('number')
+
+    const source = emitAssemblySource(resolveTable(prog), prog, STRICT).source
+    expect(source).not.toContain(`function _pf${inner!}(`)
+
+    const { entries } = engines(grammar, 'Root')
+    for (const input of ['abcd', 'a bcd']) {
+      const expected = JSON.stringify(run(grammar.Root as Entry, input))
+      for (const [name, entry] of Object.entries(entries)) {
+        expect(JSON.stringify(run(entry, input)), `${name}: ${JSON.stringify(input)}`).toBe(expected)
+      }
+    }
+  })
+
   it('executes compact and legacy precompiled classified-trivia factories', () => {
     const trivia = documentTrivia()
     const grammar = rules({ trivia }, () => ({

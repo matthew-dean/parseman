@@ -1002,11 +1002,12 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // policy by construction; a policy-bearing `OP_SCOPE` aliases only when its
     // literal policy is zero. `OP_SCOPE_CAP` also raises `captureTrivia`.
     //
-    // `ki >= 0` is required rather than implied: `TRI_NONE` and `TRI_UNKNOWN` are
-    // themselves negative, so comparing a negative operand against a lattice
-    // element would read "unknown" as a match.
-    if ((op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0)) && code[ip + 1]! >= 0
-      && labels.at(ip).tri === code[ip + 1]!) {
+    // A negative table operand has exactly one meaning: install no trivia. Match
+    // it only against TRI_NONE, never by raw negative equality, so the lattice's
+    // TRI_UNKNOWN top cannot authorize an alias.
+    const ki = code[ip + 1]!
+    const sameTrivia = ki >= 0 ? labels.at(ip).tri === ki : ki === -1 && labels.at(ip).tri === TRI_NONE
+    if ((op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0)) && sameTrivia) {
       return code[ip + 2]!
     }
     return undefined
