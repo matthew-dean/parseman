@@ -317,7 +317,7 @@ supplement to ordinary PEG continuations. Residual authority now enters only as
 part of a fused scalar trace where the derivative transition itself consumes the
 terminal and advances the local cursor; a separate cached predecision is retired.
 
-### U-60. Recognition tape followed by selective construction — `QUEUED`
+### U-60. Recognition tape followed by selective construction — `MEASURED-NEGATIVE` for bounded choice; broad-region replacement is U-65
 
 Split recognition from object/tree construction without parsing twice. The hot
 recognizer writes a compact event tape—production/action id plus source offsets
@@ -342,6 +342,20 @@ parse+replay, allocation, and peak tape words. Require total macro parse+build t
 beat the current interleaved engine by enough to imply ≥15% whole-Less upside;
 recognizer-only speed is not a win. Verify exact AST/CST/trivia identity and force
 speculative rollback paths.
+
+**Bounded generic result (iteration 69): reject the Value-choice tape.** Commit
+`cd6a717` derived 19 static routes mechanically, completed 3,745/3,865 dynamic
+attempts on the fast path, reduced suffix capture adapters from 5,050 to 1,476,
+and needed only 25 peak tape words. It had no grammar/type/name/source allowlist,
+preserved 314/314 Less corpus digests, passed deliberate suffix/fallback/rollback
+RED plants, emitted no runtime dynamic evaluation, and grew full Less macro source
+by 1.089%. The topology was nevertheless slower. A stable identical-code control
+read 1.009/0.993 (benchmark/generated); the adjacent candidate/base comparison
+read 1.050/1.089 with the candidate losing all 20 rounds on both. Normalized, the
+candidate was **4.1% and 9.7% slower**. Scanner, tape, replay, route helpers, and
+the 1,476 remaining barriers cost more than bypassing the ordinary choice/terminal/
+node shells. Do not retry a tape around one bounded choice. A tape remains viable
+only if U-65 removes the whole construction protocol across a broad region.
 
 ### U-61. Scalar parse ABI and packed rollback/capture machine — `QUEUED`
 
@@ -369,6 +383,75 @@ failure, one speculative rollback, and one value-producing exit. Inspect actual
 V8 bytecode and deopts as well as wall time. The result must remove measurable
 loads/stores/calls and show a ≥15% whole-workload ceiling; a context object merely
 hidden behind helper accessors is not this design.
+
+Iteration 69 also rejects a scalar ABI used merely to connect a token classifier,
+route helper, and event replay. The integer representation was cheap; its extra
+boundaries were not. U-61 now admits only a whole-region lowering that deletes the
+generic ABI and capture machinery on the supported trace.
+
+### U-63. TableProgram named-rule/SCC supercompiler — `ACTIVE`
+
+Recover the useful topology of 0.45 without recovering a second semantic engine.
+The canonical TableProgram remains the only IR and oracle; a macro-only backend
+emits one structured static body per named rule or profitable SCC instead of one
+`_pf` function per combinator row. It recursively schedules SEQ/CHOICE/REP/SCOPE/
+NODE control, keeps cursors and rollback marks in locals, and outlines only cold,
+shared, recursive, or bytecode-budgeted continuations. The emitted artifact is
+ordinary source fixed at build time—never runtime `eval`/`new Function`.
+
+Why this is now the leading broad hypothesis: exact 0.45 CSS output had 27 rule
+functions plus 8 private functions, while current CSS has 341 private `_pf`
+functions per assembly; Less currently has 636. Current is already at the 0.45
+target on GraphQL/JSON but is about 86% slower on Less/CSS, matching this
+construction-heavy topology split. Earlier NODE→SCOPE→SEQ wrapper fusion deleted
+147 source functions yet regressed because TurboFan had already inlined those
+small wrappers. U-63 must cross the surviving 467–796-byte NODE/REPV boundaries,
+not paste already-inlined wrappers into a larger function.
+
+First gate: identify generic named-rule regions whose dynamic NODE/REPV/capture
+protocol covers at least 15% of broad Less and CSS, show the exact baseline calls
+that survive TurboFan, and price source plus optimized code before timing. A
+vertical must use TableProgram structure only, preserve exact diagnostics/effects,
+and outline before V8 instruction-cache growth erases the saved calls.
+
+### U-64. Static reducer/factory specialization and capture authority — `ACTIVE`
+
+The current broad Less/CSS TablePrograms encode every direct-builder NODE with the
+same wide `flags=4` capture plan: 31/31 Less definitions and 18/18 CSS definitions.
+That is an authority failure until proven otherwise. Generic reducer factories and
+dispatch helpers can hide that a particular node site never consumes raw children,
+trivia, fields, or state, so codegen maintains buffers and raw entries based on a
+conservative outer signature.
+
+At macro time, partially evaluate only statically resolved reducer/factory source
+and bindings. Compute a per-site use/effect summary, propagate constants through
+closure construction and finite dispatch, and emit the narrow capture flags plus a
+direct specialized reducer expression. Opaque calls or escaping values retain the
+existing wide path exactly. This is generic interprocedural analysis—no CSS/Less
+type list, rule name, IP, or source-fragment allowlist.
+
+First gate: deliberately break one inferred read so whole-object parity goes RED,
+then census dynamic raw/trivia/field/state operations and allocations that the
+analysis proves removable on both broad Less and CSS. Do not build or time unless
+the exact whole-workload ceiling is at least 15%; builder-call removal alone was
+historically only a single-digit bucket.
+
+### U-65. Broad construction-region arena — `ACTIVE`
+
+Replace the failed choice-local tape with maximal pure construction regions. A
+region recognizes with scalar cursor/commit/failure locals and appends only the
+source offsets and action ids needed for exact construction. It crosses nested
+NODE and flattened REPV control; rollback is one tape-top reset. At a semantic-use
+barrier it replays once into the unchanged public builder/CST/trivia contract.
+Unknown callbacks, state-dependent recognition, recovery, or escaping intermediate
+values split or reject the region.
+
+The admission difference from U-60 is load-bearing: a region must delete capture
+frame install/restore, raw/trivia/leaf publication, value|FAIL traffic, and generic
+NODE/REPV calls across at least 15% of total broad-workload execution. Merely
+deferring callbacks, wrapping each opcode in an event helper, or routing one hot
+choice has already been falsified. Require <=5% ceiling-source growth before the
+vertical and <=2% for a production candidate.
 
 ### U-62. Success-only fast artifact with cold exact diagnostic replay — `MEASURED COMPONENT`
 
@@ -451,15 +534,15 @@ is no replay, runtime `eval`, or runtime `new Function`.
 
 ### Orchestration order and combination
 
-Run U-57, U-58/U-59, U-60/U-61, and U-62 as independent ceiling probes first. Do
-not prematurely force them into one implementation. The likely combined
-architecture, if the probes validate it, is: a residual/token predictor selects a
-deterministic region; the region executes under the scalar ABI; rollback-heavy
-structural actions append to a tape; cold opaque PEG continuations retain the
-existing engine. U-62 can wrap that entire success engine and invoke the exact
-diagnostic engine only on failure. Each boundary must justify itself by dynamic
-frequency and emitted-byte cost. Retain and commit only macro-runtime wins to
-`feature/0.50.0`, one measured win per commit.
+The bounded U-58/U-60 combination is now falsified. Run U-63, U-64, and U-65 as
+independent broad ceiling probes before combining them. The likely combined
+architecture, if they validate, is: one TableProgram supercompiler selects a
+named-rule/SCC region; derived-token authority drives its bounded decisions;
+specialized reducer authority narrows its output contract; the region executes
+under the scalar ABI and tapes only rollback-heavy construction; cold opaque PEG
+continuations retain the existing exact engine. Each boundary must justify itself
+by dynamic frequency, surviving machine calls, and emitted-byte cost. Retain and
+commit only macro-runtime wins to `feature/0.50.0`, one measured win per commit.
 
 ---
 
@@ -1326,13 +1409,14 @@ this during 0.47. A gate defect, currently unassigned.
 
 ---
 
-## Untried index (`QUEUED` + `UNMEASURED`)
+## Optimization index (`QUEUED`, active, and measured architecture work)
 
-**61 items — 27 `QUEUED`, 34 `UNMEASURED`.** The count at the top of this file is
-this table's length. U-01…U-30 are the pre-existing backlog; U-31…U-56 came out
-of the 2026-08 measurement batch; U-57…U-61 are the radical macro-runtime
-programs selected on 2026-08-25. Nothing is counted twice: an item whose
-siblings landed appears here once, for its unlanded part only.
+**65 items.** The count at the top of this file is this table's length.
+U-01…U-30 are the pre-existing backlog; U-31…U-56 came out of the 2026-08
+measurement batch; U-57 onward are the radical macro-runtime programs selected
+from 2026-08-25. Measured negative architecture probes stay in this index so a
+later agent cannot mistake them for untried work; their replacement topology is
+named in the marker.
 
 | # | item | marker |
 |---|---|---|
@@ -1392,12 +1476,15 @@ siblings landed appears here once, for its unlanded part only.
 | U-54 | gate the three silent-wrong-output surfaces (`OP_ADJ`, capture-reachability, site-attribute record) by whole-object parity | `UNMEASURED` |
 | U-55 | put `expected` in the identity digest (six divergences hid behind its absence during 0.47) | `QUEUED` |
 | U-56 | re-tag the 39,718 mislabelled `"engine":"table"` rows in `notes/results/parse-consumed.jsonl`, and land `lane/name-collision`'s legend + the `CHANGELOG.md:756-762` / `canonical-fixture-benchmark.md` correction banners on the release tip | `QUEUED` |
-| U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (broad recursive NODE inlining rejected; leaf-local or protocol-deleting rule traces next) |
-| U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `ACTIVE` |
-| U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE` |
-| U-60 | recognition event tape followed by selective exact construction | `ACTIVE` |
-| U-61 | scalar parse ABI with packed rollback/capture state | `ACTIVE` |
+| U-57 | deterministic-region fusion and size-budgeted superinstructions | `ACTIVE` (wrapper fusion lost; the generic replacement must cross nested NODE/REPV boundaries and delete capture protocol) |
+| U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `ACTIVE ONLY INSIDE A FULL TRACE` (ordinary choice-shell publication was falsified) |
+| U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `ACTIVE ONLY INSIDE A FULL TRACE` (ordinary continuation helpers retained too much protocol) |
+| U-60 | recognition event tape followed by selective exact construction | `MEASURED-NEGATIVE` for the bounded Value-choice form (`cd6a717`: normalized +4.1%/+9.7% slower; iteration 69); broad construction regions remain U-65 |
+| U-61 | scalar parse ABI with packed rollback/capture state | `ACTIVE` only when it replaces a whole construction region; the Value-choice scalar ABI lost with U-60 |
 | U-62 | success-only fast macro artifact with cold exact diagnostic replay | `MEASURED COMPONENT` |
+| U-63 | TableProgram named-rule/SCC supercompiler: emit structured static rule bodies from the one canonical IR, restoring 0.45's monolithic topology without restoring a second semantic engine | `ACTIVE` |
+| U-64 | macro-time reducer/factory partial evaluation: recover per-node capture plans hidden by generic closures/dispatch and elide provably unread raw/trivia/field/state protocol | `ACTIVE` |
+| U-65 | broad construction-region arena: recognize maximal pure NODE/REPV regions into scalar offsets/events, then build exact public values once at a semantic barrier | `ACTIVE` |
 
 ---
 
