@@ -633,35 +633,56 @@ class Encoder {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     const winner = refName === undefined ? undefined : this.winners?.[refName]
     const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
+    const sideWriterMemo = new Map<Combinator<unknown>, boolean>()
     const hasSideWriter = (
       current: Combinator<unknown>,
       seen = new Set<Combinator<unknown>>(),
-    ): boolean => {
-      if (seen.has(current)) return false
-      seen.add(current)
+    ): { found: boolean; complete: boolean } => {
+      const cached = sideWriterMemo.get(current)
+      if (cached !== undefined) return { found: cached, complete: true }
+      if (seen.has(current)) return { found: false, complete: false }
+      const next = new Set(seen)
+      next.add(current)
       const def = current._def
+      let result: { found: boolean; complete: boolean }
       switch (def.tag) {
         case 'field':
         case 'expect':
         case 'recover':
         case 'scanTo':
         case 'unknown':
-          return true
+          result = { found: true, complete: true }
+          break
         case 'lazy': {
           const name = (current as unknown as { _ruleName?: string })._ruleName
           const resolvedWinner = name === undefined ? undefined : this.winners?.[name]
           if (resolvedWinner !== undefined && !winnerWrapsReference(resolvedWinner, current)) {
-            return hasSideWriter(resolvedWinner, seen)
+            result = hasSideWriter(resolvedWinner, next)
+            break
           }
-          try { return hasSideWriter(def.thunk(), seen) }
-          catch { return true }
+          try { result = hasSideWriter(def.thunk(), next) }
+          catch { result = { found: true, complete: true } }
+          break
         }
-        default:
-          return childrenOf(def).some(child => hasSideWriter(child, new Set(seen)))
+        default: {
+          let complete = true
+          result = { found: false, complete: true }
+          for (const child of childrenOf(def)) {
+            const childResult = hasSideWriter(child, next)
+            if (childResult.found) {
+              result = { found: true, complete: true }
+              break
+            }
+            complete &&= childResult.complete
+          }
+          if (!result.found) result = { found: false, complete }
+        }
       }
+      if (result.found || result.complete) sideWriterMemo.set(current, result.found)
+      return result
     }
     return mayLeavePartialCapture(root, new Set(), true)
-      || hasSideWriter(root)
+      || hasSideWriter(root).found
       || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
   }
 
@@ -1187,7 +1208,7 @@ class Encoder {
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
-        if (arms.every(arm => !mayCommitFailure(arm))) {
+        if (arms.every(arm => !mayCommitFailure(arm, new Set(), rr))) {
           this.nonCommittingChoiceSites.add(head)
         }
         return head
@@ -1753,7 +1774,11 @@ class Encoder {
       ...(this.rec ? { rec: 1 as const } : {}),
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
-    }, undefined, this.choiceRollbackMasks, this.failureRollbackCleanSites, this.nonCommittingChoiceSites)
+    }, undefined, {
+      choiceRollbackMasks: this.choiceRollbackMasks,
+      failureRollbackCleanSites: this.failureRollbackCleanSites,
+      nonCommittingChoiceSites: this.nonCommittingChoiceSites,
+    })
   }
 }
 

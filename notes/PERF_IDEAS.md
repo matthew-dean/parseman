@@ -24,11 +24,12 @@ One marker per item, across this file and its four siblings
 
 **THE COUNT, which is the thing this file exists to make answerable:**
 
-> ## **61 untried items.**
-> **[§ Untried index](#untried-index-queued--unmeasured) is the authoritative list — one row each, no prose to read.**
-> Of the 61: **27 `QUEUED`** (decided, not done) and **34 `UNMEASURED`** (nobody has tried or costed it).
-> **26 came out of the 2026-08 measurement batch** (U-31…U-56); the five
-> architecture programs added on 2026-08-25 are U-57…U-61.
+> ## **56 untried items.**
+> **[§ Optimization index](#optimization-index-queued-active-and-measured-architecture-work) is the authoritative list — one row each, no prose to read.**
+> Of its 65 total rows, **22 are `QUEUED`** (decided, not done) and **34 are
+> `UNMEASURED`** (nobody has tried or costed them), for **56 untried items**.
+> U-57 onward records active and measured architecture programs alongside the
+> untried backlog so completed negative work is not proposed again.
 
 Everything else, for orientation:
 
@@ -40,8 +41,9 @@ Everything else, for orientation:
 | `REFERENCE` | data, protocol, invariant, design guidance — not work items | 12 |
 
 Compound items carry one marker per part and are counted once per marker, so
-these totals exceed the 41 headings in the file. The untried count does **not**
-double-count: it is exactly the number of rows in the untried index.
+these totals exceed the 46 work-item headings in the file. The untried count does
+**not** double-count: it is exactly the `QUEUED` plus `UNMEASURED` rows in the
+optimization index.
 
 **Scope of the 56: this file only.** Each sibling carries its own count at its own
 top, under the same convention. Repo-wide, deduplicated:
@@ -1610,7 +1612,9 @@ this during 0.47. A gate defect, currently unassigned.
 
 ## Optimization index (`QUEUED`, active, and measured architecture work)
 
-**65 items.** The count at the top of this file is this table's length.
+**65 total rows.** This table includes the 56 untried items plus active and
+measured architecture work. The untried count at the top is the sum of rows
+marked `QUEUED` or `UNMEASURED`, not this table's total length.
 U-01…U-30 are the pre-existing backlog; U-31…U-56 came out of the 2026-08
 measurement batch; U-57 onward are the radical macro-runtime programs selected
 from 2026-08-25. Measured negative architecture probes stay in this index so a

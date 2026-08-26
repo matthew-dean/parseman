@@ -220,6 +220,13 @@ describe('commitment proof predicates', () => {
     for (const ordinary of [literal('x'), expectParser(cut), recover(cut), adjacent()]) {
       expect(mayCommitFailure(ordinary)).toBe(false)
     }
+
+    const imported = throwingRef() as Combinator<unknown> & { _ruleName?: string }
+    imported._ruleName = 'Imported'
+    expect(mayCommitFailure(imported, new Set(), name =>
+      name === 'Imported' ? literal('x') : undefined)).toBe(false)
+    expect(mayCommitFailure(imported, new Set(), name =>
+      name === 'Imported' ? cut : undefined)).toBe(true)
   })
 })
 

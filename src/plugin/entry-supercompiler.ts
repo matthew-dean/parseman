@@ -387,6 +387,10 @@ export function supercompileEmittedAssembly(
   const publicRoots = new Set([...Object.values(prog.rules), ...extraIps])
   const barrier = new Map<number, string>()
   for (const ip of fns.keys()) {
+    // Context-saving TOKEN/LEAF/DISPATCH/SCOPE rows and REP loops are
+    // self-contained structured control. ATTEMPT can re-anchor failure state,
+    // while SCAN can invoke an interpreted parser, so neither effect may cross
+    // an outlined-region boundary.
     if (publicRoots.has(ip) || externalRefs.has(ip)) barrier.set(ip, 'public')
     else if (recursive.has(ip)) barrier.set(ip, 'recursive')
     else if (prog.code[ip] === OP_ATTEMPT || prog.code[ip] === OP_SCAN) barrier.set(ip, 'effect')

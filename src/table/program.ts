@@ -502,18 +502,20 @@ type RuntimeTableProgram = TableProgram & {
 export function ownTableProgram(
   prog: TableProgram,
   resolved?: ResolvedTable,
-  choiceRollbackMasks?: ReadonlyMap<number, number>,
-  failureRollbackCleanSites?: ReadonlySet<number>,
-  nonCommittingChoiceSites?: ReadonlySet<number>,
+  caches: {
+    readonly choiceRollbackMasks?: ReadonlyMap<number, number>
+    readonly failureRollbackCleanSites?: ReadonlySet<number>
+    readonly nonCommittingChoiceSites?: ReadonlySet<number>
+  } = {},
 ): TableProgram {
   const runtime = (prog as RuntimeTableProgram)[TABLE_RUNTIME]
   return {
     ...prog,
     [TABLE_RUNTIME]: {
       resolved,
-      choiceRollbackMasks: choiceRollbackMasks ?? runtime?.choiceRollbackMasks,
-      nonCommittingChoiceSites: nonCommittingChoiceSites ?? runtime?.nonCommittingChoiceSites,
-      failureRollbackCleanSites: failureRollbackCleanSites ?? runtime?.failureRollbackCleanSites,
+      choiceRollbackMasks: caches.choiceRollbackMasks ?? runtime?.choiceRollbackMasks,
+      nonCommittingChoiceSites: caches.nonCommittingChoiceSites ?? runtime?.nonCommittingChoiceSites,
+      failureRollbackCleanSites: caches.failureRollbackCleanSites ?? runtime?.failureRollbackCleanSites,
     },
   } as RuntimeTableProgram
 }

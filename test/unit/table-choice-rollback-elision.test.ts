@@ -213,7 +213,9 @@ describe('emitted ordered-choice rollback elision', () => {
 
     // RED control: deleting the compiler's rollback authority leaves the first
     // arm's captured `a` in the outer node before the second arm succeeds.
-    const planted = ownTableProgram(prog, undefined, new Map([[choiceIp(prog), 0]]))
+    const planted = ownTableProgram(prog, undefined, {
+      choiceRollbackMasks: new Map([[choiceIp(prog), 0]]),
+    })
     expect(projection(precompiled(planted), 'a?')).not.toEqual(expected)
   })
 
@@ -310,7 +312,9 @@ describe('emitted ordered-choice rollback elision', () => {
 
     // RED control: granting clean authority to a leaking child leaves the
     // optional's failed prefix in the enclosing node before the final arm wins.
-    const planted = ownTableProgram(prog, undefined, undefined, new Set([optionalIp]))
+    const planted = ownTableProgram(prog, undefined, {
+      failureRollbackCleanSites: new Set([optionalIp]),
+    })
     expect(projection(precompiled(planted), 'a')).not.toEqual(expected)
   })
 })

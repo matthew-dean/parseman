@@ -122,7 +122,7 @@ second walk. Pick the output your consumer actually needs.
 
 Even the zero-setup **interpreter** CST holds its own against a purpose-built incremental
 generator: it is faster than Lezer parse-only at small and large inputs (1.82 vs 2.25 µs;
-449 vs 604 µs) while building a richer object tree, and **about 4.3–4.4× faster than
+449 vs 604 µs) while building a richer object tree, and **about 3.9–4.4× faster than
 Chevrotain** throughout. Compile it and it moves ahead of Lezer outright.
 
 ## Incremental re-parse

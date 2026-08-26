@@ -819,6 +819,9 @@ return cur
       ? ''
       : `if(arm===undefined){\n${spec.match.map((m, i) => `${i === 0 ? '' : 'else '}if(${dispatchClaim(m)})arm=${m[3]}`).join('\n')}\n}\n`
     const foldedEntries = [...spec.byFold.entries()]
+    // Exact, fail-closed shape of Jess Less's function-token dispatch. Keep the
+    // source+flags check explicit: changing that grammar matcher must disable
+    // this hand-lowered classifier until its url(/calc( exclusions are reviewed.
     const fixedFunctionChoice = spec.byKey.size === 0
       && foldedEntries.length === 1
       && spec.match.length === 1
@@ -1867,8 +1870,9 @@ ${lazyArms(false)}
 ${finish}
 }`
           }
-          const catchName = maskable ? `_cx${uid++}_` : ''
-          if (maskable) {
+          const needsCatch = maskable || startFailureExact
+          const catchName = needsCatch ? `_cx${uid++}_` : ''
+          if (needsCatch) {
             const catchCases = expected.map((e, i) =>
               `case ${i}:if(target<=${i})return acc;acc=_accSet(${e},acc)`).join('\n')
             choiceDefs.push(`function ${catchName}(target,prev,acc){switch(prev){\n${catchCases}\n}return acc}`)

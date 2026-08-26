@@ -174,7 +174,7 @@ describe('direct-bound choice topology', () => {
       // `i` prefix checks per arm (210 at n21, 496 at n32) were quadratic.
       expect(emitted.source, `n${n}`).not.toMatch(/if\(prev</)
       expect(emitted.source.match(/case \d+:if\(target<=/g)?.length ?? 0, `n${n}`)
-        .toBe(n <= 32 ? n : 0)
+        .toBe(n)
     }
 
     const source = readFileSync(path.resolve(DIR, '../../src/table/assemble.ts'), 'utf8')

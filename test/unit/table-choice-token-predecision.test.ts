@@ -174,7 +174,7 @@ describe('small-choice token predecision', () => {
   it('does not add a predecision to a direct terminal choice', () => {
     const grammar = choice(sequence(regex(/a/), literal('!')), sequence(regex(/a/), literal('?')))
     const source = expectIdentity(grammar, ['a!', 'a?', 'a:', 'x'])
-    expect(source).not.toMatch(/&&_rec\d+_\(input,pos\)>=0/)
+    expect(source).not.toMatch(/&&_rec\d+\(input,pos\)>=0/)
   })
 
   it('decides a wrapped dispatch from its token and reuses the recognized range', () => {
