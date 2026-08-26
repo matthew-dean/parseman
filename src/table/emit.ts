@@ -162,7 +162,11 @@ export function defaultAssemblyCfgs(prog: TableProgram): RunCfg[] {
  * not lower; that option set simply gets no entry, and `assemble.ts` runs the
  * closure engine for it and RECORDS why on `Assembly.emitRefusal`.
  */
-function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
+function emitAssemblies(
+  prog: TableProgram,
+  cfgs: readonly RunCfg[],
+  fnSources?: readonly string[],
+): string[] {
   /**
    * `a:[]` IS NOT `a` ABSENT, and the difference is the whole property.
    *
@@ -208,7 +212,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
     seen.add(key)
     let em
     try {
-      em = emitAssemblySource(t, prog, cfg, extraIps, true)
+      em = emitAssemblySource(t, prog, cfg, extraIps, true, fnSources)
     } catch (e) {
       if (e instanceof Unemittable) continue
       throw e
@@ -284,7 +288,7 @@ function assertPrintable(prog: TableProgram, who: string): void {
  */
 function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOptions = {}): string[] {
   return [
-    ...emitAssemblies(prog, opts.assemblies ?? []),
+    ...emitAssemblies(prog, opts.assemblies ?? [], opts.fnSources),
     `c:[${prog.code.join(',')}],`,
     `k:[${prog.k.map(emitConst).join(',')}],`,
     `x:${emitClassPool(prog.cc)},`,

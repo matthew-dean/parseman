@@ -526,8 +526,9 @@ export function emitAssemblySource(
   },
   extraIps: readonly number[] = [],
   staticBuild = false,
+  fnSources?: readonly string[],
 ): EmitResult {
-  const { code, k, fx, disp, dsp, triviaLabelled } = t
+  const { code, k, fns, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
   const hostCst = cfg.hostCst
 
@@ -982,6 +983,167 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 `
   }
 
+  type ValueSequenceTrace = {
+    readonly root: number
+    readonly number: number
+    readonly unit: number
+    readonly dimensionBuild: number
+    readonly valueBuild: number
+    readonly pieceBuild: number
+    readonly rootBuild: number
+  }
+
+  /**
+   * Recognition runs to the end of the scalar trace before reducers replay.
+   * That is observable for an arbitrary reducer (it may mutate a closure or
+   * throw before the following terminal is examined), so node names and shape
+   * are not sufficient admission authority.  This ceiling probe admits only
+   * the four Jess reducers whose source was audited: the first three are pure
+   * constructors/projections for the accepted Dimension-only arm, and the root
+   * performs the layout reduction after every child exists.  Any source drift,
+   * wrapper, or user grammar that merely borrows these node names declines.
+   *
+   * Whitespace is erased only to make captured TS source and printed JS source
+   * equivalent; the required fragments remain deliberately grammar-specific.
+   */
+  function auditedValueSequenceReducers(builds: readonly number[]): boolean {
+    const compact = (index: number): string | undefined => {
+      const captured = fnSources?.[index]
+      if (captured !== undefined) return captured.replace(/\s+/g, '')
+      const fn = fns[index]
+      if (typeof fn !== 'function') return undefined
+      const source = Function.prototype.toString.call(fn)
+      return source.includes('[native code]') ? undefined : source.replace(/\s+/g, '')
+    }
+    const [dimensionIndex, valueIndex, pieceIndex, rootIndex] = builds
+    const dimension = compact(dimensionIndex!)
+    const value = compact(valueIndex!)
+    const piece = compact(pieceIndex!)
+    const root = compact(rootIndex!)
+    return dimension?.startsWith('(children,_fields,span)=>{') === true
+      && dimension.includes('requireToken(children[0]).value')
+      && dimension.includes('dimension(Number(numberText),unit,`${numberText}${unit}`)')
+      && (value === 'children=>requireValueNode(children.find(isValueNode))'
+        || value === '(children)=>requireValueNode(children.find(isValueNode))')
+      && piece?.startsWith('(children,fields,_span,_rawChildren,_triviaLog,state)=>{') === true
+      && (piece.includes("if(fields?.separator===undefined){returnrequireValueNode(children[0]);}")
+        || piece?.includes("if(fields?.separator===void0){returnrequireValueNode(children[0]);}") === true)
+      && piece.includes("Lessvaluepieceproducedaninvalidslashboundary.")
+      && (root === '(children,_fields,_span,_rawChildren,triviaLog,state)=>valuePieceReducerWithTrivia(children,triviaLog,state)')
+  }
+
+  /**
+   * U57 ceiling probe: the numerically dominant, effect-bounded vertical slice
+   * of Jess's ValueSequence arithmetic tower.
+   *
+   * This is intentionally admitted by structure and authored node names rather
+   * than by offsets.  It is not a second grammar: every recognizer and reducer
+   * operand comes from the table that the macro already printed.  A mismatch
+   * declines the specialization and leaves the ordinary assembly byte-for-byte
+   * in charge.
+   *
+   * The first slice accepts only one or more Dimension value pieces, separated
+   * by plain CSS whitespace.  That sounds narrow, but the exact macro census
+   * puts Dimension at 2,803/5,333 Value atoms in benchmark.less and
+   * 9,251/17,641 in generated Less.  A successful entry crosses the whole
+   * ValueSequence -> TopSumMaybeDivision -> TopSum -> TopProduct -> MathAtom ->
+   * MathUnary -> Value -> Dimension tower without entering one generic piece.
+   */
+  function planValueSequenceTrace(): ValueSequenceTrace | undefined {
+    if (!staticBuild || hostCst || cfg.tolerant || cfg.probe || cfg.coverage || cfg.trackLines) return undefined
+
+    const nodes = (type: string): number[] => reachable.filter(ip =>
+      code[ip] === OP_NODE && code[ip + 1]! >= 0 && code[ip + 4]! < 0 && k[code[ip + 5]!] === type)
+    const oneNode = (type: string): number | undefined => {
+      const found = nodes(type)
+      return found.length === 1 ? found[0] : undefined
+    }
+    const unwrapRule = (name: string): number | undefined => {
+      let at = prog.rules[name]
+      if (at === undefined) return undefined
+      const seen = new Set<number>()
+      while (!seen.has(at)) {
+        seen.add(at)
+        const op = code[at]
+        if (op === OP_RULE || op === OP_TOKEN || op === OP_LABEL || op === OP_ATTEMPT) at = code[at + 1]!
+        else if (op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN
+          || op === OP_GATE || op === OP_XFORM || op === OP_LEAF) at = code[at + 2]!
+        else return at
+      }
+      return undefined
+    }
+
+    const root = oneNode('ValueSequence')
+    const dimension = oneNode('Dimension')
+    const value = oneNode('Value')
+    const piece = oneNode('TopSumMaybeDivision')
+    const number = unwrapRule('NumberToken')
+    const unit = unwrapRule('DimensionUnit')
+    if (root === undefined || dimension === undefined || value === undefined || piece === undefined
+      || number === undefined || unit === undefined || code[number] !== OP_RX || code[unit] !== OP_RX) return undefined
+    const builds = [dimension, value, piece, root].map(ip => code[ip + 1]!)
+    if (builds.some(index => index < 0 || fns[index] === undefined)
+      || !auditedValueSequenceReducers(builds)) return undefined
+    return {
+      root, number, unit,
+      dimensionBuild: builds[0]!, valueBuild: builds[1]!, pieceBuild: builds[2]!, rootBuild: builds[3]!,
+    }
+  }
+
+  const valueSequenceTrace = planValueSequenceTrace()
+
+  function emitValueSequenceTrace(trace: ValueSequenceTrace, fname: string, cold: string): string {
+    const numberRx = kRef(code[trace.number + 1]!)
+    const unitRx = kRef(code[trace.unit + 1]!)
+    const dimensionBuild = fnRef(trace.dimensionBuild)
+    const valueBuild = fnRef(trace.valueBuild)
+    const pieceBuild = fnRef(trace.pieceBuild)
+    const rootBuild = fnRef(trace.rootBuild)
+    return `function ${fname}(input,pos,ctx){
+const c0=input.charCodeAt(pos)
+if(!((c0>=48&&c0<=57)||c0===43||c0===45||c0===46))return ${cold}(input,pos,ctx)
+const tape=[]
+let cur=pos,next=pos,gap=-1,count=0
+for(;;){
+${numberRx}.lastIndex=next
+if(!${numberRx}.test(input))return ${cold}(input,pos,ctx)
+const ne=${numberRx}.lastIndex
+${unitRx}.lastIndex=ne
+const end=${unitRx}.test(input)?${unitRx}.lastIndex:ne
+if(gap>=0)tape.push(1,gap,next,count)
+tape.push(0,next,ne,end)
+count++
+cur=end
+const c=input.charCodeAt(cur)
+if(c===42||c===43||c===45||c===47||c===37||c===64)return ${cold}(input,pos,ctx)
+next=cur
+while(next<input.length){const w=input.charCodeAt(next);if(w!==32&&w!==9&&w!==10&&w!==13&&w!==12)break;next++}
+if(next===cur)break
+gap=cur
+}
+const kids=[]
+const tlog=[]
+for(let i=0;i<tape.length;i+=4){
+const tag=tape[i],start=tape[i+1],middle=tape[i+2],end=tape[i+3]
+if(tag===1){tlog.push(start,middle,end,0);continue}
+const numberText=input.slice(start,middle)
+const numberLeaf={_tag:'leaf',value:numberText,span:{start,end:middle}}
+const dk=[numberLeaf]
+if(end>middle)dk.push({_tag:'leaf',value:input.slice(middle,end),span:{start:middle,end}})
+let value=${dimensionBuild}(dk,undefined,{start,end},EMPTY_CH,EMPTY_TL,undefined)
+value=${valueBuild}([value],undefined,{start,end},EMPTY_CH,EMPTY_TL,undefined)
+value=${pieceBuild}([value],undefined,{start,end},EMPTY_CH,EMPTY_TL,ctx.state!==undefined?Object.assign({},ctx.state):undefined)
+kids.push(value)
+}
+const tl=tlog.length===0?EMPTY_TLOG:tlog
+const nd=${rootBuild}(kids,undefined,{start:pos,end:cur},EMPTY_CH,tl,ctx.state!==undefined?Object.assign({},ctx.state):undefined)
+const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sRaw=ctx._cstRawChildren
+if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined?(sBuf.noRaw===true?undefined:rawEntry(nd,input,pos,cur)):sRaw!==undefined?rawEntry(nd,input,pos,cur):undefined)
+EC.e=cur
+return nd
+}`
+  }
+
   function link(ip: number): string {
     const hit = byIp.get(ip)
     if (hit !== undefined) return hit
@@ -997,6 +1159,12 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // to the hoisted declaration rather than to a forwarding stub. This is the
     // whole of `assemble.ts`'s `inFlight` map and its one shared closure.
     byIp.set(target, fname)
+    if (valueSequenceTrace !== undefined && valueSequenceTrace.root === target) {
+      const cold = `${fname}c`
+      bodies.push(lower(target, cold))
+      bodies.push(emitValueSequenceTrace(valueSequenceTrace, fname, cold))
+      return fname
+    }
     bodies.push(lower(target, fname))
     return fname
   }
