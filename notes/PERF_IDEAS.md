@@ -167,6 +167,24 @@ inlining is leaf-local, or when a fused scalar/tape trace deletes those repeated
 frames rather than copying them. Source shrink and confirmed inlining are not
 performance evidence by themselves.
 
+**Fourth ceiling result (iteration 63): leaf-only NODE compaction rejected;
+`ValueSequence` selected as the vertical trace.** Only 40/213 direct-builder
+NODEs are leaf-only, and TurboFan would actually inline just five unique sites
+covering 1,432/1,540 benchmark/generated entries. One representative successful
+inline grew its caller's optimized instructions from 1,056 B to 2,024 B, while
+the hot `Dimension` body remained standalone and machine-code-identical. There is
+no credible whole-Less ceiling, so the leaf probe stops without code or timing.
+
+The stack-attributed trace instead finds 129,846/340,580 entries under the single
+`ValueSequence` root: 26.3%/24.2% of every emitted-body entry. That region contains
+32,943/91,755 NODE and 16,657/38,832 REPV entries. The active U-57 vertical probe
+must delete at least 40k/100k of those internal calls and their repeated frames,
+cover at least 80% of `ValueSequence` roots, add no more than 18 KB source, and
+keep the optimized root below 40 KB. Its supported trace uses scalar cursor/
+failure/commit locals, one compact action/end tape, token-derived choice admission,
+and post-order builder replay; it contains no generic NODE, REPV, SCOPE, or SEQ
+call. Unsupported/effectful paths fall back before mutation.
+
 ### U-58. Make derived tokens the primary control-flow currency — `ACTIVE`
 
 Today token information often acts as an advisory pretest, after which the
