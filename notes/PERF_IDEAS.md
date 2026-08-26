@@ -6,7 +6,7 @@ Interpreter-side ideas are split out to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRE
 
 ---
 
-## STATUS CONVENTION AND COUNTS (updated 2026-08-07)
+## STATUS CONVENTION AND COUNTS (updated 2026-08-25)
 
 One marker per item, across this file and its four siblings
 (`INTERPRETER_PERF_IDEAS.md`, `REVIEW-parseman-perf-proposals.md`,
@@ -24,10 +24,11 @@ One marker per item, across this file and its four siblings
 
 **THE COUNT, which is the thing this file exists to make answerable:**
 
-> ## **56 untried items.**
+> ## **61 untried items.**
 > **[§ Untried index](#untried-index-queued--unmeasured) is the authoritative list — one row each, no prose to read.**
-> Of the 56: **22 `QUEUED`** (decided, not done) and **34 `UNMEASURED`** (nobody has tried or costed it).
-> **26 of the 56 came out of the 2026-08 measurement batch** (U-31…U-56).
+> Of the 61: **27 `QUEUED`** (decided, not done) and **34 `UNMEASURED`** (nobody has tried or costed it).
+> **26 came out of the 2026-08 measurement batch** (U-31…U-56); the five
+> architecture programs added on 2026-08-25 are U-57…U-61.
 
 Everything else, for orientation:
 
@@ -47,12 +48,12 @@ top, under the same convention. Repo-wide, deduplicated:
 
 | file | items | untried | notes |
 |---|---:|---:|---|
-| `PERF_IDEAS.md` (this file) | 41 headings + 18 landed bullets | **56** | the U-index |
+| `PERF_IDEAS.md` (this file) | 46 headings + 18 landed bullets | **61** | the U-index |
 | `INTERPRETER_PERF_IDEAS.md` | 26 | **3** | no commit SHA appears anywhere in it |
 | `REVIEW-parseman-perf-proposals.md` | 8 | **3** (1 net new — 2 are U-29 / U-30) | rigorous code citations, zero measurement provenance |
 | `CODEGEN-FAST-PATHS.md` | 16 | **2** (both file-local) | **describes an engine deleted at the 0.47 cutover** |
 | `RELEASE-0.48-TARGET.md` | 30 | **11** | not a backlog — four kinds of content interleaved |
-| | | **= 73 distinct** | |
+| | | **= 78 distinct** | |
 
 **Two files resisted classification and are marked as resisting, not forced.**
 `CODEGEN-FAST-PATHS.md` needed a state none of the six markers covers —
@@ -62,6 +63,176 @@ interleaves deferred work, retracted figures, hygiene rules and disclosed
 defects, and its two ownerless known-broken defects (§10.2, §10.3) are
 `UNCLASSIFIABLE` — nobody decided to do them, nobody rejected them, and they are
 not ideas. Read both files' headers before their bodies.
+
+---
+
+## 2026-08-25 — radical macro-runtime programs (U-57…U-61)
+
+These are the five high-ceiling programs selected after the 0.50 optimization
+loop found that local choice predecisions made the current macro artifact
+roughly 17–22% faster than released 0.49, but still left a broad architectural
+gap to 0.45. They are deliberately not another list of opcode peepholes.
+
+**Scope contract for every result in this section:** it counts only when run
+through ordinary macro-built shipping output. Build-time generation may use
+dynamic evaluation; the emitted parser may not use `eval` or `new Function` at
+runtime. Use the existing Jess macro A/B harness, a nearby clean worktree of the
+comparison commit, interleaved candidate/reference rounds, full-consumption and
+value/parity checks, and an adjacent identical-code control. Do not promote a
+wall-clock result whose effect does not clear the control spread. Generated JS
+size, per-body bytecode size around V8's measured 460-byte inlining limit, and
+hot-site execution coverage are co-equal outputs—not afterthoughts.
+
+The common thesis is that Parseman still executes too much *generic parser
+machinery* after the grammar has become static. A macro compiler should partially
+evaluate the grammar into a small number of deterministic source-recognition
+regions and keep PEG fallback, semantic branching, diagnostics, and tree
+construction only at the boundaries that truly require them.
+
+### U-57. Deterministic-region fusion and size-budgeted superinstructions — `QUEUED`
+
+Compile maximal deterministic regions—not individual combinators—into
+straight-line JS. A region starts where the active grammar state is known and
+continues through terminals, trivia, fixed sequences, bounded repetitions, and
+uniquely predicted choices until it reaches a genuine ambiguity, semantic gate,
+recursive boundary, recovery point, or output barrier. Its hot success trace is
+one function with local scalar cursor/capture variables and direct cold exits;
+there is no per-combinator call/return, FAIL sentinel traffic, or repeated
+save/install/restore protocol inside the region.
+
+This is closer to instruction selection and trace formation than to regex
+fusion. Build a grammar CFG, annotate edges with FIRST/nullability, capture and
+rollback effects, then form single-entry regions whose success path is unique.
+Lower recurring region fragments as *generated* superinstructions, but clone or
+split a region before its function crosses the measured V8 inlining budget.
+Cold ambiguity/failure continuations may remain ordinary piece calls. The
+compiler should choose a Pareto point from `{executed calls, emitted bytes,
+estimated bytecode size}`, rather than maximizing either fusion or sharing.
+
+First falsification experiment: fuse one high-coverage Less value/declaration
+region end-to-end while leaving its cold exits on existing code. Require a
+double-digit isolated-site reduction and a credible whole-Less ceiling of at
+least 15%; reject a shape that merely trades calls for >10% artifact growth or
+pushes its hot parent over the 460-byte cliff. Prove rollback/CST/diagnostic
+parity by forcing every cold exit, not only the success corpus.
+
+### U-58. Make derived tokens the primary control-flow currency — `QUEUED`
+
+Today token information often acts as an advisory pretest, after which the
+selected arm re-enters ordinary PEG machinery and reconstructs facts already
+known. Replace that handoff with a compact scalar token result such as
+`kind | route | flags | end`, held in locals or packed integers. A decision site
+consumes the token directly: it jumps to a route, adopts the known end offset,
+and materializes text only if a reducer requests it. Same-family arms share the
+recognition once; prefix-compatible arms receive a residual token state rather
+than rescan source. There should be no token object, general token buffer, string
+classifier, or context-level pending-result protocol on the hot path.
+
+The scanner is grammar-derived and mode-aware, not a traditional independent
+lexer. Its state is the current viable terminal family plus lexical/context
+bits, so it can preserve scannerless PEG semantics where token boundaries depend
+on the production. Token recognition and branch choice become one generated
+operation. Cache only where dynamic traces prove reuse across decision sites;
+otherwise keep the packed result in the current region's locals.
+
+First falsification experiment: on Less's hottest unrestricted `Value` family,
+generate a route table from the full viable-arm set and delete the selected
+arm's duplicate selector, regex/literal scan, and wrapper entry. Instrument
+scans and executed arms to prove work disappeared. The earlier one-slot pending
+handoff was slightly slower; this program succeeds only if the token is the
+control flow itself and no generic handoff state remains. Target ≥15% whole-Less
+ceiling before generalizing.
+
+### U-59. PEG residual/derivative decision DAG — `QUEUED`
+
+Treat each hot choice as a language-state problem. Compute a bounded residual
+of the ordered PEG expression after each observed character/token: the state is
+the remaining viable arms, their ordered-commit relation, nullable/accepting
+status, and the capture/semantic actions deferred at that point. Hash-cons
+equivalent residuals into a decision DAG. At runtime, a table or generated
+switch advances the state until it reaches a unique continuation, then jumps
+directly into the residual grammar rather than restarting an original arm.
+
+This is not a DFA conversion that discards PEG priority. Ordered choice is part
+of the state: an earlier arm may shadow a later accepting arm, and semantic
+predicates or unbounded context create explicit opaque transitions back to the
+normal engine. Use derivatives only over the regular/token-recognizable prefix;
+attach deferred capture actions to edges or accepting states. Bound state count,
+lookahead depth, and emitted bytes, falling back per site when construction
+explodes. Minimize states after capture-equivalence partitioning, not only
+language equivalence.
+
+First falsification experiment: build the residual DAG for the hot Less Value
+and selector families and report `(original decisions, residual states, unique
+continuations, fallback rate, emitted bytes, dynamic avoided arm entries)` before
+timing. If the state graph does not collapse substantially or covers too little
+dynamic traffic for a ≥15% ceiling, reject it there. If it does, compare a packed
+transition table against generated nested switches; JS engine behavior, not
+aesthetic preference, picks the representation.
+
+### U-60. Recognition tape followed by selective construction — `QUEUED`
+
+Split recognition from object/tree construction without parsing twice. The hot
+recognizer writes a compact event tape—production/action id plus source offsets
+and only the few scalar values that cannot be reconstructed cheaply—into reusable
+numeric storage. It performs no node allocation, child-array construction,
+builder dispatch, source slicing, or trivia object work. A second linear pass
+replays successful events into the exact public CST/host value. Failed speculative
+paths rewind a numeric tape cursor instead of undoing several heterogeneous
+collector arrays and context fields.
+
+This is valuable only if the tape is cheaper than the current interleaved capture
+protocol. Prefer struct-of-arrays or packed 32-bit words with geometric reuse;
+avoid per-event objects and callbacks. Allow a hybrid: directly build leaf/simple
+regions where that is cheaper, and tape only rollback-heavy or host-heavy
+regions. Reducers that affect future recognition remain eager semantic actions;
+pure constructors move to replay. Trivia and spans can be represented as source
+ranges and expanded only when demanded by the output contract.
+
+First falsification experiment: tape one complete hot Less subtree and replay it
+through the unchanged builder contract. Compare parse-only, replay-only,
+parse+replay, allocation, and peak tape words. Require total macro parse+build to
+beat the current interleaved engine by enough to imply ≥15% whole-Less upside;
+recognizer-only speed is not a win. Verify exact AST/CST/trivia identity and force
+speculative rollback paths.
+
+### U-61. Scalar parse ABI and packed rollback/capture machine — `QUEUED`
+
+Replace the generic `value | FAIL` calling convention and mutable ParseContext
+protocol inside compiled regions with a scalar ABI. A recognizer returns an end
+offset (negative encodes failure/commit class); semantic values travel through
+statically assigned local/result slots only where demanded. Cursor, farthest
+failure, commit bits, capture tops, and tape tops are numeric locals. A rollback
+point is a fixed-width record in a reusable numeric stack or a compile-time set
+of locals, not repeated snapshots of independent arrays. Cross-region calls use
+a small number of arity-specialized signatures rather than one universal object
+context.
+
+Exploit JS/V8 deliberately: keep hot numeric locals as Smis where practical;
+avoid polymorphic return shapes, exceptions, destructuring, rest parameters,
+and property churn; preserve direct named calls; keep callees below the measured
+inlining threshold; use typed arrays only after plain packed arrays are measured,
+because bounds checks and numeric conversion can lose. Emit separate ABIs for
+recognizer-only, scalar-value, and structural actions so unused output channels
+do not survive as runtime branches.
+
+First falsification experiment: lower a vertically complete Less region to the
+integer-return ABI with a fixed capture/rollback frame, including one committed
+failure, one speculative rollback, and one value-producing exit. Inspect actual
+V8 bytecode and deopts as well as wall time. The result must remove measurable
+loads/stores/calls and show a ≥15% whole-workload ceiling; a context object merely
+hidden behind helper accessors is not this design.
+
+### Orchestration order and combination
+
+Run U-57, U-58/U-59, and U-60/U-61 as independent ceiling probes first. Do not
+prematurely force them into one implementation. The likely combined architecture,
+if the probes validate it, is: a residual/token predictor selects a deterministic
+region; the region executes under the scalar ABI; rollback-heavy structural
+actions append to a tape; cold opaque PEG continuations retain the existing
+engine. Each boundary must justify itself by dynamic frequency and emitted-byte
+cost. Retain and commit only macro-runtime wins to `feature/0.50.0`, one measured
+win per commit.
 
 ---
 
@@ -930,9 +1101,10 @@ this during 0.47. A gate defect, currently unassigned.
 
 ## Untried index (`QUEUED` + `UNMEASURED`)
 
-**56 items — 22 `QUEUED`, 34 `UNMEASURED`.** The count at the top of this file is
+**61 items — 27 `QUEUED`, 34 `UNMEASURED`.** The count at the top of this file is
 this table's length. U-01…U-30 are the pre-existing backlog; U-31…U-56 came out
-of the 2026-08 measurement batch. Nothing is counted twice: an item whose
+of the 2026-08 measurement batch; U-57…U-61 are the radical macro-runtime
+programs selected on 2026-08-25. Nothing is counted twice: an item whose
 siblings landed appears here once, for its unlanded part only.
 
 | # | item | marker |
@@ -993,6 +1165,11 @@ siblings landed appears here once, for its unlanded part only.
 | U-54 | gate the three silent-wrong-output surfaces (`OP_ADJ`, capture-reachability, site-attribute record) by whole-object parity | `UNMEASURED` |
 | U-55 | put `expected` in the identity digest (six divergences hid behind its absence during 0.47) | `QUEUED` |
 | U-56 | re-tag the 39,718 mislabelled `"engine":"table"` rows in `notes/results/parse-consumed.jsonl`, and land `lane/name-collision`'s legend + the `CHANGELOG.md:756-762` / `canonical-fixture-benchmark.md` correction banners on the release tip | `QUEUED` |
+| U-57 | deterministic-region fusion and size-budgeted superinstructions | `QUEUED` |
+| U-58 | derived tokens as primary control-flow currency (packed route/end, no generic handoff) | `QUEUED` |
+| U-59 | bounded PEG residual/derivative decision DAG preserving ordered-choice semantics | `QUEUED` |
+| U-60 | recognition event tape followed by selective exact construction | `QUEUED` |
+| U-61 | scalar parse ABI with packed rollback/capture state | `QUEUED` |
 
 ---
 

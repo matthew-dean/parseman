@@ -1,5 +1,12 @@
 # 0.48 table performance experiment ledger
 
+> **Frozen predecessor.** The active 0.50 macro-runtime architecture programs
+> are U-57…U-61 in [`PERF_IDEAS.md`](./PERF_IDEAS.md): deterministic-region
+> fusion, packed token control flow, PEG residual decision DAGs, recognition
+> tapes, and the scalar parse ABI. Those programs deliberately require a
+> credible ≥15% whole-Less ceiling before expanding. Do not append their results
+> to this 0.48 ledger or constrain them to its historical lane boundaries.
+
 This is the frozen working view for 0.48 performance work. The canonical design and
 implementation order are in
 [`docs/design/parseman-0.48.md`](../docs/design/parseman-0.48.md). Historical
