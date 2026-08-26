@@ -1738,10 +1738,6 @@ return FAIL
               `case ${i}:if(target<=${i})return acc;acc=_accSet(${e},acc)`).join('\n')
             choiceDefs.push(`function ${catchName}(target,prev,acc){switch(prev){\n${catchCases}\n}return acc}`)
           }
-          // A skipped prefix can only contribute diagnostics at `pos`. Wait
-          // until an entered arm's failure depth is known before materialising
-          // it: a deeper failure supersedes that entire prefix, and the old
-          // eager catch allocated an expected array only to discard it below.
           const maskArms = maskable ? arms.map((arm, i) => {
             const pretest = pretests[i]
             const decision = pretest?.token === undefined ? '' : tmp()
@@ -1751,23 +1747,21 @@ return FAIL
             const routeMiss = pretest?.token === undefined ? '' : `
 if(${decision}===0){
 ctx._fc=false
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}`}
 {const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
-${startFailureExact
-  ? `if(at===best&&at>pos)acc=_accSet(${pretest.token.expected},acc)`
-  : `if(at===best){if(best===pos)acc=${catchName}(${i},prev,acc);acc=_accSet(${pretest.token.expected},acc)}`}}
-${startFailureExact ? '' : `prev=${i + 1}`}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)}
 }`
             return `${decision === '' ? '' : `let ${decision}=-1\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}`}
 {const at=ctx._fe??pos
 if(at>best){best=at;acc=undefined}
-${startFailureExact
-  ? 'if(at===best&&at>pos)acc=_accSet(ctx._fx,acc)'
-  : `if(at===best){if(best===pos)acc=${catchName}(${i},prev,acc);acc=_accSet(ctx._fx,acc)}`}}
-${startFailureExact ? '' : `prev=${i + 1}`}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
 if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
 }${routeMiss}`

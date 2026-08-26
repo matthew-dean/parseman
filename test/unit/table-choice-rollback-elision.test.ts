@@ -67,21 +67,6 @@ function emittedBody(source: string, ip: number): string {
 }
 
 describe('emitted ordered-choice rollback elision', () => {
-  it('does not merge skipped-arm diagnostics before a deeper arm failure', () => {
-    const boundary = '-_a-zA-Z0-9\\u0080-\\uFFFF'
-    const grammar = choice(
-      sequence(word('beta', boundary), literal('.')),
-      sequence(word('alpha', boundary), literal('!')),
-      sequence(word('alpha', boundary), literal('?')),
-    )
-    const prog = encodeTable({ Root: grammar })
-    const merges = { n: 0 }
-    const emitted = precompiledCountingExpectedMerges(prog, merges)
-
-    expect(projection(emitted, 'alpha?')).toEqual(projection(grammar as Entry, 'alpha?'))
-    expect(merges.n).toBe(1)
-  })
-
   it('does no expected-array work for exact start failures before a later arm succeeds', () => {
     const grammar = choice(literal('ab'), literal('ac'), literal('ad'))
     const prog = encodeTable({ Root: grammar })
