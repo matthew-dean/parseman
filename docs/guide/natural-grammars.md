@@ -61,11 +61,11 @@ parse(choice(literal('<'), sequence(literal('<='), literal('x'))), '<=x').value
 // → '<'
 ```
 
-So if you want the shorter arm to win, reordering won't get you there — make one of the
-arms non-literal instead. Putting the shorter arm first does nothing when every arm is a
-bare literal, since they're sorted longest-first before any is tried; on the ordered
-path, it's putting the *longer* one first that makes it win, not the shorter. Everything
-else on this page is strict PEG ordering.
+So if you want the shorter arm to win, reordering won't get you there while every arm
+stays a bare literal — they're sorted longest-first before any is tried, so order is
+moot. Make one of the arms non-literal instead: once the choice is back on the ordered
+path, the first successful arm wins, so put the shorter arm first when the shorter arm
+must win. Everything else on this page is strict PEG ordering.
 :::
 
 What you avoid: computing FIRST/FOLLOW sets yourself, and rewriting `choice(a·x, a·y)`
@@ -75,10 +75,12 @@ into `a·(x | y)` just to satisfy the tool. Write the arms, order them, done.
 
 There's exactly one exception, and it's worth knowing precisely. A `choice` whose arms
 are **all plain `literal`s** — or all literals plus a single `regex` arm that matches every
-one of them — resolves by **longest match** instead of by authored order. Whichever
-alternative consumes the most input wins; authored order only breaks ties between
-alternatives of equal length. Both engines apply this rule, so the interpreter and the
-compiled parser agree.
+one of them — resolves by **longest match** instead of by authored order. For an
+all-literal choice, whichever alternative consumes the most input wins, and authored order
+breaks a tie between two literals of equal length. For the one-regex shape, an exact
+literal match is classified as that literal regardless of arm order — there's no length
+tie to break. Both engines apply this rule, so the interpreter and the compiled parser
+agree.
 
 ```ts
 // [verify]
@@ -222,8 +224,12 @@ they produce byte-identical results.
 ## Literal-heavy choices collapse to one scan
 
 Write a pile of keyword alternatives the obvious way, and Parséman recognizes the shape
-and collapses the whole choice to a single scan-and-classify — no arm-by-arm
-backtracking. It detects two shapes (`detectStrategy`):
+and — in the **compiled output** — collapses the whole choice to a single
+scan-and-classify, no arm-by-arm backtracking. The interpreter detects the same two
+shapes and skips backtracking's rollback machinery too, but it still calls each sorted
+literal in turn, so a shared prefix can be read more than once there; the single-scan
+guarantee is specifically a compiled-engine property. It detects two shapes
+(`detectStrategy`):
 
 **All arms are literals → `literalsLongestFirst`.** Sorted longest-first (so `>=` beats
 `>`), tried without re-scanning shared prefixes.

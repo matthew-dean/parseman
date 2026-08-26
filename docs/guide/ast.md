@@ -151,10 +151,10 @@ elision, declare plain positional parameters and drop the ones you don't use.
 
 If you don't need a custom AST, **omit `build`**. A `node(combinator)` with no build
 callback is *structural*: it constructs its node through a **host** you supply via
-`ctx.build`, so the same grammar can produce a plain CST for tooling (host set) or its
-own AST for evaluation (host unset, or a `build` callback). Inside `rules()`, the object
-key is the node type. Pass the built-in `cstBuildHost` and every rule becomes a uniform
-positioned node:
+`ctx.build`, so the same grammar produces the same default CST whether you pass a host
+or not — for your own evaluation AST instead, give the `node()` call a `build` callback
+rather than relying on `ctx.build`. Inside `rules()`, the object key is the node type.
+Pass the built-in `cstBuildHost` and every rule becomes a uniform positioned node:
 
 ```ts
 // [verify]

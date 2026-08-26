@@ -166,9 +166,11 @@ macro](./modes):
   ships in strict-CSP contexts like browser extensions or some CDNs with no extra
   configuration.
 - **`compile()` / interpreter (runtime):** `compose([...])` fuses when it's called, using
-  the same code generation `compile()` uses. So, like `compile()`, it builds the fused
-  parser via `new Function`, which needs `'unsafe-eval'` under a strict CSP. Construction
-  happens once; parsing afterward runs at full speed.
+  the same code generation `compile()` uses. Like `compile()`, it tries to specialize the
+  fused parser via `new Function` once; under a strict CSP that throws, and it falls back
+  to the closure assembler — so it still runs without `'unsafe-eval'`, just via the
+  slower path for that one-time construction. Parsing afterward runs at full speed either
+  way.
 
 Either way, the parse is identical: a single fused scope of direct rule calls, with
 overrides resolved across the whole set.

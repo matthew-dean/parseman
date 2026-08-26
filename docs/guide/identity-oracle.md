@@ -146,8 +146,8 @@ definition. Assert that one directly instead.
 
 ### Nondeterminism gets caught, not hashed
 
-A grammar whose output depends on a timestamp, a counter, or iteration over a `Map` keyed
-by object identity produces a digest that moves every single run — which reads exactly like
+A grammar whose output depends on a timestamp, a counter, or a traversal whose order isn't
+stable run to run produces a digest that moves every single run — which reads exactly like
 a regression, forever.
 
 Re-parse an evenly spaced sample of the corpus and fail loudly, naming the surface and the

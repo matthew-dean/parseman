@@ -94,9 +94,11 @@ regex(/\bin\b/)                                  // → "in"
 regex(/>=|<=|>|<|=/)                             // → ">=" | "<=" | ">" | "<" | "="
 ```
 
-This is more faithful, not a simplification — nothing gets collapsed, hidden, or elided,
-and the terminal shows as the text it actually matches. Real regex structure still prints
-raw: a character class, a quantifier, an interior group, or a positive lookahead (one that
+This is more faithful, not a simplification: the fixed text always stays visible, exactly
+as it actually matches, while a recognition-only guard — the word-boundary lookahead
+above, for instance — is omitted the same way `word()`'s own guard is. Real regex
+structure still prints raw: a character class, a quantifier, an interior group, or a
+positive lookahead (one that
 constrains what follows, rather than just marking a word boundary). A diagram exists to
 make grammar complexity visible, not hide it:
 

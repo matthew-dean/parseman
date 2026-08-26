@@ -201,8 +201,9 @@ in-grammar context and JS values out.
 
 ## How it feels to build one
 
-Parser **generators** — Peggy, Nearley, Jison, Lezer, tree-sitter — take a grammar in a
-dedicated text DSL and emit a parser. That buys speed, and for Lezer and tree-sitter it
+Parser **generators** — Peggy, Nearley, Jison, Lezer, tree-sitter — take a grammar
+specification (a text DSL for most of them; tree-sitter's `grammar.js` is JS that
+*describes* one) and emit a parser. That buys speed, and for Lezer and tree-sitter it
 buys incremental buffer trees. What it costs is that the thing you run isn't the thing you
 wrote. When something breaks you're reading a generated state table, or C, and a
 breakpoint in the output rarely maps back to a rule.
@@ -259,7 +260,8 @@ parse. Ordered-choice parsers — Parséman, Peggy, Parsimmon — structurally c
 - **Parséman** — you want the fastest JS value parser here (the macro build; see
   [Benchmarks](./benchmarks)) *and* an editor-grade CST with spans and trivia,
   context-sensitive rules, incremental re-parse, and a real editor backend — all authored
-  and debugged in TypeScript, with no grammar file to maintain and no build step required.
+  and debugged in TypeScript, with no grammar file to maintain. The interpreter needs no
+  build step at all; add the macro's bundler plugin when you want that top speed shipped.
 - **[Peggy](https://peggyjs.org/)** — a quick, readable PEG file for a config language or
   small DSL, where the grammar file *is* the deliverable.
 - **[Parsimmon](https://github.com/jneen/parsimmon)** — a tiny combinator parser, no build

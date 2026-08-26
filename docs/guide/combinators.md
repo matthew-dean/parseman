@@ -273,8 +273,10 @@ That's why `choice(literal('in'), literal('instanceof'))` still returns
 `'instanceof'`, even with the short arm listed first.
 
 The shadowing example above needs `regex()` arms because that rewrite only
-applies to plain literals. Don't rely on it: add one non-literal arm and
-ordering matters again.
+applies to plain literals. Don't rely on it: add one non-literal arm and ordering
+matters again — unless that arm is a single regex covering every literal sibling
+([`greedyClassify`](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)),
+which keeps order irrelevant too.
 :::
 
 When the arms start with disjoint characters, the whole `choice` collapses into a

@@ -15,8 +15,11 @@ top as a cold path that only runs when something fails. Recovery has two pieces:
 | [`expect`](#expect-required-tokens) | A required delimiter/terminator (`}`, `)`, `;`) | Records an error, recovers **in place** (zero width), keeps going |
 | [`scanTo` / `balanced`](#positional-recovery-scanto-balanced) | Consuming an opaque region up to a boundary | Positional scanning; independently useful building blocks |
 
-Each one turns a failure into a successful parse whose value carries a `ParseError`, so
-the enclosing `sequence` / list keeps going. Errors are collected through the
+Tolerant lists and `expect` turn a failure into a successful parse whose value carries a
+`ParseError`, so the enclosing `sequence` / list keeps going. `scanTo` and `balanced` are
+plainer: they scan for a boundary and fail like any other combinator if it's missing,
+unless you pass `scanTo`'s `orEOF: true`, which lets running off the end count as success
+too — with no `ParseError` attached either way. Errors are collected through the
 [error channel](#collecting-every-error).
 
 ## The `ParseError` value

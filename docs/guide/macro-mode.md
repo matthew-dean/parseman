@@ -168,7 +168,9 @@ line-aware or CST artifact along with it. See [One factory, several macro artifa
 and [Line/column spans](./ast#linecolumn-spans).
 
 Parsers that close over external variables the evaluator can't resolve are left as-is.
-The plugin compiles what it can and quietly leaves the rest to the interpreter.
+The plugin compiles what it can and leaves the rest to the interpreter, with a build
+warning pointing at exactly what it skipped — see
+[When the plugin can't compile something](#when-the-plugin-cant-compile-something) below.
 
 ## Code size — what to expect
 

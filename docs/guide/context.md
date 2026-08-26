@@ -35,8 +35,10 @@ export const { Program } = rules<{ Program: Combinator<unknown> }>(g => {
 })
 ```
 
-`return` only works inside a body because `gate` rejects it wherever `inFn` isn't set.
-Outside a body, the `ret` arm fails at the gate, and `choice` falls through to `expr`.
+The `ret` production only matches inside a body — outside one, `gate` rejects it and
+`choice` falls through to the generic `expr` arm, which still accepts the bare text
+`return` as an ordinary identifier. (A real grammar would exclude keywords like `return`
+from `expr`; this toy example only demonstrates the gate.)
 
 One catch: `gate()`'s first-set is `any`, since a runtime predicate can't be known at build
 time. Put it as the leading term of a choice arm and you poison that choice's first-char
