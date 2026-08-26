@@ -212,6 +212,18 @@ U-58/U-60 derivation must reproduce the same trace admission, recognizer tape,
 reducer replay, and cold fallback mechanically from grammar IR while preserving
 this size/performance shape.
 
+**Broad-gap localization after the retained win (iteration 68): target the
+CSS/CST family.** The existing five-workload gate compared clean release head
+`f28d447` with exact 0.45 `7d1817f`, immediately after an identical-code control.
+The control's workload centers stayed within -0.8%..+0.9%, its worst absolute
+single-pass swing was 3.63%, and neither load window moved adversely. Current is
+already 15.4% faster than 0.45 on GraphQL, while JSON's +1.5% sits inside that
+control floor. The remaining gap is sharply consistent across CSS-shaped rows:
+Less stylesheet +84.0%, Less mixins +86.5%, and independent CSS +86.5%, with
+current losing all 12 adjacent pairs for each. U-57/U-60 should therefore optimize
+the shared CST/trivia/node-construction protocol first. Extra value-only
+GraphQL/JSON work has no priority unless it falls out of the same generic change.
+
 ### U-58. Make derived tokens the primary control-flow currency — `ACTIVE`
 
 Today token information often acts as an advisory pretest, after which the
