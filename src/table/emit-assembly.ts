@@ -382,10 +382,18 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
-  const fast = `const ${t}v=${callee}(input,cur,ctx)
+function emitTerm(
+  callee: string,
+  dst: string,
+  t: string,
+  l: SiteLabel,
+  skip: string,
+  inline?: (at: string) => string,
+): string {
+  const invoke = (at: string): string => inline?.(at) ?? `const ${t}v=${callee}(input,${at},ctx)
 if(${t}v===FAIL)return FAIL
-${dst}=${t}v
+${dst}=${t}v`
+  const fast = `${invoke('cur')}
 cur=EC.e`
   if (l.tri === TRI_NONE) return fast
   const scanned = `const ${t}tl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
@@ -395,9 +403,7 @@ const ${t}s=${skip}(input,cur,ctx)
 const ${t}stl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
 const ${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 const ${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
-const ${t}v=${callee}(input,${t}s,ctx)
-if(${t}v===FAIL)return FAIL
-${dst}=${t}v
+${invoke(`${t}s`)}
 if(EC.e>${t}s)cur=EC.e
 else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt)}`
   if (l.tri !== TRI_UNKNOWN) return scanned
@@ -1034,12 +1040,28 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
      * `trackLines` is `RunCfg`, and an open `_cstBuf` is the label. `_pushLeafBuf`
      * is that pair with both branches taken, and it takes no piece.
      */
-    const pushLeaf = L.buf && !cfg.trackLines
-      ? L.raw === RAW_OMIT ? '_pushLeafNoRawBuf' : L.raw === RAW_CAPTURE ? '_pushLeafBuf' : '_pushLeaf'
-      : '_pushLeaf'
-    const captureLeaf = (value: string): string => {
-      const call = `${pushLeaf}(ctx,${value},pos,e)`
-      return L.buf ? call : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${call}`
+    const captureLeafAt = (value: string, start: string, end: string, label: SiteLabel): string => {
+      const pushLeaf = label.buf && !cfg.trackLines
+        ? label.raw === RAW_OMIT ? '_pushLeafNoRawBuf' : label.raw === RAW_CAPTURE ? '_pushLeafBuf' : '_pushLeaf'
+        : '_pushLeaf'
+      const call = `${pushLeaf}(ctx,${value},${start},${end})`
+      return label.buf ? call : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${call}`
+    }
+    const captureLeaf = (value: string): string => captureLeafAt(value, 'pos', 'e', L)
+    const canInlineSequenceLiteral = (childIp: number): boolean => {
+      if (!staticBuild || cfg.tolerant || cfg.probe || cfg.trackLines || hostCst) return false
+      if (code[childIp] !== OP_LIT) return false
+      const value = k[code[childIp + 1]!]
+      return typeof value === 'string' && value.length === 1
+    }
+    const inlineSequenceLiteral = (childIp: number, dst: string, t: string, at: string): string => {
+      const value = k[code[childIp + 1]!] as string
+      const end = `${t}e`
+      return `if(input.charCodeAt(${at})!==${value.charCodeAt(0)}){ctx._fe=${at};ctx._fx=${fxRef(code[childIp + 2]!)};return FAIL}
+const ${end}=${at}+1
+${captureLeafAt(q(value), at, end, labels.at(childIp))}
+${dst}=${q(value)}
+EC.e=${end}`
     }
     switch (op) {
       case OP_LIT:
@@ -1555,9 +1577,12 @@ return v
         const projection = reducer < 0 ? ~reducer : -1
         const fn = fused && projection < 0 ? fnRef(reducer) : undefined
         const kids: string[] = []
+        const inlineKids: boolean[] = []
         for (let i = 0; i < n; i++) {
           const childIp = code[base + i]!
-          kids.push(code[childIp] === OP_ADJ ? '' : link(childIp))
+          const inline = i > 0 && canInlineSequenceLiteral(childIp)
+          inlineKids.push(inline)
+          kids.push(code[childIp] === OP_ADJ || inline ? '' : link(childIp))
         }
         /**
          * A RECOVERY SEQUENCE PUBLISHES `ctx._sync`, and that is the WHOLE of
@@ -1614,7 +1639,13 @@ return v
               `if(!adjacencyHolds(input,cur,ctx,${negated ? 'true' : 'false'},${kinds})){ctx._fe=cur;ctx._fx=${expected};return FAIL}`,
               `${vn}=null`,
             )
-          } else parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
+          } else {
+            const t = tmp()
+            parts.push(emitTerm(
+              kids[i]!, vn, t, L, skipFor(L),
+              inlineKids[i] ? at => inlineSequenceLiteral(childIp, vn, t, at) : undefined,
+            ))
+          }
           names.push(vn)
         }
         parts.push('EC.e=cur')
