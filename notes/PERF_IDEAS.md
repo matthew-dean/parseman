@@ -103,18 +103,26 @@ save/install/restore protocol inside the region.
 This is closer to instruction selection and trace formation than to regex
 fusion. Build a grammar CFG, annotate edges with FIRST/nullability, capture and
 rollback effects, then form single-entry regions whose success path is unique.
-Lower recurring region fragments as *generated* superinstructions, but clone or
-split a region before its function crosses the measured V8 inlining budget.
-Cold ambiguity/failure continuations may remain ordinary piece calls. The
-compiler should choose a Pareto point from `{executed calls, emitted bytes,
-estimated bytecode size}`, rather than maximizing either fusion or sharing.
+Lower recurring region fragments as *generated* superinstructions. There are
+**two size regimes**, not one universal 460-byte cap: keep a leaf region below
+the measured threshold when its value depends on inlining into a parent; allow a
+hot trace-root region to exceed it deliberately when the region has deleted the
+internal calls and optimizes as a standalone function. The 0.45 direct source
+emitter is the topology proof: it recursively emitted combinator logic inside
+named parser bodies, so those bodies did not need to inline into another parser
+to avoid internal call traffic. Cold ambiguity/failure continuations may remain
+ordinary piece calls. The compiler should choose a Pareto point from `{executed
+calls, emitted bytes, estimated bytecode size, caller-inline value}`, rather than
+maximizing fusion, sharing, or inlining in isolation.
 
 First falsification experiment: fuse one high-coverage Less value/declaration
 region end-to-end while leaving its cold exits on existing code. Require a
 double-digit isolated-site reduction and a credible whole-Less ceiling of at
-least 15%; reject a shape that merely trades calls for >10% artifact growth or
-pushes its hot parent over the 460-byte cliff. Prove rollback/CST/diagnostic
-parity by forcing every cold exit, not only the success corpus.
+least 15%; reject a shape that merely trades calls for >10% artifact growth.
+Crossing 460 bytes is a cost only if current profile/inlining evidence says the
+region's caller needs that body to inline; it is not grounds to reject a
+standalone hot trace. Prove rollback/CST/diagnostic parity by forcing every cold
+exit, not only the success corpus.
 
 ### U-58. Make derived tokens the primary control-flow currency — `QUEUED`
 

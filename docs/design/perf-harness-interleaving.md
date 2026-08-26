@@ -23,6 +23,10 @@ other lane compiling or timing, record load at both ends, and use the existing
 two-graph/interleaved harness rather than constructing a new benchmark wrapper.
 Macro source size, npm-pack size where relevant, and the bytecode size of hot
 bodies around V8's measured 460-byte inlining cutoff travel with the timing.
+The cutoff is boundary-specific, not a universal maximum: it matters when a
+callee is expected to inline into its caller. A large standalone trace that has
+deleted its internal calls may be the winning shape even though it cannot inline
+again; record that topology instead of rejecting it mechanically.
 
 The purpose of an early ceiling probe is falsification, not release readiness.
 It may temporarily suppress or replace work to price an architecture, but it
