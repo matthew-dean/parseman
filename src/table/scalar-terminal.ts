@@ -61,7 +61,7 @@ export function scalarTerminalNotChild(code: ArrayLike<number>, ip: number): num
  * merely to avoid one already-cheap terminal call.
  */
 export function leadingScalarTerminal(
-  code: ArrayLike<number>, ip: number, minDepth = 2,
+  code: ArrayLike<number>, ip: number, minDepth = 2, throughAttempt = true,
 ): number {
   const seen = new Set<number>()
   let at = ip
@@ -70,7 +70,7 @@ export function leadingScalarTerminal(
     seen.add(at)
     const op = code[at]
     if (op === OP_LIT || op === OP_RX) return depth >= minDepth ? at : -1
-    if (op === OP_RULE || op === OP_ATTEMPT || op === OP_LABEL || op === OP_TOKEN) {
+    if (op === OP_RULE || op === OP_LABEL || op === OP_TOKEN || (throughAttempt && op === OP_ATTEMPT)) {
       at = code[at + 1]!
       depth++
       continue

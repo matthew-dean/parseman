@@ -32,6 +32,23 @@ function precompiled(prog: TableProgram): Entry {
   })).Root! as Entry
 }
 
+function precompiledCountingExpectedMerges(prog: TableProgram, counter: { n: number }): Entry {
+  const owned = ownTableProgram(prog)
+  const emitted = emitAssemblySource(resolveTable(owned), owned, STRICT)
+  const source = emitted.source
+    .replace('function _accSet(ax,acc){', 'function _countAcc(ax,acc){COUNT.n++')
+    .replaceAll('_accSet(', '_countAcc(')
+  const compiled = new Function(
+    ...EMITTED_PARAMS, 'COUNT', source,
+  ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
+  const factory = ((...args: Parameters<PrecompiledAssembly['factory']>) =>
+    compiled(...args, counter)) as PrecompiledAssembly['factory']
+  return tableRules(ownTableProgram({
+    ...owned,
+    asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+  })).Root! as Entry
+}
+
 function projection(entry: Entry, input: string): unknown {
   const result = run(entry, input)
   return {
@@ -50,6 +67,27 @@ function emittedBody(source: string, ip: number): string {
 }
 
 describe('emitted ordered-choice rollback elision', () => {
+  it('does no expected-array work for exact start failures before a later arm succeeds', () => {
+    const grammar = choice(literal('ab'), literal('ac'), literal('ad'))
+    const prog = encodeTable({ Root: grammar })
+    const merges = { n: 0 }
+    const emitted = precompiledCountingExpectedMerges(prog, merges)
+
+    expect(projection(emitted, 'ac')).toEqual(projection(grammar as Entry, 'ac'))
+    expect(merges.n).toBe(0)
+
+    merges.n = 0
+    expect(projection(emitted, 'ax')).toEqual(projection(grammar as Entry, 'ax'))
+    expect(merges.n).toBe(0)
+
+    // attempt() re-anchors a deeper child failure at the choice start. Its
+    // dynamic expected set is not the static leading-terminal set, so it must
+    // remain outside this authority.
+    const unsafe = choice(attempt(sequence(literal('a'), literal('!'))), literal('ab'))
+    expect(projection(precompiled(encodeTable({ Root: unsafe })), 'ax'))
+      .toEqual(projection(unsafe as Entry, 'ax'))
+  })
+
   it('omits the outer mark when every arm contains its own failed capture', () => {
     const grammar = choice(
       node('Bang', sequence(literal('a'), literal('!'))),

@@ -45,6 +45,7 @@
  * what `encode.ts:1208-1213` refuses to allow for `OP_LIVE`.
  */
 import type { ParseContext } from '../types.ts'
+import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
   OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
@@ -1700,6 +1701,23 @@ return FAIL
           const encodedRollbackMask = choiceRollbackMask(prog, ip) ?? -1
           const rollbackMask = REC ? -1 : encodedRollbackMask
           const hasRollback = rollbackMask !== 0
+          // An always-consuming leading scalar makes a failure at `pos`
+          // statically exact: it is the arm's derived opener set, and the
+          // choice's own `choiceFx` already concatenates every such set in
+          // source order. Defer array merging until an arm reaches deeper input
+          // so a later successful arm pays no diagnostic-allocation tax.
+          //
+          // attempt() is a hard boundary: it can fail deeper and deliberately
+          // re-anchor `_fe` at `pos` while keeping the inner dynamic expected
+          // set. A zero-width regex has the same ambiguity, so neither qualifies.
+          const startFailureExact = arms.every((_arm, i) => {
+            const terminal = leadingScalarTerminal(code, code[base + i]!, 0, false)
+            if (terminal < 0) return false
+            const op = code[terminal]
+            const spec = k[code[terminal + 1]!]
+            if (op === OP_LIT) return typeof spec === 'string' && spec.length > 0
+            return op === OP_RX && spec instanceof RegExp && !regexCanMatchEmpty(spec.source)
+          })
           const rollbackFor = (i: number): string =>
             rollbackMask === -1 || (rollbackMask & (1 << i)) !== 0
               ? emitRollback(p, L.buf, L.raw, sinks)
@@ -1719,22 +1737,22 @@ return FAIL
             const routeMiss = pretest?.token === undefined ? '' : `
 if(${decision}===0){
 ctx._fc=false
-if(best===pos)acc=${catchName}(${i},prev,acc)
-prev=${i + 1}
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}`}
 {const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
-if(at===best)acc=_accSet(${pretest.token.expected},acc)}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)}
 }`
             return `${decision === '' ? '' : `let ${decision}=-1\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
-if(best===pos)acc=${catchName}(${i},prev,acc)
-prev=${i + 1}
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
+prev=${i + 1}`}
 {const at=ctx._fe??pos
 if(at>best){best=at;acc=undefined}
-if(at===best)acc=_accSet(ctx._fx,acc)}
-if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
+if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
 }${routeMiss}`
           }).join('\n') : ''
@@ -1745,21 +1763,21 @@ ${rollbackFor(i)}
               ? `&&(${decision}=${pretest.token.name}(input,pos))>0`
               : pretest?.scalar === undefined ? '' : `&&${pretest.scalar}(input,pos)>=0`
             const miss = pretest?.token === undefined
-              ? `else if(best===pos)acc=_accSet(${expected[i]},acc)`
+              ? startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`
               : `else if(${decision}===0){
 ctx._fc=false
 const at=_pfTokEnd
 if(at>best){best=at;acc=undefined}
-if(at===best)acc=_accSet(${pretest.token.expected},acc)
-}else if(best===pos)acc=_accSet(${expected[i]},acc)`
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)
+}${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
             return `${decision === '' ? '' : `let ${decision}=-1\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
 {const at=ctx._fe??pos
 if(at>best){best=at;acc=undefined}
-if(at===best)acc=_accSet(ctx._fx,acc)}
-if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
+if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
+if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
 }${miss}`
           }).join('\n')
@@ -1771,15 +1789,15 @@ let acc
 let best=pos
 ${maskable ? `if(c<128){
 const bits=${maskName}[c<0?128:c]
-let prev=0
+${startFailureExact ? '' : 'let prev=0'}
 ${maskArms}
-if(best===pos)acc=${catchName}(${n},prev,acc)
-ctx._fe=pos;ctx._fx=acc??${choiceFx}
+${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${n},prev,acc)`}
+ctx._fe=pos;ctx._fx=${startFailureExact ? `best===pos?${choiceFx}:acc??${choiceFx}` : `acc??${choiceFx}`}
 return FAIL
 }
 ` : ''}
 ${generalArms}
-ctx._fe=pos;ctx._fx=acc??${choiceFx}
+ctx._fe=pos;ctx._fx=${startFailureExact ? `best===pos?${choiceFx}:acc??${choiceFx}` : `acc??${choiceFx}`}
 return FAIL
 }`
         }
