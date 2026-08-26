@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, expect as recover, field, label, literal, node, optional, rules, run, sequence, type Combinator, word,
+  attempt, choice, expect as recover, field, label, literal, node, noTrivia, optional, regex, rules, run, sequence,
+  type Combinator, word,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -145,6 +146,39 @@ describe('emitted ordered-choice rollback elision', () => {
     // the exact source-ordered dynamic suffix diagnostics.
     merges.n = 0
     expect(projection(emitted, 'a:')).toEqual(projection(grammar as Entry, 'a:'))
+    expect(merges.n).toBeGreaterThan(0)
+  })
+
+  it('defers diagnostics for scalar-sequence-pretested arms', () => {
+    const spaces = regex(/[ \t\n\r\f]+/)
+    const scoped = rules({ trivia: spaces }, self => ({
+      Colon: sequence(literal('('), regex(/[a-z]+/), regex(/: */), literal('x')),
+      Paren: noTrivia(sequence(literal('('), regex(/[a-z]+/), literal(')'))),
+      Root: noTrivia(choice(
+        self.Colon,
+        self.Paren,
+        sequence(literal('$'), regex(/[a-z]+/)),
+        sequence(literal('%'), regex(/[a-z]+/)),
+        attempt(sequence(literal('&'), literal('!'))),
+      )),
+    }))
+    const grammar = scoped.Root
+    const prog = encodeTable(scoped)
+    const merges = { n: 0 }
+    const emitted = precompiledCountingExpectedMerges(prog, merges)
+
+    for (const input of ['(name:x', '( name : x', '(name)', '$name', '%name', '&!']) {
+      merges.n = 0
+      expect(projection(emitted, input), input).toEqual(projection(grammar as Entry, input))
+    }
+
+    merges.n = 0
+    expect(projection(emitted, '(name:x')).toEqual(projection(grammar as Entry, '(name:x'))
+    expect(merges.n, 'first pretested arm succeeds without a diagnostic merge').toBe(0)
+
+    merges.n = 0
+    expect(projection(emitted, '(name:'), 'total failure')
+      .toEqual(projection(grammar as Entry, '(name:'))
     expect(merges.n).toBeGreaterThan(0)
   })
 
