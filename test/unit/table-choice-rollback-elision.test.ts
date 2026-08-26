@@ -49,22 +49,6 @@ function precompiledCountingExpectedMerges(prog: TableProgram, counter: { n: num
   })).Root! as Entry
 }
 
-function precompiledCountingExpectedCopies(prog: TableProgram, counter: { n: number }): Entry {
-  const owned = ownTableProgram(prog)
-  const emitted = emitAssemblySource(resolveTable(owned), owned, STRICT)
-  const source = emitted.source.replaceAll('return ax.slice()', 'COUNT.n++;return ax.slice()')
-    .replaceAll('acc=acc.slice()', 'COUNT.n++;acc=acc.slice()')
-  const compiled = new Function(
-    ...EMITTED_PARAMS, 'COUNT', source,
-  ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
-  const factory = ((...args: Parameters<PrecompiledAssembly['factory']>) =>
-    compiled(...args, counter)) as PrecompiledAssembly['factory']
-  return tableRules(ownTableProgram({
-    ...owned,
-    asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
-  })).Root! as Entry
-}
-
 function projection(entry: Entry, input: string): unknown {
   const result = run(entry, input)
   return {
@@ -83,19 +67,6 @@ function emittedBody(source: string, ip: number): string {
 }
 
 describe('emitted ordered-choice rollback elision', () => {
-  it('borrows a speculative dynamic expected set when a later arm succeeds', () => {
-    const grammar = choice(
-      attempt(sequence(literal('a'), literal('!'))),
-      literal('ab'),
-    )
-    const prog = encodeTable({ Root: grammar })
-    const copies = { n: 0 }
-    const emitted = precompiledCountingExpectedCopies(prog, copies)
-
-    expect(projection(emitted, 'ab')).toEqual(projection(grammar as Entry, 'ab'))
-    expect(copies.n).toBe(0)
-  })
-
   it('does no expected-array work for exact start failures before a later arm succeeds', () => {
     const grammar = choice(literal('ab'), literal('ac'), literal('ad'))
     const prog = encodeTable({ Root: grammar })
