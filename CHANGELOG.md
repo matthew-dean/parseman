@@ -3,6 +3,27 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.1 — 2026-08-28
+
+- Fix a construction-time regression introduced by 0.50.0's rollback-elision
+  analysis. `Encoder.failureNeedsRollback` allocated its `hasSideWriter` memo Map
+  inside the function, so it was rebuilt on every call. `hasSideWriter` walks the
+  full reachable combinator graph from a site's root (through `lazy` rule
+  references), so a grammar whose many ordered-choice / `optional` / `attempt`
+  sites route through shared composed-in rules re-derived the same subgraph's
+  verdict once per site — O(sites × sharedGraphSize) instead of
+  O(sites + sharedGraphSize). Hoist the memo to an `Encoder` instance field
+  (safe: an entry is cached only when its verdict is `complete`, a
+  path-independent fact) and thread one mutable `seen` set through the DFS instead
+  of copying it per recursion level.
+- Emitted artifacts and analysis output are byte-identical to 0.50.0; this is a
+  build/compile-time speed fix only. On the Jess grammars the effect is large
+  where it was worst: the SCSS macro transform drops from ~50.7s to ~4.0s
+  (12.7x), and construction time across the four grammars re-balances into a
+  2.8–4.0s band. The regression was invisible to production parse benchmarks
+  because it lived entirely in the runtime `compile()`/`compose()` path that a
+  dev/test transform re-runs per file.
+
 ## 0.50.0 — 2026-08-26
 
 - Specialize the live table returned by runtime `compile()` and runtime `compose()`
