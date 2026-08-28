@@ -145,6 +145,22 @@ class Encoder {
   private choiceRollbackMasks = new Map<number, number>()
   private nonCommittingChoiceSites = new Set<number>()
   private failureRollbackCleanSites = new Set<number>()
+  /**
+   * `hasSideWriter` memo for `failureNeedsRollback`, shared across every call
+   * for the lifetime of this `Encoder`. A cached entry is written only when
+   * `complete` is true, which means the answer is a path-independent fact
+   * about that combinator node — it does not depend on which root's traversal
+   * asked, only on the node's own reachable subgraph. Scoping the memo per call
+   * (as a local inside `failureNeedsRollback`) was correct but discarded that
+   * fact after every arm, so a grammar with many ordered-choice arms / optional
+   * / attempt sites re-walked the SAME shared rule graph from scratch for each
+   * site — O(sites × graph size) instead of O(graph size). Measured on the
+   * scss-parser grammar (composed CSS-base superset, the deepest/largest of the
+   * four grammars): 47-50s for one `compileRuleMap` with the per-call memo,
+   * versus the whole macro transform completing in under a second once this
+   * memo is hoisted here.
+   */
+  private sideWriterMemo = new Map<Combinator<unknown>, boolean>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -633,16 +649,19 @@ class Encoder {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     const winner = refName === undefined ? undefined : this.winners?.[refName]
     const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
-    const sideWriterMemo = new Map<Combinator<unknown>, boolean>()
-    const hasSideWriter = (
-      current: Combinator<unknown>,
-      seen = new Set<Combinator<unknown>>(),
-    ): { found: boolean; complete: boolean } => {
+    const sideWriterMemo = this.sideWriterMemo
+    // A single mutable `seen` set threaded through the whole call, rather than
+    // copied at every recursion level: this DFS visits children strictly
+    // sequentially, so marking `current` in progress before recursing and
+    // clearing it once its subtree is fully explored reproduces the exact same
+    // ancestor-path membership an immutable copy-per-level would have computed,
+    // without the O(depth) allocation on every node.
+    const seen = new Set<Combinator<unknown>>()
+    const hasSideWriter = (current: Combinator<unknown>): { found: boolean; complete: boolean } => {
       const cached = sideWriterMemo.get(current)
       if (cached !== undefined) return { found: cached, complete: true }
       if (seen.has(current)) return { found: false, complete: false }
-      const next = new Set(seen)
-      next.add(current)
+      seen.add(current)
       const def = current._def
       let result: { found: boolean; complete: boolean }
       switch (def.tag) {
@@ -657,10 +676,10 @@ class Encoder {
           const name = (current as unknown as { _ruleName?: string })._ruleName
           const resolvedWinner = name === undefined ? undefined : this.winners?.[name]
           if (resolvedWinner !== undefined && !winnerWrapsReference(resolvedWinner, current)) {
-            result = hasSideWriter(resolvedWinner, next)
+            result = hasSideWriter(resolvedWinner)
             break
           }
-          try { result = hasSideWriter(def.thunk(), next) }
+          try { result = hasSideWriter(def.thunk()) }
           catch { result = { found: true, complete: true } }
           break
         }
@@ -668,7 +687,7 @@ class Encoder {
           let complete = true
           result = { found: false, complete: true }
           for (const child of childrenOf(def)) {
-            const childResult = hasSideWriter(child, next)
+            const childResult = hasSideWriter(child)
             if (childResult.found) {
               result = { found: true, complete: true }
               break
@@ -678,6 +697,7 @@ class Encoder {
           if (!result.found) result = { found: false, complete }
         }
       }
+      seen.delete(current)
       if (result.found || result.complete) sideWriterMemo.set(current, result.found)
       return result
     }
