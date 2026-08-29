@@ -1,4 +1,4 @@
-import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
+import type { Combinator, ParseContext, ParseOk, ParseResult, ParserMeta } from '../types.ts'
 import { advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, needsTriviaRollback, rollbackTrivia, saveTriviaMark, scanTriviaCompact } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
@@ -13,7 +13,7 @@ import { demoteCapturedToRaw } from '../cst/capture-buffer.ts'
  * if the item then fails or makes no progress the trivia is rolled back and the
  * loop stops (the trivia is trailing and belongs to the enclosing context).
  *
- * Returns the item value + end position, the underlying failure (so oneOrMore
+ * Returns the successful child result, the underlying failure (so oneOrMore
  * can propagate a first-item failure), or 'stop'.
  *
  * `mandatory` marks an item `min` REQUIRES rather than one the greedy loop is
@@ -32,7 +32,7 @@ function repItem<T>(
   guardable: boolean,
   mandatory: boolean,
   rollbackNeeded: boolean,
-): { value: T; end: number } | { fail: ParseResult<T>; failPos: number } | 'stop' {
+): ParseOk<T> | { fail: ParseResult<T>; failPos: number } | 'stop' {
   const mark = rollbackNeeded ? saveTriviaMark(ctx) : undefined
   let pos = cur
   if (ctx.trivia) {
@@ -82,7 +82,7 @@ function repItem<T>(
     if (mark !== undefined) rollbackTrivia(ctx, mark)
     return 'stop'
   }
-  return { value: result.value, end: result.span.end }
+  return result
 }
 
 export type RepeatOptions = {
@@ -177,7 +177,7 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
         }
         if (values !== undefined) values.push(item.value)
         count++
-        cur = item.end
+        cur = item.span.end
       }
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return { ok: true, value: (values ?? undefined) as T[], span: { start: pos, end: cur } }
@@ -242,7 +242,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
           return { ok: false, expected: expected.length > 0 ? expected : [combinator._tag], span: { start: cur, end: cur } }
         }
         if (values !== undefined) values.push(item.value)
-        cur = item.end
+        cur = item.span.end
         count++
       }
       while (cur < input.length) {
@@ -265,7 +265,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
         }
         if (values !== undefined) values.push(item.value)
         count++
-        cur = item.end
+        cur = item.span.end
       }
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       return { ok: true, value: (values ?? undefined) as T[], span: { start: pos, end: cur } }
