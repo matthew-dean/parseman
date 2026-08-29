@@ -189,6 +189,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
       // Skip the tuple when it's never observed (markUnusedValues): terms still
       // parse (and self-capture) — only the array of their values is elided.
       const values: unknown[] | undefined = def.valueUnused ? undefined : []
+      const deferredTrivia = needsDeferredTriviaCommit(ctx)
       let cur = pos
 
       for (let i = 0; i < parsers.length; i++) {
@@ -197,24 +198,24 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           // this term actually matches content past the trivia. A term that matches
           // empty (optional/many/lookahead) leaves the trivia for the enclosing rule.
           let scanEnd: number
-          const mTlog = cstTlLen(ctx)
-          const mLog = ctx._triviaLog?.length ?? 0
-          const mRootLog = ctx._rootTriviaLog?.length ?? 0
+          const mTlog = deferredTrivia ? cstTlLen(ctx) : 0
+          const mLog = deferredTrivia ? (ctx._triviaLog?.length ?? 0) : 0
+          const mRootLog = deferredTrivia ? (ctx._rootTriviaLog?.length ?? 0) : 0
 
-          if (needsDeferredTriviaCommit(ctx)) {
+          if (deferredTrivia) {
             scanEnd = commitTriviaScan(scanTriviaCompact(input, cur, ctx))
           } else {
             scanEnd = advanceTrivia(input, cur, ctx)
           }
-          const scanTlog = cstTlLen(ctx)
-          const scanLog = ctx._triviaLog?.length ?? 0
-          const scanRootLog = ctx._rootTriviaLog?.length ?? 0
+          const scanTlog = deferredTrivia ? cstTlLen(ctx) : 0
+          const scanLog = deferredTrivia ? (ctx._triviaLog?.length ?? 0) : 0
+          const scanRootLog = deferredTrivia ? (ctx._rootTriviaLog?.length ?? 0) : 0
 
           const result = parsers[i]!.parse(input, scanEnd, ctx)
           if (!result.ok) return result as ParseFail
           if (result.span.end > scanEnd) {
             cur = result.span.end
-          } else {
+          } else if (deferredTrivia) {
             rollbackScannedTriviaAt(
               ctx, mTlog, scanTlog, mLog, scanLog, mRootLog, scanRootLog,
             )
