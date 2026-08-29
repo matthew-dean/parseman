@@ -427,6 +427,8 @@ export type ParserMeta = {
   isTrivia: boolean
   /** User-defined labels for labeled trivia arms (`label(name, parser)`). */
   triviaKindLabels?: readonly string[]
+  /** Preclassified lightweight trivia scanner for the ordinary skip path. */
+  triviaScanner?: ((input: string, cur: number) => number) | null
   /** Set only by `classifiedTrivia()`: each root-visible category is a separate
    * grammar arm rather than an arbitrary label on a broad recognizer. */
   rootTriviaClassified?: true

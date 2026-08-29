@@ -280,7 +280,8 @@ export function advanceTrivia(input: string, cur: number, ctx: ParseContext): nu
   const triviaP = ctx.trivia
   if (!triviaP) return cur
   if (!ctx.trackLines) {
-    const fast = fastTriviaScanner(triviaP)
+    const classified = triviaP._meta.triviaScanner
+    const fast = classified === undefined ? fastTriviaScanner(triviaP) : classified
     if (fast) return fast(input, cur)
     if (ctx.triviaKindLabels) return skipWithLabels(input, cur, ctx)
     const tr = triviaP.parse(input, cur, createDetachedParseContext(ctx.trackLines, ctx.state))
