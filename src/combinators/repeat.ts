@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
-import { advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTriviaCompact } from './trivia-skip.ts'
+import { advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, needsTriviaRollback, rollbackTrivia, saveTriviaMark, scanTriviaCompact } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
@@ -31,8 +31,9 @@ function repItem<T>(
   ctx: ParseContext,
   guardable: boolean,
   mandatory: boolean,
+  rollbackNeeded: boolean,
 ): { value: T; end: number } | { fail: ParseResult<T>; failPos: number } | 'stop' {
-  const mark = saveTriviaMark(ctx)
+  const mark = rollbackNeeded ? saveTriviaMark(ctx) : undefined
   let pos = cur
   if (ctx.trivia) {
     if (needsDeferredTriviaCommit(ctx)) {
@@ -47,7 +48,7 @@ function repItem<T>(
   // is the operative word: a `mandatory` item is not speculative, so it is
   // attempted at EOF like the first item is, and a NULLABLE one matches there.
   if (pos >= input.length && !mandatory) {
-    rollbackTrivia(ctx, mark)
+    if (mark !== undefined) rollbackTrivia(ctx, mark)
     return 'stop'
   }
   // First-set fast-path (mirrors emitMany's codegen guard): a body that can't match
@@ -58,12 +59,12 @@ function repItem<T>(
   // probe or tolerant recovery, where a swallowed failure still feeds the probe /
   // triggers resync (matching the codegen guard's `!ctx.recovery` gate).
   if (guardable && ctx._probe === undefined && !ctx._tolerant && !startsFirstSet(combinator, input, pos)) {
-    rollbackTrivia(ctx, mark)
+    if (mark !== undefined) rollbackTrivia(ctx, mark)
     return 'stop'
   }
   const result = combinator.parse(input, pos, ctx)
   if (!result.ok) {
-    rollbackTrivia(ctx, mark)
+    if (mark !== undefined) rollbackTrivia(ctx, mark)
     if (result.committed) return { fail: result, failPos: pos }
     // Surface the POST-trivia position where the element actually failed. The
     // tolerant recovery guard must check the sync token there — not at `cur`,
@@ -78,7 +79,7 @@ function repItem<T>(
   // string with any number of them, so a `{ min: n }` prefix takes the n-item
   // derivation. It cannot spin — the prefix is exactly `n` long.
   if (result.span.end === pos && !mandatory) {
-    rollbackTrivia(ctx, mark)
+    if (mark !== undefined) rollbackTrivia(ctx, mark)
     return 'stop'
   }
   return { value: result.value, end: result.span.end }
@@ -146,11 +147,12 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
       // When the aggregate is never observed (markUnusedValues), skip the array:
       // items still parse and self-capture into the enclosing node's children.
       const values: T[] | undefined = def.valueUnused ? undefined : []
+      const rollbackNeeded = needsTriviaRollback(ctx)
       let cur = pos
       let count = 0
       while (cur < input.length) {
         if (count >= max) break
-        const item = repItem(combinator, input, cur, ctx, guardable, false)
+        const item = repItem(combinator, input, cur, ctx, guardable, false, rollbackNeeded)
         if (item === 'stop') break
         if ('fail' in item) {
           if (!item.fail.ok && item.fail.committed) return item.fail
@@ -219,6 +221,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       if (!first.ok) return first
       // Aggregate skipped when never observed (see `many`).
       const values: T[] | undefined = def.valueUnused ? undefined : [first.value]
+      const rollbackNeeded = needsTriviaRollback(ctx)
       let cur = first.span.end
       let count = 1
       // Mandatory items 2..min (only entered for min > 1) — each failure propagates,
@@ -227,7 +230,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       // two loop-termination stops: a required item is attempted at its position
       // whatever is there, and counts whatever its width.
       while (count < min) {
-        const item = repItem(combinator, input, cur, ctx, guardable, true)
+        const item = repItem(combinator, input, cur, ctx, guardable, true, rollbackNeeded)
         if (item === 'stop' || 'fail' in item) {
           if (item !== 'stop' && !item.fail.ok && item.fail.committed) return item.fail
           // Anchored at `cur` — the furthest position the repeat reached — not at
@@ -244,7 +247,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       }
       while (cur < input.length) {
         if (count >= max) break
-        const item = repItem(combinator, input, cur, ctx, guardable, false)
+        const item = repItem(combinator, input, cur, ctx, guardable, false, rollbackNeeded)
         if (item === 'stop') break
         if ('fail' in item) {
           if (!item.fail.ok && item.fail.committed) return item.fail

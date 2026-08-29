@@ -66,6 +66,18 @@ export function needsDeferredTriviaCommit(ctx: ParseContext): boolean {
   return ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined
 }
 
+/** True when speculative parsing can write anything `rollbackTrivia` restores. */
+export function needsTriviaRollback(ctx: ParseContext): boolean {
+  return ctx._cstBuf !== undefined
+    || ctx._cstLeaves !== undefined
+    || ctx._cstRawChildren !== undefined
+    || ctx._cstTriviaLog !== undefined
+    || ctx._fields !== undefined
+    || ctx._errors !== undefined
+    || ctx._triviaLog !== undefined
+    || ctx._rootTriviaLog !== undefined
+}
+
 export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
   const m = saveCstMark(ctx)
   return {
