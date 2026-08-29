@@ -85,6 +85,34 @@ function repItem<T>(
   return result
 }
 
+/** Direct strict loop for unbounded repeats with no rollback, probe, or recovery sinks. */
+function repeatNoSink<T>(
+  combinator: Combinator<T>,
+  input: string,
+  start: number,
+  cur: number,
+  ctx: ParseContext,
+  guardable: boolean,
+  values: T[] | undefined,
+): ParseResult<T[]> {
+  while (cur < input.length) {
+    let itemPos = cur
+    if (ctx.trivia) itemPos = advanceTrivia(input, cur, ctx)
+    if (itemPos >= input.length) break
+    if (guardable && !startsFirstSet(combinator, input, itemPos)) break
+    const item = combinator.parse(input, itemPos, ctx)
+    if (!item.ok) {
+      if (item.committed) return item
+      break
+    }
+    if (item.span.end === itemPos) break
+    if (values !== undefined) values.push(item.value)
+    cur = item.span.end
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+  return { ok: true, value: (values ?? undefined) as T[], span: { start, end: cur } }
+}
+
 export type RepeatOptions = {
   /**
    * Minimum number of ITEMS. Default `0`.
@@ -149,6 +177,9 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
       const values: T[] | undefined = def.valueUnused ? undefined : []
       const rollbackNeeded = needsTriviaRollback(ctx)
       let cur = pos
+      if (max === Infinity && !rollbackNeeded && ctx._probe === undefined && !ctx._tolerant) {
+        return repeatNoSink(combinator, input, pos, cur, ctx, guardable, values)
+      }
       let count = 0
       while (cur < input.length) {
         if (count >= max) break
@@ -223,6 +254,9 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       const values: T[] | undefined = def.valueUnused ? undefined : [first.value]
       const rollbackNeeded = needsTriviaRollback(ctx)
       let cur = first.span.end
+      if (min === 1 && max === Infinity && !rollbackNeeded && ctx._probe === undefined && !ctx._tolerant) {
+        return repeatNoSink(combinator, input, pos, cur, ctx, guardable, values)
+      }
       let count = 1
       // Mandatory items 2..min (only entered for min > 1) — each failure propagates,
       // exactly like the first. They go through repItem so the trivia BETWEEN items
