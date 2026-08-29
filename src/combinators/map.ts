@@ -3,6 +3,7 @@ import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { choice } from './choice.ts'
 import { matchesEmpty } from './first-set.ts'
 import { oneOrMore } from './repeat.ts'
+import { fastTriviaScanner } from './trivia-skip.ts'
 
 export function transform<T, U>(
   combinator: Combinator<T>,
@@ -27,6 +28,7 @@ export function trivia<T>(combinator: Combinator<T>): Combinator<T> {
     _meta: {
       ...combinator._meta,
       isTrivia: true,
+      triviaScanner: fastTriviaScanner(combinator as Combinator<unknown>),
       ...(kindLabels ? { triviaKindLabels: kindLabels } : {}),
     },
     _def: { tag: 'trivia', parser: combinator as Combinator<unknown> },
