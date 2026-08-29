@@ -1,8 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, FirstSet } from '../types.ts'
 import { any } from './first-set.ts'
-import { failAt } from './probe.ts'
-import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
-import { recordLineRangeFromContext } from '../line-index.ts'
 import { shorthandRanges, parseClassRanges } from '../regex/classes.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
 import { directTerminalFailureExpected } from './expected.ts'
@@ -140,32 +137,28 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
     : (resolvedFlags.includes('u') || resolvedFlags.includes('v'))
       ? any()
       : asciiCaseFold(raw.firstSet)
-  const canMatchNewline = raw.canMatchNewline
-  const meta: ParserMeta = { firstSet, canMatchNewline, isTrivia: false }
+  const meta: ParserMeta = { firstSet, canMatchNewline: raw.canMatchNewline, isTrivia: false }
   const def = { tag: 'regex', source, flags: resolvedFlags } as const
+  const expected = directTerminalFailureExpected(def)
 
   return {
     _tag: 'regex',
     _meta: meta,
     _def: def,
-    parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
+    parse(input: string, pos: number, _ctx: ParseContext): ParseResult<string> {
       const scanEnd = scan?.(input, pos)
       if (scanEnd !== undefined) {
-        if (scanEnd === null) return failAt(ctx, directTerminalFailureExpected(def), pos)
+        if (scanEnd === null) return { ok: false, expected, span: { start: pos, end: pos } }
         const value = input.slice(pos, scanEnd)
         const span = { start: pos, end: scanEnd }
-        if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, scanEnd)
-        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
         return { ok: true, value, span }
       }
       anchored.lastIndex = pos
       const m = anchored.exec(input)
       if (m === null) {
-        return failAt(ctx, directTerminalFailureExpected(def), pos)
+        return { ok: false, expected, span: { start: pos, end: pos } }
       }
       const span = { start: pos, end: pos + m[0]!.length }
-      if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, span.end)
-      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: m[0]!, span })
       return { ok: true, value: m[0]!, span }
     },
   }

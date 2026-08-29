@@ -1,8 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { fromChar, empty } from './first-set.ts'
-import { failAt } from './probe.ts'
-import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
-import { recordLineRangeFromContext } from '../line-index.ts'
 import { directTerminalFailureExpected } from './expected.ts'
 
 /**
@@ -40,8 +37,6 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
     canMatchNewline: value.includes('\n'),
     isTrivia: false,
   }
-  const canMatchNewline = meta.canMatchNewline
-
   if (caseInsensitive) {
     const upper = value.toUpperCase()
     const lower = value.toLowerCase()
@@ -69,29 +64,25 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
   const parse = !caseInsensitive && value.length === 1
     ? (() => {
         const code = value.charCodeAt(0)
-        return function parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
+        return function parse(input: string, pos: number, _ctx: ParseContext): ParseResult<string> {
           if (input.charCodeAt(pos) === code) {
             const span = { start: pos, end: pos + 1 }
-            if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, span.end)
-            if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
             return { ok: true, value, span }
           }
-          return failAt(ctx, expected, pos)
+          return { ok: false, expected, span: { start: pos, end: pos } }
         }
       })()
-    : function parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
+    : function parse(input: string, pos: number, _ctx: ParseContext): ParseResult<string> {
         const end = pos + value.length
         if (end > input.length) {
-          return failAt(ctx, expected, pos)
+          return { ok: false, expected, span: { start: pos, end: pos } }
         }
         const matchedValue = caseInsensitive ? input.slice(pos, end) : value
         if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
           const span = { start: pos, end }
-          if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, end)
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: matchedValue, span })
           return { ok: true, value: matchedValue, span }
         }
-        return failAt(ctx, expected, pos)
+        return { ok: false, expected, span: { start: pos, end: pos } }
       }
 
   return {

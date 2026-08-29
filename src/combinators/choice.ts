@@ -4,7 +4,6 @@ import type {
 } from '../types.ts'
 import { union, intersects, matchesEmpty } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
-import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
 
 type ArmParser<T> = T extends GatedArm<infer U> ? Combinator<U> : T extends Combinator<infer U> ? Combinator<U> : never
 type UnionArms<T extends (Combinator<unknown> | GatedArm<unknown>)[]> = {
@@ -84,9 +83,6 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       autoNot,
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnionArms<T>> {
-      const expected: string[] = []
-      let expectedAt = pos
-
       // ── Disjoint: O(1) first-char dispatch (arms may be gated) ────────────
       //
       // EOF IS A DISPATCH MISS, not a reason to leave the disjoint path. Every arm
@@ -116,20 +112,17 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
             return { ok: false, expected: deriveExpected(parsers[idx]!), span: { start: pos, end: pos } }
           }
           const result = parsers[idx]!.parse(input, pos, ctx)
-          if (result.ok) return result as ParseResult<UnionArms<T>>
-          expected.push(...result.expected)
-          if (result.committed) return { ok: false, expected, span: { start: pos, end: pos }, committed: true }
-          return { ok: false, expected, span: { start: pos, end: pos } }
+          return result as ParseResult<UnionArms<T>>
         }
         return {
           ok: false,
-          expected: parsers.flatMap(p => {
-            const r = p.parse(input, pos, ctx)
-            return r.ok ? [] : r.expected
-          }),
+          expected: parsers.flatMap(deriveExpected),
           span: { start: pos, end: pos },
         }
       }
+
+      const expected: string[] = []
+      let expectedAt = pos
 
       // ── greedyClassify: run one regex, classify by string equality ─────────
       //    One parse call total. No backtracking.
@@ -160,11 +153,8 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       // ── firstMatch (+ gated arms): try each arm in order, skipping gated-off arms ──
       for (let i = 0; i < parsers.length; i++) {
         if (gates[i] && !gates[i]!(ctx.state)) continue   // gate blocks this arm
-        // Save leaf-array lengths so a failed/rejected arm can be rolled back.
-        const mark = saveTriviaMark(ctx)
         const result = parsers[i]!.parse(input, pos, ctx)
         if (!result.ok) {
-          rollbackTrivia(ctx, mark)
           const at = result.span.start
           if (at > expectedAt) { expectedAt = at; expected.length = 0 }
           if (at === expectedAt) expected.push(...result.expected)
@@ -173,7 +163,6 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
         }
         const checks = autoNot[i]
         if (checks && autoNotFires(input, result.span.end, checks)) {
-          rollbackTrivia(ctx, mark)
           continue
         }
         return result as ParseResult<UnionArms<T>>
