@@ -3,6 +3,7 @@ import { any } from './first-set.ts'
 import { shorthandRanges, parseClassRanges } from '../regex/classes.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
 import { directTerminalFailureExpected } from './expected.ts'
+import { scalarResult, type ScalarParser } from './scalar.ts'
 
 /**
  * A regex terminal's first-set (for choice-dispatch fast paths) is derived by
@@ -140,26 +141,33 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   const meta: ParserMeta = { firstSet, canMatchNewline: raw.canMatchNewline, isTrivia: false }
   const def = { tag: 'regex', source, flags: resolvedFlags } as const
   const expected = directTerminalFailureExpected(def)
+  const parseScalar: ScalarParser = (input, pos, ctx) => {
+    const scanEnd = scan?.(input, pos)
+    if (scanEnd !== undefined) {
+      if (scanEnd === null) {
+        ctx._fx = expected
+        return ~pos
+      }
+      ctx._sv = input.slice(pos, scanEnd)
+      return scanEnd
+    }
+    anchored.lastIndex = pos
+    const m = anchored.exec(input)
+    if (m === null) {
+      ctx._fx = expected
+      return ~pos
+    }
+    ctx._sv = m[0]!
+    return pos + m[0]!.length
+  }
 
   return {
     _tag: 'regex',
     _meta: meta,
     _def: def,
-    parse(input: string, pos: number, _ctx: ParseContext): ParseResult<string> {
-      const scanEnd = scan?.(input, pos)
-      if (scanEnd !== undefined) {
-        if (scanEnd === null) return { ok: false, expected, span: { start: pos, end: pos } }
-        const value = input.slice(pos, scanEnd)
-        const span = { start: pos, end: scanEnd }
-        return { ok: true, value, span }
-      }
-      anchored.lastIndex = pos
-      const m = anchored.exec(input)
-      if (m === null) {
-        return { ok: false, expected, span: { start: pos, end: pos } }
-      }
-      const span = { start: pos, end: pos + m[0]!.length }
-      return { ok: true, value: m[0]!, span }
+    _parseScalar: parseScalar,
+    parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
+      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
     },
   }
 }

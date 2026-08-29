@@ -115,6 +115,8 @@ export type Combinator<T> = {
   readonly _tag: string
   readonly _meta: ParserMeta
   readonly _def: ParserDef
+  /** Experimental strict interpreter ABI: end >= 0 succeeds, ~failurePos fails. */
+  readonly _parseScalar?: (input: string, pos: number, ctx: ParseContext) => number
   parse(input: string, pos: number, ctx: ParseContext): ParseResult<T>
 }
 
@@ -311,6 +313,8 @@ export type ParseContext = {
   _fx?: string[] | undefined
   /** Framework-internal compiled-output committed-failure flag. */
   _fc?: boolean | undefined
+  /** Experimental strict interpreter semantic-value register. */
+  _sv?: unknown
   /**
    * When set by completionsAt(), tracks the highest-position ParseFail seen
    * during parsing up to _probe.offset. Used to return completions at the cursor

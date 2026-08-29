@@ -1,6 +1,7 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { fromChar, empty } from './first-set.ts'
 import { directTerminalFailureExpected } from './expected.ts'
+import { scalarResult, type ScalarParser } from './scalar.ts'
 
 /**
  * ASCII case-fold equality — the interpreter twin of the compiler's `foldEq`
@@ -61,34 +62,40 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
   // grammars (GraphQL `{ } ( ) : $ @ [ ] ! =`, JSON, CSS). A bare `charCodeAt`
   // compare beats the generic `startsWith` builtin call, and an out-of-bounds
   // `charCodeAt` returns NaN — so the length check folds into the compare.
-  const parse = !caseInsensitive && value.length === 1
+  const parseScalar: ScalarParser = !caseInsensitive && value.length === 1
     ? (() => {
         const code = value.charCodeAt(0)
-        return function parse(input: string, pos: number, _ctx: ParseContext): ParseResult<string> {
+        return function parse(input: string, pos: number, ctx: ParseContext): number {
           if (input.charCodeAt(pos) === code) {
-            const span = { start: pos, end: pos + 1 }
-            return { ok: true, value, span }
+            ctx._sv = value
+            return pos + 1
           }
-          return { ok: false, expected, span: { start: pos, end: pos } }
+          ctx._fx = expected
+          return ~pos
         }
       })()
-    : function parse(input: string, pos: number, _ctx: ParseContext): ParseResult<string> {
+    : function parse(input: string, pos: number, ctx: ParseContext): number {
         const end = pos + value.length
         if (end > input.length) {
-          return { ok: false, expected, span: { start: pos, end: pos } }
+          ctx._fx = expected
+          return ~pos
         }
         const matchedValue = caseInsensitive ? input.slice(pos, end) : value
         if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
-          const span = { start: pos, end }
-          return { ok: true, value: matchedValue, span }
+          ctx._sv = matchedValue
+          return end
         }
-        return { ok: false, expected, span: { start: pos, end: pos } }
+        ctx._fx = expected
+        return ~pos
       }
 
   return {
     _tag: 'literal',
     _meta: meta,
     _def: { tag: 'literal', value, caseInsensitive },
-    parse,
+    _parseScalar: parseScalar,
+    parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
+      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
+    },
   }
 }

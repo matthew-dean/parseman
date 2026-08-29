@@ -4,19 +4,29 @@ import { choice } from './choice.ts'
 import { matchesEmpty } from './first-set.ts'
 import { oneOrMore } from './repeat.ts'
 import { fastTriviaScanner } from './trivia-skip.ts'
+import { scalarOf, scalarResult } from './scalar.ts'
 
 export function transform<T, U>(
   combinator: Combinator<T>,
   fn: (value: T, span: { start: number; end: number }) => U
 ): Combinator<U> {
+  const child = scalarOf(combinator)
+  const observesSpan = fn.length > 1
+  const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
+    const end = child(input, pos, ctx)
+    if (end < 0) return end
+    ctx._sv = observesSpan
+      ? fn(ctx._sv as T, { start: pos, end })
+      : (fn as (value: T) => U)(ctx._sv as T)
+    return end
+  }
   return {
     _tag: 'transform',
     _meta: combinator._meta,
     _def: { tag: 'transform', parser: combinator as Combinator<unknown>, fn: fn as (v: unknown, span: { start: number; end: number }) => unknown },
+    _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<U> {
-      const result = combinator.parse(input, pos, ctx)
-      if (!result.ok) return result
-      return { ok: true, value: fn(result.value, result.span), span: result.span }
+      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
     },
   }
 }
@@ -32,6 +42,7 @@ export function trivia<T>(combinator: Combinator<T>): Combinator<T> {
       ...(kindLabels ? { triviaKindLabels: kindLabels } : {}),
     },
     _def: { tag: 'trivia', parser: combinator as Combinator<unknown> },
+    _parseScalar: scalarOf(combinator),
     parse: combinator.parse.bind(combinator),
   }
 }

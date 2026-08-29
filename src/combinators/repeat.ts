@@ -2,11 +2,9 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
 import { advanceTrivia } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
+import { scalarOf, scalarResult, type ScalarParser } from './scalar.ts'
 
-export type RepeatOptions = {
-  min?: number
-  max?: number
-}
+export type RepeatOptions = { min?: number; max?: number }
 
 function resolveBounds(what: string, opts: RepeatOptions): { min: number; max: number } {
   const min = opts.min ?? 0
@@ -20,31 +18,27 @@ function resolveBounds(what: string, opts: RepeatOptions): { min: number; max: n
 
 function repeatTail<T>(
   combinator: Combinator<T>,
+  child: ScalarParser,
   input: string,
-  start: number,
   cur: number,
   ctx: ParseContext,
   guardable: boolean,
   values: T[] | undefined,
   remaining: number,
-): ParseResult<T[]> {
+): number {
   while (cur < input.length && remaining > 0) {
     let itemPos = cur
     if (ctx.trivia) itemPos = advanceTrivia(input, cur, ctx)
     if (itemPos >= input.length) break
     if (guardable && !startsFirstSet(combinator, input, itemPos)) break
-    const item = combinator.parse(input, itemPos, ctx)
-    if (!item.ok) {
-      if (item.committed) return item
-      break
-    }
-    if (item.span.end === itemPos) break
-    if (values !== undefined) values.push(item.value)
-    cur = item.span.end
+    const end = child(input, itemPos, ctx)
+    if (end <= itemPos) break
+    if (values !== undefined) values.push(ctx._sv as T)
+    cur = end
     remaining--
   }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  return { ok: true, value: (values ?? undefined) as T[], span: { start, end: cur } }
+  ctx._sv = values
+  return cur
 }
 
 export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Combinator<T[]> {
@@ -58,16 +52,14 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
   const def: { tag: 'many'; parser: Combinator<unknown>; min: 0; max?: number; valueUnused?: boolean } =
     { tag: 'many', parser: combinator as Combinator<unknown>, min: 0, ...(max === Infinity ? {} : { max }) }
   const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
+  const child = scalarOf(combinator)
+  const parseScalar = (input: string, pos: number, ctx: ParseContext): number =>
+    repeatTail(combinator, child, input, pos, ctx, guardable, def.valueUnused ? undefined : [], max)
 
   return {
-    _tag: 'many',
-    _meta: meta,
-    _def: def,
+    _tag: 'many', _meta: meta, _def: def, _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
-      return repeatTail(
-        combinator, input, pos, pos, ctx, guardable,
-        def.valueUnused ? undefined : [], max,
-      )
+      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
     },
   }
 }
@@ -85,25 +77,25 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
   const def: { tag: 'oneOrMore'; parser: Combinator<unknown>; min: number; max?: number; valueUnused?: boolean } =
     { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min, ...(max === Infinity ? {} : { max }) }
   const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
+  const child = scalarOf(combinator)
+  const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
+    let cur = child(input, pos, ctx)
+    if (cur < 0) return cur
+    const values: T[] | undefined = def.valueUnused ? undefined : [ctx._sv as T]
+    for (let count = 1; count < min; count++) {
+      let itemPos = cur
+      if (ctx.trivia) itemPos = advanceTrivia(input, cur, ctx)
+      cur = child(input, itemPos, ctx)
+      if (cur < 0) return cur
+      if (values !== undefined) values.push(ctx._sv as T)
+    }
+    return repeatTail(combinator, child, input, cur, ctx, guardable, values, max - min)
+  }
 
   return {
-    _tag: 'oneOrMore',
-    _meta: meta,
-    _def: def,
+    _tag: 'oneOrMore', _meta: meta, _def: def, _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
-      const first = combinator.parse(input, pos, ctx)
-      if (!first.ok) return first
-      const values: T[] | undefined = def.valueUnused ? undefined : [first.value]
-      let cur = first.span.end
-      for (let count = 1; count < min; count++) {
-        let itemPos = cur
-        if (ctx.trivia) itemPos = advanceTrivia(input, cur, ctx)
-        const item = combinator.parse(input, itemPos, ctx)
-        if (!item.ok) return item
-        if (values !== undefined) values.push(item.value)
-        cur = item.span.end
-      }
-      return repeatTail(combinator, input, pos, cur, ctx, guardable, values, max - min)
+      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
     },
   }
 }
@@ -115,36 +107,36 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
     isTrivia: false,
   }
   const firstSetSkippable = !matchesEmpty(combinator)
+  const child = scalarOf(combinator)
+  const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
+    if (firstSetSkippable && !startsFirstSet(combinator, input, pos)) {
+      ctx._sv = null
+      return pos
+    }
+    const end = child(input, pos, ctx)
+    if (end >= 0) return end
+    ctx._sv = null
+    return pos
+  }
 
   return {
-    _tag: 'optional',
-    _meta: meta,
+    _tag: 'optional', _meta: meta,
     _def: { tag: 'optional', parser: combinator as Combinator<unknown> },
+    _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T | null> {
-      if (firstSetSkippable && !startsFirstSet(combinator, input, pos)) {
-        return { ok: true, value: null, span: { start: pos, end: pos } }
-      }
-      const result = combinator.parse(input, pos, ctx)
-      if (result.ok || result.committed) return result
-      return { ok: true, value: null, span: { start: pos, end: pos } }
+      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
     },
   }
 }
 
 export function oneOrMoreSep<T, S>(
-  combinator: Combinator<T>,
-  separator: Combinator<S> | KeptSeparator<S>,
-  opts: SepByOptions = {},
+  combinator: Combinator<T>, separator: Combinator<S> | KeptSeparator<S>, opts: SepByOptions = {},
 ): Combinator<T[]> {
   return sepBy(combinator, separator, { ...opts, min: opts.min ?? 1 })
 }
 
 export type TrailingSeparator = 'forbid' | 'allow'
-
-export type SepByOptions = RepeatOptions & {
-  trailing?: TrailingSeparator
-}
-
+export type SepByOptions = RepeatOptions & { trailing?: TrailingSeparator }
 export type KeptSeparator<S> = { readonly _keepSeparator: Combinator<S> }
 
 export function keepSeparator<S>(separator: Combinator<S>): KeptSeparator<S> {
@@ -158,9 +150,7 @@ function unwrapSeparator<S>(separator: Combinator<S> | KeptSeparator<S>): { sep:
 }
 
 export function sepBy<T, S>(
-  combinator: Combinator<T>,
-  separatorArg: Combinator<S> | KeptSeparator<S>,
-  opts: SepByOptions = {},
+  combinator: Combinator<T>, separatorArg: Combinator<S> | KeptSeparator<S>, opts: SepByOptions = {},
 ): Combinator<T[]> {
   const { sep: separator, keep: keepSeparators } = unwrapSeparator(separatorArg)
   const { min, max } = resolveBounds('sepBy()', opts)
@@ -170,52 +160,56 @@ export function sepBy<T, S>(
     canMatchNewline: combinator._meta.canMatchNewline || separator._meta.canMatchNewline,
     isTrivia: false,
   }
-  let expected: string[] | undefined
-  const failAt = (at: number): ParseResult<T[]> => {
-    expected ??= deriveExpected(combinator)
-    return { ok: false, expected: expected.length > 0 ? expected : [combinator._tag], span: { start: at, end: at } }
+  const expected = deriveExpected(combinator)
+  const child = scalarOf(combinator)
+  const separatorScalar = scalarOf(separator)
+  const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
+    let cur = child(input, pos, ctx)
+    if (cur < 0) {
+      if (min >= 1) {
+        ctx._fx = expected.length > 0 ? expected : [combinator._tag]
+        return ~pos
+      }
+      ctx._sv = []
+      return pos
+    }
+    const values = [ctx._sv as T]
+    while (values.length < max && (cur < input.length || values.length < min)) {
+      const beforeSeparator = cur
+      let separatorPos = cur
+      if (ctx.trivia) separatorPos = advanceTrivia(input, cur, ctx)
+      const separatorEnd = separatorScalar(input, separatorPos, ctx)
+      if (separatorEnd < 0) break
+      let itemPos = separatorEnd
+      if (ctx.trivia) itemPos = advanceTrivia(input, itemPos, ctx)
+      const itemEnd = child(input, itemPos, ctx)
+      if (itemEnd < 0) {
+        if (trailing === 'allow') cur = separatorEnd
+        else cur = beforeSeparator
+        break
+      }
+      values.push(ctx._sv as T)
+      cur = itemEnd
+    }
+    if (values.length < min) {
+      ctx._fx = expected.length > 0 ? expected : [combinator._tag]
+      return ~cur
+    }
+    ctx._sv = values
+    return cur
   }
 
   return {
-    _tag: 'sepBy',
-    _meta: meta,
+    _tag: 'sepBy', _meta: meta,
     _def: {
       tag: 'sepBy', parser: combinator as Combinator<unknown>, separator: separator as Combinator<unknown>, min,
       ...(max === Infinity ? {} : { max }),
       ...(trailing === 'forbid' ? {} : { trailing }),
       ...(keepSeparators ? { keepSeparators: true } : {}),
     },
+    _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
-      const first = combinator.parse(input, pos, ctx)
-      if (!first.ok) {
-        if (first.committed) return first
-        return min >= 1 ? failAt(pos) : { ok: true, value: [], span: { start: pos, end: pos } }
-      }
-      const values = [first.value]
-      let cur = first.span.end
-      while (values.length < max && (cur < input.length || values.length < min)) {
-        const beforeSeparator = cur
-        let separatorPos = cur
-        if (ctx.trivia) separatorPos = advanceTrivia(input, cur, ctx)
-        const sep = separator.parse(input, separatorPos, ctx)
-        if (!sep.ok) {
-          if (sep.committed) return sep
-          break
-        }
-        let itemPos = sep.span.end
-        if (ctx.trivia) itemPos = advanceTrivia(input, itemPos, ctx)
-        const next = combinator.parse(input, itemPos, ctx)
-        if (!next.ok) {
-          if (next.committed) return next
-          if (trailing === 'allow') cur = sep.span.end
-          else cur = beforeSeparator
-          break
-        }
-        values.push(next.value)
-        cur = next.span.end
-      }
-      if (values.length < min) return failAt(cur)
-      return { ok: true, value: values, span: { start: pos, end: cur } }
+      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
     },
   }
 }

@@ -4,6 +4,7 @@ import type {
 } from '../types.ts'
 import { union, intersects, matchesEmpty } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
+import { scalarOf, scalarResult } from './scalar.ts'
 
 type ArmParser<T> = T extends GatedArm<infer U> ? Combinator<U> : T extends Combinator<infer U> ? Combinator<U> : never
 type UnionArms<T extends (Combinator<unknown> | GatedArm<unknown>)[]> = {
@@ -55,20 +56,33 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
     ? computeAutoNot(parsers)
     : parsers.map(() => null)
 
-  // Runtime state for each strategy (built once, reused on every parse call):
-  let greedyLitMap: Map<string, number> | null = null
-  let sortedParsers: Combinator<unknown>[] | null = null
   const asciiDispatch = disjoint ? buildAsciiDispatch(parsers) : null
-
-  if (strategy?.tag === 'greedyClassify') {
-    greedyLitMap = new Map()
-    for (let i = 0; i < parsers.length; i++) {
-      if (i === strategy.superIndex) continue
-      const litVal = getCoreLiteralValue(parsers[i]!)
-      if (litVal !== null) greedyLitMap.set(litVal, i)
+  const scalarParsers = parsers.map(scalarOf)
+  const expected = parsers.flatMap(deriveExpected)
+  const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
+    if (disjoint) {
+      const code = pos < input.length ? input.codePointAt(pos)! : -1
+      let idx = code >= 0 && code < 128 ? asciiDispatch![code]! : -1
+      if (idx < 0 && code >= 0) {
+        for (let i = 0; i < parsers.length; i++) {
+          if (inFirstSet(code, parsers[i]!._meta.firstSet)) { idx = i; break }
+        }
+      }
+      if (idx >= 0) {
+        const gate = gates[idx]
+        if (!gate || gate(ctx.state)) return scalarParsers[idx]!(input, pos, ctx)
+        ctx._fx = deriveExpected(parsers[idx]!)
+        return ~pos
+      }
+    } else {
+      for (let i = 0; i < scalarParsers.length; i++) {
+        if (gates[i] && !gates[i]!(ctx.state)) continue
+        const end = scalarParsers[i]!(input, pos, ctx)
+        if (end >= 0 && (!autoNot[i] || !autoNotFires(input, end, autoNot[i]!))) return end
+      }
     }
-  } else if (strategy?.tag === 'literalsLongestFirst') {
-    sortedParsers = strategy.sortedIndices.map(i => parsers[i]!)
+    ctx._fx = expected
+    return ~pos
   }
 
   return {
@@ -82,98 +96,9 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       strategy: strategy ?? { tag: 'firstMatch' },
       autoNot,
     },
+    _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnionArms<T>> {
-      // ── Disjoint: O(1) first-char dispatch (arms may be gated) ────────────
-      //
-      // EOF IS A DISPATCH MISS, not a reason to leave the disjoint path. Every arm
-      // of a disjoint choice is non-nullable (that is a precondition of `disjoint`
-      // above), so at EOF no arm can match and the answer is the same "nothing
-      // could have started here" the in-bounds miss below gives. Falling through to
-      // firstMatch instead made this position the ONE place a gated-off arm was
-      // dropped from the report — firstMatch `continue`s past it and contributes
-      // nothing — while the in-bounds miss runs `parsers.flatMap` ignoring gates and
-      // DOES name it. Same gate state, same "no arm can match", two different
-      // answers; codegen and both table drivers only ever gave the union. Accept and
-      // reject are untouched: every arm fails at EOF on either path.
-      if (disjoint) {
-        const code = pos < input.length ? input.codePointAt(pos)! : -1
-        let idx = code >= 0 && code < 128 ? asciiDispatch![code]! : -1
-        if (idx < 0 && code >= 0) {
-          for (let i = 0; i < parsers.length; i++) {
-            if (inFirstSet(code, parsers[i]!._meta.firstSet)) { idx = i; break }
-          }
-        }
-        if (idx >= 0) {
-          const gate = gates[idx]
-          if (gate && !gate(ctx.state)) {
-            // Gate blocks this arm. Disjointness + non-nullable arms guarantee no
-            // OTHER arm can match this first char, so skip-and-retry is exactly
-            // fail-the-choice — we must not fall through to another arm.
-            return { ok: false, expected: deriveExpected(parsers[idx]!), span: { start: pos, end: pos } }
-          }
-          const result = parsers[idx]!.parse(input, pos, ctx)
-          return result as ParseResult<UnionArms<T>>
-        }
-        return {
-          ok: false,
-          expected: parsers.flatMap(deriveExpected),
-          span: { start: pos, end: pos },
-        }
-      }
-
-      const expected: string[] = []
-      let expectedAt = pos
-
-      // ── greedyClassify: run one regex, classify by string equality ─────────
-      //    One parse call total. No backtracking.
-      if (strategy?.tag === 'greedyClassify') {
-        const superResult = parsers[strategy.superIndex]!.parse(input, pos, ctx)
-        if (!superResult.ok) return superResult as ParseResult<UnionArms<T>>
-
-        const end = superResult.span.end
-        const litIdx = greedyLitMap!.get(input.slice(pos, end))
-        if (litIdx !== undefined) {
-          const litVal = getCoreLiteralValue(parsers[litIdx]!)!
-          const value = applyTransforms(parsers[litIdx]!, litVal, { start: pos, end })
-          return { ok: true, value: value as UnionArms<T>, span: { start: pos, end } }
-        }
-        return superResult as ParseResult<UnionArms<T>>
-      }
-
-      // ── literalsLongestFirst: sorted descending by length, no backtracking ─
-      if (strategy?.tag === 'literalsLongestFirst') {
-        for (const p of sortedParsers!) {
-          const r = p.parse(input, pos, ctx)
-          if (r.ok) return r as ParseResult<UnionArms<T>>
-          expected.push(...r.expected)
-        }
-        return { ok: false, expected, span: { start: pos, end: pos } }
-      }
-
-      // ── firstMatch (+ gated arms): try each arm in order, skipping gated-off arms ──
-      for (let i = 0; i < parsers.length; i++) {
-        if (gates[i] && !gates[i]!(ctx.state)) continue   // gate blocks this arm
-        const result = parsers[i]!.parse(input, pos, ctx)
-        if (!result.ok) {
-          const at = result.span.start
-          if (at > expectedAt) { expectedAt = at; expected.length = 0 }
-          if (at === expectedAt) expected.push(...result.expected)
-          if (result.committed) return { ok: false, expected, span: result.span, committed: true }
-          continue
-        }
-        const checks = autoNot[i]
-        if (checks && autoNotFires(input, result.span.end, checks)) {
-          continue
-        }
-        return result as ParseResult<UnionArms<T>>
-      }
-      // A nested gated choice can decline every arm after an enclosing arm has
-      // already advanced. Do not let that empty dynamic set erase both the
-      // shallower arms and the choice's own static opener contract.
-      if (expected.length === 0) {
-        for (const parser of parsers) expected.push(...deriveExpected(parser))
-      }
-      return { ok: false, expected, span: { start: pos, end: pos } }
+      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
     },
   }
 }
@@ -385,19 +310,6 @@ export function getCoreRegexDef(p: Combinator<unknown>): { source: string; flags
   if (def.tag === 'transform') return getCoreRegexDef(def.parser)
   if (def.tag === 'label') return getCoreRegexDef(def.parser)
   return null
-}
-
-/**
- * Apply a parser's transform chain to an already-known value, without re-parsing.
- * Used by greedyClassify to avoid a second parse call for the winning literal arm.
- */
-function applyTransforms(p: Combinator<unknown>, value: unknown, span: { start: number; end: number }): unknown {
-  const def = p._def
-  if (def.tag === 'transform') {
-    const inner = applyTransforms(def.parser, value, span)
-    return def.fn(inner, span)
-  }
-  return value
 }
 
 // ---------------------------------------------------------------------------
