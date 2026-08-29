@@ -165,6 +165,7 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
     _tag: 'regex',
     _meta: meta,
     _def: def,
+    _stickyRegex: anchored,
     _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       return scalarResult(parseScalar(input, pos, ctx), pos, ctx)

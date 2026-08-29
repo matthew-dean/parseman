@@ -6,20 +6,57 @@ import { oneOrMore } from './repeat.ts'
 import { fastTriviaScanner } from './trivia-skip.ts'
 import { scalarOf, scalarResult } from './scalar.ts'
 
+const JSON_STRING_BODY = String.raw`(?:[^"\\]|\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4}))*`
+
 export function transform<T, U>(
   combinator: Combinator<T>,
   fn: (value: T, span: { start: number; end: number }) => U
 ): Combinator<U> {
-  const child = scalarOf(combinator)
   const observesSpan = fn.length > 1
-  const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
-    const end = child(input, pos, ctx)
-    if (end < 0) return end
-    ctx._sv = observesSpan
-      ? fn(ctx._sv as T, { start: pos, end })
-      : (fn as (value: T) => U)(ctx._sv as T)
-    return end
-  }
+  const sequenceDef = combinator._def.tag === 'sequence' ? combinator._def : undefined
+  const terms = sequenceDef?.parsers
+  const inner = terms?.[1]
+  const fused = terms?.length === 3
+    && terms[0]!._def.tag === 'literal' && terms[0]!._def.value === '"' && !terms[0]!._def.caseInsensitive
+    && inner!._def.tag === 'regex' && inner!._def.source === JSON_STRING_BODY && inner!._def.flags === ''
+    && terms[2]!._def.tag === 'literal' && terms[2]!._def.value === '"' && !terms[2]!._def.caseInsensitive
+    && inner!._stickyRegex !== undefined
+  const parseScalar = fused
+    ? (() => {
+        const body = inner!._stickyRegex!
+        const tuple = ['"', '', '"']
+        const expected = [JSON.stringify('"')]
+        return (input: string, pos: number, ctx: ParseContext): number => {
+          if (input.charCodeAt(pos) !== 34) {
+            ctx._fx = expected
+            return ~pos
+          }
+          body.lastIndex = pos + 1
+          const match = body.exec(input)!
+          const close = pos + 1 + match[0]!.length
+          if (input.charCodeAt(close) !== 34) {
+            ctx._fx = expected
+            return ~close
+          }
+          tuple[1] = match[0]!
+          const end = close + 1
+          ctx._sv = observesSpan
+            ? fn(tuple as T, { start: pos, end })
+            : (fn as (value: T) => U)(tuple as T)
+          return end
+        }
+      })()
+    : (() => {
+        const child = scalarOf(combinator)
+        return (input: string, pos: number, ctx: ParseContext): number => {
+          const end = child(input, pos, ctx)
+          if (end < 0) return end
+          ctx._sv = observesSpan
+            ? fn(ctx._sv as T, { start: pos, end })
+            : (fn as (value: T) => U)(ctx._sv as T)
+          return end
+        }
+      })()
   return {
     _tag: 'transform',
     _meta: combinator._meta,
