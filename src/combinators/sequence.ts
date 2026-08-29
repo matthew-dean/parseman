@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseFail } from '../types.ts'
-import { sequenceFirstSet, firstSetOf, union } from './first-set.ts'
+import { sequenceFirstSet, firstSetOf, matchesEmpty, union } from './first-set.ts'
 import {
   advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt,
   scanTriviaCompact,
@@ -36,6 +36,11 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
     ;(adjacency ??= Array.from({ length: parsers.length }, () => null))[i] = a
   }
   const hasAdjacency = adjacency !== null
+  const strictArity = !hasAdjacency
+    && ((parsers.length === 2 && !matchesEmpty(parsers[1]!))
+      || (parsers.length === 3 && parsers.every(p => !matchesEmpty(p))))
+    ? parsers.length
+    : 0
 
   const meta: ParserMeta = {
     // Union through the nullable prefix — a leading optional()/many() lets a later
@@ -186,12 +191,48 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
       if (ctx._tolerant) return parseTolerant(input, pos, ctx)
       if (hasAdjacency) return parseAdjacent(input, pos, ctx)
 
-      // Skip the tuple when it's never observed (markUnusedValues): terms still
-      // parse (and self-capture) — only the array of their values is elided.
-      const values: unknown[] | undefined = def.valueUnused ? undefined : []
       const deferredTrivia = needsDeferredTriviaCommit(ctx)
       let cur = pos
 
+      if (strictArity !== 0) {
+        const first = parsers[0]!.parse(input, cur, ctx)
+        if (!first.ok) return first as ParseFail
+        cur = first.span.end
+        if (ctx.trivia) {
+          cur = deferredTrivia
+            ? commitTriviaScan(scanTriviaCompact(input, cur, ctx))
+            : advanceTrivia(input, cur, ctx)
+        }
+        const second = parsers[1]!.parse(input, cur, ctx)
+        if (!second.ok) return second as ParseFail
+        if (strictArity === 2) {
+          return {
+            ok: true,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+            value: (def.valueUnused ? undefined : [first.value, second.value]) as UnwrapParsers<T>,
+            span: { start: pos, end: second.span.end },
+          }
+        }
+
+        cur = second.span.end
+        if (ctx.trivia) {
+          cur = deferredTrivia
+            ? commitTriviaScan(scanTriviaCompact(input, cur, ctx))
+            : advanceTrivia(input, cur, ctx)
+        }
+        const third = parsers[2]!.parse(input, cur, ctx)
+        if (!third.ok) return third as ParseFail
+        return {
+          ok: true,
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+          value: (def.valueUnused ? undefined : [first.value, second.value, third.value]) as UnwrapParsers<T>,
+          span: { start: pos, end: third.span.end },
+        }
+      }
+
+      // Skip the tuple when it's never observed (markUnusedValues): terms still
+      // parse (and self-capture) — only the array of their values is elided.
+      const values: unknown[] | undefined = def.valueUnused ? undefined : []
       for (let i = 0; i < parsers.length; i++) {
         if (ctx.trivia && i > 0) {
           // Skip trivia between terms, but only *consume* it for span purposes if
