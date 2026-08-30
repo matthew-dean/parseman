@@ -1,158 +1,158 @@
 {
-  "updatedAt": "2026-07-24",
-  "gitRev": "2a83f9b",
+  "updatedAt": "2026-08-30",
+  "gitRev": "b406fbe",
   "measurement": {
     "scale": 1,
     "samples": 15
   },
   "cases": {
     "json/small/interpreted": {
-      "medianUs": 2.4173523662549226,
+      "medianUs": 1.188493305144481,
       "iterations": 50000,
       "bytes": 52
     },
     "json/small/compiled": {
-      "medianUs": 0.6136943061794696,
+      "medianUs": 0.6354704362799078,
       "iterations": 50000,
       "bytes": 52
     },
     "json/medium/interpreted": {
-      "medianUs": 70.37326388886969,
+      "medianUs": 34.14381250000057,
       "iterations": 10000,
       "bytes": 1812
     },
     "json/medium/compiled": {
-      "medianUs": 17.580302681992336,
+      "medianUs": 16.59428896103933,
       "iterations": 10000,
       "bytes": 1812
     },
     "json/large/interpreted": {
-      "medianUs": 634.7343750001073,
+      "medianUs": 290.81376470597155,
       "iterations": 2000,
       "bytes": 12226
     },
     "json/large/compiled": {
-      "medianUs": 140.72857142857953,
+      "medianUs": 133.95156756760608,
       "iterations": 2000,
       "bytes": 12226
     },
     "csv/small/interpreted": {
-      "medianUs": 2.5378495394068965,
+      "medianUs": 1.9834138634047183,
       "iterations": 50000,
       "bytes": 54
     },
     "csv/small/compiled": {
-      "medianUs": 0.4054230381833405,
+      "medianUs": 0.46663743244524025,
       "iterations": 50000,
       "bytes": 54
     },
     "csv/large/interpreted": {
-      "medianUs": 442.89583333333366,
+      "medianUs": 347.6610666666602,
       "iterations": 5000,
       "bytes": 14816
     },
     "csv/large/compiled": {
-      "medianUs": 77.1510468750023,
+      "medianUs": 76.78769841270027,
       "iterations": 5000,
       "bytes": 14816
     },
     "graphql/small/interpreted": {
-      "medianUs": 4.152729037953586,
+      "medianUs": 1.4152925709515272,
       "iterations": 50000,
       "bytes": 27
     },
     "graphql/small/compiled": {
-      "medianUs": 0.9187087653158205,
+      "medianUs": 0.6824971428571471,
       "iterations": 50000,
       "bytes": 27
     },
     "graphql/medium/interpreted": {
-      "medianUs": 25.008487654315417,
+      "medianUs": 9.633648702595723,
       "iterations": 10000,
       "bytes": 336
     },
     "graphql/medium/compiled": {
-      "medianUs": 6.123788359786284,
+      "medianUs": 5.3159203980099985,
       "iterations": 10000,
       "bytes": 336
     },
     "graphql/large/interpreted": {
-      "medianUs": 660.15625,
+      "medianUs": 239.09923809523684,
       "iterations": 2000,
       "bytes": 7849
     },
     "graphql/large/compiled": {
-      "medianUs": 137.55441666666636,
+      "medianUs": 111.50568181818183,
       "iterations": 2000,
       "bytes": 7849
     },
     "toml/small/interpreted": {
-      "medianUs": 3.429061572699563,
+      "medianUs": 1.2872650441292954,
       "iterations": 50000,
       "bytes": 59
     },
     "toml/small/compiled": {
-      "medianUs": 0.45192837465568214,
+      "medianUs": 0.5721892768080145,
       "iterations": 50000,
       "bytes": 59
     },
     "toml/medium/interpreted": {
-      "medianUs": 98.04901960784514,
+      "medianUs": 36.5150615384629,
       "iterations": 10000,
       "bytes": 1499
     },
     "toml/medium/compiled": {
-      "medianUs": 9.867809941520349,
+      "medianUs": 11.564383863079259,
       "iterations": 10000,
       "bytes": 1499
     },
     "lang/small/interpreted": {
-      "medianUs": 16.41337457044834,
+      "medianUs": 15.492338709678263,
       "iterations": 50000,
       "bytes": 54
     },
     "lang/small/compiled": {
-      "medianUs": 2.4165215889463263,
+      "medianUs": 5.1753408163268455,
       "iterations": 50000,
       "bytes": 54
     },
     "lang/medium/interpreted": {
-      "medianUs": 18.772549019605304,
+      "medianUs": 17.243426174497515,
       "iterations": 5000,
       "bytes": 1857
     },
     "lang/medium/compiled": {
-      "medianUs": 2.193789308175846,
+      "medianUs": 5.546670900692934,
       "iterations": 5000,
       "bytes": 1857
     },
     "css/selector/interpreted": {
-      "medianUs": 19.487659217875212,
+      "medianUs": 11.425893034827288,
       "iterations": 500,
       "bytes": 34
     },
     "css/selector/compiled": {
-      "medianUs": 2.0412500000002183,
+      "medianUs": 2.5626659999998083,
       "iterations": 500,
       "bytes": 34
     },
     "css/decls/interpreted": {
-      "medianUs": 21.21755309734208,
+      "medianUs": 11.147471910111706,
       "iterations": 500,
       "bytes": 47
     },
     "css/decls/compiled": {
-      "medianUs": 2.393581999998787,
+      "medianUs": 2.359415999999328,
       "iterations": 500,
       "bytes": 47
     },
     "css/bootstrap4/interpreted": {
-      "medianUs": 47643.207999999955,
+      "medianUs": 25855.207999999948,
       "iterations": 50,
       "bytes": 156056
     },
     "css/bootstrap4/compiled": {
-      "medianUs": 5691.708999999719,
+      "medianUs": 5582.584000000679,
       "iterations": 50,
       "bytes": 156056
     }
@@ -161,142 +161,142 @@
     "all": {
       "cases": {
         "json/small/interpreted": {
-          "medianUs": 2.3166898971002494,
+          "medianUs": 1.254076878276038,
           "iterations": 50000,
           "bytes": 52
         },
         "json/small/compiled": {
-          "medianUs": 0.6259554881131855,
+          "medianUs": 0.6689907453727127,
           "iterations": 50000,
           "bytes": 52
         },
         "json/medium/interpreted": {
-          "medianUs": 67.10930434782432,
+          "medianUs": 34.354021276583886,
           "iterations": 10000,
           "bytes": 1812
         },
         "json/medium/compiled": {
-          "medianUs": 17.622651408450572,
+          "medianUs": 16.945862676054826,
           "iterations": 10000,
           "bytes": 1812
         },
         "json/large/interpreted": {
-          "medianUs": 597.9629999999614,
+          "medianUs": 295.3504705882123,
           "iterations": 2000,
           "bytes": 12226
         },
         "json/large/compiled": {
-          "medianUs": 140.85474285714426,
+          "medianUs": 136.98759459459717,
           "iterations": 2000,
           "bytes": 12226
         },
         "csv/small/interpreted": {
-          "medianUs": 2.226075115207762,
+          "medianUs": 2.2176930641824875,
           "iterations": 50000,
           "bytes": 54
         },
         "csv/small/compiled": {
-          "medianUs": 0.40156905256905057,
+          "medianUs": 0.4811538461539245,
           "iterations": 50000,
           "bytes": 54
         },
         "csv/large/interpreted": {
-          "medianUs": 394.9199230769409,
+          "medianUs": 344.30279999996856,
           "iterations": 5000,
           "bytes": 14816
         },
         "csv/large/compiled": {
-          "medianUs": 76.38193939393398,
+          "medianUs": 79.21790163934511,
           "iterations": 5000,
           "bytes": 14816
         },
         "graphql/small/interpreted": {
-          "medianUs": 3.8717871485942053,
+          "medianUs": 1.517001114827007,
           "iterations": 50000,
           "bytes": 27
         },
         "graphql/small/compiled": {
-          "medianUs": 0.8565499191592759,
+          "medianUs": 0.6646130122517024,
           "iterations": 50000,
           "bytes": 27
         },
         "graphql/medium/interpreted": {
-          "medianUs": 23.07533004926066,
+          "medianUs": 10.27920292886908,
           "iterations": 10000,
           "bytes": 336
         },
         "graphql/medium/compiled": {
-          "medianUs": 6.045307038834614,
+          "medianUs": 5.294674568966488,
           "iterations": 10000,
           "bytes": 336
         },
         "graphql/large/interpreted": {
-          "medianUs": 610.7175555555133,
+          "medianUs": 248.7875000000031,
           "iterations": 2000,
           "bytes": 7849
         },
         "graphql/large/compiled": {
-          "medianUs": 144.6047714285669,
+          "medianUs": 111.69509090908295,
           "iterations": 2000,
           "bytes": 7849
         },
         "toml/small/interpreted": {
-          "medianUs": 3.1193009118537716,
+          "medianUs": 1.3104303091740015,
           "iterations": 50000,
           "bytes": 59
         },
         "toml/small/compiled": {
-          "medianUs": 0.44788837588281344,
+          "medianUs": 0.5599719861923086,
           "iterations": 50000,
           "bytes": 59
         },
         "toml/medium/interpreted": {
-          "medianUs": 91.00073214285332,
+          "medianUs": 36.388095238093925,
           "iterations": 10000,
           "bytes": 1499
         },
         "toml/medium/compiled": {
-          "medianUs": 9.821415821500969,
+          "medianUs": 11.19909502262608,
           "iterations": 10000,
           "bytes": 1499
         },
         "lang/small/interpreted": {
-          "medianUs": 15.322355555557778,
+          "medianUs": 15.509674922602466,
           "iterations": 50000,
           "bytes": 54
         },
         "lang/small/compiled": {
-          "medianUs": 2.110445226572876,
+          "medianUs": 5.060831491712543,
           "iterations": 50000,
           "bytes": 54
         },
         "lang/medium/interpreted": {
-          "medianUs": 17.653206185565708,
+          "medianUs": 17.745187725632352,
           "iterations": 5000,
           "bytes": 1857
         },
         "lang/medium/compiled": {
-          "medianUs": 2.2312190733239436,
+          "medianUs": 5.420038202247994,
           "iterations": 5000,
           "bytes": 1857
         },
         "css/selector/interpreted": {
-          "medianUs": 19.27602040816092,
+          "medianUs": 11.325102439025992,
           "iterations": 500,
           "bytes": 34
         },
         "css/selector/compiled": {
-          "medianUs": 2.04908400000204,
+          "medianUs": 2.43974999999773,
           "iterations": 500,
           "bytes": 34
         },
         "css/decls/interpreted": {
-          "medianUs": 21.14643689320624,
+          "medianUs": 11.108157480315894,
           "iterations": 500,
           "bytes": 47
         },
         "css/decls/compiled": {
-          "medianUs": 2.3845000000001164,
+          "medianUs": 2.279000000000451,
           "iterations": 500,
           "bytes": 47
         }
@@ -305,22 +305,22 @@
     "css": {
       "cases": {
         "css/selector/interpreted": {
-          "medianUs": 16.543498168498104,
+          "medianUs": 10.559440559440496,
           "iterations": 500,
           "bytes": 34
         },
         "css/selector/compiled": {
-          "medianUs": 2.045916000000034,
+          "medianUs": 2.53841599999987,
           "iterations": 500,
           "bytes": 34
         },
         "css/decls/interpreted": {
-          "medianUs": 18.0996835443038,
+          "medianUs": 10.512480676328524,
           "iterations": 500,
           "bytes": 47
         },
         "css/decls/compiled": {
-          "medianUs": 2.4509160000000065,
+          "medianUs": 2.2734159999999974,
           "iterations": 500,
           "bytes": 47
         }

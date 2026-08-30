@@ -25,7 +25,15 @@ import {
 } from './parseman-perf.ts'
 
 const all = process.argv.includes('--all')
+const HARD_SLIDE_PCT = 100 // a 2x slide against our own baseline is a stop, shelf or not
 const tolerance = Number(process.env.PARSEMAN_PERF_TOLERANCE ?? PERF_TOLERANCE) // % slower than baseline
+if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance >= HARD_SLIDE_PCT) {
+  throw new Error(`PARSEMAN_PERF_TOLERANCE must be finite, non-negative, and below the ${HARD_SLIDE_PCT}% compiled hard ceiling`)
+}
+const interpreterGuardSlowdown = Number(process.env.PARSEMAN_INTERPRETER_GUARD_SLOWDOWN ?? 1)
+if (!Number.isFinite(interpreterGuardSlowdown) || interpreterGuardSlowdown < 1) {
+  throw new Error('PARSEMAN_INTERPRETER_GUARD_SLOWDOWN must be a finite number >= 1')
+}
 const ignoredRegressionKeys = new Set([
   // Sub-microsecond fixture: useful to print, too noisy to block commits.
   'json/small/compiled',
@@ -43,17 +51,7 @@ const ignoredRegressionKeys = new Set([
 // Each entry must carry a reason and a tracking pointer. Nothing goes in here
 // because it is inconvenient; it goes in here because someone measured it, wrote
 // it down, and decided when it gets fixed.
-const shelvedRegressionKeys = new Map<string, string>([
-  // Table `compile()` vs the codegen-era baseline @ 2a83f9b. Measured ~4.4× on
-  // release/0.47.0 with no lane branches applied; compiled-vs-interpreted on css
-  // fell from 8.09× to 1.45×. Real, not noise — the same run's `interp` bars moved
-  // -14.7%/-12.8% FASTER in the same process. Absent from every bench:margin
-  // fixture (json/csv/graphql/CST), so it does not touch the published chart.
-  // Owner ruling: shelved for 0.47, addressed in 0.48.
-  // Tracked: notes/RELEASE-0.48-TARGET.md §8.
-  ['css/selector/compiled', '0.48 §8 — table compile() vs codegen-era baseline'],
-  ['css/decls/compiled', '0.48 §8 — table compile() vs codegen-era baseline'],
-])
+const shelvedRegressionKeys = new Map<string, string>()
 
 const baseline = loadBaseline()
 if (!baseline) {
@@ -90,11 +88,19 @@ if (!cases) {
   process.exit(1)
 }
 
-const rows = runParsemanSuiteRobust({
+const measuredRows = runParsemanSuiteRobust({
   ...PERF_CONTEXTS[context],
   scale: baseline.measurement?.scale ?? 1,
   measure: { samples: PERF_SAMPLES },
 }, GUARD_PASSES)
+// Permanent sensitivity control for the interpreter ratchet. It changes only the
+// reported timing after measurement; production code and the compiled leg stay
+// untouched. A 100x plant must make this process exit non-zero.
+const rows = measuredRows.map(row => {
+  if (row.mode !== 'interpreted') return row
+  const medianUs = row.medianUs * interpreterGuardSlowdown
+  return { ...row, medianUs, opsPerSec: Math.round(1_000_000 / medianUs) }
+})
 
 const regressionsAll = findRegressions(rows, baseline, {
   checkSpeedup: false,
@@ -166,10 +172,14 @@ const composeRegressed = false
 
 // ── WHAT ACTUALLY BLOCKS, AND WHY IT IS NOT THIS FILE'S HEADLINE NUMBER ─────────
 //
-// The owner's bar, stated plainly: **we cannot be slower than a competitor on any
-// bar of the published SVG charts.** That is the blocker. Sliding against our own
-// previous baseline is a warning — worth seeing on every commit, not worth
-// stopping one over — with a hard ceiling so a slide cannot go unbounded.
+// The compiled-parser owner's bar is stated by the published SVG charts. Sliding
+// compiled output against our own previous baseline remains a warning, with a
+// hard ceiling so it cannot go unbounded while the compiler is being optimized.
+//
+// The interpreter has a different contract: 0.50.2 deliberately banked its
+// setup-free gains, so an interpreted row outside the measured tolerance is a
+// regression. Block those rows at `tolerance`; do not make them spend the 2x
+// compiled-path escape hatch below.
 //
 // This file measures the SECOND thing. It compares us against our own baseline on
 // fixtures, several of which (`css/*`) appear in NO chart at all. A bar can regress
@@ -177,16 +187,17 @@ const composeRegressed = false
 // competitor overtakes us on a chart — which is the failure that actually matters
 // and which this file structurally cannot see.
 //
-// So: WARN at `tolerance`, BLOCK only past HARD_SLIDE_PCT. The competitor gate
-// lives with the charts, in `bench/svg-margin.ts`, because that is where the
-// competitor bars are.
-const HARD_SLIDE_PCT = 100 // a 2× slide against our own baseline is a stop, shelf or not
-
+// So: interpreter BLOCKS at `tolerance`; compiled WARNs there and BLOCKS only
+// past HARD_SLIDE_PCT. The compiled competitor gate lives with the charts, in
+// `bench/svg-margin.ts`, because that is where those competitor bars are.
 const pctOf = (message: string): number => {
   const m = message.match(/\+([\d.]+)% regression/)
   return m ? Number(m[1]) : 0
 }
-const hard = regressions.filter(m => pctOf(m) >= HARD_SLIDE_PCT)
+const interpreterRegressions = regressions.filter(m => keyOf(m).endsWith('/interpreted'))
+const hardCompiledRegressions = regressions.filter(
+  m => keyOf(m).endsWith('/compiled') && pctOf(m) >= HARD_SLIDE_PCT,
+)
 
 if (regressions.length > 0) {
   console.error('\nperf-guard: SLID vs baseline (warning — not blocking):')
@@ -194,10 +205,15 @@ if (regressions.length > 0) {
   console.error('\nIf this is an intentional perf change, re-baseline with `pnpm bench:baseline` and commit bench/parseman-baseline.json.')
 }
 
-if (hard.length > 0 || composeRegressed) {
-  if (hard.length > 0) {
-    console.error(`\nperf-guard: BLOCKED — slid past the ${HARD_SLIDE_PCT}% hard ceiling:`)
-    for (const m of hard) console.error(`  ${m}`)
+if (interpreterRegressions.length > 0 || hardCompiledRegressions.length > 0 || composeRegressed) {
+  if (interpreterRegressions.length > 0) {
+    console.error(`\nperf-guard: BLOCKED — interpreter slid past the ${tolerance}% noise-aware tolerance:`)
+    for (const m of interpreterRegressions) console.error(`  ${m}`)
+    console.error('  The interpreter baseline is a retained product gain. Fix the regression; do not\n  move the baseline or shelf the row merely to make this gate green.')
+  }
+  if (hardCompiledRegressions.length > 0) {
+    console.error(`\nperf-guard: BLOCKED — compiled path slid past the ${HARD_SLIDE_PCT}% hard ceiling:`)
+    for (const m of hardCompiledRegressions) console.error(`  ${m}`)
     console.error('  Shelve it explicitly in shelvedRegressionKeys with a reason and a tracking\n  pointer, or fix it. Do not reach for SKIP_PERF_GUARD=1.')
   }
   process.exit(1)

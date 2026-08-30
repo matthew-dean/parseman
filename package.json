@@ -1,6 +1,6 @@
 {
   "name": "parseman",
-  "version": "0.50.2",
+  "version": "0.50.3",
   "packageManager": "pnpm@10.15.1",
   "engines": {
     "node": "^20.19.0 || >=22.13.0"
@@ -132,7 +132,8 @@
     "load:jess": "node --import ./bench/jess/register.mjs bench/jess/load.ts",
     "fixture:jess": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts",
     "bench:less": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts less",
-    "bench:jess:ab": "node --import ./bench/jess/ab-register.mjs bench/jess/ab.ts"
+    "bench:jess:ab": "node --import ./bench/jess/ab-register.mjs bench/jess/ab.ts",
+    "bench:macro-optimize": "node --import tsx/esm bench/macro-compiled-optimize.ts"
   },
   "keywords": [
     "parser",

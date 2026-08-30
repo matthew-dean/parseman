@@ -133,6 +133,7 @@ import {
 } from './grammars.ts'
 import { COLUMNS, FACETS, digestRow } from './digest.ts'
 import { pairedRoundDispersion, resolveMeasurement } from './ab-options.ts'
+import { JESS_AB_FIXTURES as FIXTURES, JESS_AB_RESULT_MARKER as RESULT_MARKER, type StructuredRow } from './ab-protocol.ts'
 
 const GATE = 'jess-ab'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -141,6 +142,8 @@ const CONFIG_PATH = path.join(HERE, 'ab-config.json')
 
 type Config = { referenceSha: string; measurement: Measurement }
 const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
+
+const structuredRows: StructuredRow[] = []
 
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
@@ -228,13 +231,6 @@ const MODULE: Record<Dialect, string> = {
  * ranked on. A 0.1 ms row is dominated by `run()`'s own per-call cost and a
  * ratio taken from it says nothing about the grammar.
  */
-const FIXTURES: Record<Dialect, string[]> = {
-  css: ['packages/jess/benchmark/benchmark.css'],
-  less: ['packages/jess/benchmark/benchmark.less', 'packages/jess/benchmark/gen-workload.less'],
-  scss: ['packages/jess/benchmark/gen-workload.scss'],
-  jess: ['packages/jess/benchmark/benchmark.jess'],
-}
-
 type JessPreflight = {
   root: string
   grammars: { dialect: Dialect; real: string }[]
@@ -672,7 +668,11 @@ async function measureDialect(
 
   for (const rel of FIXTURES[dialect]) {
     const p = path.resolve(JESS_ROOT, rel)
-    if (!existsSync(p)) { console.log(`=== ${rel}  MISSING — not measured`); continue }
+    if (!existsSync(p)) {
+      if (REQUIRE_FULL) throw new Error(`${rel}: --require-full caught a missing configured fixture`)
+      console.log(`=== ${rel}  MISSING — not measured`)
+      continue
+    }
     const input = readFileSync(p, 'utf8')
     const bytes = Buffer.byteLength(input)
     console.log(`\n=== ${rel}   ${bytes} B`)
@@ -835,10 +835,13 @@ async function measureDialect(
     console.log('    SAME LEGS, TIMED ALONE — does the pairing agree with itself?')
     console.log(`      HEAD    ${headEngine.padEnd(11)} ${ms(hs)} ms   paired ${sign(drift(hm, hs) * 100)}   (first ${ms(hs1)}, second ${ms(hs2)})`)
     console.log(`      ${REF} ${refEngine.padEnd(11)} ${ms(rs)} ms   paired ${sign(drift(rm, rs) * 100)}   (first ${ms(rs1)}, second ${ms(rs2)})`)
-    // A tolerance of 5x the control, and no tighter: a solo leg genuinely runs in
-    // a different GC and cache environment, so small drift is expected and is not
-    // what this is looking for. It is looking for the 3.6x kind.
-    const tol = Math.max(5 * ctl, 0.15)
+    // A tolerance of 5x the control, and no tighter than the measured CI floor: a
+    // solo leg genuinely runs in a different GC and cache environment. Two clean
+    // GitHub runs of the macro gate saw 15.43% and 6.47% paired-vs-solo drift while
+    // every normalized candidate row stayed within its separate 3% regression bar.
+    // This cross-check is looking for the 3.6x kind, not charging ordinary runner
+    // movement to the compiler.
+    const tol = Math.max(5 * ctl, 0.20)
     const worst = Math.max(Math.abs(drift(hm, hs)), Math.abs(drift(rm, rs)))
     if (worst > tol && bytes >= RANKABLE_BYTES) {
       console.log(`      *** PAIRING ARTEFACT: a leg moved ${(worst * 100).toFixed(0)}% between paired and solo,`)
@@ -851,6 +854,25 @@ async function measureDialect(
       console.log('        figure is dominated by run()\'s own per-call cost, not by the grammar.')
     }
     if (forced) console.log('      *** FORCED: taken over the load ceiling, NOT a canonical number ***')
+    structuredRows.push({
+      dialect,
+      fixture: rel,
+      bytes,
+      headMs: hm,
+      referenceMs: rm,
+      ratio,
+      pairedRoundRatios: dispersion.ratios,
+      headWins: dispersion.headWins,
+      full: bothParsed,
+      identityChecked: !TWO_GRAPH,
+      identityAgreement: !TWO_GRAPH && ih === ir && ih === ii,
+      pairingWorstDrift: worst,
+      pairingTolerance: tol,
+      pairingArtifact: worst > tol && bytes >= RANKABLE_BYTES,
+      forced,
+      head: { engine: head.engine, lowering: head.lowering, source: head.srcReal },
+      reference: { engine: ref.engine, lowering: ref.lowering, source: ref.srcReal },
+    })
   }
 }
 
@@ -933,6 +955,17 @@ async function main(): Promise<void> {
     : 'the in-process CONTROL row.'}`)
   console.log('  A gap smaller than that control is not a result in either direction, and a run whose END load is far off its')
   console.log('  START load measured a moving box, ceiling or no ceiling.')
+  console.log(`${RESULT_MARKER}${JSON.stringify({
+    schemaVersion: 1,
+    self: SELF,
+    twoGraph: TWO_GRAPH,
+    reference: REF,
+    headSha: headSha(),
+    headEngine,
+    referenceEngine: refEngine,
+    measurement: M,
+    rows: structuredRows,
+  })}`)
 }
 
 await main()

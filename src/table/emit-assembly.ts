@@ -260,6 +260,16 @@ function q(s: string): string {
 }
 
 /**
+ * A code-unit lookup is a complete first-code-point decision only for a class
+ * with no non-ASCII range. At EOF `charCodeAt` yields NaN; lone surrogates and
+ * the leading surrogate of an astral point are all outside the 128-slot array,
+ * so each reads `undefined` and declines exactly as `classHas(lead(...))` does.
+ */
+function isAsciiOnlyClass(cls: ResolvedClass | null | undefined): cls is ResolvedClass {
+  return cls !== null && cls !== undefined && cls.hi.length === 0
+}
+
+/**
  * WHICH SIDE SINKS A MARK IN THIS ASSEMBLY HAS TO COVER.
  *
  * `_fields` and `_errors` used to be free: `emitRollback`'s own comment argued
@@ -1259,12 +1269,15 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 
       case OP_GATE: {
         const child = link(code[ip + 2]!)
-        const ci = classes.push([t.cc[code[ip + 1]!]!]) - 1
+        const resolved = t.cc[code[ip + 1]!]!
+        const ci = classes.push([resolved]) - 1
         classPlan.push([code[ip + 1]!])
         const cls = hoist('cl', `CLS[${ci}][0]`)
         const xf = fxRef(code[ip + 3]!)
         return `${head}
-if(!classHas(${cls},lead(input,pos))){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+if(${staticBuild && isAsciiOnlyClass(resolved)
+    ? `${cls}.ascii[input.charCodeAt(pos)]!==1`
+    : `!classHas(${cls},lead(input,pos))`}){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 return ${child}(input,pos,ctx)
 }`
       }
@@ -1700,10 +1713,11 @@ return v
           // array index feeding ONE call site, which is the megamorphic site
           // this unit exists to remove.
           const armSwitch = arms.map((a, i) => `case ${i}:v=${a}(input,pos,ctx);break`).join('\n')
+          const directAscii = staticBuild && table.hi.length === 0
           return `${head}
-const c=lead(input,pos)
+const c=${directAscii ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
 let arm=-1
-if(c>=0&&c<128){const a=${asc}[c];if(a!==0)arm=a-1}
+if(${directAscii ? 'c<128' : 'c>=0&&c<128'}){const a=${asc}[c];if(a!==0)arm=a-1}
 ${hiArr.length === 0 ? '' : `else if(c>=128){const h=${hoist('hi', `DISP[${di}].hi`)}
 for(let i=0;i<h.length;i+=3){if(c>=h[i]&&c<=h[i+1]){arm=h[i+2];break}}}`}
 if(arm>=0){
@@ -1729,7 +1743,11 @@ return FAIL
           const di = code[ip + 1]!
           const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
-          const gateRefs = Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
+          const maskable = n <= 32
+          const directAsciiMask = staticBuild && maskable && gates.every(isAsciiOnlyClass)
+          const gateRefs = directAsciiMask
+            ? []
+            : Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
           type ChoicePretest = {
             readonly scalar?: readonly string[]
             readonly sequence?: ScalarSequenceRef
@@ -1754,7 +1772,6 @@ return FAIL
             const sequence = largeChoiceScalarSequences.get(code[base + i]!)
             return sequence === undefined ? undefined : { sequence: scalarSequenceRef(sequence) }
           })
-          const maskable = n <= 32
           const maskName = maskable
             ? hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
             : ''
@@ -1856,16 +1873,16 @@ ${merge}
 ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL`
             return `${head}
-const c=lead(input,pos)
+const c=${directAsciiMask ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
 ${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
 ${deepAt.map((at, i) => `let ${at},${deepFx[i]}`).join('\n')}
 ${maskable ? `if(c<128){
-const bits=${maskName}[c<0?128:c]
+const bits=${maskName}[${directAsciiMask ? 'c' : 'c<0?128:c'}]
 if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
 ${lazyArms(true)}
-}else{
+}${directAsciiMask ? '' : `else{
 ${lazyArms(false)}
-}
+}`}
 ` : lazyArms(false)}
 ${finish}
 }`
@@ -1920,7 +1937,7 @@ if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0
 ${rollbackFor(i)}
 }${routeMiss}${sequenceMiss}`
           }).join('\n') : ''
-          const generalArms = arms.map((arm, i) => {
+          const generalArms = directAsciiMask ? '' : arms.map((arm, i) => {
             const pretest = pretests[i]
             const decision = pretest?.token === undefined && pretest?.sequence === undefined ? '' : tmp()
             const scalarCondition = pretest?.scalar === undefined ? ''
@@ -1963,12 +1980,12 @@ ${rollbackFor(i)}
           // arm can run, so the choice's encoded flat expected set is already
           // the exact result. Do not walk the arm ladder merely to rebuild it.
           return `${head}
-const c=lead(input,pos)
+const c=${directAsciiMask ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
 ${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
 let acc
 let best=pos
 ${maskable ? `if(c<128){
-const bits=${maskName}[c<0?128:c]
+const bits=${maskName}[${directAsciiMask ? 'c' : 'c<0?128:c'}]
 if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
 ${startFailureExact ? '' : 'let prev=0'}
 ${maskArms}
@@ -2076,14 +2093,20 @@ return [key,v]
         const itemFx = reportItem ? fxRef(code[ip + 6]!) : 'EMPTY_FX'
         const collect = op === OP_REP
         let itemCls: string | undefined
+        let itemAscii = false
         if (!REC) {
           const itemClassIndex = sepIp < 0 ? code[ip + 7]! : -1
           if (itemClassIndex >= 0) {
-            const ci = classes.push([t.cc[itemClassIndex]!]) - 1
+            const resolved = t.cc[itemClassIndex]!
+            const ci = classes.push([resolved]) - 1
             classPlan.push([itemClassIndex])
             itemCls = hoist('ri', `CLS[${ci}][0]`)
+            itemAscii = staticBuild && isAsciiOnlyClass(resolved)
           }
         }
+        const itemMiss = (at: string): string => itemAscii
+          ? `${itemCls}.ascii[input.charCodeAt(${at})]!==1`
+          : `!classHas(${itemCls},lead(input,${at}))`
         const skipBeforeFirst = sepIp < 0 && min === 0
         const p = tmp()
         // `viaRepItem` is `sep === undefined && count >= min && (count > 0 ||
@@ -2199,7 +2222,7 @@ const out=${collect ? '[]' : 'undefined'}
 ${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&!classHas(${itemCls},lead(input,cur)))break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
 ${markBody}
 let itemStart=cur
 let sepEnd=-1
@@ -2221,7 +2244,7 @@ itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(inp
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&!classHas(${itemCls},lead(input,itemStart))){
+${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${itemMiss('itemStart')}){
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }

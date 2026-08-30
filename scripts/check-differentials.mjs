@@ -15,9 +15,10 @@
  *
  * WHAT THIS DOES. For each entry in `REGISTRY`:
  *   1. run it clean, and record its normalised output as the BASELINE
- *   2. for each plant it registers, apply that plant to `src/`, run it again,
+ *   2. for each plant it registers, apply that plant to its real implementation
+ *      path, run it again,
  *      and require the output to MOVE (or, for a `blind` plant, to NOT move)
- *   3. restore `src/` exactly
+ *   3. restore every edited file exactly
  *
  * A differential whose output does not move under its plant is reported by name
  * and fails the gate. That report is the point of this script; the pass line is
@@ -34,11 +35,11 @@
  *   node scripts/check-differentials.mjs --list     # print the registry, run nothing
  *   node scripts/check-differentials.mjs --only=id[,id]
  *
- * ENVIRONMENT. Four of the six registered differentials drive JESS'S grammars
+ * ENVIRONMENT. Four of the seven registered differentials drive JESS'S grammars
  * over JESS'S corpora, which live in a sibling checkout (`JESS_ROOT`, default
  * /Users/matthew/git/oss/jess) that this repo does not vendor. Where that
  * checkout is absent they are reported UNPROVEN — never as passing. `--strict` is
- * what a release runs; plain mode is what CI runs, and CI proves the two
+ * what a release runs; plain mode is what CI runs, and CI proves the three
  * self-contained ones. An UNPROVEN entry is a differential whose teeth are
  * unknown in this environment, and the summary says so on its own line so it
  * cannot be read as a green.
@@ -165,6 +166,15 @@ const REGISTRY = [
       { defect: 'emit-node-span', expect: 'moves' },
       { defect: 'exec-node-span', expect: 'moves' },
     ],
+  },
+  {
+    id: 'macro-optimize-contract',
+    needs: 'repo',
+    file: 'test/unit/macro-optimize-contract.test.ts (bench/jess/ab-protocol.ts)',
+    legs: 'structured macro timing acceptance errors vs the blocking process exit status consumed by required CI',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/macro-optimize-contract.test.ts']),
+    plants: [{ defect: 'macro-timing-exit-off', expect: 'moves' }],
   },
   {
     id: 'jess-oracle',
