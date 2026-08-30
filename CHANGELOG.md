@@ -3,6 +3,26 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.3 — 2026-08-30
+
+- Make macro-generated parsers smaller by reading ASCII-only gates directly from
+  JavaScript code units. The optimization covers gated rules, choices, and repeated
+  items, while any gate that can match Unicode keeps the existing code-point-aware
+  path. EOF, lone-surrogate, and astral inputs retain identical results.
+- Keep the optimization where it pays: only statically emitted macro assemblies use
+  the shorter gate shape. The interpreter and runtime `compile()` path are unchanged,
+  and the browser bundle gains no interpreter or runtime machinery.
+- Add a machine-readable Jess A/B harness that verifies complete parses and result
+  identity across the shipped macro, reference-table, and interpreter paths. It also
+  records the actual engine, lowering, source path, and commit for every measured leg,
+  so a mislabeled or mixed-build comparison fails closed instead of producing a number.
+- Treat the performance result conservatively. The large CSS and Less workloads move
+  in the faster direction, but remain inside the paired A/A noise band; the release
+  claims the generated-source reduction, not a parse-speed win. Runtime-compiled
+  Parseman is unaffected and continues to clear the strict comparison-chart margin.
+- Re-anchor the grammar-density and broad-workload A/B checks to the exact 0.50.2
+  release, so future releases measure from the version this work actually follows.
+
 ## 0.50.2 — 2026-08-29
 
 - Speed up the setup-free interpreter for parsers that return JavaScript values. The
