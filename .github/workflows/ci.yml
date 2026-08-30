@@ -411,6 +411,11 @@ jobs:
       - name: Install pinned Jess benchmark host
         run: pnpm install --frozen-lockfile
         working-directory: .cache/jess
+      - name: Build pinned Jess benchmark host
+        run: |
+          pnpm --filter @jesscss/awaitable-pipe build
+          pnpm --filter @jesscss/core build
+        working-directory: .cache/jess
       - name: Macro semantic identity vs 0.50.2
         run: pnpm bench:macro-optimize -- --mode=correctness
         env:
