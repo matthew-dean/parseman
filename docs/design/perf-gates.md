@@ -39,7 +39,11 @@ not the runtime `compile()` path exercised by the grammar and workload gates. It
 requires full three-way result identity, then times the 0.50.3 candidate against the
 exact merged 0.50.2 release with a separate matching A/A control. A run is invalid if
 any configured fixture is missing, either leg has the wrong engine or source path, the
-A/A control moves more than 3%, or any normalized candidate row is more than 3% slower.
+A/A control moves more than its measured 10% CI ceiling, or any normalized candidate
+row is more than 3% slower. The wider A/A number is an instrument-validity limit, not a
+candidate slowdown allowance: two clean GitHub runs measured 7.94% and 3.95% A/A swing
+while the normalized candidate worst rows were 1.029x and 0.997x. Paired-vs-solo drift
+uses the same distinction, with a 20% runner floor while the candidate bar remains 3%.
 Invalid and regressed runs exit nonzero; the JSON report explains the rejection.
 
 When a target is stated in absolute milliseconds against a named fixture — as the

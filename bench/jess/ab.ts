@@ -835,10 +835,13 @@ async function measureDialect(
     console.log('    SAME LEGS, TIMED ALONE — does the pairing agree with itself?')
     console.log(`      HEAD    ${headEngine.padEnd(11)} ${ms(hs)} ms   paired ${sign(drift(hm, hs) * 100)}   (first ${ms(hs1)}, second ${ms(hs2)})`)
     console.log(`      ${REF} ${refEngine.padEnd(11)} ${ms(rs)} ms   paired ${sign(drift(rm, rs) * 100)}   (first ${ms(rs1)}, second ${ms(rs2)})`)
-    // A tolerance of 5x the control, and no tighter: a solo leg genuinely runs in
-    // a different GC and cache environment, so small drift is expected and is not
-    // what this is looking for. It is looking for the 3.6x kind.
-    const tol = Math.max(5 * ctl, 0.15)
+    // A tolerance of 5x the control, and no tighter than the measured CI floor: a
+    // solo leg genuinely runs in a different GC and cache environment. Two clean
+    // GitHub runs of the macro gate saw 15.43% and 6.47% paired-vs-solo drift while
+    // every normalized candidate row stayed within its separate 3% regression bar.
+    // This cross-check is looking for the 3.6x kind, not charging ordinary runner
+    // movement to the compiler.
+    const tol = Math.max(5 * ctl, 0.20)
     const worst = Math.max(Math.abs(drift(hm, hs)), Math.abs(drift(rm, rs)))
     if (worst > tol && bytes >= RANKABLE_BYTES) {
       console.log(`      *** PAIRING ARTEFACT: a leg moved ${(worst * 100).toFixed(0)}% between paired and solo,`)
