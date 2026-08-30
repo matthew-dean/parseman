@@ -6,7 +6,7 @@ that code ends up being.
 
 | Mode | Setup | Per-parse work | Where it fits |
 | --- | --- | --- | --- |
-| **Interpreter** | None | Uses scalar recognizers for safe value roots; retains the general tree walk for advanced modes | Tests, REPLs, dynamic grammars, browsers, anywhere a bundler isn't around |
+| **Interpreter** | None | Runs the grammar directly, with automatic optimizations for parsers that return JavaScript values | Tests, REPLs, dynamic grammars, browsers, anywhere a bundler isn't around |
 | **Macro build** | Bundler plugin + `with { type: 'macro' }` — lowers at build time | Runs a table artifact through the shared table runtime; a large terminal `composeLeaf` also embeds one strict assembly | Production apps built with Vite/Rollup/webpack |
 | **`compile()`** | Call `compile()` — lowers once at runtime | Runs a specialised live table assembly, with a closure fallback | Grammars assembled dynamically at runtime |
 
@@ -15,12 +15,11 @@ about until runtime.
 
 ## Interpreter (the default)
 
-Import a combinator, call `parse()`, done. For a context-free semantic-value grammar,
-construction installs a complete scalar recognizer family and the parser selects it once:
-internal calls return end offsets and one public result is built at the root. Grammars that
-use recovery, line tracking, CST/trivia capture, instrumentation, adjacency, gated or
-ordered choices, or kept separators retain the complete general tree-walking interpreter.
-No build step, no `new Function`, nothing to configure — it runs anywhere JavaScript does.
+Import a combinator, call `parse()`, done. Parsers that return ordinary JavaScript values
+are optimized automatically, while advanced features such as recovery, line tracking, and
+CST/trivia capture continue to work as before. There is no build step, no `new Function`,
+and nothing to configure. The interpreter stays lightweight for browsers and runs anywhere
+JavaScript does.
 
 ```ts
 import { choice, literal, parse } from 'parseman'

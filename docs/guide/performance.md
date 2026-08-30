@@ -17,12 +17,10 @@ as current 0.48 figures.
 ## The one rule: fewer combinator boundaries
 
 The single biggest grammar-level performance lever is the number of combinator boundaries
-on your hot path. For a safe semantic-value root, the interpreter now gives each boundary
-a scalar recognizer—so recursive calls avoid allocating a `ParseResult`—but the function
-call and semantic handoff still exist. Featureful interpreter paths retain full result,
-rollback, capture, and diagnostic work. Inside a `node()` rule, a boundary can also cost a
-leaf push. Fewer, fatter combinators therefore still beat many thin ones, and the compiler
-lowers a fair number of `regex` terminals into direct loops of its own (see
+on your hot path. The interpreter now cuts much of this overhead automatically for parsers
+that return ordinary JavaScript values. Boundaries still add work, especially when using
+richer parsing features, so fewer, fatter combinators still beat many thin ones. The
+compiler also lowers a fair number of `regex` terminals into direct loops of its own (see
 [regex lowering](./regex-lowering)).
 
 ## Collapse opaque shapes into one regex

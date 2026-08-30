@@ -91,7 +91,7 @@ size measured:
 
 The **interpreter** — no compile step at all — is now the fastest non-compiled parser on
 every JSON and CSV size in these charts. On GraphQL it remains in the leading group:
-Chevrotain is 8–15% faster depending on size, and Peggy wins the tiny row while Parseman
+Chevrotain is 10–16% faster depending on size, and Peggy wins the tiny row while Parseman
 wins medium and large. Reach for the macro build when you want construction out of runtime
 entirely, and `compile()` when the grammar itself is assembled on the fly.
 
