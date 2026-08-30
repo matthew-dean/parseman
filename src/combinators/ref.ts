@@ -1,6 +1,17 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any } from './first-set.ts'
 import { hasOwnTriviaBoundary } from './trivia-boundary.ts'
+import { scalarOf, type ScalarParser } from './scalar.ts'
+
+function withRuleTrivia<T>(
+  trivia: Combinator<unknown>, ctx: ParseContext, run: () => T,
+): T {
+  const savedLabels = ctx.triviaKindLabels
+  ctx.trivia = trivia
+  ctx.triviaKindLabels = trivia._meta.triviaKindLabels
+  try { return run() }
+  finally { ctx.trivia = undefined; ctx.triviaKindLabels = savedLabels }
+}
 
 /**
  * Create a forward-declared parser slot for mutually recursive grammars.
@@ -17,6 +28,7 @@ import { hasOwnTriviaBoundary } from './trivia-boundary.ts'
  */
 export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
   let resolved: Combinator<T> | null = null
+  let resolvedScalar: ScalarParser | null = null
   /** `hasOwnTriviaBoundary(resolved)`, resolved at `define()`. See `parse`. */
   let ownBoundary = false
 
@@ -36,8 +48,18 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
         return resolved as Combinator<unknown>
       },
     },
+    _parseScalar(input: string, pos: number, ctx: ParseContext): number {
+      const scalar = resolvedScalar
+      if (!scalar) throw new Error('ref<T>() used before .define() was called')
+      const gt = meta.grammarTrivia
+      if (gt !== undefined && ownBoundary && ctx.trivia === undefined) {
+        return withRuleTrivia(gt, ctx, () => scalar(input, pos, ctx))
+      }
+      return scalar(input, pos, ctx)
+    },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
-      if (!resolved) throw new Error('ref<T>() used before .define() was called')
+      const parser = resolved
+      if (!parser) throw new Error('ref<T>() used before .define() was called')
       // A RULE CARRIES ITS OWN AMBIENT TRIVIA — see `rules()` in parser.ts, which
       // stamps `grammarTrivia` on EVERY rule precisely so that entering any one of
       // them installs it. Reading it only at the parse ENTRY (grammar.ts) made the
@@ -83,17 +105,14 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
       // Hot path is one boolean check.
       const gt = meta.grammarTrivia
       if (gt !== undefined && ownBoundary && ctx.trivia === undefined) {
-        const savedLabels = ctx.triviaKindLabels
-        ctx.trivia = gt
-        ctx.triviaKindLabels = gt._meta.triviaKindLabels
-        try { return resolved.parse(input, pos, ctx) }
-        finally { ctx.trivia = undefined; ctx.triviaKindLabels = savedLabels }
+        return withRuleTrivia(gt, ctx, () => parser.parse(input, pos, ctx))
       }
-      return resolved.parse(input, pos, ctx)
+      return parser.parse(input, pos, ctx)
     },
     define(p: Combinator<T>): void {
       if (resolved) throw new Error('ref<T>() already defined')
       resolved = p
+      resolvedScalar = scalarOf(p)
       ownBoundary = hasOwnTriviaBoundary(p as Combinator<unknown>)
       meta.firstSet = p._meta.firstSet
       meta.canMatchNewline = p._meta.canMatchNewline

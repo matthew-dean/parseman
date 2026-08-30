@@ -751,6 +751,10 @@ parse(spanned, 'abc').value
 captured children and trivia, use [`node()`](./ast) — see
 [`transform` vs `node`](#mapping-vs-building-transform-vs-node).
 
+Treat arrays and objects passed to your callback as temporary: use them only while the
+callback runs. Copy one before keeping it or returning it. Values you create yourself,
+including copies, are yours and are never reused by Parseman.
+
 ### `token`
 
 Run a contiguous region with trivia disabled, return the matched **source text**, and

@@ -56,6 +56,7 @@ export function createParseContext(): ParseContext {
     _fe: undefined,
     _fx: undefined,
     _fc: undefined,
+    _sv: undefined,
     _probe: undefined,
     _cstChildren: undefined,
     _cstLeaves: undefined,

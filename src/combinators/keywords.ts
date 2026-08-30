@@ -4,6 +4,7 @@ import { caseFoldVariants } from './case-fold.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { directTerminalFailureExpected } from './expected.ts'
+import type { ScalarParser } from './scalar.ts'
 
 export type KeywordsOptions = {
   /** Match case-insensitively. */
@@ -141,17 +142,27 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
     caseInsensitive: opts.caseInsensitive ?? false,
     boundary: opts.boundary,
   } as const
+  const expected = directTerminalFailureExpected(def)
+  const parseScalar: ScalarParser = (input, pos, ctx) => {
+    re.lastIndex = pos
+    const m = re.exec(input)
+    if (m === null) {
+      ctx._fx = expected
+      return ~pos
+    }
+    ctx._sv = m[0]!
+    return pos + m[0]!.length
+  }
 
   return {
     _tag: 'keywords',
     _meta: meta,
     _def: def,
+    _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       re.lastIndex = pos
       const m = re.exec(input)
-      if (m === null || m.index !== pos) {
-        return failAt(ctx, directTerminalFailureExpected(def), pos)
-      }
+      if (m === null) return failAt(ctx, directTerminalFailureExpected(def), pos)
       const value = m[0]!
       const span = { start: pos, end: pos + value.length }
       if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })

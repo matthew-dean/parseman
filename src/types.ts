@@ -115,6 +115,10 @@ export type Combinator<T> = {
   readonly _tag: string
   readonly _meta: ParserMeta
   readonly _def: ParserDef
+  /** Experimental strict interpreter ABI: end >= 0 succeeds, ~failurePos fails. */
+  readonly _parseScalar?: ((input: string, pos: number, ctx: ParseContext) => number) | undefined
+  /** Construction-owned sticky matcher for exact terminal fusion. */
+  readonly _stickyRegex?: RegExp
   parse(input: string, pos: number, ctx: ParseContext): ParseResult<T>
 }
 
@@ -311,6 +315,8 @@ export type ParseContext = {
   _fx?: string[] | undefined
   /** Framework-internal compiled-output committed-failure flag. */
   _fc?: boolean | undefined
+  /** Experimental strict interpreter semantic-value register. */
+  _sv?: unknown
   /**
    * When set by completionsAt(), tracks the highest-position ParseFail seen
    * during parsing up to _probe.offset. Used to return completions at the cursor
@@ -427,6 +433,8 @@ export type ParserMeta = {
   isTrivia: boolean
   /** User-defined labels for labeled trivia arms (`label(name, parser)`). */
   triviaKindLabels?: readonly string[]
+  /** Preclassified lightweight trivia scanner for the ordinary skip path. */
+  triviaScanner?: ((input: string, cur: number) => number) | null
   /** Set only by `classifiedTrivia()`: each root-visible category is a separate
    * grammar arm rather than an arbitrary label on a broad recognizer. */
   rootTriviaClassified?: true

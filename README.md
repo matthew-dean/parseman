@@ -14,13 +14,15 @@ library with an optional compiler, and it gives you both.
 parser in the suite** — ahead of every other library measured, at every grammar and every
 input size in that suite.
 Every parser in the suite builds real output: objects, row arrays, AST nodes. On a 7.7 kB
-GraphQL document Parséman takes **188 µs**; Peggy takes 323 µs. Only a purpose-built native
-edges it out: `JSON.parse` on JSON.
+GraphQL document compiled Parséman takes **148 µs**; Chevrotain takes 336 µs. Only a
+purpose-built native edges it out: `JSON.parse` on JSON.
 
 ![GraphQL parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-graphql.svg)
 
-Two more results. The compiled CST path beats Lezer on the JSON CST fixture — **242 µs** vs
-570 µs at 11.9 kB — while producing a richer tree carrying spans and trivia. And `parseDoc`
+Two more results. The setup-free interpreter now leads every external parser at every
+measured JSON, CSV, and GraphQL size. The compiled CST path beats Lezer on the JSON CST
+fixture — **148 µs** vs 583 µs at 11.9 kB — while producing a richer tree carrying spans
+and trivia. And `parseDoc`
 stores parent-relative spans, so an in-place edit costs a fraction of a full reparse rather
 than a multiple of it. Results move with grammar shape, input size and runtime — which is
 why [the suite](#benchmarks) ships with the library rather than only its conclusions.
@@ -160,12 +162,14 @@ Benchmarked against [Peggy](https://peggyjs.org/),
 Each chart's legend names the libraries measured for that grammar.
 
 Largest fixture of each, runtime compile against the fastest other library on that chart:
-GraphQL **188 µs** vs Peggy's 323 µs, JSON **223 µs** vs Chevrotain's 238 µs, CSV
-**114 µs** vs Peggy's 422 µs. Native `JSON.parse` does JSON large in 50.3 µs. On the CST
-chart, runtime compile runs 242 µs against Lezer's 570 µs parse-only.
+GraphQL **147.76 µs** vs Chevrotain's 335.75 µs, JSON **122.09 µs** vs Chevrotain's
+242.86 µs, CSV **75.02 µs** vs Peggy's 433.52 µs. Native `JSON.parse` does JSON large
+in 40.61 µs. On the CST chart, runtime compile runs 151.87 µs against Lezer's 582.14 µs
+parse-only.
 
-Those are the committed 0.48.0 charts, regenerated on 2026-08-14 on an M4 Pro with
-Node 25.9.0. They include the restored small rows for JSON, CSV, GraphQL, and CST.
+Those are the committed 0.50.2 charts, regenerated on 2026-08-29 on an M4 Pro with
+Node 24.11.1. They include small, medium, and large rows for JSON, GraphQL, and CST,
+plus small and large CSV rows.
 
 ![JSON parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-json.svg)
 

@@ -13,21 +13,20 @@ COUNTS. Strikethroughs and "partial ✅" are retired; a compound item carries on
 marker per part. `UNCLASSIFIABLE` is used where an item genuinely does not fit,
 with the reason stated — it is not a sixth bucket, it is an admission.
 
-## COUNTS — 26 items
+## COUNTS — 28 items
 
 | marker | count |
 |---|---:|
-| `LANDED` | 13 |
-| `MEASURED-NULL` | 2 |
+| `LANDED` | 15 |
+| `MEASURED-NULL` | 3 |
 | `REJECTED` | 7 |
 | `QUEUED` | 1 |
-| **`UNMEASURED`** | **2** |
+| **`UNMEASURED`** | **1** |
 | `UNCLASSIFIABLE` | 1 |
 
-> ### **Untried in this file: 3.**
-> 1. `#1` "Remaining" — shape-specific runners (`seq` number tokens, string bodies), gated on fresh before/after `bench:parseman` numbers — `UNMEASURED`
-> 2. Low-priority table — lazy/scalar arrays for *consumed* `many()` values; conditional on an interpreter profile nobody has run — `UNMEASURED`
-> 3. `## Runtime bundle-size follow-up` — split a lean `parseman/runtime` entry from the compiler APIs — `QUEUED`
+> ### **Untried in this file: 2.**
+> 1. Low-priority table — lazy/scalar arrays for *consumed* `many()` values; conditional on an interpreter profile nobody has run — `UNMEASURED`
+> 2. `## Runtime bundle-size follow-up` — split a lean `parseman/runtime` entry from the compiler APIs — `QUEUED`
 
 **Per-item markers, in document order.** `## Already landed` (9 bullets): all
 `LANDED`. Note two riders inside them that are separately `MEASURED-NULL` and
@@ -44,12 +43,14 @@ generalisation is `MEASURED-NULL` (explicitly "measured flat" — GraphQL large
 322→418 µs), a loss and not a null. The two are in one block and are **not** the
 same disposition.
 
-`#1 Interpreter regex scan lowering` — **`UNCLASSIFIABLE` as one item**, and the
-file's own "(partial ✅)" concedes it: three statuses under one heading. Narrow
-chars-only runner `LANDED`; generic recursive matcher `REJECTED` ("The broader
-version was slower"); `Remaining:` shape-specific runners `UNMEASURED`. Its
+`#1 Interpreter regex scan lowering` — **`UNCLASSIFIABLE` as one item** because
+it contains several dispositions. Narrow chars-only runner `LANDED`; generic
+recursive matcher `REJECTED` ("The broader version was slower"); exact JSON
+number scanner `MEASURED-NULL`; exact quoted-JSON fusion `LANDED`. Its
 nested `Rejected follow-up (2026-07-08)` is `REJECTED` (CSV large 348→389 µs
 across six rows).
+
+`## Scalar value-root recognizer family` is `LANDED`.
 
 `#2` `LANDED` · `#3` `LANDED` · `#4` `LANDED` · `#5` `LANDED` (pooling half
 deliberately not done, and reappears in the low-priority table) · `#6`
@@ -91,7 +92,7 @@ Rejected alongside these (2026-07-10):
 
 ## High priority
 
-### 1. Interpreter regex scan lowering — `UNCLASSIFIABLE`: `LANDED` (narrow chars-only runner) + `REJECTED` (generic recursive matcher, slower) + `UNMEASURED` (shape-specific runners)
+### 1. Interpreter regex scan lowering — `UNCLASSIFIABLE`: `LANDED` (narrow chars-only and quoted-JSON paths) + `REJECTED` (generic recursive matcher) + `MEASURED-NULL` (exact JSON number scanner)
 
 Compiled parsers lower many `regex()` terminals to direct `charCodeAt` loops via `scannable-terminal.ts` and `scannable-run.ts`; the interpreter now does this for short simple char-class runs only.
 
@@ -101,7 +102,16 @@ Why this shape only: it reuses the already-proven soundness work without carryin
 
 Guard: only use shapes the compiler already accepts; keep native `RegExp.exec` as the fallback and as the differential-test oracle. Long runs bail out to native exec.
 
-Remaining: maybe add more shape-specific runners later (`seq` number tokens, string bodies), but only with fresh before/after `bench:parseman` numbers. Do not resurrect the generic recursive matcher without a new measurement story.
+2026-08-29 follow-up, anchored at baseline `9c2ae8a` and final checkpoint
+`2c36611`: an exact JavaScript JSON-number scanner was correct under a
+200,000-case sticky-RegExp differential but did not improve the paired chart and
+added 516 raw browser bytes, so it was rejected. The useful string optimization
+was not a body scanner: construction recognizes the exact
+quote/body/quote/transform topology, keeps the existing sticky body RegExp, and
+removes the surrounding interpreter boundaries. That fusion is part of the
+scalar value-root family below.
+
+Do not resurrect the generic recursive matcher without a new measurement story.
 
 Rejected follow-up (2026-07-08): negated runs (`[^,\r\n]*`), required literal prefix + run (`#[^\n\r]*`), and optional literal prefix + run (`-?[0-9]+`) were tried together in the tiny runtime scanner. Fresh same-session baseline before the change, same command after: `pnpm bench:parseman -- --only=csv,toml,json,graphql,lang,css --scale=0.2 --samples=7`. It regressed the intended rows: CSV large **348→389µs**, TOML medium **67→73µs**, JSON large **422→446µs**, lang medium **19.9→21.5µs**, GraphQL large **585→630µs**, CSS bootstrap **52.6→54.1ms**. Leave them on native `RegExp.exec` unless a narrower single-shape experiment proves otherwise.
 
@@ -126,6 +136,52 @@ Idea: build a compact runtime dispatch plan once when the `choice()` is construc
 Guard: preserve PEG order for non-disjoint choices. This is only for arms already proven disjoint, or for unique-key partitions that can skip impossible arms.
 
 Landed: for already-disjoint choices, build a 128-entry ASCII table once and fall back to the old first-set loop for non-ASCII or unmapped starts. No PEG-order change.
+
+### Scalar value-root recognizer family — `LANDED` (2026-08-29)
+
+The main JSON cost was not feature checks by themselves. A strict-feature
+ablation removed 682 lines and improved direct JSON by about 11–12%, but remained
+well behind Chevrotain. The larger cost was recursively allocating `ParseResult`
+objects and crossing generic combinator boundaries.
+
+The landed shape gives supported combinators a complete `_parseScalar` recognizer:
+success is a non-negative end offset, failure is an encoded negative position, and
+the semantic value travels through one parse-local context slot. A recursively
+verified context-free grammar root selects this family once in the public parser
+closure and materializes one public `ParseResult` at the root. Unsupported or
+featureful shapes expose no scalar entry and retain the general interpreter for
+recovery, line tracking, CST/trivia capture, instrumentation, adjacency,
+gated or classifier-driven choices, and separator-preserving repetition.
+
+This is intentionally not a generic table/plan executor. Fixed topology and
+recognizer choice are captured when combinators are built; hot scalar functions do
+not branch on advanced feature flags. Construction and cold-path helpers are shared
+where that reduces source size. Consolidating the general sequence runners and the
+duplicate general no-sink repeat loop kept the dual family inside the existing
+browser ratchet.
+
+Exact SVG JSON chart, three confirmations, baseline `9c2ae8a` → checkpoint
+`2c36611`: Chevrotain/Parseman geomean **0.774→1.165**, with Parseman winning all
+three sizes in every final run. The public browser closure was **57,733 raw / 18,541
+gzip bytes**, four raw bytes below its ratchet. Table/executor modules emitted zero
+bytes; the pre-existing shared `compiler/value-usage.ts` analysis emits 1,253 bytes.
+The full **4,147-test** suite passes.
+
+2026-08-29 GraphQL follow-up, checkpoint `fec6f2b`: the scalar family had never
+run for GraphQL. Seven keyword terminals lacked scalar recognition, and two
+ordinary ordered choices withheld an already-correct scalar runner. Completing
+those construction-time capabilities moved the exact rotated SVG rows to
+**1.17 / 9.84 / 214.70 µs**, ahead of Chevrotain's **2.19 / 12.79 / 335.75 µs**.
+Five A/A-gated confirmations won all three rows; the full **4,149-test** suite
+passes. That checkpoint's browser closure was **57,624 raw / 18,637 gzip bytes**
+with no emitted table/executor machinery. Review-time correctness safeguards for
+interpreter context and failure handling brought the release bundle to **57,957 raw /
+18,751 gzip bytes**, still with no emitted table/executor machinery.
+
+The exact JSON string fusion uses a construction-owned scratch reducer tuple. A
+callback that retains that internal reducer input can observe later mutation; normal
+callback invocation, values, spans, failures, recursion and advanced modes remain
+unchanged. This narrow lifetime contract is the only intentional semantic boundary.
 
 ## Medium priority
 
@@ -172,16 +228,19 @@ Related rejected follow-up: nested `parser()` context spread was replaced with s
 
 ## Runtime bundle-size follow-up
 
-- **Split a lean interpreter/runtime entry from compiler APIs.** The Chevrotain
-  interpreted browser bundle showed that importing the public `src/index.ts`
-  entry pulls in `regexp-tree` and some compiler-adjacent helpers even when the
-  grammar only interprets combinators. Keep `compile()` / macro / linker APIs as
-  separately imported functions, not methods or runtime-default imports, and add
-  a runtime-only entry for interpreted/browser use. Target shape:
+- **Split a lean interpreter/runtime entry from compiler APIs.** The Parseman
+  interpreted browser bundle now proves the public-root path stays at 57,957 raw /
+  18,751 gzip bytes with no emitted table/executor machinery. The package root
+  still traverses compiler/table modules during bundling and emits 1,253 bytes of
+  shared value-usage analysis. A dedicated entry is therefore lower priority, but
+  remains a possible way to make dependency boundaries legible and remove that
+  shared analysis for users who never call the convenience `parse()` function.
+  Target shape:
   `import { literal, regex, ... } from 'parseman/runtime'`; opt into
   `compile()` from `parseman/compiler` or the existing top-level convenience
-  entry. Measure with the Chevrotain interpreted bundle before/after; do not
-  trade away normal top-level ergonomics unless the size drop is real.
+  entry. Measure the real emitted closure before changing exports; module traversal
+  alone is not shipped weight, and normal top-level ergonomics should move only for
+  a material byte win.
 
 ## Measuring
 

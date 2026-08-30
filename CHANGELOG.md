@@ -3,6 +3,29 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.2 — 2026-08-29
+
+- Speed up the setup-free interpreter for parsers that return JavaScript values. The
+  optimization is automatic: there is no new API, option, or build step. Advanced
+  features such as recovery, line tracking, CST/trivia capture, and instrumentation
+  continue to work as before. The full 4,149-test suite remains green.
+- Make the interpreter the fastest setup-free parser in every JSON, CSV, and GraphQL
+  row. On GraphQL it now takes 1.17 / 9.84 / 214.70 microseconds versus Chevrotain's
+  2.19 / 12.79 / 335.75 microseconds for small, medium, and large inputs. The same
+  optimization also keeps JSON ahead of Chevrotain and CSV ahead of every external
+  parser.
+- Clarify the `transform()` callback contract: treat input arrays and objects as
+  temporary, and copy one before keeping or returning it. Values your callback creates,
+  including copies, are yours and are never reused by Parseman.
+- Keep the browser bundle light at 57,957 raw / 18,751 gzip bytes. Small correctness
+  safeguards added 333 raw / 114 gzip bytes over the performance checkpoint, while the
+  bundle check continues to guard both total size and which code an interpreter-only
+  browser build actually includes.
+- Regenerate all four public comparison SVGs on Node 24.11.1. Runtime-compiled
+  Parseman remains the fastest compared JavaScript parser in every JSON, CSV,
+  GraphQL, and CST row; the strict margin gate's tightest row is 1.74x over
+  Chevrotain on medium GraphQL, against a 1.05x floor.
+
 ## 0.50.1 — 2026-08-28
 
 - Fix a construction-time regression introduced by 0.50.0's rollback-elision

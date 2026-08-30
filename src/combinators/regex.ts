@@ -6,6 +6,7 @@ import { recordLineRangeFromContext } from '../line-index.ts'
 import { shorthandRanges, parseClassRanges } from '../regex/classes.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
 import { directTerminalFailureExpected } from './expected.ts'
+import type { ScalarParser } from './scalar.ts'
 
 /**
  * A regex terminal's first-set (for choice-dispatch fast paths) is derived by
@@ -143,11 +144,33 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   const canMatchNewline = raw.canMatchNewline
   const meta: ParserMeta = { firstSet, canMatchNewline, isTrivia: false }
   const def = { tag: 'regex', source, flags: resolvedFlags } as const
+  const expected = directTerminalFailureExpected(def)
+  const parseScalar: ScalarParser = (input, pos, ctx) => {
+    const scanEnd = scan?.(input, pos)
+    if (scanEnd !== undefined) {
+      if (scanEnd === null) {
+        ctx._fx = expected
+        return ~pos
+      }
+      ctx._sv = input.slice(pos, scanEnd)
+      return scanEnd
+    }
+    anchored.lastIndex = pos
+    const match = anchored.exec(input)
+    if (match === null) {
+      ctx._fx = expected
+      return ~pos
+    }
+    ctx._sv = match[0]!
+    return pos + match[0]!.length
+  }
 
   return {
     _tag: 'regex',
     _meta: meta,
     _def: def,
+    _stickyRegex: anchored,
+    _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       const scanEnd = scan?.(input, pos)
       if (scanEnd !== undefined) {
