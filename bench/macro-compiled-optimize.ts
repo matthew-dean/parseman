@@ -13,6 +13,7 @@ import { JESS_ROOT } from './jess/grammars.ts'
 import {
   JESS_AB_RESULT_MARKER as RESULT_MARKER,
   expectedRowKeys,
+  macroCandidateGateRatio,
   macroTimingExitCode,
   macroTimingErrors,
   rowKey,
@@ -233,19 +234,19 @@ printLegProvenance('self-control', selfRuns)
 const candidateRows = candidateRuns.flatMap(run => run.rows).filter(row => row.bytes >= RANKABLE_BYTES)
 const selfRows = selfRuns.flatMap(run => run.rows).filter(row => row.bytes >= RANKABLE_BYTES)
 const selfByFixture = new Map(selfRows.map(row => [`${row.dialect}/${row.fixture}`, row]))
-const normalizedRows = candidateRows.map(row => {
+const scoredRows = candidateRows.map(row => {
   const self = selfByFixture.get(`${row.dialect}/${row.fixture}`)
   if (!self) throw new Error(`self run omitted ${row.dialect}/${row.fixture}`)
   return {
     ...row,
     selfRatio: self.ratio,
-    normalizedRatio: row.ratio / self.ratio * slowdownPlant,
+    gateRatio: macroCandidateGateRatio(row.ratio, slowdownPlant),
   }
 })
 
-const ratios = normalizedRows.map(row => row.normalizedRatio)
-const lessRatios = normalizedRows.filter(row => row.dialect === 'less').map(row => row.normalizedRatio)
-const cssRatios = normalizedRows.filter(row => row.dialect === 'css').map(row => row.normalizedRatio)
+const ratios = scoredRows.map(row => row.gateRatio)
+const lessRatios = scoredRows.filter(row => row.dialect === 'less').map(row => row.gateRatio)
+const cssRatios = scoredRows.filter(row => row.dialect === 'css').map(row => row.gateRatio)
 const allRows = [...candidateRows, ...selfRows]
 const fullRows = allRows.filter(row => row.full).length
 const pairingArtifacts = allRows.filter(row => row.pairingArtifact).length
@@ -275,7 +276,7 @@ process.stdout.write(`${JSON.stringify({
   macro_css_geomean_ratio: cssRatios.length > 0 ? geomean(cssRatios) : 1,
   macro_worst_fixture_ratio: Math.max(...ratios),
   macro_rows_better: ratios.filter(ratio => ratio < 1).length,
-  macro_rankable_rows: normalizedRows.length,
+  macro_rankable_rows: scoredRows.length,
   macro_full_rows: fullRows,
   macro_expected_full_rows: expectedFullRows,
   macro_pairing_artifacts: pairingArtifacts,
@@ -288,7 +289,7 @@ process.stdout.write(`${JSON.stringify({
   asserted_candidate_slowdown: slowdownPlant,
   asserted_aa_swing: aaSwingPlant,
   rejection_reasons: timingErrors,
-  rows: normalizedRows,
+  rows: scoredRows,
   provenance: {
     harness: realpathSync(import.meta.filename),
     jess_ab: realpathSync(AB),

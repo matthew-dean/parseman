@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   JESS_AB_FIXTURES,
+  macroCandidateGateRatio,
   macroTimingExitCode,
   macroTimingErrors,
   validateStructuredRun,
@@ -56,6 +57,11 @@ const expected = {
 }
 
 describe('macro optimization gate contract', () => {
+  it('judges the adjacent candidate pair without dividing by separate-process A/A noise', () => {
+    expect(macroCandidateGateRatio(1.013)).toBe(1.013)
+    expect(macroCandidateGateRatio(1.013, 1.2)).toBeCloseTo(1.2156)
+  })
+
   it('accepts only the complete pinned macro run shape', () => {
     expect(validateStructuredRun(run(), expected)).toEqual([])
 

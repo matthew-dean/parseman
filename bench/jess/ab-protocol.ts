@@ -62,6 +62,15 @@ export function expectedRowKeys(dialects: readonly ('css' | 'less')[]): string[]
 }
 
 /**
+ * The candidate gate uses its own adjacent, order-alternated paired ratio.
+ * A separate-process A/A result validates the instrument; dividing by it would
+ * inject that control's independent noise into an otherwise valid candidate row.
+ */
+export function macroCandidateGateRatio(candidateRatio: number, slowdownPlant = 1): number {
+  return candidateRatio * slowdownPlant
+}
+
+/**
  * Validate the structured child record before any result can be called a measurement.
  * The caller still owns semantic identity and timing thresholds; this owns run shape,
  * fixture completeness, and the engine/source provenance shared by both modes.
