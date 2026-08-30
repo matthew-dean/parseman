@@ -162,7 +162,7 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       re.lastIndex = pos
       const m = re.exec(input)
-      if (m === null) return failAt(ctx, expected, pos)
+      if (m === null) return failAt(ctx, directTerminalFailureExpected(def), pos)
       const value = m[0]!
       const span = { start: pos, end: pos + value.length }
       if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
