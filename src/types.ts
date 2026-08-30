@@ -116,7 +116,7 @@ export type Combinator<T> = {
   readonly _meta: ParserMeta
   readonly _def: ParserDef
   /** Experimental strict interpreter ABI: end >= 0 succeeds, ~failurePos fails. */
-  readonly _parseScalar?: (input: string, pos: number, ctx: ParseContext) => number
+  readonly _parseScalar?: ((input: string, pos: number, ctx: ParseContext) => number) | undefined
   /** Construction-owned sticky matcher for exact terminal fusion. */
   readonly _stickyRegex?: RegExp
   parse(input: string, pos: number, ctx: ParseContext): ParseResult<T>

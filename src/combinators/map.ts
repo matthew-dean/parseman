@@ -4,7 +4,7 @@ import { choice } from './choice.ts'
 import { matchesEmpty } from './first-set.ts'
 import { oneOrMore } from './repeat.ts'
 import { fastTriviaScanner } from './trivia-skip.ts'
-import { scalarOf, scalarResult } from './scalar.ts'
+import { scalarOf } from './scalar.ts'
 
 const JSON_STRING_BODY = String.raw`(?:[^"\\]|\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4}))*`
 
@@ -63,7 +63,9 @@ export function transform<T, U>(
     _def: { tag: 'transform', parser: combinator as Combinator<unknown>, fn: fn as (v: unknown, span: { start: number; end: number }) => unknown },
     _parseScalar: parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<U> {
-      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
+      const result = combinator.parse(input, pos, ctx)
+      if (!result.ok) return result
+      return { ok: true, value: fn(result.value, result.span), span: result.span }
     },
   }
 }

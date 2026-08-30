@@ -1,7 +1,10 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { fromChar, empty } from './first-set.ts'
+import { failAt } from './probe.ts'
+import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 import { directTerminalFailureExpected } from './expected.ts'
-import { scalarResult, type ScalarParser } from './scalar.ts'
+import type { ScalarParser } from './scalar.ts'
 
 /**
  * ASCII case-fold equality — the interpreter twin of the compiler's `foldEq`
@@ -38,6 +41,32 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
     canMatchNewline: value.includes('\n'),
     isTrivia: false,
   }
+  const canMatchNewline = meta.canMatchNewline
+  const parseScalar: ScalarParser = !caseInsensitive && value.length === 1
+    ? (() => {
+        const code = value.charCodeAt(0)
+        return (input, pos, ctx) => {
+          if (input.charCodeAt(pos) === code) {
+            ctx._sv = value
+            return pos + 1
+          }
+          ctx._fx = expected
+          return ~pos
+        }
+      })()
+    : (input, pos, ctx) => {
+        const end = pos + value.length
+        if (end <= input.length) {
+          const matchedValue = caseInsensitive ? input.slice(pos, end) : value
+          if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
+            ctx._sv = matchedValue
+            return end
+          }
+        }
+        ctx._fx = expected
+        return ~pos
+      }
+
   if (caseInsensitive) {
     const upper = value.toUpperCase()
     const lower = value.toLowerCase()
@@ -62,31 +91,32 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
   // grammars (GraphQL `{ } ( ) : $ @ [ ] ! =`, JSON, CSS). A bare `charCodeAt`
   // compare beats the generic `startsWith` builtin call, and an out-of-bounds
   // `charCodeAt` returns NaN — so the length check folds into the compare.
-  const parseScalar: ScalarParser = !caseInsensitive && value.length === 1
+  const parse = !caseInsensitive && value.length === 1
     ? (() => {
         const code = value.charCodeAt(0)
-        return function parse(input: string, pos: number, ctx: ParseContext): number {
+        return function parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
           if (input.charCodeAt(pos) === code) {
-            ctx._sv = value
-            return pos + 1
+            const span = { start: pos, end: pos + 1 }
+            if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, span.end)
+            if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
+            return { ok: true, value, span }
           }
-          ctx._fx = expected
-          return ~pos
+          return failAt(ctx, expected, pos)
         }
       })()
-    : function parse(input: string, pos: number, ctx: ParseContext): number {
+    : function parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
         const end = pos + value.length
         if (end > input.length) {
-          ctx._fx = expected
-          return ~pos
+          return failAt(ctx, expected, pos)
         }
         const matchedValue = caseInsensitive ? input.slice(pos, end) : value
         if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
-          ctx._sv = matchedValue
-          return end
+          const span = { start: pos, end }
+          if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, end)
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: matchedValue, span })
+          return { ok: true, value: matchedValue, span }
         }
-        ctx._fx = expected
-        return ~pos
+        return failAt(ctx, expected, pos)
       }
 
   return {
@@ -94,8 +124,6 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
     _meta: meta,
     _def: { tag: 'literal', value, caseInsensitive },
     _parseScalar: parseScalar,
-    parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
-      return scalarResult(parseScalar(input, pos, ctx), pos, ctx)
-    },
+    parse,
   }
 }
