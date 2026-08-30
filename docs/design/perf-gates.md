@@ -39,12 +39,13 @@ not the runtime `compile()` path exercised by the grammar and workload gates. It
 requires full three-way result identity, then times the 0.50.3 candidate against the
 exact merged 0.50.2 release with a separate matching A/A control. A run is invalid if
 any configured fixture is missing, either leg has the wrong engine or source path, the
-A/A control moves more than its measured 10% CI ceiling, or any paired candidate row is
+A/A control moves more than its measured 20% CI ceiling, or any paired candidate row is
 more than 3% slower. The A/A result validates the instrument but does not numerically
 rescale a candidate measured in another process: doing that turned a valid 1.013x paired
 CSS row into a synthetic 1.045x failure by dividing it by an independent 0.970x control.
-Across the three clean GitHub runs used to calibrate this gate, every raw paired candidate
-row was at or below 1.026x. Paired-vs-solo drift uses the same distinction, with a 20%
+Across the four clean GitHub runs used to calibrate this gate, every raw paired candidate
+row was at or below 1.026x, while a valid all-winning run saw 15.7% separate-process A/A
+movement. Paired-vs-solo drift uses the same distinction, with a 20%
 runner floor while the candidate bar remains 3%.
 Invalid and regressed runs exit nonzero; the JSON report explains the rejection.
 

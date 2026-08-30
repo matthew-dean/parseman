@@ -85,13 +85,13 @@ describe('macro optimization gate contract', () => {
       forcedRows: 0,
       provenanceValid: true,
       aaWorstSwing: 1.02,
-      aaSwingCeiling: 1.10,
+      aaSwingCeiling: 1.20,
       candidateRatios: [0.99, 1.01],
       candidateRatioCeiling: 1.03,
     }
     expect(macroTimingErrors(base)).toEqual([])
     expect(macroTimingExitCode(macroTimingErrors(base))).toBe(0)
-    expect(macroTimingErrors({ ...base, aaWorstSwing: 1.101 })).toContain('A/A swing 1.101 exceeds 1.1')
+    expect(macroTimingErrors({ ...base, aaWorstSwing: 1.201 })).toContain('A/A swing 1.201 exceeds 1.2')
     const candidateErrors = macroTimingErrors({ ...base, candidateRatios: [1.031] })
     expect(candidateErrors).toContain(
       '1 candidate ratios exceed 1.03',
@@ -107,7 +107,7 @@ describe('macro optimization gate contract', () => {
       forcedRows: 0,
       provenanceValid: true,
       aaWorstSwing: 1,
-      aaSwingCeiling: 1.10,
+      aaSwingCeiling: 1.20,
       candidateRatios: [1],
       candidateRatioCeiling: 1.03,
     }
