@@ -135,12 +135,35 @@ import { COLUMNS, FACETS, digestRow } from './digest.ts'
 import { pairedRoundDispersion, resolveMeasurement } from './ab-options.ts'
 
 const GATE = 'jess-ab'
+const RESULT_MARKER = '__JESS_AB_RESULT__'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../..')
 const CONFIG_PATH = path.join(HERE, 'ab-config.json')
 
 type Config = { referenceSha: string; measurement: Measurement }
 const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
+
+type StructuredRow = {
+  dialect: Dialect
+  fixture: string
+  bytes: number
+  headMs: number
+  referenceMs: number
+  ratio: number
+  pairedRoundRatios: number[]
+  headWins: number
+  full: boolean
+  identityChecked: boolean
+  identityAgreement: boolean
+  pairingWorstDrift: number
+  pairingTolerance: number
+  pairingArtifact: boolean
+  forced: boolean
+  head: { engine: string; lowering: string; source: string }
+  reference: { engine: string; lowering: string; source: string }
+}
+
+const structuredRows: StructuredRow[] = []
 
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
@@ -851,6 +874,25 @@ async function measureDialect(
       console.log('        figure is dominated by run()\'s own per-call cost, not by the grammar.')
     }
     if (forced) console.log('      *** FORCED: taken over the load ceiling, NOT a canonical number ***')
+    structuredRows.push({
+      dialect,
+      fixture: rel,
+      bytes,
+      headMs: hm,
+      referenceMs: rm,
+      ratio,
+      pairedRoundRatios: dispersion.ratios,
+      headWins: dispersion.headWins,
+      full: bothParsed,
+      identityChecked: !TWO_GRAPH,
+      identityAgreement: !TWO_GRAPH && ih === ir && ih === ii,
+      pairingWorstDrift: worst,
+      pairingTolerance: tol,
+      pairingArtifact: worst > tol && bytes >= RANKABLE_BYTES,
+      forced,
+      head: { engine: head.engine, lowering: head.lowering, source: head.srcReal },
+      reference: { engine: ref.engine, lowering: ref.lowering, source: ref.srcReal },
+    })
   }
 }
 
@@ -933,6 +975,17 @@ async function main(): Promise<void> {
     : 'the in-process CONTROL row.'}`)
   console.log('  A gap smaller than that control is not a result in either direction, and a run whose END load is far off its')
   console.log('  START load measured a moving box, ceiling or no ceiling.')
+  console.log(`${RESULT_MARKER}${JSON.stringify({
+    schemaVersion: 1,
+    self: SELF,
+    twoGraph: TWO_GRAPH,
+    reference: REF,
+    headSha: headSha(),
+    headEngine,
+    referenceEngine: refEngine,
+    measurement: M,
+    rows: structuredRows,
+  })}`)
 }
 
 await main()

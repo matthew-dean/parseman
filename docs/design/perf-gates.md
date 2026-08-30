@@ -5,7 +5,7 @@ difference is the whole point.
 
 | gate | asks | cost |
 | --- | --- | --- |
-| `pnpm perf:guard` | did parseman's own microbenchmarks move? | seconds |
+| `pnpm perf:guard` | did parseman's own microbenchmarks move, especially the retained interpreter baseline? | seconds |
 | `pnpm perf:guard:grammars` | did a known cost AXIS move? | ~1.5-2 min |
 | `pnpm perf:workloads` | did realistic parsing get slower, on any axis at all? | ~2.5-3 min |
 
@@ -26,9 +26,12 @@ reads a real +49.6% Less regression as +2%…+9%, because a realistic parse spen
 most of its time on work the regression does not touch — which is exactly why the
 amplifying sweep is worth keeping.
 
-These three are GATES: they answer "did it move", differentially, against a
-pinned commit. None of them reports an absolute millisecond count, deliberately,
-because a stored millisecond measures the runner.
+These three are GATES: they answer "did it move?" The grammar and workload gates
+compare two builds in the same run. The fast guard compares against a committed
+baseline: interpreted rows block outside the measured 15% cross-machine
+tolerance, preserving the setup-free gains, while smaller compiled movement is
+reported for investigation and judged by the workload and comparison-chart
+gates.
 
 When a target is stated in absolute milliseconds against a named fixture — as the
 table lowering's is — the instrument is
@@ -42,7 +45,8 @@ ceiling and a printed protocol for that reason.
 
 `perf:guard` measures `fixtures/css/decls.css` (47 bytes) and
 `fixtures/css/selector.css` (34 bytes), in microseconds, against a committed
-baseline. It is a good, cheap tripwire for a catastrophic codegen change.
+baseline. It is the interpreter's quick regression ratchet and a cheap tripwire
+for a catastrophic compiled-parser change.
 
 It is not a gate on parseman's actual goal. During the 0.34.0 cycle it passed on
 every PR. It passed at 0.34.0. And 0.34.0 made a downstream Less grammar parse

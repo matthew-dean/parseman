@@ -132,7 +132,8 @@
     "load:jess": "node --import ./bench/jess/register.mjs bench/jess/load.ts",
     "fixture:jess": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts",
     "bench:less": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts less",
-    "bench:jess:ab": "node --import ./bench/jess/ab-register.mjs bench/jess/ab.ts"
+    "bench:jess:ab": "node --import ./bench/jess/ab-register.mjs bench/jess/ab.ts",
+    "bench:macro-optimize": "node --import tsx/esm bench/macro-compiled-optimize.ts"
   },
   "keywords": [
     "parser",
