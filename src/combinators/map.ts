@@ -21,12 +21,21 @@ export function transform<T, U>(
     && inner!._def.tag === 'regex' && inner!._def.source === JSON_STRING_BODY && inner!._def.flags === ''
     && terms[2]!._def.tag === 'literal' && terms[2]!._def.value === '"' && !terms[2]!._def.caseInsensitive
     && inner!._stickyRegex !== undefined
+  const child = scalarOf(combinator)
   const parseScalar = fused
     ? (() => {
         const body = inner!._stickyRegex!
         const tuple = ['"', '', '"']
         const expected = [JSON.stringify('"')]
         return (input: string, pos: number, ctx: ParseContext): number => {
+          if (ctx.trivia !== undefined) {
+            const end = child(input, pos, ctx)
+            if (end < 0) return end
+            ctx._sv = observesSpan
+              ? fn(ctx._sv as T, { start: pos, end })
+              : (fn as (value: T) => U)(ctx._sv as T)
+            return end
+          }
           if (input.charCodeAt(pos) !== 34) {
             ctx._fx = expected
             return ~pos
@@ -47,7 +56,6 @@ export function transform<T, U>(
         }
       })()
     : (() => {
-        const child = scalarOf(combinator)
         return (input: string, pos: number, ctx: ParseContext): number => {
           const end = child(input, pos, ctx)
           if (end < 0) return end

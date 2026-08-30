@@ -146,9 +146,9 @@ rank bar. The tightest row moved to medium GraphQL: 7.135 µs for Parséman vers
 12.417 µs for Chevrotain, a 1.74× lead, while the worst in-run A/A spread was
 2.8%.
 
-The interpreter is excluded from this compiled-rank verdict, but its published
-bars now lead every external parser on JSON and CSV. Chevrotain remains 8–15%
-faster on interpreted GraphQL.
+The interpreter is excluded from this compiled-rank verdict. Its published bars
+now lead every external parser on JSON, CSV, and GraphQL; on GraphQL it takes
+1.17 / 9.84 / 214.70 µs versus Chevrotain's 2.19 / 12.79 / 335.75 µs.
 
 ## Historical margin as of `f78bc9b` (0.46.0, pre-lane)
 

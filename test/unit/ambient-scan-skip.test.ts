@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { assertMacroCompiled, evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
-  rules, sequence, literal, regex, parse, compile,
+  rules, sequence, literal, regex, parse, compile, parser,
 } from '../../src/index.ts'
 import { scanTo, balanced } from '../../src/index.ts'
 
@@ -169,6 +169,21 @@ describe('ambient scanSkip — a sentinel hidden in a string is not matched', ()
     ]
     expect(new Set(vals).size).toBe(1)
     expect(vals[0]).toBe(EXPECT)
+  })
+})
+
+describe('ambient scanSkip — parse() installs it before entering a parser() rule', () => {
+  it('skips a hidden sentinel when the rules() entry is already a parser scope', () => {
+    const scoped = rules({ scanSkip: [dq] }, () => ({
+      entry: parser({}, sequence(scanTo(literal(';')), literal(';'))),
+    }))
+
+    const result = parse(scoped.entry, 'a "x;y" b;')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value[0]).toBe('a "x;y" b')
+      expect(result.span.end).toBe(10)
+    }
   })
 })
 

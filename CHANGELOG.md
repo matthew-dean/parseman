@@ -37,9 +37,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - Clarify the `transform()` callback contract: treat input arrays and objects as
   temporary, and copy one before keeping or returning it. Values your callback creates,
   including copies, are yours and are never reused by Parseman.
-- Keep the browser bundle light at 57,624 raw / 18,637 gzip bytes, 109 raw bytes smaller
-  than the previous release candidate. The bundle check guards both its total size and
-  which code an interpreter-only browser build actually includes.
+- Keep the browser bundle light at 57,957 raw / 18,751 gzip bytes. Small correctness
+  safeguards added 333 raw / 114 gzip bytes over the performance checkpoint, while the
+  bundle check continues to guard both total size and which code an interpreter-only
+  browser build actually includes.
 - Regenerate all four public comparison SVGs on Node 24.11.1. Runtime-compiled
   Parseman remains the fastest compared JavaScript parser in every JSON, CSV,
   GraphQL, and CST row; the strict margin gate's tightest row is 1.74x over
