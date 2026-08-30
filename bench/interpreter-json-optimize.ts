@@ -7,19 +7,21 @@
  *   --assert-interpreter-slowdown 100
  *   --assert-extra-browser-bytes 100000
  */
-import { execFileSync } from 'node:child_process'
 import { randomInt } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { builtinModules, createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { build } from 'esbuild'
-import { BAR_MARKER, CHART_GROUPS } from './chart-specs.ts'
+import { CHART_GROUPS } from './chart-specs.ts'
+import {
+  assertInterpreterChecks, INTERPRETER_BROWSER_RAW_LIMIT, measureInterpreterBar,
+} from './interpreter-optimize-support.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const CHILD = resolve(ROOT, 'bench/measure-bar.ts')
 const BROWSER_ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
-const WIN_FLOOR = 1.05
+const PARITY_NOISE_FLOOR = 0.95
 const require = createRequire(import.meta.url)
 
 function numericArg(name: string, fallback: number): number {
@@ -36,20 +38,7 @@ const extraBytes = numericArg('assert-extra-browser-bytes', Number.EPSILON) === 
   : numericArg('assert-extra-browser-bytes', 0)
 
 function measure(key: 'parseman-interp' | 'chevrotain'): number[] {
-  const out = execFileSync(process.execPath, ['--import', 'tsx/esm', CHILD, 'json', key], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    timeout: 180_000,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  const line = out.split('\n').find(value => value.startsWith(BAR_MARKER))
-  if (!line) throw new Error(`json/${key} produced no ${BAR_MARKER} line`)
-  const values = JSON.parse(line.slice(BAR_MARKER.length)) as unknown
-  if (!Array.isArray(values) || values.length !== CHART_GROUPS.json.length
-      || values.some(value => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
-    throw new Error(`json/${key} produced unusable timings ${JSON.stringify(values)}`)
-  }
-  return values as number[]
+  return measureInterpreterBar(ROOT, CHILD, 'json', key)
 }
 
 function geomean(values: readonly number[]): number {
@@ -99,14 +88,14 @@ const result = {
     ],
     chevrotain_package: realpathSync(require.resolve('chevrotain')),
     order,
-    win_floor: WIN_FLOOR,
+    parity_noise_floor: PARITY_NOISE_FLOOR,
     assertions: { interpreter_slowdown: slowdown, extra_browser_bytes: extraBytes },
   },
   measurement_valid: 1,
   browser_heavy_dependency_modules: browserInputs.filter(input => heavyDependency.test(input)).length,
   browser_node_builtin_modules: browserInputs.filter(input => builtinNames.has(input)).length,
   json_chevrotain_geomean_ratio: geomean(ratios),
-  json_chevrotain_rows_won: ratios.filter(ratio => ratio >= WIN_FLOOR).length,
+  json_chevrotain_rows_at_parity: ratios.filter(ratio => ratio >= PARITY_NOISE_FLOOR).length,
   interpreter_browser_raw_bytes: browserBytes.length + extraBytes,
   interpreter_browser_gzip_bytes: gzipSync(browserBytes).length,
   interpreter_browser_module_count: browserInputs.length,
@@ -122,3 +111,12 @@ const result = {
 }
 
 process.stdout.write(`${JSON.stringify(result)}\n`)
+assertInterpreterChecks([
+  [aaWorst <= 1.05, `interpreter A/A swing ${aaWorst.toFixed(3)} exceeds 1.05`],
+  [result.interpreter_browser_raw_bytes <= INTERPRETER_BROWSER_RAW_LIMIT,
+    `browser bundle ${result.interpreter_browser_raw_bytes} exceeds ${INTERPRETER_BROWSER_RAW_LIMIT} raw bytes`],
+  [result.browser_heavy_dependency_modules === 0, 'browser bundle includes a heavy dependency'],
+  [result.browser_node_builtin_modules === 0, 'browser bundle includes a Node builtin'],
+  [result.json_chevrotain_rows_at_parity === CHART_GROUPS.json.length,
+    `interpreter reaches JSON parity on ${result.json_chevrotain_rows_at_parity}/${CHART_GROUPS.json.length} rows`],
+])

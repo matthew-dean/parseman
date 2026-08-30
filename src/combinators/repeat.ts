@@ -241,8 +241,9 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
     for (let count = 1; count < min; count++) {
       let itemPos = cur
       if (ctx.trivia) itemPos = advanceTrivia(input, cur, ctx)
-      cur = scalarChild(input, itemPos, ctx)
-      if (cur < 0) return cur
+      const end = scalarChild(input, itemPos, ctx)
+      if (end < 0) return ~cur
+      cur = end
       if (values !== undefined) values.push(ctx._sv as T)
     }
     return repeatScalarTail(combinator, scalarChild, input, cur, ctx, guardable, values, max - min)

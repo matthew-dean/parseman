@@ -162,8 +162,8 @@ browser ratchet.
 
 Exact SVG JSON chart, three confirmations, baseline `9c2ae8a` → checkpoint
 `2c36611`: Chevrotain/Parseman geomean **0.774→1.165**, with Parseman winning all
-three sizes in every final run. The public browser closure is **57,733 raw / 18,541
-gzip bytes**, four raw bytes below its ratchet. Table/executor modules emit zero
+three sizes in every final run. The public browser closure was **57,733 raw / 18,541
+gzip bytes**, four raw bytes below its ratchet. Table/executor modules emitted zero
 bytes; the pre-existing shared `compiler/value-usage.ts` analysis emits 1,253 bytes.
 The full **4,147-test** suite passes.
 
@@ -173,8 +173,10 @@ ordinary ordered choices withheld an already-correct scalar runner. Completing
 those construction-time capabilities moved the exact rotated SVG rows to
 **1.17 / 9.84 / 214.70 µs**, ahead of Chevrotain's **2.19 / 12.79 / 335.75 µs**.
 Five A/A-gated confirmations won all three rows; the full **4,149-test** suite
-passes. The browser closure shrank to **57,624 raw / 18,637 gzip bytes** with no
-emitted table/executor machinery.
+passes. That checkpoint's browser closure was **57,624 raw / 18,637 gzip bytes**
+with no emitted table/executor machinery. Review-time correctness safeguards for
+interpreter context and failure handling brought the release bundle to **57,957 raw /
+18,751 gzip bytes**, still with no emitted table/executor machinery.
 
 The exact JSON string fusion uses a construction-owned scratch reducer tuple. A
 callback that retains that internal reducer input can observe later mutation; normal
@@ -226,9 +228,9 @@ Related rejected follow-up: nested `parser()` context spread was replaced with s
 
 ## Runtime bundle-size follow-up
 
-- **Split a lean interpreter/runtime entry from compiler APIs.** The Chevrotain
-  interpreted browser bundle now proves the public-root path stays at 57,624 raw /
-  18,637 gzip bytes with no emitted table/executor machinery. The package root
+- **Split a lean interpreter/runtime entry from compiler APIs.** The Parseman
+  interpreted browser bundle now proves the public-root path stays at 57,957 raw /
+  18,751 gzip bytes with no emitted table/executor machinery. The package root
   still traverses compiler/table modules during bundling and emits 1,253 bytes of
   shared value-usage analysis. A dedicated entry is therefore lower priority, but
   remains a possible way to make dependency boundaries legible and remove that

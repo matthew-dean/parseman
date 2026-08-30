@@ -123,6 +123,17 @@ describe('rules({ trivia }) — a reference re-establishes the target rule\'s sc
     })) as unknown as Record<string, Combinator<unknown>>
   }
 
+  it('the scalar path restores trivia for a referenced rule inside noTrivia', () => {
+    const g = rules({ trivia: rw }, (r: Record<string, Combinator<unknown>>) => ({
+      Pair: sequence(literal('x'), literal('y')),
+      Entry: noTrivia(r.Pair!),
+    })) as unknown as Record<string, Combinator<unknown>>
+
+    const result = parse(g.Entry!, 'x y')
+    expect(result.ok).toBe(true)
+    expect(result.ok && result.span.end).toBe(3)
+  })
+
   /** All four engines: interpreter, compiled, and both table drivers. */
   function fourEngines(input: string): Record<string, string> {
     const g = priorityGrammar()

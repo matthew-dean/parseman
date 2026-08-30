@@ -7,7 +7,7 @@ import { resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '../..')
 const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
-const BASELINE_RAW_BYTES = 57_680
+const BASELINE_RAW_BYTES = 57_957
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

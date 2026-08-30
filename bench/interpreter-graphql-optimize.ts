@@ -10,19 +10,20 @@
  *   --assert-interpreter-slowdown 100
  *   --assert-extra-browser-bytes 100000
  */
-import { execFileSync } from 'node:child_process'
 import { randomInt } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { builtinModules, createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { build, type Metafile } from 'esbuild'
-import { BAR_MARKER, CHART_GROUPS } from './chart-specs.ts'
+import { CHART_GROUPS } from './chart-specs.ts'
+import {
+  assertInterpreterChecks, INTERPRETER_BROWSER_RAW_LIMIT, measureInterpreterBar,
+} from './interpreter-optimize-support.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const CHILD = resolve(ROOT, 'bench/measure-bar.ts')
 const BROWSER_ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
-const BROWSER_RAW_LIMIT = 57_737
 const require = createRequire(import.meta.url)
 
 function numericArg(name: string, fallback: number): number {
@@ -41,20 +42,7 @@ const extraBytes = numericArg('assert-extra-browser-bytes', Number.EPSILON) === 
 type ParserKey = 'parseman-interp' | 'chevrotain' | 'peggy'
 
 function measure(key: ParserKey): number[] {
-  const out = execFileSync(process.execPath, ['--import', 'tsx/esm', CHILD, 'graphql', key], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    timeout: 180_000,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  const line = out.split('\n').find(value => value.startsWith(BAR_MARKER))
-  if (!line) throw new Error(`graphql/${key} produced no ${BAR_MARKER} line`)
-  const values = JSON.parse(line.slice(BAR_MARKER.length)) as unknown
-  if (!Array.isArray(values) || values.length !== CHART_GROUPS.graphql.length
-      || values.some(value => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
-    throw new Error(`graphql/${key} produced unusable timings ${JSON.stringify(values)}`)
-  }
-  return values as number[]
+  return measureInterpreterBar(ROOT, CHILD, 'graphql', key)
 }
 
 function geomean(values: readonly number[]): number {
@@ -136,7 +124,7 @@ const result = {
   measurement_valid: 1,
   graphql_rows_valid: ratios.length,
   aa_within_limit: aaWorst <= 1.05 ? 1 : 0,
-  browser_within_limit: rawBytes <= BROWSER_RAW_LIMIT ? 1 : 0,
+  browser_within_limit: rawBytes <= INTERPRETER_BROWSER_RAW_LIMIT ? 1 : 0,
   browser_heavy_dependency_modules: browserInputs.filter(input => heavyDependency.test(input)).length,
   browser_node_builtin_modules: browserInputs.filter(input => builtinNames.has(input)).length,
   browser_table_execution_modules: tableExecutionModules.length,
@@ -170,3 +158,12 @@ const result = {
 }
 
 process.stdout.write(`${JSON.stringify(result)}\n`)
+assertInterpreterChecks([
+  [result.graphql_rows_valid === CHART_GROUPS.graphql.length, 'not every GraphQL row produced a valid measurement'],
+  [result.aa_within_limit === 1, `interpreter A/A swing ${aaWorst.toFixed(3)} exceeds 1.05`],
+  [result.browser_within_limit === 1, `browser bundle ${rawBytes} exceeds ${INTERPRETER_BROWSER_RAW_LIMIT} raw bytes`],
+  [result.browser_heavy_dependency_modules === 0, 'browser bundle includes a heavy dependency'],
+  [result.browser_node_builtin_modules === 0, 'browser bundle includes a Node builtin'],
+  [result.browser_table_execution_modules === 0, 'browser bundle includes table execution machinery'],
+  [result.graphql_min_competitor_ratio >= 1, `interpreter loses a GraphQL row at ${result.graphql_min_competitor_ratio.toFixed(3)}x`],
+])

@@ -11,14 +11,16 @@
  *   --assert-interpreter-slowdown 100
  *   --assert-extra-browser-bytes 100000
  */
-import { execFileSync } from 'node:child_process'
 import { randomInt } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { builtinModules, createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { build } from 'esbuild'
-import { BAR_MARKER, CHART_GROUPS, type ChartKey } from './chart-specs.ts'
+import { CHART_GROUPS, type ChartKey } from './chart-specs.ts'
+import {
+  assertInterpreterChecks, INTERPRETER_BROWSER_RAW_LIMIT, measureInterpreterBar,
+} from './interpreter-optimize-support.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const CHILD = resolve(ROOT, 'bench/measure-bar.ts')
@@ -41,20 +43,7 @@ const assertedExtraBytes = numericArg('assert-extra-browser-bytes', Number.EPSIL
   : numericArg('assert-extra-browser-bytes', 0)
 
 function measureBar(chart: ChartKey, key: 'parseman-interp' | 'chevrotain'): number[] {
-  const out = execFileSync(process.execPath, ['--import', 'tsx/esm', CHILD, chart, key], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    timeout: 180_000,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  const line = out.split('\n').find(value => value.startsWith(BAR_MARKER))
-  if (!line) throw new Error(`${chart}/${key} produced no ${BAR_MARKER} line`)
-  const values = JSON.parse(line.slice(BAR_MARKER.length)) as unknown
-  if (!Array.isArray(values) || values.length !== CHART_GROUPS[chart].length
-      || values.some(value => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
-    throw new Error(`${chart}/${key} produced unusable timings ${JSON.stringify(values)}`)
-  }
-  return values as number[]
+  return measureInterpreterBar(ROOT, CHILD, chart, key)
 }
 
 function geomean(values: readonly number[]): number {
@@ -167,3 +156,12 @@ const result = {
 }
 
 process.stdout.write(`${JSON.stringify(result)}\n`)
+assertInterpreterChecks([
+  [aaWorstSwing <= 1.05, `interpreter A/A swing ${aaWorstSwing.toFixed(3)} exceeds 1.05`],
+  [result.interpreter_browser_raw_bytes <= INTERPRETER_BROWSER_RAW_LIMIT,
+    `browser bundle ${result.interpreter_browser_raw_bytes} exceeds ${INTERPRETER_BROWSER_RAW_LIMIT} raw bytes`],
+  [result.browser_heavy_dependency_modules === 0, 'browser bundle includes a heavy dependency'],
+  [result.browser_node_builtin_modules === 0, 'browser bundle includes a Node builtin'],
+  [result.chevrotain_geomean_ratio >= 1,
+    `interpreter aggregate trails Chevrotain at ${result.chevrotain_geomean_ratio.toFixed(3)}x`],
+])

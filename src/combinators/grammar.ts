@@ -278,7 +278,8 @@ export function parse<T>(
     _analyzed.add(combinator)
     markUnusedValues(combinator)
   }
-  if (!opts.trackLines && !opts.recover && combinator._def.tag === 'grammar') {
+  if (!opts.trackLines && !opts.recover && combinator._def.tag === 'grammar'
+    && combinator._meta.grammarScanSkip === undefined) {
     return (combinator as ParsemanParser<T>).parse(input)
   }
   const trackLines = opts.trackLines ?? combinator._meta.grammarTrackLines ?? false

@@ -2,6 +2,8 @@ import type { Combinator, ParseContext } from '../types.ts'
 
 export type ScalarParser = (input: string, pos: number, ctx: ParseContext) => number
 
+const SCALAR_TAG = /^(?:literal|regex|keywords|sequence|choice|many|oneOrMore|optional|transform|trivia|grammar|sepBy|lazy)$/
+
 export function scalarOf<T>(combinator: Combinator<T>): ScalarParser {
   return combinator._parseScalar!
 }
@@ -11,6 +13,7 @@ function scalarTree(parser: Combinator<unknown>, seen: Set<Combinator<unknown>>)
   if (parser._parseScalar === undefined) return false
   seen.add(parser)
   const def = parser._def
+  if (!SCALAR_TAG.test(def.tag)) return false
   if ('parsers' in def && !def.parsers.every(child => scalarTree(child, seen))) return false
   if ('parser' in def && !scalarTree(def.parser, seen)) return false
   if ('separator' in def && !scalarTree(def.separator, seen)) return false
