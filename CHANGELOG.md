@@ -8,18 +8,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - Speed up the setup-free interpreter for parsers that return JavaScript values. The
   optimization is automatic: there is no new API, option, or build step. Advanced
   features such as recovery, line tracking, CST/trivia capture, and instrumentation
-  continue to work as before. The full 4,147-test suite remains green.
-- Improve JSON parsing enough for the interpreter to beat Chevrotain at every measured
-  size: 0.83 / 25.28 / 205.36 microseconds versus 1.00 / 29.57 / 246.16 microseconds
-  for small, medium, and large inputs. CSV's interpreter also leads every external
-  parser; GraphQL remains close and trails Chevrotain by roughly 10–16%, depending on
-  size.
+  continue to work as before. The full 4,149-test suite remains green.
+- Make the interpreter the fastest setup-free parser in every JSON, CSV, and GraphQL
+  row. On GraphQL it now takes 1.17 / 9.84 / 214.70 microseconds versus Chevrotain's
+  2.19 / 12.79 / 335.75 microseconds for small, medium, and large inputs. The same
+  optimization also keeps JSON ahead of Chevrotain and CSV ahead of every external
+  parser.
 - Clarify the `transform()` callback contract: treat input arrays and objects as
   temporary, and copy one before keeping or returning it. Values your callback creates,
   including copies, are yours and are never reused by Parseman.
-- Keep the browser bundle light at 57,733 raw / 18,541 gzip bytes, four raw bytes below
-  the existing limit. The bundle check now guards both its total size and which code an
-  interpreter-only browser build actually includes.
+- Keep the browser bundle light at 57,624 raw / 18,637 gzip bytes, 109 raw bytes smaller
+  than the previous release candidate. The bundle check guards both its total size and
+  which code an interpreter-only browser build actually includes.
 - Regenerate all four public comparison SVGs on Node 24.11.1. Runtime-compiled
   Parseman remains the fastest compared JavaScript parser in every JSON, CSV,
   GraphQL, and CST row; the strict margin gate's tightest row is 1.74x over

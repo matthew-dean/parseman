@@ -14,13 +14,13 @@ library with an optional compiler, and it gives you both.
 parser in the suite** — ahead of every other library measured, at every grammar and every
 input size in that suite.
 Every parser in the suite builds real output: objects, row arrays, AST nodes. On a 7.7 kB
-GraphQL document compiled Parséman takes **147 µs**; Chevrotain takes 329 µs. Only a
+GraphQL document compiled Parséman takes **148 µs**; Chevrotain takes 336 µs. Only a
 purpose-built native edges it out: `JSON.parse` on JSON.
 
 ![GraphQL parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-graphql.svg)
 
-Two more results. The setup-free interpreter now beats Chevrotain at every measured JSON
-size and every external parser on CSV. The compiled CST path beats Lezer on the JSON CST
+Two more results. The setup-free interpreter now leads every external parser at every
+measured JSON, CSV, and GraphQL size. The compiled CST path beats Lezer on the JSON CST
 fixture — **148 µs** vs 583 µs at 11.9 kB — while producing a richer tree carrying spans
 and trivia. And `parseDoc`
 stores parent-relative spans, so an in-place edit costs a fraction of a full reparse rather
@@ -162,9 +162,10 @@ Benchmarked against [Peggy](https://peggyjs.org/),
 Each chart's legend names the libraries measured for that grammar.
 
 Largest fixture of each, runtime compile against the fastest other library on that chart:
-GraphQL **147 µs** vs Chevrotain's 329 µs, JSON **122 µs** vs Chevrotain's 246 µs, CSV
-**73.83 µs** vs Peggy's 432.15 µs. Native `JSON.parse` does JSON large in 41.16 µs. On the
-CST chart, runtime compile runs 148 µs against Lezer's 583 µs parse-only.
+GraphQL **147.76 µs** vs Chevrotain's 335.75 µs, JSON **122.09 µs** vs Chevrotain's
+242.86 µs, CSV **75.02 µs** vs Peggy's 433.52 µs. Native `JSON.parse` does JSON large
+in 40.61 µs. On the CST chart, runtime compile runs 151.87 µs against Lezer's 582.14 µs
+parse-only.
 
 Those are the committed 0.50.2 charts, regenerated on 2026-08-29 on an M4 Pro with
 Node 24.11.1. They include small, medium, and large rows for JSON, GraphQL, and CST,

@@ -151,7 +151,7 @@ verified context-free grammar root selects this family once in the public parser
 closure and materializes one public `ParseResult` at the root. Unsupported or
 featureful shapes expose no scalar entry and retain the general interpreter for
 recovery, line tracking, CST/trivia capture, instrumentation, adjacency,
-ordered/gated choices, and separator-preserving repetition.
+gated or classifier-driven choices, and separator-preserving repetition.
 
 This is intentionally not a generic table/plan executor. Fixed topology and
 recognizer choice are captured when combinators are built; hot scalar functions do
@@ -166,6 +166,15 @@ three sizes in every final run. The public browser closure is **57,733 raw / 18,
 gzip bytes**, four raw bytes below its ratchet. Table/executor modules emit zero
 bytes; the pre-existing shared `compiler/value-usage.ts` analysis emits 1,253 bytes.
 The full **4,147-test** suite passes.
+
+2026-08-29 GraphQL follow-up, checkpoint `fec6f2b`: the scalar family had never
+run for GraphQL. Seven keyword terminals lacked scalar recognition, and two
+ordinary ordered choices withheld an already-correct scalar runner. Completing
+those construction-time capabilities moved the exact rotated SVG rows to
+**1.17 / 9.84 / 214.70 µs**, ahead of Chevrotain's **2.19 / 12.79 / 335.75 µs**.
+Five A/A-gated confirmations won all three rows; the full **4,149-test** suite
+passes. The browser closure shrank to **57,624 raw / 18,637 gzip bytes** with no
+emitted table/executor machinery.
 
 The exact JSON string fusion uses a construction-owned scratch reducer tuple. A
 callback that retains that internal reducer input can observe later mutation; normal
@@ -218,8 +227,8 @@ Related rejected follow-up: nested `parser()` context spread was replaced with s
 ## Runtime bundle-size follow-up
 
 - **Split a lean interpreter/runtime entry from compiler APIs.** The Chevrotain
-  interpreted browser bundle now proves the public-root path stays at 57,733 raw /
-  18,541 gzip bytes with no emitted table/executor machinery. The package root
+  interpreted browser bundle now proves the public-root path stays at 57,624 raw /
+  18,637 gzip bytes with no emitted table/executor machinery. The package root
   still traverses compiler/table modules during bundling and emits 1,253 bytes of
   shared value-usage analysis. A dedicated entry is therefore lower priority, but
   remains a possible way to make dependency boundaries legible and remove that
