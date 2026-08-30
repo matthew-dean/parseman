@@ -25,7 +25,11 @@ import {
 } from './parseman-perf.ts'
 
 const all = process.argv.includes('--all')
+const HARD_SLIDE_PCT = 100 // a 2x slide against our own baseline is a stop, shelf or not
 const tolerance = Number(process.env.PARSEMAN_PERF_TOLERANCE ?? PERF_TOLERANCE) // % slower than baseline
+if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance >= HARD_SLIDE_PCT) {
+  throw new Error(`PARSEMAN_PERF_TOLERANCE must be finite, non-negative, and below the ${HARD_SLIDE_PCT}% compiled hard ceiling`)
+}
 const interpreterGuardSlowdown = Number(process.env.PARSEMAN_INTERPRETER_GUARD_SLOWDOWN ?? 1)
 if (!Number.isFinite(interpreterGuardSlowdown) || interpreterGuardSlowdown < 1) {
   throw new Error('PARSEMAN_INTERPRETER_GUARD_SLOWDOWN must be a finite number >= 1')
@@ -92,9 +96,11 @@ const measuredRows = runParsemanSuiteRobust({
 // Permanent sensitivity control for the interpreter ratchet. It changes only the
 // reported timing after measurement; production code and the compiled leg stay
 // untouched. A 100x plant must make this process exit non-zero.
-const rows = measuredRows.map(row => row.mode === 'interpreted'
-  ? { ...row, medianUs: row.medianUs * interpreterGuardSlowdown }
-  : row)
+const rows = measuredRows.map(row => {
+  if (row.mode !== 'interpreted') return row
+  const medianUs = row.medianUs * interpreterGuardSlowdown
+  return { ...row, medianUs, opsPerSec: Math.round(1_000_000 / medianUs) }
+})
 
 const regressionsAll = findRegressions(rows, baseline, {
   checkSpeedup: false,
@@ -184,8 +190,6 @@ const composeRegressed = false
 // So: interpreter BLOCKS at `tolerance`; compiled WARNs there and BLOCKS only
 // past HARD_SLIDE_PCT. The compiled competitor gate lives with the charts, in
 // `bench/svg-margin.ts`, because that is where those competitor bars are.
-const HARD_SLIDE_PCT = 100 // a 2× slide against our own baseline is a stop, shelf or not
-
 const pctOf = (message: string): number => {
   const m = message.match(/\+([\d.]+)% regression/)
   return m ? Number(m[1]) : 0
