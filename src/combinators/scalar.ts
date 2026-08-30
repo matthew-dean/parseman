@@ -11,26 +11,10 @@ function scalarTree(parser: Combinator<unknown>, seen: Set<Combinator<unknown>>)
   if (parser._parseScalar === undefined) return false
   seen.add(parser)
   const def = parser._def
-  switch (def.tag) {
-    case 'literal':
-    case 'regex':
-      return true
-    case 'transform':
-    case 'trivia':
-    case 'optional':
-    case 'many':
-    case 'oneOrMore':
-      return scalarTree(def.parser, seen)
-    case 'sequence':
-    case 'choice':
-      return def.parsers.every(child => scalarTree(child, seen))
-    case 'sepBy':
-      return scalarTree(def.parser, seen) && scalarTree(def.separator, seen)
-    case 'lazy':
-      return scalarTree(def.thunk(), seen)
-    default:
-      return false
-  }
+  if ('parsers' in def && !def.parsers.every(child => scalarTree(child, seen))) return false
+  if ('parser' in def && !scalarTree(def.parser, seen)) return false
+  if ('separator' in def && !scalarTree(def.separator, seen)) return false
+  return def.tag !== 'lazy' || scalarTree(def.thunk(), seen)
 }
 
 /** Select the strict value-only ABI only when the complete root is in its family. */

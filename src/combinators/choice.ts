@@ -50,10 +50,11 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
   // the dispatched branch); a NON-disjoint gated choice falls to firstMatch — the
   // greedy/longest-first strategies are incompatible with per-arm predicates.
   const strategy = (disjoint || hasGates) ? null : detectStrategy(parsers)
+  const ordered = strategy?.tag === 'firstMatch' || strategy?.tag === 'sharedPrefix'
   // `sharedPrefix` is a `firstMatch` specialization — the interpreter runs it via
   // the firstMatch loop below, and codegen falls back to firstMatch under
   // coverage/recovery/linkable — so it needs the same auto-not table computed.
-  const autoNot = (!disjoint && !hasGates && (strategy?.tag === 'firstMatch' || strategy?.tag === 'sharedPrefix'))
+  const autoNot = (!disjoint && !hasGates && ordered)
     ? computeAutoNot(parsers)
     : parsers.map(() => null)
 
@@ -74,6 +75,8 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
   }
 
   const scalarParsers = parsers.map(scalarOf)
+  const scalarEligible = !hasGates && parsers.every(p => p._parseScalar !== undefined)
+    && (disjoint || ordered)
   const scalarExpected = parsers.flatMap(deriveExpected)
   const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
     if (disjoint) {
@@ -112,7 +115,7 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       strategy: strategy ?? { tag: 'firstMatch' },
       autoNot,
     },
-    _parseScalar: disjoint && !hasGates ? parseScalar : undefined,
+    _parseScalar: scalarEligible ? parseScalar : undefined,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnionArms<T>> {
       const expected: string[] = []
       let expectedAt = pos
