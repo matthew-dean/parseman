@@ -1,0 +1,8 @@
+{
+  "_comment": "Release gate for the shipping Jess macro parsers. Both repositories are pinned so a green run always names the same parser source and fixture source.",
+  "referenceSha": "b406fbe3398b79f8281f4cc8b08bfce4cc51aebf",
+  "referenceVersion": "0.50.2",
+  "jessSha": "a0289130fe193a11a44c763d79e50058c3db8b06",
+  "aaSwingCeiling": 1.03,
+  "candidateRatioCeiling": 1.03
+}

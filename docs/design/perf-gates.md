@@ -1,6 +1,6 @@
 # Performance gates
 
-parseman has three performance gates. They answer different questions, and the
+parseman has four performance gates. They answer different questions, and the
 difference is the whole point.
 
 | gate | asks | cost |
@@ -8,10 +8,11 @@ difference is the whole point.
 | `pnpm perf:guard` | did parseman's own microbenchmarks move, especially the retained interpreter baseline? | seconds |
 | `pnpm perf:guard:grammars` | did a known cost AXIS move? | ~1.5-2 min |
 | `pnpm perf:workloads` | did realistic parsing get slower, on any axis at all? | ~2.5-3 min |
+| `pnpm bench:macro-optimize` | did the shipping Jess macro parsers stay correct and within their measured speed band? | several minutes |
 
-All three run on every PR, and all three are required. None needs a checkout of
-any other repository, a network fetch, or a setup step: `pnpm install && pnpm
-perf:workloads` is the whole contract.
+All four run on every code PR, and all four are required. The first three are
+self-contained in this repository. The macro gate also uses the pinned Jess commit
+named in `bench/jess/macro-optimize-config.json`; CI checks it out automatically.
 
 The last two are not redundant, and which one you reach for depends on what you
 are doing. `perf:workloads` is the one that FINDS a regression: it parses real
@@ -26,12 +27,20 @@ reads a real +49.6% Less regression as +2%…+9%, because a realistic parse spen
 most of its time on work the regression does not touch — which is exactly why the
 amplifying sweep is worth keeping.
 
-These three are GATES: they answer "did it move?" The grammar and workload gates
+These four are GATES: they answer "did it move?" The grammar and workload gates
 compare two builds in the same run. The fast guard compares against a committed
 baseline: interpreted rows block outside the measured 15% cross-machine
 tolerance, preserving the setup-free gains, while smaller compiled movement is
 reported for investigation and judged by the workload and comparison-chart
 gates.
+
+The macro gate covers a different shipping shape. Jess loads Parseman's macro output,
+not the runtime `compile()` path exercised by the grammar and workload gates. It first
+requires full three-way result identity, then times the 0.50.3 candidate against the
+exact merged 0.50.2 release with a separate matching A/A control. A run is invalid if
+any configured fixture is missing, either leg has the wrong engine or source path, the
+A/A control moves more than 3%, or any normalized candidate row is more than 3% slower.
+Invalid and regressed runs exit nonzero; the JSON report explains the rejection.
 
 When a target is stated in absolute milliseconds against a named fixture — as the
 table lowering's is — the instrument is

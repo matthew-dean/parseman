@@ -15,13 +15,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - Add a machine-readable Jess A/B harness that verifies complete parses and result
   identity across the shipped macro, reference-table, and interpreter paths. It also
   records the actual engine, lowering, source path, and commit for every measured leg,
-  so a mislabeled or mixed-build comparison fails closed instead of producing a number.
+  so a mislabeled, incomplete, or mixed-build comparison fails closed instead of
+  producing a number. CI now runs this shipping-macro path against pinned Parseman
+  0.50.2 and Jess checkouts, with a matching A/A control and a 3% regression ceiling.
 - Treat the performance result conservatively. The large CSS and Less workloads move
   in the faster direction, but remain inside the paired A/A noise band; the release
   claims the generated-source reduction, not a parse-speed win. Runtime-compiled
   Parseman is unaffected and continues to clear the strict comparison-chart margin.
-- Re-anchor the grammar-density and broad-workload A/B checks to the exact 0.50.2
-  release, so future releases measure from the version this work actually follows.
+- Re-anchor the interpreter baseline, Jess macro comparison, grammar-density check,
+  and broad-workload check to merged 0.50.2 commit `b406fbe`, so future releases
+  measure from the final reviewed release rather than its earlier optimization checkpoint.
 
 ## 0.50.2 — 2026-08-29
 

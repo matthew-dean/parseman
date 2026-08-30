@@ -1,12 +1,13 @@
 /**
- * THE PLANT CATALOGUE — one real defect per entry, as a textual edit to `src/`.
+ * THE PLANT CATALOGUE — one real defect per entry, as a textual edit to the
+ * implementation path the registered differential claims to exercise.
  *
  * `scripts/check-differentials.mjs` applies one of these, runs the differentials
  * registered against it, and restores. A registered differential that does not
  * MOVE under its plant is a differential that cannot fail, and that is the whole
  * finding — see docs/design/differential-gates.md.
  *
- * WHY TEXTUAL EDITS TO REAL SOURCE, and not a mock or an injected hook.
+ * WHY TEXTUAL EDITS TO REAL IMPLEMENTATION CODE, and not a mock or an injected hook.
  *
  * A hook proves the hook fires. The claim under test is that the harness, run
  * exactly as a lane runs it, notices a change to the engine it names — so the
@@ -133,5 +134,21 @@ export const DEFECTS = {
         replace: '  const REC = false',
       },
     ],
+  },
+
+  /**
+   * The macro timing contract computes rejection reasons but always exits green.
+   *
+   * The defect class: a report correctly names a regression while the required
+   * CI step still succeeds. This plant lives in benchmark protocol code because
+   * that protocol—not the browser/runtime package—is the behavior under test.
+   */
+  'macro-timing-exit-off': {
+    why: 'macro timing gate: regressions are reported but never block CI',
+    edits: [{
+      file: 'bench/jess/ab-protocol.ts',
+      find: '  return errors.length === 0 ? 0 : 1',
+      replace: '  return 0',
+    }],
   },
 }

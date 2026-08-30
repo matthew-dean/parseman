@@ -6,48 +6,36 @@
  * verbose provenance transcript and emits one JSON object for ce-optimize.
  */
 import { execFileSync } from 'node:child_process'
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { JESS_ROOT } from './jess/grammars.ts'
+import {
+  JESS_AB_RESULT_MARKER as RESULT_MARKER,
+  expectedRowKeys,
+  macroTimingExitCode,
+  macroTimingErrors,
+  rowKey,
+  validateStructuredRun,
+  type MacroRunKind,
+  type StructuredRun,
+} from './jess/ab-protocol.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const AB = path.resolve(ROOT, 'bench/jess/ab.ts')
 const REGISTER = path.resolve(ROOT, 'bench/jess/ab-register.mjs')
-const RESULT_MARKER = '__JESS_AB_RESULT__'
+const CONFIG_PATH = path.resolve(ROOT, 'bench/jess/macro-optimize-config.json')
 const RANKABLE_BYTES = 4096
 
 type Dialect = 'css' | 'less'
-type StructuredRow = {
-  dialect: Dialect
-  fixture: string
-  bytes: number
-  headMs: number
-  referenceMs: number
-  ratio: number
-  pairedRoundRatios: number[]
-  headWins: number
-  full: boolean
-  identityChecked: boolean
-  identityAgreement: boolean
-  pairingWorstDrift: number
-  pairingTolerance: number
-  pairingArtifact: boolean
-  forced: boolean
-  head: { engine: string; lowering: string; source: string }
-  reference: { engine: string; lowering: string; source: string }
+type Config = {
+  referenceSha: string
+  referenceVersion: string
+  jessSha: string
+  aaSwingCeiling: number
+  candidateRatioCeiling: number
 }
-
-type StructuredRun = {
-  schemaVersion: number
-  self: boolean
-  twoGraph: boolean
-  reference: string
-  headSha: string
-  headEngine: string
-  referenceEngine: string
-  measurement: { warmup: number; timed: number; rounds: number; runs: number }
-  rows: StructuredRow[]
-}
+const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
 
 function arg(name: string): string | null {
   return process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null
@@ -67,6 +55,18 @@ function positiveNumber(name: string, fallback: number): number {
   const value = Number(raw)
   if (!Number.isFinite(value) || value <= 0) throw new Error(`--${name} must be a positive number`)
   return value
+}
+
+function gitCommit(cwd: string, ref: string): string {
+  try {
+    return execFileSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 10_000,
+    }).trim()
+  } catch (error) {
+    throw new Error(`could not resolve ${ref} to a commit in ${cwd}`, { cause: error })
+  }
 }
 
 function geomean(values: readonly number[]): number {
@@ -107,7 +107,31 @@ function runAb(dialect: Dialect, args: readonly string[], env: NodeJS.ProcessEnv
   if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.rows) || parsed.rows.length === 0) {
     throw new Error(`macro optimize ${dialect} child emitted an unusable record`)
   }
+  if (process.argv.includes('--assert-omit-first-row')) parsed.rows = parsed.rows.slice(1)
   return parsed
+}
+
+function validateRuns(runs: readonly StructuredRun[], dialects: readonly Dialect[], kind: MacroRunKind,
+  reference: string, headSha: string, headSource: string): void {
+  if (runs.length !== dialects.length) throw new Error(`${kind}: got ${runs.length} runs, expected ${dialects.length}`)
+  const errors = runs.flatMap((run, index) => validateStructuredRun(run, {
+    dialect: dialects[index]!,
+    kind,
+    reference: kind === 'self' ? headSha : reference,
+    headSha,
+    headSource,
+  }).map(error => `${kind}/${dialects[index]}: ${error}`))
+  if (errors.length > 0) throw new Error(`macro optimize rejected ${kind} provenance:\n${errors.join('\n')}`)
+}
+
+function printLegProvenance(label: string, runs: readonly StructuredRun[]): void {
+  process.stdout.write(`${label} legs (engine, lowering, resolved source):\n`)
+  for (const run of runs) {
+    for (const row of run.rows) {
+      process.stdout.write(`  ${rowKey(row)} HEAD ${row.head.engine} ${row.head.lowering} ${row.head.source}\n`)
+      process.stdout.write(`  ${rowKey(row)} REF  ${row.reference.engine} ${row.reference.lowering} ${row.reference.source}\n`)
+    }
+  }
 }
 
 const mode = arg('mode') ?? 'timing'
@@ -117,14 +141,33 @@ if (dialectsRaw.length === 0 || dialectsRaw.some(value => value !== 'less' && va
   throw new Error('--dialects must be a comma-separated subset of less,css')
 }
 const dialects = [...new Set(dialectsRaw)] as Dialect[]
-const reference = arg('ref') ?? process.env.PM_MACRO_OPT_REF
-if (!reference) throw new Error('--ref=<immutable 0.50.2 sha> or PM_MACRO_OPT_REF is required')
+const requestedReference = arg('ref') ?? process.env.PM_MACRO_OPT_REF ?? CONFIG.referenceSha
+const reference = gitCommit(ROOT, requestedReference)
+const releaseReference = gitCommit(ROOT, CONFIG.referenceSha)
+if (reference !== releaseReference) {
+  throw new Error(`--ref must resolve to the pinned ${CONFIG.referenceVersion} release ${releaseReference}; got ${reference}`)
+}
+const headCommit = gitCommit(ROOT, 'HEAD')
+if (headCommit === reference) throw new Error('--ref resolves to HEAD, so the candidate and reference would be the same build')
+const headSha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim()
+const headSource = realpathSync(path.resolve(ROOT, 'src'))
+const jessCommit = gitCommit(JESS_ROOT, 'HEAD')
+if (jessCommit !== CONFIG.jessSha) {
+  throw new Error(`JESS_ROOT must be pinned at ${CONFIG.jessSha}; got ${jessCommit} from ${realpathSync(JESS_ROOT)}`)
+}
+const jessDirty = execFileSync('git', ['status', '--porcelain'], {
+  cwd: JESS_ROOT,
+  encoding: 'utf8',
+  timeout: 10_000,
+}).trim()
+if (jessDirty !== '') throw new Error(`JESS_ROOT has uncommitted changes; refusing an unpinned fixture/grammar source:\n${jessDirty}`)
 
 const warmup = positiveInt('warmup', mode === 'timing' ? 3 : 1)
 const timed = positiveInt('timed', mode === 'timing' ? 5 : 1)
 const rounds = positiveInt('rounds', mode === 'timing' ? 8 : 1)
 const runs = positiveInt('runs', mode === 'timing' ? 2 : 1)
 const slowdownPlant = positiveNumber('assert-candidate-slowdown', 1)
+const aaSwingPlant = positiveNumber('assert-aa-swing', 1)
 const common = [
   `--warmup=${warmup}`,
   `--timed=${timed}`,
@@ -133,28 +176,40 @@ const common = [
 ]
 
 if (mode === 'correctness') {
-  const rows = dialects.flatMap(dialect => runAb(dialect, [
+  const correctnessRuns = dialects.map(dialect => runAb(dialect, [
     `--ref=${reference}`,
     '--require-identity',
     '--require-full',
     ...common,
-  ]).rows)
-  const valid = rows.filter(row => row.full && row.identityChecked && row.identityAgreement && !row.forced)
+  ], { ...process.env, PM_FORCE: '1' }))
+  validateRuns(correctnessRuns, dialects, 'correctness', reference, headSha, headSource)
+  printLegProvenance('correctness', correctnessRuns)
+  const rows = correctnessRuns.flatMap(run => run.rows)
+  const expectedRows = expectedRowKeys(dialects).length
+  // Correctness does not consume the timing columns, so host load cannot invalidate
+  // semantic identity. The timing mode below still refuses forced measurements.
+  const valid = rows.filter(row => row.full && row.identityChecked && row.identityAgreement)
+  const measurementValid = valid.length === expectedRows
   process.stdout.write(`${JSON.stringify({
-    measurement_valid: valid.length === rows.length ? 1 : 0,
+    measurement_valid: measurementValid ? 1 : 0,
     macro_identity_rows: valid.length,
-    macro_expected_identity_rows: rows.length,
+    macro_expected_identity_rows: expectedRows,
     macro_full_rows: rows.filter(row => row.full).length,
+    macro_expected_full_rows: expectedRows,
     macro_pairing_artifacts: rows.filter(row => row.pairingArtifact).length,
+    macro_forced_rows: rows.filter(row => row.forced).length,
+    rows,
     provenance: {
       harness: realpathSync(import.meta.filename),
       jess_ab: realpathSync(AB),
       reference,
+      reference_version: CONFIG.referenceVersion,
+      jess_sha: jessCommit,
       dialects,
       mode,
     },
   })}\n`)
-  process.exit(valid.length === rows.length ? 0 : 1)
+  process.exit(measurementValid ? 0 : 1)
 }
 
 const candidateRuns = dialects.map(dialect => runAb(dialect, [
@@ -169,6 +224,11 @@ const selfRuns = dialects.map(dialect => runAb(dialect, [
   '--require-full',
   ...common,
 ]))
+
+validateRuns(candidateRuns, dialects, 'candidate', reference, headSha, headSource)
+validateRuns(selfRuns, dialects, 'self', reference, headSha, headSource)
+printLegProvenance('candidate', candidateRuns)
+printLegProvenance('self-control', selfRuns)
 
 const candidateRows = candidateRuns.flatMap(run => run.rows).filter(row => row.bytes >= RANKABLE_BYTES)
 const selfRows = selfRuns.flatMap(run => run.rows).filter(row => row.bytes >= RANKABLE_BYTES)
@@ -194,7 +254,20 @@ const provenanceValid = allRows.every(row => row.head.engine === 'macro'
   && row.reference.engine === 'macro'
   && row.head.lowering === 'macro→static-table-assembly'
   && row.reference.lowering === 'macro→static-table-assembly')
-const aaWorstSwing = Math.max(...selfRows.map(row => Math.max(row.ratio, 1 / row.ratio)))
+const aaWorstSwing = Math.max(...selfRows.map(row => Math.max(row.ratio, 1 / row.ratio))) * aaSwingPlant
+const expectedFullRows = expectedRowKeys(dialects).length * 2
+const timingErrors = macroTimingErrors({
+  fullRows,
+  expectedFullRows,
+  pairingArtifacts,
+  forcedRows,
+  provenanceValid,
+  aaWorstSwing,
+  aaSwingCeiling: CONFIG.aaSwingCeiling,
+  candidateRatios: ratios,
+  candidateRatioCeiling: CONFIG.candidateRatioCeiling,
+})
+const measurementValid = timingErrors.length === 0
 
 process.stdout.write(`${JSON.stringify({
   macro_geomean_ratio: geomean(ratios),
@@ -204,19 +277,24 @@ process.stdout.write(`${JSON.stringify({
   macro_rows_better: ratios.filter(ratio => ratio < 1).length,
   macro_rankable_rows: normalizedRows.length,
   macro_full_rows: fullRows,
-  macro_expected_full_rows: allRows.length,
+  macro_expected_full_rows: expectedFullRows,
   macro_pairing_artifacts: pairingArtifacts,
   macro_forced_rows: forcedRows,
   macro_provenance_valid: provenanceValid ? 1 : 0,
   aa_worst_swing_ratio: aaWorstSwing,
-  measurement_valid: fullRows === allRows.length && pairingArtifacts === 0
-    && forcedRows === 0 && provenanceValid ? 1 : 0,
+  aa_swing_ceiling: CONFIG.aaSwingCeiling,
+  candidate_ratio_ceiling: CONFIG.candidateRatioCeiling,
+  measurement_valid: measurementValid ? 1 : 0,
   asserted_candidate_slowdown: slowdownPlant,
+  asserted_aa_swing: aaSwingPlant,
+  rejection_reasons: timingErrors,
   rows: normalizedRows,
   provenance: {
     harness: realpathSync(import.meta.filename),
     jess_ab: realpathSync(AB),
     reference,
+    reference_version: CONFIG.referenceVersion,
+    jess_sha: jessCommit,
     head_shas: candidateRuns.map(run => run.headSha),
     self_head_shas: selfRuns.map(run => run.headSha),
     dialects,
@@ -224,3 +302,4 @@ process.stdout.write(`${JSON.stringify({
     measurement: { warmup, timed, rounds, runs },
   },
 })}\n`)
+process.exit(macroTimingExitCode(timingErrors))

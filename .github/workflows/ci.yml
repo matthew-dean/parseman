@@ -383,6 +383,43 @@ jobs:
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
+  # Shipping macro-parser gate. The grammar/workload jobs above exercise runtime
+  # compile(); they do not instantiate Jess's macro-emitted parser. Pin Jess as
+  # well as parseman so the fixture and grammar side cannot drift under the gate.
+  macro-perf:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout parseman
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Checkout pinned Jess benchmark host
+        uses: actions/checkout@v4
+        with:
+          repository: jesscss/jess
+          ref: a0289130fe193a11a44c763d79e50058c3db8b06
+          path: .cache/jess
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install pinned Jess benchmark host
+        run: pnpm install --frozen-lockfile
+        working-directory: .cache/jess
+      - name: Macro semantic identity vs 0.50.2
+        run: pnpm bench:macro-optimize -- --mode=correctness
+        env:
+          JESS_ROOT: ${{ github.workspace }}/.cache/jess
+      - name: Macro timing gate vs 0.50.2 with adjacent self-control
+        run: pnpm bench:macro-optimize
+        env:
+          JESS_ROOT: ${{ github.workspace }}/.cache/jess
+
   # Code-size gate. On the same footing as the two perf gates, because until it
   # existed size had NO gate at all: `bench:size` lived in package.json and in
   # zero workflows, so the code-size budget published in docs/guide/macro-mode.md

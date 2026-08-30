@@ -209,18 +209,18 @@ that is what the sweeps themselves are for. It times nothing.
 
 ### UNPROVEN is not passing
 
-Four of the six registered differentials drive jess's grammars over jess's
+Four of the seven registered differentials drive jess's grammars over jess's
 corpora, which live in an unpinned sibling checkout (`JESS_ROOT`) this repo does
 not vendor. Where that checkout is absent they are reported UNPROVEN on their own
 summary line — never as passing, and never silently omitted. CI runs the plain
-mode and proves the two self-contained ones; `--strict` makes an UNPROVEN entry a
+mode and proves the three self-contained ones; `--strict` makes an UNPROVEN entry a
 failure and is what a release runs, on a box where the jess checkout exists.
 
 ## Adding a differential
 
 1. Register it in `REGISTRY` with its `legs` prose. The prose is required: it is
    where a label and an import get to disagree in public.
-2. Add a plant to `differential-defects.mjs` — a real edit to `src/`, in the code
+2. Add a plant to `differential-defects.mjs` — a real edit to the implementation
    path the differential claims to cover, of the shape of a defect that has
    actually shipped.
 3. Run `pnpm check:differentials --only=<id>` and watch it say CAUGHT. If it says
@@ -237,7 +237,7 @@ failure and is what a release runs, on a box where the jess checkout exists.
   non-zero, but a lane reading them by hand gets no exit code to trust, and
   `table-lowering-identity` is registered against the vitest test rather than the
   sweep for exactly that reason.
-- `bench/jess/ab.ts` and `bench/jess/fixture.ts` are not registered. Both are
-  timing harnesses whose defects (V1, V3, V5) are the ones this document opens
-  with, and a timing differential needs `perf-harness-interleaving.md`'s
-  machinery before a plant means anything.
+- The raw timing loop in `bench/jess/ab.ts` is not registered: a timing
+  differential needs `perf-harness-interleaving.md`'s machinery before a plant
+  means anything. The deterministic acceptance protocol around it is registered
+  as `macro-optimize-contract`, including the blocking exit status consumed by CI.

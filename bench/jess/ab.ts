@@ -133,35 +133,15 @@ import {
 } from './grammars.ts'
 import { COLUMNS, FACETS, digestRow } from './digest.ts'
 import { pairedRoundDispersion, resolveMeasurement } from './ab-options.ts'
+import { JESS_AB_FIXTURES as FIXTURES, JESS_AB_RESULT_MARKER as RESULT_MARKER, type StructuredRow } from './ab-protocol.ts'
 
 const GATE = 'jess-ab'
-const RESULT_MARKER = '__JESS_AB_RESULT__'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../..')
 const CONFIG_PATH = path.join(HERE, 'ab-config.json')
 
 type Config = { referenceSha: string; measurement: Measurement }
 const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
-
-type StructuredRow = {
-  dialect: Dialect
-  fixture: string
-  bytes: number
-  headMs: number
-  referenceMs: number
-  ratio: number
-  pairedRoundRatios: number[]
-  headWins: number
-  full: boolean
-  identityChecked: boolean
-  identityAgreement: boolean
-  pairingWorstDrift: number
-  pairingTolerance: number
-  pairingArtifact: boolean
-  forced: boolean
-  head: { engine: string; lowering: string; source: string }
-  reference: { engine: string; lowering: string; source: string }
-}
 
 const structuredRows: StructuredRow[] = []
 
@@ -251,13 +231,6 @@ const MODULE: Record<Dialect, string> = {
  * ranked on. A 0.1 ms row is dominated by `run()`'s own per-call cost and a
  * ratio taken from it says nothing about the grammar.
  */
-const FIXTURES: Record<Dialect, string[]> = {
-  css: ['packages/jess/benchmark/benchmark.css'],
-  less: ['packages/jess/benchmark/benchmark.less', 'packages/jess/benchmark/gen-workload.less'],
-  scss: ['packages/jess/benchmark/gen-workload.scss'],
-  jess: ['packages/jess/benchmark/benchmark.jess'],
-}
-
 type JessPreflight = {
   root: string
   grammars: { dialect: Dialect; real: string }[]
@@ -695,7 +668,11 @@ async function measureDialect(
 
   for (const rel of FIXTURES[dialect]) {
     const p = path.resolve(JESS_ROOT, rel)
-    if (!existsSync(p)) { console.log(`=== ${rel}  MISSING — not measured`); continue }
+    if (!existsSync(p)) {
+      if (REQUIRE_FULL) throw new Error(`${rel}: --require-full caught a missing configured fixture`)
+      console.log(`=== ${rel}  MISSING — not measured`)
+      continue
+    }
     const input = readFileSync(p, 'utf8')
     const bytes = Buffer.byteLength(input)
     console.log(`\n=== ${rel}   ${bytes} B`)
