@@ -751,6 +751,10 @@ parse(spanned, 'abc').value
 captured children and trivia, use [`node()`](./ast) — see
 [`transform` vs `node`](#mapping-vs-building-transform-vs-node).
 
+Reducer inputs are callback-scoped. Consume them synchronously and return the value
+you want to own; do not retain an intermediate sequence tuple or depend on its object
+identity across parses. Returned objects and arrays are yours and are not reused.
+
 ### `token`
 
 Run a contiguous region with trivia disabled, return the matched **source text**, and

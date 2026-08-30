@@ -17,12 +17,13 @@ as current 0.48 figures.
 ## The one rule: fewer combinator boundaries
 
 The single biggest grammar-level performance lever is the number of combinator boundaries
-on your hot path. In the interpreter, and for a `regex` the compiler doesn't lower away,
-every `sequence` / `regex` / `oneOrMore` step costs a function call and a result-object
-allocation. Inside a `node()` rule, it also costs a leaf push. Fewer, fatter combinators
-beat many thin ones — and the compiler still lowers a fair number of `regex` terminals
-into a direct `charCodeAt` loop on its own (see [regex lowering](./regex-lowering)), so
-this rule matters most for the boundaries that don't get lowered for you.
+on your hot path. For a safe semantic-value root, the interpreter now gives each boundary
+a scalar recognizer—so recursive calls avoid allocating a `ParseResult`—but the function
+call and semantic handoff still exist. Featureful interpreter paths retain full result,
+rollback, capture, and diagnostic work. Inside a `node()` rule, a boundary can also cost a
+leaf push. Fewer, fatter combinators therefore still beat many thin ones, and the compiler
+lowers a fair number of `regex` terminals into direct loops of its own (see
+[regex lowering](./regex-lowering)).
 
 ## Collapse opaque shapes into one regex
 

@@ -139,7 +139,18 @@ compiled GraphQL by ~60%, and inflated each library by a *different* amount.
 If a competitor's ratio drops toward 1.0× in any row, that row is the gate and
 your change needs a number on both sides before it lands, not after.
 
-## The margin as of `f78bc9b` (0.46.0, pre-lane)
+## Current release margin (0.50.2)
+
+A three-round all-chart run on 2026-08-29 under Node 24.11.1 held every compiled
+rank bar. The tightest row moved to medium GraphQL: 7.135 µs for Parséman versus
+12.417 µs for Chevrotain, a 1.74× lead, while the worst in-run A/A spread was
+2.8%.
+
+The interpreter is excluded from this compiled-rank verdict, but its published
+bars now lead every external parser on JSON and CSV. Chevrotain remains 8–15%
+faster on interpreted GraphQL.
+
+## Historical margin as of `f78bc9b` (0.46.0, pre-lane)
 
 3 rounds, rotated, one process per bar. Every in-run control read 0.98–1.03×, so
 the noise floor for this run was ~±3%; every competitor row won 3/3 paired

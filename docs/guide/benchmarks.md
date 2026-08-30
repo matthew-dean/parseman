@@ -14,12 +14,12 @@ This page is only about speed. For how these tools actually differ — output sh
 context-sensitive grammars, incremental re-parse, error recovery — see
 [How Parséman compares](./comparison).
 
-Everything below was measured on an Apple M4 Pro running Node 25.9.0. Bars show µs per
+Everything below was measured on an Apple M4 Pro running Node 24.11.1. Bars show µs per
 parse, so shorter is faster.
 
 ::: info Where these numbers come from
 Every figure on this page is transcribed from `assets/bench-*.svg`, regenerated for
-**0.50.0 on 2026-08-26** by `pnpm bench:svg`. Parséman's compiled bars are the table
+**0.50.2 on 2026-08-29** by `pnpm bench:svg`. Parséman's compiled bars are the table
 artifact produced by runtime `compile()` — the same thing the macro build ships. Each
 parser runs in its own process, each group over three rotated rounds. If a table and a
 chart ever disagree, believe the chart.
@@ -78,21 +78,22 @@ before its first parse, every time — which is why it only appears in the init 
 On JSON, CSV, and GraphQL, the compiled artifact is ahead of every other library at every
 size measured:
 
-| Fixture | Parséman compiled | [Peggy](https://peggyjs.org/) | [Chevrotain](https://chevrotain.io/) | Native |
-| --- | --- | --- | --- | --- |
-| JSON small (52 B) | **0.57 µs** | 2.55 | 1.00 | `JSON.parse` 0.21 µs |
-| JSON medium (1.8 kB) | **15.69 µs** | 64.40 | 29.57 | `JSON.parse` 4.41 µs |
-| JSON large (11.9 kB) | **121.50 µs** | 451.40 | 245.15 | `JSON.parse` 51.70 µs |
-| CSV small (54 B) | **0.41 µs** | 1.93 | 5.31 | — |
-| CSV large (14.5 kB) | **74.32 µs** | 425.53 | 1,050.49 | — |
-| GraphQL small (27 B) | **0.61 µs** | 2.10 | 2.15 | — |
-| GraphQL medium (336 B) | **5.03 µs** | 14.74 | 12.64 | — |
-| GraphQL large (7.7 kB) | **108.18 µs** | 332.98 | 334.17 | — |
+| Fixture | Parséman compiled | Parséman interpreted | [Peggy](https://peggyjs.org/) | [Chevrotain](https://chevrotain.io/) | Native |
+| --- | --- | --- | --- | --- | --- |
+| JSON small (52 B) | **0.56 µs** | **0.83** | 2.63 | 1.00 | `JSON.parse` 0.17 µs |
+| JSON medium (1.8 kB) | **15.37 µs** | **25.28** | 68.20 | 29.57 | `JSON.parse` 3.84 µs |
+| JSON large (11.9 kB) | **122.03 µs** | **205.36** | 479.90 | 246.16 | `JSON.parse` 41.16 µs |
+| CSV small (54 B) | **0.41 µs** | **1.57** | 1.95 | 5.00 | — |
+| CSV large (14.5 kB) | **73.83 µs** | **285.20** | 432.15 | 972.01 | — |
+| GraphQL small (27 B) | **0.75 µs** | 2.47 | 2.29 | **2.14** | — |
+| GraphQL medium (336 B) | **7.07 µs** | 14.46 | 15.99 | **12.42** | — |
+| GraphQL large (7.7 kB) | **146.96 µs** | 361.40 | 374.03 | **329.11** | — |
 
-The **interpreter** — no compile step at all — holds up better than it has any right to:
-second only to compiled Parséman on CSV, ahead of Peggy on JSON, and in the leading group
-on GraphQL. Reach for the macro build when you want construction out of runtime entirely,
-and `compile()` when the grammar itself is assembled on the fly.
+The **interpreter** — no compile step at all — is now the fastest non-compiled parser on
+every JSON and CSV size in these charts. On GraphQL it remains in the leading group:
+Chevrotain is 8–15% faster depending on size, and Peggy wins the tiny row while Parseman
+wins medium and large. Reach for the macro build when you want construction out of runtime
+entirely, and `compile()` when the grammar itself is assembled on the fly.
 
 ## Parsing to a syntax tree
 
@@ -107,11 +108,11 @@ with full trivia and span capture. Same JSON fixtures:
 
 | Parser | small (52 B) | medium (1.8 kB) | large (11.9 kB) | Output |
 | --- | --- | --- | --- | --- |
-| **Parséman CST (runtime compile)** | **0.59 µs** | **18.18 µs** | **153.12 µs** | object tree + spans |
-| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.25 µs | 69.33 µs | 603.50 µs | compact buffer tree |
-| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.60 µs | 79.03 µs | 681.03 µs | compact buffer tree |
-| Parséman CST (interpreter) | 1.82 µs | 63.55 µs | 449.12 µs | object tree + spans |
-| [Chevrotain](https://chevrotain.io/) CST | 7.74 µs | 249.73 µs | 1.96 ms | object CST |
+| **Parséman CST (runtime compile)** | **0.58 µs** | **18.27 µs** | **148.48 µs** | object tree + spans |
+| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.35 µs | 69.19 µs | 583.41 µs | compact buffer tree |
+| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.68 µs | 78.76 µs | 665.13 µs | compact buffer tree |
+| Parséman CST (interpreter) | 1.87 µs | 64.49 µs | 457.38 µs | object tree + spans |
+| [Chevrotain](https://chevrotain.io/) CST | 7.28 µs | 236.37 µs | 1.81 ms | object CST |
 
 **Compiled Parséman is ahead of Lezer at every size here** — about 3.9× at the large
 fixture — while producing an object tree you can use directly, with a span on every node.
@@ -124,8 +125,8 @@ formatter or refactor can walk without a second pass. Different outputs for diff
 consumers. Pick the one yours actually needs.
 
 Even the setup-free **interpreter** holds its own against a purpose-built incremental
-generator — faster than Lezer parse-only at small and large inputs (1.82 vs 2.25 µs, 449 vs
-604 µs) while building the richer tree, and roughly 3.9–4.4× faster than Chevrotain
+generator — faster than Lezer parse-only at every measured size (1.87 vs 2.35 µs, 64.49 vs
+69.19 µs, 457 vs 583 µs) while building the richer tree, and roughly 3.7–4.0× faster than Chevrotain
 throughout.
 
 ## Incremental re-parse
@@ -168,11 +169,12 @@ heavy structural churn stays within a small factor of Lezer.
 
 For parsing to JS values — objects, rows, AST nodes — the compiled artifact is the fastest
 general-purpose JS parser in this comparison, at every grammar and every size measured. For
-syntax trees, it's ahead of Lezer and Chevrotain on the JSON fixture. And the setup-free
-interpreter is second only to compiled Parséman on CSV, in the leading group on the rest.
+syntax trees, it's ahead of Lezer and Chevrotain on the JSON fixture. The setup-free
+interpreter leads every external parser on JSON and CSV and stays within roughly 15% of
+the GraphQL leader.
 
 All of it comes from a suite you can run yourself (`pnpm bench:svg`), on one M4 Pro and
-Node 25.9.0, three rotated rounds with one parser per process. Think a parser belongs in
+Node 24.11.1, three rotated rounds with one parser per process. Think a parser belongs in
 here and isn't? [Open an issue](https://github.com/matthew-dean/parseman/issues) — the
 harness in `bench/run.ts` was built to take new entrants.
 

@@ -338,6 +338,10 @@ arm matches at every position, so it disables its `choice`'s first-char dispatch
 Map a successful value (and span) through `fn(value, span)`. For plain value-mapping only;
 use [`node`](#node-type-combinator-build-opts) for tree building.
 
+The reducer input is callback-scoped. Consume it synchronously and return the value you
+want to own; do not retain an intermediate sequence tuple across parses. Returned values
+are caller-owned.
+
 ### `token(combinator)`
 
 Run `combinator` with active trivia cleared and return the matched source text as a

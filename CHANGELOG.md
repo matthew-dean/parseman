@@ -3,6 +3,37 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.2 — 2026-08-29
+
+- Add a construction-selected scalar recognizer family for context-free semantic-
+  value roots. Supported literals, regexes, transforms, sequences, choices,
+  repetitions, trivia scopes, and recursive references exchange an end offset and
+  one parse-local semantic value, then materialize a single public `ParseResult` at
+  the grammar root. The hot recognizers do not repeatedly branch on recovery, line,
+  capture, instrumentation, adjacency, or separator-preservation features.
+- Preserve the complete general interpreter beside that scalar family. A recursive
+  construction-time check admits only safe value roots; recovery, line tracking,
+  CST/trivia capture, instrumentation, ordered/gated choice, adjacency, and kept
+  separators retain their existing `ParseResult` path. All 4,147 interpreter,
+  compiled, parity, recovery, CST, and diagnostics tests remain green.
+- Fuse the exact JSON quote/body/quote transform shape while retaining the existing
+  sticky RegExp as its recognition oracle. The final three-run SVG comparison puts
+  the interpreter at 0.83 / 25.28 / 205.36 microseconds for small, medium, and large
+  JSON, ahead of Chevrotain at 1.00 / 29.57 / 246.16 microseconds on every size.
+  CSV's interpreter also leads every external parser; GraphQL remains close but
+  trails Chevrotain by roughly 8–15% depending on size. This exact fused shape uses
+  a scratch reducer-input tuple: reducers may consume it synchronously but must not
+  retain that intermediate tuple across parses. Returned values remain caller-owned.
+- Keep the public browser closure light: 57,733 raw / 18,541 gzip bytes, four raw
+  bytes below the existing ratchet. A strengthened guard rejects emitted table
+  modules and unapproved compiler machinery, allowlists only small pure shared
+  runtime facts, and caps those helpers at 1.3 kB. The current bundle emits no
+  table/executor code and 1,253 bytes of shared value-usage analysis.
+- Regenerate all four public comparison SVGs on Node 24.11.1. Runtime-compiled
+  Parseman remains the fastest compared JavaScript parser in every JSON, CSV,
+  GraphQL, and CST row; the strict margin gate's tightest row is 1.74x over
+  Chevrotain on medium GraphQL, against a 1.05x floor.
+
 ## 0.50.1 — 2026-08-28
 
 - Fix a construction-time regression introduced by 0.50.0's rollback-elision
