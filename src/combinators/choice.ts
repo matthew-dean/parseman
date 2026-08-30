@@ -5,6 +5,7 @@ import type {
 import { union, intersects, matchesEmpty } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
+import { scalarOf } from './scalar.ts'
 
 type ArmParser<T> = T extends GatedArm<infer U> ? Combinator<U> : T extends Combinator<infer U> ? Combinator<U> : never
 type UnionArms<T extends (Combinator<unknown> | GatedArm<unknown>)[]> = {
@@ -72,6 +73,34 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
     sortedParsers = strategy.sortedIndices.map(i => parsers[i]!)
   }
 
+  const scalarParsers = parsers.map(scalarOf)
+  const scalarExpected = parsers.flatMap(deriveExpected)
+  const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
+    if (disjoint) {
+      const code = pos < input.length ? input.codePointAt(pos)! : -1
+      let idx = code >= 0 && code < 128 ? asciiDispatch![code]! : -1
+      if (idx < 0 && code >= 0) {
+        for (let i = 0; i < parsers.length; i++) {
+          if (inFirstSet(code, parsers[i]!._meta.firstSet)) { idx = i; break }
+        }
+      }
+      if (idx >= 0) {
+        const gate = gates[idx]
+        if (!gate || gate(ctx.state)) return scalarParsers[idx]!(input, pos, ctx)
+        ctx._fx = deriveExpected(parsers[idx]!)
+        return ~pos
+      }
+    } else {
+      for (let i = 0; i < scalarParsers.length; i++) {
+        if (gates[i] && !gates[i]!(ctx.state)) continue
+        const end = scalarParsers[i]!(input, pos, ctx)
+        if (end >= 0 && (!autoNot[i] || !autoNotFires(input, end, autoNot[i]!))) return end
+      }
+    }
+    ctx._fx = scalarExpected
+    return ~pos
+  }
+
   return {
     _tag: 'choice',
     _meta: meta,
@@ -83,6 +112,7 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       strategy: strategy ?? { tag: 'firstMatch' },
       autoNot,
     },
+    _parseScalar: disjoint && !hasGates ? parseScalar : undefined,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnionArms<T>> {
       const expected: string[] = []
       let expectedAt = pos

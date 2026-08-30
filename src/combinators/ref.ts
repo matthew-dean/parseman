@@ -1,6 +1,7 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any } from './first-set.ts'
 import { hasOwnTriviaBoundary } from './trivia-boundary.ts'
+import { scalarOf, type ScalarParser } from './scalar.ts'
 
 /**
  * Create a forward-declared parser slot for mutually recursive grammars.
@@ -17,6 +18,7 @@ import { hasOwnTriviaBoundary } from './trivia-boundary.ts'
  */
 export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
   let resolved: Combinator<T> | null = null
+  let resolvedScalar: ScalarParser | null = null
   /** `hasOwnTriviaBoundary(resolved)`, resolved at `define()`. See `parse`. */
   let ownBoundary = false
 
@@ -35,6 +37,10 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
         if (!resolved) throw new Error('ref<T>() used before .define() was called')
         return resolved as Combinator<unknown>
       },
+    },
+    _parseScalar(input: string, pos: number, ctx: ParseContext): number {
+      if (!resolvedScalar) throw new Error('ref<T>() used before .define() was called')
+      return resolvedScalar(input, pos, ctx)
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
       if (!resolved) throw new Error('ref<T>() used before .define() was called')
@@ -94,6 +100,7 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
     define(p: Combinator<T>): void {
       if (resolved) throw new Error('ref<T>() already defined')
       resolved = p
+      resolvedScalar = scalarOf(p)
       ownBoundary = hasOwnTriviaBoundary(p as Combinator<unknown>)
       meta.firstSet = p._meta.firstSet
       meta.canMatchNewline = p._meta.canMatchNewline

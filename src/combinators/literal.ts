@@ -4,6 +4,7 @@ import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
 import { directTerminalFailureExpected } from './expected.ts'
+import type { ScalarParser } from './scalar.ts'
 
 /**
  * ASCII case-fold equality — the interpreter twin of the compiler's `foldEq`
@@ -41,6 +42,30 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
     isTrivia: false,
   }
   const canMatchNewline = meta.canMatchNewline
+  const parseScalar: ScalarParser = !caseInsensitive && value.length === 1
+    ? (() => {
+        const code = value.charCodeAt(0)
+        return (input, pos, ctx) => {
+          if (input.charCodeAt(pos) === code) {
+            ctx._sv = value
+            return pos + 1
+          }
+          ctx._fx = expected
+          return ~pos
+        }
+      })()
+    : (input, pos, ctx) => {
+        const end = pos + value.length
+        if (end <= input.length) {
+          const matchedValue = caseInsensitive ? input.slice(pos, end) : value
+          if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
+            ctx._sv = matchedValue
+            return end
+          }
+        }
+        ctx._fx = expected
+        return ~pos
+      }
 
   if (caseInsensitive) {
     const upper = value.toUpperCase()
@@ -98,6 +123,7 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
     _tag: 'literal',
     _meta: meta,
     _def: { tag: 'literal', value, caseInsensitive },
+    _parseScalar: parseScalar,
     parse,
   }
 }

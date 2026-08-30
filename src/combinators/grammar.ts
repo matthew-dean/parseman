@@ -4,6 +4,7 @@ import { markUnusedValues } from '../compiler/value-usage.ts'
 import { triviaKindMask } from '../cst/trivia-kinds.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { createParseContext } from '../parse-context.ts'
+import { scalarOf, scalarRootOf, type ScalarParser } from './scalar.ts'
 
 export type ParseOptions = {
   trackLines?: boolean
@@ -132,6 +133,27 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
     : scopeLabels !== undefined ? triviaKindMask(scopeLabels, captureKinds)
     : undefined
   const inheritCaptureMask = captureKinds !== undefined && scopeLabels === undefined
+  const rootScalar = scalarOf(root)
+  const scalarEligible = opts.trackLines !== true && opts.recover !== true
+    && !opaqueRootCapture && !forceCaptureTrivia && captureKinds === undefined
+  const parseScalar = scalarEligible
+    ? (input: string, pos: number, ctx: ParseContext): number => {
+        const savedTrivia = ctx.trivia
+        const savedLabels = ctx.triviaKindLabels
+        if (clearTrivia) {
+          ctx.trivia = undefined
+          ctx.triviaKindLabels = undefined
+        } else if (scopeTrivia !== undefined) {
+          ctx.trivia = scopeTrivia
+          ctx.triviaKindLabels = scopeLabels
+        }
+        const end = rootScalar(input, pos, ctx)
+        ctx.trivia = savedTrivia
+        ctx.triviaKindLabels = savedLabels
+        return end
+      }
+    : undefined
+  let publicScalar: ScalarParser | null | undefined
   const grammar: ParsemanParser<T> = {
     _tag: 'grammar',
     _meta: {
@@ -155,7 +177,20 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
       constructionTrackLines: trackLinesPolicy,
       ...(captureKinds === undefined ? {} : { constructionCaptureTriviaKinds: captureKinds }),
     },
+    _parseScalar: parseScalar,
     parse(input: string, pos?: number, _ctx?: ParseContext): ParseResult<T> {
+      if (pos === undefined && _ctx === undefined) {
+        publicScalar ??= scalarRootOf(grammar) ?? null
+        if (publicScalar) {
+          const ctx = createParseContext()
+          const end = publicScalar(input, 0, ctx)
+          if (end < 0) {
+            const at = ~end
+            return { ok: false, expected: ctx._fx ?? [], span: { start: at, end: at } }
+          }
+          return { ok: true, value: ctx._sv as T, span: { start: 0, end } }
+        }
+      }
       if (refuseUnclassified) refuseUnclassifiedRootScope(_ctx?._rootTriviaStrictScopes)
       const trackLines = trackLinesOf(_ctx)
       const lineContext = trackLines && _ctx?._lineIndex === undefined && _ctx?._lineStarts === undefined
@@ -242,6 +277,9 @@ export function parse<T>(
   if (!_analyzed.has(combinator)) {
     _analyzed.add(combinator)
     markUnusedValues(combinator)
+  }
+  if (!opts.trackLines && !opts.recover && combinator._def.tag === 'grammar') {
+    return (combinator as ParsemanParser<T>).parse(input)
   }
   const trackLines = opts.trackLines ?? combinator._meta.grammarTrackLines ?? false
   const lineContext = trackLines ? createParseLineContext(input, 0) : undefined
