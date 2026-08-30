@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { BAR_MARKER, CHART_GROUPS, type ChartKey } from './chart-specs.ts'
 
 export const INTERPRETER_BROWSER_RAW_LIMIT = 58_014
+export const INTERPRETER_AA_NOISE_LIMIT = 1.10
 const CHILD_TIMEOUT_MS = 180_000
 
 export function contextualizeInterpreterTimeout(error: unknown, leg: string): unknown {

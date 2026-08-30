@@ -19,7 +19,8 @@ import { gzipSync } from 'node:zlib'
 import { build } from 'esbuild'
 import { CHART_GROUPS, type ChartKey } from './chart-specs.ts'
 import {
-  assertInterpreterChecks, INTERPRETER_BROWSER_RAW_LIMIT, measureInterpreterBar,
+  assertInterpreterChecks, INTERPRETER_AA_NOISE_LIMIT, INTERPRETER_BROWSER_RAW_LIMIT,
+  measureInterpreterBar,
 } from './interpreter-optimize-support.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -157,7 +158,8 @@ const result = {
 
 process.stdout.write(`${JSON.stringify(result)}\n`)
 assertInterpreterChecks([
-  [aaWorstSwing <= 1.05, `interpreter A/A swing ${aaWorstSwing.toFixed(3)} exceeds 1.05`],
+  [aaWorstSwing <= INTERPRETER_AA_NOISE_LIMIT,
+    `interpreter A/A swing ${aaWorstSwing.toFixed(3)} exceeds ${INTERPRETER_AA_NOISE_LIMIT}`],
   [result.interpreter_browser_raw_bytes <= INTERPRETER_BROWSER_RAW_LIMIT,
     `browser bundle ${result.interpreter_browser_raw_bytes} exceeds ${INTERPRETER_BROWSER_RAW_LIMIT} raw bytes`],
   [result.browser_heavy_dependency_modules === 0, 'browser bundle includes a heavy dependency'],

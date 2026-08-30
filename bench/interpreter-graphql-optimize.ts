@@ -18,7 +18,8 @@ import { gzipSync } from 'node:zlib'
 import { build, type Metafile } from 'esbuild'
 import { CHART_GROUPS } from './chart-specs.ts'
 import {
-  assertInterpreterChecks, INTERPRETER_BROWSER_RAW_LIMIT, measureInterpreterBar,
+  assertInterpreterChecks, INTERPRETER_AA_NOISE_LIMIT, INTERPRETER_BROWSER_RAW_LIMIT,
+  measureInterpreterBar,
 } from './interpreter-optimize-support.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -123,7 +124,7 @@ const result = {
   },
   measurement_valid: 1,
   graphql_rows_valid: ratios.length,
-  aa_within_limit: aaWorst <= 1.05 ? 1 : 0,
+  aa_within_limit: aaWorst <= INTERPRETER_AA_NOISE_LIMIT ? 1 : 0,
   browser_within_limit: rawBytes <= INTERPRETER_BROWSER_RAW_LIMIT ? 1 : 0,
   browser_heavy_dependency_modules: browserInputs.filter(input => heavyDependency.test(input)).length,
   browser_node_builtin_modules: browserInputs.filter(input => builtinNames.has(input)).length,
@@ -160,7 +161,8 @@ const result = {
 process.stdout.write(`${JSON.stringify(result)}\n`)
 assertInterpreterChecks([
   [result.graphql_rows_valid === CHART_GROUPS.graphql.length, 'not every GraphQL row produced a valid measurement'],
-  [result.aa_within_limit === 1, `interpreter A/A swing ${aaWorst.toFixed(3)} exceeds 1.05`],
+  [result.aa_within_limit === 1,
+    `interpreter A/A swing ${aaWorst.toFixed(3)} exceeds ${INTERPRETER_AA_NOISE_LIMIT}`],
   [result.browser_within_limit === 1, `browser bundle ${rawBytes} exceeds ${INTERPRETER_BROWSER_RAW_LIMIT} raw bytes`],
   [result.browser_heavy_dependency_modules === 0, 'browser bundle includes a heavy dependency'],
   [result.browser_node_builtin_modules === 0, 'browser bundle includes a Node builtin'],
