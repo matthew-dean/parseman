@@ -3,6 +3,22 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.4 — 2026-08-31
+
+- Fix `compose([base, delta])` so a delta rule override reroutes the inherited
+  parents' RECOGNIZER, not only their reducer. The recognizer first-set gate that
+  decides whether to ENTER an inherited parent resolved a cross-rule `lazy` reference
+  thunk-first (the base piece's binding), so a delta that WIDENED a leaf was reached
+  only for input the base leaf's first-set already admitted — the widened input was
+  gated out even though the reducer had rerouted. `firstSetOf`/`matchesEmpty` now
+  resolve a named cross-rule reference winner-first (matching the encoder's
+  `winners`), and the table encoder computes a bare cross-rule ref body's gate
+  first-set from the resolved winner rather than the cached set. This is what a
+  superset grammar composing on a base needs: widening a leaf now admits the widened
+  input through inherited structural parents even when the intermediate rule is a bare
+  combinator (e.g. a `choice` const, not a `node()`). Monolithic (non-composed)
+  encodes are byte-identical.
+
 ## 0.50.3 — 2026-08-30
 
 - Make macro-generated parsers smaller by reading ASCII-only gates directly from
