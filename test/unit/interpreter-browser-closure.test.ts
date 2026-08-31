@@ -7,7 +7,12 @@ import { resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '../..')
 const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
-const BASELINE_RAW_BYTES = 57_957
+// Bumped +208B for the compose open-recursion recognizer fix: `first-set.ts`
+// `winnerForRef` resolves a named ref to its compose WINNER (with the transparent-alias
+// guard the encoder's `winnerWrapsReference` applies) so first-set / nullability gating
+// reroutes to a delta-overridden rule. The winners resolver is table-encoder-only, so
+// this code is dead weight in the browser bundle, but the shared module carries it.
+const BASELINE_RAW_BYTES = 58_165
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([
