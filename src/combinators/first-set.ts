@@ -63,11 +63,31 @@ export function classifyFinalChoice(
   return { exclusive, firstSets, nullable }
 }
 
-/** The `resolve`-supplied target for an unresolvable NAMED lazy, if any. */
-function resolveNamedRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
+/** The compose WINNER a named lazy ref resolves to — the same row the encoder's
+ * `lazy` case calls via `winners`/`scopedRef`. Winner-FIRST resolution is what makes
+ * first-set / nullability analysis AGREE with emission: a base piece's thunk still
+ * closes over its own binding, so a compose OVERRIDE (and any undefined cross-piece
+ * ref) would otherwise be invisible to the gate — the reducer reroutes, the recognizer
+ * does not. `undefined` → no winner; fall back to the thunk. Monolithic: the winner IS
+ * the thunk's target, a no-op. A winner that recurses back to `p` (recursive or
+ * self-alias rule) is caught by the shared `seen` guard → `any`, a sound over-approx. */
+function winnerForRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
   if (resolve === undefined) return undefined
   const name = (p as unknown as { _ruleName?: string })._ruleName
-  return name === undefined ? undefined : resolve(name)
+  const w = name === undefined ? undefined : resolve(name)
+  // Skip a winner that merely wraps THIS reference (a transparent rules()/parser()
+  // alias): resolving to it is a self-hop, not an override — matches the encoder's
+  // own `winnerWrapsReference` guard so first-set analysis agrees with emission.
+  if (w === undefined || w === p) return undefined
+  let cur = w
+  for (const seen = new Set<Combinator<unknown>>(); !seen.has(cur); ) {
+    if (cur === p) return undefined
+    seen.add(cur)
+    const cd = cur._def as ParserDef
+    if (cd.tag !== 'grammar' && cd.tag !== 'trivia') return w
+    cur = cd.parser
+  }
+  return w
 }
 
 export function union(a: FirstSet, b: FirstSet): FirstSet {
@@ -190,9 +210,12 @@ function matchesEmptyBody(
     case 'node':
     case 'grammar':
     case 'recover':   return me(d.parser)
-    case 'lazy':
+    case 'lazy': {
+      const w = winnerForRef(p, resolve)
+      if (w !== undefined) return me(w)
       try { return me(d.thunk()) }
-      catch { const t = resolveNamedRef(p, resolve); return t ? me(t) : true }
+      catch { return true }
+    }
     default:          return true          // scanTo / guard / unknown → assume nullable (safe)
   }
 }
@@ -338,9 +361,12 @@ function firstSetBody(
     case 'regex':
     case 'keywords':  return p._meta.firstSet  // terminals: no refs, cached set is exact
     case 'dispatch':  return fs(d.selector)
-    case 'lazy':
+    case 'lazy': {
+      const w = winnerForRef(p, resolve)
+      if (w !== undefined) return fs(w)
       try { return fs(d.thunk()) }
-      catch { const t = resolveNamedRef(p, resolve); return t ? fs(t) : any() }
+      catch { return any() }
+    }
     case 'choice': {
       let out: FirstSet = empty()
       for (const arm of d.parsers) out = union(out, fs(arm))

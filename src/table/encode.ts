@@ -1404,7 +1404,15 @@ class Encoder {
         // names tokens the run would have skipped — `['"@"', '"(", '"x"']` where
         // running the body reports `['"x"']` alone.
         if (matchesEmpty(d.parser)) return body
-        const fs = d.parser._meta.firstSet
+        // A node whose BODY is a bare cross-rule ref (`node('X', g.Y, …)`) caches its
+        // first set from the ref's base binding. Under a compose OVERRIDE the winner
+        // for `Y` may be WIDER, so the cached set gates out input the merged rule
+        // accepts (the reducer reroutes via `winners`, but this recognizer gate did
+        // not). Resolve the ref's gate through `winners`, exactly as the `lazy` case
+        // resolves the call. Non-ref bodies keep the cached set (byte-identical).
+        const fs = d.parser._def.tag === 'lazy'
+          ? firstSetOf(d.parser, new Set(), this.refResolver())
+          : d.parser._meta.firstSet
         if (fs.kind === 'any') return body
         const cls = this.charClass(fs)
         if (cls < 0) return body
@@ -1594,7 +1602,11 @@ class Encoder {
         // run itself would have skipped past. Running the inner instead reported a
         // strictly smaller set, so omitting the guard was an observable divergence,
         // not a slower equivalent.
-        const fs = d.parser._meta.firstSet
+        // Same override-aware resolution as the node gate: a bare-ref inner resolves
+        // its gate through `winners` so a widened winner is not gated out.
+        const fs = d.parser._def.tag === 'lazy'
+          ? firstSetOf(d.parser, new Set(), this.refResolver())
+          : d.parser._meta.firstSet
         if (fs.kind === 'any' || matchesEmpty(d.parser)) return inner
         const cls = this.charClass(fs)
         if (cls < 0) return inner
