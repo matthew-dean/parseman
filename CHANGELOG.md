@@ -19,6 +19,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   combinator (e.g. a `choice` const, not a `node()`). Monolithic (non-composed)
   encodes are byte-identical.
 
+- Re-anchor the release perf gates (`bench/grammar-density/config.json`,
+  `bench/workloads/config.json` `referenceSha`) from the 0.50.2 commit `b406fbe` to the
+  0.50.3 release commit `c4ad56a`, so this release is measured against the immediately
+  prior one. The fix is build-time (recognizer first-set for composed bare refs) and
+  parse-neutral for monolithic grammars; grammar-density and broad-workload gates pass
+  against the newer, stricter anchor.
+
 ## 0.50.3 — 2026-08-30
 
 - Make macro-generated parsers smaller by reading ASCII-only gates directly from
