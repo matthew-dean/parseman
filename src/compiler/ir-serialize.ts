@@ -321,6 +321,33 @@ class Serializer {
     return c._def.tag === 'lazy' && ruleNameOf(c) !== undefined ? (lazyTarget(c) ?? c) : c
   }
 
+  /**
+   * The child a rule-entry grammar scope should serialize as its body, when that
+   * scope merely WRAPS the rule's own named `lazy` proxy.
+   *
+   * `rules({ trackLines: true }, …)` wraps every rule VALUE — which is that rule's
+   * own named lazy proxy — in a `grammarParser({ trackLines: true })` scope
+   * (`parser.ts:229-242`). `body()` unwraps a BARE lazy entry to its defined target;
+   * a lazy wrapped one level deep by that scope must be unwrapped INSIDE the scope
+   * too. Left wrapped, the inner proxy serializes as a `g[name]` SELF-reference and
+   * the rule's real body is dropped, so it re-lowers to `Name: parser(opts, g.Name)`
+   * — a bodyless self-cycle the table encoder rejects with `alias cycle — lazy (rule
+   * 'Name') encodes to its own recursion trampoline`. This is why the four
+   * `*PositionsGrammar` exports fell back to a runtime `compose()` under trackLines.
+   *
+   * STRICT: only a scope that IS a rule entry (in `localRuleNames`) AND wraps ITS
+   * OWN name unwraps. A scope wrapping another rule's ref (a genuine cross-rule
+   * alias, `Name: parser(opts, g.Other)`) or a real body is untouched, so the
+   * non-trackLines and non-self-wrap output stays byte-identical.
+   */
+  private scopeSelfBody(c: Comb): Comb | undefined {
+    const name = this.localRuleNames.get(c)
+    if (name === undefined || c._def.tag !== 'grammar') return undefined
+    const inner = c._def.parser
+    if (inner._def.tag !== 'lazy' || ruleNameOf(inner) !== name) return undefined
+    return lazyTarget(inner) ?? undefined
+  }
+
   run(): string {
     for (const [, c] of this.ruleMap) this.analyze(this.body(c), new Set())
     for (const c of this.scanSkip) { this.assertNoRuleRef(c, new Set()); this.analyze(c, new Set()) }
@@ -415,7 +442,9 @@ class Serializer {
       return
     }
     active.add(c)
-    for (const child of childrenOf(def)) this.analyze(child, active)
+    const selfBody = def.tag === 'grammar' ? this.scopeSelfBody(c) : undefined
+    const kids = selfBody !== undefined ? [selfBody] : childrenOf(def)
+    for (const child of kids) this.analyze(child, active)
     active.delete(c)
   }
 
@@ -602,7 +631,7 @@ class Serializer {
           : spec
             ? `classifiedTrivia({ ${spec.arms.map(arm => `${JSON.stringify(arm.label)}: ${kid(arm.parser)}`).join(', ')} })`
             : def.triviaParser ? kid(def.triviaParser) : 'undefined'
-        return `parser({ trivia: ${trivia}${def.captureTrivia ? ', captureTrivia: true' : ''}${def.rootCapture ? `, rootCapture: ${JSON.stringify(def.rootCapture)}` : ''}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(def.parser)})`
+        return `parser({ trivia: ${trivia}${def.captureTrivia ? ', captureTrivia: true' : ''}${def.rootCapture ? `, rootCapture: ${JSON.stringify(def.rootCapture)}` : ''}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(this.scopeSelfBody(c) ?? def.parser)})`
       }
       case 'withCtx': {
         // A `withCtx` round-trips through `_wc`, which rebuilds it AND re-attaches
