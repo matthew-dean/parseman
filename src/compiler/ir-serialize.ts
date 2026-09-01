@@ -442,8 +442,18 @@ class Serializer {
       return
     }
     active.add(c)
+    // When a rule-entry scope wraps its own named lazy, substitute the lazy's
+    // unwrapped body for `def.parser` — but keep the scope's OTHER children (its
+    // `triviaParser`) in the analysis, exactly as `childrenOf('grammar')` returns
+    // both. Dropping the trivia parser here would leave a recursive/shared trivia
+    // unanalysed, so its const/self-ref hoisting would be missing when `expr` emits
+    // it via `kid(def.triviaParser)`. selfBody is non-undefined only for `'grammar'`.
     const selfBody = def.tag === 'grammar' ? this.scopeSelfBody(c) : undefined
-    const kids = selfBody !== undefined ? [selfBody] : childrenOf(def)
+    const kids = selfBody === undefined
+      ? childrenOf(def)
+      : def.tag === 'grammar' && def.triviaParser
+        ? [selfBody, def.triviaParser]
+        : [selfBody]
     for (const child of kids) this.analyze(child, active)
     active.delete(c)
   }

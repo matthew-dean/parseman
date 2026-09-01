@@ -18,7 +18,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   lazy to that lazy's defined body, so the wrapper preserves the real rule.
   STRICT/ADDITIVE: a scope wrapping ANOTHER rule's ref (a genuine cross-rule alias) or
   a real body is untouched, and the non-`trackLines` and non-self-wrap serialization
-  is byte-identical. This defect affected EVERY self-referencing rule in a
+  is byte-identical. The unwrap keeps the scope's sibling `triviaParser` in the
+  analysis (as `childrenOf('grammar')` returns both), so a recursive or shared trivia
+  is still hoisted correctly rather than dropped. This defect affected EVERY self-referencing rule in a
   `trackLines` compose delta — recognition-alias overrides, node-rule overrides,
   recognition-only and reducer-bearing deltas, ast and cst host modes, and every
   arity — not only the recognition-alias case; it is why a grammar's `trackLines`

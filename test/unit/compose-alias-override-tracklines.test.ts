@@ -29,6 +29,9 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { transformMacro } from '../../src/plugin/index.ts'
 
+/** Run `fn` against a throwaway temp directory, always cleaned up afterwards. The
+ * base's transformed `.js` is written there so the downstream module's `import`
+ * resolves the emitted artifact, exactly as a real cross-package compose fuses. */
 function withTmp<T>(fn: (dir: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-alias-override-'))
   try { return fn(dir) } finally { fs.rmSync(dir, { recursive: true, force: true }) }

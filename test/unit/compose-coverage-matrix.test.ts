@@ -279,4 +279,42 @@ export const parser = compose([
       expectFused(build([['base.js', base], ['down.js', down]]))
     })
   })
+
+  describe('recursive / shared trivia under trackLines (CodeRabbit #137)', () => {
+    // The trackLines self-wrap fix substitutes a rule's unwrapped body for the wrapped
+    // self-lazy during analysis; it must NOT drop the scope's sibling trivia parser, or
+    // a recursive/shared trivia would be left unanalysed and mis-hoisted. These cells
+    // prove a non-trivial trivia parser survives a trackLines compose with a
+    // self-referencing rule. (Nested-comment trivia via `balanced()` is a separate,
+    // pre-existing serialization constraint — trivia arms must be a regex or a labelled
+    // arm — unrelated to trackLines or this fix, so it is not a cell here.)
+    it('shared multi-arm trivia (const) + self-referencing rule fuses under trackLines', () => {
+      const base = `import { rules, regex, node, compose } from 'parseman' with { type: 'macro' }
+${ws}
+export const base = compose([rules({ trivia: ws }, g => ({ Leaf: node('Leaf', regex(/[a-z]+/)) }))])`
+      const down = `import { rules, regex, node, choice, oneOrMore, compose } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+const tv = oneOrMore(choice(regex(/[ \\t\\n]/), regex(/\\/\\/[^\\n]*/)))
+export const parser = compose([base, rules({ trivia: tv, trackLines: true }, g => ({
+  Doc: node('Doc', choice(g.Leaf, g.Doc), c => ({ t: 'Doc', c: [...c] })),
+}))])`
+      expectFused(build([['base.js', base], ['down.js', down]]))
+    })
+
+    it('a rule value that is a trivia scope around a self-reference fuses under trackLines', () => {
+      // `Doc: parser({ trivia: tv }, choice(g.Leaf, g.Doc))` places a trivia scope
+      // between the trackLines wrapper and the self-reference — the shape most likely to
+      // exercise a trivia parser alongside a self-wrapped rule entry.
+      const base = `import { rules, regex, node, compose } from 'parseman' with { type: 'macro' }
+${ws}
+export const base = compose([rules({ trivia: ws }, g => ({ Leaf: node('Leaf', regex(/[a-z]+/)) }))])`
+      const down = `import { rules, regex, node, choice, parser, oneOrMore, compose } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+const tv = oneOrMore(regex(/[ \\t\\n]/))
+export const parser2 = compose([base, rules({ trackLines: true }, g => ({
+  Doc: node('Doc', parser({ trivia: tv }, choice(g.Leaf, g.Doc)), c => ({ t: 'Doc', c: [...c] })),
+}))])`
+      expectFused(build([['base.js', base], ['down.js', down]]))
+    })
+  })
 })
