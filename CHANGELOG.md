@@ -3,6 +3,48 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.5 — 2026-08-31
+
+- Fix `compose([base, delta])` so a delta rule that references itself macro-fuses
+  under `trackLines: true`. `rules({ trackLines: true }, …)` wraps every rule value —
+  which is that rule's own named `lazy` proxy — in a `parser({ trackLines: true })`
+  scope. When such a rule was serialized to carried IR, `ir-serialize.ts`'s `body()`
+  only unwrapped a rule's own lazy proxy at the TOP level, so the wrapped proxy was
+  emitted as a `g[name]` SELF-reference and the rule's real body was dropped: the rule
+  re-lowered to `Name: parser({ trackLines: true }, g.Name)`, a bodyless self-cycle
+  the table encoder rejects with `alias cycle — lazy (rule 'Name') encodes to its own
+  recursion trampoline`, forcing a runtime `compose()` fallback. `serializeRuleMap`
+  now unwraps a rule-entry `parser()`/`grammar` scope that merely wraps its OWN named
+  lazy to that lazy's defined body, so the wrapper preserves the real rule.
+  STRICT/ADDITIVE: a scope wrapping ANOTHER rule's ref (a genuine cross-rule alias) or
+  a real body is untouched, and the non-`trackLines` and non-self-wrap serialization
+  is byte-identical. The unwrap keeps the scope's sibling `triviaParser` in the
+  analysis (as `childrenOf('grammar')` returns both), so a recursive or shared trivia
+  is still hoisted correctly rather than dropped. This defect affected EVERY self-referencing rule in a
+  `trackLines` compose delta — recognition-alias overrides, node-rule overrides,
+  recognition-only and reducer-bearing deltas, ast and cst host modes, and every
+  arity — not only the recognition-alias case; it is why a grammar's `trackLines`
+  variants (e.g. line-position exports) fell back to a runtime `compose()`.
+
+- Add `test/unit/compose-coverage-matrix.test.ts`, the permanent, auditable home for
+  compose() fusion coverage: it systematically crosses piece topology (single- vs
+  cross-package), delta kind (recognition-only vs reducer-bearing), overridden base
+  shape (node-rule vs recognition-ALIAS), hostMode (ast vs cst), `trackLines`
+  (off/on), builder free-bindings (local-hoisted, imported ast factory, and a
+  name-COLLISION whose refusal STAYS), and arity (`[base, delta]` vs
+  `[base, recogA, recogB, rules(delta)]`), all with pure synthetic parseman grammars.
+  Every future compose() capability or bugfix adds its row here. On 0.50.4, 11 of its
+  16 cells fail (every `trackLines`-on cell); all pass after the fix. The dedicated
+  red→green anchor is `test/unit/compose-alias-override-tracklines.test.ts`.
+
+- Re-anchor the release perf gates (`bench/grammar-density/config.json`,
+  `bench/workloads/config.json` `referenceSha`) from the 0.50.3 release commit
+  `c4ad56a` to the 0.50.4 release commit `ef0e7d6` (merge #136), so this release is
+  measured against the immediately prior one. The fix is build-time (IR serialization
+  of a `trackLines` compose delta) and does not touch any parse path; monolithic
+  (non-composed) encodes are byte-identical, and the grammar-density and
+  broad-workload gates are parse-neutral against the newer anchor.
+
 ## 0.50.4 — 2026-08-31
 
 - Fix `compose([base, delta])` so a delta rule override reroutes the inherited
