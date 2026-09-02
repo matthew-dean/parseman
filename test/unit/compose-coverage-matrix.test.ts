@@ -26,7 +26,8 @@
  * trackLines               | off (control)      | *.off cells              | tested
  *                          | on                 | *.on cells               | tested
  * builder free-bindings    | local-hoisted      | build.localHoisted       | tested
- *                          | core/ast-imported  | build.imported           | tested
+ *                          | core/ast-imported (arrow) | build.imported    | tested
+ *                          | core/ast-imported (BARE reducer) | build.bareImported | tested
  *                          | name-COLLISION     | build.collisionRefused   | tested (refusal STAYS)
  * arity                    | [base, delta]      | (default in all cells)   | tested
  *                          | [base,recA,recB,d] | arity.fourElement        | tested
@@ -231,6 +232,38 @@ export const parser = compose([base, rules({ trivia: ws, trackLines: true }, g =
   Doc: node('Doc', choice(g.Leaf, g.Doc), c => ({ t: 'Doc', c: [...c] })),
 }))])`
       expectFused(build([['base.js', base], ['down.js', down]], { 'astf.js': "export const mk = (c) => ({ t: 'M', c: [...c] })\n" }))
+    })
+
+    it('BARE imported-factory reducer (node(t,p,mk), not an arrow) inherited across a compose re-emits its own import', () => {
+      // The axis the arrow cell above does NOT cover: the reducer is a BARE reference to
+      // an imported factory — `node('Leaf', p, mk)` — not `c => mk(c)`. Such a reducer is
+      // emitted as a live `f:[mk]` pool binding and its buildSrc is the NAME `mk`; a
+      // cross-package compose that re-lowers the inherited rule inlines that name and, on
+      // 0.50.5, dropped its import ("`mk` is read but bound by nothing"), forcing a runtime
+      // compose() fallback. This is the class that bit jess's selector-CST convergence
+      // (#9 RelativeComplex): css's hoisted reducer helpers (e.g. combinatorTailReducer)
+      // are bare references, and inheriting those css rules into less dropped the import —
+      // "reverting the convergence restores 0" because less then re-imported them locally.
+      // The reducer's OWN import must travel with the carried IR. Also exercised through an
+      // open-recursion CYCLE (base Rel -> g.Doc override; Doc -> g.Leaf; delta overrides Doc).
+      const base = `import { rules, regex, node, sequence, optional, compose } from 'parseman' with { type: 'macro' }
+import { mkLeaf, mkRel } from './astf.js'
+${ws}
+export const base = compose([rules({ trivia: ws }, g => ({
+  Leaf: node('Leaf', regex(/[a-z]+/), mkLeaf),
+  Doc: node('Doc', sequence(g.Leaf, optional(g.Rel)), c => ({ t: 'Doc', c: [...c] })),
+  Rel: node('Rel', sequence(regex(/>/), g.Doc), mkRel),
+}))])`
+      const down = `import { rules, regex, node, sequence, optional, choice, compose } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+${ws}
+export const parser = compose([base, rules({ trivia: ws, trackLines: true }, g => ({
+  Doc: node('Doc', sequence(choice(g.Leaf, g.Rel), optional(g.Rel)), c => ({ t: 'WideDoc', c: [...c] })),
+}))])`
+      expectFused(build(
+        [['base.js', base], ['down.js', down]],
+        { 'astf.js': "export const mkLeaf = (c) => ({ t: 'L', c: [...c] })\nexport const mkRel = (c) => ({ t: 'R', c: [...c] })\n" },
+      ))
     })
 
     it('name-COLLISION on a re-emitted builder import is REFUSED — refusal STAYS (Gap C is jess-side)', () => {

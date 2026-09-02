@@ -3,6 +3,38 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.6 — 2026-09-02
+
+- Fix `compose([base, delta])` so an inherited base rule whose reducer is a BARE
+  imported-factory reference — `node('Rel', parser, mkRel)`, not `c => mkRel(c)` —
+  re-emits that reducer's own import into a downstream module that fuses it. A bare
+  reducer is emitted as a live `f:[mkRel]` pool binding whose `buildSrc` is the NAME
+  `mkRel`; the evaluator carried import provenance only for INLINE builders
+  (`buildSigSrc === undefined`), so a bare reducer's own import was dropped from the
+  carried IR. A cross-package `compose()` that re-lowered the inherited rule then
+  inlined `mkRel` with no import, which the emit-time free-identifier net refused
+  (`mkRel is read but bound by nothing`), forcing a runtime `compose()` fallback — and
+  that fallback threw `IR direct node builder for … references module import(s) mkRel
+  that a runtime compose() cannot supply`. `evaluator.ts` now carries the reducer
+  NAME's own import when the build argument is a bare imported identifier (guarded by
+  `buildSrc === be.name`, so a foreign-factory reducer whose source was rewritten to a
+  self-contained body is untouched). STRICT/ADDITIVE: this is the reducer name's own,
+  unambiguous, THIS-module import — never the reducer BODY's internal free names (the
+  named-reducer provenance trap), and a name-collision on the re-emit still refuses as
+  before. This is the class that blocked jess's selector-CST convergence (#9
+  RelativeComplex): css's hoisted reducer helpers (e.g. `combinatorTailReducer`) are
+  bare references, so inheriting those css rules into less dropped their imports — 132
+  runtime-compose fallbacks after the convergence, 0 before (less had been RE-IMPORTING
+  those reducers locally by overriding the rules). Same class that bit W0.
+
+- Extend `test/unit/compose-coverage-matrix.test.ts` with the `build.bareImported`
+  cell (a BARE `node(t, p, mk)` reducer inherited across a compose, distinct from the
+  existing inline-arrow cell), and add a runtime-bearing red→green anchor in
+  `test/unit/compose-direct-builder-ir.test.ts` for the full cross-override
+  open-recursion topology (an inherited bare-reducer rule that open-recurses into a
+  delta-overridden node, under `trackLines`). Both fail on 0.50.5 and pass after the
+  fix.
+
 ## 0.50.5 — 2026-08-31
 
 - Fix `compose([base, delta])` so a delta rule that references itself macro-fuses

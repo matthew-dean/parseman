@@ -193,6 +193,83 @@ export const parser = compose([base, rules({ trivia: ws }, g => ({
     }
   })
 
+  it('MACRO-fuses a cross-override OPEN-RECURSION over a BARE imported-factory reducer (jess #9 RelativeComplex), re-emitting the reducer\'s own import', async () => {
+    // The jess selector-CST convergence shape, reproduced synthetically end-to-end. An
+    // INHERITED base rule (`Rel`) uses a BARE imported-factory reducer — `node('Rel', p,
+    // mkRel)`, NOT `c => mkRel(c)` — and OPEN-RECURSES into `Complex`, which the delta
+    // OVERRIDES (a cross-module cycle). A bare reducer is emitted as a live `f:[mkRel]`
+    // pool binding whose buildSrc is the NAME `mkRel`; on 0.50.5 the evaluator carried
+    // import provenance only for INLINE builders (buildSigSrc === undefined), so the bare
+    // reducer's own import was dropped from the carried IR. The downstream compose then
+    // inlined `mkRel` with no import → "read but bound by nothing" → runtime compose()
+    // fallback → "IR direct node builder references module import(s) mkRel that a runtime
+    // compose() cannot supply". This is exactly why jess saw 132 fallbacks after the
+    // convergence and 0 before (less had been RE-IMPORTING those reducers locally by
+    // overriding the rules). Fixed by carrying a bare imported reducer's own import.
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-bare-crossoverride-'))
+    try {
+      // The factory must exist BEFORE the base transform: a BARE reducer's declaration is
+      // read to resolve its signature, unlike an arrow whose free names come from the
+      // import statement alone.
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'ast-factory.js'),
+        'export const mkComplex = (c) => ({ type: \'Complex\', kids: [...c] })\n'
+        + 'export const mkRel = (c) => ({ type: \'Rel\', kids: [...c] })\n')
+      const baseT = transformMacro(
+        `import { rules, node, regex, sequence, many, optional, compose } from 'parseman' with { type: 'macro' }
+import { mkComplex, mkRel } from './ast-factory.js'
+const ws = regex(/[ \\t\\n]*/)
+export const base = compose([rules({ trivia: ws }, g => ({
+  Unit: node('Unit', regex(/[a-z]+/), c => ({ type: 'Unit', v: c[0]?.value })),
+  Complex: node('Complex', sequence(g.Unit, many(sequence(optional(regex(/>/)), g.Unit))), mkComplex),
+  Rel: node('Rel', sequence(optional(regex(/>/)), g.Complex), mkRel),
+}))])`,
+        path.join(dir, 'base.ts'), new Set(['parseman']),
+      )!
+      expect(baseT.warnings).toEqual([])
+      // The bare reducer's own import provenance is what must survive in the carried IR.
+      expect(baseT.code).toContain('\\"local\\":\\"mkRel\\"')
+      fs.writeFileSync(path.join(dir, 'base.js'), baseT.code)
+
+      // Downstream overrides Complex (which the inherited Rel open-recurses into) and
+      // references g.Rel back — the cross-module cycle. This module imports NEITHER helper.
+      const downT = transformMacro(
+        `import { rules, node, regex, sequence, many, optional, choice, compose } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+const ws = regex(/[ \\t\\n]*/)
+export const parser = compose([base, rules({ trivia: ws, trackLines: true }, g => ({
+  Complex: node('Complex', sequence(g.Unit, many(sequence(optional(regex(/[>,]/)), choice(g.Rel, g.Unit)))), c => ({ type: 'WideComplex', kids: [...c] })),
+}))])`,
+        path.join(dir, 'down.ts'), new Set(['parseman']),
+      )!
+      expect(downT.warnings).toEqual([])
+      // Fully fused: no runtime compose() left, no interpreter parse marker.
+      expect(/\bcompose\s*\(/.test(downT.code)).toBe(false)
+      expect(/_rp\[\d+\]\.parse\(/.test(downT.code)).toBe(false)
+      // The inherited Rel's bare reducer import is re-emitted into the fused downstream.
+      expect(/import \{[^}]*\bmkRel\b[^}]*\} from ["']\.\/ast-factory\.js["']/.test(downT.code)).toBe(true)
+
+      // Behaviour: parse THROUGH the inherited Rel (bare reducer mkRel) into the OVERRIDDEN
+      // Complex — proof the re-emitted mkRel binds and the reducer actually runs.
+      const base = evalMacroExports(baseT.code, {
+        mkComplex: (c: unknown[]) => ({ type: 'Complex', kids: [...c] }),
+        mkRel: (c: unknown[]) => ({ type: 'Rel', kids: [...c] }),
+      }).base
+      const parser = evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(
+        downT.code, 'parser',
+        { base, mkRel: (c: unknown[]) => ({ type: 'Rel', kids: [...c] }) },
+      )
+      const rel = parser.Rel!('> a > b', 0, {})
+      expect(rel.ok).toBe(true)
+      expect((rel.value as { type: string }).type).toBe('Rel')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('reports lexical reads from Oxc AST, without mistaking keys or member names for bindings', () => {
     expect(directBuilderUnsupportedBindings(
       '(children, _fields, span) => ({ kind: "Direct", span, values: children.map(item => ({ item })) })',

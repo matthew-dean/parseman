@@ -756,6 +756,19 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
             if (prov) carriedImports.push({ local: name, source: prov.source, imported: prov.imported })
             else unresolved.push(name)
           }
+        } else if (be!.type === 'Identifier' && typeof be!.name === 'string' && combi._def.buildSrc === be!.name) {
+          // A NAMED reducer that is a BARE IMPORTED identifier — `node(t, parser, mkRel)`
+          // where `mkRel` is `import { mkRel } from './astf'`. The table inlines the
+          // reducer as its NAME (`f:[mkRel]`), and a cross-package compose that re-lowers
+          // this carried piece re-emits that name verbatim into the consuming module —
+          // which does not import it, so the fused artifact throws ReferenceError. Carry
+          // the ONE import the emitted name needs so the downstream re-emit binds it. This
+          // is the reducer NAME's own import (unambiguous — it is THIS module's import),
+          // never the reducer BODY's internal free names (the `buildSigSrc` P1 trap): the
+          // guard `buildSrc === be.name` also excludes a foreign-factory reducer whose
+          // source was rewritten to a self-contained body above.
+          const prov = _builderImports?.(be!.name) ?? null
+          if (prov) carriedImports.push({ local: be!.name, source: prov.source, imported: prov.imported })
         }
         const staticError = [...report.structural, ...unresolved]
         if (staticError.length > 0) combi._def.buildStaticError = staticError
