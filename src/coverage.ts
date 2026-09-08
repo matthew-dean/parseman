@@ -3,7 +3,7 @@ import { GRAMMAR_COVERAGE_DEFINITIONS } from './grammar-metadata.ts'
 export { GRAMMAR_COVERAGE_DEFINITIONS } from './grammar-metadata.ts'
 import type { Combinator, DispatchCase, DispatchMatcherCase, ParseContext, ParseResult } from './types.ts'
 import { choice } from './combinators/choice.ts'
-import { dispatch, endsWith, matches, otherwise, startsWith, when, type DispatchArm, type DispatchStringMatcher } from './combinators/dispatch.ts'
+import { dispatch, endsWith, endsWithUnescaped, matches, otherwise, startsWith, when, type DispatchArm, type DispatchStringMatcher } from './combinators/dispatch.ts'
 import { attempt } from './combinators/attempt.ts'
 import { getCoreLiteralValue } from './combinators/choice.ts'
 import { not } from './combinators/not.ts'
@@ -29,7 +29,7 @@ function dispatchMatcher(entry: DispatchMatcherCase): DispatchStringMatcher {
     case 'startsWith':
       return startsWith(entry.value)
     case 'endsWith':
-      return endsWith(entry.value)
+      return entry.escape !== undefined ? endsWithUnescaped(entry.value) : endsWith(entry.value)
     case 'matches':
       return matches(new RegExp(entry.value, entry.flags))
   }

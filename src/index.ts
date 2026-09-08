@@ -16,7 +16,7 @@ export type { KeywordsOptions, WordOptions } from './combinators/keywords.ts'
 
 export { sequence } from './combinators/sequence.ts'
 export { choice } from './combinators/choice.ts'
-export { dispatch, endsWith, makeWhen, matches, otherwise, routed, startsWith, when } from './combinators/dispatch.ts'
+export { dispatch, endsWith, endsWithUnescaped, makeWhen, matches, otherwise, routed, startsWith, when } from './combinators/dispatch.ts'
 export type { DispatchArm, DispatchOtherwise, DispatchStringMatcher, DispatchWhen, DispatchWhenFactory, DispatchWhenOptions, DispatchWhenMatcher } from './combinators/dispatch.ts'
 export { attempt } from './combinators/attempt.ts'
 export { many, oneOrMore, optional, sepBy, oneOrMoreSep, keepSeparator } from './combinators/repeat.ts'

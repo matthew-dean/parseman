@@ -1115,11 +1115,13 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
     if (callee.type === 'Identifier' && callee.name === 'makeWhen') {
       return whenFactoryFromArgs(node.arguments, scope, code, mfs)
     }
-    if (callee.type === 'Identifier' && (callee.name === 'startsWith' || callee.name === 'endsWith')) {
+    if (callee.type === 'Identifier' && (callee.name === 'startsWith' || callee.name === 'endsWith' || callee.name === 'endsWithUnescaped')) {
       if (node.arguments.length !== 1 || node.arguments[0]?.type === 'SpreadElement') return null
       const value = anyValue(node.arguments[0] as Expression, scope, code, mfs)
       if (typeof value !== 'string') return null
-      return callee.name === 'startsWith' ? parseman.startsWith(value) : parseman.endsWith(value)
+      if (callee.name === 'startsWith') return parseman.startsWith(value)
+      if (callee.name === 'endsWithUnescaped') return parseman.endsWithUnescaped(value)
+      return parseman.endsWith(value)
     }
     if (callee.type === 'Identifier' && callee.name === 'matches') {
       if (node.arguments.length !== 1 || node.arguments[0]?.type === 'SpreadElement') return null

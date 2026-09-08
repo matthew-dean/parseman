@@ -1474,13 +1474,19 @@ class Encoder {
           // `matchesDispatchMatcher` does (it tests the RAW value with `i`
           // appended). `startsWith`/`endsWith` fold BOTH sides, so the stored
           // value is pre-folded and kinds 3/4 tell the driver to fold the key.
-          if (!m.caseInsensitive) { match.push([KIND[m.kind], m.value, m.flags ?? '', arm]); continue }
+          // Slot 2 carries the kind's side-data: regex flags for `matches`, the
+          // escape char for an `endsWithUnescaped` (kind `endsWith` + `escape`),
+          // empty otherwise. The drivers key off it — see `matcherClaims`/`linkMatcher`.
+          if (!m.caseInsensitive) {
+            const extra = m.kind === 'matches' ? (m.flags ?? '') : (m.escape ?? '')
+            match.push([KIND[m.kind], m.value, extra, arm]); continue
+          }
           if (m.kind === 'matches') {
             const f = m.flags ?? ''
             match.push([2, m.value, f.includes('i') ? f : `${f}i`, arm])
             continue
           }
-          match.push([m.kind === 'startsWith' ? 3 : 4, asciiFoldKey(m.value), '', arm])
+          match.push([m.kind === 'startsWith' ? 3 : 4, asciiFoldKey(m.value), m.kind === 'endsWith' ? (m.escape ?? '') : '', arm])
         }
         const other = d.otherwise === undefined
           ? -1

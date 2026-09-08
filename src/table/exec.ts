@@ -1,7 +1,7 @@
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
-import { asciiFoldKey } from '../combinators/dispatch.ts'
+import { asciiFoldKey, endsWithUnescapedBoundary } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
@@ -144,9 +144,11 @@ const ROUTED_FX: string[] = ['routed()']
 function matcherClaims(m: readonly [number, string, string, number], key: string): boolean {
   switch (m[0]) {
     case 0: return key.startsWith(m[1])
-    case 1: return key.endsWith(m[1])
+    // Slot 2 is the escape char for an `endsWithUnescaped` arm, '' for a plain
+    // `endsWith` — a `\`-parity check keeps `\(` off a function arm.
+    case 1: return key.endsWith(m[1]) && (m[2] === '' || endsWithUnescapedBoundary(key, m[1].length, m[2]))
     case 3: return asciiFoldKey(key).startsWith(m[1])
-    case 4: return asciiFoldKey(key).endsWith(m[1])
+    case 4: { const fk = asciiFoldKey(key); return fk.endsWith(m[1]) && (m[2] === '' || endsWithUnescapedBoundary(fk, m[1].length, m[2])) }
     // A fresh RegExp per test, as `matchesDispatchMatcher` builds — a cached one
     // would carry `lastIndex` across parses whenever the author's pattern was
     // sticky or global.

@@ -25,7 +25,7 @@ import { literal } from '../combinators/literal.ts'
 import { keywords } from '../combinators/keywords.ts'
 import { sequence } from '../combinators/sequence.ts'
 import { choice } from '../combinators/choice.ts'
-import { dispatch, endsWith, matches, otherwise, routed, startsWith, when } from '../combinators/dispatch.ts'
+import { dispatch, endsWith, endsWithUnescaped, matches, otherwise, routed, startsWith, when } from '../combinators/dispatch.ts'
 import { attempt } from '../combinators/attempt.ts'
 import { many, oneOrMore, optional, sepBy, keepSeparator } from '../combinators/repeat.ts'
 import { not } from '../combinators/not.ts'
@@ -131,7 +131,9 @@ function matcherExpr(entry: DispatchMatcherCase): string {
     case 'startsWith':
       return `startsWith(${JSON.stringify(entry.value)})`
     case 'endsWith':
-      return `endsWith(${JSON.stringify(entry.value)})`
+      return entry.escape !== undefined
+        ? `endsWithUnescaped(${JSON.stringify(entry.value)})`
+        : `endsWith(${JSON.stringify(entry.value)})`
     case 'matches':
       return `matches(${new RegExp(entry.value, entry.flags ?? '').toString()})`
   }
@@ -258,13 +260,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   }
   // eslint-disable-next-line no-new-func
   const fn = new Function(
-    'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'startsWith', 'endsWith', 'matches', 'otherwise', 'routed', 'attempt',
+    'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'startsWith', 'endsWith', 'endsWithUnescaped', 'matches', 'otherwise', 'routed', 'attempt',
     'many', 'oneOrMore', 'optional', 'sepBy', 'keepSeparator', 'not', 'peek', 'node', 'parser',
     'scanTo', 'balanced', 'token', 'leaf', 'transform', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', 'adjacent', 'notAdjacent', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
-    rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
+    rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, endsWithUnescaped, matches, otherwise, routed, attempt,
     many, oneOrMore, optional, sepBy, keepSeparator, not, peek, node, parser,
     scanTo, balanced, token, leaf, transform, trivia, classifiedTrivia, label, field, expectC, adjacent, notAdjacent, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>

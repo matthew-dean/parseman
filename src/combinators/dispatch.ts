@@ -20,7 +20,7 @@ export type DispatchWhenMatcher<T> = {
 
 export type DispatchStringMatcher =
   | { readonly kind: 'startsWith'; readonly value: string }
-  | { readonly kind: 'endsWith'; readonly value: string }
+  | { readonly kind: 'endsWith'; readonly value: string; readonly escape?: string }
   | { readonly kind: 'matches'; readonly value: string; readonly flags: string }
 
 export type DispatchOtherwise<T> = {
@@ -107,6 +107,20 @@ export function asciiFoldKey(key: string): string {
   return out
 }
 
+/**
+ * Is the suffix that ends `text` (length `suffixLen`) UNESCAPED — i.e. preceded
+ * by an even-length run of `escapeChar`? Two backslashes are one escaped
+ * backslash, so `\\(` ends with a real `(` while `\(` does not. The caller has
+ * already confirmed `text` ends with the suffix. Shared by the runtime matcher
+ * and both table drivers so the parity rule has ONE definition.
+ */
+export function endsWithUnescapedBoundary(text: string, suffixLen: number, escapeChar: string): boolean {
+  let i = text.length - suffixLen - 1
+  let run = 0
+  while (i >= 0 && text[i] === escapeChar) { run++; i-- }
+  return (run & 1) === 0
+}
+
 export function matchesDispatchMatcher(value: string, matcher: DispatchMatcherCase): boolean {
   const candidate = matcher.caseInsensitive ? asciiFoldKey(value) : value
   const expected = matcher.caseInsensitive ? asciiFoldKey(matcher.value) : matcher.value
@@ -114,7 +128,9 @@ export function matchesDispatchMatcher(value: string, matcher: DispatchMatcherCa
     case 'startsWith':
       return candidate.startsWith(expected)
     case 'endsWith':
-      return candidate.endsWith(expected)
+      if (!candidate.endsWith(expected)) return false
+      return matcher.escape === undefined
+        || endsWithUnescapedBoundary(candidate, expected.length, matcher.escape)
     case 'matches': {
       const flags = matcher.caseInsensitive && !matcher.flags?.includes('i')
         ? `${matcher.flags ?? ''}i`
@@ -142,6 +158,21 @@ export function startsWith(prefix: string): DispatchStringMatcher {
 
 export function endsWith(suffix: string): DispatchStringMatcher {
   return fixedMatcher('endsWith', suffix)
+}
+
+/**
+ * Like `endsWith`, but the suffix only claims the key when it is NOT escaped by
+ * a preceding backslash. `endsWithUnescaped('(')` routes `foo(` and `\41(` to a
+ * function arm while leaving `\(` and `a\(` (an escaped paren in a value ident)
+ * on the fallback — the distinction a raw `endsWith('(')` cannot see. Lowers to
+ * the plain-string `endsWith` fast path plus a backslash-parity check, never a
+ * regex. The escape character is `\` (CSS/JS/JSON lexical escape); add an option
+ * if a grammar ever needs another.
+ */
+export function endsWithUnescaped(suffix: string): DispatchStringMatcher {
+  if (typeof suffix !== 'string') throw new TypeError('parseman: endsWithUnescaped() value must be a string')
+  if (suffix.length === 0) throw new RangeError('parseman: endsWithUnescaped() requires a non-empty value')
+  return { kind: 'endsWith', value: suffix, escape: '\\' }
 }
 
 export function matches(pattern: RegExp): DispatchStringMatcher {
@@ -260,6 +291,7 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
         kind: matcher.kind,
         value: matcher.value,
         ...(matcher.kind === 'matches' ? { flags: matcher.flags } : {}),
+        ...(matcher.kind === 'endsWith' && matcher.escape !== undefined ? { escape: matcher.escape } : {}),
         parser: arm.parser as Combinator<unknown>,
         caseInsensitive: arm.caseInsensitive,
         ...(arm.usesRouted === true ? { usesRouted: true } : {}),

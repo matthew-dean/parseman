@@ -135,6 +135,14 @@ export type DispatchMatcherCase = {
   kind: DispatchMatcherKind
   value: string
   flags?: string | undefined
+  /**
+   * For `endsWith` only: a single escape character (always `\` today) whose ODD
+   * run immediately before the suffix means the suffix is escaped and the arm
+   * does NOT claim the key. `endsWithUnescaped('(')` sets this so `\(` (an
+   * escaped paren in a value ident) is not misread as a function opener, while
+   * `foo(` and `\41(` still are. Absent = a plain suffix test.
+   */
+  escape?: string | undefined
   parser: Combinator<unknown>
   caseInsensitive: boolean
   usesRouted?: boolean | undefined

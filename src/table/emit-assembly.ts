@@ -104,7 +104,7 @@ export const EMITTED_PARAMS = [
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
   'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
   'scanTrivia', 'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
-  'asciiFoldKey', 'ROUTED_FX',
+  'asciiFoldKey', 'endsWithUnescapedBoundary', 'ROUTED_FX',
   // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
   // char-class index — the emitted twin of `assemble.ts`'s `sentinelFor` memo,
   // and an interpreted `Combinator` indexed out of an array for the same reason
@@ -790,9 +790,15 @@ return cur
   const dispatchClaim = (m: readonly [number, string, string, number]): string => {
     switch (m[0]) {
       case 0: return `key.startsWith(${q(m[1])})`
-      case 1: return `key.endsWith(${q(m[1])})`
+      // Slot 2 is the escape char for an `endsWithUnescaped` arm, '' for plain
+      // `endsWith`; the parity check keeps `\(` off a function arm.
+      case 1: return m[2] === ''
+        ? `key.endsWith(${q(m[1])})`
+        : `(key.endsWith(${q(m[1])})&&endsWithUnescapedBoundary(key,${m[1].length},${q(m[2])}))`
       case 3: return `asciiFoldKey(key).startsWith(${q(m[1])})`
-      case 4: return `asciiFoldKey(key).endsWith(${q(m[1])})`
+      case 4: return m[2] === ''
+        ? `asciiFoldKey(key).endsWith(${q(m[1])})`
+        : `(asciiFoldKey(key).endsWith(${q(m[1])})&&endsWithUnescapedBoundary(asciiFoldKey(key),${m[1].length},${q(m[2])}))`
       default: {
         if (!m[2].includes('g') && !m[2].includes('y')) {
           try {

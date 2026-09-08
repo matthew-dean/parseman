@@ -66,7 +66,7 @@
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
-import { asciiFoldKey } from '../combinators/dispatch.ts'
+import { asciiFoldKey, endsWithUnescapedBoundary } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
@@ -168,11 +168,18 @@ const EMPTY_SENTS: readonly (Combinator<null> | undefined)[] = Object.freeze([])
  */
 function linkMatcher(m: readonly [number, string, string, number]): (key: string) => boolean {
   const value = m[1]
+  const esc = m[2]
   switch (m[0]) {
     case 0: return key => key.startsWith(value)
-    case 1: return key => key.endsWith(value)
+    // Slot 2 is the escape char for an `endsWithUnescaped` arm, '' for a plain
+    // `endsWith`; the parity check keeps `\(` off a function arm.
+    case 1: return esc === ''
+      ? key => key.endsWith(value)
+      : key => key.endsWith(value) && endsWithUnescapedBoundary(key, value.length, esc)
     case 3: return key => asciiFoldKey(key).startsWith(value)
-    case 4: return key => asciiFoldKey(key).endsWith(value)
+    case 4: return esc === ''
+      ? key => asciiFoldKey(key).endsWith(value)
+      : key => { const fk = asciiFoldKey(key); return fk.endsWith(value) && endsWithUnescapedBoundary(fk, value.length, esc) }
     default: {
       const flags = m[2]
       // `matches()` refuses global/sticky patterns, so every compiler-owned
@@ -3740,7 +3747,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
-        asciiFoldKey, ROUTED_FX,
+        asciiFoldKey, endsWithUnescapedBoundary, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
@@ -3816,7 +3823,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
-        asciiFoldKey, ROUTED_FX,
+        asciiFoldKey, endsWithUnescapedBoundary, ROUTED_FX,
         // THE SENTINEL POOL, dense over char-class indices so the emitted text can
         // index it the way it indexes `SCANS`. Built only for a recovery assembly
         // — a strict one emits no reader — and through the SAME `sentinelFor` memo
