@@ -109,12 +109,17 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
       // primes `/` in the class pool, so the optional-repeat guard can bind it.
       Piece: choice(literal('/'), regex(/[a-z]+/)),
       Cont: parser({ trivia }, sequence(peek(trivia), not(literal('@')), g.Piece!)),
+      Inherited: parser({}, sequence(peek(trivia), not(literal('@')), g.Piece!)),
+      Cleared: noTrivia(sequence(peek(trivia), not(literal('@')), g.Piece!)),
       Seq: noTrivia(sequence(g.Piece!, many(g.Cont!))),
     })) as unknown as Record<string, Combinator<unknown>>
 
     const prog = encodeTable(map)
-    const first = firstSetOf(map.Cont!)
-    expect(first.kind === 'ranges' && first.ranges.some(range => range.lo <= 32 && range.hi >= 32)).toBe(true)
+    const admitsSpace = (set: ReturnType<typeof firstSetOf>): boolean => set.kind === 'ranges'
+      && set.ranges.some(range => range.lo <= 32 && range.hi >= 32)
+    expect(admitsSpace(firstSetOf(map.Cont!))).toBe(true)
+    expect(admitsSpace(firstSetOf(map.Inherited!))).toBe(true)
+    expect(admitsSpace(firstSetOf(map.Cleared!))).toBe(false)
 
     // RED control: the old analysis intersected these sets. Their shared `/`
     // kept the result finite, but that intersection excludes the valid space.

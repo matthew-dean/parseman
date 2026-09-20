@@ -109,7 +109,7 @@ export function intersects(a: FirstSet, b: FirstSet): boolean {
 }
 
 export function fromChar(code: number): FirstSet {
-  return { kind: 'ranges', ranges: [{ lo: code, hi: code }] }
+  return fromRange(code, code)
 }
 
 /**
@@ -238,11 +238,10 @@ function matchesEmptyBody(
  * (see `isPositiveLookahead` and `sequenceFirstSet`).
  */
 export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
-  const tag = (p._def as ParserDef).tag
   // `adjacency` joins `not` for the same reason: `adjacent()`/`notAdjacent()` are
   // zero-width tests of the gap BEHIND the cursor, so they constrain nothing about
   // the first char ahead and must not contribute their `any` to the sequence.
-  return tag === 'not' || tag === 'adjacency'
+  return p._tag === 'not' || p._tag === 'adjacency'
 }
 
 /**
@@ -259,7 +258,7 @@ export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
  * therefore constrains nothing; `peek()` reports `any()` in that case, which the
  * intersection treats as "no constraint".
  */
-export function isPositiveLookahead(
+function isPositiveLookahead(
   p: Combinator<unknown>,
 ): p is Combinator<unknown> & { _def: Extract<ParserDef, { tag: 'peek' }> } {
   return p._tag === 'peek'
@@ -287,9 +286,7 @@ function narrowBy(acc: FirstSet | null, constraint: FirstSet): FirstSet | null {
  * only succeed — even zero-width — where X matches.
  */
 function applyAssertion(fs: FirstSet, assertion: FirstSet | null): FirstSet {
-  if (assertion === null) return fs
-  if (fs.kind === 'empty') return assertion
-  return narrowBy(fs, assertion) ?? fs
+  return assertion === null ? fs : fs.kind === 'empty' ? assertion : narrowBy(fs, assertion)!
 }
 
 /**
@@ -337,6 +334,7 @@ export function firstSetOf(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
+  triviaCanAdvance?: boolean,
 ): FirstSet {
   // `seen` is the current recursion path, not a global visited set. A completed
   // shared child must be analysed again for a sibling; only a back-edge on this
@@ -344,7 +342,7 @@ export function firstSetOf(
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
   try {
-    return firstSetBody(p, seen, resolve)
+    return firstSetBody(p, seen, resolve, triviaCanAdvance)
   } finally {
     seen.delete(p)
   }
@@ -354,8 +352,9 @@ function firstSetBody(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>>,
   resolve: RefResolver | undefined,
+  triviaCanAdvance: boolean | undefined,
 ): FirstSet {
-  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve)
+  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve, triviaCanAdvance)
   const empties = (c: Combinator<unknown>): boolean => matchesEmpty(c, new Set(), resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
@@ -375,10 +374,9 @@ function firstSetBody(
       return out
     }
     case 'sequence': {
-      // A leading peek is already a sound upper bound. Intersecting it with a
-      // later term is unsound when an enclosing trivia scope moves the cursor.
+      // A leading peek is already a sound upper bound inside a trivia scope.
       const first = d.parsers[0]!
-      if (isPositiveLookahead(first) && !empties(first._def.parser)) return fs(first)
+      if (triviaCanAdvance && isPositiveLookahead(first) && !empties(first._def.parser)) return fs(first)
       // Union through the nullable prefix (a leading nullable term lets a later
       // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
       // A leading zero-width assertion (`not`) contributes nothing (its `any` would
@@ -408,9 +406,9 @@ function firstSetBody(
     case 'token':
     case 'leaf':
     case 'node':
-    case 'grammar':
+    case 'sepBy':
     case 'expect':    return fs(d.parser)
-    case 'sepBy':     return fs(d.parser)   // both min 0 and min 1 start with the item
+    case 'grammar':   return firstSetOf(d.parser, seen, resolve, !d.clearTrivia)
     default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
   }
 }
