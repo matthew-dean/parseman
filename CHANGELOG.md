@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.50.7 — unreleased
+## 0.50.7 — 2026-09-20
 
 - Fix table lowering's first-set analysis inside `parser({ trivia })` scopes so
   sequence terms after nullable or zero-width prefixes are analyzed at the cursor
@@ -18,6 +18,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   agree for explicit, inherited, and cleared trivia scopes, including lookaheads and
   ordinary optional prefixes, without dropping any of the Less grammar's existing
   macro dispatch gates. The absolute macro gate passes against 0.50.2.
+
+- Re-anchor the grammar-density and broad-workload release comparisons to 0.50.6
+  (`ba71854`), the immediately preceding stable release. Peak baselines are unchanged.
 
 ## 0.50.6 — 2026-09-02
 
