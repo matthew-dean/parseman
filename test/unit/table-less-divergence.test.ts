@@ -114,17 +114,15 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
 
     const prog = encodeTable(map)
     const first = firstSetOf(map.Cont!)
-    expect(first.kind).toBe('any')
+    expect(first.kind === 'ranges' && first.ranges.some(range => range.lo <= 32 && range.hi >= 32)).toBe(true)
 
-    // RED control: the old analysis looked straight through the grammar scope
-    // and computed the body alone. Its peek/value intersection admits `/` but
-    // excludes the space that the scoped trivia consumes before Piece.
-    const contRef = map.Cont!
-    if (contRef._def.tag !== 'lazy') throw new TypeError('Cont should be a named rule reference')
-    const cont = contRef._def.thunk()
-    if (cont._def.tag !== 'grammar') throw new TypeError('Cont should resolve to a trivia scope')
-    const unscoped = firstSetOf(cont._def.parser)
-    expect(unscoped.kind === 'ranges' && unscoped.ranges.some(range => range.lo <= 32 && range.hi >= 32)).toBe(false)
+    // RED control: the old analysis intersected these sets. Their shared `/`
+    // kept the result finite, but that intersection excludes the valid space.
+    const oldTerms = [firstSetOf(trivia), firstSetOf(map.Piece!)]
+    const oldAdmits = (code: number): boolean => oldTerms.every(set => set.kind === 'any'
+      || set.kind === 'ranges' && set.ranges.some(range => range.lo <= code && range.hi >= code))
+    expect(oldAdmits(47)).toBe(true)
+    expect(oldAdmits(32)).toBe(false)
 
     for (const entry of [execRules(prog).Seq!, tableRules(prog).Seq!]) {
       expect(run(entry as never, 'red blue').span.end).toBe(8)

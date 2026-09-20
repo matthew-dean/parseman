@@ -373,6 +373,10 @@ function firstSetBody(
       return out
     }
     case 'sequence': {
+      // A leading peek is already a sound upper bound. Intersecting it with a
+      // later term is unsound when an enclosing trivia scope moves the cursor.
+      const first = d.parsers[0]!
+      if (isPositiveLookahead(first)) return fs(first)
       // Union through the nullable prefix (a leading nullable term lets a later
       // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
       // A leading zero-width assertion (`not`) contributes nothing (its `any` would
@@ -402,9 +406,8 @@ function firstSetBody(
     case 'token':
     case 'leaf':
     case 'node':
+    case 'grammar':
     case 'expect':    return fs(d.parser)
-    // A trivia scope can move between an assertion and the consuming term.
-    case 'grammar': return d.triviaParser ? any() : fs(d.parser)
     case 'sepBy':     return fs(d.parser)   // both min 0 and min 1 start with the item
     default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
   }
