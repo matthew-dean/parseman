@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { firstSetOf } from '../../src/combinators/first-set.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import {
-  classifiedTrivia, leaf, literal, many, node, noTrivia, oneOrMore, oneOrMoreSep, parser,
-  peek, regex, rules, sepBy, sequence, type Combinator,
+  choice, classifiedTrivia, leaf, literal, many, node, noTrivia, not, oneOrMore, optional,
+  oneOrMoreSep, parser, peek, regex, rules, sepBy, sequence, type Combinator,
 } from '../../src/index.ts'
 
 /**
@@ -98,6 +100,51 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
     const table = execRules(encodeTable(map)).Seq!
     expect((run(table as never, '1 2 3').value as { n: number }).n).toBe(3)
     expect(both(map, 'Seq', '1 2 3').table).toBe(both(map, 'Seq', '1 2 3').interp)
+  })
+
+  it('does not intersect a scoped trivia lookahead with the token after that trivia', () => {
+    const trivia = choice(regex(/ +/), regex(/\/\*(?:[^*]|\*(?!\/))*\*\//))
+    const map = rules<Record<string, Combinator<unknown>>>({ trivia }, (g: Record<string, Combinator<unknown>>) => ({
+      // The shared slash makes the unsound intersection non-empty. It also
+      // primes `/` in the class pool, so the optional-repeat guard can bind it.
+      Piece: choice(literal('/'), regex(/[a-z]+/)),
+      Cont: parser({ trivia }, sequence(peek(trivia), not(literal('@')), g.Piece!)),
+      Inherited: parser({}, sequence(peek(trivia), not(literal('@')), g.Piece!)),
+      Cleared: noTrivia(sequence(peek(trivia), not(literal('@')), g.Piece!)),
+      Broad: parser({ trivia }, sequence(peek(regex(/./s)), g.Piece!)),
+      Delayed: parser({ trivia }, sequence(not(literal('@')), peek(g.Piece!), g.Piece!)),
+      Optional: parser({ trivia }, sequence(optional(literal('+')), g.Piece!)),
+      Seq: noTrivia(sequence(g.Piece!, many(g.Cont!))),
+      DelayedSeq: noTrivia(sequence(g.Piece!, many(g.Delayed!))),
+      OptionalSeq: noTrivia(sequence(g.Piece!, many(g.Optional!))),
+    })) as unknown as Record<string, Combinator<unknown>>
+
+    const prog = encodeTable(map)
+    const admitsSpace = (set: ReturnType<typeof firstSetOf>): boolean => set.kind === 'ranges'
+      && set.ranges.some(range => range.lo <= 32 && range.hi >= 32)
+    expect(admitsSpace(firstSetOf(map.Cont!))).toBe(true)
+    expect(admitsSpace(firstSetOf(map.Inherited!, new Set(), undefined, trivia))).toBe(true)
+    expect(admitsSpace(firstSetOf(map.Cleared!))).toBe(false)
+    expect(admitsSpace(firstSetOf(map.Broad!))).toBe(true)
+    expect(firstSetOf(map.Broad!).kind).toBe('ranges')
+    expect(admitsSpace(firstSetOf(map.Delayed!))).toBe(true)
+    expect(admitsSpace(firstSetOf(map.Optional!))).toBe(true)
+
+    // RED control: the old analysis intersected these sets. Their shared `/`
+    // kept the result finite, but that intersection excludes the valid space.
+    const oldTerms = [firstSetOf(trivia), firstSetOf(map.Piece!)]
+    const oldAdmits = (code: number): boolean => oldTerms.every(set => set.kind === 'any'
+      || set.kind === 'ranges' && set.ranges.some(range => range.lo <= code && range.hi >= code))
+    expect(oldAdmits(47)).toBe(true)
+    expect(oldAdmits(32)).toBe(false)
+
+    for (const entry of [execRules(prog).Seq!, tableRules(prog).Seq!]) {
+      expect(run(entry as never, 'red blue').span.end).toBe(8)
+    }
+    expect(both(map, 'Broad', ' blue').table).toBe(both(map, 'Broad', ' blue').interp)
+    expect(both(map, 'Seq', 'red blue').table).toBe(both(map, 'Seq', 'red blue').interp)
+    expect(both(map, 'DelayedSeq', 'red blue').table).toBe(both(map, 'DelayedSeq', 'red blue').interp)
+    expect(both(map, 'OptionalSeq', 'red blue').table).toBe(both(map, 'OptionalSeq', 'red blue').interp)
   })
 
   it('many() DOES own the trivia before its first item, and still does', () => {

@@ -25,6 +25,7 @@ export type FinalChoiceClassification = {
 export function classifyFinalChoice(
   arms: readonly Combinator<unknown>[],
   resolve?: RefResolver,
+  activeTrivia?: Combinator<unknown> | null,
 ): FinalChoiceClassification {
   const firstSets: FirstSet[] = []
   const nullable: boolean[] = []
@@ -36,7 +37,7 @@ export function classifyFinalChoice(
   for (const arm of arms) {
     const empty = matchesEmpty(arm, new Set(), resolve)
     nullable.push(empty)
-    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve))
+    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve, activeTrivia))
     if (empty) exclusive = false
   }
   if (exclusive) {
@@ -109,7 +110,7 @@ export function intersects(a: FirstSet, b: FirstSet): boolean {
 }
 
 export function fromChar(code: number): FirstSet {
-  return { kind: 'ranges', ranges: [{ lo: code, hi: code }] }
+  return fromRange(code, code)
 }
 
 /**
@@ -238,11 +239,10 @@ function matchesEmptyBody(
  * (see `isPositiveLookahead` and `sequenceFirstSet`).
  */
 export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
-  const tag = (p._def as ParserDef).tag
   // `adjacency` joins `not` for the same reason: `adjacent()`/`notAdjacent()` are
   // zero-width tests of the gap BEHIND the cursor, so they constrain nothing about
   // the first char ahead and must not contribute their `any` to the sequence.
-  return tag === 'not' || tag === 'adjacency'
+  return p._tag === 'not' || p._tag === 'adjacency'
 }
 
 /**
@@ -259,8 +259,10 @@ export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
  * therefore constrains nothing; `peek()` reports `any()` in that case, which the
  * intersection treats as "no constraint".
  */
-export function isPositiveLookahead(p: Combinator<unknown>): boolean {
-  return (p._def as ParserDef).tag === 'peek'
+function isPositiveLookahead(
+  p: Combinator<unknown>,
+): p is Combinator<unknown> & { _def: Extract<ParserDef, { tag: 'peek' }> } {
+  return p._tag === 'peek'
 }
 
 /** Intersect a lookahead constraint into an accumulator; `any` = no constraint. */
@@ -285,9 +287,7 @@ function narrowBy(acc: FirstSet | null, constraint: FirstSet): FirstSet | null {
  * only succeed — even zero-width — where X matches.
  */
 function applyAssertion(fs: FirstSet, assertion: FirstSet | null): FirstSet {
-  if (assertion === null) return fs
-  if (fs.kind === 'empty') return assertion
-  return narrowBy(fs, assertion) ?? fs
+  return assertion === null ? fs : fs.kind === 'empty' ? assertion : narrowBy(fs, assertion)!
 }
 
 /**
@@ -299,19 +299,36 @@ function applyAssertion(fs: FirstSet, assertion: FirstSet | null): FirstSet {
  * A leading zero-width assertion (`not(…)`) is nullable but contributes NOTHING to
  * the first-set (see `isZeroWidthAssertion`) — its `any` must not poison the union.
  */
-export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
-  let fs: FirstSet = empty()
-  let assertion: FirstSet | null = null
-  for (const p of parsers) {
-    if (isPositiveLookahead(p)) {
-      // Zero-width but CONSTRAINING: intersect, keep scanning (it consumes nothing).
-      assertion = narrowBy(assertion, p._meta.firstSet)
-      continue
-    }
-    if (!isZeroWidthAssertion(p)) fs = union(fs, p._meta.firstSet)
-    if (!matchesEmpty(p)) return applyAssertion(fs, assertion)
+function sequenceSet(
+  parsers: readonly Combinator<unknown>[],
+  fs: (p: Combinator<unknown>) => FirstSet,
+  empties: (p: Combinator<unknown>) => boolean,
+  trivia?: Combinator<unknown> | null,
+): FirstSet {
+  const afterBoundary = (i: number): FirstSet => {
+    const rest = at(i)
+    return trivia ? union(rest, fs(trivia)) : rest
   }
-  return applyAssertion(fs, assertion)
+  const at = (i: number): FirstSet => {
+    const p = parsers[i]!
+    if (isPositiveLookahead(p)) {
+      const constraint = fs(p)
+      return i + 1 === parsers.length
+        ? constraint
+        : applyAssertion(afterBoundary(i + 1), constraint)
+    }
+    if (isZeroWidthAssertion(p)) {
+      return i + 1 === parsers.length ? empty() : afterBoundary(i + 1)
+    }
+    const first = fs(p)
+    if (!empties(p) || i + 1 === parsers.length) return first
+    return union(first, afterBoundary(i + 1))
+  }
+  return at(0)
+}
+
+export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
+  return sequenceSet(parsers, p => p._meta.firstSet, matchesEmpty)
 }
 
 /**
@@ -335,6 +352,7 @@ export function firstSetOf(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
+  activeTrivia?: Combinator<unknown> | null,
 ): FirstSet {
   // `seen` is the current recursion path, not a global visited set. A completed
   // shared child must be analysed again for a sibling; only a back-edge on this
@@ -342,7 +360,7 @@ export function firstSetOf(
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
   try {
-    return firstSetBody(p, seen, resolve)
+    return firstSetBody(p, seen, resolve, activeTrivia)
   } finally {
     seen.delete(p)
   }
@@ -352,8 +370,9 @@ function firstSetBody(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>>,
   resolve: RefResolver | undefined,
+  activeTrivia: Combinator<unknown> | null | undefined,
 ): FirstSet {
-  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve)
+  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve, activeTrivia)
   const empties = (c: Combinator<unknown>): boolean => matchesEmpty(c, new Set(), resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
@@ -373,19 +392,17 @@ function firstSetBody(
       return out
     }
     case 'sequence': {
-      // Union through the nullable prefix (a leading nullable term lets a later
-      // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
-      // A leading zero-width assertion (`not`) contributes nothing (its `any` would
-      // poison the union) but is still nullable, so keep scanning past it. A
-      // positive `peek()` is zero-width AND constraining → intersect.
-      let out: FirstSet = empty()
-      let assertion: FirstSet | null = null
-      for (const term of d.parsers) {
-        if (isPositiveLookahead(term)) { assertion = narrowBy(assertion, fs(term)); continue }
-        if (!isZeroWidthAssertion(term)) out = union(out, fs(term))
-        if (!empties(term)) return applyAssertion(out, assertion)
-      }
-      return applyAssertion(out, assertion)
+      // A zero-width or nullable term leaves the cursor at its current position,
+      // while every later term first skips active trivia. The sequence can
+      // therefore start with that trivia or with the later term. A positive
+      // lookahead still constrains both possibilities at the cursor where it ran:
+      //
+      //   peek ∩ (later ∪ trivia)
+      //
+      // Recurse at every term boundary because a lookahead after another
+      // zero-width term runs after trivia has advanced, not at the sequence's
+      // original cursor.
+      return sequenceSet(d.parsers, fs, empties, activeTrivia)
     }
     case 'peek': {
       // Deep-resolve the body: a `ref()` reads `any()` at CONSTRUCTION, so the
@@ -402,9 +419,14 @@ function firstSetBody(
     case 'token':
     case 'leaf':
     case 'node':
-    case 'grammar':
+    case 'sepBy':
     case 'expect':    return fs(d.parser)
-    case 'sepBy':     return fs(d.parser)   // both min 0 and min 1 start with the item
+    case 'grammar':   return firstSetOf(
+      d.parser,
+      seen,
+      resolve,
+      d.clearTrivia ? null : (d.triviaParser ?? activeTrivia),
+    )
     default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
   }
 }

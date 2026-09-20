@@ -539,7 +539,9 @@ class Encoder {
   private followClass(parsers: readonly Combinator<unknown>[], i: number): number {
     let fs: FirstSet = { kind: 'empty' }
     const rr = this.refResolver()
-    for (let j = i + 1; j < parsers.length; j++) fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr))
+    for (let j = i + 1; j < parsers.length; j++) {
+      fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia))
+    }
     return this.charClass(fs)
   }
 
@@ -779,7 +781,7 @@ class Encoder {
    */
   private subtree(c: Combinator<unknown>): SubtreeRef {
     const ip = this.node(c).ip
-    const fs = firstSetOf(c, new Set(), this.refResolver())
+    const fs = firstSetOf(c, new Set(), this.refResolver(), this.activeTrivia)
     return [ip, fs.kind === 'empty' ? -2 : this.charClass(fs)]
   }
 
@@ -1168,7 +1170,7 @@ class Encoder {
         // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
-        const finalChoice = classifyFinalChoice(arms, rr)
+        const finalChoice = classifyFinalChoice(arms, rr, this.activeTrivia)
         // attempt() preserves its child's success language, but the broad
         // classifier deliberately treats the transaction as nullable/unknown so
         // it can never by itself authorize exclusive one-arm selection. Recover
@@ -1180,7 +1182,7 @@ class Encoder {
           if (!finalChoice.nullable[i]) return undefined
           const def = arm._def as ParserDef
           if (def.tag !== 'attempt' || matchesEmpty(def.parser, new Set(), rr)) return undefined
-          return firstSetOf(def.parser, new Set(), rr)
+          return firstSetOf(def.parser, new Set(), rr, this.activeTrivia)
         })
         const gateFirst = finalChoice.firstSets.map((first, i) => transactionalFirst[i] ?? first)
         const classes = gateFirst.map((first, i) => finalChoice.nullable[i] && transactionalFirst[i] === undefined
@@ -1239,7 +1241,7 @@ class Encoder {
         const rr = this.refResolver()
         const itemClass = matchesEmpty(d.parser, new Set(), rr)
           ? -1
-          : this.existingCharClass(firstSetOf(d.parser, new Set(), rr))
+          : this.existingCharClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
@@ -1274,7 +1276,7 @@ class Encoder {
         if (this.rec) {
           return this.emit(
             OP_REP, child, d.min, d.max ?? -1, sep, flags,
-            this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator, new Set(), this.refResolver())),
+            this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia)),
           )
         }
         return d.min >= 2
@@ -1411,7 +1413,7 @@ class Encoder {
         // not). Resolve the ref's gate through `winners`, exactly as the `lazy` case
         // resolves the call. Non-ref bodies keep the cached set (byte-identical).
         const fs = d.parser._def.tag === 'lazy'
-          ? firstSetOf(d.parser, new Set(), this.refResolver())
+          ? firstSetOf(d.parser, new Set(), this.refResolver(), this.activeTrivia)
           : d.parser._meta.firstSet
         if (fs.kind === 'any') return body
         const cls = this.charClass(fs)
@@ -1605,7 +1607,7 @@ class Encoder {
         // Same override-aware resolution as the node gate: a bare-ref inner resolves
         // its gate through `winners` so a widened winner is not gated out.
         const fs = d.parser._def.tag === 'lazy'
-          ? firstSetOf(d.parser, new Set(), this.refResolver())
+          ? firstSetOf(d.parser, new Set(), this.refResolver(), this.activeTrivia)
           : d.parser._meta.firstSet
         if (fs.kind === 'any' || matchesEmpty(d.parser)) return inner
         const cls = this.charClass(fs)
