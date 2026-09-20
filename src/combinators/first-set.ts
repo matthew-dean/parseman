@@ -402,8 +402,9 @@ function firstSetBody(
     case 'token':
     case 'leaf':
     case 'node':
-    case 'grammar':
     case 'expect':    return fs(d.parser)
+    // A trivia scope can move between an assertion and the consuming term.
+    case 'grammar': return d.triviaParser ? any() : fs(d.parser)
     case 'sepBy':     return fs(d.parser)   // both min 0 and min 1 start with the item
     default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
   }

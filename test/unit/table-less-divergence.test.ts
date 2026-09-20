@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { firstSetOf } from '../../src/combinators/first-set.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import {
-  classifiedTrivia, leaf, literal, many, node, noTrivia, oneOrMore, oneOrMoreSep, parser,
-  peek, regex, rules, sepBy, sequence, type Combinator,
+  choice, classifiedTrivia, leaf, literal, many, node, noTrivia, not, oneOrMore,
+  oneOrMoreSep, parser, peek, regex, rules, sepBy, sequence, type Combinator,
 } from '../../src/index.ts'
 
 /**
@@ -98,6 +100,36 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
     const table = execRules(encodeTable(map)).Seq!
     expect((run(table as never, '1 2 3').value as { n: number }).n).toBe(3)
     expect(both(map, 'Seq', '1 2 3').table).toBe(both(map, 'Seq', '1 2 3').interp)
+  })
+
+  it('does not intersect a scoped trivia lookahead with the token after that trivia', () => {
+    const trivia = choice(regex(/ +/), regex(/\/\*(?:[^*]|\*(?!\/))*\*\//))
+    const map = rules<Record<string, Combinator<unknown>>>({ trivia }, (g: Record<string, Combinator<unknown>>) => ({
+      // The shared slash makes the unsound intersection non-empty. It also
+      // primes `/` in the class pool, so the optional-repeat guard can bind it.
+      Piece: choice(literal('/'), regex(/[a-z]+/)),
+      Cont: parser({ trivia }, sequence(peek(trivia), not(literal('@')), g.Piece!)),
+      Seq: noTrivia(sequence(g.Piece!, many(g.Cont!))),
+    })) as unknown as Record<string, Combinator<unknown>>
+
+    const prog = encodeTable(map)
+    const first = firstSetOf(map.Cont!)
+    expect(first.kind).toBe('any')
+
+    // RED control: the old analysis looked straight through the grammar scope
+    // and computed the body alone. Its peek/value intersection admits `/` but
+    // excludes the space that the scoped trivia consumes before Piece.
+    const contRef = map.Cont!
+    if (contRef._def.tag !== 'lazy') throw new TypeError('Cont should be a named rule reference')
+    const cont = contRef._def.thunk()
+    if (cont._def.tag !== 'grammar') throw new TypeError('Cont should resolve to a trivia scope')
+    const unscoped = firstSetOf(cont._def.parser)
+    expect(unscoped.kind === 'ranges' && unscoped.ranges.some(range => range.lo <= 32 && range.hi >= 32)).toBe(false)
+
+    for (const entry of [execRules(prog).Seq!, tableRules(prog).Seq!]) {
+      expect(run(entry as never, 'red blue').span.end).toBe(8)
+    }
+    expect(both(map, 'Seq', 'red blue').table).toBe(both(map, 'Seq', 'red blue').interp)
   })
 
   it('many() DOES own the trivia before its first item, and still does', () => {
