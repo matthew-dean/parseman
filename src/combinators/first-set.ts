@@ -259,8 +259,10 @@ export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
  * therefore constrains nothing; `peek()` reports `any()` in that case, which the
  * intersection treats as "no constraint".
  */
-export function isPositiveLookahead(p: Combinator<unknown>): boolean {
-  return (p._def as ParserDef).tag === 'peek'
+export function isPositiveLookahead(
+  p: Combinator<unknown>,
+): p is Combinator<unknown> & { _def: Extract<ParserDef, { tag: 'peek' }> } {
+  return p._tag === 'peek'
 }
 
 /** Intersect a lookahead constraint into an accumulator; `any` = no constraint. */
@@ -376,7 +378,7 @@ function firstSetBody(
       // A leading peek is already a sound upper bound. Intersecting it with a
       // later term is unsound when an enclosing trivia scope moves the cursor.
       const first = d.parsers[0]!
-      if (isPositiveLookahead(first)) return fs(first)
+      if (isPositiveLookahead(first) && !empties(first._def.parser)) return fs(first)
       // Union through the nullable prefix (a leading nullable term lets a later
       // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
       // A leading zero-width assertion (`not`) contributes nothing (its `any` would
