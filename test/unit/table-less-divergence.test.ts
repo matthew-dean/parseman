@@ -5,7 +5,7 @@ import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import {
-  choice, classifiedTrivia, leaf, literal, many, node, noTrivia, not, oneOrMore,
+  choice, classifiedTrivia, leaf, literal, many, node, noTrivia, not, oneOrMore, optional,
   oneOrMoreSep, parser, peek, regex, rules, sepBy, sequence, type Combinator,
 } from '../../src/index.ts'
 
@@ -112,7 +112,11 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
       Inherited: parser({}, sequence(peek(trivia), not(literal('@')), g.Piece!)),
       Cleared: noTrivia(sequence(peek(trivia), not(literal('@')), g.Piece!)),
       Broad: parser({ trivia }, sequence(peek(regex(/./s)), g.Piece!)),
+      Delayed: parser({ trivia }, sequence(not(literal('@')), peek(g.Piece!), g.Piece!)),
+      Optional: parser({ trivia }, sequence(optional(literal('+')), g.Piece!)),
       Seq: noTrivia(sequence(g.Piece!, many(g.Cont!))),
+      DelayedSeq: noTrivia(sequence(g.Piece!, many(g.Delayed!))),
+      OptionalSeq: noTrivia(sequence(g.Piece!, many(g.Optional!))),
     })) as unknown as Record<string, Combinator<unknown>>
 
     const prog = encodeTable(map)
@@ -123,6 +127,8 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
     expect(admitsSpace(firstSetOf(map.Cleared!))).toBe(false)
     expect(admitsSpace(firstSetOf(map.Broad!))).toBe(true)
     expect(firstSetOf(map.Broad!).kind).toBe('ranges')
+    expect(admitsSpace(firstSetOf(map.Delayed!))).toBe(true)
+    expect(admitsSpace(firstSetOf(map.Optional!))).toBe(true)
 
     // RED control: the old analysis intersected these sets. Their shared `/`
     // kept the result finite, but that intersection excludes the valid space.
@@ -137,6 +143,8 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
     }
     expect(both(map, 'Broad', ' blue').table).toBe(both(map, 'Broad', ' blue').interp)
     expect(both(map, 'Seq', 'red blue').table).toBe(both(map, 'Seq', 'red blue').interp)
+    expect(both(map, 'DelayedSeq', 'red blue').table).toBe(both(map, 'DelayedSeq', 'red blue').interp)
+    expect(both(map, 'OptionalSeq', 'red blue').table).toBe(both(map, 'OptionalSeq', 'red blue').interp)
   })
 
   it('many() DOES own the trivia before its first item, and still does', () => {

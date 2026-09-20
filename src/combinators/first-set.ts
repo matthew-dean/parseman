@@ -305,23 +305,26 @@ function sequenceSet(
   empties: (p: Combinator<unknown>) => boolean,
   trivia?: Combinator<unknown> | null,
 ): FirstSet {
-  let out: FirstSet = empty()
-  let assertion: FirstSet | null = null
-  for (let i = 0; i < parsers.length; i++) {
+  const afterBoundary = (i: number): FirstSet => {
+    const rest = at(i)
+    return trivia ? union(rest, fs(trivia)) : rest
+  }
+  const at = (i: number): FirstSet => {
     const p = parsers[i]!
     if (isPositiveLookahead(p)) {
-      // Zero-width but CONSTRAINING: intersect, keep scanning (it consumes nothing).
       const constraint = fs(p)
-      if (i === 0 && trivia && parsers.length > 1 && !empties(p._def.parser)) {
-        return applyAssertion(union(sequenceSet(parsers.slice(1), fs, empties, trivia), fs(trivia)), constraint)
-      }
-      assertion = narrowBy(assertion, constraint)
-      continue
+      return i + 1 === parsers.length
+        ? constraint
+        : applyAssertion(afterBoundary(i + 1), constraint)
     }
-    if (!isZeroWidthAssertion(p)) out = union(out, fs(p))
-    if (!empties(p)) return applyAssertion(out, assertion)
+    if (isZeroWidthAssertion(p)) {
+      return i + 1 === parsers.length ? empty() : afterBoundary(i + 1)
+    }
+    const first = fs(p)
+    if (!empties(p) || i + 1 === parsers.length) return first
+    return union(first, afterBoundary(i + 1))
   }
-  return applyAssertion(out, assertion)
+  return at(0)
 }
 
 export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
@@ -389,16 +392,16 @@ function firstSetBody(
       return out
     }
     case 'sequence': {
-      // A leading peek inspects the original cursor, while the next term first
-      // skips active trivia. The sequence can therefore start where the peek
-      // and the later term overlap OR where the peek and trivia overlap:
+      // A zero-width or nullable term leaves the cursor at its current position,
+      // while every later term first skips active trivia. The sequence can
+      // therefore start with that trivia or with the later term. A positive
+      // lookahead still constrains both possibilities at the cursor where it ran:
       //
       //   peek ∩ (later ∪ trivia)
       //
-      // Returning the peek alone is sound but needlessly turns broad lookaheads
-      // into open dispatch arms. Intersecting it with `later` alone is precise
-      // only when no trivia advances the cursor — and caused the `red blue`
-      // table divergence this path exists to prevent.
+      // Recurse at every term boundary because a lookahead after another
+      // zero-width term runs after trivia has advanced, not at the sequence's
+      // original cursor.
       return sequenceSet(d.parsers, fs, empties, activeTrivia)
     }
     case 'peek': {
