@@ -25,6 +25,7 @@ export type FinalChoiceClassification = {
 export function classifyFinalChoice(
   arms: readonly Combinator<unknown>[],
   resolve?: RefResolver,
+  activeTrivia?: Combinator<unknown> | null,
 ): FinalChoiceClassification {
   const firstSets: FirstSet[] = []
   const nullable: boolean[] = []
@@ -36,7 +37,7 @@ export function classifyFinalChoice(
   for (const arm of arms) {
     const empty = matchesEmpty(arm, new Set(), resolve)
     nullable.push(empty)
-    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve))
+    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve, activeTrivia))
     if (empty) exclusive = false
   }
   if (exclusive) {
@@ -298,19 +299,33 @@ function applyAssertion(fs: FirstSet, assertion: FirstSet | null): FirstSet {
  * A leading zero-width assertion (`not(…)`) is nullable but contributes NOTHING to
  * the first-set (see `isZeroWidthAssertion`) — its `any` must not poison the union.
  */
-export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
-  let fs: FirstSet = empty()
+function sequenceSet(
+  parsers: readonly Combinator<unknown>[],
+  fs: (p: Combinator<unknown>) => FirstSet,
+  empties: (p: Combinator<unknown>) => boolean,
+  trivia?: Combinator<unknown> | null,
+): FirstSet {
+  let out: FirstSet = empty()
   let assertion: FirstSet | null = null
-  for (const p of parsers) {
+  for (let i = 0; i < parsers.length; i++) {
+    const p = parsers[i]!
     if (isPositiveLookahead(p)) {
       // Zero-width but CONSTRAINING: intersect, keep scanning (it consumes nothing).
-      assertion = narrowBy(assertion, p._meta.firstSet)
+      const constraint = fs(p)
+      if (i === 0 && trivia && parsers.length > 1 && !empties(p._def.parser)) {
+        return applyAssertion(union(sequenceSet(parsers.slice(1), fs, empties, trivia), fs(trivia)), constraint)
+      }
+      assertion = narrowBy(assertion, constraint)
       continue
     }
-    if (!isZeroWidthAssertion(p)) fs = union(fs, p._meta.firstSet)
-    if (!matchesEmpty(p)) return applyAssertion(fs, assertion)
+    if (!isZeroWidthAssertion(p)) out = union(out, fs(p))
+    if (!empties(p)) return applyAssertion(out, assertion)
   }
-  return applyAssertion(fs, assertion)
+  return applyAssertion(out, assertion)
+}
+
+export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
+  return sequenceSet(parsers, p => p._meta.firstSet, matchesEmpty)
 }
 
 /**
@@ -334,7 +349,7 @@ export function firstSetOf(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
-  triviaCanAdvance?: boolean,
+  activeTrivia?: Combinator<unknown> | null,
 ): FirstSet {
   // `seen` is the current recursion path, not a global visited set. A completed
   // shared child must be analysed again for a sibling; only a back-edge on this
@@ -342,7 +357,7 @@ export function firstSetOf(
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
   try {
-    return firstSetBody(p, seen, resolve, triviaCanAdvance)
+    return firstSetBody(p, seen, resolve, activeTrivia)
   } finally {
     seen.delete(p)
   }
@@ -352,9 +367,9 @@ function firstSetBody(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>>,
   resolve: RefResolver | undefined,
-  triviaCanAdvance: boolean | undefined,
+  activeTrivia: Combinator<unknown> | null | undefined,
 ): FirstSet {
-  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve, triviaCanAdvance)
+  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve, activeTrivia)
   const empties = (c: Combinator<unknown>): boolean => matchesEmpty(c, new Set(), resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
@@ -374,22 +389,17 @@ function firstSetBody(
       return out
     }
     case 'sequence': {
-      // A leading peek is already a sound upper bound inside a trivia scope.
-      const first = d.parsers[0]!
-      if (triviaCanAdvance && isPositiveLookahead(first) && !empties(first._def.parser)) return fs(first)
-      // Union through the nullable prefix (a leading nullable term lets a later
-      // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
-      // A leading zero-width assertion (`not`) contributes nothing (its `any` would
-      // poison the union) but is still nullable, so keep scanning past it. A
-      // positive `peek()` is zero-width AND constraining → intersect.
-      let out: FirstSet = empty()
-      let assertion: FirstSet | null = null
-      for (const term of d.parsers) {
-        if (isPositiveLookahead(term)) { assertion = narrowBy(assertion, fs(term)); continue }
-        if (!isZeroWidthAssertion(term)) out = union(out, fs(term))
-        if (!empties(term)) return applyAssertion(out, assertion)
-      }
-      return applyAssertion(out, assertion)
+      // A leading peek inspects the original cursor, while the next term first
+      // skips active trivia. The sequence can therefore start where the peek
+      // and the later term overlap OR where the peek and trivia overlap:
+      //
+      //   peek ∩ (later ∪ trivia)
+      //
+      // Returning the peek alone is sound but needlessly turns broad lookaheads
+      // into open dispatch arms. Intersecting it with `later` alone is precise
+      // only when no trivia advances the cursor — and caused the `red blue`
+      // table divergence this path exists to prevent.
+      return sequenceSet(d.parsers, fs, empties, activeTrivia)
     }
     case 'peek': {
       // Deep-resolve the body: a `ref()` reads `any()` at CONSTRUCTION, so the
@@ -408,7 +418,12 @@ function firstSetBody(
     case 'node':
     case 'sepBy':
     case 'expect':    return fs(d.parser)
-    case 'grammar':   return firstSetOf(d.parser, seen, resolve, !d.clearTrivia)
+    case 'grammar':   return firstSetOf(
+      d.parser,
+      seen,
+      resolve,
+      d.clearTrivia ? null : (d.triviaParser ?? activeTrivia),
+    )
     default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
   }
 }
