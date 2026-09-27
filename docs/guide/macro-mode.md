@@ -1,5 +1,12 @@
 # Macro mode
 
+::: danger Superseded in part
+Statements on this page about the `composeLeaf` precompiled assembly, the size budget,
+and runtime `compose()` under CSP are superseded by
+[the runtime and size contract](../design/runtime-and-size-contract.md), which is
+binding. See its "Superseded statements" list.
+:::
+
 Add the plugin once, and your parser imports get evaluated and compiled at build time.
 The combinator import you mark `with { type: 'macro' }` disappears entirely, leaving an
 optimized `TableProgram` artifact in its place. That artifact imports the shared
