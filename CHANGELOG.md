@@ -3,6 +3,30 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.50.8 — unreleased
+
+- Fix the macro silently dropping a `rules()` option whose value names an imported
+  binding. `rules({ scanSkip: [importedUnit] }, …)` evaluated the import to `null`, the
+  option became `undefined`, and the grammar built green, with no warning, and no
+  ambient scan-skip. Strings and comments inside `scanTo`/`balanced` regions were no
+  longer skipped. A local skip array named by identifier (`scanSkip: SKIP`) was dropped
+  the same way, and so were `scanTo`/`balanced` options that did not evaluate.
+
+- Resolve imported values wherever the macro evaluates a grammar: a terminal in a rule
+  body, a combinator argument (`balanced(o, c, opts)`, `word(s, boundary)`), and
+  `rules({ trivia, scanSkip })`. A relative import is read from its source. A package
+  import is read from its published entry. Exported compiled terminals (and any a
+  verbatim export still names) now carry their combinator IR under
+  `Symbol.for('parseman.combinatorIR')`, so a grammar family can share terminals by
+  import instead of re-declaring them per grammar. An imported `rules()` factory's own
+  imports resolve the same way.
+
+- Fail the build, naming the option or declaration, the grammar, and each unresolved
+  binding with its reason, when an imported binding can't be resolved, when a
+  `trivia`/`scanSkip` option can't be evaluated, or when an options spread could hide
+  one. An options object or array containing an unresolved element is now unresolved
+  as a whole, instead of carrying a `null` in its place.
+
 ## 0.50.7 — 2026-09-20
 
 - Fix table lowering's first-set analysis inside `parser({ trivia })` scopes so

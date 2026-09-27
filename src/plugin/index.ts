@@ -23,7 +23,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
 import { compileRuleMap } from '../table/compile-rule-map.ts'
@@ -37,7 +37,7 @@ import {
 } from '../compiler/degradation.ts'
 import type { HostMode } from '../cst/host-mode.ts'
 import { COMPOSED_PIECES } from '../compiler/linker.ts'
-import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
+import { evalCombinatorIR, evalRuleMapIR, serializeCombinator, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { grammarReflectionSource, type GrammarReflection } from '../cst/reflection.ts'
 import { createHash } from 'node:crypto'
@@ -341,14 +341,41 @@ function topLevelInit(body: AnyNode[], name: string): AnyNode | null {
   return null
 }
 
-/** `Symbol.for('parseman.composedPieces')` ? */
-function isComposedPiecesSymbol(n: AnyNode | undefined): boolean {
+/** `Symbol.for('<key>')` ? */
+function isSymbolFor(n: AnyNode | undefined, key: string): boolean {
   if (!n || n.type !== 'CallExpression') return false
   const callee = n.callee as AnyNode | undefined
   const obj = (callee?.object as { name?: string } | undefined)?.name
   const prop = (callee?.property as { name?: string } | undefined)?.name
   const arg0 = (n.arguments as AnyNode[] | undefined)?.[0] as { value?: unknown } | undefined
-  return obj === 'Symbol' && prop === 'for' && arg0?.value === 'parseman.composedPieces'
+  return obj === 'Symbol' && prop === 'for' && arg0?.value === key
+}
+const isComposedPiecesSymbol = (n: AnyNode | undefined): boolean => isSymbolFor(n, 'parseman.composedPieces')
+
+/**
+ * The key a compiled terminal carries its combinator IR under — see `withCombinatorIR`.
+ * EMITTED SOURCE TEXT, like the composed-pieces key: the runtime never reads it, only a
+ * downstream macro build does, by finding it in the artifact's AST.
+ */
+const COMBINATOR_IR_KEY = 'parseman.combinatorIR'
+
+/** A compiled top-level const initializer's carried combinator IR, or null.
+ * The shape is exactly what `withCombinatorIR` emits:
+ * `Object.defineProperty(<parser>, Symbol.for('parseman.combinatorIR'), { value: '<ir>', … })`. */
+function carriedCombinatorIR(init: AnyNode): string | null {
+  let n = init
+  while (n.type === 'ParenthesizedExpression') n = n.expression as AnyNode
+  if (n.type !== 'CallExpression') return null
+  const callee = n.callee as AnyNode
+  const args = n.arguments as AnyNode[]
+  if ((callee.object as { name?: string } | undefined)?.name !== 'Object'
+    || (callee.property as { name?: string } | undefined)?.name !== 'defineProperty'
+    || !isSymbolFor(args[1], COMBINATOR_IR_KEY)) return null
+  for (const p of (args[2]?.properties as AnyNode[] | undefined) ?? []) {
+    const v = p.value as { type?: string; value?: unknown } | undefined
+    if (propName(p as never) === 'value' && v?.type === 'Literal' && typeof v.value === 'string') return v.value
+  }
+  return null
 }
 
 /** Walk an initializer subtree for the `Object.defineProperty(_,
@@ -555,16 +582,17 @@ function transformMacroImpl(
     specifiers: Array<{ type: string; local: string; start: number; end: number }>
   }> = []
 
+  // A macro import is a parseman-alias import carrying `with { type: 'macro' }`
+  // (oxc exposes this as ImportDeclaration.attributes).
+  const isMacroImport = (s: ImportDeclaration): boolean => s.attributes.some(a => {
+    const key = a.key.type === 'Identifier' ? a.key.name : String(a.key.value)
+    return key === 'type' && a.value.value === 'macro'
+  })
   for (const stmt of body) {
     if (stmt.type !== 'ImportDeclaration') continue
     const s = stmt as ImportDeclaration
 
-    // A macro import is a parseman-alias import carrying `with { type: 'macro' }`
-    // (oxc exposes this as ImportDeclaration.attributes).
-    const isMacro = moduleAliases.has(s.source.value) && s.attributes.some(a => {
-      const key = a.key.type === 'Identifier' ? a.key.name : String(a.key.value)
-      return key === 'type' && a.value.value === 'macro'
-    })
+    const isMacro = moduleAliases.has(s.source.value) && isMacroImport(s)
 
     if (!isMacro) {
       const specifiers: Array<{ type: string; local: string; start: number; end: number }> = []
@@ -673,6 +701,170 @@ function transformMacroImpl(
    * import (see the re-lower pass below). Module-private consts stay refusals. */
   setBuilderImportResolver(name => importBindings.get(name) ?? null)
 
+  /*
+   * IMPORTED VALUES — a terminal, a skip set, an options object or a boundary string
+   * declared in ANOTHER module and used where the macro evaluates a grammar: a rule
+   * body, a combinator's arguments, a `rules({ trivia, scanSkip })` option.
+   *
+   * Before this, an imported name evaluated to `null`. In a rule body that made the
+   * factory "not statically evaluable"; in an option it was worse — the option became
+   * `undefined` and the build succeeded without it. So every grammar family re-declared
+   * its own copy of each shared terminal, because only a whole `rules()` map could
+   * cross a module boundary (as `compose()` pieces).
+   *
+   * Resolution reads the exporting module, and never runs it:
+   *   - a relative import resolves to its SOURCE (`resolvePrivateSourceModule`, the
+   *     same rule imported factories use), whose declaration is evaluated like a local;
+   *   - a package import resolves to its PUBLISHED ENTRY, a compiled artifact, where a
+   *     terminal survives only as a compiled parser. The macro therefore carries each
+   *     such terminal's combinator IR on the exported value (`withCombinatorIR`), the
+   *     way a grammar carries its composed pieces, and this reads it back. A plain
+   *     value (a string, an options object, an array of terminals) is left verbatim by
+   *     the macro and is evaluated as written.
+   *
+   * Values are rebuilt per transform, never shared across modules: `rules()` stamps
+   * `_ruleName` and the ambient trivia onto a rule's value, so a terminal object shared
+   * between two grammars would carry one grammar's stamps into the other.
+   *
+   * A binding that exists but cannot be resolved is recorded in `unresolvedImports`,
+   * and every place that fails for it fails the BUILD naming it (`failOnUnresolved`).
+   */
+  const unresolvedImports = new Set<string>()
+  type ValueModule = {
+    file: string
+    src: string
+    body: AnyNode[]
+    consts: Map<string, AnyNode>
+    imports: Map<string, { source: string; imported: string }>
+    opaqueImports: Set<string>
+    scope?: ModuleScope
+  }
+  const valueModules = new Map<string, ValueModule | null>()
+  const OPAQUE_IMPORT = 'is a default or namespace import, which the macro does not resolve — import the binding by name'
+  const opaqueImportsOf = (moduleBody: AnyNode[]): Set<string> => {
+    const out = new Set<string>()
+    for (const st of moduleBody) {
+      if (st.type !== 'ImportDeclaration') continue
+      for (const sp of (st as unknown as ImportDeclaration).specifiers) {
+        if (sp.type !== 'ImportSpecifier') out.add(sp.local.name)
+      }
+    }
+    return out
+  }
+  const valueModule = (file: string): ValueModule | null => {
+    if (valueModules.has(file)) return valueModules.get(file)!
+    const mod = parseModuleCached(file)
+    let out: ValueModule | null = null
+    if (mod) {
+      const consts = new Map<string, AnyNode>()
+      for (const st of mod.body as Statement[]) {
+        const vd = unwrapVd(st)
+        if (!vd || (vd as unknown as { kind?: string }).kind !== 'const') continue
+        for (const d of vd.declarations) {
+          const idn = d.id as unknown as { type?: string; name?: string }
+          if (idn.type === 'Identifier' && idn.name && d.init) consts.set(idn.name, d.init as unknown as AnyNode)
+        }
+      }
+      out = {
+        file,
+        src: mod.src,
+        body: mod.body as AnyNode[],
+        consts,
+        imports: extractImportBindings(mod.body as AnyNode[]),
+        opaqueImports: opaqueImportsOf(mod.body as AnyNode[]),
+      }
+    }
+    valueModules.set(file, out)
+    return out
+  }
+  const resolveValueFile = (from: string, specifier: string): string | null => {
+    const source = resolvePrivateSourceModule(from, specifier)
+    if (source) return source
+    try { return getCompiledResolver().resolveFileSync(from, specifier).path ?? null } catch { return null }
+  }
+  const evaluatingConsts = new Set<string>()
+  /** Evaluate one top-level `const` of a foreign module, as the macro would locally. */
+  const moduleConstValue = (m: ValueModule, name: string): FreeNameResolution => {
+    const key = `${m.file}\0${name}`
+    if (evaluatingConsts.has(key)) return { unresolved: `is part of a declaration cycle in ${m.file}` }
+    evaluatingConsts.add(key)
+    try {
+      const init = m.consts.get(name)! as unknown as Expression
+      const ir = carriedCombinatorIR(init as unknown as AnyNode)
+      if (ir !== null) {
+        const combi = evalCombinatorIR(ir)
+        return combi ? { value: { combi, mfSrcs: [] } satisfies ScopeEntry } : { unresolved: `carries combinator IR that does not evaluate (${m.file})` }
+      }
+      const scope = moduleValueScope(m)
+      // Offsets inside this module's reducers must be answered against ITS scope tree.
+      reducerResolver.register(m.file)
+      const mfs: string[] = []
+      const combi = evaluateExpr(init, scope as unknown as Scope, m.src, mfs)
+      if (combi) return { value: { combi, mfSrcs: mfs } satisfies ScopeEntry }
+      const factory = evaluateWordFactory(init, scope as unknown as Scope, m.src) ?? evaluateWhenFactory(init, scope as unknown as Scope, m.src)
+      if (factory) return { value: factory }
+      const value = evaluateStaticValue(init, scope as unknown as Scope, m.src)
+      if (value !== null && value !== undefined || isStaticNullishExpression(init)) return { value }
+      return {
+        unresolved: /\btableRules\b/.test(m.src.slice(init.start, init.end))
+          ? `is a compiled parser in ${m.file} that carries no combinator IR — rebuild that module with parseman v${PARSEMAN_VERSION}`
+          : `is not a statically-known combinator or value (${m.file})`,
+      }
+    } finally {
+      evaluatingConsts.delete(key)
+    }
+  }
+  const moduleValueScope = (m: ValueModule): ModuleScope =>
+    m.scope ??= new ModuleScope(name => {
+      if (m.consts.has(name)) return moduleConstValue(m, name)
+      const binding = m.imports.get(name)
+      if (binding) return importedValue(m.file, binding)
+      return m.opaqueImports.has(name) ? { unresolved: OPAQUE_IMPORT } : null
+    }, unresolvedImports)
+  /** The value of export `name` of module `m`, following `export { x } from '…'`. */
+  const exportedValue = (m: ValueModule, name: string, depth: number): FreeNameResolution => {
+    for (const st of m.body) {
+      if (st.type !== 'ExportNamedDeclaration' || !(st as { source?: unknown }).source) continue
+      for (const sp of (st.specifiers as AnyNode[] | undefined) ?? []) {
+        if ((sp.exported as { name?: string }).name !== name) continue
+        const source = (st.source as { value: string }).value
+        const file = depth < 16 ? resolveValueFile(m.file, source) : null
+        const next = file ? valueModule(file) : null
+        if (!next) return { unresolved: `is re-exported from '${source}', which does not resolve from ${m.file}` }
+        return exportedValue(next, (sp.local as { name: string }).name, depth + 1)
+      }
+    }
+    const local = exportLocalName(m.body, name)
+    if (local === null) return { unresolved: `is not exported by ${m.file}` }
+    const scope = moduleValueScope(m)
+    if (!scope.has(local)) {
+      scope.get(local) // records WHY, for the error
+      return { unresolved: `could not be resolved in ${m.file}` }
+    }
+    return { value: scope.get(local) }
+  }
+  const importedValue = (from: string, binding: { source: string; imported: string }): FreeNameResolution => {
+    const file = resolveValueFile(from, binding.source)
+    const m = file ? valueModule(file) : null
+    if (!m) return { unresolved: `is imported from '${binding.source}', which does not resolve from ${from}` }
+    return exportedValue(m, binding.imported, 0)
+  }
+  /** Declarations of THIS module that failed to evaluate because of an unresolved
+   * import, so a later read of the local names the import behind it. */
+  const localFailures = new Map<string, string>()
+  const mainOpaqueImports = opaqueImportsOf(body as unknown as AnyNode[])
+  const resolveMainFree = (name: string): FreeNameResolution => {
+    const failed = localFailures.get(name)
+    if (failed !== undefined) return { unresolved: failed }
+    const binding = importBindings.get(name)
+    if (!binding) return mainOpaqueImports.has(name) ? { unresolved: OPAQUE_IMPORT } : null
+    const resolved = importedValue(id, binding)
+    // Its value is now inside the compiled grammar; the import goes too unless
+    // something left verbatim still reads it (the same rule as an inlined factory).
+    if (resolved !== null && 'value' in resolved) usedImportedFactories.add(name)
+    return resolved
+  }
+
   const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
     for (const st of moduleBody) {
       const decl = st.type === 'ExportNamedDeclaration'
@@ -685,19 +877,21 @@ function transformMacroImpl(
     }
     return null
   }
-  const isParsemanMacroImport = (stmt: AnyNode): boolean => {
-    if (stmt.type !== 'ImportDeclaration') return false
-    const s = stmt as unknown as ImportDeclaration
-    return moduleAliases.has(s.source.value) && s.attributes.some(a => {
-      const key = a.key.type === 'Identifier' ? a.key.name : String(a.key.value)
-      return key === 'type' && a.value.value === 'macro'
-    })
-  }
-  const sourceScopeUntil = (moduleBody: AnyNode[], source: string, until: number): Scope | null => {
-    const out: Scope = new Map()
+  const sourceScopeUntil = (file: string, moduleBody: AnyNode[], source: string, until: number): Scope | null => {
+    // The module's own declarations are still evaluated EAGERLY, in order, up to the
+    // factory (a factory module the macro cannot fully account for still falls back).
+    // Its imports are what changed: they resolve on first read, like this module's.
+    const imports = extractImportBindings(moduleBody)
+    const opaque = opaqueImportsOf(moduleBody)
+    const out = new ModuleScope(name => {
+      const binding = imports.get(name)
+      if (binding) return importedValue(file, binding)
+      return opaque.has(name) ? { unresolved: OPAQUE_IMPORT } : null
+    }, unresolvedImports) as unknown as Scope
     for (const stmt of moduleBody as Statement[]) {
       if (stmt.type === 'ImportDeclaration') {
-        if (!isParsemanMacroImport(stmt as unknown as AnyNode)) return null
+        // A module that imports parseman WITHOUT the macro attribute is not macro code.
+        if (moduleAliases.has((stmt as unknown as ImportDeclaration).source.value) && !isMacroImport(stmt as unknown as ImportDeclaration)) return null
         continue
       }
       if (stmt.type === 'FunctionDeclaration') continue
@@ -747,6 +941,11 @@ function transformMacroImpl(
     }
     return out
   }
+  /** Imported factories whose module could not be accounted for because of an
+   * unresolved import — reported when a `rules()` call actually uses one. */
+  const factoryFailures = new Map<string, string[]>()
+  /** Imports the macro inlined — a factory, or an imported terminal/value — and so
+   * may remove once nothing verbatim reads them. */
   const usedImportedFactories = new Set<string>()
   const markUsedImportedFactories = (names: readonly string[] | undefined): void => {
     for (const name of names ?? []) usedImportedFactories.add(name)
@@ -759,8 +958,14 @@ function transformMacroImpl(
     const localFor = exportLocalName(mod.body as AnyNode[], binding.imported)
     const init = localFor ? topLevelInit(mod.body as AnyNode[], localFor) ?? topLevelFunction(mod.body as AnyNode[], localFor) : null
     if (!init || (init.type !== 'ArrowFunctionExpression' && init.type !== 'FunctionExpression' && init.type !== 'FunctionDeclaration')) continue
-    const factoryScope = sourceScopeUntil(mod.body as AnyNode[], mod.src, init.start)
-    if (!factoryScope) continue
+    unresolvedImports.clear()
+    const factoryScope = sourceScopeUntil(file, mod.body as AnyNode[], mod.src, init.start)
+    if (!factoryScope) {
+      // Not silent: `rules(<this factory>)` refuses the build naming the binding.
+      if (unresolvedImports.size > 0) factoryFailures.set(localName, [...unresolvedImports])
+      unresolvedImports.clear()
+      continue
+    }
     factoryDecls.set(localName, {
       fn: init as unknown as Expression,
       declaredAt: -1,
@@ -778,8 +983,9 @@ function transformMacroImpl(
   // --- Pass 2: evaluate declarations in source order ---
   // Scope stores enriched ScopeEntry objects so evaluateParserFactory can
   // replay mfSrcs when outer-scope combinators are referenced inside factories.
-  const scope: Scope = new Map<string, ScopeEntry>()
-  const replacements: Array<{ start: number; end: number; replacement: string }> = []
+  const scope = new ModuleScope(resolveMainFree, unresolvedImports) as unknown as Scope
+  /** `carry`: a compiled terminal that may need its combinator IR — see `withCombinatorIR`. */
+  const replacements: Array<{ start: number; end: number; replacement: string; carry?: { name: string; combi: Combinator<unknown>; exported: boolean } }> = []
   const warnings: string[] = []
   // Collect degradations instead of printing them, so they arrive on the SAME channel
   // as every other macro warning (the bundler's `this.warn`) with a `file:line` anchor.
@@ -886,6 +1092,53 @@ function transformMacroImpl(
   }
 
   /**
+   * REFUSE THE BUILD over something the macro could not evaluate, naming each binding
+   * it could not resolve (`unresolvedImports`, filled by the scopes as they miss).
+   *
+   * A warning is not enough here. For a `rules()` option the "fallback" was to build the
+   * grammar WITHOUT the option — `scanSkip` gone, every string and comment inside a
+   * `scanTo`/`balanced` region live again — with the build green and no interpreter
+   * fallback to count. And a terminal imported from a published package is a compiled
+   * parser at runtime, so there is no interpreter fallback for it to take either.
+   */
+  const unevaluable = (pos: number, what: string): never => {
+    const names = [...unresolvedImports]
+    unresolvedImports.clear()
+    throw new Error(
+      `${id}:${lineOf(pos)} — ${what} can't be evaluated at build time`
+      + (names.length > 0
+        ? `; unresolved binding(s):\n${names.map(n => `  - ${n}`).join('\n')}`
+        : ' (it is not a static combinator/value expression)')
+      + `\n  parseman will not emit this module rather than drop it silently.`,
+    )
+  }
+  /** A `rules()` option: absent/nullish → `undefined`; otherwise evaluated or the build fails. */
+  const requiredOption = <T>(label: string, name: string, value: Expression | undefined, evaluate: (v: Expression) => T | null): T | undefined => {
+    if (value === undefined || isStaticNullishExpression(value)) return undefined
+    unresolvedImports.clear()
+    const out = evaluate(value)
+    if (out === null) return unevaluable(value.start, `${label}: rules({ ${name} })`)
+    unresolvedImports.clear()
+    return out
+  }
+  /** Options the macro reads by NAME, so a spread — or a computed key it cannot prove
+   * names no option — would hide one from it. */
+  const RULES_OPTIONS = new Set(['trivia', 'scanSkip', 'hostMode', 'trackLines'])
+  const assertPlainOptions = (optExpr: AnyNode | undefined, label: string): void => {
+    for (const p of (optExpr?.type === 'ObjectExpression' ? optExpr.properties as AnyNode[] : [])) {
+      if (propName(p as never) !== null) continue
+      const key = p.type === 'Property' ? evaluateStaticValue(p.key as unknown as Expression, scope, code) : null
+      if (typeof key !== 'string' || RULES_OPTIONS.has(key)) {
+        unevaluable(p.start, `${label}: an options ${p.type === 'Property' ? 'computed key' : 'spread'}`)
+      }
+    }
+  }
+  const triviaOption = (optExpr: AnyNode | undefined, label: string): Combinator<unknown> | undefined => {
+    assertPlainOptions(optExpr, label)
+    return requiredOption(label, 'trivia', optionProp(optExpr, 'trivia'), v => evaluateExpr(v, scope, code, []))
+  }
+
+  /**
    * Compile a `rules(factory)` call into ONE shared replacement expression
    * for the whole call — see compileRuleMap() in codegen.ts for why this is
    * one shared codegen pass instead of one `compile()` per entry (a `rules()`
@@ -923,6 +1176,13 @@ function transformMacroImpl(
     const importedFactory = namedFactory?.imported === true && factoryArg === namedFactory.fn
       ? (factoryArgRaw as unknown as { name?: string }).name
       : undefined
+    const failedFactory = factoryArgRaw.type === 'Identifier'
+      ? factoryFailures.get((factoryArgRaw as unknown as { name: string }).name)
+      : undefined
+    if (failedFactory) {
+      for (const n of failedFactory) unresolvedImports.add(n)
+      unevaluable(init.start, `${label}: the imported rules() factory \`${(factoryArgRaw as unknown as { name: string }).name}\``)
+    }
 
     // Grammar-level options object — evaluate `trivia` / `scanSkip` so the compiled
     // map seeds them as the ambient defaults (build-time mirror of rules() tagging
@@ -973,14 +1233,13 @@ function transformMacroImpl(
      *
      * Evaluated BEFORE the factory because they are now inputs to it.
      */
-    const triviaValue = optionValue('trivia')
-    const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
-    const scanSkipValue = optionValue('scanSkip')
-    const gScanSkip = scanSkipValue
-      ? (evaluateCombinatorArray(scanSkipValue, scope, code) ?? undefined)
-      : undefined
+    const gTrivia = triviaOption(optionsArg, label)
+    const scanSkipArray = requiredOption(label, 'scanSkip', optionValue('scanSkip'), v =>
+      v.type === 'ArrayExpression' && v.elements.length === 0 ? [] : evaluateCombinatorArray(v, scope, code))
+    const gScanSkip = scanSkipArray?.length ? scanSkipArray : undefined
 
     const why: { reason?: string } = {}
+    unresolvedImports.clear()
     const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [], why, {
       ...(gTrivia ? { trivia: gTrivia as Combinator<unknown> } : {}),
       ...(gScanSkip ? { scanSkip: gScanSkip } : {}),
@@ -988,6 +1247,7 @@ function transformMacroImpl(
       ...(gTrackLines === true ? { trackLines: true } : {}),
     })
     if (!ruleMap) {
+      if (unresolvedImports.size > 0) unevaluable(init.start, `${label}: rules(...) factory`)
       warn(init.start, why.reason === undefined
         ? `${label}: rules(...) factory isn't statically evaluable`
         : `${label}: rules(...) factory isn't statically evaluable — ${why.reason}`)
@@ -1456,9 +1716,7 @@ function transformMacroImpl(
     const a0 = rulesArgs[0] as AnyNode | undefined
     const a1 = rulesArgs[1] as AnyNode | undefined
     const optExpr = (a0?.type === 'ObjectExpression' ? a0 : a1?.type === 'ObjectExpression' ? a1 : undefined) as AnyNode | undefined
-    const triviaValue = optionProp(optExpr, 'trivia')
-    if (!triviaValue) return undefined
-    return (evaluateExpr(triviaValue, scope, code, []) as Combinator<unknown> | null) ?? undefined
+    return triviaOption(optExpr, 'compose() element')
   }
   const composingTrivia = (elements: ReadonlyArray<Expression | null>): Combinator<unknown> | undefined => {
     for (let i = elements.length - 1; i >= 0; i--) {
@@ -1497,6 +1755,10 @@ function transformMacroImpl(
     // because the artifact genuinely WAS 'ast'. Same vacuous-classification shape this
     // change exists to remove, one call site over.
     const cOptions = (init as unknown as { arguments: Expression[] }).arguments[1] as AnyNode | undefined
+    // `optionProp` reads an object LITERAL: any other options expression, or a spread
+    // inside one, would hide `hostMode` from it and ship the default.
+    if (cOptions !== undefined && cOptions.type !== 'ObjectExpression') unevaluable(cOptions.start, 'compose() options')
+    assertPlainOptions(cOptions, 'compose()')
     const cHostModeValue = optionProp(cOptions, 'hostMode')
     const cHostMode = cHostModeValue?.type === 'Literal'
       ? (cHostModeValue as unknown as { value?: unknown }).value
@@ -1809,10 +2071,16 @@ function transformMacroImpl(
         // ── Simple binding: const name = <expr> ──────────────────────────
         const varName = (d.id as unknown as { name: string }).name
         if (!referencesAny(init, allNames, scope)) {
+          unresolvedImports.clear()
           const staticValue = evaluateStaticValue(init, scope, code)
           if (staticValue !== null && staticValue !== undefined || isStaticNullishExpression(init)) {
             ;(scope as Map<string, unknown>).set(varName, staticValue)
+          } else if (unresolvedImports.size > 0) {
+            // Ordinary runtime code may read imports the macro cannot see, so this is not
+            // an error HERE — only if a grammar later reads `varName` (see resolveMainFree).
+            localFailures.set(varName, `could not be evaluated at build time, because: ${[...unresolvedImports].join('; ')}`)
           }
+          unresolvedImports.clear()
           continue
         }
 
@@ -1991,6 +2259,7 @@ function transformMacroImpl(
         }
 
         const mapFnSources: string[] = []
+        unresolvedImports.clear()
         const parser = evaluateExpr(init, scope, code, mapFnSources)
         if (parser === null) {
           const wordFactory = evaluateWordFactory(init, scope, code)
@@ -2034,6 +2303,7 @@ function transformMacroImpl(
             if (exportPrefix) exportedFactories.push({ name: varName, pos: init.start })
             continue
           }
+          if (unresolvedImports.size > 0) unevaluable(init.start, `"${varName}"`)
           warn(init.start, `"${varName}" references a parseman macro import but isn't a statically-evaluable combinator`)
           continue
         }
@@ -2055,6 +2325,7 @@ function transformMacroImpl(
           start: init.start,
           end: init.end,
           replacement: compiled.inlineExpression,
+          carry: { name: varName, combi: parser, exported: exportPrefix !== '' },
         })
 
         // Store enriched scope entry so factories can replay mfSrcs
@@ -2165,40 +2436,69 @@ function transformMacroImpl(
     )
   }
 
+  /**
+   * Carry a compiled terminal's combinator IR on its value, when another module can
+   * reach it: it is exported, or something left verbatim (an exported skip array, an
+   * options object) still names it.
+   *
+   * Lowering turns `export const blockComment = regex(…)` into a compiled PARSER, and a
+   * parser is not something the macro can evaluate. So without this, a package could
+   * share a grammar map (whose pieces it carries for `compose()`) but not one terminal,
+   * and every grammar that wanted the same string-or-comment skipper declared its own.
+   * The IR rides on the value exactly like composed pieces do — non-enumerable, under a
+   * `Symbol.for` key — and `carriedCombinatorIR` reads it back out of the artifact.
+   * The parser function itself is unchanged, so no parse runs differently.
+   */
+  const withCombinatorIR = <R extends (typeof replacements)[number]>(r: R): R => {
+    if (!r.carry || (!r.carry.exported && !stillReferenced(r.carry.name))) return r
+    let ir: string | null = null
+    // An IR the serializer cannot produce leaves the terminal uncarried; a module that
+    // imports it then fails ITS build naming it (see `moduleConstValue`).
+    try { ir = serializeCombinator(r.carry.combi) } catch { /* uncarried */ }
+    return ir === null ? r : {
+      ...r,
+      replacement: `/* @__PURE__ */ Object.defineProperty(${r.replacement}, Symbol.for('${COMBINATOR_IR_KEY}'), { value: ${JSON.stringify(ir)}, enumerable: false })`,
+    }
+  }
   const ms = new MagicString(code)
   const replacementRanges = runtimeComposeFallback
     ? []
     : replacements.map(({ start, end }) => ({ start, end }))
   const isInsideReplacement = (start: number, end: number): boolean =>
     replacementRanges.some(r => start >= r.start && end <= r.end)
-  const importedBindingStillReferenced = (local: string): boolean => {
-    const walk = (node: unknown, parent?: AnyNode, parentKey?: string): boolean => {
-      if (!node || typeof node !== 'object') return false
-      const rec = node as AnyNode
-      if (rec.type === 'ImportDeclaration') return false
-      if (typeof rec.start === 'number' && typeof rec.end === 'number' && isInsideReplacement(rec.start, rec.end)) return false
-      if ((rec.type === 'Identifier' || rec.type === 'BindingIdentifier') && (rec as { name?: string }).name === local) {
-        if (
-          parentKey === 'key' &&
-          (parent?.type === 'ObjectProperty' || parent?.type === 'Property' || parent?.type === 'PropertyDefinition') &&
-          (parent as { computed?: boolean }).computed !== true
-        ) return false
-        if (parentKey === 'property' && parent?.type === 'StaticMemberExpression') return false
-        if (parentKey === 'property' && parent?.type === 'MemberExpression' && (parent as { computed?: boolean }).computed !== true) return false
-        return true
-      }
-      for (const key of Object.keys(rec)) {
-        if (key === 'type' || key === 'start' || key === 'end') continue
-        const value = (rec as Record<string, unknown>)[key]
-        if (Array.isArray(value)) {
-          if (value.some(child => walk(child, rec, key))) return true
-        } else if (walk(value, rec, key)) {
-          return true
+  /** Every name the EMITTED module still reads outside the replaced ranges — computed
+   * once (it used to be one whole-module walk per name asked about). A declaration's
+   * own binding name is not a read. */
+  let referencedOutside: Set<string> | null = null
+  const stillReferenced = (name: string): boolean => {
+    if (referencedOutside === null) {
+      const out = new Set<string>()
+      const walk = (node: unknown, parent?: AnyNode, parentKey?: string): void => {
+        if (!node || typeof node !== 'object') return
+        const rec = node as AnyNode
+        if (rec.type === 'ImportDeclaration') return
+        if (typeof rec.start === 'number' && typeof rec.end === 'number' && isInsideReplacement(rec.start, rec.end)) return
+        if (rec.type === 'Identifier' || rec.type === 'BindingIdentifier') {
+          const isKey = parentKey === 'key'
+            && (parent?.type === 'ObjectProperty' || parent?.type === 'Property' || parent?.type === 'PropertyDefinition')
+            && (parent as { computed?: boolean }).computed !== true
+          const isMember = parentKey === 'property'
+            && (parent?.type === 'StaticMemberExpression' || (parent?.type === 'MemberExpression' && (parent as { computed?: boolean }).computed !== true))
+          const isDeclared = parentKey === 'id' && parent?.type === 'VariableDeclarator'
+          if (!isKey && !isMember && !isDeclared) out.add(rec.name as string)
+          return
+        }
+        for (const key of Object.keys(rec)) {
+          if (key === 'type' || key === 'start' || key === 'end') continue
+          const value = (rec as Record<string, unknown>)[key]
+          if (Array.isArray(value)) for (const child of value) walk(child, rec, key)
+          else walk(value, rec, key)
         }
       }
-      return false
+      for (const stmt of body as unknown[]) walk(stmt)
+      referencedOutside = out
     }
-    return (body as unknown[]).some(stmt => walk(stmt))
+    return referencedOutside.has(name)
   }
 
   for (const imp of ordinaryImports) {
@@ -2208,7 +2508,7 @@ function transformMacroImpl(
       imp.specifiers.every(spec =>
         spec.type === 'ImportSpecifier' &&
         usedImportedFactories.has(spec.local) &&
-        !importedBindingStillReferenced(spec.local),
+        !stillReferenced(spec.local),
       )
     ) {
       ms.remove(imp.start, imp.end)
@@ -2239,7 +2539,7 @@ function transformMacroImpl(
   // Runtime compose consumes combinator objects. A partially lowered module mixes
   // compiled parser functions with those objects (for example `trivia(ws)` after
   // `ws` was lowered), so an unresolved compose makes the whole module runtime.
-  const applied = runtimeComposeFallback ? [] : replacements
+  const applied = runtimeComposeFallback ? [] : replacements.map(r => withCombinatorIR(r))
   // NO MODULE HOIST. It existed to deduplicate declarations across the fused IIFEs the
   // source lowering emitted — `_pfFail` and friends, one copy per variant. A table
   // replacement is a `tableRules(...)` call over a data literal: there are no emitted
