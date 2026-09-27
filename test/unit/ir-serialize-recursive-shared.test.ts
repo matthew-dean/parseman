@@ -15,7 +15,8 @@ import { describe, it, expect } from 'vitest'
 import { rules, regex, literal, sequence, choice, many, transform, expect as expectC } from '../../src/index.ts'
 import { ref } from '../../src/combinators/ref.ts'
 import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
-import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
+import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
+import { evalRuleMapIR } from '../../src/plugin/ir-eval.ts'
 
 import type { Combinator } from '../../src/types.ts'
 

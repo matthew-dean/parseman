@@ -166,17 +166,26 @@ published, compiled-only package composes just fine.
 `compose()` works whether a grammar [runs interpreted, via `compile()`, or via the
 macro](./modes):
 
-- **Macro (build):** `compose([...])` is fused at **build time** into one static parser —
-  a plain closure of direct rule calls, emitted as ordinary source. It needs no base
-  grammar source (the pieces travel on the imported value) and runs under any CSP, so it
+- **Macro (build):** `compose([...])` is fused at **build time** into one static table.
+  It needs no base grammar source (the pieces travel on the imported value as carried
+  IR, which the plugin re-lowers in the bundler) and constructs no code at runtime, so it
   ships in strict-CSP contexts like browser extensions or some CDNs with no extra
   configuration.
-- **`compile()` / interpreter (runtime):** `compose([...])` fuses when it's called, using
-  the same code generation `compile()` uses. Like `compile()`, it tries to specialize the
-  fused parser via `new Function` once; under a strict CSP that throws, and it falls back
-  to the closure assembler — so it still runs without `'unsafe-eval'`, just via the
-  slower path for that one-time construction. Parsing afterward runs at full speed either
-  way.
+- **Runtime (interpreter):** `compose([...])` only **links**. Each piece's `rules()`
+  factory runs again against one shared namespace, a later piece's rule winning by name,
+  so the result is the interpreter grammar one `rules()` over all the pieces would build.
+  It builds no table, evaluates no source and never touches the pieces, so it runs under
+  any CSP, and it links lazily: `compose()` itself only reads the pieces' rule names.
+  Runtime `compose()` takes interpreter grammars — `rules()` maps and other runtime
+  compositions. It refuses a build-compiled grammar, because linking one would mean
+  evaluating its carried IR; compose that at build time instead.
+- **`compile()` (runtime, opt-in):** pass the composition to `compile()` for a table.
+  `compile(composed)` encodes it once and specialises the table with `new Function`; under
+  a strict CSP that throws `EvalError` and the same table runs on the closure assembler.
 
-Either way, the parse is identical: a single fused scope of direct rule calls, with
-overrides resolved across the whole set.
+All three produce the same parse, with overrides resolved across the whole set.
+`test/unit/csp-runtime-paths.test.ts` runs every runtime path under
+`--disallow-code-generation-from-strings` and asserts that nothing but `compile()` ever
+reaches `Function` or `eval`; `test/parity/interpreted-fuse-parity.test.ts` pins the
+runtime link to the compiled table.
+

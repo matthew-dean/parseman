@@ -13,8 +13,9 @@
 import { describe, it, expect } from 'vitest'
 import { rules, balanced, regex, literal, sequence, parse } from '../../src/index.ts'
 import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
-import { compose } from '../../src/compiler/linker.ts'
-import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
+import { compile } from '../../src/table/compile.ts'
+import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
+import { evalRuleMapIR } from '../../src/plugin/ir-eval.ts'
 
 const blockComment = sequence(literal('/*'), regex(/(?:[^*]|\*(?!\/))*/), literal('*/'))
 const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
@@ -25,9 +26,8 @@ type Result = { ok: boolean; span: { end: number } }
 type Fn = (i: string, p: number, c: object) => Result
 
 function lower(entries: ReadonlyArray<readonly [string, unknown]>): Fn {
-  // Fuse through the public `compose()` — the table lowering has no separate
-  // "link already-lowered pieces" step, so a one-grammar compose IS the fuse.
-  return (compose([Object.fromEntries(entries as never)]) as unknown as Record<string, Fn>).Group!
+  // Encode the rule map to one table, as a build re-lowering carried IR does.
+  return compile(Object.fromEntries(entries) as Record<string, unknown>).Group as unknown as Fn
 }
 
 describe('compose() keeps ambient scanSkip inside a balanced() interior', () => {

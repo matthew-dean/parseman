@@ -1,3 +1,4 @@
+import type { CompiledParser } from '../../src/types.ts'
 /**
  * Ambient scan-skip — grammar-level `rules({ trivia, scanSkip })` makes a
  * `scanTo` skip comments/whitespace (via ambient trivia) and opaque units like
@@ -325,7 +326,7 @@ describe('balanced() honors ambient scanSkip in its interior', () => {
 // ---------------------------------------------------------------------------
 describe('balanced() member of scanSkip — codegen terminates and skips correctly', () => {
   it('compile() a balanced whose rebuild pulls in the balanced scanSkip member — no stack overflow', () => {
-    let compiledBracket: ReturnType<typeof compile>
+    let compiledBracket: CompiledParser<unknown>
     expect(() => { compiledBracket = compile(bs.bracket) }).not.toThrow()
     // …and it actually parses: a `]` hidden inside a paren group is skipped, so
     // the bracket closes at the REAL `]`.

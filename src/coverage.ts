@@ -157,11 +157,11 @@ export function grammarCoverageDefinitions(entry: Combinator<unknown>, winners?:
 }
 
 /** Definitions for a runtime `compose()` result, normalized through its final
- * IR winner map. Opaque precompiled pieces intentionally fail rather than
+ * winner map. Anything else — a compiled table, a plain map — fails rather than
  * reporting source-piece identities as though they were final grammar IDs. */
 export function composedGrammarCoverageDefinitions(grammar: Record<string, unknown>, startRule: string): readonly GrammarCoverageDefinition[] {
   const winners = composedCoverageRules(grammar)
-  if (!winners) throw new TypeError('semantic coverage needs re-lowerable composed IR; this composition contains an opaque artifact')
+  if (!winners) throw new TypeError('semantic coverage needs a runtime compose() result (a linked interpreter grammar); this is not one')
   const entry = winners[startRule]
   if (!entry) throw new TypeError(`semantic coverage start rule ${JSON.stringify(startRule)} is not a final winner`)
   return grammarCoverageDefinitions(entry, winners)

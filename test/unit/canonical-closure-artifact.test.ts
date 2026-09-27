@@ -63,25 +63,35 @@ describe('live compilation and serialized closure artifacts', () => {
     })).toBe(0)
   })
 
-  it('specialises live rule maps while returning closure-stamped wire programs', () => {
+  it('runs internal rule maps on the closure artifact; only compile() specialises', () => {
     const entries = [['Entry', literal('ok')]] as const
     const printable = compileRuleMap(entries)
     const runnable = compileRuleMapRunnable(entries)
+    const specialised = compileRuleMapRunnable(entries, { specialise: true })
     expect(printable).not.toBeNull()
     expect(runnable).not.toBeNull()
-    if (!printable || !runnable) return
+    expect(specialised).not.toBeNull()
+    if (!printable || !runnable || !specialised) return
 
     expect(printable.prog.asm).toEqual([])
     expect(runnable.prog.asm).toEqual([])
     expect(printable.replacement).toContain('a:[],')
-    expect(functionCalls(() => {
-      expect((printable.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
-      expect((runnable.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
-    })).toBe(2)
+    // The macro's and linkable()'s live maps never construct code…
     expect(functionCalls(() => {
       expect((printable.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
       expect((runnable.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
     })).toBe(0)
+    // …while compile()'s specialises once, then reuses the assembly.
+    expect(functionCalls(() => {
+      expect((specialised.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
+    })).toBe(1)
+    expect(functionCalls(() => {
+      expect((specialised.rules.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
+    })).toBe(0)
+    const table = compile({ Entry: literal('ok') } as Record<string, unknown>)
+    expect(functionCalls(() => {
+      expect((table.Entry! as unknown as ParseFn)('ok', 0, {}).ok).toBe(true)
+    })).toBe(1)
   })
 
   it('falls back to closure assembly when a CSP blocks runtime construction', () => {

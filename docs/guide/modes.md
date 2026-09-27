@@ -82,15 +82,27 @@ compiled.source                                  // printable table module sourc
 compiled.inlineExpression                        // table expression (requires tableRules)
 ```
 
+`compile()` also takes a whole rule map — a `rules()` grammar or a runtime `compose()`
+result — and returns a map of runnable table rules that `run()` and `parseDoc()` accept:
+
+```ts
+const table = compile(compose([baseGrammar, dialectRules]))
+run(table.Stylesheet, source)
+```
+
 ::: warning Content Security Policy
-Macro output and every artifact printed by `compile()` carry an explicit empty
-assembly inventory (`a:[]`), so importing and parsing those artifacts never calls
-`new Function`. A live parser returned directly by runtime `compile()` instead tries
-to specialise its table once with `new Function`; if the environment rejects that
-operation, Parseman catches the `EvalError` and uses the closure assembler. Runtime
-`compose()` follows the same rule. Both paths therefore parse under a strict
-[Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP), while
-the macro avoids even attempting runtime source construction.
+`compile()` is the ONLY place Parseman constructs code at runtime. A live parser it
+returns tries to specialise its table once with `new Function`; if the environment
+rejects that, Parseman catches the `EvalError` and runs the same table on the closure
+assembler. Everything else — the interpreter, runtime `compose()` and `composeLeaf()`,
+`linkable()`, loading macro or printed artifacts, and the spec/railroad tooling —
+never turns a string into code, so all of it parses under a strict
+[Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP).
+
+`test/unit/csp-runtime-paths.test.ts` decides this for every runtime path: in-process
+with `Function` and `eval` spied (zero calls outside `compile()`), and in a child
+process under `--disallow-code-generation-from-strings`, where every path, `compile()`
+included, parses exactly what it parses unrestricted.
 
 Terminal large `composeLeaf()` artifacts carry one ordinary function literal for their
 strict AST/no-lines assembly; it is emitted by the build, not constructed from source

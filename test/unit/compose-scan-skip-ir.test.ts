@@ -197,19 +197,21 @@ export const parser = compose([base, rules(g => ({ Top: g.Doc }))])`
 })
 
 describe('compose() threads a local rules({ scanSkip }) per-piece — runtime', () => {
-  // The runtime `compose()` fuse (no macro): itemCarried must carry the grammar's
-  // `_meta.grammarScanSkip` into the IR so materializePiece re-lowers it ambiently.
+  // The runtime `compose()` link (no macro): the local piece's `scanSkip` option
+  // stays per piece when every factory is re-run against the shared namespace.
   const dq = parseman.sequence(parseman.literal('"'), parseman.regex(/[^"]*/), parseman.literal('"'))
   const base = parseman.rules(() => ({ Filler: parseman.regex(/#/) }))
   const local = parseman.rules({ scanSkip: [dq] }, (g: Record<string, parseman.Combinator<unknown>>) => ({
     entry: parseman.sequence(g.toSemi!, parseman.literal(';')),
     toSemi: parseman.scanTo(parseman.literal(';')),
   }))
-  const grammar = parseman.compose([base as never, local as never]) as unknown as Record<string, FusedRule>
+  const grammar = parseman.compose([base as never, local as never])
 
-  it('a sentinel hidden in a string is NOT matched', () => {
-    const r = grammar.entry!(INPUT, 0, {})
-    expect(r.ok).toBe(true)
-    if (r.ok) expect((r.value as string[])[0]).toBe(EXPECT)
+  it('a sentinel hidden in a string is NOT matched — linked, and compiled', () => {
+    for (const entry of [grammar.entry!, parseman.compile(grammar as Record<string, unknown>).entry!]) {
+      const r = parseman.run(entry, INPUT)
+      expect(r.ok).toBe(true)
+      if (r.ok) expect((r.value as string[])[0]).toBe(EXPECT)
+    }
   })
 })

@@ -1816,8 +1816,11 @@ describe('derived lexical-token families', () => {
     const roots = names.map(name => winners[name]!)
     const resolve = (name: string): Combinator<unknown> | undefined => winners[name]
     const alphabet = collectLexicalAlphabet(roots, resolve)
+    // A runtime composition holds each rule in its own slot; the decision is its body.
+    const word = winners.Word!
+    const wordBody = word._def.tag === 'lazy' ? word._def.thunk() : word
     const finalWord = alphabet.decisions.find(decision =>
-      alphabet.capabilities[decision.siteId]!.parser === winners.Word)!
+      alphabet.capabilities[decision.siteId]!.parser === wordBody)!
     expect(finalWord.families.some(family => family.arms.length === 2)).toBe(true)
     const planted = alphabet.decisions.map(decision => decision !== finalWord ? decision : ({
       ...decision,

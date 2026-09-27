@@ -105,7 +105,7 @@ describe('coverage definition surfaces distinguish "could not" from "nothing"', 
 
   it('composedGrammarCoverageDefinitions THROWS on a non-composed / opaque input', () => {
     expect(() => composedGrammarCoverageDefinitions({}, 'Term')).toThrow(TypeError)
-    expect(() => composedGrammarCoverageDefinitions({}, 'Term')).toThrow(/re-lowerable composed IR/)
+    expect(() => composedGrammarCoverageDefinitions({}, 'Term')).toThrow(/needs a runtime compose\(\) result/)
   })
 
   it('composedGrammarCoverageDefinitions names an unknown start rule instead of returning []', () => {

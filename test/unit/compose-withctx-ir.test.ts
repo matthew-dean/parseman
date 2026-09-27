@@ -27,9 +27,10 @@ import { describe, it, expect } from 'vitest'
 import * as parseman from '../../src/index.ts'
 import type { FusedRule } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
+import { evalRuleMapIR } from '../../src/plugin/ir-eval.ts'
 import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { evalMacroExports } from '../helpers/eval-macro-module.ts'
+import { macroComposed } from '../helpers/macro-package.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
@@ -100,12 +101,13 @@ describe('compose over a compiled base with a withCtx (0.26.3)', () => {
     // The real jess shape: compose([compiledCss, delta]). RED before the fix —
     // the baked pieces referenced the base `cst` helper (`cst is not defined`) and
     // corrupted dispatch inside the composed ruleset body.
-    const delta = parseman.rules(() => ({ Extra: parseman.withCtx({ z: 1 }, parseman.regex(/z/)) }))
-    const composed = parseman.compose([
-      cssGrammar as never,
-      delta as never,
-    ]) as unknown as Record<string, FusedRule>
+    const composed = macroComposed(CSS_SRC, `import { compose, rules, regex, withCtx } from 'parseman' with { type: 'macro' }
+import { cssGrammar } from './base.js'
+export const composed = compose([cssGrammar, rules(g => ({ Extra: withCtx({ z: 1 }, regex(/z/)) }))])`).composed as Record<string, FusedRule>
     expect(composed.Ruleset!('.a{color:red}', 0, {}).ok).toBe(true)
+    // …and at runtime the built base is refused, never re-evaluated.
+    expect(() => parseman.compose([cssGrammar as never, parseman.rules(() => ({ Extra: parseman.regex(/z/) })) as never]))
+      .toThrow('a build-compiled compose() result has no live rules to link')
   })
 
   it('the withCtx STATE round-trips through `_wc` (extra re-evaluated + extraSrc restored)', () => {
@@ -137,10 +139,11 @@ export const typed = rules(g => ({
   it('strips TypeScript from withCtx state before a composed artifact re-lowers', () => {
     // `extraSrc` crosses the artifact IR boundary and is evaluated/inlined as JS.
     // Keeping `as {...}` would break `new Function` only after composition.
-    const typed = buildCompiledGrammar(`import { rules, literal, withCtx } from 'parseman' with { type: 'macro' }
+    const TYPED_SRC = `import { rules, literal, withCtx } from 'parseman' with { type: 'macro' }
 export const typed = rules(g => ({
   Entry: withCtx(({ inner: true } as { inner: boolean }), literal('x')),
-}))`)
+}))`
+    const typed = buildCompiledGrammar(TYPED_SRC)
     const base = typed.typed as Record<string | symbol, unknown>
     const carried = base[COMPOSED_PIECES] as Array<{ ir: string }>
     const ir = carried.find(p => typeof p.ir === 'string')!.ir
@@ -148,8 +151,9 @@ export const typed = rules(g => ({
     const pieces = compileLinkable(evalRuleMapIR(ir), '_typed_')!
     expect(pieces.replacement).not.toBeNull()
 
-    const delta = parseman.rules(() => ({ Extra: parseman.literal('z') }))
-    const composed = parseman.compose([base as never, delta]) as unknown as Record<string, FusedRule>
+    const composed = macroComposed(TYPED_SRC, `import { compose, rules, literal } from 'parseman' with { type: 'macro' }
+import { typed } from './base.js'
+export const composed = compose([typed, rules(g => ({ Extra: literal('z') }))])`).composed as Record<string, FusedRule>
     expect(composed.Entry!('x', 0, {}).ok).toBe(true)
   })
 })

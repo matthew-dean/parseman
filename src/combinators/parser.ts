@@ -140,7 +140,52 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
 ): RulesResult<T> {
   const factory = (typeof a === 'function' ? a : b) as (self: any) => T
   const options = (typeof a === 'function' ? b : a) as RulesOptions | undefined
-  const cache: Partial<T> = {}
+  const recipe: RulesRecipe = { factory, options }
+  const map = linkRules([recipe])
+  Object.defineProperty(map, RULES_RECIPE, { value: [recipe], enumerable: false })
+  return map as RulesResult<T>
+}
+
+/**
+ * The recipe a `rules()` result was built from — its factory and options —
+ * non-enumerable, in piece order. Runtime `compose()` links grammars by running
+ * these again against ONE shared namespace (`linkRules`), which is what makes a
+ * composition the same graph as one `rules()` written over every piece. A
+ * composed result carries the concatenated list, so it composes again.
+ */
+export const RULES_RECIPE = Symbol.for('parseman.rulesRecipe')
+export type RulesRecipe = {
+  readonly factory: (self: any) => Record<string, Combinator<unknown>>
+  readonly options: RulesOptions | undefined
+}
+
+/**
+ * How a composition overrides its pieces' own options: the composing grammar's
+ * trivia governs every rule (composing-wins), and an explicit host mode wins
+ * over each piece's.
+ */
+export type LinkOptions = {
+  readonly trivia?: Combinator<unknown> | undefined
+  readonly hostMode?: HostMode | undefined
+}
+
+/**
+ * Build ONE rule map from one or more recipes, run in order against a single
+ * shared namespace, a later recipe's definition winning per rule name.
+ *
+ * `rules()` is the one-recipe case. Runtime `compose()` passes every piece's
+ * recipe plus `link`: each `g.X` in every factory then resolves to the one
+ * composed slot for X, so an override reroutes a base piece's own calls (open
+ * recursion) and every choice computes its first-set dispatch against the
+ * winners. The graph is built fresh, so no shared rule of any piece is touched;
+ * under `link` a winner is always held in a fresh slot, so the stamps below never
+ * land on a combinator a factory returned from module scope either.
+ */
+export function linkRules(
+  recipes: readonly RulesRecipe[],
+  link?: LinkOptions,
+): Record<string, Combinator<unknown>> {
+  const cache: Record<string, Combinator<unknown>> = {}
 
   // Proxy: accessing any property creates a ref() placeholder on first touch.
   const proxy = new Proxy(cache, {
@@ -161,13 +206,20 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
 
   // Evaluate all rule definitions. JavaScript evaluates object-literal values
   // left-to-right, so any `g.ruleName` access inside triggers placeholder creation
-  // before the rule's own parser is built — enabling forward references.
-  const definitions = factory(proxy)
+  // before the rule's own parser is built — enabling forward references. A later
+  // recipe's definition of a name WINS; the name keeps its first position.
+  const winners = new Map<string, { parser: Combinator<unknown>; options: RulesOptions | undefined }>()
+  for (const recipe of recipes) {
+    const definitions = recipe.factory(proxy)
+    for (const key of Object.keys(definitions)) {
+      winners.set(key, { parser: definitions[key]!, options: recipe.options })
+    }
+  }
+  const keys = [...winners.keys()]
 
   // Fill each ref with its actual definition, or store directly if never accessed via proxy.
-  for (const key of Object.keys(definitions)) {
-    const placeholder = (cache as Record<string, Combinator<unknown>>)[key]
-    const parser = (definitions as Record<string, Combinator<unknown>>)[key]!
+  for (const [key, { parser }] of winners) {
+    const placeholder = cache[key]
     if (placeholder === parser) {
       throw new Error(`rules(): rule "${key}" cannot be a direct alias to itself`)
     }
@@ -177,76 +229,60 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
       // Propagate actual first-set so later choices wrapping this ref get correct dispatch.
       placeholder._meta.firstSet = parser._meta.firstSet
       placeholder._meta.canMatchNewline = parser._meta.canMatchNewline
-    } else if (isNamedRuleRefForAnotherRule(parser, key)) {
+    } else if (isNamedRuleRefForAnotherRule(parser, key) || link !== undefined) {
+      if (!isNamedRuleRefForAnotherRule(parser, key)) tagRule(parser, key)
       const alias = ref()
       tagRule(alias, key)
       alias.define(parser)
       alias._meta.firstSet = parser._meta.firstSet
       alias._meta.canMatchNewline = parser._meta.canMatchNewline
-      ;(cache as Record<string, Combinator<unknown>>)[key] = alias
+      cache[key] = alias
     } else {
       tagRule(parser, key)
-      ;(cache as Record<string, Combinator<unknown>>)[key] = parser
+      cache[key] = parser
     }
   }
 
-  // Declare the grammar-level ambient trivia on every rule, so parsing ANY rule
-  // as an entry installs it (run()/parse() read this), and the macro can seed the
-  // compiled map. `parser({trivia})` / `noTrivia` still override it locally.
-  // `!= null`: a `trivia: null` grammar clears trivia — same as omitting it at the
-  // grammar level — so store nothing (and never write null, which has no `_meta`).
-  if (options?.trivia != null) {
-    for (const key of Object.keys(definitions)) {
-      const rule = (cache as Record<string, Combinator<unknown>>)[key]
-      // Skip trivia rules (e.g. the grammar's `rw`, returned so the driver can
-      // reach it as `g.rw`): a trivia rule must never carry ambient trivia, or it
-      // would recursively skip trivia within itself. Mirrors the codegen guard.
-      if (rule && !rule._meta.isTrivia) (rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = options.trivia
-    }
-  }
-
-  // Grammar-level ambient scan-skip, mirroring the trivia stamp above: every
-  // non-trivia rule carries it so any parse entry installs `ctx.scanSkip` and the
-  // compiled map can seed it. `!= null` so `scanSkip: null` clears (stores nothing).
-  if (options?.scanSkip != null) {
-    for (const key of Object.keys(definitions)) {
-      const rule = (cache as Record<string, Combinator<unknown>>)[key]
-      if (rule && !rule._meta.isTrivia) (rule._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip = options.scanSkip
-    }
-  }
-
-  // Grammar-level host mode, mirroring the two stamps above. Only `'cst'` is recorded:
-  // `'ast'` is the default everywhere, so stamping it would put a field on every rule of
-  // every grammar to say "unchanged". Trivia rules are skipped for the same reason as
-  // above — they build no nodes, so the mode is meaningless on them.
-  if (options?.hostMode === 'cst') {
-    for (const key of Object.keys(definitions)) {
-      const rule = (cache as Record<string, Combinator<unknown>>)[key]
-      if (rule && !rule._meta.isTrivia) (rule._meta as { grammarHostMode?: HostMode }).grammarHostMode = 'cst'
-    }
-  }
-
-  if (options?.trackLines === true) {
-    for (const key of Object.keys(definitions)) {
-      const rule = (cache as Record<string, Combinator<unknown>>)[key]
-      if (rule && !rule._meta.isTrivia) (rule._meta as { grammarTrackLines?: true }).grammarTrackLines = true
-    }
-    for (const key of Object.keys(definitions)) {
-      const rule = (cache as Record<string, Combinator<unknown>>)[key]
-      if (rule && !rule._meta.isTrivia && rule._def.tag !== 'grammar') {
-        const wrapped = grammarParser({ trackLines: true }, rule)
-        tagRule(wrapped, key)
-        ;(wrapped._meta as { grammarTrackLines?: true }).grammarTrackLines = true
-        ;(cache as Record<string, Combinator<unknown>>)[key] = wrapped
+  // Grammar-level stamps, per rule. Each touches only its own rule — a wrap
+  // replaces that rule's entry, and references hold the placeholder — so one pass
+  // is the same as a pass per stamp. Trivia rules (e.g. the grammar's `rw`,
+  // returned so the driver can reach it as `g.rw`) take none: a trivia rule must
+  // never carry ambient trivia, or it would recursively skip trivia within itself.
+  for (const key of keys) {
+    const options = winners.get(key)!.options
+    let rule = cache[key]!
+    if (!rule._meta.isTrivia) {
+      const meta = rule._meta as {
+        grammarTrivia?: Combinator<unknown>
+        grammarScanSkip?: Combinator<unknown>[]
+        grammarHostMode?: HostMode
+        grammarTrackLines?: true
+      }
+      // Ambient trivia, installed at the parse entry (run()/parse() read it) and
+      // seeded into the compiled map; `parser({trivia})` / `noTrivia` override it
+      // locally. `!= null`: `trivia: null` clears — store nothing. Under `link`
+      // the COMPOSING trivia governs every rule, inherited ones included.
+      const trivia = link !== undefined ? link.trivia : options?.trivia
+      if (trivia != null) meta.grammarTrivia = trivia
+      // Ambient scan-skip, per piece (never composing-wins: opaque units are
+      // dialect-specific), so any entry installs `ctx.scanSkip`.
+      if (options?.scanSkip != null) meta.grammarScanSkip = options.scanSkip
+      // Host mode: only `'cst'` is recorded — `'ast'` is the default everywhere.
+      if ((link?.hostMode ?? options?.hostMode) === 'cst') meta.grammarHostMode = 'cst'
+      if (options?.trackLines === true) {
+        meta.grammarTrackLines = true
+        if (rule._def.tag !== 'grammar') {
+          rule = grammarParser({ trackLines: true }, rule)
+          tagRule(rule, key)
+          ;(rule._meta as { grammarTrackLines?: true }).grammarTrackLines = true
+          cache[key] = rule
+        }
       }
     }
-  }
-
-  // Dead-value analysis: mark container aggregates that only feed a node()'s
-  // capture so the interpreter (and, via the same flag, the compiled output) skips
-  // building them. Each rule is its own root — refs are boundaries (see value-usage).
-  for (const key of Object.keys(definitions)) {
-    markUnusedValues((cache as Record<string, Combinator<unknown>>)[key]!)
+    // Dead-value analysis: mark container aggregates that only feed a node()'s
+    // capture so the interpreter (and, via the same flag, the compiled output) skips
+    // building them. Each rule is its own root — refs are boundaries (see value-usage).
+    markUnusedValues(rule)
   }
 
   // Record the factory's DECLARATION order (the returned object's key order).
@@ -256,11 +292,11 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
   // Non-enumerable, so Object.keys / spread / for-in over the grammar are
   // unaffected and every existing consumer sees exactly the rules it did before.
   Object.defineProperty(cache, RULE_ORDER, {
-    value: Object.keys(definitions),
+    value: keys,
     enumerable: false,
     configurable: true,
   })
-  attachGrammarReflection(cache, collectGrammarReflection(Object.keys(definitions).map(key => [key, (cache as Record<string, Combinator<unknown>>)[key]!])))
+  attachGrammarReflection(cache, collectGrammarReflection(keys.map(key => [key, cache[key]!])))
 
-  return cache as RulesResult<T>
+  return cache
 }

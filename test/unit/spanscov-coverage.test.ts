@@ -449,9 +449,9 @@ describe('composedGrammarCoverageDefinitions', () => {
     expect(defs.map(d => d.id)).toEqual(expect.arrayContaining(['rule:Entry', 'rule:A']))
   })
 
-  it('refuses a grammar that carries no re-lowerable composed IR', () => {
+  it('refuses a grammar that is not a runtime composition', () => {
     expect(() => composedGrammarCoverageDefinitions({ Entry: literal('a') }, 'Entry'))
-      .toThrow('semantic coverage needs re-lowerable composed IR; this composition contains an opaque artifact')
+      .toThrow('semantic coverage needs a runtime compose() result (a linked interpreter grammar); this is not one')
   })
 })
 

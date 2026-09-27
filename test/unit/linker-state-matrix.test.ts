@@ -56,18 +56,18 @@ describe('linker state and recovery matrix', () => {
     expect(calls).toBe(1)
   })
 
-  it('recovers carried table/IR maps and reports opaque artifact names', () => {
+  it('recovers a live table map, and reports IR and binary pieces as opaque — IR is never evaluated at runtime', () => {
     const table = compileLinkableTable([['A', literal('a')]], 'table')!
     const ir = irPiece('ir', { B: literal('b') })
     const hidden = opaque('hidden', ['C', 'D'])
     const detailed = carriedRuleMapsDetailed([table, ir, hidden])
 
-    expect(detailed.maps.map(map => map.map(([name]) => name))).toEqual([['A'], ['B']])
-    expect(detailed.opaque).toEqual([{ ns: 'hidden', ruleNames: ['C', 'D'] }])
-    expect(carriedRuleMaps([table, ir, hidden])).toHaveLength(2)
+    expect(detailed.maps.map(map => map.map(([name]) => name))).toEqual([['A']])
+    expect(detailed.opaque).toEqual([{ ns: 'ir', ruleNames: [] }, { ns: 'hidden', ruleNames: ['C', 'D'] }])
+    expect(carriedRuleMaps([table, ir, hidden])).toHaveLength(1)
   })
 
-  it('recovers later-wins definitions from a composed stamp and skips unresolved refs', () => {
+  it('recovers nothing from a build-compiled (IR-stamped) composition, and names every piece', () => {
     const base = rules(() => ({ Value: literal('a') })) as Record<string, Combinator<unknown>>
     const delta = rules(g => ({ Entry: g.Value, Value: literal('b') })) as Record<string, Combinator<unknown>>
     const stamped: Record<string, unknown> = {}
@@ -76,9 +76,10 @@ describe('linker state and recovery matrix', () => {
     })
 
     const recovered = recoverComposedRules(stamped)!
-    expect(recovered.opaque).toEqual([])
-    expect(run(recovered.rules.get('Value')!, 'b').ok).toBe(true)
-    expect(run(recovered.rules.get('Value')!, 'a').ok).toBe(false)
+    expect(recovered.opaque.map(o => o.ns)).toEqual(['base', 'delta'])
+    expect(recovered.rules.size).toBe(0)
+    // A runtime composition is already a combinator map: nothing to recover.
+    expect(recoverComposedRules(compose([base, delta]) as Record<string, unknown>)).toBeUndefined()
     expect(recoverComposedRules({})).toBeUndefined()
   })
 
@@ -96,30 +97,34 @@ describe('linker state and recovery matrix', () => {
   it('attributes a missing name to the rule that references it', () => {
     const incomplete = rules(g => ({ Entry: sequence(literal('('), g.Missing, literal(')')) }))
     expect(() => fuseInterpreted([incomplete]))
-      .toThrow('fuseInterpreted: rule "Entry" references missing rule "Missing"')
+      .toThrow('compose: rule "Entry" references missing rule "Missing"')
   })
 
-  it('refuses to silently rebind one shared placeholder to a different fusion', () => {
+  it('two fusions over one shared piece each bind their own winner, and neither mutates it', () => {
     const base = rules(g => ({ Entry: g.Value }))
     const first = rules(() => ({ Value: literal('a') }))
     const second = rules(() => ({ Value: literal('b') }))
-    expect(run(fuseInterpreted([base, first]).Entry!, 'a').ok).toBe(true)
-    expect(() => fuseInterpreted([base, second])).toThrow(/already bound by a DIFFERENT interpreted fusion/)
+    const a = fuseInterpreted([base, first])
+    const b = fuseInterpreted([base, second])
+    expect(run(a.Entry!, 'a').ok).toBe(true)
+    expect(run(a.Entry!, 'b').ok).toBe(false)
+    expect(run(b.Entry!, 'b').ok).toBe(true)
+    expect(run(b.Entry!, 'a').ok).toBe(false)
   })
 
   it('fails closed when an interpreted diagnostic meets opaque composed state', () => {
     const composed: Record<string, unknown> = {}
     Object.defineProperty(composed, COMPOSED_PIECES, { value: [opaque('binary', ['Entry'])] })
     expect(() => fuseInterpreted([composed]))
-      .toThrow('cannot interpret a composed grammar containing precompiled artifact(s) "binary" (1 rules)')
+      .toThrow('a build-compiled compose() result has no live rules to link')
   })
 
   it('refuses an opaque artifact directly in both composition engines', () => {
     const binary = opaque('binary', ['Entry'])
     expect(() => fuseInterpreted([binary]))
-      .toThrow('a precompiled linkable artifact with no carried IR has no combinator graph')
+      .toThrow('the table artifact "binary" has no live rules to link')
     expect(() => compose([binary]))
-      .toThrow('compose: carried piece "binary" has no re-lowerable IR and cannot be fused')
+      .toThrow('the table artifact "binary" has no live rules to link')
   })
 
   it('explicit ast mode clears a rule-map cst stamp', () => {

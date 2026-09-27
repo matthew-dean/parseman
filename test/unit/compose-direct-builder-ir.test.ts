@@ -8,10 +8,11 @@ import { describe, expect, it } from 'vitest'
 import * as parseman from '../../src/index.ts'
 import { isInterpretedFuse } from '../../src/compiler/linker.ts'
 import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
-import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
+import { evalRuleMapIR } from '../../src/plugin/ir-eval.ts'
 import { directBuilderUnsupportedBindings } from '../../src/plugin/direct-builder-static.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroExports, evalMacroModule } from '../helpers/eval-macro-module.ts'
+import { macroComposed } from '../helpers/macro-package.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
@@ -44,11 +45,14 @@ describe('compose over a macro-built direct node builder', () => {
     // it round-tripped as SOURCE.
     expect(pieces.replacement).not.toBeNull()
 
-    const rehydrated = parseman.compose([{ [COMPOSED_PIECES]: [{ ...carried[0], ir }] } as never]) as unknown as Record<
+    // A downstream package composing the built base re-lowers that IR at BUILD time.
+    const composed = macroComposed(BASE_SOURCE, `import { compose, rules, literal } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+export const composed = compose([base, rules(g => ({ Tail: literal('z') }))])`).composed as Record<
       string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }
     >
     const host = () => ({ kind: 'host' })
-    expect(rehydrated.Direct!('x', 0, { build: host }).value).toEqual({
+    expect(composed.Direct!('x', 0, { build: host }).value).toEqual({
       kind: 'direct', span: { start: 0, end: 1 }, children: [{ _tag: 'leaf', value: 'x', span: { start: 0, end: 1 } }],
     })
   })
@@ -69,17 +73,17 @@ export const base = rules(g => ({
     expect(carried[0]!.ir).not.toContain('["importedFactory"]')
   })
 
-  it('fails a RUNTIME compose() closed — it cannot supply the module import in-process', () => {
+  it('fails a RUNTIME compose() closed — it never re-evaluates a built base', () => {
     // The provenance rescue is a BUILD-TIME (macro) mechanism: the plugin re-emits the
-    // import into the generated module. A runtime compose() builds live functions with
-    // no import to give, so it must refuse rather than defer a parse-time ReferenceError.
+    // import into the generated module. Runtime compose() links live rules() maps only,
+    // so a built base is refused before any builder source could be evaluated.
     const captured = macroModule(`import { rules, literal, node } from 'parseman' with { type: 'macro' }
 import { importedFactory } from './ast-factory.ts'
 export const base = rules(g => ({
   Direct: node('Direct', literal('x'), () => importedFactory()),
 }))`).base as Record<string | symbol, unknown>
     expect(() => parseman.compose([captured as never])).toThrow(
-      /references module import\(s\) importedFactory that a runtime compose\(\) cannot supply/,
+      'a build-compiled compose() result has no live rules to link',
     )
   })
 
@@ -291,15 +295,16 @@ export const base = rules(g => ({
 }))`).base as Record<string | symbol, unknown>
     const carried = captured[COMPOSED_PIECES] as Array<{ ir?: string }>
     expect(carried[0]!.ir).toContain('["lexicalHelper"]')
-    const delta = parseman.rules(() => ({ Tail: parseman.literal('z') }))
-    expect(() => parseman.compose([captured as never, delta])).toThrow(
+    // The build-time re-lower refuses it (the plugin then leaves the compose unfused).
+    expect(() => evalRuleMapIR(carried[0]!.ir!)).toThrow(
       'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): lexicalHelper',
     )
   })
 
   it('keeps the direct value after composition with a second grammar', () => {
-    const delta = parseman.rules(() => ({ Tail: parseman.literal('z') }))
-    const composed = parseman.compose([base as never, delta]) as unknown as Record<
+    const composed = macroComposed(BASE_SOURCE, `import { compose, rules, literal } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+export const composed = compose([base, rules(g => ({ Tail: literal('z') }))])`).composed as Record<
       string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }
     >
     const host = () => ({ kind: 'host' })

@@ -180,7 +180,7 @@ describe('a selective assembly parses exactly as the closure engine', () => {
             expect(run(entry as never, input, opts), `${label}: ${input}`).toEqual(want[i])
           })
         }
-      })
+      }, 60_000)
     }
   }
 

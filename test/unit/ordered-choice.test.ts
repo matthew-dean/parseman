@@ -206,7 +206,7 @@ describe('not() still works for explicit lookahead', () => {
 // ---------------------------------------------------------------------------
 
 describe('longest-match — compiler parity', () => {
-  function parity<T>(p: Parameters<typeof compile>[0], input: string) {
+  function parity<T>(p: import('../../src/index.ts').Combinator<T>, input: string) {
     const compiled = compile(p as import('../../src/index.ts').Combinator<T>)
     const interp = parse(p as import('../../src/index.ts').Combinator<T>, input)
     const comp = compiled.parse(input)
