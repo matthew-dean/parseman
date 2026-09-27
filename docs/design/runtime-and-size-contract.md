@@ -88,6 +88,10 @@ A gated benchmark over the same real grammars measures:
 
 Each has an absolute per-grammar budget, and CI fails on regression.
 
+The numeric budgets don't exist yet: this rule is unmet (see "Correction status"). The
+change that adds the gate records each budget in this section, together with the CI
+configuration that enforces it.
+
 ### 6. No performance regression
 
 *"please please just fix all of this without ALSO destroying parseman performance"*
@@ -127,6 +131,13 @@ change that fixes the behaviour:
   - "Terminal large `composeLeaf()` artifacts carry one ordinary function literal".
 - `docs/guide/macro-mode.md`, "The budget": the 10× ceiling is replaced by rule 4, and
   "enforced on every PR" is false (row B).
+- `docs/guide/extending.md`, "How this behaves in each execution mode": runtime
+  `compose()` "fuses … using the same code generation `compile()` uses" and "falls back to
+  the closure assembler". Both break rules 1 and 2, and the fallback claim is false (row D).
+- `docs/guide/performance.md`: "a large enough terminal (a `composeLeaf`) it may also
+  materialize one strict assembly" (row A).
+- `docs/reference/api.md`: "Once its canonical table reaches 1,024 instruction words, the
+  default AST/no-lines leaf …" (row A).
 - `CHANGELOG.md` 0.48.0: "the deterministic size ceiling stays green" (row A).
 - Commit `cfa50d7`: "Build-time only (perf-free)" (row C).
 
