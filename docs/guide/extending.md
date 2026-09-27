@@ -1,5 +1,11 @@
 # Extending grammars
 
+::: danger Superseded in part
+Statements on this page about how runtime `compose()` behaves (it currently evaluates source and has no CSP fallback) are superseded by
+[the runtime and size contract](../design/runtime-and-size-contract.md), which is
+binding. See its "Superseded statements" list.
+:::
+
 Two grammars often overlap almost entirely: a base language and a dialect that adds or
 tweaks a few rules. Think JSON versus a lenient JSON with comments and trailing commas, or
 CSS versus a Less/Sass superset. Rather than copy the base and edit it, **compose** it —
