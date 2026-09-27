@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.50.8 — unreleased
+## 0.50.8 — 2026-09-27
 
 - Fix the macro silently dropping a `rules()` option whose value names an imported
   binding. `rules({ scanSkip: [importedUnit] }, …)` evaluated the import to `null`, the
