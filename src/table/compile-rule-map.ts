@@ -119,7 +119,7 @@ export type CompiledRuleMapTable = {
    * (only the default AST/no-lines option set is pre-compiled) and for a table
    * the emitter refuses.
    */
-  selectAssembly(budget: number): { readonly sites: ReadonlySet<number>; readonly bytes: number }
+  selectAssembly(budget: number, profile?: ArrayLike<number>): { readonly sites: ReadonlySet<number>; readonly bytes: number }
   hostMode: HostMode
   hostBranchElided: boolean
   reflection: GrammarReflection
@@ -344,7 +344,7 @@ export function compileRuleMap(
     ...(metadataSource === undefined ? {} : { metadataSource }),
   })
   const replacement = replacementWithMetadata()
-  const selectAssembly = (budget: number): { sites: ReadonlySet<number>; bytes: number } => {
+  const selectAssembly = (budget: number, profile?: ArrayLike<number>): { sites: ReadonlySet<number>; bytes: number } => {
     const none = { sites: new Set<number>(), bytes: 0 }
     if (hostMode !== 'ast' || prog.lines === 1) return none
     const table = resolveTable(artifact)
@@ -360,7 +360,7 @@ export function compileRuleMap(
       if (e instanceof Unemittable) return none
       throw e
     }
-    const sites = selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, budget - fixed)
+    const sites = selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, budget - fixed, profile)
     if (sites.size === 0) return none
     let bytes = fixed
     for (const ip of sites) bytes += siteBytes.get(ip)!

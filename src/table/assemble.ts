@@ -119,7 +119,7 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  * property read per terminal miss — the same price codegen pays.
  */
 import {
-  classHas, decodeClassSpec, expandCompact, resolveTable,
+  classHas, decodeClassSpec, expandCompact, ownTableProgram, resolveTable,
   validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
@@ -1361,7 +1361,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       && code[ip + 1]! >= 0
       && closureLabels.at(ip).tri === code[ip + 1]!
       ? link(code[ip + 2]!)
-      : lower(ip)
+      : countedPiece(lower(ip), ip)
 
     inFlight.delete(ip)
     holder.set(piece)
@@ -3961,6 +3961,43 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   return { pieces, end: () => EC.e, begin, finish, scanSkip, reached, emitRefusal }
+}
+
+/**
+ * BUILD-TIME SITE PROFILING (`countSiteVisits`). Set only while that call runs;
+ * `link` reads it when it LOWERS a site, never per parse, so an ordinary assembly
+ * carries no counter and no branch.
+ */
+let SITE_COUNTS: Int32Array | undefined
+
+function countedPiece(piece: Piece, ip: number): Piece {
+  const counts = SITE_COUNTS
+  if (counts === undefined) return piece
+  return (input, pos, ctx) => {
+    counts[ip]!++
+    return piece(input, pos, ctx)
+  }
+}
+
+/**
+ * How many times each table site runs while `parse` drives the program — the
+ * profile an optional corpus gives selective assembly (`select-hot.ts`). Runs the
+ * CLOSURE engine, so it constructs no code; `counts[ip]` is the number of calls
+ * of the piece lowered for site `ip` (an alias site counts at its target).
+ */
+export function countSiteVisits(
+  prog: TableProgram,
+  parse: (rules: Record<string, TableRule>) => void,
+  /** A replacement callback pool (same indices), e.g. stand-ins for inert builders. */
+  fns: readonly unknown[] = prog.fns,
+): Int32Array {
+  const counts = new Int32Array(prog.code.length)
+  // A fresh program, not a spread: a spread keeps the source's cached resolution,
+  // which holds the ORIGINAL callback pool.
+  const profiled = ownTableProgram({ ...prog, fns, asm: [] })
+  SITE_COUNTS = counts
+  try { parse(tableRules(profiled)) } finally { SITE_COUNTS = undefined }
+  return counts
 }
 
 /**

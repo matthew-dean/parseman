@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
-import { AssemblyCache, cfgKey, tableRules } from '../../src/table/assemble.ts'
+import { AssemblyCache, cfgKey, countSiteVisits, tableRules } from '../../src/table/assemble.ts'
 import { defaultAssemblyCfgs, scanRootIps } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { resolveTable, type TableProgram } from '../../src/table/program.ts'
@@ -19,6 +19,11 @@ import { run } from '../../src/functional/run.ts'
 import { cssRules } from '../../examples/css/parser.ts'
 import { jsonRules, jsonWs } from '../../bench/table-grammars.ts'
 import type { Combinator } from '../../src/types.ts'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { choice, literal, many, noTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
 
 /**
@@ -200,5 +205,68 @@ describe('a selective assembly parses exactly as the closure engine', () => {
     // Deterministic: the same inputs select the same sites.
     expect([...selectHotSites(prog.code, entries, siteBytes, total / 2)])
       .toEqual([...selectHotSites(prog.code, entries, siteBytes, total / 2)])
+  })
+})
+
+describe('an optional corpus profile ranks sites by measured calls', () => {
+  it('countSiteVisits counts the closure engine and constructs no code', () => {
+    const prog = encodeTable(cssRules as unknown as RuleMap, {})
+    const realFunction = globalThis.Function
+    let constructed = 0
+    globalThis.Function = new Proxy(realFunction, {
+      construct(target, args, nt) { constructed++; return Reflect.construct(target, args, nt) as object },
+    })
+    let counts: Int32Array
+    try {
+      counts = countSiteVisits(prog, rules => {
+        expect(run(rules.Stylesheet as never, 'a { color: red } b { x: y }').ok).toBe(true)
+      })
+    } finally { globalThis.Function = realFunction }
+    expect(constructed).toBe(0)
+    expect(counts!.reduce((a, b) => a + b, 0)).toBeGreaterThan(0)
+  })
+
+  it('a profile selects only sites the corpus ran, within budget', () => {
+    const prog = encodeTable(cssRules as unknown as RuleMap, {})
+    const cfg = defaultAssemblyCfgs(prog)[0]!
+    const { siteBytes } = emitAssemblySource(resolveTable(prog), prog, cfg, scanRootIps(prog), true)
+    const counts = countSiteVisits(prog, rules => { run(rules.Stylesheet as never, 'a { color: red }') })
+    const total = [...siteBytes.values()].reduce((a, b) => a + b, 0)
+    const picked = selectHotSites(prog.code, Object.values(prog.rules), siteBytes, total, counts)
+    expect(picked.size).toBeGreaterThan(0)
+    for (const ip of picked) expect(counts[ip]).toBeGreaterThan(0)
+    // …and the assembly it selects parses exactly as the closure engine does.
+    const closure = tableRules({ ...prog, asm: [] }).Stylesheet!
+    const entry = tableRules(selective(prog, picked)).Stylesheet!
+    for (const input of CASES[0]!.inputs) expect(run(entry as never, input)).toEqual(run(closure as never, input))
+  })
+})
+
+describe('the assemblyProfile plugin option', () => {
+  it('is optional, and a corpus changes only which sites are generated', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+    try {
+      const corpus = join(dir, 'corpus.txt')
+      writeFileSync(corpus, 'b b b b b b b b b b')
+      // A terminal compose(), with a module long enough (the budget is the module's
+      // own length) to pay for an assembly's fixed prelude.
+      const source = `import { choice, compose, many, regex, rules, literal } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: many(choice(g.A, g.B, g.C)), A: literal('a'), B: regex(/b ?/), C: regex(/c+/) }))])
+${'// padding\n'.repeat(3000)}`
+      const plain = transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']))!
+      const profiled = transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [corpus] })!
+      expect(plain.warnings).toEqual([])
+      expect(profiled.warnings).toEqual([])
+      // Both carry a selective assembly; the corpus (only `b`) changes which sites.
+      const sites = (code: string): string => code.match(/function _pf\d+/g)!.sort().join()
+      expect(plain.code).toMatch(/\bext:\[/)
+      expect(profiled.code).toMatch(/\bext:\[/)
+      expect(sites(profiled.code)).not.toBe(sites(plain.code))
+      const a = evalMacroModule<Record<string, unknown>>(plain.code, 'g').Doc
+      const b = evalMacroModule<Record<string, unknown>>(profiled.code, 'g').Doc
+      for (const input of ['ab', 'b b a', 'x']) expect(run(b as never, input)).toEqual(run(a as never, input))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

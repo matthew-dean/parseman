@@ -42,9 +42,30 @@ export function selectHotSites(
   entries: readonly number[],
   siteBytes: ReadonlyMap<number, number>,
   budget: number,
+  /** Measured calls per site (`countSiteVisits` over a corpus). Replaces the
+   * static estimate when given. */
+  profile?: ArrayLike<number>,
 ): Set<number> {
   const selected = new Set<number>()
   if (budget <= 0) return selected
+  const estimate = profile === undefined ? staticWeights(code, entries) : undefined
+  const w = (ip: number): number => (estimate !== undefined ? estimate.get(ip) : profile![ip]) ?? 0
+  // Ties (saturated cycles) break by site offset, so a build is deterministic.
+  const ranked = [...siteBytes.keys()].sort((a, b) =>
+    w(b) / siteBytes.get(b)! - w(a) / siteBytes.get(a)! || a - b)
+  let spent = 0
+  for (const ip of ranked) {
+    if (w(ip) === 0) break
+    const bytes = siteBytes.get(ip)!
+    if (spent + bytes > budget) continue
+    spent += bytes
+    selected.add(ip)
+  }
+  return selected
+}
+
+/** The static hotness estimate described above. */
+function staticWeights(code: readonly number[], entries: readonly number[]): Map<number, number> {
   let weight = new Map<number, number>()
   const kids: number[] = []
   for (let round = 0; round < ROUNDS; round++) {
@@ -61,16 +82,5 @@ export function selectHotSites(
     }
     weight = next
   }
-  // Ties (saturated cycles) break by site offset, so a build is deterministic.
-  const ranked = [...siteBytes.keys()].sort((a, b) =>
-    (weight.get(b) ?? 0) / siteBytes.get(b)! - (weight.get(a) ?? 0) / siteBytes.get(a)! || a - b)
-  let spent = 0
-  for (const ip of ranked) {
-    if ((weight.get(ip) ?? 0) === 0) break
-    const bytes = siteBytes.get(ip)!
-    if (spent + bytes > budget) continue
-    spent += bytes
-    selected.add(ip)
-  }
-  return selected
+  return weight
 }

@@ -26,6 +26,10 @@ import { adjacent, notAdjacent } from '../combinators/adjacency.ts'
 
 type Comb = Combinator<unknown>
 
+/** Marks the inert builder `_nd` installs, naming its node type, so a build-time
+ * profiling run can stand a plain node in for it (`plugin/index.ts` `profileOf`). */
+export const IR_BUILD_SENTINEL = Symbol('parseman.irBuildSentinel')
+
 /** Reconstruct a rule map from serialized IR (the inverse of `serializeRuleMap`) —
  * evaluate the combinator-construction expression with every constructor in scope.
  *
@@ -70,7 +74,11 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     // carries the callback source. The compiler is the only consumer that may
     // materialize `buildSrc`; raw IR interpretation deliberately rejects direct
     // builders rather than evaluating arbitrary captured source at runtime.
-    const n = node(type, child as never, (() => { throw new Error('IR node build requires static re-lowering') }) as never, opts as never)
+    const sentinel = Object.assign(
+      () => { throw new Error('IR node build requires static re-lowering') },
+      { [IR_BUILD_SENTINEL]: type },
+    )
+    const n = node(type, child as never, sentinel as never, opts as never)
     ;(n._def as { buildSrc?: string; buildStaticError?: readonly string[] }).buildSrc = src
     if (staticError !== undefined) (n._def as { buildStaticError?: readonly string[] }).buildStaticError = staticError
     // Analysis-only resolved reducer signature (see `buildAnalysisSrc`). Without it a

@@ -28,6 +28,8 @@ import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
 import { compileRuleMap, type CompiledRuleMapTable } from '../table/compile-rule-map.ts'
 import { SELECTIVE_ASSEMBLY_BUDGET } from '../table/select-hot.ts'
+import { countSiteVisits } from '../table/assemble.ts'
+import { run } from '../functional/run.ts'
 import { compileLinkableTable } from '../compiler/compile-linkable-table.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
@@ -39,7 +41,7 @@ import {
 import type { HostMode } from '../cst/host-mode.ts'
 import { COMPOSED_PIECES } from '../compiler/linker.ts'
 import { serializeRuleMap } from '../compiler/ir-serialize.ts'
-import { evalRuleMapIR } from './ir-eval.ts'
+import { evalRuleMapIR, IR_BUILD_SENTINEL } from './ir-eval.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { grammarReflectionSource, type GrammarReflection } from '../cst/reflection.ts'
 import { createHash } from 'node:crypto'
@@ -87,9 +89,40 @@ export type ParsecraftPluginOptions = {
   /** Emit grammar-coverage hooks in macro output. Off by default, so ordinary
    * macro output remains byte-identical. */
   grammarCoverage?: boolean
+  /**
+   * OPTIONAL TUNING for selective assemblies. **Off by default**; no grammar needs it.
+   *
+   * A terminal grammar gets generated code only for its hottest sites, within a
+   * budget of its own source length. Without this option the build ranks sites by a
+   * static estimate. With it, the build parses `files` from rule `entry` (on the
+   * closure engine — nothing is generated to measure) and ranks sites by measured
+   * calls per byte instead. It changes which sites are generated, never what a
+   * parse returns, and nothing is written to disk. See `docs/guide/macro-mode.md`.
+   */
+  assemblyProfile?: AssemblyProfile
+}
+
+/** A corpus a build parses to rank selective-assembly sites — see `assemblyProfile`. */
+export type AssemblyProfile = {
+  /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar
+   * without this rule keeps the static ranking. */
+  readonly entry: string
+  /** Paths of representative inputs. */
+  readonly files: readonly string[]
 }
 
 const PARSEMAN_MODULE = 'parseman'
+
+/** Corpus texts, read once per profile object across every module a build lowers. */
+const corpusCache = new WeakMap<AssemblyProfile, readonly string[]>()
+function corpusTexts(profile: AssemblyProfile): readonly string[] {
+  let texts = corpusCache.get(profile)
+  if (texts === undefined) {
+    texts = profile.files.map(file => fs.readFileSync(file, 'utf8'))
+    corpusCache.set(profile, texts)
+  }
+  return texts
+}
 
 /**
  * The REASON a lowering refused, appended to the warning that reports it.
@@ -284,7 +317,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
     if (!code.includes('parseman')) return null
     if (!code.includes('macro')) return null
     const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
-    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true)
+    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true, opts.assemblyProfile)
     if (result?.warnings.length) {
       for (const w of result.warnings) {
         if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -516,12 +549,13 @@ export function transformMacro(
 ): TransformMacroResult | null {
   const depth = degradationCaptureDepth()
   try {
-    return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage)
+    return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage, assemblyProfile)
   } finally {
     setReducerResolver(null)
     setBuilderImportResolver(null)
     // Both are idempotent: on the success path the body already released them and these
     // are no-ops. On an aborted transform they are what stops the leak.
+  assemblyProfile?: AssemblyProfile,
     for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
   }
 }
@@ -542,6 +576,7 @@ function transformMacroImpl(
   }
   if (result.errors.length > 0) return null
 
+  assemblyProfile: AssemblyProfile | undefined,
   const body = result.program.body
 
   // --- Pass 1: collect macro imports + non-macro import bindings ---
@@ -1501,7 +1536,7 @@ function transformMacroImpl(
   })
   const selectAssembly = (compiled: CompiledRuleMapTable, terminal: boolean): ReadonlySet<number> => {
     if (!terminal) return new Set()
-    const { sites, bytes } = compiled.selectAssembly(assemblyBudget)
+    const { sites, bytes } = compiled.selectAssembly(assemblyBudget, profileOf(compiled))
     assemblyBudget -= bytes
     return sites
   }
@@ -1517,6 +1552,31 @@ function transformMacroImpl(
     if (!arr || arr.type !== 'ArrayExpression') {
       warn(init.start, 'compose(): expected a static array of grammars/artifacts')
       return null
+  /** Measured site calls over the optional corpus, or `undefined` for the static
+   * ranking. A file whose parse throws still contributes the calls it made. */
+  const profileOf = (compiled: CompiledRuleMapTable): Int32Array | undefined => {
+    // Only the default AST/no-lines table carries an assembly, so only it is profiled.
+    if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1
+      || !(assemblyProfile.entry in compiled.prog.rules)) return undefined
+    let parsed = 0
+    // A rule re-lowered from carried IR holds an inert builder; for COUNTING only,
+    // a plain node stands in for it, so the corpus can run past it.
+    const fns = compiled.prog.fns.map(fn => {
+      const type = (fn as { [IR_BUILD_SENTINEL]?: string } | null)?.[IR_BUILD_SENTINEL]
+      return type === undefined ? fn
+        : (children: unknown, _fields: unknown, span: unknown) => ({ type, span, children })
+    })
+    const counts = countSiteVisits(compiled.prog, rules => {
+      const entry = rules[assemblyProfile.entry]!
+      for (const text of corpusTexts(assemblyProfile)) {
+        try { if (run(entry, text).ok) parsed++ } catch { /* the calls it made still count */ }
+      }
+    }, fns)
+    if (parsed > 0) return counts
+    // Not `warn()`: nothing fell back to the interpreter — the build is only untuned.
+    warnings.push(`${id} — assemblyProfile: no corpus file parsed from rule "${assemblyProfile.entry}"; using the static ranking`)
+    return undefined
+  }
     }
     const elements = (arr as unknown as { elements: Expression[] }).elements
     // `compose(items, { hostMode })` — read and VALIDATE it, mirroring `rules()`. This
