@@ -109,7 +109,7 @@ it. A claim with no test is removed until it has one.
 
 | # | Claim that shipped | What was actually true | Why nothing caught it |
 |---|---|---|---|
-| A | 0.50.0 CHANGELOG: precompile the terminal `composeLeaf` AST/no-lines assembly once it reaches 1,024 instruction words, "and the deterministic size ceiling stays green" | It generated the **whole grammar** a second time as JavaScript. Jess's css grammar `ast.js` reached 1.8–2.24 MB, **13–14×** its source, 80% of it that assembly. It does buy ~1.5× steady-state css parsing: 8.6M vs 13.0M instructions per parse. | The size gate covered only parseman's own probes (largest 11 KB), and none reaches the 1,024-word threshold. |
+| A | 0.48.0 CHANGELOG (2026-08-14): precompile the terminal `composeLeaf` AST/no-lines assembly once it reaches 1,024 instruction words, "and the deterministic size ceiling stays green" | It generated the **whole grammar** a second time as JavaScript. Jess's css grammar `ast.js` reached 1.8–2.24 MB, **13–14×** its source, 80% of it that assembly. It does buy ~1.5× steady-state css parsing: 8.6M vs 13.0M instructions per parse. | The size gate covered only parseman's own probes (largest 11 KB), and none reaches the 1,024-word threshold. |
 | B | `macro-mode.md`: "The ceiling is 10× raw bytes. It's enforced on every PR … and it can't be waived by rebaselining." | Since 0.45 the gate only blocks a fixture that grows past its own baseline (`bench/size-guard.ts:103, 525–540`). The 10× ceiling is reported, not enforced. | The claim had no test. |
 | C | Commit `cfa50d7` (2026-07-06), "carry compact IR instead of lowered rule source": "Build-time only (perf-free)" | Runtime `compose()` rebuilds every carried piece from IR **source text** with `eval` / `new Function`. That is `evalRuleMapIR`, `src/compiler/ir-serialize.ts:158–270`, called from `src/compiler/linker.ts:318–324` and `:511`, plus a `buildSrc` eval at `linker.ts:301`. It even prefers the text when the live map exists (*"IR FIRST: re-evaluating it yields FRESH combinators, so seeding composing trivia onto their `_meta` cannot leak back"*): a shared-state mutation was "fixed" by evaluating source. Measured: **2.4 s** to compose the Less grammar in Chromium, 2,825 ms total script load against 50 ms compiled. | No test ran runtime `compose()` at real scale or timed it. |
 | D | `modes.md` CSP warning: "Runtime `compose()` follows the same rule" (catch `EvalError`, fall back) | Runtime `compose()` throws `EvalError` under CSP with no fallback, so the interpreter build fails behind a strict CSP. | `test/unit/no-function-constructor.test.ts` covers the macro path and `compile()` only, never runtime `compose()`. |
@@ -127,7 +127,7 @@ change that fixes the behaviour:
   - "Terminal large `composeLeaf()` artifacts carry one ordinary function literal".
 - `docs/guide/macro-mode.md`, "The budget": the 10× ceiling is replaced by rule 4, and
   "enforced on every PR" is false (row B).
-- `CHANGELOG.md` 0.50.0: "the deterministic size ceiling stays green" (row A).
+- `CHANGELOG.md` 0.48.0: "the deterministic size ceiling stays green" (row A).
 - Commit `cfa50d7`: "Build-time only (perf-free)" (row C).
 
 ## Correction status
