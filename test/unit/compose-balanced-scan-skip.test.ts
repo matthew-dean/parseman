@@ -11,9 +11,11 @@
  * grammar did not. An interpreter-vs-compiled divergence in shipped code.
  */
 import { describe, it, expect } from 'vitest'
-import { rules, balanced, regex, literal, sequence, parse, scanTo } from '../../src/index.ts'
+import { rules, balanced, regex, literal, sequence, parse, run, scanTo } from '../../src/index.ts'
 import { compose } from '../../src/compiler/linker.ts'
-import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
+import { compile } from '../../src/table/compile.ts'
+import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
+import { evalRuleMapIR } from '../../src/plugin/ir-eval.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroModule, macroImportRemoved } from '../helpers/eval-macro-module.ts'
 
@@ -26,9 +28,8 @@ type Result = { ok: boolean; span: { end: number } }
 type Fn = (i: string, p: number, c: object) => Result
 
 function lower(entries: ReadonlyArray<readonly [string, unknown]>): Fn {
-  // Fuse through the public `compose()` — the table lowering has no separate
-  // "link already-lowered pieces" step, so a one-grammar compose IS the fuse.
-  return (compose([Object.fromEntries(entries as never)]) as unknown as Record<string, Fn>).Group!
+  // Encode the rule map to one table, as a build re-lowering carried IR does.
+  return compile(Object.fromEntries(entries) as Record<string, unknown>).Group as unknown as Fn
 }
 
 describe('compose() keeps ambient scanSkip inside a balanced() interior', () => {
@@ -101,11 +102,11 @@ describe('compose() keeps ambient scanSkip inside a balanced() interior', () => 
       skip: [balanced('(', ')', { strict: true })],
     })
     const local = rules(() => ({ Body: body }))
-    const runtime = compose([local]) as unknown as Record<string, Fn>
+    const runtime = compose([local]) as unknown as Record<string, unknown>
 
     const source = 'fn(unclosed; second: `good`;'
     const interpreted = parse(body, source) as unknown as Result & { value?: unknown }
-    const composed = runtime.Body!(source, 0, {}) as Result & { value?: unknown }
+    const composed = run(runtime.Body as never, source) as unknown as Result & { value?: unknown }
 
     for (const result of [interpreted, composed]) {
       expect(result.ok).toBe(true)

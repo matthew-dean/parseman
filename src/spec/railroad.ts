@@ -8,7 +8,7 @@
  */
 import type { Production, SpecModel, SpecNode } from './model.ts'
 import { renderExpr } from './ebnf.ts'
-import { RAILROAD_CSS, RAILROAD_JS } from './railroad-lib.ts'
+import { RAILROAD_CSS, RAILROAD_JS, railroadLibrary } from './railroad-lib.ts'
 
 const j = (s: string): string => JSON.stringify(s)
 
@@ -69,7 +69,7 @@ function toDsl(node: SpecNode): string {
   }
 }
 
-// Vendored railroad-diagrams builders, evaluated once. `.toString()` on the
+// Vendored railroad-diagrams builders, installed once. `.toString()` on the
 // result walks an in-memory FakeSVG tree and emits SVG markup with no DOM — so a
 // diagram can be rendered to a static SVG string at build time (Node), not just
 // in the browser. The library exports onto `exports` when it's an object.
@@ -89,8 +89,7 @@ let _builders: RailroadBuilders | null = null
 function builders(): RailroadBuilders {
   if (_builders) return _builders
   const mod = {} as Record<string, unknown>
-  // eslint-disable-next-line no-new-func
-  new Function('exports', RAILROAD_JS)(mod)
+  railroadLibrary(mod)
   _builders = mod as unknown as RailroadBuilders
   return _builders
 }

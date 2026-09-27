@@ -330,16 +330,22 @@ describe('a composed artifact is REJECTED loudly, never analyzed silently', () =
     Rest: node('Rest', choice(sequence(regex(/@\w+/), literal('...')), literal('...'))),
   }))
 
-  it('compose() returns compiled parse functions, not combinators', () => {
-    const fused = compose([piece()]) as Record<string, unknown>
-    expect(typeof fused.Rest).toBe('function')
-    expect((fused.Rest as { _def?: unknown })._def).toBeUndefined()
+  it('compile() of a grammar returns table parse functions, not combinators', () => {
+    const table = compile(piece() as Record<string, unknown>) as Record<string, unknown>
+    expect(typeof table.Rest).toBe('function')
+    expect((table.Rest as { _def?: unknown })._def).toBeUndefined()
   })
 
-  it('analyzing a composed artifact THROWS with an actionable message', () => {
-    const fused = compose([piece()]) as unknown as Record<string, Combinator<unknown>>
-    expect(() => analyzeDuplicationRules(Object.entries(fused)))
+  it('analyzing a compiled table THROWS with an actionable message', () => {
+    const table = compile(piece() as Record<string, unknown>) as unknown as Record<string, Combinator<unknown>>
+    expect(() => analyzeDuplicationRules(Object.entries(table)))
       .toThrow(/is not a combinator \(no _def\)[\s\S]*rules\(\) map/)
+  })
+
+  it('a runtime compose() IS a combinator map, and analyzes like its rules() map', () => {
+    const linked = compose([piece()]) as unknown as Record<string, Combinator<unknown>>
+    const r = analyzeDuplicationRules(Object.entries(linked))
+    expect(r.rewrites.some(f => f.rewrite === 'optional-prefix')).toBe(true)
   })
 
   it('the SAME grammar analyzed as its rules() map produces real findings', () => {

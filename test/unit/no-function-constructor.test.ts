@@ -45,7 +45,7 @@ import { cssRules } from '../../examples/css/parser.ts'
 import { jsonDoc, unescapeJsonString, objectFromPairs } from '../../examples/json/parser.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import type { Combinator } from '../../src/types.ts'
+import type { Combinator, CompiledParser } from '../../src/types.ts'
 
 type RuleMap = Record<string, Combinator<unknown>>
 
@@ -288,7 +288,7 @@ describe('runtime compile prints the same compact artifact the macro uses', () =
   })
 
   it('runtime compile may specialise once but stamps its printable artifacts with an empty inventory', () => {
-    let compiled!: ReturnType<typeof compile>
+    let compiled!: CompiledParser<unknown>
     const calls = functionConstructorCalls(() => {
       compiled = compile(jsonDoc)
       const r = compiled.parse('{"a":[1,true,null]}')

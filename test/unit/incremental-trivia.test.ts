@@ -36,7 +36,7 @@ import { describe, it, expect } from 'vitest'
 import {
   node, regex, literal, sequence, optional, sepBy, oneOrMore, trivia, rules, parseDoc, compile,
 } from '../../src/index.ts'
-import type { Combinator } from '../../src/index.ts'
+import type { Combinator, CompiledParser } from '../../src/index.ts'
 import type { Registry } from '../../src/functional/doc.ts'
 import { structurallyEqual, relTreeOf } from '../../src/functional/doc.ts'
 import type { CSTChild, CSTNode } from '../../src/cst/types.ts'
@@ -102,7 +102,7 @@ function makeGrammar(): Record<string, Combinator<unknown>> {
 // functions (parseDoc does not seed it into its own ctx; see the file header).
 function compiledRegistry(): Registry<CSTNode> {
   const g = makeGrammar()
-  const reg: Record<string, ReturnType<typeof compile>> = {}
+  const reg: Record<string, CompiledParser<unknown>> = {}
   for (const key of Object.keys(g)) reg[key] = compile(g[key]!)
   return reg as unknown as Registry<CSTNode>
 }

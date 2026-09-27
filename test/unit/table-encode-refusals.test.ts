@@ -5,7 +5,8 @@ import { encodeTable, UnsupportedConstruct } from '../../src/table/encode.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
-import { compose, cstBuildHost } from '../../src/compiler/linker.ts'
+import { cstBuildHost } from '../../src/compiler/linker.ts'
+import { compile } from '../../src/table/compile.ts'
 import { checkIdentity } from '../../bench/table-lowering-identity.ts'
 import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, selectNodes } from '../../bench/table-grammars.ts'
 import { tableRules } from '../../src/table/assemble.ts'
@@ -759,7 +760,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
   it('every failing input reports the same expected set on all three paths', () => {
     for (const [name, g, rule, inputs] of suites) {
       const table = execRules(encodeTable(g as never))[rule]!
-      const compiled = (compose([g as never]) as unknown as Record<string, unknown>)[rule]!
+      const compiled = compile(g as Record<string, unknown>)[rule]!
       for (const input of inputs) {
         const t = run(table as never, input)
         const i = run((g as Record<string, unknown>)[rule] as never, input)
@@ -809,7 +810,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
       Min: sepBy(regex(/[a-z]/), literal(','), { min: 2 }) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
     const t = execRules(encodeTable(g))
-    const c = compose([g as never]) as unknown as Record<string, unknown>
+    const c = compile(g as Record<string, unknown>)
     const cases = [
       ['Kw', 'ifx', ['keyword']],
       ['Peek', 'ax', ['peek(literal)']],
@@ -842,7 +843,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
     // one of the engines' elements, never a token they did not name. A regression
     // that invents a token, or moves the position, still fails this.
     const jt = execRules(encodeTable(jsonRules as never)).Value!
-    const jc = (compose([jsonRules as never]) as unknown as Record<string, unknown>).Value!
+    const jc = compile(jsonRules as Record<string, unknown>).Value!
     for (const [bad, dispatched] of [['[1,2,]', '"]"'], ['{"a":', '"}"'], ['nope', '"null"']] as const) {
       const fromTable = run(jt as never, bad)
       const fromInterp = run(jsonRules.Value! as never, bad)
@@ -851,7 +852,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
       expect(fromTable.span, bad).toEqual({ start: 0, end: 0 })
       expect(fromInterp.span, bad).toEqual({ start: 0, end: 0 })
       expect(fromCompiled.span, bad).toEqual({ start: 0, end: 0 })
-      // THE THIRD ENGINE IS GONE. `compose()` now fuses to a TABLE, so `fromCompiled`
+      // THE THIRD ENGINE IS GONE. `compile()` of the map is a TABLE, so `fromCompiled`
       // is table-backed and reports the dispatched arm exactly as `fromTable` does. The
       expect(fromTable.expected, bad).toEqual([dispatched])
       expect(fromCompiled.expected, bad).toEqual(fromTable.expected)
@@ -873,7 +874,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
     // agree exactly. Same rule, same arms, no divergence — which is what makes
     // the rows above a `disjoint`-staleness finding and not a reporting one.
     const st = execRules(encodeTable({ jsonValue: shippedJsonValue } as never)).jsonValue!
-    const sc = (compose([{ jsonValue: shippedJsonValue } as never]) as unknown as Record<string, unknown>).jsonValue!
+    const sc = compile({ jsonValue: shippedJsonValue } as Record<string, unknown>).jsonValue!
     for (const [bad, only] of [['[1,2,]', '"]"'], ['{"a":', '"}"'], ['nope', '"null"']] as const) {
       for (const r of [run(st as never, bad), run(shippedJsonValue as never, bad), run(sc as never, bad)]) {
         expect(r.ok, bad).toBe(false)

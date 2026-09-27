@@ -138,8 +138,10 @@ export const parser = compose([ratioShape, rules(g => ({ Value: regex(/[0-9]+/) 
       const shape = new Function('tableRules', ...Object.keys(parseman), `${emitted.shape!.code.replace(/^import[^\n]*\n/gm, '').replace('export const', 'const')}\nreturn ratioShape`)(
         tableRules, ...Object.values(parseman),
       ) as never
-      const composed = parseman.compose([shape, parseman.rules(() => ({ Value: parseman.regex(/[0-9]+/) })) as never]) as unknown as Record<string, Parse>
-      const r = composed.Ratio!('16/9', 0, {})
+      // The shape's runtime value is its interpreter rules() map, so a runtime
+      // compose() links it directly.
+      const composed = parseman.compose([shape, parseman.rules(() => ({ Value: parseman.regex(/[0-9]+/) })) as never])
+      const r = parseman.run(composed.Ratio!, '16/9')
       expect(r.ok).toBe(true)
       expect(r.value).toEqual(['16', '/', '9'])
     })

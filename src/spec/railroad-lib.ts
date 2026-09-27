@@ -2,12 +2,18 @@
  * Vendored copy of tabatkins railroad-diagrams (v1.0.0), license CC0-1.0.
  * https://github.com/tabatkins/railroad-diagrams
  *
- * Public domain (CC0) — embedded verbatim as strings so the generated
- * railroad-diagram HTML page is fully self-contained (no CDN, no runtime dep).
+ * Public domain (CC0). The library is held ONCE, as real code: `railroadLibrary`
+ * renders SVG in Node, and `RAILROAD_JS` embeds the same function's own source in
+ * the generated HTML page (no CDN, no runtime dep). Nothing evaluates a string —
+ * docs/design/runtime-and-size-contract.md, rule 1.
  * Do not edit by hand; regenerate from the npm package if bumping versions.
  */
 /* eslint-disable */
-export const RAILROAD_JS: string = `/*
+// @ts-nocheck — vendored third-party JavaScript, kept verbatim.
+
+/** Install the railroad-diagrams builders onto `exports`. */
+export function railroadLibrary(exports) {
+/*
 Railroad Diagrams
 by Tab Atkins Jr. (and others)
 http://xanthir.com
@@ -90,7 +96,7 @@ At runtime, these constants can be found on the Diagram class.
 	};
 	FakeSVG.prototype.escapeString = function(string) {
                 // Escape markdown and HTML special characters
-		return string.replace(/[*_\\\`\\[\\]<&]/g, function(charString) {
+		return string.replace(/[*_\`\[\]<&]/g, function(charString) {
 			return '&#' + charString.charCodeAt(0) + ';';
 		});
 	};
@@ -112,7 +118,7 @@ At runtime, these constants can be found on the Diagram class.
 			str += ' ' + attr + '="' + (this.attrs[attr]+'').replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '"';
 		}
 		str += '>';
-		if(group) str += "\\n";
+		if(group) str += "\n";
 		if(typeof this.children == 'string') {
 			str += FakeSVG.prototype.escapeString(this.children);
 		} else {
@@ -120,7 +126,7 @@ At runtime, these constants can be found on the Diagram class.
 				str += e;
 			});
 		}
-		str += '</' + this.tagName + '>\\n';
+		str += '</' + this.tagName + '>\n';
 		return str;
 	}
 
@@ -522,7 +528,7 @@ At runtime, these constants can be found on the Diagram class.
 	*/
 	['Diagram', 'ComplexDiagram', 'Sequence', 'Choice', 'Optional', 'OneOrMore', 'ZeroOrMore', 'Terminal', 'NonTerminal', 'Comment', 'Skip']
 		.forEach(function(e,i) { root[e] = temp[i]; });
-}).call(this,
+}).call(undefined,
 	{
 	VERTICAL_SEPARATION: 8,
 	ARC_RADIUS: 10,
@@ -531,7 +537,11 @@ At runtime, these constants can be found on the Diagram class.
 	INTERNAL_ALIGNMENT: 'center',
 	}
 );
-`
+
+}
+
+/** The same library as page script: installs its builders as browser globals. */
+export const RAILROAD_JS: string = `(${railroadLibrary.toString()})(window);`
 
 export const RAILROAD_CSS: string = `svg.railroad-diagram {
     background-color: hsl(30,20%,95%);
