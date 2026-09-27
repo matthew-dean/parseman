@@ -184,6 +184,17 @@ export const grammar = rules(g => ({ Doc: semi }))
 `)
     expect(out.code).not.toContain('parseman.combinatorIR')
   })
+
+  it('not one named only by a shared rules() factory, whose text survives as dead code', () => {
+    const out = lower(`
+import { rules, literal } from 'parseman' with { type: 'macro' }
+const semi = literal(';')
+const factory = g => ({ Doc: semi })
+export const grammar = rules(factory)
+`)
+    expect(out.warnings).toEqual([])
+    expect(out.code).not.toContain('parseman.combinatorIR')
+  })
 })
 
 describe('what the macro cannot resolve fails the build, naming the binding', () => {

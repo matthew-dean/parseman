@@ -2450,7 +2450,7 @@ function transformMacroImpl(
    * The parser function itself is unchanged, so no parse runs differently.
    */
   const withCombinatorIR = <R extends (typeof replacements)[number]>(r: R): R => {
-    if (!r.carry || (!r.carry.exported && !stillReferenced(r.carry.name))) return r
+    if (!r.carry || (!r.carry.exported && !referencedNames().live.has(r.carry.name))) return r
     let ir: string | null = null
     // An IR the serializer cannot produce leaves the terminal uncarried; a module that
     // imports it then fails ITS build naming it (see `moduleConstValue`).
@@ -2468,37 +2468,46 @@ function transformMacroImpl(
     replacementRanges.some(r => start >= r.start && end <= r.end)
   /** Every name the EMITTED module still reads outside the replaced ranges — computed
    * once (it used to be one whole-module walk per name asked about). A declaration's
-   * own binding name is not a read. */
-  let referencedOutside: Set<string> | null = null
-  const stillReferenced = (name: string): boolean => {
-    if (referencedOutside === null) {
-      const out = new Set<string>()
-      const walk = (node: unknown, parent?: AnyNode, parentKey?: string): void => {
-        if (!node || typeof node !== 'object') return
-        const rec = node as AnyNode
-        if (rec.type === 'ImportDeclaration') return
-        if (typeof rec.start === 'number' && typeof rec.end === 'number' && isInsideReplacement(rec.start, rec.end)) return
-        if (rec.type === 'Identifier' || rec.type === 'BindingIdentifier') {
-          const isKey = parentKey === 'key'
-            && (parent?.type === 'ObjectProperty' || parent?.type === 'Property' || parent?.type === 'PropertyDefinition')
-            && (parent as { computed?: boolean }).computed !== true
-          const isMember = parentKey === 'property'
-            && (parent?.type === 'StaticMemberExpression' || (parent?.type === 'MemberExpression' && (parent as { computed?: boolean }).computed !== true))
-          const isDeclared = parentKey === 'id' && parent?.type === 'VariableDeclarator'
-          if (!isKey && !isMember && !isDeclared) out.add(rec.name as string)
-          return
-        }
-        for (const key of Object.keys(rec)) {
-          if (key === 'type' || key === 'start' || key === 'end') continue
-          const value = (rec as Record<string, unknown>)[key]
-          if (Array.isArray(value)) for (const child of value) walk(child, rec, key)
-          else walk(value, rec, key)
-        }
+   * own binding name is not a read. `live` leaves out reads inside a local `rules()`
+   * factory, whose text survives lowering only as macro-only dead code, and inside the
+   * `.define()` statements lowering removes. */
+  let referenced: { all: Set<string>; live: Set<string> } | null = null
+  const referencedNames = (): { all: Set<string>; live: Set<string> } => {
+    if (referenced !== null) return referenced
+    const all = new Set<string>()
+    const live = new Set<string>()
+    // Also the `x.define(…)` statements lowering strips.
+    const deadRanges = [...[...factoryDecls.values()].filter(f => !f.imported).map(f => f.fn), ...(anyUnresolved ? [] : defineRemovals)]
+    const walk = (node: unknown, inFactory: boolean, parent?: AnyNode, parentKey?: string): void => {
+      if (!node || typeof node !== 'object') return
+      const rec = node as AnyNode
+      if (rec.type === 'ImportDeclaration') return
+      if (typeof rec.start === 'number' && typeof rec.end === 'number') {
+        if (isInsideReplacement(rec.start, rec.end)) return
+        inFactory ||= deadRanges.some(f => rec.start >= f.start && rec.end <= f.end)
       }
-      for (const stmt of body as unknown[]) walk(stmt)
-      referencedOutside = out
+      if (rec.type === 'Identifier' || rec.type === 'BindingIdentifier') {
+        const isKey = parentKey === 'key'
+          && (parent?.type === 'ObjectProperty' || parent?.type === 'Property' || parent?.type === 'PropertyDefinition')
+          && (parent as { computed?: boolean }).computed !== true
+        const isMember = parentKey === 'property'
+          && (parent?.type === 'StaticMemberExpression' || (parent?.type === 'MemberExpression' && (parent as { computed?: boolean }).computed !== true))
+        const isDeclared = parentKey === 'id' && parent?.type === 'VariableDeclarator'
+        if (!isKey && !isMember && !isDeclared) {
+          all.add(rec.name as string)
+          if (!inFactory) live.add(rec.name as string)
+        }
+        return
+      }
+      for (const key of Object.keys(rec)) {
+        if (key === 'type' || key === 'start' || key === 'end') continue
+        const value = (rec as Record<string, unknown>)[key]
+        if (Array.isArray(value)) for (const child of value) walk(child, inFactory, rec, key)
+        else walk(value, inFactory, rec, key)
+      }
     }
-    return referencedOutside.has(name)
+    for (const stmt of body as unknown[]) walk(stmt, false)
+    return referenced = { all, live }
   }
 
   for (const imp of ordinaryImports) {
@@ -2508,7 +2517,7 @@ function transformMacroImpl(
       imp.specifiers.every(spec =>
         spec.type === 'ImportSpecifier' &&
         usedImportedFactories.has(spec.local) &&
-        !stillReferenced(spec.local),
+        !referencedNames().all.has(spec.local),
       )
     ) {
       ms.remove(imp.start, imp.end)
