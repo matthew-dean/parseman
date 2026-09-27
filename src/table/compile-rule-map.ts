@@ -1,7 +1,7 @@
 import type { Combinator } from '../types.ts'
 import { hasDirectBuildDef } from '../analysis/commitment.ts'
 import type { HostMode } from '../cst/host-mode.ts'
-import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
+import { collectGrammarReflection, GRAMMAR_REFLECTION, type GrammarReflection } from '../cst/reflection.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { defaultAssemblyCfgs, emitTableExpression } from './emit.ts'
 import { tableRules } from './assemble.ts'
@@ -54,6 +54,12 @@ const DEFAULT_PRECOMPILE_MIN_WORDS = 1_024
 export type TableRuleMapOptions = {
   /** Grammar-level ambient trivia, as `rules({ trivia }, …)` declares it. */
   readonly trivia?: Combinator<unknown>
+  /**
+   * `compileRuleMapRunnable` only: specialise the runnable table once with generated
+   * code (falling back to closures under CSP). `compile()` alone passes it — no other
+   * runtime path may construct code.
+   */
+  readonly specialise?: boolean
   /** Grammar-level ambient scan-skip, as `rules({ scanSkip }, …)` declares it. */
   readonly scanSkip?: Combinator<unknown>[]
   readonly recovery?: boolean
@@ -120,10 +126,11 @@ export type CompiledRuleMapTable = {
    * hands back text and nothing else, because its artifact only exists once the
    * emitted source is evaluated. A table exists as data before it is printed, so
    * the same call that produces the replacement can also hand back the parser.
-   * It may use runtime assembly specialisation; `prog` and `replacement` remain
-   * serialized closure artifacts. That is what makes a differential against the
-   * interpreter possible without `eval`, and it is why the table-vs-interpreter
-   * test can compare `expected` sets rather than only accept/reject.
+   * It runs the CLOSURE artifact — the engine printed output runs — so building
+   * it never constructs code: only `compile()` specialises (`specialise`), per
+   * docs/design/runtime-and-size-contract.md, rule 1. That is what makes a
+   * differential against the interpreter possible without `eval`, and it is why the
+   * table-vs-interpreter test can compare `expected` sets rather than only accept/reject.
    */
   rules: Record<string, TableRule>
   /** The closure-stamped wire program, for a caller that wants to fold or inspect it. */
@@ -232,13 +239,16 @@ export function compileRuleMapRunnable(
   if (encoded === null) return null
   const { prog, hostMode, plan } = encoded
   const artifact = closureArtifact(prog)
+  const reflection = collectGrammarReflection(ruleMap)
   return {
     keys: ruleMap.map(([key]) => key),
     hostMode,
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
-    reflection: collectGrammarReflection(ruleMap),
+    reflection,
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    rules: tableRules(prog),
+    // Reflection rides on the map's metadata prototype from birth. Only `compile()`
+    // asks to specialise; every other caller runs the closure artifact.
+    rules: tableRules(opts.specialise === true ? prog : artifact, { [GRAMMAR_REFLECTION]: reflection }),
     prog: artifact,
   }
 }
@@ -349,7 +359,7 @@ export function compileRuleMap(
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    rules: tableRules(prog),
+    rules: tableRules(artifact),
     prog: artifact,
   }
 }

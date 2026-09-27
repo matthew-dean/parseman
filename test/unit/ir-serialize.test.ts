@@ -14,6 +14,7 @@ import {
 } from '../../src/index.ts'
 import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
+import { evalRuleMapIR } from '../../src/plugin/ir-eval.ts'
 
 type RunMap = Record<string, (i: string, p: number, c: object) => { ok: boolean; value?: unknown; span: { end: number } }>
 
@@ -24,7 +25,6 @@ function run(rm: ReadonlyArray<readonly [string, unknown]>): RunMap {
   return pieces.rules as unknown as RunMap
 }
 
-import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 
 function roundTrip(rm: ReadonlyArray<readonly [string, unknown]>, rule: string, inputs: string[]) {
   const src = serializeRuleMap(rm as never)

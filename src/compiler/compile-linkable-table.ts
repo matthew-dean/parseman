@@ -31,7 +31,7 @@ import { PARSEMAN_VERSION } from '../version.ts'
  *                       composable half, and it is NOT new machinery: the plugin
  *                       already carries pieces as IR (`plugin/index.ts:1772`) and
  *                       the linker already re-lowers them (`linker.ts:640`,
- *                       `compileLinkable(evalRuleMapIR(p.ir), …)`).
+ *                       `compileLinkable(evalRuleMapIR(p.ir), …)` at build time).
  *
  * ── WHY THAT MAKES COMPOSITION THE EASY KIND ─────────────────────────────────
  * The open question was whether table-to-table composition has to merge two

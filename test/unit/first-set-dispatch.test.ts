@@ -176,11 +176,12 @@ export const grammar = compose([rules(g => ({
 //    is resolved at fuse time; the nullable-prefix arm must be reachable.
 // ---------------------------------------------------------------------------
 describe('compose/fuse dispatch — nullable-prefix ref arm', () => {
-  const makeFused = () => compose([rules(g => ({
+  // The table a caller opts into: `compile()` of the composition.
+  const makeFused = () => compile(compose([rules(g => ({
     stmt: choice(g.interp, g.digits),
     interp: transform(sequence(optional(regex(/[.#]/)), regex(/@\{[a-z]+\}/)), x => x),
     digits: regex(/[0-9]+/),
-  }))]) as Record<string, (i: string, p: number, c: Record<string, unknown>) => { ok: boolean; span: { end: number } }>
+  }))]) as Record<string, unknown>) as unknown as Record<string, (i: string, p: number, c: Record<string, unknown>) => { ok: boolean; span: { end: number } }>
 
   it('fuse-resolved dispatch reaches the `@`-led ref arm', () => {
     // Exercises BOTH the fuse-time first-set substitution (ref arm → winning

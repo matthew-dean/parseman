@@ -36,9 +36,10 @@ import { describe, it, expect } from 'vitest'
 import * as parseman from '../../src/index.ts'
 import type { FusedRule } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
+import { evalRuleMapIR } from '../../src/plugin/ir-eval.ts'
 import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { evalMacroExports } from '../helpers/eval-macro-module.ts'
+import { macroComposed } from '../helpers/macro-package.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
@@ -104,27 +105,30 @@ describe('compose over a compiled base with a gated choice (0.26.2)', () => {
     expect(g.Ruleset!('.a{color:red}', 0, {}).ok).toBe(true)
   })
 
+  // The real jess shape: a downstream package compose()s the built css at BUILD time.
+  const DOWNSTREAM = `import { compose, rules, regex } from 'parseman' with { type: 'macro' }
+import { cssGrammar } from './base.js'
+export const composed = compose([cssGrammar, rules(g => ({ Extra: regex(/z/) }))])`
+
   it('composed: a SIBLING rule (Declaration) still dispatches for an ident', () => {
-    // The real jess shape: compose([compiledCss, delta]). RED before the fix —
-    // `color` inside the composed ruleset body failed to dispatch to Declaration.
-    const delta = parseman.rules(() => ({ Extra: parseman.regex(/z/) }))
-    const composed = parseman.compose([
-      cssGrammar as never,
-      delta as never,
-    ]) as unknown as Record<string, FusedRule>
+    // RED before the fix — `color` inside the composed ruleset body failed to
+    // dispatch to Declaration.
+    const composed = macroComposed(CSS_SRC, DOWNSTREAM).composed as Record<string, FusedRule>
     expect(composed.Ruleset!('.a{color:red}', 0, {}).ok).toBe(true)
   })
 
   it('composed: the gated `&` arm still gates on state.inner', () => {
-    const delta = parseman.rules(() => ({ Extra: parseman.regex(/z/) }))
-    const composed = parseman.compose([
-      cssGrammar as never,
-      delta as never,
-    ]) as unknown as Record<string, FusedRule>
+    const composed = macroComposed(CSS_SRC, DOWNSTREAM).composed as Record<string, FusedRule>
     // `&` is rejected without inner state, accepted with it — round-trip preserved
     // the per-arm gate predicate through the IR.
     expect(composed.Ruleset!('&{color:red}', 0, {}).ok).toBe(false)
     expect(composed.Ruleset!('&{color:red}', 0, { state: { inner: true } }).ok).toBe(true)
+  })
+
+  it('runtime compose() refuses the built base rather than evaluating its IR', () => {
+    const delta = parseman.rules(() => ({ Extra: parseman.regex(/z/) }))
+    expect(() => parseman.compose([cssGrammar as never, delta as never]))
+      .toThrow('a build-compiled compose() result has no live rules to link')
   })
 
   it('a gate written with a TS angle-bracket assertion (<T>x) re-lowers to valid JS', () => {
@@ -147,8 +151,9 @@ export const g2 = rules(g => ({
     // Assert the gate on the RE-LOWERED artifact (compose re-lowers the IR), not the
     // original g2 — a regression that loses/changes the predicate during restoration
     // would only surface here, not on the original grammar.
-    const delta = parseman.rules(() => ({ Extra: parseman.regex(/z/) }))
-    const composed = parseman.compose([g2 as never, delta as never]) as unknown as Record<string, FusedRule>
+    const composed = macroComposed(src, `import { compose, rules, regex } from 'parseman' with { type: 'macro' }
+import { g2 } from './base.js'
+export const composed = compose([g2, rules(g => ({ Extra: regex(/z/) }))])`).composed as Record<string, FusedRule>
     expect(composed.Ruleset!('&{}', 0, {}).ok).toBe(false)                          // gate blocks without inner
     expect(composed.Ruleset!('&{}', 0, { state: { inner: true } }).ok).toBe(true)  // gate passes with inner
   })

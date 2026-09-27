@@ -25,7 +25,8 @@ import { node, runWithGrammarCoverage } from '../../src/index.ts'
 import { matchesEmpty, firstSetOf } from '../../src/combinators/first-set.ts'
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
-import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
+import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
+import { evalRuleMapIR } from '../../src/plugin/ir-eval.ts'
 
 /** Does this choice emit O(1) first-char dispatch? The single gating question. */
 const dispatches = (c: Combinator<unknown>): boolean =>

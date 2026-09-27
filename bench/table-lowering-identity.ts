@@ -14,7 +14,6 @@
  */
 import { digestValue } from '../src/oracle/index.ts'
 import { run } from '../src/functional/run.ts'
-import { compose } from '../src/compiler/linker.ts'
 import { encodeTable, type TableSettings } from '../src/table/encode.ts'
 /**
  * `tableRules` IS THE SHIPPED TABLE ENGINE — `src/table/index.ts` re-exports
@@ -82,9 +81,8 @@ export function checkIdentity(
     settings?: TableSettings
     trivia?: Combinator<unknown>
     /**
-     * Gate against the INTERPRETER only. For a grammar that exposes an entry
-     * combinator but not its rule map, `compose()` cannot fuse it — the compiled
-     * leg is unavailable, not passing. Callers must say which they got.
+     * Gate against the INTERPRETER only: skip the closure-artifact leg. Callers
+     * must say which they got.
      */
     interpreterOnly?: boolean
   } = {},
@@ -99,11 +97,10 @@ export function checkIdentity(
   const ref = referenceRules(prog)[entryRule]
   if (ref === undefined) throw new Error(`reference table has no rule '${entryRule}'`)
 
-  // The public composed path, lowered to the same canonical closure table
-  // artifact as macro output.
+  // The canonical closure artifact macro output runs (`a:[]`: no specialisation).
   const compiledMap = opts.interpreterOnly
     ? undefined
-    : compose([ruleMap as never]) as unknown as Record<string, RunnableLike>
+    : tableRules({ ...prog, asm: [] }) as unknown as Record<string, RunnableLike>
   const comp = compiledMap?.[entryRule]
   if (comp === undefined && !opts.interpreterOnly) throw new Error(`compiled map has no rule '${entryRule}'`)
 

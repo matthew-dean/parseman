@@ -38,8 +38,14 @@ import type { Combinator } from '../../src/types.ts'
 
 type Entries = Array<[string, Combinator<unknown>]>
 
-const entriesOf = (g: object): Entries =>
-  Object.entries(g as Record<string, Combinator<unknown>>) as Entries
+/** The `rules()` map each piece's entries came from: runtime `compose()` links
+ * recipes, so the reference side needs the map, not a copy of its entries. */
+const sourceOf = new WeakMap<Entries, Record<string, unknown>>()
+const entriesOf = (g: object): Entries => {
+  const entries = Object.entries(g as Record<string, Combinator<unknown>>) as Entries
+  sourceOf.set(entries, g as Record<string, unknown>)
+  return entries
+}
 
 /** Merge pieces the way `compose()` composes them: later names win. */
 function mergeMaps(pieces: Entries[]): Record<string, Combinator<unknown>> {
@@ -61,10 +67,7 @@ function differential(
 ): { table: ReturnType<typeof run>; interp: ReturnType<typeof run> } {
   return {
     table: run(tabledMerge(build())[rule] as never, input),
-    // A fresh build per side: an interpreted fuse binds the shared placeholder
-    // objects IN PLACE, so reusing the table's pieces would hand the table a
-    // grammar the reference had already rewritten.
-    interp: run(fuseInterpreted(build().map(p => Object.fromEntries(p)) as never)[rule] as never, input),
+    interp: run(fuseInterpreted(build().map(p => sourceOf.get(p)!))[rule] as never, input),
   }
 }
 
