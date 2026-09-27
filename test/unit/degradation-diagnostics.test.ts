@@ -203,7 +203,10 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
     // The resolved declaration source is analysis-only: the builder is still referenced
     // by name, never inlined a second time.
     expect(source).toContain('foldOperation')
-    expect(source.match(/children => \(\{ n: children\.length \}\)/g) ?? []).toHaveLength(1)
+    // (The exported value's carried combinator IR — a string literal, never run —
+    // records the resolved signature for a downstream build; it is not emitted code.)
+    const emitted = source.replace(/Symbol\.for\('parseman\.combinatorIR'\), \{ value: "(?:[^"\\]|\\.)*"/, '')
+    expect(emitted.match(/children => \(\{ n: children\.length \}\)/g) ?? []).toHaveLength(1)
   })
 })
 

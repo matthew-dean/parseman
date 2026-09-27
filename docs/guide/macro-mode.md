@@ -174,6 +174,45 @@ macro emits each call site independently, so importing `grammar` doesn't drag in
 line-aware or CST artifact along with it. See [One factory, several macro artifacts](./recursive-rules#one-factory-several-macro-artifacts)
 and [Line/column spans](./ast#linecolumn-spans).
 
+### Sharing terminals across grammars
+
+A grammar can import a terminal, a skip set, an options object or a boundary string from
+another module and use it anywhere the macro evaluates the grammar: in a rule body, in a
+combinator's arguments, or in a `rules({ trivia, scanSkip })` option.
+
+```ts
+// shared/scan-skip.ts — built with the plugin
+import { literal, regex, sequence } from 'parseman' with { type: 'macro' }
+export const blockComment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)
+export const doubleQuoted = sequence(literal('"'), regex(/(?:[^"\\]|\\[\s\S])*/), literal('"'))
+export const scanSkip = [blockComment, doubleQuoted]
+```
+
+```ts
+// less/grammar.ts
+import { rules, literal, scanTo } from 'parseman' with { type: 'macro' }
+import { scanSkip } from '@my/shared/scan-skip'
+
+export const grammar = rules({ scanSkip }, g => ({ Body: scanTo(literal(';')) }))
+```
+
+The exporting module is read, never run:
+
+- A **relative** import resolves to its source, and the declaration is evaluated the same
+  way a local one would be.
+- A **package** import resolves to its published entry, which is a compiled artifact. A
+  compiled terminal is a parser function, not a combinator, so the macro carries each
+  terminal another module can reach — exported, or named by an exported value — with its
+  combinator IR attached under `Symbol.for('parseman.combinatorIR')`. Plain values (strings,
+  option objects, arrays of terminals) are kept as written. Both sides must be built by the
+  same parseman version.
+
+Each grammar gets its own copy of an imported terminal. Under `compose()` and
+`composeLeaf()`, `scanSkip` still applies only to the rules of the grammar that declared
+it, so each dialect in a family can name the one shared set by import.
+
+A default or namespace import isn't resolved. Import the binding by name.
+
 Parsers that close over external variables the evaluator can't resolve are left as-is.
 The plugin compiles what it can and leaves the rest to the interpreter, with a build
 warning pointing at exactly what it skipped — see
@@ -304,3 +343,14 @@ over a runtime value, or isn't a recognized combinator shape — it:
 
 So a silent fallback never goes unnoticed. You'll see exactly which rule dropped to the
 interpreter, and why.
+
+Some things fail the build instead of falling back, because there's no correct fallback:
+
+- a `rules({ trivia })` or `rules({ scanSkip })` option the plugin can't evaluate, or an
+  options spread that could hide one. Building without the option would change what the
+  grammar accepts.
+- an imported binding the plugin can't resolve, wherever the grammar uses it. At runtime a
+  package's terminal is a compiled parser, which the interpreter can't use either.
+
+The error names the option or declaration, the grammar, and each binding it couldn't
+resolve, with the reason.
