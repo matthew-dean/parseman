@@ -77,6 +77,14 @@ export type EmittedAssembly = {
   readonly end: () => number
   readonly begin: (ctx: ParseContext) => void
   readonly finish: () => void
+  /**
+   * Present only on a SELECTIVE assembly: the unselected sites its bodies call,
+   * the hook that binds them to closure pieces (with a setter for the closure
+   * engine's installed trivia scanner), and that same setter for this scope's.
+   */
+  readonly ext?: readonly number[]
+  readonly bind?: (setClosureScan: (s: unknown) => unknown, pieces: readonly EmittedPiece[]) => void
+  readonly scan?: (s: unknown) => unknown
 }
 /** The `new Function` result. Its parameters are `EMITTED_PARAMS`, in order. */
 export type EmittedFactory = (...args: readonly unknown[]) => EmittedAssembly
@@ -474,6 +482,8 @@ export type EmitResult = {
   readonly armExpected: readonly (readonly string[])[][]
   /** The same three pools as indices, for a build-time emitter. */
   readonly plan: PoolPlan
+  /** Source length of each emitted site body, by site — what selection prices. */
+  readonly siteBytes: ReadonlyMap<number, number>
 }
 
 /** The candidate mask for one `CLS` row — the ONE definition, shared with the emitter. */
@@ -521,6 +531,11 @@ export function rebuildPools(
  * ordinary factory literal in a macro artifact. It permits macro-only code
  * shaping without perturbing the runtime `compile()` emitter, whose generated
  * parser must remain byte-identical when the optimization cannot affect it.
+ *
+ * `select`, when given, makes this a SELECTIVE (hybrid) assembly: only sites
+ * whose alias-resolved target is in the set get a body. Every other child a
+ * body calls is an EXTERNAL — `_px<ip>`, a wrapper bound after construction to
+ * the closure engine's piece for that site (`assemble.ts`).
  */
 export function emitAssemblySource(
   t: ResolvedTable,
@@ -536,6 +551,7 @@ export function emitAssemblySource(
   },
   extraIps: readonly number[] = [],
   staticBuild = false,
+  select?: ReadonlySet<number>,
 ): EmitResult {
   const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
@@ -719,6 +735,9 @@ export function emitAssemblySource(
 
   const bodies: string[] = []
   const byIp = new Map<number, string>()
+  /** Unselected sites a selective assembly calls into — see `select`. */
+  const externals: number[] = []
+  const siteBytes = new Map<number, number>()
   const reached = new Set<number>()
   const prelude: string[] = []
   const skipDefs: string[] = []
@@ -1005,12 +1024,20 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     const target = resolveAlias(ip)
     const done = byIp.get(target)
     if (done !== undefined) return done
+    if (select !== undefined && !select.has(target)) {
+      const ext = `_px${target}`
+      byIp.set(target, ext)
+      externals.push(target)
+      return ext
+    }
     const fname = `_pf${target}`
     // Reserved BEFORE lowering, so a back-edge into a site still in flight binds
     // to the hoisted declaration rather than to a forwarding stub. This is the
     // whole of `assemble.ts`'s `inFlight` map and its one shared closure.
     byIp.set(target, fname)
-    bodies.push(lower(target, fname))
+    const body = lower(target, fname)
+    siteBytes.set(target, body.length)
+    bodies.push(body)
     return fname
   }
 
@@ -2508,8 +2535,12 @@ return nd
     }
   }
 
+  // A selective assembly serves only its selected sites; the closure engine
+  // serves every other rule entry and scan root (`assemble.ts`).
+  const served = (ip: number): boolean => select === undefined || select.has(resolveAlias(ip))
   const ruleEntries: string[] = []
   for (const [rname, entryIp] of Object.entries(prog.rules)) {
+    if (!served(entryIp)) continue
     // `_r_<Name>` — the composition surface, in `codegen.ts`'s own spelling and
     // deliberately NOT namespaced, so a sibling calls it by name.
     const target = link(entryIp)
@@ -2520,7 +2551,40 @@ return nd
   // Sites the SCAN pool and the scan-skip sets reference. They are linked
   // through `subtreeComb` outside the emitted scope, so they need names.
   const extra: string[] = []
-  for (const ip of extraIps) extra.push(`${ip}:${link(ip)}`)
+  const exported = new Set<number>()
+  for (const ip of extraIps) {
+    if (!served(ip)) continue
+    exported.add(ip)
+    extra.push(`${ip}:${link(ip)}`)
+  }
+  // Selected sites a CLOSURE piece may call. Over-approximated from every
+  // unselected reachable site's children; linking one may lower it for the first
+  // time, when only the closure side reaches it.
+  if (select !== undefined) {
+    const kids: number[] = []
+    for (const ip of reachable) {
+      if (select.has(resolveAlias(ip))) continue
+      kids.length = 0
+      childSlots(code, ip, kids)
+      for (const kid of kids) {
+        const target = resolveAlias(kid)
+        if (!select.has(target) || exported.has(target)) continue
+        exported.add(target)
+        extra.push(`${target}:${link(target)}`)
+      }
+    }
+  }
+  const hybrid = select === undefined ? '' : `,
+ext:[${externals.join(',')}],
+bind:function(xs,ps){_xScan=xs
+${externals.map((ip, i) => `_xp${ip}=ps[${i}]`).join('\n')}},
+scan:function(s){const o=_pfScan;_pfScan=s;return o}`
+  // One wrapper per external: the closure engine reads its OWN installed trivia
+  // scanner, so the emitted one is handed across for the call and restored.
+  const externalDefs = select === undefined ? '' : `let _xScan
+${externals.map(ip => `let _xp${ip}
+function _px${ip}(input,pos,ctx){const o=_xScan(_pfScan);const v=_xp${ip}(input,pos,ctx);_xScan(o);return v}`).join('\n')}
+`
 
   // The per-label trivia scans sit AFTER the hoisted pool they close over: they
   // are `function` declarations, so a body may call one that is textually below
@@ -2531,7 +2595,7 @@ ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${choiceDefs.join('\n')}
 ${bodies.join('\n')}
-function _begin(ctx){
+${externalDefs}function _begin(ctx){
 const host=ctx.build
 if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])
 _pfDepth++
@@ -2558,11 +2622,11 @@ pieces:{${ruleEntries.join(',')}},
 byIp:{${extra.join(',')}},
 end:function(){return EC.e},
 begin:_begin,
-finish:_finish
+finish:_finish${hybrid}
 }`
 
   return {
-    source, reached, masks, classes, armExpected,
+    source, reached, masks, classes, armExpected, siteBytes,
     plan: { classes: classPlan, armExpected: armExpectedPlan, masks: maskPlan },
   }
 }

@@ -26,7 +26,8 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
-import { compileRuleMap } from '../table/compile-rule-map.ts'
+import { compileRuleMap, type CompiledRuleMapTable } from '../table/compile-rule-map.ts'
+import { SELECTIVE_ASSEMBLY_BUDGET } from '../table/select-hot.ts'
 import { compileLinkableTable } from '../compiler/compile-linkable-table.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
@@ -1481,6 +1482,34 @@ function transformMacroImpl(
   /** Compile `compose([...])` to STATIC fused source (eval-free) + its carried
    * (re-lowerable) list (for a sidecar / same-file chaining). null → leave the
    * runtime `compose()` in place (correct, just not build-fused). */
+  /**
+   * THE SELECTIVE ASSEMBLY BUDGET IS PER MODULE: the emitted site bodies of every
+   * fused grammar in this module together may not exceed its own source length
+   * (`SELECTIVE_ASSEMBLY_BUDGET`). A module that declares a `composeLeaf` has named
+   * its terminal parser, so its `compose()` results are composable PIECES — another
+   * build re-lowers them and never parses through their table — and spend nothing.
+   * Without a `composeLeaf`, a `compose()` result is the module's parser.
+   */
+  let assemblyBudget = code.length * SELECTIVE_ASSEMBLY_BUDGET
+  const declaresLeaf = (body as Statement[]).some(stmt => {
+    const vd = stmt.type === 'ExportNamedDeclaration'
+      ? (stmt as unknown as ExportNamedDeclaration).declaration
+      : stmt
+    return vd?.type === 'VariableDeclaration' && (vd as unknown as VariableDeclaration).declarations
+      .some(d => d.init != null && isComposeLeafCall(d.init as Expression))
+  })
+  const selectAssembly = (compiled: CompiledRuleMapTable, terminal: boolean): ReadonlySet<number> => {
+    if (!terminal) return new Set()
+    const { sites, bytes } = compiled.selectAssembly(assemblyBudget)
+    assemblyBudget -= bytes
+    return sites
+  }
+  /** The fused table's replacement, with its selective default assembly if any. */
+  const selectiveReplacement = (compiled: CompiledRuleMapTable, metadata: string, select: ReadonlySet<number>): string => {
+    if (select.size === 0) return compiled.replacementWithMetadata(metadata)
+    return supercompileRuleMapReplacement(compiled.prog, compiled.replacementWithMetadata(metadata, { select }), select)
+  }
+
   const compileComposeCall = (init: Expression): { replacement: string; exportedReplacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[]; coverageDefinitions?: readonly { id: string; kind: string }[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
@@ -1540,14 +1569,15 @@ function transformMacroImpl(
       })
       if (compiled !== null) {
         usedTableRuntime = true
+        const select = selectAssembly(compiled, !declaresLeaf)
         const reflectionMetadata = staticTableMetadataSource({ reflection: compiled.reflection })
         const exportedMetadata = staticTableMetadataSource({
           carried,
           reflection: compiled.reflection,
         })
         return {
-          replacement: compiled.replacementWithMetadata(reflectionMetadata),
-          exportedReplacement: compiled.replacementWithMetadata(exportedMetadata),
+          replacement: selectiveReplacement(compiled, reflectionMetadata, select),
+          exportedReplacement: selectiveReplacement(compiled, exportedMetadata, select),
           carried,
           ...(composing ? { trivia: composing } : {}),
           ...(importedFactories.length ? { importedFactories } : {}),
@@ -1697,12 +1727,10 @@ function transformMacroImpl(
         if (compiled !== null) {
           usedTableRuntime = true
           return {
-            replacement: supercompileRuleMapReplacement(
-              compiled.prog,
-              compiled.replacementWithMetadata(
-                staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
-                { precompileDefault: true },
-              ),
+            replacement: selectiveReplacement(
+              compiled,
+              staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
+              selectAssembly(compiled, true),
             ),
             ...(importedFactories.length ? { importedFactories } : {}),
           }

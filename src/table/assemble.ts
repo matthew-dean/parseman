@@ -503,6 +503,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    */
   let SCAN: FastTriviaScanner | null = null
 
+  /**
+   * A SELECTIVE build-time assembly: emitted bodies for its selected sites, this
+   * engine for the rest. `link` hands out its exported sites, wrapped so the
+   * callee sees this engine's installed scanner — the one slot both engines keep
+   * separately (the end cell `EC` is already shared).
+   */
+  let HYBRID: EmittedAssembly | undefined
+  function hybridPiece(piece: Piece): Piece {
+    const setScan = HYBRID!.scan!
+    return (input, pos, ctx) => {
+      const saved = setScan(SCAN)
+      const value = piece(input, pos, ctx)
+      setScan(saved)
+      return value
+    }
+  }
+
   const memo = new Map<number, Piece>()
   const reached = new Set<number>()
 
@@ -1322,6 +1339,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (done !== undefined) return done
     const flight = inFlight.get(ip)
     if (flight !== undefined) return flight.fwd
+    const selected = HYBRID?.byIp[ip]
+    if (selected !== undefined) {
+      const piece = hybridPiece(selected as Piece)
+      memo.set(ip, piece)
+      reached.add(ip)
+      return piece
+    }
 
     let target: Piece | undefined
     const fwd: Piece = (input, pos, ctx) => target!(input, pos, ctx)
@@ -3746,6 +3770,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
       )
       emitReached = new Set(pre.reached)
+      if (emitted.ext !== undefined) HYBRID = emitted
     }
     /**
      * ONCE A PROGRAM CARRIES ASSEMBLIES, THE CONSTRUCTOR IS OFF FOR IT — for
@@ -3837,7 +3862,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /** One piece for a site, from whichever engine this assembly is running. */
   function pieceAt(ip: number): Piece {
     const em = emitted
-    if (em !== undefined) {
+    if (em !== undefined && HYBRID === undefined) {
       const p = em.byIp[ip]
       if (p === undefined) throw new Error(`table emitter: no emitted body for site ${ip}`)
       return p as Piece
@@ -3863,6 +3888,28 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     (prog.scanSkip ?? []).map(set => set.map(r => subtreeComb(r)))
 
   /* ── link the rules ──────────────────────────────────────────────────────── */
+
+  if (HYBRID !== undefined) {
+    const em = HYBRID
+    em.bind!(
+      s => { const saved = SCAN; SCAN = s as FastTriviaScanner | null; return saved },
+      em.ext!.map(ip => link(ip)),
+    )
+    const pieces: Record<string, Piece> = {}
+    for (const [name, entryIp] of Object.entries(prog.rules)) {
+      pieces[name] = (em.pieces[name] as Piece | undefined) ?? link(entryIp)
+    }
+    for (const ip of emitReached!) reached.add(ip)
+    return {
+      pieces,
+      end: () => EC.e,
+      begin: ctx => { begin(ctx); em.begin(ctx) },
+      finish: () => { em.finish(); finish() },
+      scanSkip,
+      reached,
+      emitRefusal: undefined,
+    }
+  }
 
   if (emitted !== undefined) {
     const em = emitted

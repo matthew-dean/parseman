@@ -124,7 +124,7 @@ const grammar = rules(g => ({ Entry: literal('ok') }))
     })).toBe(0)
   })
 
-  it('precompiles exactly one terminal composeLeaf default artifact once the table is large', () => {
+  it('gives a terminal composeLeaf a selective default assembly, and its rules() piece none', () => {
     const recognitionRules = Array.from(
       { length: 400 },
       (_, i) => `R${i}: literal(${JSON.stringify(`value-${i}`)})`,
@@ -136,6 +136,8 @@ const grammar = composeLeaf([recognition, rules(g => ({ Entry: g.R0 }))])
 `, 'canonical-compose-leaf.ts', new Set(['parseman']))
     expect(out?.warnings).toEqual([])
     expect(out?.code.match(/a:\[\{/g)).toHaveLength(1)
+    // SELECTIVE: the factory reports the sites it left to the closure engine.
+    expect(out?.code).toMatch(/\bext:\[/)
     expect(out?.code).toMatch(/const recognition\s*=\s*\/\* @__PURE__ \*\/ tableRules\(\{\s*a:\[\],/)
 
     const entry = evalMacroModule<ParseFn>(out!.code, 'grammar.Entry')
@@ -144,15 +146,19 @@ const grammar = composeLeaf([recognition, rules(g => ({ Entry: g.R0 }))])
     })).toBe(0)
   })
 
-  it('keeps small, tracked, and CST precompile requests on the compact closure artifact', () => {
+  it('selects no assembly for tracked or CST tables, and prints none unless asked', () => {
     const entries = [['Entry', literal('ok')]] as const
-    const request = { precompileDefault: true } as const
     const small = compileRuleMap(entries)
     const tracked = compileRuleMap(entries, { trackLines: true })
     const cst = compileRuleMap(entries, { hostMode: 'cst' })
-    expect(small?.replacementWithMetadata('{}', request)).toContain('a:[],')
-    expect(tracked?.replacementWithMetadata('{}', request)).toContain('a:[],')
-    expect(cst?.replacementWithMetadata('{}', request)).toContain('a:[],')
+    expect(tracked?.selectAssembly(1e9).sites.size).toBe(0)
+    expect(cst?.selectAssembly(1e9).sites.size).toBe(0)
+    expect(small?.selectAssembly(0).sites.size).toBe(0)
+    expect(small?.replacementWithMetadata('{}')).toContain('a:[],')
+    const picked = small!.selectAssembly(1e9)
+    expect(picked.sites.size).toBeGreaterThan(0)
+    expect(picked.bytes).toBeGreaterThan(0)
+    expect(small?.replacementWithMetadata('{}', { select: picked.sites })).toMatch(/a:\[\{key:/)
   })
 
   it('a macro round-trip preserves a descriptor-backed sequence projection', () => {

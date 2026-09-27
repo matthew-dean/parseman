@@ -10,7 +10,7 @@
 import { parseSync } from 'oxc-parser'
 import { OP_ATTEMPT, OP_NODE, OP_NODE_TRACK, OP_REPV, OP_SCAN } from '../table/ops.ts'
 import { emitAssemblySource, type EmitResult } from '../table/emit-assembly.ts'
-import { defaultAssemblyCfgs } from '../table/emit.ts'
+import { defaultAssemblyCfgs, scanRootIps } from '../table/emit.ts'
 import { resolveTable, type TableProgram } from '../table/program.ts'
 
 type Ast = { type: string; start?: number; end?: number; [key: string]: unknown }
@@ -229,20 +229,19 @@ export function supercompileEntryAssembly(
  * then finds the precompiled assembly through the table object's AST shape and
  * replaces only that factory body. Any mismatch returns the canonical source.
  */
-export function supercompileRuleMapReplacement(prog: TableProgram, replacement: string): string {
+export function supercompileRuleMapReplacement(
+  prog: TableProgram,
+  replacement: string,
+  select?: ReadonlySet<number>,
+): string {
   const cfg = defaultAssemblyCfgs(prog)[0]
   if (cfg === undefined) return replacement
-  const extraIps: number[] = []
-  for (const scan of prog.scans ?? []) {
-    for (const ref of scan.skip) extraIps.push(ref[0])
-    if (scan.sentinel !== undefined) extraIps.push(scan.sentinel[0])
-  }
-  for (const set of prog.scanSkip ?? []) for (const ref of set) extraIps.push(ref[0])
+  const extraIps = scanRootIps(prog)
 
   let canonical: EmitResult
   let candidate: EntrySupercompileResult
   try {
-    canonical = emitAssemblySource(resolveTable(prog), prog, cfg, extraIps, true)
+    canonical = emitAssemblySource(resolveTable(prog), prog, cfg, extraIps, true, select)
     candidate = supercompileEmittedAssembly(prog, cfg, extraIps, canonical)
   } catch {
     return replacement
