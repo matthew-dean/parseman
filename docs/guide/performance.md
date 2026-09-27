@@ -1,5 +1,11 @@
 # Performance
 
+::: danger Superseded in part
+Statements on this page about the `composeLeaf` precompiled assembly are superseded by
+[the runtime and size contract](../design/runtime-and-size-contract.md), which is
+binding. See its "Superseded statements" list.
+:::
+
 Parséman is fast by default — the [macro build](./macro-mode) beats hand-tuned parser
 generators on the benchmarks. But how you write your grammar still matters more than
 anything the compiler does for you. This page covers the one technique that matters most,

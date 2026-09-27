@@ -1,5 +1,12 @@
 # The three modes
 
+::: danger Superseded in part
+Statements on this page about the `composeLeaf` precompiled assembly, the size budget,
+and runtime `compose()` under CSP are superseded by
+[the runtime and size contract](../design/runtime-and-size-contract.md), which is
+binding. See its "Superseded statements" list.
+:::
+
 One grammar, three ways to run it, identical results from all of them. You write the
 combinators once; the mode only decides *when* they turn into running code, and how fast
 that code ends up being.

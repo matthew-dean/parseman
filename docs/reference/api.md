@@ -1,5 +1,11 @@
 # API reference
 
+::: danger Superseded in part
+Statements on this page about the `composeLeaf` precompiled assembly and runtime `compose()` are superseded by
+[the runtime and size contract](../design/runtime-and-size-contract.md), which is
+binding. See its "Superseded statements" list.
+:::
+
 Every value `parseman` exports, in one place. Types live separately in
 [Types](./types). Import anything you need from the package root:
 
