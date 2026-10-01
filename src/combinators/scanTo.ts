@@ -199,11 +199,21 @@ export function scanTo(
         // Try each skipper in order; take first that advances.
         let advanced = false
         for (const skipper of skip) {
+          const errorCount = ctx._errors?.length ?? -1
           const r = skipper.parse(input, cur, probeCtx)
           if (r.ok && r.span.end > cur) {
             cur = r.span.end
             advanced = true
             break
+          }
+          // A skipper is a speculative opaque-region probe. If it recognizes
+          // an opener but cannot finish (for example strict balanced('(', ')')
+          // at an outer recovery boundary), its committed diagnostic belongs
+          // only to that failed probe. Letting it escape makes an otherwise
+          // successful recovery look malformed to the enclosing tolerant list.
+          const errors = ctx._errors
+          if (errors !== undefined && errorCount >= 0 && errors.length > errorCount) {
+            errors.length = errorCount
           }
         }
 

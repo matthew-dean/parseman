@@ -573,10 +573,15 @@ function objectFromPairs(pairs) {
       '{ answer: 42 }` {',
       'bad; second: `good`;',
       'function);\n  calc-value: calc(`calc);',
+      'fn(; next: `good`;',
       'unfinished\\\nnext: `value`;',
     ]) {
       expect(outcome(memory.Doc, input), `memory ${input}`).toBe(outcome(source, input))
       expect(outcome(emitted.Doc, input), `emitted ${input}`).toBe(outcome(source, input))
+      expect(run(memory.Doc as never, input).errors, `memory errors ${input}`)
+        .toEqual(run(source, input).errors)
+      expect(run(emitted.Doc as never, input).errors, `emitted errors ${input}`)
+        .toEqual(run(source, input).errors)
     }
   })
 

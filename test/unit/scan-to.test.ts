@@ -124,6 +124,17 @@ describe('scanTo — paired-sentinel recovery', () => {
     expect(result.errors).toEqual([])
   })
 
+  it('rolls back errors from a failed strict skipper before recovering', () => {
+    const source = scanTo(literal('`'), {
+      recoverAt: choice(literal(';'), literal('(')),
+      skip: [balanced('(', ')', { strict: true })],
+    })
+    const result = run(source, 'fn(; next: `good`;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('fn')
+    expect(result.errors).toEqual([])
+  })
+
   it('stops at a hard boundary without crossing the following line', () => {
     const result = parse(body, 'unfinished\\\nnext: `value`;')
     expect(result.ok).toBe(true)
