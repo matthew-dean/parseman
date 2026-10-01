@@ -373,7 +373,10 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
     case 'choice':    return d.parsers.some(x => hasNodeDef(x, seen))
     case 'dispatch':  return hasNodeDef(d.selector, seen) || d.cases.some(x => hasNodeDef(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => hasNodeDef(entry.parser, seen)) : false) || (d.otherwise ? hasNodeDef(d.otherwise, seen) : false)
     case 'sepBy':     return hasNodeDef(d.parser, seen) || hasNodeDef(d.separator, seen)
-    case 'scanTo':    return hasNodeDef(d.sentinel, seen) || d.skip.some(x => hasNodeDef(x, seen))
+    case 'scanTo':    return hasNodeDef(d.sentinel, seen)
+      || d.skip.some(x => hasNodeDef(x, seen))
+      || (d.recoverAt !== undefined && hasNodeDef(d.recoverAt, seen))
+      || (d.stopAt !== undefined && hasNodeDef(d.stopAt, seen))
     case 'recover':   return hasNodeDef(d.parser, seen) || hasNodeDef(d.sentinel, seen)
     case 'expect':    return hasNodeDef(d.parser, seen)
     case 'withCtx':   return hasNodeDef(d.parser, seen)
@@ -428,7 +431,10 @@ export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<u
       || (d.matchers ? d.matchers.some(x => hasDirectBuildDef(x.parser, seen)) : false)
       || (d.otherwise ? hasDirectBuildDef(d.otherwise, seen) : false)
     case 'sepBy':     return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.separator, seen)
-    case 'scanTo':    return hasDirectBuildDef(d.sentinel, seen) || d.skip.some(x => hasDirectBuildDef(x, seen))
+    case 'scanTo':    return hasDirectBuildDef(d.sentinel, seen)
+      || d.skip.some(x => hasDirectBuildDef(x, seen))
+      || (d.recoverAt !== undefined && hasDirectBuildDef(d.recoverAt, seen))
+      || (d.stopAt !== undefined && hasDirectBuildDef(d.stopAt, seen))
     case 'recover':   return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.sentinel, seen)
     case 'routed':    return d.fallback ? hasDirectBuildDef(d.fallback, seen) : false
     default:          return false
@@ -470,6 +476,8 @@ export function mayCommitFailure(
     case 'scanTo':
       return mayCommitFailure(d.sentinel, seen, resolve)
         || d.skip.some(x => mayCommitFailure(x, seen, resolve))
+        || (d.recoverAt !== undefined && mayCommitFailure(d.recoverAt, seen, resolve))
+        || (d.stopAt !== undefined && mayCommitFailure(d.stopAt, seen, resolve))
     case 'lazy': {
       try { return mayCommitFailure(d.thunk(), seen, resolve) }
       catch {

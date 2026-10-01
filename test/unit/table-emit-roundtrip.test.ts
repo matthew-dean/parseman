@@ -553,6 +553,27 @@ function objectFromPairs(pairs) {
     expect(run(emitted.Tail as never, 'no brace here').ok).toBe(true)
   })
 
+  it('scanTo() emits paired-sentinel recovery and hard-stop subtrees', async () => {
+    const source = scanTo(literal('`'), {
+      recoverAt: choice(literal(';'), literal('{'), literal('}')),
+      stopAt: literal('\\\n'),
+      skip: [balanced('{', '}', { strict: true })],
+    })
+    const prog = encodeTable({ Doc: source })
+    expect(prog.runtimeOnly).toBeUndefined()
+    const emitted = await loadEmitted(prog, 'scanto-recovery')
+    const memory = execRules(prog)
+    for (const input of [
+      'let x = 1; x`;',
+      '{ answer: 42 }` {',
+      'bad; second: `good`;',
+      'unfinished\\\nnext: `value`;',
+    ]) {
+      expect(outcome(memory.Doc, input), `memory ${input}`).toBe(outcome(source, input))
+      expect(outcome(emitted.Doc, input), `emitted ${input}`).toBe(outcome(source, input))
+    }
+  })
+
   it('ambient scanSkip survives emission, PER RULE, and a raw scan still ignores it', async () => {
     // `ss:`/`so:`. The set is a property of the rule, not the program: `run()`
     // installs the ENTRY rule's own set. Emitting one program-wide set gave rules

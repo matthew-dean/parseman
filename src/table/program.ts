@@ -251,6 +251,8 @@ export type ScanSpec = {
   readonly flags: number
   readonly skip: readonly SubtreeRef[]
   readonly sentinel?: SubtreeRef
+  readonly recoverAt?: SubtreeRef
+  readonly stopAt?: SubtreeRef
   readonly sent?: string | null
   readonly open?: string
   readonly close?: string

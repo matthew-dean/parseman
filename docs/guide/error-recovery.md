@@ -194,6 +194,23 @@ const prelude = scanTo(choice(literal('{'), literal(';')), {
 })
 ```
 
+For a paired delimiter whose payload can contain the surrounding recovery
+boundary, keep that delimiter as the sentinel and pass `recoverAt` separately:
+
+```ts
+const removedBacktickValue = scanTo(literal('`'), {
+  recoverAt: choice(literal(';'), literal('}')),
+  stopAt: literal('\\\n'),
+  skip: [singleStr, doubleStr, balanced('(', ')'), balanced('{', '}')],
+})
+```
+
+The first recovery boundary is retained as a checkpoint while scanning ahead.
+If a real closing sentinel is confirmed, the complete payload is returned. If
+later sentinels form another complete pair, Parseman returns to the checkpoint
+instead of joining two separate constructs. `stopAt` prevents recovery from
+crossing a hard boundary such as an escaped line end.
+
 ### `balanced(open, close, opts?)`
 
 Match a single self-contained delimited region and get its full text back, including the

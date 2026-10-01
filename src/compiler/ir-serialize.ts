@@ -65,7 +65,12 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'expect':    return [def.parser]
     case 'grammar':   return def.triviaParser ? [def.parser, def.triviaParser] : [def.parser]
     case 'sepBy':     return [def.parser, def.separator]
-    case 'scanTo':    return [def.sentinel, ...def.skip]
+    case 'scanTo':    return [
+      def.sentinel,
+      ...def.skip,
+      ...(def.recoverAt === undefined ? [] : [def.recoverAt]),
+      ...(def.stopAt === undefined ? [] : [def.stopAt]),
+    ]
     case 'routed':    return def.fallback ? [def.fallback] : []
     case 'lazy':
     case 'literal':
@@ -584,7 +589,7 @@ class Serializer {
       case 'field':     return `field(${JSON.stringify(def.name)}, ${kid(def.parser)})`
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`
       case 'scanTo':
-        return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}]${def.raw ? ', raw: true' : ''}, orEOF: ${def.orEOF} })`
+        return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}]${def.raw ? ', raw: true' : ''}, orEOF: ${def.orEOF}${def.recoverAt === undefined ? '' : `, recoverAt: ${kid(def.recoverAt)}`}${def.stopAt === undefined ? '' : `, stopAt: ${kid(def.stopAt)}`} })`
       case 'transform': {
         if (def.fnSrc === undefined) throw new Unserializable('transform without fnSrc')
         // `_tf` sets `_def.fnSrc` so re-lowering INLINES the callback (a plain

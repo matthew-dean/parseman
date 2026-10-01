@@ -359,7 +359,13 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'guard': return gate(def.predicate)
         case 'withCtx': return withCtx(def.extra, build(def.parser))
         case 'expect': return expect(build(def.parser), def.label)
-        case 'scanTo': return scanTo(build(def.sentinel), { skip: def.skip.map(build), orEOF: def.orEOF })
+        case 'scanTo': return scanTo(build(def.sentinel), {
+          skip: def.skip.map(build),
+          raw: def.raw,
+          orEOF: def.orEOF,
+          ...(def.recoverAt === undefined ? {} : { recoverAt: build(def.recoverAt) }),
+          ...(def.stopAt === undefined ? {} : { stopAt: build(def.stopAt) }),
+        })
         // Zero-width assertion with no coverage-bearing child; reuse it verbatim so
         // the rebuilt sequence still recognises the boundary marker.
         case 'adjacency': return parser

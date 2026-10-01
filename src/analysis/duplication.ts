@@ -397,7 +397,7 @@ function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
     case 'sepBy':     return `sepBy\u0000${d.min}\u0000${d.max ?? ''}\u0000${d.trailing ?? ''}`
     case 'dispatch':  return `dispatch\u0000${d.cases.map(c => JSON.stringify(c.keys)).join('\u0002')}\u0000${d.otherwise !== undefined}`
     case 'expect':    return `expect\u0000${d.label ?? ''}\u0000${d.expected.join('\u0001')}`
-    case 'scanTo':    return `scanTo\u0000${d.raw}\u0000${d.orEOF}`
+    case 'scanTo':    return `scanTo\u0000${d.raw}\u0000${d.orEOF}\u0000${d.recoverAt !== undefined}\u0000${d.stopAt !== undefined}`
     case 'guard':     return `guard\u0000${fnKey(d.predSrc, d.predicate)}`
     case 'adjacency': return `adjacency\u0000${d.polarity}\u0000${d.kinds ? d.kinds.join(',') : ''}`
     case 'withCtx':   return `withCtx\u0000${d.extraSrc ?? safeJson(d.extra)}`
@@ -493,7 +493,12 @@ function segment(d: ParserDef, index: number): string {
     case 'field': return `field(${d.name})`
     case 'sepBy': return index === 0 ? 'sepBy.item' : 'sepBy.sep'
     case 'recover': return index === 0 ? 'recover.body' : 'recover.sentinel'
-    case 'scanTo': return index === 0 ? 'scanTo.sentinel' : `scanTo.skip[${index - 1}]`
+    case 'scanTo': {
+      if (index === 0) return 'scanTo.sentinel'
+      if (index <= d.skip.length) return `scanTo.skip[${index - 1}]`
+      if (d.recoverAt !== undefined && index === d.skip.length + 1) return 'scanTo.recoverAt'
+      return 'scanTo.stopAt'
+    }
     default: return d.tag
   }
 }

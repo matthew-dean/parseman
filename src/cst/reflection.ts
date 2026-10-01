@@ -58,7 +58,12 @@ function childrenOf(def: ParserDef): readonly Combinator<unknown>[] {
     case 'sepBy':
       return [def.parser, def.separator]
     case 'scanTo':
-      return [def.sentinel, ...def.skip]
+      return [
+        def.sentinel,
+        ...def.skip,
+        ...(def.recoverAt === undefined ? [] : [def.recoverAt]),
+        ...(def.stopAt === undefined ? [] : [def.stopAt]),
+      ]
     case 'routed':
       return def.fallback ? [def.fallback] : []
     case 'literal':

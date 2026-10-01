@@ -33,6 +33,27 @@ export type ScanToOptions = {
    */
   orEOF?: boolean
   /**
+   * A delimiter owned by the surrounding grammar that may terminate an
+   * unfinished scan. Unlike putting that delimiter in `sentinel`, `scanTo`
+   * keeps looking for a real sentinel so the same delimiter may appear in a
+   * complete payload.
+   *
+   * This mode is intended for paired sentinels such as quotes. Once a recovery
+   * point has been seen, later sentinels are counted as alternating close/open
+   * delimiters. At the next outer recovery point (or EOF), an odd count accepts
+   * the first sentinel; an even count returns the first recovery point. This
+   * preserves complete payloads such as `` `let x = 1; x` `` without pairing an
+   * unfinished payload with a later construct's opening delimiter.
+   */
+  recoverAt?: Combinator<unknown>
+  /**
+   * An unconditional recovery boundary. The scan resolves at this position
+   * using the same paired-sentinel decision as EOF. Use this for boundaries
+   * that must never be crossed while looking for a closing sentinel, such as a
+   * line end after an escape character.
+   */
+  stopAt?: Combinator<unknown>
+  /**
    * `balanced()` only. Make an unmatched close a genuine FAILURE instead of a
    * recovered one.
    *
@@ -97,7 +118,7 @@ export function resolveScanSkip(
  */
 export function scanTo(
   sentinel: Combinator<unknown>,
-  { skip, raw = false, orEOF = false }: ScanToOptions = {},
+  { skip, raw = false, orEOF = false, recoverAt, stopAt }: ScanToOptions = {},
 ): Combinator<string> {
   const meta: ParserMeta = {
     firstSet: any(),
@@ -109,9 +130,18 @@ export function scanTo(
   return {
     _tag: 'scanTo',
     _meta: meta,
-    _def: { tag: 'scanTo', sentinel, skip: explicitSkip, raw, orEOF },
+    _def: {
+      tag: 'scanTo', sentinel, skip: explicitSkip, raw, orEOF,
+      ...(recoverAt === undefined ? {} : { recoverAt }),
+      ...(stopAt === undefined ? {} : { stopAt }),
+    },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       let cur = pos
+      let recovery = -1
+      let firstSentinel = -1
+      let sentinelCount = 0
+      let recoveryErrorCount = -1
+      let sentinelErrorCount = -1
       // Fold grammar-level ambient trivia + scanSkip into the effective skippers.
       const skip = resolveScanSkip(explicitSkip, raw, ctx)
 
@@ -133,13 +163,66 @@ export function scanTo(
         }
       }
 
+      const succeed = (end: number): ParseResult<string> => {
+        if (ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, end)
+        emit(end)
+        return { ok: true, value: input.slice(pos, end), span: { start: pos, end } }
+      }
+
+      const recoveredEnd = () => {
+        const acceptSentinel = firstSentinel >= 0 && (sentinelCount & 1) === 1
+        const errors = ctx._errors
+        if (errors !== undefined) {
+          const keep = acceptSentinel ? sentinelErrorCount : recoveryErrorCount
+          if (keep >= 0 && errors.length > keep) errors.length = keep
+        }
+        return acceptSentinel ? firstSentinel : recovery
+      }
+
       while (cur < input.length) {
         // Check sentinel — if it matches here, stop and return consumed text.
         const s = sentinel.parse(input, cur, probeCtx)
         if (s.ok) {
-          if (ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, cur)
-          emit(cur)
-          return { ok: true, value: input.slice(pos, cur), span: { start: pos, end: cur } }
+          if (recovery < 0) return succeed(cur)
+          if (s.span.end <= cur) {
+            throw new TypeError('scanTo recovery requires a sentinel that consumes input')
+          }
+          if (firstSentinel < 0) {
+            firstSentinel = cur
+            sentinelErrorCount = ctx._errors?.length ?? -1
+          }
+          sentinelCount++
+          cur = s.span.end
+          continue
+        }
+
+        if (stopAt !== undefined) {
+          const stop = stopAt.parse(input, cur, probeCtx)
+          if (stop.ok) {
+            if (recovery < 0) {
+              recovery = cur
+              recoveryErrorCount = ctx._errors?.length ?? -1
+            }
+            return succeed(recoveredEnd())
+          }
+        }
+
+        if (recoverAt !== undefined) {
+          const recover = recoverAt.parse(input, cur, probeCtx)
+          if (recover.ok) {
+            if (recover.span.end <= cur) {
+              throw new TypeError('scanTo recoverAt must consume input')
+            }
+            if (recovery < 0) {
+              recovery = cur
+              recoveryErrorCount = ctx._errors?.length ?? -1
+            }
+            if (firstSentinel >= 0 && (sentinelCount & 1) === 1) {
+              return succeed(firstSentinel)
+            }
+            cur = recover.span.end
+            continue
+          }
         }
 
         // Try each skipper in order; take first that advances.
@@ -158,10 +241,9 @@ export function scanTo(
       }
 
       // Reached EOF without finding sentinel.
+      if (recovery >= 0) return succeed(recoveredEnd())
       if (orEOF) {
-        if (ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, cur)
-        emit(cur)
-        return { ok: true, value: input.slice(pos, cur), span: { start: pos, end: cur } }
+        return succeed(cur)
       }
       const sentDef = sentinel._def
       const expected = sentDef.tag === 'literal' ? [JSON.stringify(sentDef.value)] : ['sentinel']

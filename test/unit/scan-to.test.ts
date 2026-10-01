@@ -73,6 +73,47 @@ describe('scanTo — basics', () => {
   })
 })
 
+describe('scanTo — paired-sentinel recovery', () => {
+  const boundary = choice(literal(';'), literal('{'), literal('}'))
+  const jsString = sequence(literal("'"), scanTo(literal("'"), { raw: true }), literal("'"))
+  const body = scanTo(literal('`'), {
+    recoverAt: boundary,
+    stopAt: literal('\\\n'),
+    skip: [jsString, balanced('(', ')', { strict: true }), balanced('{', '}', { strict: true })],
+  })
+
+  it('keeps a complete payload containing a recovery delimiter', () => {
+    expect(parseValue(body, 'let x = 1; x`;')).toBe('let x = 1; x')
+  })
+
+  it('keeps a complete object before an outer block delimiter', () => {
+    expect(parseValue(body, '{ answer: 42 }` {')).toBe('{ answer: 42 }')
+  })
+
+  it('recovers an unfinished payload before a later complete payload', () => {
+    const result = parse(body, 'bad; second: `good`;')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value).toBe('bad')
+      expect(result.span).toEqual({ start: 0, end: 3 })
+    }
+  })
+
+  it('accepts the first sentinel when later complete payloads preserve odd parity', () => {
+    expect(parseValue(body, 'one; still one` next: `two`;')).toBe('one; still one')
+  })
+
+  it('does not treat recovery delimiters inside a skipper as outer boundaries', () => {
+    expect(parseValue(body, 'fn(\';\'); done`;')).toBe("fn(';'); done")
+  })
+
+  it('stops at a hard boundary without crossing the following line', () => {
+    const result = parse(body, 'unfinished\\\nnext: `value`;')
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toBe('unfinished')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Skip patterns
 // ---------------------------------------------------------------------------
