@@ -493,6 +493,21 @@ describe('rebuildCombinator — substitutions stranded inside a frozen subtree',
     expect(unapplied).toEqual([target])
   })
 
+  it('reports targets buried in scanTo recovery boundaries as unapplied', () => {
+    const recovery = literal(';')
+    const stop = literal('}')
+    const s = scanTo(literal('`'), { recoverAt: recovery, stopAt: stop })
+    const { frozen, unapplied } = rebuildCombinator(
+      named(sequence(asC(s)), 'Doc'),
+      new Map([
+        [recovery, asC(literal(','))],
+        [stop, asC(literal(']'))],
+      ]),
+    )
+    expect(frozen).toEqual([{ tag: 'scanTo', rule: 'Doc' }])
+    expect(unapplied).toEqual([recovery, stop])
+  })
+
   it('lists a stranded target once, however many times it occurs inside the frozen subtree', () => {
     const target = literal('deep')
     const g = withCtx({ k: 1 }, sequence(target, target))

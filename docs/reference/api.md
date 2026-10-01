@@ -999,7 +999,13 @@ Consume text up to (not including) `sentinel`; return it. Skips the grammar's am
 `trivia` **and** `scanSkip` opaque units (strings/brackets) by default, so a sentinel
 hidden in a string or comment is never matched. `opts.skip` declares EXTRA opaque
 regions for this call (extends the ambient set); `opts.raw` opts out of all ambient
-skipping (raw byte walk); `opts.orEOF` makes EOF a success.
+skipping (raw byte walk); `opts.orEOF` makes EOF a success. `opts.recoverAt`
+remembers the first surrounding-grammar boundary while continuing to seek a real
+paired sentinel. At the next outer boundary or EOF, sentinel parity chooses the
+first sentinel for a complete payload or the remembered boundary for an unfinished
+one. `opts.stopAt` ends that speculative search at a hard boundary. Opaque `skip`
+regions take precedence over both recovery options, so delimiters inside a skipped
+string, comment, or balanced group remain payload.
 
 ### `balanced(open, close, opts?)`
 

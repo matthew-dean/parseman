@@ -5,7 +5,7 @@
  * balanced(open, close, { skip }) — match a balanced delimiter pair.
  */
 import { describe, it, expect } from 'vitest'
-import { literal, regex, sequence, choice, transform, parse, parser, trivia } from '../../src/index.ts'
+import { literal, regex, sequence, choice, transform, parse, parser, trivia, run, expect as expected } from '../../src/index.ts'
 import { scanTo, balanced } from '../../src/index.ts'
 import { parseValue } from '../helpers/parse-result.ts'
 
@@ -105,6 +105,23 @@ describe('scanTo — paired-sentinel recovery', () => {
 
   it('does not treat recovery delimiters inside a skipper as outer boundaries', () => {
     expect(parseValue(body, 'fn(\';\'); done`;')).toBe("fn(';'); done")
+  })
+
+  it('lets an opaque skipper win when it shares a recovery opener', () => {
+    expect(parseValue(body, 'start; { value: `inner` } end`;'))
+      .toBe('start; { value: `inner` } end')
+  })
+
+  it('rolls back errors produced after the retained sentinel', () => {
+    const diagnosticSkipper = sequence(literal('('), expected(literal(')')))
+    const source = scanTo(literal('`'), {
+      recoverAt: literal(';'),
+      skip: [diagnosticSkipper],
+    })
+    const result = run(source, 'one; done`(;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('one; done')
+    expect(result.errors).toEqual([])
   })
 
   it('stops at a hard boundary without crossing the following line', () => {

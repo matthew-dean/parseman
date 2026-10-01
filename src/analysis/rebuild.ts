@@ -105,7 +105,7 @@ function subtreeContains(p: Combinator<unknown>, targets: ReadonlySet<Combinator
     const kids: Combinator<unknown>[] = []
     if (Array.isArray(rec.parsers)) kids.push(...(rec.parsers as Combinator<unknown>[]))
     if (Array.isArray(rec.skip)) kids.push(...(rec.skip as Combinator<unknown>[]))
-    for (const k of ['parser', 'main', 'skipped', 'separator', 'sentinel', 'selector', 'otherwise', 'fallback', 'triviaParser'])
+    for (const k of ['parser', 'main', 'skipped', 'separator', 'sentinel', 'recoverAt', 'stopAt', 'selector', 'otherwise', 'fallback', 'triviaParser'])
       if (rec[k]) kids.push(rec[k] as Combinator<unknown>)
     if (d.tag === 'dispatch') {
       for (const c2 of d.cases) kids.push(c2.parser)

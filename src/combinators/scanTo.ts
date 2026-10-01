@@ -196,6 +196,22 @@ export function scanTo(
           continue
         }
 
+        // Try each skipper in order; take first that advances.
+        let advanced = false
+        for (const skipper of skip) {
+          const r = skipper.parse(input, cur, probeCtx)
+          if (r.ok && r.span.end > cur) {
+            cur = r.span.end
+            advanced = true
+            break
+          }
+        }
+
+        // Opaque units protect recovery boundaries just as they protect the
+        // sentinel. A `{` owned by balanced('{', '}') is payload, not an outer
+        // recovery point, even when recoverAt can also begin with `{`.
+        if (advanced) continue
+
         if (stopAt !== undefined) {
           const stop = stopAt.parse(input, cur, probeCtx)
           if (stop.ok) {
@@ -218,26 +234,15 @@ export function scanTo(
               recoveryErrorCount = ctx._errors?.length ?? -1
             }
             if (firstSentinel >= 0 && (sentinelCount & 1) === 1) {
-              return succeed(firstSentinel)
+              return succeed(recoveredEnd())
             }
             cur = recover.span.end
             continue
           }
         }
 
-        // Try each skipper in order; take first that advances.
-        let advanced = false
-        for (const skipper of skip) {
-          const r = skipper.parse(input, cur, probeCtx)
-          if (r.ok && r.span.end > cur) {
-            cur = r.span.end
-            advanced = true
-            break
-          }
-        }
-
         // Nothing matched — consume one character and continue.
-        if (!advanced) cur++
+        cur++
       }
 
       // Reached EOF without finding sentinel.
