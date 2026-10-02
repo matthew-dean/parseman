@@ -3,6 +3,19 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.51.0 — unreleased
+
+- Add `recoverAt` and `stopAt` options to `scanTo()` for paired-delimiter error
+  recovery. `recoverAt` records surrounding grammar checkpoints while preserving
+  complete payloads that contain the same delimiter; `stopAt` defines an
+  unconditional boundary that takes priority over opaque skippers. Interpreter,
+  macro, table, serialized IR, analysis, reflection, and coverage paths carry the
+  options identically.
+
+- Keep recovery scans opaque and diagnostic-safe: delimiters inside strings,
+  comments, or balanced groups do not become outer recovery points, and failed
+  speculative skippers cannot leak diagnostics into a successful recovered parse.
+
 ## 0.50.7 — 2026-09-20
 
 - Fix table lowering's first-set analysis inside `parser({ trivia })` scopes so
