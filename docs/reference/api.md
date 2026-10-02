@@ -1015,6 +1015,11 @@ Match one balanced delimited region — **string** delimiters — including the 
 counting nested same-type pairs. Skips the grammar's ambient `scanSkip` opaque units in
 its interior, so a delimiter hidden inside a string doesn't close the balance early.
 `opts.skip` declares EXTRA regions (extends the ambient set); `opts.raw` opts out.
+By default, a missing `close` is tolerant: the balance records an expected-token
+diagnostic and succeeds through the recovered span. With `opts.strict: true`, a
+missing close fails the whole balance and rolls back to `open`, so an enclosing
+`choice()`, `not()`, or opaque scan skipper can reject that arm. Nested same-type
+groups inherit strictness.
 
 Under a `node()` it contributes **one** CST leaf — the whole matched source slice —
 exactly like `scanTo`. Changed in 0.47.0: it previously contributed its shredded

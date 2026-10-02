@@ -3,6 +3,18 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.51.1 — 2026-10-02
+
+- Preserve `strict: true` on ambient `balanced()` skippers when `compose()`
+  serializes and reconstructs a grammar. The missing option made emitted grammars
+  recover from an unmatched nested delimiter where the interpreter failed the
+  skipper, allowing that skipper to consume an outer `scanTo()` recovery boundary.
+  Composed and interpreted grammars now agree, including when strict balancing is
+  combined with per-call and ambient skip rules.
+
+- Re-anchor the grammar-density and broad-workload release comparisons to 0.51.0
+  (`b2a68c1`), the immediately preceding stable release. Peak baselines are unchanged.
+
 ## 0.51.0 — 2026-10-01
 
 - Add `recoverAt` and `stopAt` options to `scanTo()` for paired-delimiter error
