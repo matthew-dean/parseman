@@ -81,6 +81,19 @@ describe('compose() keeps ambient scanSkip inside a balanced() interior', () => 
     }
   })
 
+  it('strict survives the round trip alongside per-call and ambient skip', () => {
+    const backtick = sequence(literal('`'), regex(/[^`]*/), literal('`'))
+    const strict = balanced('(', ')', { skip: [backtick], strict: true })
+    const rmStrict = Object.entries(rules({ scanSkip: SCAN_SKIP }, () => ({ Group: strict })))
+    const irStrict = serializeRuleMap(rmStrict as never, SCAN_SKIP as never)
+    expect(irStrict).not.toBeNull()
+    expect(irStrict!).toContain('strict: true')
+
+    const composed = lower(evalRuleMapIR(irStrict!))
+    expect(composed('(`)` e)', 0, {}).ok).toBe(true)
+    expect(composed('(unfinished', 0, {}).ok).toBe(false)
+  })
+
   it('raw: true stays structural — it opts out of ambient resolution', () => {
     const raw = balanced('(', ')', { raw: true })
     const rmRaw = Object.entries(rules({ scanSkip: SCAN_SKIP }, () => ({ Group: raw })))
