@@ -138,11 +138,6 @@ export function scanTo(
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       let cur = pos
-      let recovery = -1
-      let firstSentinel = -1
-      let sentinelCount = 0
-      let recoveryErrorCount = -1
-      let sentinelErrorCount = -1
       // Fold grammar-level ambient trivia + scanSkip into the effective skippers.
       const skip = resolveScanSkip(explicitSkip, raw, ctx)
 
@@ -163,6 +158,47 @@ export function scanTo(
           pushCstLeaf(ctx, leaf)
         }
       }
+
+      // Keep ordinary scanTo on its established hot path. Recovery adds probes,
+      // parity, and diagnostic checkpoints inside the byte loop; selecting that
+      // machinery at construction scope would tax every CSS prelude scan even
+      // though almost all scanTo sites use neither recovery option.
+      if (recoverAt === undefined && stopAt === undefined) {
+        while (cur < input.length) {
+          const s = sentinel.parse(input, cur, probeCtx)
+          if (s.ok) {
+            if (ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, cur)
+            emit(cur)
+            return { ok: true, value: input.slice(pos, cur), span: { start: pos, end: cur } }
+          }
+
+          let advanced = false
+          for (const skipper of skip) {
+            const r = skipper.parse(input, cur, probeCtx)
+            if (r.ok && r.span.end > cur) {
+              cur = r.span.end
+              advanced = true
+              break
+            }
+          }
+          if (!advanced) cur++
+        }
+
+        if (orEOF) {
+          if (ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, cur)
+          emit(cur)
+          return { ok: true, value: input.slice(pos, cur), span: { start: pos, end: cur } }
+        }
+        const sentDef = sentinel._def
+        const expected = sentDef.tag === 'literal' ? [JSON.stringify(sentDef.value)] : ['sentinel']
+        return { ok: false, expected, span: { start: pos, end: cur } }
+      }
+
+      let recovery = -1
+      let firstSentinel = -1
+      let sentinelCount = 0
+      let recoveryErrorCount = -1
+      let sentinelErrorCount = -1
 
       const succeed = (end: number): ParseResult<string> => {
         if (ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, end)

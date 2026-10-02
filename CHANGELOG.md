@@ -3,14 +3,15 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.51.0 — unreleased
+## 0.51.0 — 2026-10-01
 
 - Add `recoverAt` and `stopAt` options to `scanTo()` for paired-delimiter error
   recovery. `recoverAt` records surrounding grammar checkpoints while preserving
   complete payloads that contain the same delimiter; `stopAt` defines an
   unconditional boundary that takes priority over opaque skippers. Interpreter,
   macro, table, serialized IR, analysis, reflection, and coverage paths carry the
-  options identically.
+  options identically. Sites that use neither recovery option retain the existing
+  scan loop, so ordinary grammar scans do not pay the recovery probes per byte.
 
 - Keep recovery scans opaque and diagnostic-safe: delimiters inside strings,
   comments, or balanced groups do not become outer recovery points, and failed
