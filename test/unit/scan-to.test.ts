@@ -176,6 +176,26 @@ describe('scanTo — paired-sentinel recovery', () => {
     }
   })
 
+  it('drops skipper errors recorded beyond an interior hard stop', () => {
+    const diagnosticWhitespace = sequence(
+      literal(' '),
+      expected(literal('?')),
+      literal('\n'),
+    )
+    const skipperResult = run(diagnosticWhitespace, ' \n')
+    expect(skipperResult.ok).toBe(true)
+    expect(skipperResult.errors).toHaveLength(1)
+
+    const source = scanTo(literal('`'), {
+      stopAt: literal('\n'),
+      skip: [diagnosticWhitespace],
+    })
+    const result = run(source, 'unfinished \nnext: `value`;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('unfinished ')
+    expect(result.errors).toEqual([])
+  })
+
   it('rolls back errors from a failed hard-stop probe', () => {
     const diagnosticStop = sequence(
       literal('!'),

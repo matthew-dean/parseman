@@ -267,6 +267,13 @@ export function scanTo(
                 const stopErrorCount = ctx._errors?.length ?? -1
                 const stop = stopAt.parse(input, stopPos, probeCtx)
                 if (stop.ok) {
+                  // The skipper parsed beyond a boundary that should have
+                  // pre-empted it, so none of its speculative diagnostics may
+                  // survive into the shorter successful result.
+                  const errors = ctx._errors
+                  if (errors !== undefined && errorCount >= 0 && errors.length > errorCount) {
+                    errors.length = errorCount
+                  }
                   if (recovery < 0) {
                     recovery = stopPos
                     recoveryErrorCount = ctx._errors?.length ?? -1
