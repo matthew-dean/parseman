@@ -107,7 +107,7 @@ export type ParserDef =
   // `scanSkip` are PREPENDED at parse/compile time (explicit skip EXTENDS the
   // ambient default). `raw`: hard opt-out — skip nothing ambiently, restoring the
   // pre-ambient raw byte-walk.
-  | { tag: 'scanTo';   sentinel: Combinator<unknown>; skip: Combinator<unknown>[]; raw: boolean; orEOF: boolean }
+  | { tag: 'scanTo';   sentinel: Combinator<unknown>; skip: Combinator<unknown>[]; raw: boolean; orEOF: boolean; recoverAt?: Combinator<unknown>; stopAt?: Combinator<unknown> }
   | { tag: 'keywords'; words: readonly string[]; caseInsensitive: boolean; boundary: string | undefined }
   | { tag: 'unknown' }
 

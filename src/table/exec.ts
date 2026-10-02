@@ -1666,7 +1666,13 @@ function makeDriver(
     const sentDef: ParserDef | undefined = typeof s.sent === 'string'
       ? { tag: 'literal', value: s.sent, caseInsensitive: false } as unknown as ParserDef
       : undefined
-    return scanTo(subtreeComb(s.sentinel!, sentDef), { skip, raw, orEOF: (s.flags & 2) !== 0 }) as Combinator<unknown>
+    return scanTo(subtreeComb(s.sentinel!, sentDef), {
+      skip,
+      raw,
+      orEOF: (s.flags & 2) !== 0,
+      ...(s.recoverAt === undefined ? {} : { recoverAt: subtreeComb(s.recoverAt) }),
+      ...(s.stopAt === undefined ? {} : { stopAt: subtreeComb(s.stopAt) }),
+    }) as Combinator<unknown>
   })
 
   const scanSkip: readonly (readonly Combinator<unknown>[])[] =

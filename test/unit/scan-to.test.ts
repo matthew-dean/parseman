@@ -5,7 +5,7 @@
  * balanced(open, close, { skip }) — match a balanced delimiter pair.
  */
 import { describe, it, expect } from 'vitest'
-import { literal, regex, sequence, choice, transform, parse, parser, trivia } from '../../src/index.ts'
+import { literal, regex, sequence, choice, transform, parse, parser, trivia, run, expect as expected } from '../../src/index.ts'
 import { scanTo, balanced } from '../../src/index.ts'
 import { parseValue } from '../helpers/parse-result.ts'
 
@@ -70,6 +70,163 @@ describe('scanTo — basics', () => {
     const r = parse(p, 'line1\nline2\nEND')
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.value).toBe('line1\nline2\n')
+  })
+})
+
+describe('scanTo — paired-sentinel recovery', () => {
+  const boundary = choice(literal(';'), literal('{'), literal('}'))
+  const jsString = sequence(literal("'"), scanTo(literal("'"), { raw: true }), literal("'"))
+  const body = scanTo(literal('`'), {
+    recoverAt: boundary,
+    stopAt: literal('\\\n'),
+    skip: [jsString, balanced('(', ')', { strict: true }), balanced('{', '}', { strict: true })],
+  })
+
+  it('keeps a complete payload containing a recovery delimiter', () => {
+    expect(parseValue(body, 'let x = 1; x`;')).toBe('let x = 1; x')
+  })
+
+  it('keeps a complete object before an outer block delimiter', () => {
+    expect(parseValue(body, '{ answer: 42 }` {')).toBe('{ answer: 42 }')
+  })
+
+  it('recovers an unfinished payload before a later complete payload', () => {
+    const result = parse(body, 'bad; second: `good`;')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value).toBe('bad')
+      expect(result.span).toEqual({ start: 0, end: 3 })
+    }
+  })
+
+  it('accepts the first sentinel when later complete payloads preserve odd parity', () => {
+    expect(parseValue(body, 'one; still one` next: `two`;')).toBe('one; still one')
+  })
+
+  it('does not treat recovery delimiters inside a skipper as outer boundaries', () => {
+    expect(parseValue(body, 'fn(\';\'); done`;')).toBe("fn(';'); done")
+  })
+
+  it('lets an opaque skipper win when it shares a recovery opener', () => {
+    expect(parseValue(body, 'start; { value: `inner` } end`;'))
+      .toBe('start; { value: `inner` } end')
+  })
+
+  it('rolls back errors produced after the retained sentinel', () => {
+    const diagnosticSkipper = sequence(literal('('), expected(literal(')')))
+    const source = scanTo(literal('`'), {
+      recoverAt: literal(';'),
+      skip: [diagnosticSkipper],
+    })
+    const result = run(source, 'one; done`(;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('one; done')
+    expect(result.errors).toEqual([])
+  })
+
+  it('rolls back errors from a failed skipper after it recorded a diagnostic', () => {
+    const diagnosticSkipper = sequence(
+      literal('('),
+      expected(literal(')')),
+      literal('!'),
+    )
+    const skipperResult = run(diagnosticSkipper, '(;')
+    expect(skipperResult.ok).toBe(false)
+    expect(skipperResult.errors).toHaveLength(1)
+
+    const source = scanTo(literal('`'), {
+      recoverAt: choice(literal(';'), literal('(')),
+      skip: [diagnosticSkipper],
+    })
+    const result = run(source, 'fn(; next: `good`;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('fn')
+    expect(result.errors).toEqual([])
+  })
+
+  it('stops at a hard boundary without crossing the following line', () => {
+    const result = parse(body, 'unfinished\\\nnext: `value`;')
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toBe('unfinished')
+  })
+
+  it('lets a hard stop win over an overlapping skipper', () => {
+    const source = scanTo(literal('`'), {
+      stopAt: literal('\n'),
+      skip: [regex(/\s+/)],
+    })
+    const result = parse(source, 'unfinished\nnext: `value`;')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value).toBe('unfinished')
+      expect(result.span).toEqual({ start: 0, end: 10 })
+    }
+  })
+
+  it('rolls back errors from a failed hard-stop probe', () => {
+    const diagnosticStop = sequence(
+      literal('!'),
+      expected(literal('?')),
+      literal('#'),
+    )
+    const stopResult = run(diagnosticStop, '!;')
+    expect(stopResult.ok).toBe(false)
+    expect(stopResult.errors).toHaveLength(1)
+
+    const source = scanTo(literal('`'), {
+      recoverAt: literal(';'),
+      stopAt: diagnosticStop,
+    })
+    const result = run(source, 'one! still one`;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('one! still one')
+    expect(result.errors).toEqual([])
+  })
+
+  it('rolls back errors from a failed recovery-boundary probe', () => {
+    const diagnosticBoundary = sequence(
+      literal('!'),
+      expected(literal('?')),
+      literal('#'),
+    )
+    const boundaryResult = run(diagnosticBoundary, '!;')
+    expect(boundaryResult.ok).toBe(false)
+    expect(boundaryResult.errors).toHaveLength(1)
+
+    const source = scanTo(literal('`'), { recoverAt: diagnosticBoundary })
+    const result = run(source, 'one! still one`;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('one! still one')
+    expect(result.errors).toEqual([])
+  })
+
+  it('rolls back errors emitted by successful recovery probes', () => {
+    const diagnosticSentinel = sequence(literal('`'), expected(literal('?')))
+    const sentinelResult = run(
+      scanTo(diagnosticSentinel, { recoverAt: literal(';') }),
+      'one; still one`',
+    )
+    expect(sentinelResult.ok).toBe(true)
+    expect(sentinelResult.value).toBe('one; still one')
+    expect(sentinelResult.errors).toEqual([])
+
+    const diagnosticBoundary = sequence(literal(';'), expected(literal('?')))
+    const boundaryResult = run(
+      scanTo(literal('`'), { recoverAt: diagnosticBoundary }),
+      'one; still one`',
+    )
+    expect(boundaryResult.ok).toBe(true)
+    expect(boundaryResult.value).toBe('one; still one')
+    expect(boundaryResult.errors).toEqual([])
+
+    const diagnosticStop = sequence(literal('\n'), expected(literal('?')))
+    const stopResult = run(
+      scanTo(literal('`'), { stopAt: diagnosticStop }),
+      'unfinished\nnext: `value`;',
+    )
+    expect(stopResult.ok).toBe(true)
+    expect(stopResult.value).toBe('unfinished')
+    expect(stopResult.errors).toEqual([])
   })
 })
 

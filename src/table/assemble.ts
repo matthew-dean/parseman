@@ -487,6 +487,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   for (const s of prog.scans ?? []) {
     for (const r of s.skip) labelExtraIps.push(r[0])
     if (s.sentinel !== undefined) labelExtraIps.push(s.sentinel[0])
+    if (s.recoverAt !== undefined) labelExtraIps.push(s.recoverAt[0])
+    if (s.stopAt !== undefined) labelExtraIps.push(s.stopAt[0])
   }
   for (const set of prog.scanSkip ?? []) for (const r of set) labelExtraIps.push(r[0])
   const closureLabels = computeSiteLabels(
@@ -3659,6 +3661,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     for (const s of prog.scans ?? []) {
       for (const r of s.skip) extraIps.push(r[0])
       if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
+      if (s.recoverAt !== undefined) extraIps.push(s.recoverAt[0])
+      if (s.stopAt !== undefined) extraIps.push(s.stopAt[0])
     }
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
     const roots = [...Object.values(prog.rules), ...extraIps]
@@ -3855,7 +3859,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const sentDef: ParserDef | undefined = typeof s.sent === 'string'
       ? { tag: 'literal', value: s.sent, caseInsensitive: false } as unknown as ParserDef
       : undefined
-    scansArr.push(scanTo(subtreeComb(s.sentinel!, sentDef), { skip, raw, orEOF: (s.flags & 2) !== 0 }) as Combinator<unknown>)
+    scansArr.push(scanTo(subtreeComb(s.sentinel!, sentDef), {
+      skip,
+      raw,
+      orEOF: (s.flags & 2) !== 0,
+      ...(s.recoverAt === undefined ? {} : { recoverAt: subtreeComb(s.recoverAt) }),
+      ...(s.stopAt === undefined ? {} : { stopAt: subtreeComb(s.stopAt) }),
+    }) as Combinator<unknown>)
   }
   const scans: readonly Combinator<unknown>[] = scansArr
 

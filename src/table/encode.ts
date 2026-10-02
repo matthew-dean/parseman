@@ -1005,6 +1005,8 @@ class Encoder {
         flags: (d.raw ? 1 : 0) | (d.orEOF ? 2 : 0),
         skip: d.skip.map(c => this.subtree(c)),
         sentinel: this.subtree(d.sentinel),
+        ...(d.recoverAt === undefined ? {} : { recoverAt: this.subtree(d.recoverAt) }),
+        ...(d.stopAt === undefined ? {} : { stopAt: this.subtree(d.stopAt) }),
         sent: sentDef.tag === 'literal' ? sentDef.value : null,
       }))
     }
@@ -1764,6 +1766,8 @@ class Encoder {
     const refs: SubtreeRef[] = []
     for (const s of this.scans) {
       if (s.sentinel !== undefined) refs.push(s.sentinel)
+      if (s.recoverAt !== undefined) refs.push(s.recoverAt)
+      if (s.stopAt !== undefined) refs.push(s.stopAt)
       refs.push(...s.skip)
     }
     for (const set of this.scanSkipSets) refs.push(...set)
@@ -1784,6 +1788,8 @@ class Encoder {
       ...s,
       skip: s.skip.map(res),
       ...(s.sentinel === undefined ? {} : { sentinel: res(s.sentinel) }),
+      ...(s.recoverAt === undefined ? {} : { recoverAt: res(s.recoverAt) }),
+      ...(s.stopAt === undefined ? {} : { stopAt: res(s.stopAt) }),
     }))
     this.scanSkipSets = this.scanSkipSets.map(set => set.map(res))
   }

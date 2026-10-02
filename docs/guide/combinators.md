@@ -1120,10 +1120,19 @@ opaque regions by default — `scanTo` two kinds, `balanced` one:
 | `skip: [...]` | Extra opaque units for *this* call. **Extends** (doesn't replace) what the combinator already skips ambiently — trivia + `scanSkip` for `scanTo`, `scanSkip` alone for `balanced`. |
 | `raw: true` | Hard opt-out: skip nothing ambiently — the pre-ambient raw byte walk. |
 | `orEOF: true` | *(scanTo only)* Reaching end-of-input without the sentinel succeeds, returning everything consumed. |
+| `recoverAt` | *(scanTo only)* Remember the first surrounding-grammar boundary while continuing to look for a real paired sentinel. At an outer boundary or EOF, an odd number of later sentinels accepts the first sentinel; an even number recovers at the remembered boundary. |
+| `stopAt` | *(scanTo only)* Stop speculative paired-sentinel recovery at this hard boundary. At the current scan position it is checked before opaque skippers; a skipper that began earlier remains opaque throughout its matched span. |
 
-The sentinel is always checked **before** any skipper, so a sentinel that also
-starts a skip region still wins. `balanced` consults ambient `scanSkip` only (not
-trivia) — its delimiters are structural.
+The sentinel is always checked first. A `stopAt` hard boundary is checked next,
+before any skipper; `recoverAt` remains behind opaque skippers so a delimiter in
+a string, comment, or balanced group remains payload. `balanced` consults ambient
+`scanSkip` only (not trivia) — its delimiters are structural.
+
+`recoverAt` handles removed or invalid delimited constructs without confusing a
+valid delimiter inside their payload with the enclosing language boundary. For
+example, a backtick scanner may recover at `;` while preserving the complete
+payload in `` `let x = 1; x` ``. Once recovery has begun, the sentinel must
+consume input; Parseman throws if a zero-width sentinel is used in this mode.
 
 **Gating:** both have an `any` first-set by nature, so a choice arm leading with
 either won't first-char-gate. That is often fine for an error-recovery fallback arm;

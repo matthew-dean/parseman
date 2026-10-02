@@ -25,7 +25,10 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
     case 'dispatch': return parserHasOwnFields(d.selector, seen) || d.cases.some(x => parserHasOwnFields(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => parserHasOwnFields(entry.parser, seen)) : false) || (d.otherwise ? parserHasOwnFields(d.otherwise, seen) : false)
     case 'sepBy': return parserHasOwnFields(d.parser, seen) || parserHasOwnFields(d.separator, seen)
     case 'grammar': return parserHasOwnFields(d.parser, seen) || (d.triviaParser ? parserHasOwnFields(d.triviaParser, seen) : false)
-    case 'scanTo': return parserHasOwnFields(d.sentinel, seen) || d.skip.some(x => parserHasOwnFields(x, seen))
+    case 'scanTo': return parserHasOwnFields(d.sentinel, seen)
+      || d.skip.some(x => parserHasOwnFields(x, seen))
+      || (d.recoverAt !== undefined && parserHasOwnFields(d.recoverAt, seen))
+      || (d.stopAt !== undefined && parserHasOwnFields(d.stopAt, seen))
     case 'recover': return parserHasOwnFields(d.parser, seen) || parserHasOwnFields(d.sentinel, seen)
     case 'routed': return d.fallback ? parserHasOwnFields(d.fallback, seen) : false
     case 'many':
@@ -151,7 +154,10 @@ export function parserEnablesTriviaCapture(p: Combinator<unknown>, seen: Set<Com
     case 'choice': return d.parsers.some(x => parserEnablesTriviaCapture(x, seen))
     case 'dispatch': return parserEnablesTriviaCapture(d.selector, seen) || d.cases.some(x => parserEnablesTriviaCapture(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => parserEnablesTriviaCapture(entry.parser, seen)) : false) || (d.otherwise ? parserEnablesTriviaCapture(d.otherwise, seen) : false)
     case 'sepBy': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.separator, seen)
-    case 'scanTo': return parserEnablesTriviaCapture(d.sentinel, seen) || d.skip.some(x => parserEnablesTriviaCapture(x, seen))
+    case 'scanTo': return parserEnablesTriviaCapture(d.sentinel, seen)
+      || d.skip.some(x => parserEnablesTriviaCapture(x, seen))
+      || (d.recoverAt !== undefined && parserEnablesTriviaCapture(d.recoverAt, seen))
+      || (d.stopAt !== undefined && parserEnablesTriviaCapture(d.stopAt, seen))
     case 'recover': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.sentinel, seen)
     case 'routed': return d.fallback ? parserEnablesTriviaCapture(d.fallback, seen) : false
     case 'many':
