@@ -1003,9 +1003,10 @@ skipping (raw byte walk); `opts.orEOF` makes EOF a success. `opts.recoverAt`
 remembers the first surrounding-grammar boundary while continuing to seek a real
 paired sentinel. At the next outer boundary or EOF, sentinel parity chooses the
 first sentinel for a complete payload or the remembered boundary for an unfinished
-one. `opts.stopAt` ends that speculative search at a hard boundary. Opaque `skip`
-regions take precedence over both recovery options, so delimiters inside a skipped
-string, comment, or balanced group remain payload.
+one. `opts.stopAt` ends that speculative search at a hard boundary and takes
+precedence over opaque skippers. Opaque `skip` regions take precedence over
+`recoverAt`, so recovery delimiters inside a skipped string, comment, or balanced
+group remain payload.
 
 ### `balanced(open, close, opts?)`
 

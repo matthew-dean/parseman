@@ -48,9 +48,10 @@ export type ScanToOptions = {
   recoverAt?: Combinator<unknown>
   /**
    * An unconditional recovery boundary. The scan resolves at this position
-   * using the same paired-sentinel decision as EOF. Use this for boundaries
-   * that must never be crossed while looking for a closing sentinel, such as a
-   * line end after an escape character.
+   * using the same paired-sentinel decision as EOF. A hard stop is checked
+   * before opaque skippers, so even an overlapping trivia or skip region cannot
+   * consume it. Use this for boundaries that must never be crossed while looking
+   * for a closing sentinel, such as a line end after an escape character.
    */
   stopAt?: Combinator<unknown>
   /**
@@ -196,6 +197,20 @@ export function scanTo(
           continue
         }
 
+        // A hard stop is stronger than opacity: when both begin here, the stop
+        // must win so a skipper cannot carry the scan across a boundary that the
+        // caller declared uncrossable. The sentinel still has first priority.
+        if (stopAt !== undefined) {
+          const stop = stopAt.parse(input, cur, probeCtx)
+          if (stop.ok) {
+            if (recovery < 0) {
+              recovery = cur
+              recoveryErrorCount = ctx._errors?.length ?? -1
+            }
+            return succeed(recoveredEnd())
+          }
+        }
+
         // Try each skipper in order; take first that advances.
         let advanced = false
         for (const skipper of skip) {
@@ -221,17 +236,6 @@ export function scanTo(
         // sentinel. A `{` owned by balanced('{', '}') is payload, not an outer
         // recovery point, even when recoverAt can also begin with `{`.
         if (advanced) continue
-
-        if (stopAt !== undefined) {
-          const stop = stopAt.parse(input, cur, probeCtx)
-          if (stop.ok) {
-            if (recovery < 0) {
-              recovery = cur
-              recoveryErrorCount = ctx._errors?.length ?? -1
-            }
-            return succeed(recoveredEnd())
-          }
-        }
 
         if (recoverAt !== undefined) {
           const recover = recoverAt.parse(input, cur, probeCtx)

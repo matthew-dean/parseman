@@ -1121,11 +1121,12 @@ opaque regions by default — `scanTo` two kinds, `balanced` one:
 | `raw: true` | Hard opt-out: skip nothing ambiently — the pre-ambient raw byte walk. |
 | `orEOF: true` | *(scanTo only)* Reaching end-of-input without the sentinel succeeds, returning everything consumed. |
 | `recoverAt` | *(scanTo only)* Remember the first surrounding-grammar boundary while continuing to look for a real paired sentinel. At an outer boundary or EOF, an odd number of later sentinels accepts the first sentinel; an even number recovers at the remembered boundary. |
-| `stopAt` | *(scanTo only)* Stop speculative paired-sentinel recovery at this hard boundary. |
+| `stopAt` | *(scanTo only)* Stop speculative paired-sentinel recovery at this hard boundary. Checked before opaque skippers, so an overlapping skip cannot cross it. |
 
-The sentinel is always checked **before** any skipper, so a sentinel that also
-starts a skip region still wins. `balanced` consults ambient `scanSkip` only (not
-trivia) — its delimiters are structural.
+The sentinel is always checked first. A `stopAt` hard boundary is checked next,
+before any skipper; `recoverAt` remains behind opaque skippers so a delimiter in
+a string, comment, or balanced group remains payload. `balanced` consults ambient
+`scanSkip` only (not trivia) — its delimiters are structural.
 
 `recoverAt` handles removed or invalid delimited constructs without confusing a
 valid delimiter inside their payload with the enclosing language boundary. For

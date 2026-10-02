@@ -209,7 +209,8 @@ The first recovery boundary is retained as a checkpoint while scanning ahead.
 If a real closing sentinel is confirmed, the complete payload is returned. If
 later sentinels form another complete pair, Parseman returns to the checkpoint
 instead of joining two separate constructs. `stopAt` prevents recovery from
-crossing a hard boundary such as an escaped line end.
+crossing a hard boundary such as an escaped line end, even when an opaque skipper
+also begins at that boundary.
 
 ### `balanced(open, close, opts?)`
 

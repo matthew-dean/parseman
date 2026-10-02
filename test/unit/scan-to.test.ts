@@ -124,10 +124,19 @@ describe('scanTo — paired-sentinel recovery', () => {
     expect(result.errors).toEqual([])
   })
 
-  it('rolls back errors from a failed strict skipper before recovering', () => {
+  it('rolls back errors from a failed skipper after it recorded a diagnostic', () => {
+    const diagnosticSkipper = sequence(
+      literal('('),
+      expected(literal(')')),
+      literal('!'),
+    )
+    const skipperResult = run(diagnosticSkipper, '(;')
+    expect(skipperResult.ok).toBe(false)
+    expect(skipperResult.errors).toHaveLength(1)
+
     const source = scanTo(literal('`'), {
       recoverAt: choice(literal(';'), literal('(')),
-      skip: [balanced('(', ')', { strict: true })],
+      skip: [diagnosticSkipper],
     })
     const result = run(source, 'fn(; next: `good`;')
     expect(result.ok).toBe(true)
@@ -139,6 +148,19 @@ describe('scanTo — paired-sentinel recovery', () => {
     const result = parse(body, 'unfinished\\\nnext: `value`;')
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.value).toBe('unfinished')
+  })
+
+  it('lets a hard stop win over an overlapping skipper', () => {
+    const source = scanTo(literal('`'), {
+      stopAt: literal('\n'),
+      skip: [regex(/\s+/)],
+    })
+    const result = parse(source, 'unfinished\nnext: `value`;')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value).toBe('unfinished')
+      expect(result.span).toEqual({ start: 0, end: 10 })
+    }
   })
 })
 
