@@ -48,10 +48,10 @@ export type ScanToOptions = {
   recoverAt?: Combinator<unknown>
   /**
    * An unconditional recovery boundary. The scan resolves at this position
-   * using the same paired-sentinel decision as EOF. A hard stop is checked
-   * before opaque skippers, so even an overlapping trivia or skip region cannot
-   * consume it. Use this for boundaries that must never be crossed while looking
-   * for a closing sentinel, such as a line end after an escape character.
+   * using the same paired-sentinel decision as EOF. A hard stop is checked at
+   * the current scan position before opaque skippers. A skipper that began at an
+   * earlier position remains opaque throughout its matched span. Use this for
+   * boundaries such as a line end after an escape character.
    */
   stopAt?: Combinator<unknown>
   /**
@@ -279,6 +279,7 @@ export function scanTo(
         if (advanced) continue
 
         if (recoverAt !== undefined) {
+          const errorCount = ctx._errors?.length ?? -1
           const recover = recoverAt.parse(input, cur, probeCtx)
           if (recover.ok) {
             if (recover.span.end <= cur) {
@@ -293,6 +294,10 @@ export function scanTo(
             }
             cur = recover.span.end
             continue
+          }
+          const errors = ctx._errors
+          if (errors !== undefined && errorCount >= 0 && errors.length > errorCount) {
+            errors.length = errorCount
           }
         }
 

@@ -9,7 +9,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes } from '../../bench/table-grammars.ts'
-import { balanced, choice, keywords, literal, many, node, optional, peek, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
+import { balanced, choice, expect as expectCombinator, keywords, literal, many, node, optional, peek, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
 import type { TableProgram } from '../../src/table/program.ts'
 
 /**
@@ -554,13 +554,18 @@ function objectFromPairs(pairs) {
   })
 
   it('scanTo() emits paired-sentinel recovery and hard-stop subtrees', async () => {
+    const diagnosticBoundary = sequence(
+      literal('!'),
+      expectCombinator(literal('?')),
+      literal('#'),
+    )
     const nextDeclaration = sequence(
       literal(';'),
       regex(/[ \t\n\r\f]*/),
       peek(sequence(regex(/[a-z-]+/), literal(':'))),
     )
     const source = scanTo(literal('`'), {
-      recoverAt: choice(literal(';'), literal('{'), literal('}'), literal(')')),
+      recoverAt: choice(literal(';'), literal('{'), literal('}'), literal(')'), diagnosticBoundary),
       stopAt: choice(literal('\\\n'), nextDeclaration),
       skip: [balanced('{', '}', { strict: true })],
     })
@@ -574,6 +579,7 @@ function objectFromPairs(pairs) {
       'bad; second: `good`;',
       'function);\n  calc-value: calc(`calc);',
       'fn(; next: `good`;',
+      'one! still one`;',
       'unfinished\\\nnext: `value`;',
     ]) {
       expect(outcome(memory.Doc, input), `memory ${input}`).toBe(outcome(source, input))

@@ -182,6 +182,23 @@ describe('scanTo — paired-sentinel recovery', () => {
     expect(result.value).toBe('one! still one')
     expect(result.errors).toEqual([])
   })
+
+  it('rolls back errors from a failed recovery-boundary probe', () => {
+    const diagnosticBoundary = sequence(
+      literal('!'),
+      expected(literal('?')),
+      literal('#'),
+    )
+    const boundaryResult = run(diagnosticBoundary, '!;')
+    expect(boundaryResult.ok).toBe(false)
+    expect(boundaryResult.errors).toHaveLength(1)
+
+    const source = scanTo(literal('`'), { recoverAt: diagnosticBoundary })
+    const result = run(source, 'one! still one`;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('one! still one')
+    expect(result.errors).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------

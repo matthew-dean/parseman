@@ -1918,6 +1918,24 @@ describe('derived lexical-token families', () => {
     }
   })
 
+  it('catalogues scanTo recovery-boundary terminals', () => {
+    const sentinel = literal('`')
+    const recoverAt = literal(';')
+    const stopAt = literal('\n')
+    const value = scanTo(sentinel, { recoverAt, stopAt })
+
+    const primitiveKernels = collectAlphabet([value])
+    expect(primitiveKernels.originOf.has(
+      primitiveKernels.byKey.get('L\u0000`\u0000')!,
+    )).toBe(true)
+    expect(primitiveKernels.originOf.has(
+      primitiveKernels.byKey.get('L\u0000;\u0000')!,
+    )).toBe(true)
+    expect(primitiveKernels.originOf.has(
+      primitiveKernels.byKey.get('L\u0000\n\u0000')!,
+    )).toBe(true)
+  })
+
   it('resolves a lazy selector to the existing token family without minting a twin', () => {
     const identOrFunction = token(sequence(regex(/[a-z]+/), optional(literal('('))))
     const selector = ref<string>()

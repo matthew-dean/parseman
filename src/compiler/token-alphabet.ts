@@ -1319,7 +1319,7 @@ export function tokenChildren(
   const out: Combinator<unknown>[] = []
   const push = (v: Combinator<unknown> | undefined): void => { if (v !== undefined) out.push(v) }
   const rec = d as unknown as Record<string, unknown>
-  for (const k of ['parser', 'main', 'skipped', 'separator', 'selector', 'sentinel', 'fallback', 'otherwise', 'triviaParser']) {
+  for (const k of ['parser', 'main', 'skipped', 'separator', 'selector', 'sentinel', 'recoverAt', 'stopAt', 'fallback', 'otherwise', 'triviaParser']) {
     const v = rec[k]
     if (v !== null && typeof v === 'object' && '_def' in (v as object)) push(v as Combinator<unknown>)
   }
