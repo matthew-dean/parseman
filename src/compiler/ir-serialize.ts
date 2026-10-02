@@ -101,7 +101,7 @@ const ruleNameOf = (c: Comb): string | undefined =>
  * the serializer treats it as an atom: it is not descended for sharing/recursion
  * analysis (the interior's `self` ref is internal and must not surface as a cycle).
  */
-const balancedOf = (c: Comb): { open: string; close: string; ownSkip: Comb[] } | undefined =>
+const balancedOf = (c: Comb): { open: string; close: string; ownSkip: Comb[]; strict?: boolean } | undefined =>
   (c as BalancedAmbient)._balancedAmbient
 
 /** Resolve a lazy's target, or null if it isn't defined yet (external ref). */
@@ -505,8 +505,12 @@ class Serializer {
     // which is correct — they opt out of ambient resolution by definition.
     const bal = balancedOf(c)
     if (bal) {
-      const skipArg = bal.ownSkip.length === 0 ? '' : `, { skip: [${bal.ownSkip.map(kid).join(', ')}] }`
-      return `balanced(${JSON.stringify(bal.open)}, ${JSON.stringify(bal.close)}${skipArg})`
+      const options = [
+        ...(bal.ownSkip.length === 0 ? [] : [`skip: [${bal.ownSkip.map(kid).join(', ')}]`]),
+        ...(bal.strict ? ['strict: true'] : []),
+      ]
+      const optionsArg = options.length === 0 ? '' : `, { ${options.join(', ')} }`
+      return `balanced(${JSON.stringify(bal.open)}, ${JSON.stringify(bal.close)}${optionsArg})`
     }
     switch (def.tag) {
       case 'lazy': {

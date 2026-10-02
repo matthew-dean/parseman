@@ -11,10 +11,11 @@
  * grammar did not. An interpreter-vs-compiled divergence in shipped code.
  */
 import { describe, it, expect } from 'vitest'
-import { rules, balanced, regex, literal, sequence, parse } from '../../src/index.ts'
-import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
+import { rules, balanced, regex, literal, sequence, parse, scanTo } from '../../src/index.ts'
 import { compose } from '../../src/compiler/linker.ts'
 import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
+import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule, macroImportRemoved } from '../helpers/eval-macro-module.ts'
 
 const blockComment = sequence(literal('/*'), regex(/(?:[^*]|\*(?!\/))*/), literal('*/'))
 const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
@@ -79,6 +80,57 @@ describe('compose() keeps ambient scanSkip inside a balanced() interior', () => 
       const r = composed(input, 0, {})
       expect(r.ok && r.span.end, input).toBe(end)
     }
+  })
+
+  it('strict survives the round trip alongside per-call and ambient skip', () => {
+    const backtick = sequence(literal('`'), regex(/[^`]*/), literal('`'))
+    const strict = balanced('(', ')', { skip: [backtick], strict: true })
+    const rmStrict = Object.entries(rules({ scanSkip: SCAN_SKIP }, () => ({ Group: strict })))
+    const irStrict = serializeRuleMap(rmStrict as never, SCAN_SKIP as never)
+    expect(irStrict).not.toBeNull()
+    expect(irStrict!).toContain('strict: true')
+
+    const composed = lower(evalRuleMapIR(irStrict!))
+    expect(composed('(`)` e)', 0, {}).ok).toBe(true)
+    expect(composed('(unfinished', 0, {}).ok).toBe(false)
+  })
+
+  it('an unfinished strict skipper cannot swallow an outer recovery boundary after compose', () => {
+    const body = scanTo(literal('`'), {
+      recoverAt: literal(';'),
+      skip: [balanced('(', ')', { strict: true })],
+    })
+    const local = rules(() => ({ Body: body }))
+    const runtime = compose([local]) as unknown as Record<string, Fn>
+
+    const source = 'fn(unclosed; second: `good`;'
+    const interpreted = parse(body, source) as unknown as Result & { value?: unknown }
+    const composed = runtime.Body!(source, 0, {}) as Result & { value?: unknown }
+
+    for (const result of [interpreted, composed]) {
+      expect(result.ok).toBe(true)
+      expect(result.span.end).toBe(11)
+      expect(result.value).toBe('fn(unclosed')
+    }
+
+    const macroSource = `import { balanced, compose, literal, rules, scanTo } from 'parseman' with { type: 'macro' }
+const base = rules(g => ({ Filler: literal('#') }))
+export const grammar = compose([base, rules(g => ({
+  Body: scanTo(literal('\`'), {
+    recoverAt: literal(';'),
+    skip: [balanced('(', ')', { strict: true })],
+  }),
+}))])`
+    const transformed = transformMacro(macroSource, '/pkg/strict-balanced-compose.ts', new Set(['parseman']))
+    expect(transformed).not.toBeNull()
+    expect(transformed!.warnings).toEqual([])
+    expect(macroImportRemoved(transformed!.code), 'macro must not fall back to runtime compose').toBe(true)
+
+    const macro = evalMacroModule<Record<string, Fn>>(transformed!.code, 'grammar')
+    const emitted = macro.Body!(source, 0, {}) as Result & { value?: unknown }
+    expect(emitted.ok).toBe(true)
+    expect(emitted.span.end).toBe(11)
+    expect(emitted.value).toBe('fn(unclosed')
   })
 
   it('raw: true stays structural — it opts out of ambient resolution', () => {
