@@ -237,6 +237,7 @@ export function scanTo(
         // must win so a skipper cannot carry the scan across a boundary that the
         // caller declared uncrossable. The sentinel still has first priority.
         if (stopAt !== undefined) {
+          const errorCount = ctx._errors?.length ?? -1
           const stop = stopAt.parse(input, cur, probeCtx)
           if (stop.ok) {
             if (recovery < 0) {
@@ -244,6 +245,10 @@ export function scanTo(
               recoveryErrorCount = ctx._errors?.length ?? -1
             }
             return succeed(recoveredEnd())
+          }
+          const errors = ctx._errors
+          if (errors !== undefined && errorCount >= 0 && errors.length > errorCount) {
+            errors.length = errorCount
           }
         }
 
@@ -253,6 +258,29 @@ export function scanTo(
           const errorCount = ctx._errors?.length ?? -1
           const r = skipper.parse(input, cur, probeCtx)
           if (r.ok && r.span.end > cur) {
+            if (stopAt !== undefined) {
+              // A hard boundary remains uncrossable when one skipper consumes
+              // the bytes before and after it as a single opaque span. The
+              // sentinel stays opaque inside that span; only stopAt has this
+              // stronger boundary contract.
+              for (let stopPos = cur + 1; stopPos < r.span.end; stopPos++) {
+                const stopErrorCount = ctx._errors?.length ?? -1
+                const stop = stopAt.parse(input, stopPos, probeCtx)
+                if (stop.ok) {
+                  if (recovery < 0) {
+                    recovery = stopPos
+                    recoveryErrorCount = ctx._errors?.length ?? -1
+                  }
+                  return succeed(recoveredEnd())
+                }
+                const stopErrors = ctx._errors
+                if (stopErrors !== undefined
+                    && stopErrorCount >= 0
+                    && stopErrors.length > stopErrorCount) {
+                  stopErrors.length = stopErrorCount
+                }
+              }
+            }
             cur = r.span.end
             advanced = true
             break

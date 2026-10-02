@@ -162,6 +162,39 @@ describe('scanTo — paired-sentinel recovery', () => {
       expect(result.span).toEqual({ start: 0, end: 10 })
     }
   })
+
+  it('does not let an advancing skipper cross a hard stop inside its span', () => {
+    const source = scanTo(literal('`'), {
+      stopAt: literal('\n'),
+      skip: [regex(/\s+/)],
+    })
+    const result = parse(source, 'unfinished \nnext: `value`;')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value).toBe('unfinished ')
+      expect(result.span).toEqual({ start: 0, end: 11 })
+    }
+  })
+
+  it('rolls back errors from a failed hard-stop probe', () => {
+    const diagnosticStop = sequence(
+      literal('!'),
+      expected(literal('?')),
+      literal('#'),
+    )
+    const stopResult = run(diagnosticStop, '!;')
+    expect(stopResult.ok).toBe(false)
+    expect(stopResult.errors).toHaveLength(1)
+
+    const source = scanTo(literal('`'), {
+      recoverAt: literal(';'),
+      stopAt: diagnosticStop,
+    })
+    const result = run(source, 'one! still one`;')
+    expect(result.ok).toBe(true)
+    expect(result.value).toBe('one! still one')
+    expect(result.errors).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
