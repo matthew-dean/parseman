@@ -258,36 +258,6 @@ export function scanTo(
           const errorCount = ctx._errors?.length ?? -1
           const r = skipper.parse(input, cur, probeCtx)
           if (r.ok && r.span.end > cur) {
-            if (stopAt !== undefined) {
-              // A hard boundary remains uncrossable when one skipper consumes
-              // the bytes before and after it as a single opaque span. The
-              // sentinel stays opaque inside that span; only stopAt has this
-              // stronger boundary contract.
-              for (let stopPos = cur + 1; stopPos < r.span.end; stopPos++) {
-                const stopErrorCount = ctx._errors?.length ?? -1
-                const stop = stopAt.parse(input, stopPos, probeCtx)
-                if (stop.ok) {
-                  // The skipper parsed beyond a boundary that should have
-                  // pre-empted it, so none of its speculative diagnostics may
-                  // survive into the shorter successful result.
-                  const errors = ctx._errors
-                  if (errors !== undefined && errorCount >= 0 && errors.length > errorCount) {
-                    errors.length = errorCount
-                  }
-                  if (recovery < 0) {
-                    recovery = stopPos
-                    recoveryErrorCount = ctx._errors?.length ?? -1
-                  }
-                  return succeed(recoveredEnd())
-                }
-                const stopErrors = ctx._errors
-                if (stopErrors !== undefined
-                    && stopErrorCount >= 0
-                    && stopErrors.length > stopErrorCount) {
-                  stopErrors.length = stopErrorCount
-                }
-              }
-            }
             cur = r.span.end
             advanced = true
             break
