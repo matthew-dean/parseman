@@ -559,13 +559,20 @@ function objectFromPairs(pairs) {
       expectCombinator(literal('?')),
       literal('#'),
     )
+    const diagnosticMatchedBoundary = sequence(
+      literal('~'),
+      expectCombinator(literal('?')),
+    )
     const nextDeclaration = sequence(
       literal(';'),
       regex(/[ \t\n\r\f]*/),
       peek(sequence(regex(/[a-z-]+/), literal(':'))),
     )
     const source = scanTo(literal('`'), {
-      recoverAt: choice(literal(';'), literal('{'), literal('}'), literal(')'), diagnosticBoundary),
+      recoverAt: choice(
+        literal(';'), literal('{'), literal('}'), literal(')'),
+        diagnosticBoundary, diagnosticMatchedBoundary,
+      ),
       stopAt: choice(literal('\\\n'), nextDeclaration),
       skip: [balanced('{', '}', { strict: true })],
     })
@@ -580,6 +587,7 @@ function objectFromPairs(pairs) {
       'function);\n  calc-value: calc(`calc);',
       'fn(; next: `good`;',
       'one! still one`;',
+      'one~ still one`;',
       'unfinished\\\nnext: `value`;',
     ]) {
       expect(outcome(memory.Doc, input), `memory ${input}`).toBe(outcome(source, input))

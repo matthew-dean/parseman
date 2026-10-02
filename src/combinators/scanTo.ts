@@ -218,7 +218,14 @@ export function scanTo(
 
       while (cur < input.length) {
         // Check sentinel — if it matches here, stop and return consumed text.
+        const sentinelProbeErrorCount = ctx._errors?.length ?? -1
         const s = sentinel.parse(input, cur, probeCtx)
+        const sentinelProbeErrors = ctx._errors
+        if (sentinelProbeErrors !== undefined
+            && sentinelProbeErrorCount >= 0
+            && sentinelProbeErrors.length > sentinelProbeErrorCount) {
+          sentinelProbeErrors.length = sentinelProbeErrorCount
+        }
         if (s.ok) {
           if (recovery < 0) return succeed(cur)
           if (s.span.end <= cur) {
@@ -226,7 +233,7 @@ export function scanTo(
           }
           if (firstSentinel < 0) {
             firstSentinel = cur
-            sentinelErrorCount = ctx._errors?.length ?? -1
+            sentinelErrorCount = sentinelProbeErrorCount
           }
           sentinelCount++
           cur = s.span.end
@@ -239,16 +246,16 @@ export function scanTo(
         if (stopAt !== undefined) {
           const errorCount = ctx._errors?.length ?? -1
           const stop = stopAt.parse(input, cur, probeCtx)
-          if (stop.ok) {
-            if (recovery < 0) {
-              recovery = cur
-              recoveryErrorCount = ctx._errors?.length ?? -1
-            }
-            return succeed(recoveredEnd())
-          }
           const errors = ctx._errors
           if (errors !== undefined && errorCount >= 0 && errors.length > errorCount) {
             errors.length = errorCount
+          }
+          if (stop.ok) {
+            if (recovery < 0) {
+              recovery = cur
+              recoveryErrorCount = errorCount
+            }
+            return succeed(recoveredEnd())
           }
         }
 
@@ -281,23 +288,23 @@ export function scanTo(
         if (recoverAt !== undefined) {
           const errorCount = ctx._errors?.length ?? -1
           const recover = recoverAt.parse(input, cur, probeCtx)
+          const errors = ctx._errors
+          if (errors !== undefined && errorCount >= 0 && errors.length > errorCount) {
+            errors.length = errorCount
+          }
           if (recover.ok) {
             if (recover.span.end <= cur) {
               throw new TypeError('scanTo recoverAt must consume input')
             }
             if (recovery < 0) {
               recovery = cur
-              recoveryErrorCount = ctx._errors?.length ?? -1
+              recoveryErrorCount = errorCount
             }
             if (firstSentinel >= 0 && (sentinelCount & 1) === 1) {
               return succeed(recoveredEnd())
             }
             cur = recover.span.end
             continue
-          }
-          const errors = ctx._errors
-          if (errors !== undefined && errorCount >= 0 && errors.length > errorCount) {
-            errors.length = errorCount
           }
         }
 

@@ -199,6 +199,35 @@ describe('scanTo — paired-sentinel recovery', () => {
     expect(result.value).toBe('one! still one')
     expect(result.errors).toEqual([])
   })
+
+  it('rolls back errors emitted by successful recovery probes', () => {
+    const diagnosticSentinel = sequence(literal('`'), expected(literal('?')))
+    const sentinelResult = run(
+      scanTo(diagnosticSentinel, { recoverAt: literal(';') }),
+      'one; still one`',
+    )
+    expect(sentinelResult.ok).toBe(true)
+    expect(sentinelResult.value).toBe('one; still one')
+    expect(sentinelResult.errors).toEqual([])
+
+    const diagnosticBoundary = sequence(literal(';'), expected(literal('?')))
+    const boundaryResult = run(
+      scanTo(literal('`'), { recoverAt: diagnosticBoundary }),
+      'one; still one`',
+    )
+    expect(boundaryResult.ok).toBe(true)
+    expect(boundaryResult.value).toBe('one; still one')
+    expect(boundaryResult.errors).toEqual([])
+
+    const diagnosticStop = sequence(literal('\n'), expected(literal('?')))
+    const stopResult = run(
+      scanTo(literal('`'), { stopAt: diagnosticStop }),
+      'unfinished\nnext: `value`;',
+    )
+    expect(stopResult.ok).toBe(true)
+    expect(stopResult.value).toBe('unfinished')
+    expect(stopResult.errors).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
