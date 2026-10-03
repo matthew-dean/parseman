@@ -392,7 +392,7 @@ function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
     case 'field':     return `field\u0000${d.name}`
     case 'node':      return `node\u0000${d.type ?? ''}\u0000${d.unwrap === true}\u0000${d.collapse === true}\u0000${fnKey(d.buildSrc, d.build)}`
     case 'transform': return `transform\u0000${fnKey(d.fnSrc, d.fn)}\u0000${d.recognitionOnly === true}`
-    case 'leaf':      return `leaf\u0000${fnKey(d.fnSrc, d.fn)}`
+    case 'leaf':      return `leaf\u0000${d.cstValue ?? 'value'}\u0000${fnKey(d.fnSrc, d.fn)}`
     case 'many': case 'oneOrMore': return `${d.tag}\u0000${d.min}\u0000${d.max ?? ''}`
     case 'sepBy':     return `sepBy\u0000${d.min}\u0000${d.max ?? ''}\u0000${d.trailing ?? ''}`
     case 'dispatch':  return `dispatch\u0000${d.cases.map(c => JSON.stringify(c.keys)).join('\u0002')}\u0000${d.otherwise !== undefined}`

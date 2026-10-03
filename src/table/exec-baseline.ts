@@ -5,7 +5,7 @@ import {
   pushCstLeaf, rollbackCstCapture, saveCstMark, type CstRollbackMark,
 } from '../cst/capture-buffer.ts'
 import {
-  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
+  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT,
 } from './ops.ts'
@@ -434,12 +434,37 @@ function makeDriver(
         return fn(v, { start: pos, end: END })
       }
 
-      case OP_LEAF: {
-        const v = exec(code[ip + 2]!, input, pos, ctx)
+      case OP_LEAF:
+      case OP_SOURCE_LEAF: {
+        const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
+        const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
+        const sOuterTl = ctx._triviaLog
+        const wasCapturing = cstCaptureActive(ctx)
+        ctx._cstBuf = undefined
+        ctx._cstChildren = undefined
+        ctx._cstLeaves = undefined
+        ctx._cstRawChildren = undefined
+        ctx._cstTriviaLog = undefined
+        ctx._triviaLog = undefined
+        let v: unknown
+        try { v = exec(code[ip + 2]!, input, pos, ctx) }
+        finally {
+          ctx._cstBuf = sBuf
+          ctx._cstChildren = sChildren
+          ctx._cstLeaves = sLeaves
+          ctx._cstRawChildren = sRaw
+          ctx._cstTriviaLog = sTl
+          ctx._triviaLog = sOuterTl
+        }
         if (v === FAIL) return FAIL
         const end = END
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const out = fn(v, { start: pos, end })
+        if (wasCapturing) pushCstLeaf(ctx, {
+          _tag: 'leaf',
+          value: code[ip] === OP_SOURCE_LEAF ? input.slice(pos, end) : out,
+          span: { start: pos, end },
+        })
         END = end
         return out
       }

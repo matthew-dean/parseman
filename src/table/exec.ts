@@ -15,7 +15,7 @@ import {
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
 } from '../cst/capture-buffer.ts'
 import {
-  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
+  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
@@ -1371,7 +1371,8 @@ function makeDriver(
         return fn(v, { start: pos, end: EC.e })
       }
 
-      case OP_LEAF: {
+      case OP_LEAF:
+      case OP_SOURCE_LEAF: {
         // Mirrors src/combinators/token.ts:89-127. `leaf()` is a CAPTURE
         // BOUNDARY: it suppresses the interior's own CST captures and exposes
         // exactly ONE leaf carrying the reducer's value. Running the interior
@@ -1410,7 +1411,11 @@ function makeDriver(
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         if (COUNT) siteFn('LEAF fn()', fn)
         const out = fn(v, { start: pos, end })
-        if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
+        if (wasCapturing) pushCstLeaf(ctx, {
+          _tag: 'leaf',
+          value: code[ip] === OP_SOURCE_LEAF ? input.slice(pos, end) : out,
+          span: { start: pos, end },
+        })
         EC.e = end
         return out
       }

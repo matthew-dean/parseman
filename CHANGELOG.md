@@ -3,6 +3,13 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.51.2 — 2026-10-03
+
+- Add `sourceLeaf(combinator, reducer)` for grammars that need a reduced semantic
+  value in AST mode while preserving the full matched source as one CST leaf.
+  Interpreter, compiled table, macro output, serialized IR, reflection, and
+  analysis paths carry the projection identically.
+
 ## 0.51.1 — 2026-10-02
 
 - Preserve `strict: true` on ambient `balanced()` skippers when `compose()`
