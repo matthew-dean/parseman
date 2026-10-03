@@ -9,7 +9,7 @@ import { buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/bu
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators/dispatch.ts'
 import {
-  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
+  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
@@ -1322,7 +1322,7 @@ class Encoder {
       }
       case 'leaf': {
         const child = this.node(d.parser).ip
-        return this.emit(OP_LEAF, this.fn(d.fn, d.fnSrc ?? null), child)
+        return this.emit(d.cstValue === 'source' ? OP_SOURCE_LEAF : OP_LEAF, this.fn(d.fn, d.fnSrc ?? null), child)
       }
       case 'node': {
         // A node legally has NO builder when its value comes from a selection:
@@ -1737,7 +1737,7 @@ class Encoder {
       switch (this.code[ip]) {
         case OP_GATE: return [ip + 2]
         case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: return [ip + 1]
-        case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
+        case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_SOURCE_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
         // ARMS START AT ip+4. `ip+3` is the choice's own EXPECTED-SET index, and

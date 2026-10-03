@@ -79,7 +79,7 @@ export type ParserDef =
   // selector matched). It exists so ONE production can serve both contexts instead of
   // being spelled twice — a `routed()` twin and a concrete-lead original.
   | { tag: 'routed';    fallback?: Combinator<unknown> }
-  | { tag: 'leaf';      parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
+  | { tag: 'leaf';      parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; cstValue?: 'source' }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'field';     name: string; parser: Combinator<unknown> }
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; rootCapture?: 'opaque'; trackLines: boolean; constructionTrackLines?: 'on' | 'off' | 'inherit'; constructionCaptureTriviaKinds?: readonly string[] }

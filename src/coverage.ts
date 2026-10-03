@@ -16,8 +16,7 @@ import { label, field, transform, trivia } from './combinators/map.ts'
 import { many, oneOrMore, optional, sepBy } from './combinators/repeat.ts'
 import { scanTo } from './combinators/scanTo.ts'
 import { sequence } from './combinators/sequence.ts'
-import { token } from './combinators/token.ts'
-import { leaf } from './combinators/token.ts'
+import { token, leaf, sourceLeaf } from './combinators/token.ts'
 import { withCtx } from './combinators/withCtx.ts'
 import { composedCoverageRules } from './compiler/linker.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition, type GrammarCoveragePlan } from './compiler/grammar-coverage-ids.ts'
@@ -343,7 +342,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'transform': return transform(build(def.parser), def.fn)
         case 'trivia': return trivia(build(def.parser))
         case 'token': return token(build(def.parser))
-        case 'leaf': return leaf(build(def.parser), def.fn)
+        case 'leaf': return def.cstValue === 'source' ? sourceLeaf(build(def.parser), def.fn) : leaf(build(def.parser), def.fn)
         case 'field': return field(def.name, build(def.parser))
         case 'grammar': return grammarParser({
           ...(def.triviaParser === undefined ? (def.clearTrivia ? { trivia: null } : {}) : { trivia: build(def.triviaParser) }),

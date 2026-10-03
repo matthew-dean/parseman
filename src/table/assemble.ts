@@ -80,7 +80,7 @@ import {
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
 import {
-  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
+  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
@@ -2149,7 +2149,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
-      case OP_LEAF: {
+      case OP_LEAF:
+      case OP_SOURCE_LEAF: {
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const child = link(code[ip + 2]!)
         return (input, pos, ctx) => {
@@ -2179,7 +2180,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (v === FAIL) return FAIL
           const end = EC.e
           const out = fn(v, { start: pos, end })
-          if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
+          if (wasCapturing) pushCstLeaf(ctx, {
+            _tag: 'leaf',
+            value: op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out,
+            span: { start: pos, end },
+          })
           EC.e = end
           return out
         }

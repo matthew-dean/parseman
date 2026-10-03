@@ -49,7 +49,7 @@ import { not } from '../combinators/not.ts'
 import { peek } from '../combinators/peek.ts'
 import { node } from '../combinators/node.ts'
 import { transform, label, field } from '../combinators/map.ts'
-import { token, leaf } from '../combinators/token.ts'
+import { token, leaf, sourceLeaf } from '../combinators/token.ts'
 import { expect } from '../combinators/expect.ts'
 import { adjacent, notAdjacent } from '../combinators/adjacency.ts'
 import { parser } from '../combinators/grammar.ts'
@@ -222,7 +222,7 @@ export function rebuildCombinator(
       case 'label': out = label(d.label, one(d.parser)); break
       case 'field': out = field(d.name, one(d.parser)); break
       case 'token': out = token(one(d.parser)); break
-      case 'leaf': out = leaf(one(d.parser), d.fn); break
+      case 'leaf': out = d.cstValue === 'source' ? sourceLeaf(one(d.parser), d.fn) : leaf(one(d.parser), d.fn); break
       // A LABELLED expect reproduces `d.expected` exactly (`expect` sets it to `[label]`).
       // An unlabelled one RE-DERIVES it from the rebuilt inner parser, so it can differ
       // from `d.expected` when derivation hit an undefined `lazy` thunk in a different

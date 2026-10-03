@@ -610,9 +610,10 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     } catch { return null }
   }
 
-  // leaf(inner, fn) — like transform(), but suppresses inner CST captures and
-  // publishes one reducer-selected terminal leaf to its parent.
-  if (callee.name === 'leaf' && code !== undefined && mfs !== undefined) {
+  // leaf(inner, fn) / sourceLeaf(inner, fn) — like transform(), but suppresses
+  // inner CST captures. sourceLeaf keeps the semantic result for evaluation
+  // while publishing the matched source text to the CST parent.
+  if ((callee.name === 'leaf' || callee.name === 'sourceLeaf') && code !== undefined && mfs !== undefined) {
     const [parserArg, fnArg] = node.arguments
     if (!parserArg || !fnArg || parserArg.type === 'SpreadElement' || fnArg.type === 'SpreadElement') return null
     const inner = anyValue(parserArg as Expression, scope, code, mfs)
@@ -620,7 +621,9 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const fnSrc = stripTsFromSource(fnArg as Node, code)
     mfs.push(fnSrc)
     try {
-      const combi = parseman.leaf(inner, (v: unknown) => v)
+      const combi = callee.name === 'sourceLeaf'
+        ? parseman.sourceLeaf(inner, (v: unknown) => v)
+        : parseman.leaf(inner, (v: unknown) => v)
       if (combi._def.tag === 'leaf') combi._def.fnSrc = fnSrc
       return combi
     } catch { return null }

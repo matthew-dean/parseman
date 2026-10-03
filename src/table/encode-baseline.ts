@@ -3,7 +3,7 @@ import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import {
-  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
+  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT,
 } from './ops.ts'
@@ -265,7 +265,7 @@ class Encoder {
       }
       case 'leaf': {
         const child = this.node(d.parser).ip
-        return this.emit(OP_LEAF, this.fn(d.fn), child)
+        return this.emit(d.cstValue === 'source' ? OP_SOURCE_LEAF : OP_LEAF, this.fn(d.fn), child)
       }
       case 'node': {
         if (d.unwrap || d.collapse || d.project !== undefined) throw new UnsupportedConstructBaseline('node(unwrap|collapse|project)')
@@ -319,6 +319,7 @@ class Encoder {
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: [], rules: this.rules,
       lines: this.track ? 1 : 0,
+      ...(this.settings.hostMode === undefined ? {} : { hostMode: this.settings.hostMode }),
     }
   }
 }

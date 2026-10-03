@@ -40,6 +40,7 @@ Three words that sound alike but play different roles:
 | `transform(c, fn)` | Map the result: `fn(value, span) → newValue`. |
 | `token(c)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
 | `leaf(c, reducer)` | Treat a structural grammar as one semantic leaf, without touching trivia. |
+| `sourceLeaf(c, reducer)` | Return a reduced semantic value while exposing the matched source as one CST leaf. |
 | `label(name, c)` | Attach a string label to a combinator arm (metadata; used for per-chunk trivia kinds). |
 | `field(name, c)` | Capture a named value/span for the nearest enclosing `node()` builder. |
 | `not(c)` | **Negative** lookahead — succeeds (consuming nothing) when `c` fails. |
