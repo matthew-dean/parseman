@@ -290,17 +290,20 @@ describe('sourceLeaf()', () => {
 
     const interpreted = parse(sourceLeafDoc, 'ab')
     const compiled = sourceLeafDocCompiled.parse('ab', 0)
+    const compiledWithCstHost = sourceLeafDocCompiled.parseWithContext('ab', { trackLines: false, build: cstBuildHost() }, 0)
     const compiledCst = sourceLeafDocCstCompiled.parseWithContext('ab', { trackLines: false, build: cstBuildHost() }, 0)
     const macro = macroSourceLeafFn('ab', 0, {})
     expect(interpreted.ok).toBe(true)
     expect(compiled.ok).toBe(true)
+    expect(compiledWithCstHost.ok).toBe(true)
     expect(compiledCst.ok).toBe(true)
     expect(macro.ok).toBe(true)
-    if (!interpreted.ok || !compiled.ok || !compiledCst.ok || !macro.ok) return
+    if (!interpreted.ok || !compiled.ok || !compiledWithCstHost.ok || !compiledCst.ok || !macro.ok) return
 
     expect(leafValues(interpreted.value)).toEqual(['decoded'])
     expect(compiled.value).toEqual(interpreted.value)
     expect(macro.value).toEqual(interpreted.value)
+    expect(leafValues(compiledWithCstHost.value)).toEqual(['ab'])
     expect(leafValues(compiledCst.value)).toEqual(['ab'])
   })
 

@@ -1414,7 +1414,7 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
       case OP_LEAF:
       case OP_SOURCE_LEAF: {
         const isToken = op === OP_TOKEN
-        const capturesSource = isToken || op === OP_SOURCE_LEAF
+        const capturesSource = isToken || (op === OP_SOURCE_LEAF && hostCst)
         const fn = isToken ? undefined : fnRef(code[ip + 1]!)
         const child = link(isToken ? code[ip + 1]! : code[ip + 2]!)
         // `try`/`finally`, AS `assemble.ts` HAS IT. `OP_SCOPE` restores linearly

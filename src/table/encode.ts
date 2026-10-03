@@ -1322,7 +1322,7 @@ class Encoder {
       }
       case 'leaf': {
         const child = this.node(d.parser).ip
-        return this.emit(d.cstValue === 'source' && this.settings.hostMode === 'cst' ? OP_SOURCE_LEAF : OP_LEAF, this.fn(d.fn, d.fnSrc ?? null), child)
+        return this.emit(d.cstValue === 'source' ? OP_SOURCE_LEAF : OP_LEAF, this.fn(d.fn, d.fnSrc ?? null), child)
       }
       case 'node': {
         // A node legally has NO builder when its value comes from a selection:

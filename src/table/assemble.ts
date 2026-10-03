@@ -2182,7 +2182,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const out = fn(v, { start: pos, end })
           if (wasCapturing) pushCstLeaf(ctx, {
             _tag: 'leaf',
-            value: op === OP_SOURCE_LEAF ? input.slice(pos, end) : out,
+            value: op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out,
             span: { start: pos, end },
           })
           EC.e = end

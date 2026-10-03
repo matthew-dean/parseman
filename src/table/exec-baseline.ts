@@ -94,6 +94,7 @@ function makeDriver(
   cc: readonly ResolvedClass[],
   fx: readonly (readonly string[])[],
   disp: readonly ResolvedDispatch[],
+  hostCst: boolean,
 ): Driver {
   /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
   let END = 0
@@ -462,7 +463,7 @@ function makeDriver(
         const out = fn(v, { start: pos, end })
         if (wasCapturing) pushCstLeaf(ctx, {
           _tag: 'leaf',
-          value: code[ip] === OP_SOURCE_LEAF ? input.slice(pos, end) : out,
+          value: code[ip] === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out,
           span: { start: pos, end },
         })
         END = end
@@ -534,7 +535,7 @@ function makeDriver(
 export function execRulesBaseline(source: TableProgram | CompactProgram): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp)
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, prog.hostMode === 'cst')
   const out: Record<string, TableRule> = {}
   // Chosen ONCE, from table data, at rule-map construction. Not a per-parse
   // branch on an option: a plain table never has this wrapper at all.
