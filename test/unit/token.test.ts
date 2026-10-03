@@ -1,7 +1,7 @@
 import { beforeAll, describe, it, expect } from 'vitest'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
-  choice, leaf, literal, many, node, noTrivia, oneOrMore, optional, parse, parser, regex, sequence, sourceLeaf, token, trivia,
+  choice, cstBuildHost, leaf, literal, many, node, noTrivia, oneOrMore, optional, parse, parser, regex, sequence, sourceLeaf, token, trivia,
   sepBy, transform,
 } from '../../src/index.ts'
 import type { CSTLeaf, ParseContext } from '../../src/index.ts'
@@ -66,6 +66,7 @@ const decodedSourceLeaf = sourceLeaf(sequence(literal('a'), literal('b')), () =>
 const decodedSourceLeafCompiled = compile(decodedSourceLeaf)
 const sourceLeafDoc = node('SourceLeafDoc', decodedSourceLeaf)
 const sourceLeafDocCompiled = compile(sourceLeafDoc)
+const sourceLeafDocCstCompiled = compile(sourceLeafDoc, undefined, { hostMode: 'cst' })
 type ParseFn = (input: string, pos: number, ctx: object) =>
   { ok: boolean; value?: unknown; span: { start: number; end: number } }
 let macroFn: ParseFn
@@ -283,25 +284,28 @@ describe('leaf()', () => {
 })
 
 describe('sourceLeaf()', () => {
-  it('returns the reduced value while exposing one matched-source CST leaf', () => {
+  it('returns the reduced value while exposing matched source to a CST host', () => {
     expect(parse(decodedSourceLeaf, 'ab')).toMatchObject({ ok: true, value: 'decoded' })
     expect(decodedSourceLeafCompiled.parse('ab', 0)).toMatchObject({ ok: true, value: 'decoded' })
 
     const interpreted = parse(sourceLeafDoc, 'ab')
     const compiled = sourceLeafDocCompiled.parse('ab', 0)
+    const compiledCst = sourceLeafDocCstCompiled.parseWithContext('ab', { trackLines: false, build: cstBuildHost() }, 0)
     const macro = macroSourceLeafFn('ab', 0, {})
     expect(interpreted.ok).toBe(true)
     expect(compiled.ok).toBe(true)
+    expect(compiledCst.ok).toBe(true)
     expect(macro.ok).toBe(true)
-    if (!interpreted.ok || !compiled.ok || !macro.ok) return
+    if (!interpreted.ok || !compiled.ok || !compiledCst.ok || !macro.ok) return
 
-    expect(leafValues(interpreted.value)).toEqual(['ab'])
+    expect(leafValues(interpreted.value)).toEqual(['decoded'])
     expect(compiled.value).toEqual(interpreted.value)
     expect(macro.value).toEqual(interpreted.value)
+    expect(leafValues(compiledCst.value)).toEqual(['ab'])
   })
 
   it('keeps source projection in the baseline comparison driver', () => {
-    const run = execRulesBaseline(encodeTableBaseline({ Entry: decodedSourceLeaf })).Entry!
+    const run = execRulesBaseline(encodeTableBaseline({ Entry: decodedSourceLeaf }, { hostMode: 'cst' })).Entry!
     const leaves: unknown[] = []
     const result = run('ab', 0, { trackLines: false, _cstLeaves: leaves })
     expect(result).toMatchObject({ ok: true, value: 'decoded', span: { start: 0, end: 2 } })

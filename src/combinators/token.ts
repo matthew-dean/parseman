@@ -1,14 +1,15 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
+import { cstOutputHost } from '../compiler/build-arity.ts'
 
-type LeafCstValue<U> = (input: string, start: number, end: number, value: U) => unknown
+type LeafCstValue<U> = (ctx: ParseContext, input: string, start: number, end: number, value: U) => unknown
 
-function semanticLeafValue<U>(_input: string, _start: number, _end: number, value: U): U {
+function semanticLeafValue<U>(_ctx: ParseContext, _input: string, _start: number, _end: number, value: U): U {
   return value
 }
 
-function sourceLeafValue(input: string, start: number, end: number, _value: unknown): string {
-  return input.slice(start, end)
+function sourceLeafValue<U>(ctx: ParseContext, input: string, start: number, end: number, value: U): U | string {
+  return cstOutputHost(ctx.build) ? input.slice(start, end) : value
 }
 
 /**
@@ -134,7 +135,7 @@ function makeLeaf<T, U>(
       const value = fn(result.value, result.span)
       if (wasCapturing) pushCstLeaf(ctx, {
         _tag: 'leaf',
-        value: cstValue(input, pos, result.span.end, value),
+        value: cstValue(ctx, input, pos, result.span.end, value),
         span: result.span,
       })
       return { ok: true, value, span: result.span }

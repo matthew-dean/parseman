@@ -265,7 +265,7 @@ class Encoder {
       }
       case 'leaf': {
         const child = this.node(d.parser).ip
-        return this.emit(d.cstValue === 'source' ? OP_SOURCE_LEAF : OP_LEAF, this.fn(d.fn), child)
+        return this.emit(d.cstValue === 'source' && this.settings.hostMode === 'cst' ? OP_SOURCE_LEAF : OP_LEAF, this.fn(d.fn), child)
       }
       case 'node': {
         if (d.unwrap || d.collapse || d.project !== undefined) throw new UnsupportedConstructBaseline('node(unwrap|collapse|project)')
