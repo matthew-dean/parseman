@@ -1,6 +1,16 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 
+type LeafCstValue<U> = (input: string, start: number, end: number, value: U) => unknown
+
+function semanticLeafValue<U>(_input: string, _start: number, _end: number, value: U): U {
+  return value
+}
+
+function sourceLeafValue(input: string, start: number, end: number, _value: unknown): string {
+  return input.slice(start, end)
+}
+
 /**
  * Treat a parser as one source token.
  *
@@ -77,7 +87,11 @@ export function token(root: Combinator<unknown>): Combinator<string> {
 export function leaf<T, U>(
   root: Combinator<T>,
   fn: (value: T, span: { start: number; end: number }) => U,
+  options?: { cstValue?: 'source' },
 ): Combinator<U> {
+  const cstValue: LeafCstValue<U> = options?.cstValue === 'source'
+    ? sourceLeafValue
+    : semanticLeafValue
   const meta: ParserMeta = {
     firstSet: root._meta.firstSet,
     canMatchNewline: root._meta.canMatchNewline,
@@ -86,7 +100,12 @@ export function leaf<T, U>(
   return {
     _tag: 'leaf',
     _meta: meta,
-    _def: { tag: 'leaf', parser: root as Combinator<unknown>, fn: fn as (v: unknown, span: { start: number; end: number }) => unknown },
+    _def: {
+      tag: 'leaf',
+      parser: root as Combinator<unknown>,
+      fn: fn as (v: unknown, span: { start: number; end: number }) => unknown,
+      ...(options?.cstValue === 'source' ? { cstValue: 'source' as const } : {}),
+    },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<U> {
       const savedBuf = ctx._cstBuf
       const savedChildren = ctx._cstChildren
@@ -113,8 +132,24 @@ export function leaf<T, U>(
       }
       if (!result.ok) return result
       const value = fn(result.value, result.span)
-      if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: result.span })
+      if (wasCapturing) pushCstLeaf(ctx, {
+        _tag: 'leaf',
+        value: cstValue(input, pos, result.span.end, value),
+        span: result.span,
+      })
       return { ok: true, value, span: result.span }
     },
   }
+}
+
+/**
+ * Reduce a structural parser semantically while exposing its matched source as
+ * one CST leaf. This keeps AST-only decoding out of the CST contract without a
+ * second source scan.
+ */
+export function sourceLeaf<T, U>(
+  root: Combinator<T>,
+  fn: (value: T, span: { start: number; end: number }) => U,
+): Combinator<U> {
+  return leaf(root, fn, { cstValue: 'source' })
 }

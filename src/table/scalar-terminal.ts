@@ -1,5 +1,5 @@
 import {
-  OP_ATTEMPT, OP_CHOICE, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_NODE, OP_NOT,
+  OP_ATTEMPT, OP_CHOICE, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT,
   OP_PEEK, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV,
   OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
@@ -86,7 +86,7 @@ export function leadingScalarTerminal(
       continue
     }
     if (op === OP_GATE || op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN
-      || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || op === OP_LEAF) {
+      || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || (op === OP_LEAF || op === OP_SOURCE_LEAF)) {
       at = code[at + 2]!
       depth++
       continue
@@ -139,7 +139,7 @@ export function leadingScalarSequence(
         continue
       }
       if (op === OP_GATE || op === OP_SCOPE_PLAIN
-        || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || op === OP_LEAF) {
+        || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || (op === OP_LEAF || op === OP_SOURCE_LEAF)) {
         at = code[at + 2]!
         continue
       }
@@ -173,7 +173,7 @@ export function leadingScalarSequence(
       at = code[at + 2]!
       continue
     }
-    if (op === OP_GATE || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || op === OP_LEAF) {
+    if (op === OP_GATE || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || (op === OP_LEAF || op === OP_SOURCE_LEAF)) {
       at = code[at + 2]!
       continue
     }
@@ -220,7 +220,7 @@ export function leadingLiteralFamily(
         return walk(code[at + 1]!, depth + 1)
       }
       if (op === OP_GATE || op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN
-        || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || op === OP_LEAF) {
+        || op === OP_XFORM || op === OP_NODE || op === OP_FIELD || (op === OP_LEAF || op === OP_SOURCE_LEAF)) {
         return walk(code[at + 2]!, depth + 1)
       }
       if (op === OP_SEQ || op === OP_SEQV) {

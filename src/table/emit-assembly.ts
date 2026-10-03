@@ -48,7 +48,7 @@ import type { ParseContext } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
   OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
-  OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
+  OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
   OP_LEX_BODY, OP_LEX_PROGRAM,
@@ -1411,8 +1411,10 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
       /* ── boundaries ──────────────────────────────────────────────────────── */
 
       case OP_TOKEN:
-      case OP_LEAF: {
+      case OP_LEAF:
+      case OP_SOURCE_LEAF: {
         const isToken = op === OP_TOKEN
+        const capturesSource = isToken || op === OP_SOURCE_LEAF
         const fn = isToken ? undefined : fnRef(code[ip + 1]!)
         const child = link(isToken ? code[ip + 1]! : code[ip + 2]!)
         // `try`/`finally`, AS `assemble.ts` HAS IT. `OP_SCOPE` restores linearly
@@ -1460,7 +1462,7 @@ ctx._triviaLog=sOtl
 if(v===FAIL)return FAIL
 const e=EC.e
 const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
-if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:out,span:{start:pos,end:e}})
+if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:${capturesSource ? 'input.slice(pos,e)' : 'out'},span:{start:pos,end:e}})
 EC.e=e
 return out
 }`

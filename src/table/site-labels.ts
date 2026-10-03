@@ -60,7 +60,7 @@
  * label licenses at a leaf is dropping the TEST — never the capture.
  */
 import {
-  OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF,
+  OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_SOURCE_LEAF,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE,
   OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
@@ -193,7 +193,7 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
     if (at.tri === TRI_NONE && !at.buf) return at
     return { tri: TRI_NONE, buf: false, raw: RAW_UNKNOWN, cap: at.cap }
   }
-  if (op === OP_LEAF) {
+  if (op === OP_LEAF || op === OP_SOURCE_LEAF) {
     if (!at.buf) return at
     return { tri: at.tri, buf: false, raw: RAW_UNKNOWN, cap: at.cap }
   }

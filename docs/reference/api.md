@@ -382,6 +382,22 @@ This is useful when a parent reducer needs a flat terminal (here `'*'` or `'/'`)
 but the language accepts structured comments or spacing around it. Static `leaf()`
 calls macro-compile and retain the inner grammar's normal coverage and trace IDs.
 
+### `sourceLeaf(combinator, reducer)`
+
+Reduce a structural grammar for semantic consumers while exposing its complete
+matched source as one CST leaf. The returned parse value is the reducer result;
+only the CST leaf value uses source text.
+
+```ts
+const escapedName = sourceLeaf(
+  sequence(nameStart, many(namePart)),
+  parts => decodeName(parts),
+)
+```
+
+Use this when AST construction needs decoded or classified grammar facts while a
+syntax tree must retain the authored token spelling and its single-leaf shape.
+
 ### `not(combinator)` · `peek(combinator)`
 
 The two lookaheads. Both are zero-width — they assert and consume nothing.

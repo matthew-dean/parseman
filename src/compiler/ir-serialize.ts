@@ -176,11 +176,11 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     if (recognitionOnly) (t._def as { recognitionOnly?: boolean }).recognitionOnly = true
     return t as Comb
   }
-  const _lf = (child: Comb, src: string): Comb => {
+  const _lf = (child: Comb, src: string, source = false): Comb => {
     let fn: (...a: unknown[]) => unknown
     // eslint-disable-next-line no-eval
     try { fn = (0, eval)(`(${src})`) } catch { fn = () => { throw new Error('IR leaf fn not materialized') } }
-    const l = leaf(child as never, fn as never)
+    const l = leaf(child as never, fn as never, source ? { cstValue: 'source' } : undefined)
     ;(l._def as { fnSrc?: string }).fnSrc = src
     return l as Comb
   }
@@ -587,7 +587,7 @@ class Serializer {
       case 'token':     return `token(${kid(def.parser)})`
       case 'leaf': {
         if (def.fnSrc === undefined) throw new Unserializable('leaf without fnSrc')
-        return `_lf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)})`
+        return `_lf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)}${def.cstValue === 'source' ? ', true' : ''})`
       }
       case 'label':     return `label(${JSON.stringify(def.label)}, ${kid(def.parser)})`
       case 'field':     return `field(${JSON.stringify(def.name)}, ${kid(def.parser)})`

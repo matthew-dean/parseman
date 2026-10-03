@@ -31,7 +31,7 @@ export type { BuildNode, NodeCombinator, NodeOptions, NodeProjectOptions } from 
 export { transform, trivia, classifiedTrivia, label, field } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
-export { token, leaf } from './combinators/token.ts'
+export { token, leaf, sourceLeaf } from './combinators/token.ts'
 
 export { compile } from './table/compile.ts'
 /*

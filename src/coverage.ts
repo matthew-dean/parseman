@@ -343,7 +343,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'transform': return transform(build(def.parser), def.fn)
         case 'trivia': return trivia(build(def.parser))
         case 'token': return token(build(def.parser))
-        case 'leaf': return leaf(build(def.parser), def.fn)
+        case 'leaf': return leaf(build(def.parser), def.fn, def.cstValue === undefined ? undefined : { cstValue: def.cstValue })
         case 'field': return field(def.name, build(def.parser))
         case 'grammar': return grammarParser({
           ...(def.triviaParser === undefined ? (def.clearTrivia ? { trivia: null } : {}) : { trivia: build(def.triviaParser) }),

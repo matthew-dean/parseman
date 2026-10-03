@@ -222,7 +222,7 @@ export function rebuildCombinator(
       case 'label': out = label(d.label, one(d.parser)); break
       case 'field': out = field(d.name, one(d.parser)); break
       case 'token': out = token(one(d.parser)); break
-      case 'leaf': out = leaf(one(d.parser), d.fn); break
+      case 'leaf': out = leaf(one(d.parser), d.fn, d.cstValue === undefined ? undefined : { cstValue: d.cstValue }); break
       // A LABELLED expect reproduces `d.expected` exactly (`expect` sets it to `[label]`).
       // An unlabelled one RE-DERIVES it from the rebuilt inner parser, so it can differ
       // from `d.expected` when derivation hit an undefined `lazy` thunk in a different
