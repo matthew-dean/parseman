@@ -33,6 +33,12 @@ type Comb = Combinator<unknown>
  * in the bundler; no runtime module imports it
  * (docs/design/runtime-and-size-contract.md, rule 1). */
 export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
+  return Object.entries(evalRulesIR(ir))
+}
+
+/** The `rules()` grammar an IR expression builds — the map plus, non-enumerable,
+ * the recipe (`RULES_RECIPE`) a composition links it by. Build time only, as above. */
+export function evalRulesIR(ir: string): Record<string, Comb> {
   // `_tf`/`_nd` reconstruct a transform/node AND restore its captured callback
   // source (`_def.fnSrc`/`buildSrc`) so re-lowering inlines it statically. The live
   // fn is only needed for interpreted mode; a self-contained transform source is
@@ -145,5 +151,5 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     many, oneOrMore, optional, sepBy, keepSeparator, not, peek, node, parser,
     scanTo, balanced, token, leaf, transform, trivia, classifiedTrivia, label, field, expectC, adjacent, notAdjacent, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
-  return Object.entries(map)
+  return map
 }
