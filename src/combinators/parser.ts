@@ -155,7 +155,7 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
  */
 export const RULES_RECIPE = Symbol.for('parseman.rulesRecipe')
 export type RulesRecipe = {
-  readonly factory: (self: any) => Record<string, Combinator<unknown>>
+  readonly factory: (self: Record<string, Combinator<unknown>>) => Record<string, Combinator<unknown>>
   readonly options: RulesOptions | undefined
 }
 
