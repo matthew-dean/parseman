@@ -3,6 +3,37 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.52.0 — 2026-10-04
+
+- Runtime `compose()` and `composeLeaf()` link the pieces' live `rules()` recipes
+  in one namespace instead of rebuilding each piece from serialized IR source with
+  `eval` / `new Function`. A composed interpreter grammar now loads under a
+  Content-Security-Policy without `'unsafe-eval'`, builds no table, and mutates no
+  piece: composing trivia is bound per composition. Importing jess's Less
+  interpreter grammar retired 55.20G instructions before and 1.91G after.
+  `compile(ruleMap)` is the one runtime path that generates code, and it falls back
+  to closures under CSP (`test/unit/csp-runtime-paths.test.ts`). Breaking: runtime
+  `compose()` refuses a build-compiled grammar, which has no live rules to link.
+  `evalRuleMapIR` moved into the build-time plugin, and the railroad generator no
+  longer evaluates a bundled script.
+
+- The macro links a composition's carried pieces the same way, so first sets,
+  nullability and expected sets agree across the macro, the interpreter and
+  `compile()` (`test/unit/compose-expected-parity.test.ts`). Compiled tables of
+  composed grammars change: a failure at a cross-piece reference reports the
+  tokens it starts with rather than the bare rule name, and no longer lists a
+  token the parse never required there.
+
+- Grammar analysis probing an undefined `ref()` no longer builds an `Error` per
+  probe; parsing through one still throws a fresh error with its own stack.
+
+- The compose-depth-1/2/3 and variant size probes' ceilings rise by 11–14 B
+  (0.5–0.9%) for the linked expected sets their tables now carry.
+
+- Re-anchor the grammar-density, broad-workload and jess A/B release comparisons
+  to 0.51.2 (`047f920`), the immediately preceding stable release. Peak baselines
+  are unchanged.
+
 ## 0.51.2 — 2026-10-03
 
 - Add `sourceLeaf(combinator, reducer)` for grammars that need a reduced semantic
