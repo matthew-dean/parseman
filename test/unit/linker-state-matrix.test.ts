@@ -100,6 +100,16 @@ describe('linker state and recovery matrix', () => {
       .toThrow('compose: rule "Entry" references missing rule "Missing"')
   })
 
+  it('names a missing rule that no defined rule references', () => {
+    // The factory reads `g.Missing` outside every rule it returns.
+    const incomplete = rules(g => {
+      void g.Missing
+      return { Entry: literal('a') }
+    })
+    expect(() => fuseInterpreted([incomplete]))
+      .toThrow('compose: rule(s) "Missing" are referenced but defined by no composed grammar')
+  })
+
   it('two fusions over one shared piece each bind their own winner, and neither mutates it', () => {
     const base = rules(g => ({ Entry: g.Value }))
     const first = rules(() => ({ Value: literal('a') }))
