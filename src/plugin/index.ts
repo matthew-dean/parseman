@@ -38,7 +38,8 @@ import {
 import type { HostMode } from '../cst/host-mode.ts'
 import { COMPOSED_PIECES } from '../compiler/linker.ts'
 import { serializeRuleMap } from '../compiler/ir-serialize.ts'
-import { evalRuleMapIR } from './ir-eval.ts'
+import { evalRulesIR } from './ir-eval.ts'
+import { linkRules, RULES_RECIPE, type LinkOptions, type RulesRecipe } from '../combinators/parser.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { grammarReflectionSource, type GrammarReflection } from '../cst/reflection.ts'
 import { createHash } from 'node:crypto'
@@ -1262,33 +1263,19 @@ function transformMacroImpl(
   }
 
   /**
-   * MERGE a carried list to ONE rule map — the table lowering's entire composition
-   * mechanism, and the reason it needs no linker.
-   *
-   * Source composition is a TEXTUAL splice: each piece is lowered on its own to
-   * namespaced `_r_<Name>` functions, and `fusedBody()` picks a winner per name and
-   * substitutes the `@FS:` dispatch placeholders with that winner's first-set
-   * condition. A table has no text to splice and no placeholders to resolve, so the
-   * merge moves one level UP, onto the combinators: evaluate each piece's IR back to
-   * a rule map, let a later piece's name override an earlier one — which is exactly
-   * what `compose()` means — and hand the single merged map to
-   * `compileRuleMap`, which encodes ONCE.
-   *
-   * This is what makes table composition the easy kind: no relocation of code
-   * offsets, no merging of const / fn / class / expected / dispatch pools between
-   * two already-encoded programs. `encodeTableProgram` points `enc.winners` at the
-   * merged map (`table/encode.ts:1383`), so a base piece's internal `g.Atom`
-   * resolves BY NAME to the override (`:1036`) rather than through a thunk that
-   * closes over the base. Open recursion — much of the point of compose — therefore
-   * survives the merge, and the result is the table the merged grammar would have
-   * produced had it been written as a single `rules()` call.
+   * Evaluate a carried list back to combinators, one entry per piece: its rule map
+   * and the `rules()` recipe it was built from. `compose()` links the recipes into
+   * one namespace (`mergedCarriedRules`); `composeLeaf()` merges the maps by name.
+   * Either way the merged grammar is encoded ONCE by `compileRuleMap` — no relocation
+   * of code offsets and no merging of const / fn / expected pools between two
+   * already-encoded programs.
    *
    * `null` means some piece cannot contribute combinators: a FULL BAKED piece (the
    * un-serializable fallback at `localCarried`) carries lowered SOURCE and nothing
    * else. That shape is codegen-only, so the caller falls back to fused source
    * rather than refusing the grammar.
    */
-  type CarriedRuleMap = { ns: string; rules: Array<[string, Combinator<unknown>]> }
+  type CarriedRuleMap = { ns: string; rules: Array<[string, Combinator<unknown>]>; recipes: readonly RulesRecipe[] }
   const carriedRuleMaps = (
     items: CarriedItem[],
   ): { pieces: CarriedRuleMap[]; trackLines: boolean } | null => {
@@ -1301,7 +1288,8 @@ function transformMacroImpl(
       // merged encode resolves `trackLines` from `_meta` alone and silently drops line
       // tracking for a grammar that asked for it.
       if (item.trackLines === true) trackLines = true
-      pieces.push({ ns: item.ns, rules: evalRuleMapIR(item.ir) })
+      const map = evalRulesIR(item.ir)
+      pieces.push({ ns: item.ns, rules: Object.entries(map), recipes: (map as Record<symbol, readonly RulesRecipe[]>)[RULES_RECIPE]! })
       return true
     }
     for (const item of items) {
@@ -1346,24 +1334,39 @@ function transformMacroImpl(
     return [...winners]
   }
 
+  /**
+   * LINK a carried list into the composed map, exactly as runtime `compose()` does:
+   * every piece's carried `rules()` recipe runs again against ONE namespace
+   * (`linkRules`), a later piece's rule winning by name, and the composing trivia and
+   * host mode stamped on every rule. A `g.X` in one piece is then the SAME slot as the
+   * `X` another piece defines, so everything the encoder derives from the graph —
+   * first sets, nullability, expected sets — sees the composed grammar. Merging
+   * per-piece maps by name instead left each piece's cross-piece `g.X` an unresolved
+   * thunk: parsing still bound it by name, but a failure derived as the bare rule name
+   * (or, through a nullable guess, a token the parse never required), so the macro
+   * table reported different `expected` sets than the interpreter and `compile()` of
+   * the same composition.
+   */
   const mergedCarriedRules = (
     items: CarriedItem[],
+    link: LinkOptions,
   ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean } | null => {
     const carriedMaps = carriedRuleMaps(items)
     if (carriedMaps === null) return null
-    return { rules: mergeRuleMaps(carriedMaps.pieces.map(p => p.rules)), trackLines: carriedMaps.trackLines }
+    const linked = linkRules(carriedMaps.pieces.flatMap(p => p.recipes), link)
+    // A name some piece only REFERENCES and none defines stays an undefined slot in
+    // the namespace. It is not a rule, so it is not handed to the encoder as one.
+    const rules = Object.entries(linked).filter(([, rule]) => {
+      if (rule._def.tag !== 'lazy') return true
+      try { rule._def.thunk(); return true } catch { return false }
+    })
+    return { rules, trackLines: carriedMaps.trackLines }
   }
 
   /**
-   * COMPOSING-WINS, as an OVERRIDE rather than a gap-fill.
-   *
-   * `compileRuleMap`'s `applyAmbient` only fills a rule that carries no trivia of
-   * its own — correct for `composeLeaf`, whose pieces may legitimately disagree, and
-   * WRONG for `compose`, where the composing grammar's trivia governs every fused rule
-   * INCLUDING the inherited ones. Gap-filling leaves a base rule that declared its own
-   * `rules({ trivia }, …)` still skipping the base's trivia after a delta re-declared
-   * it, so `compose([css, less])` silently parses the inherited rules under css's
-   * whitespace — the multi-level composing-wins contract, inverted.
+   * COMPOSING-WINS for `composeLeaf()`'s carried pieces, as an OVERRIDE rather than
+   * a gap-fill: `compileRuleMap`'s `applyAmbient` only fills a rule that carries no
+   * trivia of its own. (`compose()` gets the same override from `linkRules`.)
    *
    * Safe to mutate: every rule here came from `evalRuleMapIR`, which constructs FRESH
    * combinators per piece per compose, so this cannot leak into another compose of the
@@ -1524,9 +1527,11 @@ function transformMacroImpl(
     // does — one encode, one `tableRules(…)` expression, no linker. `carried` is
     // unchanged either way: it is the re-lowerable IR list, not a lowering artifact,
     // so a downstream re-compose behaves identically whichever engine emitted here.
-    const merged = mergedCarriedRules(carried)
+    const merged = mergedCarriedRules(carried, {
+      trivia: composing,
+      ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
+    })
     if (merged !== null) {
-      if (composing) applyComposingTrivia(merged.rules, composing)
       // Harvest the direct-builder import provenance carried on the merged graph so
       // the re-lower pass at the end of this transform re-emits those imports.
       collectBuilderImports(merged.rules)
