@@ -26,6 +26,15 @@ function withRuleTrivia<T>(
  *
  * Unlike lazy(() => x), you use the ref directly — no wrapping at each call site.
  */
+/*
+ * What `thunk()` throws for an undefined ref. Grammar construction probes thunks
+ * constantly — a `rules()` factory runs before any of its refs is defined, and
+ * first-set, nullability and expected-set analysis all try a thunk and catch — so
+ * one shared error spares a stack capture per probe. Parsing through an undefined
+ * ref still throws a fresh error below, with the stack that locates it.
+ */
+const UNDEFINED_REF = new Error('ref<T>() used before .define() was called')
+
 export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
   let resolved: Combinator<T> | null = null
   let resolvedScalar: ScalarParser | null = null
@@ -44,7 +53,7 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
     _def: {
       tag: 'lazy' as const,
       thunk: () => {
-        if (!resolved) throw new Error('ref<T>() used before .define() was called')
+        if (!resolved) throw UNDEFINED_REF
         return resolved as Combinator<unknown>
       },
     },
