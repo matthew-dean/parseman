@@ -77,21 +77,21 @@
       "locMultiplier": 0.486
     },
     "probe/compose-depth-1": {
-      "genBytes": 1838,
-      "gzipBytes": 891,
-      "bytesRatio": 1.708,
+      "genBytes": 1852,
+      "gzipBytes": 895,
+      "bytesRatio": 1.721,
       "locMultiplier": 1.188
     },
     "probe/compose-depth-2": {
-      "genBytes": 1994,
-      "gzipBytes": 933,
-      "bytesRatio": 1.303,
+      "genBytes": 2007,
+      "gzipBytes": 931,
+      "bytesRatio": 1.312,
       "locMultiplier": 0.826
     },
     "probe/compose-depth-3": {
-      "genBytes": 2144,
-      "gzipBytes": 968,
-      "bytesRatio": 1.081,
+      "genBytes": 2155,
+      "gzipBytes": 970,
+      "bytesRatio": 1.086,
       "locMultiplier": 0.633
     },
     "probe/compose-leaf": {
@@ -125,9 +125,9 @@
       "locMultiplier": 2
     },
     "probe/variant": {
-      "genBytes": 1624,
-      "gzipBytes": 823,
-      "bytesRatio": 1.614,
+      "genBytes": 1638,
+      "gzipBytes": 830,
+      "bytesRatio": 1.628,
       "locMultiplier": 1.267
     },
     "probe/variants-1": {
