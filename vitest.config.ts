@@ -51,6 +51,10 @@ export default defineConfig({
         // Reachability walker used only by bench/table-opcode-gaps.ts to report which
         // constructs a grammar reaches. Not a runtime path.
         'src/table/inspect.ts',
+        // Vendored railroad-diagrams, kept verbatim. It used to ship as a source
+        // string, which coverage never counted; as real code its builders that the
+        // spec tooling never calls would count against parseman's own code.
+        'src/spec/railroad-lib.ts',
       ],
     },
   },
