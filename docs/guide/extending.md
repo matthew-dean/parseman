@@ -168,9 +168,9 @@ macro](./modes):
 
 - **Macro (build):** `compose([...])` is fused at **build time** into one static table.
   It needs no base grammar source (the pieces travel on the imported value as carried
-  IR, which the plugin re-lowers in the bundler) and constructs no code at runtime, so it
-  ships in strict-CSP contexts like browser extensions or some CDNs with no extra
-  configuration.
+  IR, which the plugin re-lowers in the bundler and links in one namespace, as the
+  runtime link below does) and constructs no code at runtime, so it ships in strict-CSP
+  contexts like browser extensions or some CDNs with no extra configuration.
 - **Runtime (interpreter):** `compose([...])` only **links**. Each piece's `rules()`
   factory runs again against one shared namespace, a later piece's rule winning by name,
   so the result is the interpreter grammar one `rules()` over all the pieces would build.
@@ -183,7 +183,8 @@ macro](./modes):
   `compile(composed)` encodes it once and specialises the table with `new Function`; under
   a strict CSP that throws `EvalError` and the same table runs on the closure assembler.
 
-All three produce the same parse, with overrides resolved across the whole set.
+All three produce the same parse, with overrides resolved across the whole set, and
+report the same expected set when it fails (`test/unit/compose-expected-parity.test.ts`).
 `test/unit/csp-runtime-paths.test.ts` runs every runtime path under
 `--disallow-code-generation-from-strings` and asserts that nothing but `compile()` ever
 reaches `Function` or `eval`; `test/parity/interpreted-fuse-parity.test.ts` pins the
