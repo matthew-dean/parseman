@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.52.0 — 2026-10-06
+## 0.52.0 — 2026-10-07
 
 - Add `attempt(parser, { contain: true })`. A failure committed inside the
   transaction — a `dispatch()` whose selected branch failed — is reported as an
@@ -41,6 +41,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   sides: Less AST `benchmark.less` -1.84%, Less CST -1.22%, Less AST
   `bootstrap.css` -1.41%, .jess -0.79%, SCSS -0.25%. The interpreter browser
   bundle grows 105 bytes.
+
+- Re-anchor the grammar-density and broad-workload release comparisons to 0.51.2
+  (`047f920`), the immediately preceding stable release. Peak baselines are unchanged.
 
 ## 0.51.2 — 2026-10-03
 
