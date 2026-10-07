@@ -123,8 +123,8 @@ index; projected leaves become strings, projected sub-nodes are returned as-is, 
 combined with `build`, `unwrap`, or `collapse`.
 
 `captureTrivia` owns interior trivia. `trailingTrivia` is for a repeating document root at
-EOF: it commits the active terminal trivia to that node's log; blocks with a closing
-delimiter don't need it.
+EOF: it commits the active terminal trivia inside that node's span (to its log when the
+node keeps one; it doesn't force capture); blocks with a closing delimiter don't need it.
 
 `tags` declares grammar-level CST categories used by `createVisitor(grammar, { tag: … })`.
 Tags are stored in grammar reflection and aren't copied onto CST nodes by default — use

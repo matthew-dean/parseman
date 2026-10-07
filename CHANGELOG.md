@@ -24,6 +24,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `attempt()` stays nullable to the choice classifier, so it still never
   authorizes exclusive one-arm dispatch.
 
+- `node({ trailingTrivia: true })` no longer forces the node's own trivia capture.
+  It still ends the node after the trivia that follows its body, and that trivia
+  still reaches this node's log whenever the node keeps one (a structural node, a
+  `build` that declares `triviaLog`, `captureTrivia`, a CST host) and the selected
+  root trivia either way. A `build` that never reads the log now keeps the lean
+  compiled node body instead of opening the capture frame at every match. On
+  jess's SCSS grammar, whose custom-property value takes its trailing comments
+  this way, a 20,000-declaration file parses in 2.60% fewer instructions.
+
 ## 0.51.2 — 2026-10-03
 
 - Add `sourceLeaf(combinator, reducer)` for grammars that need a reduced semantic

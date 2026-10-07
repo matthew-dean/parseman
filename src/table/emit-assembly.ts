@@ -2334,8 +2334,11 @@ return nd
         // not closure-only semantics. Print the same body for a precompiled
         // assembly so a large composeLeaf artifact does not fall back to opening
         // the generic raw/trivia buffer that its reducer arity proved unread.
+        // The trailing-trivia bit (128) rides on the children-only shape as it
+        // does in the closure assembler: a consume after the body, no capture.
+        const leanFlags = flags & ~128
         if (!hostCst && !tracked && build !== undefined && proj < 0
-          && (flags === 2 || flags === 18 || flags === 34)) {
+          && (leanFlags === 2 || (flags === 18 || flags === 34))) {
           const fields = flags === 18
           const collapseChildren = flags === 34
           const publish = L.buf && L.raw === RAW_OMIT
@@ -2382,7 +2385,9 @@ ctx._cstTriviaLog=undefined
 ctx.captureTrivia=false
 ctx._fields=${fields ? '[]' : 'undefined'}
 const v=${child}(input,pos,ctx)
-const captured=_capturedFlatChildren(flat)
+${trailingTrivia && L.tri !== TRI_NONE
+  ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})EC.e=consumeTrivia(input,EC.e,ctx)\n`
+  : ''}const captured=_capturedFlatChildren(flat)
 ${fields ? 'const fieldMap=buildFieldMap(ctx._fields)\n' : ''}ctx._fields=sFields
 ctx._cstBuf=sBuf
 ctx._cstChildren=sCh

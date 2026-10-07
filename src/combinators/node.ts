@@ -46,8 +46,12 @@ export type BuildNode<N> = (
  *   enclosing `parser()` did not opt into document-wide trivia capture. This is
  *   scoped to the node; sibling and parent nodes retain their own setting.
  * - `trailingTrivia` — after a successful node body, consume the active grammar
- *   trivia once into THIS node's log. Intended for a document root whose body is
- *   a repetition; do not set it on a block that already has a closing delimiter.
+ *   trivia once, inside THIS node's span: it lands in this node's log when the
+ *   node captures trivia (its reducer reads the log, `captureTrivia`, a structural
+ *   node, a CST host) and in the root trivia table either way. It does not by
+ *   itself turn capture on. Intended for a document root whose body is a
+ *   repetition, or a value whose trailing comments belong to it; do not set it on
+ *   a block that already has a closing delimiter.
  * - `tags` — grammar-level CST categories for visitor dispatch. Stored once in
  *   grammar reflection; not copied onto every CST node.
  * Both skip `build` only for a one-child match; zero or two-plus children go
@@ -218,7 +222,12 @@ export function node<N>(
   // added in 0.37.0), where it costs nothing. The interpreter has no compile step and
   // stays dynamic, so it re-decides per parse — which is the same answer, reached the
   // only way this engine can reach it.
-  const capturesTrivia = captureTrivia || trailingTrivia || (build ? buildReadsTrivia(def) : project === undefined)
+  //
+  // `trailingTrivia` is not a term here: it moves the node's END past the trivia
+  // that follows the body, and the trivia it consumes reaches the root table with
+  // or without a node log. Forcing capture for it handed a three-argument reducer
+  // a log it never reads, at the price of the full capture frame on every match.
+  const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : project === undefined)
   const clonesState = build ? buildReadsState(def) : project === undefined
   const hasOwnFields = parserHasOwnFields(combinator)
   const capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)

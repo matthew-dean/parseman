@@ -73,10 +73,10 @@ There are three separate concerns here, kept separate on purpose:
   that scope ends.
 - `node(child, build, { captureTrivia: true })` **owns** the per-node log. The log belongs
   to that node's build/CST boundary, not to every combinator below it.
-- `node(child, build, { trailingTrivia: true })` is the narrow document-boundary form:
-  after `child` succeeds, it commits one final run of the active trivia into that same
-  node's log. It also enables that node's capture frame, even when its build/host would
-  otherwise elide trivia.
+- `node(child, build, { trailingTrivia: true })` is the narrow terminal-boundary form:
+  after `child` succeeds, it commits one final run of the active trivia inside that same
+  node's span, into its log when the node keeps one. It does not open a log for a
+  `build` whose arity says it never reads one.
 - A direct `build` callback that declares its fifth `triviaLog` parameter retains the
   established capture behavior. That arity analysis is a performance optimization and
   compatibility rule, not a second parser-wide capture API.
