@@ -287,7 +287,17 @@ Before publishing, it refuses unless:
   `npm pack --dry-run`, `docs:verify`.
 
 Then it runs `npm publish --provenance` and creates the tag `vX.Y.Z` on the published
-commit. `check:differentials --strict` (§D above) needs the jess sibling checkout, so it
+commit.
+
+If the publish succeeds and the tag step fails, do not re-dispatch: the run stops at
+"already on npm". Create the tag on the commit the failed run published:
+
+```sh
+sha=$(gh run view <run-id> --json headSha --jq .headSha)
+gh api repos/matthew-dean/parseman/git/refs -f ref=refs/tags/vX.Y.Z -f "sha=$sha"
+```
+
+`check:differentials --strict` (§D above) needs the jess sibling checkout, so it
 stays a by-hand step before dispatching.
 
 ### One-time setup
@@ -298,7 +308,8 @@ trusted publisher. Register it once, either way:
 - on npmjs.com: package `parseman` → **Settings** → **Trusted Publisher** → GitHub
   Actions, with user `matthew-dean`, repository `parseman`, workflow filename
   `publish.yml`, and no environment;
-- or from a terminal, logged in as the package owner, with npm ≥ 11.10.0:
+- or from a terminal, logged in as the package owner, with npm ≥ 11.15.0 (the first
+  release with `--allow-publish`):
 
   ```sh
   npm trust github parseman --file publish.yml --repo matthew-dean/parseman --allow-publish
