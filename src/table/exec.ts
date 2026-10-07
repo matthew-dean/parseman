@@ -1535,7 +1535,8 @@ function makeDriver(
         // `attempt()` verbatim: mark, run, and on failure restore every capture
         // sink and re-anchor the report at the transaction's entry. A COMMITTED
         // failure is still rolled back and then propagated untouched — the
-        // interpreter returns `result` itself on that branch.
+        // interpreter returns `result` itself on that branch — unless the row
+        // contains commitment (`k`), where it is reported like any other failure.
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -1547,7 +1548,10 @@ function makeDriver(
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v !== FAIL) return v
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        if (ctx._fc === true) return FAIL
+        if (ctx._fc === true) {
+          if (code[ip + 2] !== 1) return FAIL
+          ctx._fc = false
+        }
         ctx._fe = pos
         return FAIL
       }

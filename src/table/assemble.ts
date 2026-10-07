@@ -1912,6 +1912,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_ATTEMPT: {
         const child = link(code[ip + 1]!)
+        const contain = code[ip + 2] === 1
         return (input, pos, ctx) => {
           const need = markCst(ctx)
           const mRaw = MRAW
@@ -1924,8 +1925,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const v = child(input, pos, ctx)
           if (v !== FAIL) return v
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          // A committed failure propagates VERBATIM — rolled back, not re-anchored.
-          if (committed(ctx)) return FAIL
+          // A committed failure propagates VERBATIM — rolled back, not re-anchored —
+          // unless the row contains commitment, where it is reported like any other.
+          if (committed(ctx)) {
+            if (!contain) return FAIL
+            ctx._fc = false
+          }
           ctx._fe = pos
           return FAIL
         }

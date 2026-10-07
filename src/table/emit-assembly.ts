@@ -1552,7 +1552,7 @@ ${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
 ${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
-if(ctx._fc===true)return FAIL
+${code[ip + 2] === 1 ? 'ctx._fc=false' : 'if(ctx._fc===true)return FAIL'}
 ctx._fe=pos
 return FAIL
 }`

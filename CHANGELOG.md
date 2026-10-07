@@ -3,6 +3,17 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.52.0 — 2026-10-06
+
+- Add `attempt(parser, { contain: true })`. A failure committed inside the
+  transaction — a `dispatch()` whose selected branch failed — is reported as an
+  ordinary failure at the attempt's start, so an enclosing `choice()` still tries
+  its next arm. This is for two readings of one prefix that only a later token
+  decides, such as CSS reading a block item as a declaration and then as a nested
+  rule (css-syntax-3 §5.4.4); before, a dispatch inside the first reading made the
+  second unreachable. Interpreter, compiled table, emitted assembly, macro output
+  and serialized IR carry the option identically; a plain `attempt()` is unchanged.
+
 ## 0.51.2 — 2026-10-03
 
 - Add `sourceLeaf(combinator, reducer)` for grammars that need a reduced semantic

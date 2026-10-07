@@ -56,7 +56,7 @@ export type ParserDef =
   // closures live in `gates`.
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; gateSrcs?: (string | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
   | { tag: 'dispatch';  selector: Combinator<string>; cases: readonly DispatchCase[]; matchers?: readonly DispatchMatcherCase[] | undefined; otherwise?: Combinator<unknown> | undefined; otherwiseUsesRouted?: boolean | undefined }
-  | { tag: 'attempt';   parser: Combinator<unknown> }
+  | { tag: 'attempt';   parser: Combinator<unknown>; /** `attempt(p, { contain: true })`: a committed failure inside is reported uncommitted. */ contain?: true }
   // The TAG carries NULLABILITY (what every downstream switch keys on): `many` is
   // the nullable min-0 repeat, `oneOrMore` the non-nullable min>=1 one. `min`/`max`
   // carry the actual ITEM bounds (`many(x, { min: 3, max: 8 })` is a `oneOrMore`

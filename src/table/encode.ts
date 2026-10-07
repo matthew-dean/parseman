@@ -1596,7 +1596,7 @@ class Encoder {
       // A TRANSACTION IS A ROW. See `OP_ATTEMPT` for why the transparent
       // lowering was correct only for a choice arm.
       case 'attempt': {
-        const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip)
+        const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip, d.contain === true ? 1 : 0)
         if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(inner)
         // THE FIRST-SET FAIL-FAST GUARD, lowered as the `OP_GATE` row the `node()`
         // case already uses — it is the same guard, written twice in the
