@@ -17,7 +17,7 @@
       "locMultiplier": 0.176
     },
     "example/graphql": {
-      "genBytes": 4548,
+      "genBytes": 4538,
       "gzipBytes": 1784,
       "bytesRatio": 0.413,
       "locMultiplier": 0.049
