@@ -54,15 +54,20 @@ describe('attempt(parser, { contain: true })', () => {
   })
 
   it('removes recovery diagnostics written inside the contained reading', () => {
-    const grammar = choice(
-      attempt(sequence(required(literal('a')), dispatch(literal('k'), when('k', literal('x')))), { contain: true }),
-      otherReading(),
-    )
-    const errors: unknown[] = []
-    const result = grammar.parse('aky', 0, { trackLines: false, _errors: errors } as unknown as ParseContext)
-    expect(result).toMatchObject({ ok: true, value: ['a', 'k', 'y'] })
-    expect(errors).toEqual([])
-    expect(assertEnginesAgree(grammar, 'aky')).toMatchObject({ ok: true })
+    // `required('b')` misses at 1 and records a diagnostic BEFORE the dispatch commits its failure.
+    const diagnosing = () => sequence(literal('a'), required(literal('b')), dispatch(literal('k'), when('k', literal('x'))))
+    const table = (root: unknown) => execRules(encodeTable({ Root: root as never })).Root! as unknown as Parameters<typeof run>[0]
+
+    // Standalone: no enclosing choice() whose own rollback could stand in for the attempt's.
+    const alone = attempt(diagnosing(), { contain: true })
+    expect(assertEnginesAgree(alone, 'aky')).toEqual({ ok: false, expected: ['"x"'], span: { start: 0, end: 0 } })
+    expect(run(alone, 'aky').errors).toEqual([])
+    expect(run(table(alone), 'aky').errors).toEqual([])
+
+    // The fallback still takes the other reading, and inherits no diagnostic from the abandoned one.
+    const fallback = choice(attempt(diagnosing(), { contain: true }), otherReading())
+    expect(assertEnginesAgree(fallback, 'aky')).toMatchObject({ ok: true, value: ['a', 'k', 'y'] })
+    expect(run(fallback, 'aky')).toMatchObject({ ok: true, errors: [] })
   })
 
   it('contains the commitment in the reference table driver', () => {
