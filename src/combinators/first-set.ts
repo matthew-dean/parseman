@@ -420,7 +420,11 @@ function firstSetBody(
     case 'leaf':
     case 'node':
     case 'sepBy':
-    case 'expect':    return fs(d.parser)
+    case 'expect':
+    // A transaction accepts exactly what its inner accepts. Its own `_meta` is
+    // the inner's construction-time set, which reads `any` when the inner opens
+    // with a rule reference — resolve through it like any other wrapper.
+    case 'attempt':   return fs(d.parser)
     case 'grammar':   return firstSetOf(
       d.parser,
       seen,

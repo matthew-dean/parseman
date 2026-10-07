@@ -14,6 +14,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   second unreachable. Interpreter, compiled table, emitted assembly, macro output
   and serialized IR carry the option identically; a plain `attempt()` is unchanged.
 
+- `firstSetOf()` resolves through `attempt()` the way it resolves through `node()`
+  or `label()`. It used to read the transaction's construction-time first set,
+  which is `any` whenever the inner opens with a rule reference, and the compiled
+  table then left every choice arm that an `attempt()` opens ungated: the arm was
+  entered at every position, including the `}` that ends each block a
+  `many(choice(…))` reads. An `attempt()` at the head of jess's Less nested-rule
+  selector cost 3.60% of a `benchmark.less` parse before and 0.02% after.
+  `attempt()` stays nullable to the choice classifier, so it still never
+  authorizes exclusive one-arm dispatch.
+
 ## 0.51.2 — 2026-10-03
 
 - Add `sourceLeaf(combinator, reducer)` for grammars that need a reduced semantic
