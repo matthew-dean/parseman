@@ -52,6 +52,12 @@ export function peelLabel(p: Combinator<unknown>): { label: string; parser: Comb
  * (or a single labeled arm), return the label table and matchers.
  */
 export function analyzeLabeledTrivia(trivia: Combinator<unknown>): LabeledTriviaSpec | null {
+  // A `trivia()` combinator carries its own spec, built once at construction —
+  // the hot path. The four slots below serve every other caller.
+  if (trivia._def.tag === 'trivia') {
+    const own = trivia._meta.labeledTriviaSpec
+    if (own !== undefined) return own
+  }
   if (trivia === labeledTrivia0) return labeledSpec0!
   if (trivia === labeledTrivia1) return labeledSpec1!
   if (trivia === labeledTrivia2) return labeledSpec2!

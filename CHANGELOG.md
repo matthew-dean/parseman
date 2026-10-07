@@ -33,6 +33,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   jess's SCSS grammar, whose custom-property value takes its trailing comments
   this way, a 20,000-declaration file parses in 2.60% fewer instructions.
 
+- A `trivia()` combinator carries its labeled-arm spec, built once, and every
+  labeled trivia scan reads it from there. The scan asked a module-level memo of
+  four slots, which a grammar switching among more than four trivia tables
+  thrashed: jess's Less grammar re-derived the spec 4,149 times per
+  `benchmark.less` parse. Measured on jess's compiled grammars, same tables both
+  sides: Less AST `benchmark.less` -1.84%, Less CST -1.22%, Less AST
+  `bootstrap.css` -1.41%, .jess -0.79%, SCSS -0.25%. The interpreter browser
+  bundle grows 105 bytes.
+
 ## 0.51.2 — 2026-10-03
 
 - Add `sourceLeaf(combinator, reducer)` for grammars that need a reduced semantic
