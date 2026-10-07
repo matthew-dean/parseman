@@ -1,0 +1,103 @@
+name: Publish
+
+# Publishes `parseman` to npm through trusted publishing (OIDC): no npm token exists
+# in this repository or its secrets. See docs/design/release-gates.md § Publishing,
+# including the one-time trusted-publisher registration on npmjs.com.
+#
+# Dispatch only. Merging a release PR never publishes; dispatching this workflow on
+# `main` is the publish decision:
+#
+#   gh workflow run publish.yml --ref main
+on:
+  workflow_dispatch:
+
+# Two dispatches must never race each other to the registry.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # The OIDC token npm exchanges for a short-lived publish credential, and signs
+      # the provenance attestation with.
+      id-token: write
+      # Creating the vX.Y.Z tag after the publish.
+      contents: write
+    steps:
+      - name: Refuse any ref but main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::publish runs only on main (dispatched on $GITHUB_REF)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          # Full history so existing tags are visible to the clobber guard below.
+          fetch-depth: 0
+          # Nothing pushes through git. The tag is created through the API in the
+          # last step, so the token has no reason to sit in .git/config while
+          # dependency install scripts run.
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Use an npm with trusted publishing
+        # Trusted publishing needs npm >= 11.5.1. npm, not pnpm, does the publish.
+        run: npm install -g 'npm@^11.5.1'
+
+      - name: Version is converged and unpublished
+        id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          # CHANGELOG top heading == package.json == src/version.ts, heading dated.
+          node scripts/check-changelog.mjs --publish
+          node scripts/check-main-release-state.mjs --base-ref=main --head-ref=main
+          # Assigned first so a registry failure fails the step instead of reading
+          # as "not published".
+          published=$(npm view parseman versions --json)
+          if grep -qF "\"$version\"" <<<"$published"; then
+            echo "::error::parseman@$version is already on npm. Merge the next release PR first."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::tag v$version already exists."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Release preflight (AGENTS.md)
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm check:invariants
+          pnpm check:differentials
+          pnpm test:coverage
+          pnpm coverage:guard
+          pnpm test
+          pnpm build
+          npm pack --dry-run
+          pnpm docs:verify
+
+      - name: Publish to npm
+        # prepublishOnly re-runs check-changelog --publish.
+        run: npm publish --provenance
+
+      - name: Tag the published commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/v$VERSION" -f "sha=$GITHUB_SHA"

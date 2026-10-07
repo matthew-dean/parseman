@@ -261,3 +261,48 @@ node scripts/check-changelog.mjs --publish          # + convergence (what `npm p
 
 `--root=<dir>` points it at another checkout, which is how
 `test/unit/release-gate.test.ts` drives it over fixture repositories.
+
+## Publishing
+
+`.github/workflows/publish.yml` publishes through npm **trusted publishing** (OIDC).
+There is no npm token in this repository or its secrets.
+
+It runs only when dispatched by hand, and only on `main`. Merging a release PR never
+publishes anything; dispatching the workflow is the publish decision:
+
+```sh
+gh workflow run publish.yml --ref main
+gh run watch      # optional: follow the run
+```
+
+Before publishing, it refuses unless:
+
+- the ref is `main`;
+- `check-changelog.mjs --publish` and `check-main-release-state.mjs` pass: the changelog
+  heading, `package.json` and `src/version.ts` name the same version, and the heading is
+  dated;
+- that version is not already on npm, and the tag `vX.Y.Z` does not exist yet;
+- the preflight from `AGENTS.md` passes: typecheck, lint, invariants, differentials,
+  tests with coverage and the coverage guard, the full test run, build,
+  `npm pack --dry-run`, `docs:verify`.
+
+Then it runs `npm publish --provenance` and creates the tag `vX.Y.Z` on the published
+commit. `check:differentials --strict` (§D above) needs the jess sibling checkout, so it
+stays a by-hand step before dispatching.
+
+### One-time setup
+
+npm accepts an OIDC publish only from a workflow the package owner has registered as a
+trusted publisher. Register it once, either way:
+
+- on npmjs.com: package `parseman` → **Settings** → **Trusted Publisher** → GitHub
+  Actions, with user `matthew-dean`, repository `parseman`, workflow filename
+  `publish.yml`, and no environment;
+- or from a terminal, logged in as the package owner, with npm ≥ 11.10.0:
+
+  ```sh
+  npm trust github parseman --file publish.yml --repo matthew-dean/parseman --allow-publish
+  ```
+
+Until it is registered, the publish step fails with a 404 ("could not be found or you do
+not have permission").
