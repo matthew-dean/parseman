@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, label, literal, many, node, oneOrMore, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { choice, classifiedTrivia, compile, label, literal, many, node, oneOrMore, regex, rules, run, sequence, trivia } from '../../src/index.ts'
+import { encodeTable } from '../../src/table/encode.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
+import type { Combinator } from '../../src/types.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
@@ -150,6 +154,59 @@ export const grammar = compose([mid, rules({ trivia: rw }, g => ({ Pass: regex(/
       expectOwnership(logs)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * `trailingTrivia` decides WHERE the node ends: after the trivia that follows its
+ * body. It does not decide whether the node keeps its own trivia log; that is the
+ * reducer's business, as for every other node. A reducer declared not to read the
+ * log had capture forced on anyway, which put the node on the generic capture
+ * path at every match: jess's SCSS custom-property value, whose trailing comments
+ * this keeps in place, paid about 2.5k instructions per declaration for a log its
+ * three-argument reducer never read.
+ */
+describe('node({ trailingTrivia: true }) with a reducer that does not read trivia', () => {
+  const seen: unknown[] = []
+  const classified = classifiedTrivia({ space: regex(/[ ]+/), comment: regex(/\/\*[^]*?\*\//) })
+  const lean = rules({ trivia: classified }, (g: any) => ({
+    Doc: node('Doc', sequence(g.Value, literal(';')), children => children),
+    Value: node('Value', oneOrMore(regex(/[a-z]+/)), function (children: readonly unknown[], _fields: unknown, span: { start: number; end: number }) {
+      // `buildArity: 3` declares the log unread; the fifth argument is observed only
+      // to tell an opened log from the shared empty one.
+      // eslint-disable-next-line prefer-rest-params
+      seen.push(arguments[4])
+      return { words: children.length, span }
+    }, { trailingTrivia: true, buildArity: 3 }),
+  }))
+  const SOURCE = 'a b /* c */ ;'
+  const engines = (): [string, Combinator<unknown>][] => [
+    ['interpreter', lean.Doc as Combinator<unknown>],
+    ['table', tableRules(encodeTable(lean)).Doc as unknown as Combinator<unknown>],
+    ['reference', execRules(encodeTable(lean)).Doc as unknown as Combinator<unknown>],
+  ]
+
+  it('still ends the node after the trivia that follows it, in every engine', () => {
+    for (const [name, entry] of engines()) {
+      const result = run(entry, SOURCE)
+      expect(result.ok, name).toBe(true)
+      expect((result.value as [{ span: { end: number } }, string])[0].span.end, name).toBe(SOURCE.indexOf(';'))
+    }
+  })
+
+  it('still records that trivia in the root trivia table, in every engine', () => {
+    for (const [name, entry] of engines()) {
+      const result = run(entry, SOURCE, { rootTrivia: { select: ['comment'] } })
+      expect(result.rootTrivia?.rows, name).toEqual([3, 12, 4, 11, 0])
+    }
+  })
+
+  it('hands the reducer no trivia log it did not ask for, in every engine', () => {
+    for (const [name, entry] of engines()) {
+      seen.length = 0
+      expect(run(entry, SOURCE).ok, name).toBe(true)
+      expect(seen.map(log => (log as readonly number[] | undefined)?.length ?? 0), name).toEqual([0])
     }
   })
 })

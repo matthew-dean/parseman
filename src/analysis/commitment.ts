@@ -456,10 +456,12 @@ export function mayCommitFailure(
     case 'choice':
     case 'sequence':
       return d.parsers.some(x => mayCommitFailure(x, seen, resolve))
+    // A contained transaction reports every failure uncommitted.
+    case 'attempt':
+      return d.contain !== true && mayCommitFailure(d.parser, seen, resolve)
     case 'many':
     case 'oneOrMore':
     case 'optional':
-    case 'attempt':
     case 'transform':
     case 'label':
     case 'field':

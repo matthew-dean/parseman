@@ -7,7 +7,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import { union, intersects, fromChar, fromRange, any, empty, sequenceFirstSet, firstSetOf, isZeroWidthAssertion, matchesEmpty } from '../../src/combinators/first-set.ts'
-import { sequence, not, optional, many, oneOrMore, literal, regex, choice, rules } from '../../src/index.ts'
+import { attempt, sequence, not, optional, many, oneOrMore, literal, regex, choice, rules } from '../../src/index.ts'
+import { encodeTable } from '../../src/table/encode.ts'
 import type { Combinator, FirstSet } from '../../src/types.ts'
 
 describe('first-set — union()', () => {
@@ -208,5 +209,42 @@ describe('first-set — soundness fuzz (superset over randomized grammars)', () 
     expect(matched).toBeGreaterThan(100)
     expect(checked).toBeGreaterThan(50000)
     expect(violations.slice(0, 10)).toEqual([])
+  })
+})
+
+/**
+ * `attempt()` accepts exactly what its inner accepts, so a first-set question
+ * asked THROUGH it must be answered by the inner, resolved like any other
+ * wrapper. `firstSetOf` stopped at the attempt's construction-time `_meta`,
+ * which reads `any` whenever the inner opens with a rule reference — and since
+ * the transaction is (deliberately) nullable to the classifier, that `any`
+ * widened every sequence the attempt opened and every choice arm led by one. A
+ * compiled choice then entered that arm at every position, including the `}`
+ * that ends each block a `many(choice(…))` reads.
+ */
+describe('first-set — attempt() forwards its inner first set', () => {
+  // The transaction's inner is built while `g.Sel` is still an unresolved
+  // reference, so its construction-time first set is `any`.
+  const grammar = () => rules(g => ({
+    Doc: many(choice(g.Rule, literal(';'))),
+    Sel: regex(/[a-z]+/),
+    Head: attempt(sequence(g.Sel, optional(literal('!')))),
+    Rule: sequence(attempt(sequence(g.Sel, optional(literal('!')))), literal('{'), literal('}')),
+  }))
+
+  it('resolves through attempt() over an inner that opens with a rule reference', () => {
+    expect(firstSetOf(grammar().Head)).toEqual({ kind: 'ranges', ranges: [{ lo: 97, hi: 122 }] })
+  })
+
+  it('keeps the transaction nullable to the classifier, so what follows it still counts', () => {
+    const g = grammar()
+    expect(matchesEmpty(attempt(literal('a')))).toBe(true)
+    expect(firstSetOf(g.Rule)).toEqual({ kind: 'ranges', ranges: [{ lo: 97, hi: 123 }] })
+  })
+
+  it('gives a compiled choice arm led by attempt() its own gate', () => {
+    const prog = encodeTable(grammar())
+    expect(prog.disp).toHaveLength(1)
+    expect(prog.disp[0]![0]).toBeGreaterThanOrEqual(0)
   })
 })

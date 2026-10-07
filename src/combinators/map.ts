@@ -79,13 +79,17 @@ export function transform<T, U>(
 }
 
 export function trivia<T>(combinator: Combinator<T>): Combinator<T> {
-  const kindLabels = analyzeLabeledTrivia(combinator as Combinator<unknown>)?.labels
+  const labeled = analyzeLabeledTrivia(combinator as Combinator<unknown>)
+  const kindLabels = labeled?.labels
   return {
     _tag: combinator._tag,
     _meta: {
       ...combinator._meta,
       isTrivia: true,
       triviaScanner: fastTriviaScanner(combinator as Combinator<unknown>),
+      // Every labeled scan of this trivia reads its spec; the module's four-slot
+      // memo alone thrashes on a grammar with more than four trivia tables.
+      labeledTriviaSpec: labeled,
       ...(kindLabels ? { triviaKindLabels: kindLabels } : {}),
     },
     _def: { tag: 'trivia', parser: combinator as Combinator<unknown> },

@@ -574,7 +574,7 @@ class Serializer {
         ? `oneOrMore(${kid(def.parser)})`
         : `many(${kid(def.parser)}${repeatOpts(def.min, def.max)})`
       case 'optional':  return `optional(${kid(def.parser)})`
-      case 'attempt':   return `attempt(${kid(def.parser)})`
+      case 'attempt':   return `attempt(${kid(def.parser)}${def.contain === true ? ', { contain: true }' : ''})`
       // `keepSeparators` is an opt-in expressed at the SEPARATOR, not in the options
       // bag, so it must round-trip as `keepSeparator(sep)` — serializing it as an
       // option would reconstruct a grammar whose call site no longer states its own

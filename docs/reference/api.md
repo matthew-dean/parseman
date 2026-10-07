@@ -593,7 +593,8 @@ dynamic selection, filtering, or reconstructing values from several tokens.
 plain combinators own no log. A direct build that declares the fifth `triviaLog` parameter
 keeps the established arity-based capture behavior. See [CST / AST nodes](../guide/ast).
 `opts.trailingTrivia` is a document-boundary opt-in: after a successful node body it commits
-the active trivia once into that node's log (and therefore forces this node's trivia capture).
+the active trivia once inside that node's span, into its log when the node keeps one. It
+does not force capture: a direct `build` that doesn't declare `triviaLog` gets no log.
 Use it for a repeating document root at EOF, not for blocks with a closing delimiter; their
 ordinary following `}` already owns the preceding trivia.
 

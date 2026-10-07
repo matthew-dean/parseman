@@ -1,3 +1,5 @@
+import type { LabeledTriviaSpec } from './cst/trivia-kinds.ts'
+
 export type Span = {
   start: number
   end: number
@@ -56,7 +58,7 @@ export type ParserDef =
   // closures live in `gates`.
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; gateSrcs?: (string | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
   | { tag: 'dispatch';  selector: Combinator<string>; cases: readonly DispatchCase[]; matchers?: readonly DispatchMatcherCase[] | undefined; otherwise?: Combinator<unknown> | undefined; otherwiseUsesRouted?: boolean | undefined }
-  | { tag: 'attempt';   parser: Combinator<unknown> }
+  | { tag: 'attempt';   parser: Combinator<unknown>; /** `attempt(p, { contain: true })`: a committed failure inside is reported uncommitted. */ contain?: true }
   // The TAG carries NULLABILITY (what every downstream switch keys on): `many` is
   // the nullable min-0 repeat, `oneOrMore` the non-nullable min>=1 one. `min`/`max`
   // carry the actual ITEM bounds (`many(x, { min: 3, max: 8 })` is a `oneOrMore`
@@ -433,6 +435,11 @@ export type ParserMeta = {
   isTrivia: boolean
   /** User-defined labels for labeled trivia arms (`label(name, parser)`). */
   triviaKindLabels?: readonly string[]
+  /**
+   * Set only by `trivia()`: the labeled-arm spec of this trivia (`null` when it is
+   * not labeled), built once so a labeled scan never re-derives it.
+   */
+  labeledTriviaSpec?: LabeledTriviaSpec | null
   /** Preclassified lightweight trivia scanner for the ordinary skip path. */
   triviaScanner?: ((input: string, cur: number) => number) | null
   /** Set only by `classifiedTrivia()`: each root-visible category is a separate

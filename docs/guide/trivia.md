@@ -217,8 +217,11 @@ locally (for example, a CSS grammar's `Stylesheet` root):
 const Document = node('Document', many(rule), undefined, { trailingTrivia: true })
 ```
 
-`trailingTrivia: true` commits that one final active-trivia run to **this node's** log
-and forces this node's trivia capture. Use it only for a meaningful terminal boundary,
+`trailingTrivia: true` commits that one final active-trivia run inside **this node's**
+span: to this node's log whenever the node keeps one (a structural node, a `build` that
+declares its fifth `triviaLog` parameter, `captureTrivia`, or a CST host), and to the
+selected root trivia either way. It doesn't open a log for a `build` that doesn't read
+one. Use it only for a meaningful terminal boundary,
 normally a repeating document root — don't add it to ordinary nodes or blocks. A closing
 delimiter such as `}` is already the next term, so normal trivia ownership records the
 preceding gap. Keeping the opt-in node-local preserves ordinary sibling ownership and

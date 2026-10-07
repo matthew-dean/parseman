@@ -327,7 +327,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'oneOrMore': return oneOrMore(build(def.parser))
         case 'optional': return optional(build(def.parser))
         case 'attempt': {
-          const base = attempt(build(def.parser))
+          const base = attempt(build(def.parser), def.contain === true ? { contain: true } : undefined)
           const id = maps.attempts.get(parser)
           return id === undefined ? base : {
             ...base,

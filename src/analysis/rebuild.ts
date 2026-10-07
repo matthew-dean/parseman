@@ -204,7 +204,7 @@ export function rebuildCombinator(
           ? adjacent()
           : d.kinds === undefined ? notAdjacent() : notAdjacent({ kinds: d.kinds })
         break
-      case 'attempt': out = attempt(one(d.parser)); break
+      case 'attempt': out = attempt(one(d.parser), d.contain === true ? { contain: true } : undefined); break
       case 'not': out = not(one(d.parser)); break
       case 'peek': out = peek(one(d.parser)); break
       case 'optional': out = optional(one(d.parser)); break

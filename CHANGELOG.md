@@ -3,6 +3,48 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.52.0 — 2026-10-07
+
+- Add `attempt(parser, { contain: true })`. A failure committed inside the
+  transaction — a `dispatch()` whose selected branch failed — is reported as an
+  ordinary failure at the attempt's start, so an enclosing `choice()` still tries
+  its next arm. This is for two readings of one prefix that only a later token
+  decides, such as CSS reading a block item as a declaration and then as a nested
+  rule (css-syntax-3 §5.4.4); before, a dispatch inside the first reading made the
+  second unreachable. Interpreter, compiled table, emitted assembly, macro output
+  and serialized IR carry the option identically; a plain `attempt()` is unchanged.
+
+- `firstSetOf()` resolves through `attempt()` the way it resolves through `node()`
+  or `label()`. It used to read the transaction's construction-time first set,
+  which is `any` whenever the inner opens with a rule reference, and the compiled
+  table then left every choice arm that an `attempt()` opens ungated: the arm was
+  entered at every position, including the `}` that ends each block a
+  `many(choice(…))` reads. An `attempt()` at the head of jess's Less nested-rule
+  selector cost 3.60% of a `benchmark.less` parse before and 0.02% after.
+  `attempt()` stays nullable to the choice classifier, so it still never
+  authorizes exclusive one-arm dispatch.
+
+- `node({ trailingTrivia: true })` no longer forces the node's own trivia capture.
+  It still ends the node after the trivia that follows its body, and that trivia
+  still reaches this node's log whenever the node keeps one (a structural node, a
+  `build` that declares `triviaLog`, `captureTrivia`, a CST host) and the selected
+  root trivia either way. A `build` that never reads the log now keeps the lean
+  compiled node body instead of opening the capture frame at every match. On
+  jess's SCSS grammar, whose custom-property value takes its trailing comments
+  this way, a 20,000-declaration file parses in 2.60% fewer instructions.
+
+- A `trivia()` combinator carries its labeled-arm spec, built once, and every
+  labeled trivia scan reads it from there. The scan asked a module-level memo of
+  four slots, which a grammar switching among more than four trivia tables
+  thrashed: jess's Less grammar re-derived the spec 4,149 times per
+  `benchmark.less` parse. Measured on jess's compiled grammars, same tables both
+  sides: Less AST `benchmark.less` -1.84%, Less CST -1.22%, Less AST
+  `bootstrap.css` -1.41%, .jess -0.79%, SCSS -0.25%. The interpreter browser
+  bundle grows 105 bytes.
+
+- Re-anchor the grammar-density and broad-workload release comparisons to 0.51.2
+  (`047f920`), the immediately preceding stable release. Peak baselines are unchanged.
+
 ## 0.51.2 — 2026-10-03
 
 - Add `sourceLeaf(combinator, reducer)` for grammars that need a reduced semantic

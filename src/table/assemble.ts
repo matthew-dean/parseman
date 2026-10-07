@@ -523,8 +523,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * exact AST workloads execute the three shapes below 42k/66k/205k times per
    * CSS/Less/generated parse. Keep their bodies scalar and keep every other
    * shape on the generic oracle below.
+   *
+   * `trailing` is the node's `trailingTrivia` bit: consume the active trivia
+   * after a successful body, inside the node's span, exactly where the generic
+   * body does. It opens no capture: these shapes are the reducers that read no
+   * trivia log.
    */
-  function plainBuildNode(child: Piece, build: NodeBuilder): Piece {
+  function plainBuildNode(child: Piece, build: NodeBuilder, trailing: boolean): Piece {
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
@@ -542,6 +547,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
+      if (trailing && value !== FAIL && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
       const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
       const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
       ctx._fields = savedFields
@@ -578,7 +584,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /** Direct reducer whose declared arity proves `rawChildren` is unobservable.
    * Use the existing split children/leaves collector instead of opening a
    * duplicate raw capture buffer. The body shape is selected while linking. */
-  function childrenOnlyBuildNode(child: Piece, build: NodeBuilder): Piece {
+  function childrenOnlyBuildNode(child: Piece, build: NodeBuilder, trailing: boolean): Piece {
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
@@ -596,6 +602,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
+      if (trailing && value !== FAIL && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
       const captured = capturedFlatChildren(kids)
       ctx._fields = savedFields
       ctx._cstBuf = sBuf
@@ -1912,6 +1919,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_ATTEMPT: {
         const child = link(code[ip + 1]!)
+        const contain = code[ip + 2] === 1
         return (input, pos, ctx) => {
           const need = markCst(ctx)
           const mRaw = MRAW
@@ -1924,8 +1932,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const v = child(input, pos, ctx)
           if (v !== FAIL) return v
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          // A committed failure propagates VERBATIM — rolled back, not re-anchored.
-          if (committed(ctx)) return FAIL
+          // A committed failure propagates VERBATIM — rolled back, not re-anchored —
+          // unless the row contains commitment, where it is reported like any other.
+          if (committed(ctx)) {
+            if (!contain) return FAIL
+            ctx._fc = false
+          }
           ctx._fe = pos
           return FAIL
         }
@@ -3462,11 +3474,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // data plus this assembly's fixed option set; direct/custom contexts and
         // every richer node shape retain the generic implementation below.
         if (!hostCst && !tracked) {
-          if (build !== undefined && proj < 0 && flags === 0) {
-            return plainBuildNode(child, build)
+          // The trailing-trivia bit (128) rides on the two leanest shapes; it adds
+          // a consume, not a capture.
+          if (build !== undefined && proj < 0 && (flags & ~128) === 0) {
+            return plainBuildNode(child, build, trailingTrivia)
           }
-          if (build !== undefined && proj < 0 && flags === 2) {
-            return childrenOnlyBuildNode(child, build)
+          if (build !== undefined && proj < 0 && (flags & ~128) === 2) {
+            return childrenOnlyBuildNode(child, build, trailingTrivia)
           }
           if (build !== undefined && proj < 0 && flags === 18) {
             return childrenOnlyFieldsBuildNode(child, build)

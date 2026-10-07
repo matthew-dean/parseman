@@ -159,8 +159,10 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
   }
   if (op === OP_NODE || op === OP_NODE_TRACK) {
     const flags = code[ip + 3]!
+    // The same selection `emit-assembly.ts` makes: the trailing-trivia bit (128)
+    // keeps the children-only shape.
     const directChildren = !hostCst && op === OP_NODE && code[ip + 1]! >= 0 && code[ip + 4]! < 0
-      && (flags === 2 || flags === 18 || flags === 34)
+      && ((flags & ~128) === 2 || flags === 18 || flags === 34)
     if (directChildren) {
       // The confirmed low-arity builder projection installs split child/leaf
       // arrays instead of a CstCaptureBuf. Descendants still capture, but they
