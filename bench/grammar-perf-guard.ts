@@ -104,7 +104,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph,
   type Case, type Thresholds,
 } from './ab-harness.ts'
 import { classifyCandidateShelf, type CandidateCeiling } from './grammar-perf-shelf.ts'
@@ -186,9 +186,11 @@ type Side = {
   input: (c: DensityCase, rules: number) => string
 }
 
+/** Every call is a FRESH module graph, shared by the compiler and the grammar — see `freshGraph`. */
 async function loadSide(dir: string): Promise<Side> {
-  const pm = await import(path.join(dir, 'src', 'index.ts')) as { compile: Side['compile'] }
-  const g = await import(path.join(dir, 'bench', 'grammar-density', 'grammar.ts')) as {
+  const load = freshGraph()
+  const pm = await load(path.join(dir, 'src', 'index.ts')) as { compile: Side['compile'] }
+  const g = await load(path.join(dir, 'bench', 'grammar-density', 'grammar.ts')) as {
     caseGrammar: Side['grammar']
     caseInput: Side['input']
     DENSITY_CASES: Side['cases']
@@ -208,6 +210,16 @@ function toCases(side: Side): Case[] {
       run: (reps: number) => { for (let n = 0; n < reps; n++) parse() },
     }
   })
+}
+
+/** One pass's cases for a side, EACH case compiled in a module graph of its own. */
+async function isolatedCases(dir: string): Promise<Case[]> {
+  const out: Case[] = []
+  for (let n = 0; n < ref.cases.length; n++) {
+    const side = await loadSide(dir)
+    out.push(...toCases({ ...side, cases: [side.cases[n]!] }))
+  }
+  return out
 }
 
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
@@ -251,7 +263,9 @@ console.log(`  repetitions per sample: ${refCases.map(c => `${c.id.split('/')[1]
 
 const T = CONFIG.thresholds
 const load0 = os.loadavg()[0] ?? 0
-const { passRows, calibration } = measurePasses(() => toCases(ref), () => toCases(head), reps, M, T)
+const { passRows, calibration } = await measurePasses(
+  () => isolatedCases(refDir), () => isolatedCases(headDir), reps, M, T,
+)
 const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
 
@@ -260,7 +274,8 @@ console.log(
   + `\n  a pass BREACHES on median > ${T.medianPct}% OR min > ${T.minPct}% slower,`
   + ` AND at most the case's CALIBRATED share of interleaved pairs won`
   + `\n  or on the sign test: same win-rate rule AND > ${T.signTest.medianPct}% on BOTH median and min`
-  + `\n  the calibrated share is the null win rate a CONTROL pair of two reference instances measured in`
+  + `\n  the calibrated share is the null win rate a CONTROL pair of two reference instances, each from its own`
+  + `\n  module graph as both gate sides are, measured in`
   + `\n  the same passes, shifted by ${(0.5 - T.winRateCeiling).toFixed(2)} — so a null of 50% is judged at the configured`
   + ` ${Math.round(T.winRateCeiling * 100)}%`
   + `\n  a case FAILS only when a strict majority of passes breach — one bad pass is a busy machine, not a regression\n`,
@@ -281,7 +296,7 @@ for (const v of rows) {
   )
 }
 console.log(
-  `\nmeasured NULL — a control pair of two REFERENCE instances, identical code, same passes and positions.`
+  `\nmeasured NULL — a control pair of two REFERENCE instances from separate module graphs, identical code, same passes and positions.`
   + `\nEvery number in this block is instrument, not compiler; the ceiling column is what the win rates above`
   + `\nwere actually judged against.\n`,
 )

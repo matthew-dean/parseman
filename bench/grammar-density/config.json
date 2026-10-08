@@ -27,7 +27,7 @@
     "medianPct": 6,
     "minPct": 6,
     "winRateCeiling": 0.25,
-    "_winRateNote": "The win-rate ceiling is a NULL-RELATIVE distance, not an absolute rate. `measurePasses` measures each case's null win rate every run with a control pair of two independently compiled REFERENCE instances, and judges the head side at `null - (0.5 - winRateCeiling)`. A case whose null is 50% is judged at exactly this number, so the calibration can never loosen an unbiased case; a case the instrument favours or disfavours is judged at the same DISTANCE from its own null instead of an absolute one. Measured cause: two independently compiled instances of identical code read 12/12 (-7.8%) and 0/12 (+7.8%) on this repo's density cases, so a flat ceiling both false-fires and goes blind depending on which way the draw fell.",
+    "_winRateNote": "The win-rate ceiling is a NULL-RELATIVE distance, not an absolute rate. `measurePasses` measures each case's null win rate every run with a control pair of two REFERENCE instances, each compiled from its own fresh module graph exactly as both gate sides are, and judges the head side at `null - (0.5 - winRateCeiling)`. A case whose null is 50% is judged at exactly this number, so the calibration can never loosen an unbiased case; a case the instrument favours or disfavours is judged at the same DISTANCE from its own null instead of an absolute one. Measured cause: two independently compiled instances of identical code read 12/12 (-7.8%) and 0/12 (+7.8%) on this repo's density cases, so a flat ceiling both false-fires and goes blind depending on which way the draw fell.",
 
     "signTest": {
       "winRateCeiling": 0.25,
