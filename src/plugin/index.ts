@@ -1130,7 +1130,12 @@ function transformMacroImpl(
     if (value === undefined || isStaticNullishExpression(value)) return undefined
     unresolvedImports.clear()
     const out = evaluate(value)
-    if (out === null) return unevaluable(value.start, `${label}: rules({ ${name} })`)
+    if (out === null) {
+      // A const bound to `null`/`undefined` means no option, exactly as the literal does.
+      const id = (value.type === 'Identifier' ? value.name : null)
+      if (id !== null && scope.has(id) && scope.get(id) == null) return undefined
+      return unevaluable(value.start, `${label}: rules({ ${name} })`)
+    }
     unresolvedImports.clear()
     return out
   }

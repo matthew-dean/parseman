@@ -28,7 +28,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   one, or when a trailing `rules(factory, options)` argument isn't an object literal.
   An options object or array containing an unresolved element is now unresolved as a
   whole, instead of carrying a `null` in its place. An empty `scanSkip` array means no
-  skip units whether it's written `[]` or named by a `const`.
+  skip units whether it's written `[]` or named by a `const`, and an option bound to a
+  `null` const means no option, as the literal `null` does.
 
 - Re-anchor the grammar-density and broad-workload release comparisons to 0.52.0
   (`5ecb114`), the immediately preceding stable release. Peak baselines are unchanged.

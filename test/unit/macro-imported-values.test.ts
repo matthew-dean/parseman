@@ -176,6 +176,15 @@ export const grammar = rules({ scanSkip: SKIP }, g => ({ Doc: scanTo(literal(';'
 `)
     expect(endOf(g.Doc!, 'a ";" b;')).toBe(3)
   })
+
+  it('a named NULL option means no option, exactly as `null` does', () => {
+    const g = build(`
+import { rules, literal, scanTo } from 'parseman' with { type: 'macro' }
+const NONE = null
+export const grammar = rules({ trivia: NONE, scanSkip: NONE }, g => ({ Doc: scanTo(literal(';')) }))
+`)
+    expect(endOf(g.Doc!, 'a ";" b;')).toBe(3)
+  })
 })
 
 describe('a terminal re-exported by a barrel (`export * from`)', () => {
