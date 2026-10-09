@@ -41,12 +41,12 @@ export const g = compose([base, rules(g => ({ Extra: literal('x') }))])`)
   })
 
   it('still only warns for an argument that is not build-compiled', () => {
-    // A local grammar the macro cannot evaluate runs on the interpreter, and a
-    // runtime compose() links it, so the fallback is real there.
-    const run = downstream('export {}\n', `import { compose, rules, sequence, literal } from 'parseman' with { type: 'macro' }
-const base = rules(g => ({ Entry: sequence(g.Atom, literal('!')), Atom: literal('a') }))
-const reuse = rules(g => ({ Entry: base.Entry }))
-export const g = compose([reuse, rules(g => ({ Atom: literal('b') }))])`)
+    // A grammar the macro cannot resolve statically (here, one returned by a local
+    // call) is a live rules() grammar at runtime, which runtime compose() links, so
+    // the fallback is real there.
+    const run = downstream('export {}\n', `import { compose, rules, literal } from 'parseman' with { type: 'macro' }
+const make = () => rules(g => ({ A: literal('a') }))
+export const g = compose([make(), rules(g => ({ B: literal('b') }))])`)
     const out = run()
     expect(out?.warnings.some(w => w.includes("argument 0 isn't a build-resolvable grammar; falling back to runtime"))).toBe(true)
   })

@@ -71,11 +71,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     linking it would mean evaluating that IR. Compose compiled grammars at build time
     with the macro, which is unchanged in that respect. For a table at runtime, pass
     the composition to `compile()`, which now also takes a whole rule map and is the
-    one runtime path that specialises. It falls back to closures under CSP. An
-    override reaches each composed factory's `g.X` references, but not a rule object
-    a factory takes from another grammar (`Entry: base.Entry`): that object keeps
-    `base`'s bindings, where the IR rebuild used to rebind it by name. Compose
-    `base` itself to put its rules under the composition's names.
+    one runtime path that specialises. It falls back to closures under CSP.
+  - **Breaking:** `compose()`, and `compile()` of a plain rule map, refuse a rule
+    object borrowed from another grammar (`Entry: base.Entry`) whose graph
+    references a rule the composition also defines. Its references are `base`'s
+    slots: the interpreter would keep `base`'s rule while a compiled table binds the
+    composition's by name, so the two engines would accept different input. The IR
+    rebuild used to rebind it by name. The error names the rule and the reference;
+    compose `base` itself instead. A borrowed rule that references nothing the
+    composition defines still links.
   - A macro `compose()` over an esbuild-bundled compiled upstream lowers at build
     time again. esbuild reprints the carried-pieces key as
     `[/* @__PURE__ */ Symbol.for("parseman.composedPieces")]`, renames a clashing

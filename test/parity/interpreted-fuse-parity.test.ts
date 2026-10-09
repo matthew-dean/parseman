@@ -282,19 +282,38 @@ describe('fuseInterpreted fuse-time contract', () => {
     expect(P.run(second.Doc!, 'QQ').ok).toBe(true)
   })
 
-  it('an override reaches g.X references, not a rule object borrowed from another grammar', () => {
-    // A factory may return another grammar's rule object. Its references were bound
-    // when THAT grammar was built, so an override of `Atom` here does not reach
-    // inside it. Composing `base` itself is what puts its rules under the
-    // composition's names (docs/guide/extending.md, "Override is open-recursive").
+  it('refuses a borrowed rule object whose graph references a rule the composition defines', () => {
+    // A factory may return another grammar's rule object. Its references are that
+    // grammar's slots: the interpreter would keep `base`'s Atom while compile() of the
+    // composition binds Atom by name, so the two engines would accept different input.
     const base = P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Entry: P.sequence(g.Atom!, P.literal('!')), Atom: P.literal('a') }))
     const override = P.rules(() => ({ Atom: P.literal('b') }))
     const borrowed = P.compose([P.rules(() => ({ Entry: base.Entry })), override])
-    expect(P.run(borrowed.Entry!, 'a!').ok).toBe(true)
-    expect(P.run(borrowed.Entry!, 'b!').ok).toBe(false)
+    expect(() => borrowed.Entry).toThrow(/compose: rule "Entry" is a rule object borrowed from another grammar, and its graph references "Atom"/)
+    expect(() => P.compile(borrowed)).toThrow(/rule "Entry" is a rule object borrowed/)
+    // A plain map handed to compile() is refused the same way.
+    expect(() => P.compile({ Entry: base.Entry, Atom: P.literal('b') } as Record<string, unknown>)).toThrow(/compile: rule "Entry" is a rule object borrowed/)
+    // Composing `base` itself is the supported route, and both engines agree on it.
     const composed = P.compose([base, override])
-    expect(P.run(composed.Entry!, 'b!').ok).toBe(true)
-    expect(P.run(composed.Entry!, 'a!').ok).toBe(false)
+    const table = P.compile(composed)
+    for (const [input, ok] of [['b!', true], ['a!', false]] as const) {
+      expect(P.run(composed.Entry!, input).ok).toBe(ok)
+      expect(P.run(table.Entry!, input).ok).toBe(ok)
+    }
+  })
+
+  it('links a borrowed rule object that references no rule the composition defines', () => {
+    const word = P.rules(() => ({ Word: P.regex(/[a-z]+/) }))
+    const base = P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Entry: P.sequence(g.Atom!, P.literal('!')), Atom: P.literal('a') }))
+    const cases = [
+      [P.compose([P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Doc: P.sequence(g.W!, P.literal(';')), W: word.Word }))]), 'abc;'],
+      // base.Entry references base's Atom, which this composition does not define.
+      [P.compose([P.rules(() => ({ Doc: base.Entry }))]), 'a!'],
+    ] as const
+    for (const [composed, input] of cases) {
+      expect(P.run(composed.Doc!, input).ok).toBe(true)
+      expect(P.run(P.compile(composed).Doc!, input).ok).toBe(true)
+    }
   })
 
   it('links a runtime linkable() artifact through its recipe, and refuses an IR-only one', () => {

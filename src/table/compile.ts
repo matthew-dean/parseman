@@ -9,6 +9,7 @@ import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnostic, type DuplicationOption } from './duplication-hook.ts'
 import { beginCompileDegradationDrain } from '../compiler/degradation.ts'
 import { compileRuleMapRunnable } from './compile-rule-map.ts'
+import { borrowedRuleMessage, borrowedRuleReference } from '../compiler/borrowed-rules.ts'
 import type { TableRule } from './program.ts'
 
 /**
@@ -148,6 +149,10 @@ function compileMap(grammar: Record<string, unknown>, opts: { readonly hostMode?
     }
     entries.push([key, value])
   }
+  // A runtime composition was already checked when it linked; a plain map is checked
+  // here, because this encoder binds references by name.
+  const borrowed = borrowedRuleReference(Object.fromEntries(entries))
+  if (borrowed !== undefined) throw new Error(borrowedRuleMessage('compile', borrowed))
   // One aggregated degradation block per compile, exactly as `compileRoot` drains it.
   const drain = beginCompileDegradationDrain()
   let done = false

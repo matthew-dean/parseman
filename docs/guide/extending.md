@@ -41,8 +41,12 @@ base's internals see your overrides too.
 
 The references it re-binds are the `g.X` references in each composed grammar's own
 `rules()` factory. A factory that returns a rule object taken from another grammar
-(`Entry: base.Entry`) gets that grammar's bindings with it. To put `base`'s rules under the
-composition's names, compose `base` itself.
+(`Entry: base.Entry`) brings that grammar's references with it, so `compose()` refuses one
+whose graph references a rule the composition also defines: the interpreter would keep
+`base`'s rule while `compile()` binds the composition's, and they'd accept different input.
+`compile()` of a plain rule map refuses it the same way. Compose `base` itself instead, so
+its references resolve to the composition's rules. A borrowed rule that references nothing
+the composition defines is fine (`test/parity/interpreted-fuse-parity.test.ts`).
 
 ## Assembling one grammar from parts of several
 

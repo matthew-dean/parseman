@@ -12,6 +12,7 @@
  * IR and encodes the merged map once into a static table.
  */
 import { ruleDependencies } from '../analysis/gating.ts'
+import { borrowedRuleMessage, borrowedRuleReference } from './borrowed-rules.ts'
 import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
 import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
@@ -385,6 +386,11 @@ function linkComposition(
     }
     throw new Error(`compose: rule(s) ${missing.map(n => `"${n}"`).join(', ')} are referenced but defined by no composed grammar`)
   }
+  // A borrowed rule object keeps its own grammar's bindings here but would be rebound
+  // by name in `compile()` of this composition: refuse it rather than let the two
+  // engines accept different input.
+  const borrowed = borrowedRuleReference(map)
+  if (borrowed !== undefined) throw new Error(borrowedRuleMessage('compose', borrowed))
   for (const rule of Object.values(map)) LINKED_WINNERS.set(rule, map)
   // The linked map is itself a composition: it composes again, and says so.
   Object.defineProperty(map, RULES_RECIPE, { value: recipes, enumerable: false })
