@@ -29,6 +29,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   terminal whose helper is a relative file inside that package fails the build naming
   both, since the importing module has no stable path to it.
 
+- Ordinary top-level code in a macro module is evaluated at build time only when a
+  grammar reads it, so the imports it reads are never resolved for a value nothing
+  compiles. A declaration such as `const table = compute(N)`, which reads a local
+  constant, no longer draws a "references a parseman macro import" warning.
+
 - Fail the build, naming the option or declaration, the grammar, and each unresolved
   binding with its reason, when an imported binding can't be resolved, when a
   `trivia`/`scanSkip` option can't be evaluated, when an options spread could hide

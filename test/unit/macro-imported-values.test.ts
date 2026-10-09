@@ -37,10 +37,10 @@ export const parenOpts = { skip: [dq] }
 export const identBoundary = '-_a-zA-Z0-9'
 `.trim()
 
-const BUILDERS = (helper: string) => `
+const BUILDERS = (helper: string, builder = 'children => mkIdent(children)') => `
 import { node, regex } from 'parseman' with { type: 'macro' }
 import { mkIdent } from '${helper}'
-export const ident = node('Ident', regex(/[a-z]+/), children => mkIdent(children))
+export const ident = node('Ident', regex(/[a-z]+/), ${builder})
 `.trim()
 
 let dir: string
@@ -77,11 +77,11 @@ beforeAll(() => {
   // A terminal whose node() builder calls a helper ITS module imports.
   fs.writeFileSync(path.join(dir, 'builders.ts'), BUILDERS('./ast.js'))
   fs.mkdirSync(path.join(dir, 'sub'))
-  for (const [name, helper] of [['builders', '@t/ast'], ['builders-rel', './ast.js']]) {
+  for (const [name, helper, builder] of [['builders', '@t/ast'], ['builders-rel', './ast.js'], ['builders-named', '@t/ast', 'mkIdent']]) {
     const p = path.join(dir, 'node_modules', '@t', name!)
     fs.mkdirSync(path.join(p, 'lib'), { recursive: true })
     fs.writeFileSync(path.join(p, 'package.json'), JSON.stringify({ name: `@t/${name}`, type: 'module', exports: { '.': './lib/index.js' } }))
-    fs.writeFileSync(path.join(p, 'lib', 'index.js'), transformMacro(BUILDERS(helper!), path.join(p, 'src', 'index.ts'), new Set(['parseman']))!.code)
+    fs.writeFileSync(path.join(p, 'lib', 'index.js'), transformMacro(BUILDERS(helper!, builder), path.join(p, 'src', 'index.ts'), new Set(['parseman']))!.code)
   }
 })
 afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
@@ -276,6 +276,41 @@ export const grammar = rules(g => ({ Doc: sequence(literal('='), ident) }))
 
   it('refuses a helper a package imports by relative path, naming both', () => {
     expect(() => lower(grammar('@t/builders-rel'))).toThrow(/`ident` has a node\(\) builder reading `mkIdent` from '\.\/ast\.js' inside .*builders-rel/)
+  })
+
+  it('names the terminal whose carried builder IR cannot be rebuilt', () => {
+    // A package builder that is an imported NAME, not an inline function, is carried
+    // with a static error the IR cannot rebuild from.
+    expect(() => lower(grammar('@t/builders-named'))).toThrow(/`ident` carries combinator IR that does not evaluate .*builders-named.*: IR direct node builder for Ident/)
+  })
+})
+
+describe('ordinary code beside a grammar', () => {
+  it('is evaluated only if a grammar reads it, so its imports are never resolved', () => {
+    // `table` reads a static local and a runtime-only import. It is not grammar code,
+    // and evaluating it anyway failed the build over a value nothing compiles.
+    const out = lower(`
+import { rules, literal } from 'parseman' with { type: 'macro' }
+import { opaque } from './runtime-only.ts'
+const N = 3
+const table = opaque(N)
+export const grammar = rules(g => ({ Doc: literal('a') }))
+`)
+    expect(out.warnings).toEqual([])
+    expect(out.code).toContain('const table = opaque(N)')
+  })
+
+  it('a local a grammar reads is still resolved, after a ref() pre-pass has looked for it', () => {
+    const g = build(`
+import { rules, ref, literal, word } from 'parseman' with { type: 'macro' }
+const B = '-_a-zA-Z0-9'
+const r = ref()
+r.define(literal('x'))
+const kw = word('if', B)
+export const grammar = rules(g => ({ Doc: kw }))
+`)
+    expect(endOf(g.Doc!, 'if')).toBe(2)
+    expect(endOf(g.Doc!, 'if-x')).toBeNull()
   })
 })
 

@@ -211,7 +211,8 @@ export class ModuleScope extends Map<string, unknown> {
       super.set(name, r.value)
       return true
     }
-    this.tried.set(name, r?.unresolved)
+    // A name nothing binds YET is not remembered: a later declaration may bind it.
+    if (r !== null) this.tried.set(name, r.unresolved)
     return false
   }
 }

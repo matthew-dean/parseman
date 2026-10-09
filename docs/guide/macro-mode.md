@@ -205,7 +205,14 @@ The exporting module is read, never run:
   terminal another module can reach — exported, or named by an exported value — with its
   combinator IR attached under `Symbol.for('parseman.combinatorIR')`. Plain values (strings,
   option objects, arrays of terminals) are kept as written. Both sides must be built by the
-  same parseman version.
+  same parseman version. A bundled entry works too: a bundler may emit each top-level
+  `const` as `var`, and a top-level `let`/`var` the module never reassigns or redeclares is
+  read like a `const`.
+
+A terminal's `node()` builder can call a helper its own module imports. The compiled
+grammar imports that helper too, with the path re-spelled from the importing module. A
+helper that is a relative file inside another package has no stable path from outside it,
+so that fails the build; have the package import the helper by package name instead.
 
 Each grammar gets its own copy of an imported terminal. Under `compose()` and
 `composeLeaf()`, `scanSkip` still applies only to the rules of the grammar that declared

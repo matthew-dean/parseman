@@ -926,13 +926,25 @@ function transformMacroImpl(
     if (!m) return { unresolved: `is imported from '${binding.source}', which does not resolve from ${from}` }
     return exportedValue(m, binding.imported, 0)
   }
-  /** Declarations of THIS module that failed to evaluate because of an unresolved
-   * import, so a later read of the local names the import behind it. */
-  const localFailures = new Map<string, string>()
+  /** Declarations of THIS module that no grammar construct references, kept unevaluated
+   * until a grammar reads the name. Ordinary code may read any import, and resolving a
+   * module for a value nothing compiles is pure build cost — or a build failure. */
+  const deferredLocals = new Map<string, Expression>()
   const mainOpaqueImports = opaqueImportsOf(body as unknown as AnyNode[])
   const resolveMainFree = (name: string): FreeNameResolution => {
-    const failed = localFailures.get(name)
-    if (failed !== undefined) return { unresolved: failed }
+    const deferred = deferredLocals.get(name)
+    if (deferred !== undefined) {
+      deferredLocals.delete(name)
+      // Its own misses are reported through the local's name, not beside it.
+      const outer = [...unresolvedImports]
+      unresolvedImports.clear()
+      const value = evaluateStaticValue(deferred, scope, code)
+      const why = [...unresolvedImports]
+      unresolvedImports.clear()
+      for (const n of outer) unresolvedImports.add(n)
+      if (value !== null && value !== undefined || isStaticNullishExpression(deferred)) return { value }
+      return why.length > 0 ? { unresolved: `could not be evaluated at build time, because: ${why.join('; ')}` } : null
+    }
     const binding = importBindings.get(name)
     if (!binding) return mainOpaqueImports.has(name) ? { unresolved: OPAQUE_IMPORT } : null
     const resolved = importedValue(id, binding)
@@ -2165,16 +2177,8 @@ function transformMacroImpl(
         // ── Simple binding: const name = <expr> ──────────────────────────
         const varName = (d.id as unknown as { name: string }).name
         if (!referencesAny(init, allNames, scope)) {
-          unresolvedImports.clear()
-          const staticValue = evaluateStaticValue(init, scope, code)
-          if (staticValue !== null && staticValue !== undefined || isStaticNullishExpression(init)) {
-            ;(scope as Map<string, unknown>).set(varName, staticValue)
-          } else if (unresolvedImports.size > 0) {
-            // Ordinary runtime code may read imports the macro cannot see, so this is not
-            // an error HERE — only if a grammar later reads `varName` (see resolveMainFree).
-            localFailures.set(varName, `could not be evaluated at build time, because: ${[...unresolvedImports].join('; ')}`)
-          }
-          unresolvedImports.clear()
+          // Evaluated only if a grammar reads it — see `deferredLocals`.
+          deferredLocals.set(varName, init)
           continue
         }
 
