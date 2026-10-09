@@ -26,13 +26,28 @@
  *   at 0/12 with ±8% medians on byte-identical sides. Compiling once and reusing
  *   made every pass one draw of that lottery; the win rate then reads as
  *   certainty in whichever direction the draw fell. See `measurePasses`.
+ * - **Every compile is a REAL compile.** V8's compilation cache hands identical
+ *   `new Function` source back as the SAME SharedFunctionInfo, feedback vector
+ *   and optimized code, so "recompiled" instances of byte-identical emitted
+ *   source — across passes, across the null pair, and across the two sides
+ *   whenever a change does not touch the emitted text — were one JIT profile
+ *   driving several module graphs' helpers. See `isolateCompilation`.
+ * - **Every instance comes from its own MODULE GRAPH.** The runtime helpers a
+ *   parser calls are module-level functions, JIT-compiled once per graph and kept
+ *   for the life of the process, so a graph is a lottery draw of its own that a
+ *   fresh compile does not resample. Every case of every side factory call is
+ *   built in a fresh graph (`freshGraph`), which also makes the null pair
+ *   cross-graph, as the gate pair always is.
  * - **Same-parse assertion.** The cheapest way for a side to look fast is to stop
  *   doing work. Both sides must produce identical results, compared structurally
  *   because they come from two separate module graphs.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, cpSync, symlinkSync, rmSync } from 'node:fs'
+import { register } from 'node:module'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+import v8 from 'node:v8'
 
 export type Measurement = {
   targetSampleMs: number
@@ -97,9 +112,10 @@ export type Thresholds = {
    * `measurePasses` fixes the cause by RESAMPLING: every pass compiles a fresh
    * pair, so `passes` independent passes are finally independent in the thing
    * that dominates, and it measures the null directly with a control pair of two
-   * reference instances. The ceiling each case is judged against is that measured
-   * null shifted by `0.5 - winRateCeiling`, so an unbiased case is judged at
-   * exactly this number and a biased one is judged at what "biased" is worth.
+   * reference instances, each case in its own module graph. The ceiling each case
+   * is judged against is that measured null shifted by `0.5 - winRateCeiling`, so
+   * an unbiased case is judged at exactly this number and a biased one is judged
+   * at what "biased" is worth.
    */
   signTest: {
     winRateCeiling: number
@@ -498,10 +514,12 @@ export function interleave(
 export type Contest = { label: string; a: readonly Case[]; b: readonly Case[] }
 
 /**
- * Builds one side's cases. Called ONCE PER PASS, and it must return FRESH
- * instances every time — a factory that memoises defeats the resampling below.
+ * Builds one side's cases. Called once per contest per pass, and it must return
+ * FRESH instances, EACH compiled in a fresh module graph of its own
+ * (`freshGraph`) — a factory that memoises, or shares a graph between cases or
+ * calls, defeats the resampling below.
  */
-export type SideFactory = () => Case[]
+export type SideFactory = () => Promise<Case[]>
 
 /** What the control pair measured, per case, pooled over every pass. */
 export type Calibration = {
@@ -520,6 +538,84 @@ const shift = (nullRate: number, configured: number): number =>
   Math.min(1, Math.max(0, nullRate - (0.5 - configured)))
 
 /**
+ * Turn V8's compilation cache off for the rest of this process, so every
+ * `new Function` over the same text compiles to its OWN SharedFunctionInfo.
+ *
+ * `compile()` assembles each parser with `new Function(...EMITTED_PARAMS,
+ * source)`. V8 caches that by source text: from the second compile of a given
+ * text on, it returns the cached SharedFunctionInfo AND its feedback cell, so
+ * every "fresh" instance shares one feedback vector and one optimized code
+ * object with every other instance of that text. Each instance still calls its
+ * own module graph's helpers (they arrive as `EMITTED_PARAMS`), so one shared
+ * JIT profile was driving two or three graphs' functions at once. Whenever the
+ * reference and head emit identical source — any change that does not touch the
+ * emitted text — the gate pair, the null pair and every pass were one compiled
+ * object, and "recompiled per pass" was false.
+ *
+ * `test/bench/ab-harness.test.ts` proves the sharing, and its removal, on the
+ * running node with `%GetOptimizationStatus`; `docs/design/perf-harness-interleaving.md`
+ * has what it did to the gates.
+ *
+ * Set at RUNTIME rather than as a `--no-compilation-cache` command-line flag
+ * because a flag lives in whatever launched the process: a direct
+ * `node --import tsx/esm bench/…` run, an ad-hoc script, or a future CI step
+ * would silently measure with the cache on. V8 reads the flag on every cache
+ * lookup, so turning it off here takes effect for every compile after this call,
+ * however the gate was started. Idempotent; it is never turned back on.
+ */
+export function isolateCompilation(): void {
+  v8.setFlagsFromString('--no-compilation-cache')
+}
+
+/**
+ * Tags every `file:` module resolved from a tagged parent with the parent's tag,
+ * so a tagged entry pulls in a whole graph of its own. Node keys its module map on
+ * the URL, query included. Runs ahead of tsx's hooks and lets tsx resolve first.
+ */
+const GRAPH_HOOKS = `export async function resolve(specifier, context, next) {
+  const r = await next(specifier, context)
+  const tag = /[?&]pm-graph=(\\d+)/.exec(context.parentURL ?? '')?.[1]
+  if (tag === undefined || !r.url.startsWith('file:') || /[?&]pm-graph=/.test(r.url)) return r
+  return { ...r, url: r.url + (r.url.includes('?') ? '&' : '?') + 'pm-graph=' + tag }
+}`
+let graphCount = 0
+
+/**
+ * An importer for ONE fresh module graph: every file imported through it, and
+ * everything those files import, is a new module instance shared with no other
+ * graph. Import a side's entry points through one importer so they share a graph
+ * with each other and with nothing else.
+ *
+ * Fresh compiled instances are not enough on their own. The parser's runtime
+ * helpers are module-level functions, compiled and optimized ONCE PER GRAPH and
+ * kept for the life of the process, so with one graph per side every pass shares
+ * the same helper code. Measured with the compilation cache already off: an
+ * identical-code A/A read `graphql/document` at +1.2%…+2.8% in all five passes,
+ * winning 0–3 of 12 pairs each time — a false FAIL of the sign test — while its
+ * null read flat; in another process the same graph read −3.3% against the same
+ * reference. One draw per graph, fixed for the run, and the majority-of-passes
+ * rule cannot absorb a draw that every pass shares.
+ *
+ * A graph per SIDE is not enough either: every case compiled in one graph calls
+ * the same helpers, so their JIT state depends on the mix of grammars, and the
+ * draw then moves every case of that side together. On the density cases, one
+ * graph per side per pass breached 33 of 140 case-passes across four
+ * identical-code runs and false-failed one run; one graph per CASE breached 11 of
+ * 140 and failed none. So a side factory builds each case in a graph of its own.
+ */
+export function freshGraph(): (file: string) => Promise<unknown> {
+  if (graphCount === 0) {
+    register(`data:text/javascript,${encodeURIComponent(GRAPH_HOOKS)}`)
+    // ponytail: every graph would otherwise cache tsx's source maps for all of its
+    // modules — about half the heap of a gate run. Stack traces lose TS lines; the
+    // gates report through `fail()`, not traces.
+    process.setSourceMapsEnabled(false)
+  }
+  const tag = ++graphCount
+  return file => import(`${pathToFileURL(file).href}?pm-graph=${tag}`)
+}
+
+/**
  * Run every pass, and measure the null while doing it.
  *
  * Two things happen here that did not happen when a gate called `interleave`
@@ -535,16 +631,23 @@ const shift = (nullRate: number, configured: number): number =>
  * on byte-identical code. Three passes over one draw is one measurement reported
  * three times; a majority of it is unanimous by construction.
  *
- * Rebuilding per pass costs one compile per side per pass and buys the property
- * the majority rule was always claimed to have.
+ * Rebuilding per pass costs one module graph and one compile per case per side
+ * per pass and buys the property the majority rule was always claimed to have —
+ * but only because each rebuild is a real one: V8's compilation cache is off
+ * (`isolateCompilation`, called before anything is built) and every case is
+ * built in a fresh graph (`freshGraph`). Before both, a rebuild of identical
+ * emitted source was the same compiled object handed back, calling helpers whose
+ * JIT state had been fixed once per graph for the whole run.
  *
  * ## 2. A control pair measures the null win rate, in this process, this run
  *
- * The control is two independently compiled REFERENCE instances — identical code,
- * so every pair it wins or loses is instrument, not compiler. It is measured in
- * the same loop as the gate pair, at the same rotated run positions, and which of
- * the two gets compiled first alternates by pass, because the first-compiled pair
- * is the one that most often draws the skew.
+ * The control is two REFERENCE instances, each case in its own fresh module graph —
+ * identical code, so every pair it wins or loses is instrument, not compiler, and
+ * cross-graph exactly as the gate pair is. (It used to be two instances of the
+ * reference's ONE graph, which cannot see the term the gate pair always carries.)
+ * It is measured in the same loop as the gate pair, at the same rotated run
+ * positions, and which of the two gets compiled first alternates by pass, because
+ * the first-compiled pair is the one that most often draws the skew.
  *
  * Its pooled win rate is the null the gate pair is judged against: the configured
  * `winRateCeiling` is the ceiling for a null of 0.5, and a case whose null lands
@@ -556,13 +659,14 @@ const shift = (nullRate: number, configured: number): number =>
  * Reference-side instances are used for the control rather than head-side ones so
  * that the null never depends on the code under test.
  */
-export function measurePasses(
+export async function measurePasses(
   refSide: SideFactory,
   headSide: SideFactory,
   reps: Map<string, number>,
   m: Measurement & { passes: number },
   t: Thresholds,
-): { passRows: Row[][]; calibration: Map<string, Calibration> } {
+): Promise<{ passRows: Row[][]; calibration: Map<string, Calibration> }> {
+  isolateCompilation()
   const gateSamples: Samples[] = []
   const nullSamples: Samples[] = []
   for (let p = 0; p < m.passes; p++) {
@@ -572,11 +676,11 @@ export function measurePasses(
     let gate: Contest
     let ctl: Contest
     if (p % 2 === 0) {
-      gate = { label: 'gate', a: refSide(), b: headSide() }
-      ctl = { label: 'null', a: refSide(), b: refSide() }
+      gate = { label: 'gate', a: await refSide(), b: await headSide() }
+      ctl = { label: 'null', a: await refSide(), b: await refSide() }
     } else {
-      ctl = { label: 'null', a: refSide(), b: refSide() }
-      gate = { label: 'gate', a: refSide(), b: headSide() }
+      ctl = { label: 'null', a: await refSide(), b: await refSide() }
+      gate = { label: 'gate', a: await refSide(), b: await headSide() }
     }
     const s = interleave([gate, ctl], reps, m)
     gateSamples.push(s.get('gate')!)

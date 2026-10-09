@@ -53,7 +53,9 @@ export const brackets = item
     const result = transform(REF_MACRO)!
     expect(result.warnings).toEqual([])
     expect(result.code).not.toContain("from 'parseman'")
-    expect(result.code).not.toContain('.define(')
+    // The STATEMENT is stripped. (`brackets` is exported, so its carried combinator IR
+    // — a string — spells the recursion as `ref()`/`.define()` for a downstream build.)
+    expect(result.code).not.toMatch(/^item\.define\(/m)
     expect(result.code).toContain('export const brackets =')
   })
 

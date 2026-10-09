@@ -37,6 +37,31 @@ function isNamedRuleRefForAnotherRule(r: Combinator<unknown>, key: string): bool
   return name !== undefined && name !== key
 }
 
+/** Every rule value a finished `rules()` call holds. See `ownRule`. */
+const claimedRules = new WeakSet<object>()
+
+/**
+ * `rules()` stamps its options (`trivia`, `scanSkip`, `hostMode`, `trackLines`) and the
+ * rule name onto the rule object itself. So a value ANOTHER grammar already holds — one
+ * terminal returned by two factories, or a rule of grammar A returned by grammar B —
+ * must not be stamped in place: the second grammar would overwrite the first's options,
+ * or inherit them wherever it omits one, and the two would parse different input than
+ * either declared. This grammar takes its own shallow copy instead, with none of those
+ * stamps. (A rule ref's `parse` still reads the meta it closes over — that is the other
+ * grammar's rule carrying its own trivia, exactly as a `g.X` reference to it would.)
+ */
+function ownRule(p: Combinator<unknown>, copies: Map<object, Combinator<unknown>>): Combinator<unknown> {
+  // A trivia rule is never stamped, and its identity is what ties it to `{ trivia }`.
+  if (!claimedRules.has(p) || p._meta.isTrivia) return p
+  let own = copies.get(p)
+  if (own === undefined) {
+    const { grammarTrivia: _t, grammarScanSkip: _s, grammarHostMode: _h, grammarTrackLines: _l, ...meta } = p._meta
+    // One copy per grammar, so a value under two keys stays one object here too.
+    copies.set(p, own = { ...p, _meta: meta })
+  }
+  return own
+}
+
 /**
  * Define named grammar rules without forward declarations.
  *
@@ -218,8 +243,10 @@ export function linkRules(
   const keys = [...winners.keys()]
 
   // Fill each ref with its actual definition, or store directly if never accessed via proxy.
-  for (const [key, { parser }] of winners) {
+  const copies = new Map<object, Combinator<unknown>>()
+  for (const [key, { parser: defined }] of winners) {
     const placeholder = cache[key]
+    const parser = ownRule(defined, copies)
     if (placeholder === parser) {
       throw new Error(`rules(): rule "${key}" cannot be a direct alias to itself`)
     }
@@ -283,6 +310,9 @@ export function linkRules(
     // capture so the interpreter (and, via the same flag, the compiled output) skips
     // building them. Each rule is its own root — refs are boundaries (see value-usage).
     markUnusedValues(rule)
+    // Claimed only after the define loop, so one value under two keys of THIS grammar
+    // stays one object. See `ownRule`.
+    claimedRules.add(winners.get(key)!.parser).add(rule)
   }
 
   // Record the factory's DECLARATION order (the returned object's key order).

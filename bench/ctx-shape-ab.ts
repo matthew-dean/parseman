@@ -21,15 +21,15 @@
  * Reuses `bench/ab-harness.ts` unchanged, so the load-bearing properties are the
  * gate's, not this file's: both sides in ONE process, interleaved and
  * order-alternated, both RECOMPILED per pass, alternating which side compiles
- * first, and a NULL control of two reference instances measured in the same
- * passes and positions. Absolutes across separate process launches are not
+ * first, and a NULL control of two reference instances, each from its own
+ * module graph, measured in the same passes and positions. Absolutes across separate process launches are not
  * comparable and are not reported.
  */
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign, freshGraph,
   type Case, type Thresholds,
 } from './ab-harness.ts'
 
@@ -73,7 +73,7 @@ const COPY = ['bench/ctx-shape-cases.ts', 'bench/workloads', 'examples'] as cons
 type BuiltCase = { id: string; bytes: number; make: () => { parse: () => unknown } }
 
 async function loadSide(dir: string): Promise<BuiltCase[]> {
-  const mod = await import(path.join(dir, 'bench', 'ctx-shape-cases.ts')) as {
+  const mod = await freshGraph()(path.join(dir, 'bench', 'ctx-shape-cases.ts')) as {
     buildCases: () => BuiltCase[]
   }
   return mod.buildCases()
@@ -89,6 +89,13 @@ function toCases(built: readonly BuiltCase[]): Case[] {
       run: (reps: number) => { for (let n = 0; n < reps; n++) made.parse() },
     }
   })
+}
+
+/** One pass's cases for a side, EACH case compiled in a module graph of its own. */
+async function isolatedCases(dir: string): Promise<Case[]> {
+  const out: Case[] = []
+  for (let n = 0; n < refBuilt.length; n++) out.push(...toCases([(await loadSide(dir))[n]!]))
+  return out
 }
 
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
@@ -118,8 +125,8 @@ console.log(
 console.log(`  parses per sample: ${refCases.map(c => `${c.id} ${reps.get(c.id)}`).join(', ')}`)
 
 const load0 = os.loadavg()[0] ?? 0
-const { passRows, calibration } = measurePasses(
-  () => toCases(refBuilt), () => toCases(headBuilt), reps, M, T,
+const { passRows, calibration } = await measurePasses(
+  () => isolatedCases(refDir), () => isolatedCases(headDir), reps, M, T,
 )
 const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
@@ -138,7 +145,7 @@ for (const v of rows) {
   )
 }
 
-console.log('\nmeasured NULL — two REFERENCE instances, identical code, same passes and positions.')
+console.log('\nmeasured NULL — two REFERENCE instances from separate module graphs, identical code, same passes and positions.')
 console.log('Every number in this block is instrument, not compiler.\n')
 for (const v of rows) {
   const k = calibration.get(v.id)!

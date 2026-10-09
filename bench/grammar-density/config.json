@@ -4,8 +4,8 @@
   "scoreMethod": "paired-ratio-v2",
   "_scoreMethodNote": "A/A --self revalidation on 2026-08-09 produced 0/35 false breaches with a worst single-pass swing of 1.52%, so the existing percentage floors remain unchanged. Historical 0.47 shelf median and minimum ceilings remain tagged aggregate-v1 and are compared with the retained v1 statistics only.",
 
-  "referenceSha": "047f920",
-  "_referenceNote": "The A/B reference: the exact stable v0.51.2 release commit (merge #145). Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the exact stable main base at every release, in the release PR, with the numbers read in that PR. Do NOT infer it from the first commit carrying the version string and do NOT bump it to silence a red gate.",
+  "referenceSha": "5ecb114",
+  "_referenceNote": "The A/B reference: the exact stable v0.52.0 main base (merge #147). Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the exact stable main base at every release, in the release PR, with the numbers read in that PR. Do NOT infer it from the first commit carrying the version string and do NOT bump it to silence a red gate.",
 
   "input": {
     "rules": 200,
@@ -27,7 +27,7 @@
     "medianPct": 6,
     "minPct": 6,
     "winRateCeiling": 0.25,
-    "_winRateNote": "The win-rate ceiling is a NULL-RELATIVE distance, not an absolute rate. `measurePasses` measures each case's null win rate every run with a control pair of two independently compiled REFERENCE instances, and judges the head side at `null - (0.5 - winRateCeiling)`. A case whose null is 50% is judged at exactly this number, so the calibration can never loosen an unbiased case; a case the instrument favours or disfavours is judged at the same DISTANCE from its own null instead of an absolute one. Measured cause: two independently compiled instances of identical code read 12/12 (-7.8%) and 0/12 (+7.8%) on this repo's density cases, so a flat ceiling both false-fires and goes blind depending on which way the draw fell.",
+    "_winRateNote": "The win-rate ceiling is a NULL-RELATIVE distance, not an absolute rate. `measurePasses` measures each case's null win rate every run with a control pair of two REFERENCE instances, each compiled from its own fresh module graph exactly as both gate sides are, and judges the head side at `null - (0.5 - winRateCeiling)`. A case whose null is 50% is judged at exactly this number, so the calibration can never loosen an unbiased case; a case the instrument favours or disfavours is judged at the same DISTANCE from its own null instead of an absolute one. Measured cause: two independently compiled instances of identical code read 12/12 (-7.8%) and 0/12 (+7.8%) on this repo's density cases, so a flat ceiling both false-fires and goes blind depending on which way the draw fell.",
 
     "signTest": {
       "winRateCeiling": 0.25,

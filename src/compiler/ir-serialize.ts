@@ -157,6 +157,19 @@ export function serializeRuleMap(
   }
 }
 
+/**
+ * ONE plain combinator as IR — what a compiled module carries on an exported terminal
+ * so another module can import it into a grammar (the macro evaluates grammars, and a
+ * compiled parser function is not a combinator it can evaluate).
+ *
+ * No new format: it is `serializeRuleMap`'s `scanSkip` channel over an empty map, which
+ * already serializes rule-free terminals OUTSIDE any factory — exactly this shape. Its
+ * inverse, `evalCombinatorIR`, evaluates source and so lives in `src/plugin/ir-eval.ts`.
+ */
+export function serializeCombinator(c: Comb): string | null {
+  return serializeRuleMap([], [c])
+}
+
 /** A recursive combinator currently being emitted, and the local `ref()` var that
  * stands in for its back-edge. Frames NEST: an inline recursive combinator inside
  * another one must still be able to name the outer one's ref var. */

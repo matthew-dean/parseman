@@ -5,6 +5,54 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.53.0 — 2026-10-09
 
+- Fix the macro silently dropping a `rules()` option whose value names an imported
+  binding. `rules({ scanSkip: [importedUnit] }, …)` evaluated the import to `null`, the
+  option became `undefined`, and the grammar built green, with no warning, and no
+  ambient scan-skip. Strings and comments inside `scanTo`/`balanced` regions were no
+  longer skipped. A local skip array named by identifier (`scanSkip: SKIP`) was dropped
+  the same way, and so were `scanTo`/`balanced` options that did not evaluate.
+
+- Resolve imported values wherever the macro evaluates a grammar: a terminal in a rule
+  body, a combinator argument (`balanced(o, c, opts)`, `word(s, boundary)`), and
+  `rules({ trivia, scanSkip })`. A relative import is read from its source. A package
+  import is read from its published entry. Named and `export * from` re-exports are
+  followed. Exported compiled terminals (and any a verbatim export still names) now
+  carry their combinator IR under
+  `Symbol.for('parseman.combinatorIR')`, so a grammar family can share terminals by
+  import instead of re-declaring them per grammar. An imported `rules()` factory's own
+  imports resolve the same way. A bundled entry resolves too: a bundler such as esbuild
+  emits each top-level `const` as `var` (and may requote the carried IR as a template
+  literal), so a top-level `let`/`var` that the module never reassigns (including as a
+  `for…of`/`for…in` target) or redeclares is read as its initializer. An imported
+  terminal whose inline `node()` builder calls a helper its own module imports now
+  brings that import along: the compiled grammar re-imports the helper, re-spelled
+  relative to the importing module. A package
+  terminal whose helper is a relative file inside that package fails the build naming
+  both, since the importing module has no stable path to it, and so do two builders that
+  read one local name as different exports.
+
+- Ordinary top-level code in a macro module is evaluated at build time only when a
+  grammar reads it, so the imports it reads are never resolved for a value nothing
+  compiles. A declaration such as `const table = compute(N)`, which reads a local
+  constant, no longer draws a "references a parseman macro import" warning.
+
+- Fail the build, naming the option or declaration, the grammar, and each unresolved
+  binding with its reason, when an imported binding can't be resolved, when a
+  `trivia`/`scanSkip` option can't be evaluated, when an options spread could hide
+  one, or when a trailing `rules(factory, options)` argument isn't an object literal.
+  An options object or array containing an unresolved element is now unresolved as a
+  whole, instead of carrying a `null` in its place. An empty `scanSkip` array means no
+  skip units whether it's written `[]` or named by a `const`, and an option bound to a
+  `null` const means no option, as the literal `null` does.
+
+- Fix two grammars that return the same rule value sharing their options. `rules()`
+  stamps `trivia`, `scanSkip`, `hostMode` and `trackLines` onto each rule object, so a
+  terminal returned by two grammars, or a rule of one grammar returned by another,
+  carried the first grammar's options into the second wherever it omitted one, and the
+  second parsed different input than it declared. This happened at runtime and under
+  the macro, for a local terminal as well as an imported one. `rules()` now gives each
+  grammar after the first its own unstamped copy of such a value.
+
 - Nothing outside `compile()` turns a string into code at runtime
   (`docs/design/runtime-and-size-contract.md`, rules 1 and 2). Runtime `compose()`
   serialized every `rules()` piece to IR text and rebuilt it with `eval` and
@@ -54,6 +102,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     grammar packages included, with `Function` and `eval` spied and again under
     `--disallow-code-generation-from-strings`, and statically pins the one remaining
     string-to-code site to `compile()`'s specialisation.
+
+- Re-anchor the grammar-density and broad-workload release comparisons to 0.52.0
+  (`5ecb114`), the immediately preceding stable release. Peak baselines are unchanged.
 
 ## 0.52.0 — 2026-10-07
 

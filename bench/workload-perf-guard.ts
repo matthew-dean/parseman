@@ -63,7 +63,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD, freshGraph,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
 import { classifyWorkloadShelves, SHELVED_WORKLOADS, usesPinned047WorkloadShelf } from './workload-perf-shelf.ts'
@@ -125,8 +125,9 @@ const M: GateMeasurement = QUICK
  */
 const COPY = ['bench/workloads', 'examples'] as const
 
+/** Every call is a FRESH module graph — see `freshGraph`. */
 async function loadSide(dir: string): Promise<Workload[]> {
-  const mod = await import(path.join(dir, 'bench', 'workloads', 'index.ts')) as {
+  const mod = await freshGraph()(path.join(dir, 'bench', 'workloads', 'index.ts')) as {
     buildWorkloads: () => Workload[]
   }
   const all = mod.buildWorkloads()
@@ -151,6 +152,13 @@ function toCases(workloads: readonly Workload[], side: string): Case[] {
       run: (reps: number) => { for (let n = 0; n < reps; n++) built.parse() },
     }
   })
+}
+
+/** One pass's cases for a side, EACH workload compiled in a module graph of its own. */
+async function isolatedCases(dir: string, side: string): Promise<Case[]> {
+  const out: Case[] = []
+  for (let n = 0; n < refWorkloads.length; n++) out.push(...toCases([(await loadSide(dir))[n]!], side))
+  return out
 }
 
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
@@ -204,8 +212,10 @@ console.log(`  parses per sample: ${refCases.map(c => `${c.id} ${reps.get(c.id)}
 
 const T = PEAK ? peakThresholds(CONFIG.peak.allowancePct) : CONFIG.thresholds
 const load0 = os.loadavg()[0] ?? 0
-const { passRows, calibration } = measurePasses(
-  () => toCases(refWorkloads, 'reference pass'), () => toCases(headWorkloads, 'head pass'), reps, M, T,
+const { passRows, calibration } = await measurePasses(
+  () => isolatedCases(refDir, 'reference pass'),
+  () => isolatedCases(headDir, 'head pass'),
+  reps, M, T,
 )
 const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
@@ -233,7 +243,8 @@ console.log(
     : `\nper-workload result over ${M.passes} independent passes, both sides RECOMPILED each pass`
       + `\n  a pass BREACHES on median > ${T.medianPct}% OR min > ${T.minPct}% slower,`
       + ` AND at most the workload's CALIBRATED share of interleaved pairs won`
-      + `\n  the calibrated share is the null win rate a CONTROL pair of two reference instances measured in the`
+      + `\n  the calibrated share is the null win rate a CONTROL pair of two reference instances, each from its own`
+      + `\n  module graph as both gate sides are, measured in the`
       + `\n  same passes, shifted by ${(0.5 - T.winRateCeiling).toFixed(2)} — so a null of 50% is judged at the configured`
       + ` ${Math.round(T.winRateCeiling * 100)}%`
       + `\n  a workload FAILS only when a strict majority of passes breach — one bad pass is a busy machine, not a regression\n`,
@@ -290,7 +301,7 @@ if (shelf !== null) {
   }
 }
 console.log(
-  `\nmeasured NULL — a control pair of two REFERENCE instances, identical code, same passes and positions.`
+  `\nmeasured NULL — a control pair of two REFERENCE instances from separate module graphs, identical code, same passes and positions.`
   + `\nEvery number in this block is instrument, not compiler; the ceiling column is what the win rates above`
   + `\nwere actually judged against.\n`,
 )

@@ -39,6 +39,17 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
 /** The `rules()` grammar an IR expression builds — the map plus, non-enumerable,
  * the recipe (`RULES_RECIPE`) a composition links it by. Build time only, as above. */
 export function evalRulesIR(ir: string): Record<string, Comb> {
+  return evalIR(ir, rules) as Record<string, Comb>
+}
+
+/** The inverse of `serializeCombinator`: the same evaluation, with `rules` reading the
+ * one `scanSkip` unit back instead of building a grammar around it. Build time only. */
+export function evalCombinatorIR(ir: string): Comb | null {
+  const units = evalIR(ir, (opts: { scanSkip?: Comb[] }) => opts.scanSkip) as Comb[] | undefined
+  return units?.length === 1 ? units[0]! : null
+}
+
+function evalIR(ir: string, rulesImpl: unknown): unknown {
   // `_tf`/`_nd` reconstruct a transform/node AND restore its captured callback
   // source (`_def.fnSrc`/`buildSrc`) so re-lowering inlines it statically. The live
   // fn is only needed for interpreted mode; a self-contained transform source is
@@ -146,10 +157,9 @@ export function evalRulesIR(ir: string): Record<string, Comb> {
     'scanTo', 'balanced', 'token', 'leaf', 'transform', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', 'adjacent', 'notAdjacent', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
-  const map = fn(
-    rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
+  return fn(
+    rulesImpl, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
     many, oneOrMore, optional, sepBy, keepSeparator, not, peek, node, parser,
     scanTo, balanced, token, leaf, transform, trivia, classifiedTrivia, label, field, expectC, adjacent, notAdjacent, _tf, _lf, _nd, _gch, _wc,
-  ) as Record<string, Comb>
-  return map
+  )
 }
