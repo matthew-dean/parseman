@@ -309,6 +309,16 @@ export function composedCoverageRules(grammar: Record<string, unknown>): Record<
   return link?.()
 }
 
+/** Each runtime composition's rules, mapped to the linked map they belong to. */
+const LINKED_WINNERS = new WeakMap<Combinator<unknown>, Record<string, Combinator<unknown>>>()
+
+/** The linked winner map a runtime composition's rule belongs to, or `undefined`.
+ * Lets a coverage run over ONE composed rule name its choices exactly as
+ * `composedGrammarCoverageDefinitions` does. INTERNAL: coverage tooling only. */
+export function linkedWinnersOf(rule: Combinator<unknown>): Record<string, Combinator<unknown>> | undefined {
+  return LINKED_WINNERS.get(rule)
+}
+
 /** The recipes one `compose()` item contributes, in order. */
 function recipesOf(item: LinkableTable | Record<string, unknown>): readonly RulesRecipe[] {
   const recipes = (item as Record<symbol, unknown>)[RULES_RECIPE]
@@ -375,6 +385,7 @@ function linkComposition(
     }
     throw new Error(`compose: rule(s) ${missing.map(n => `"${n}"`).join(', ')} are referenced but defined by no composed grammar`)
   }
+  for (const rule of Object.values(map)) LINKED_WINNERS.set(rule, map)
   // The linked map is itself a composition: it composes again, and says so.
   Object.defineProperty(map, RULES_RECIPE, { value: recipes, enumerable: false })
   Object.defineProperty(map, LINKED, { value: () => map, enumerable: false })

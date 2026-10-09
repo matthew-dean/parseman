@@ -91,6 +91,15 @@ describe('grammar semantic coverage', () => {
     expect(composedGrammarCoverageDefinitions(composed, 'X').map(definition => definition.id)).toEqual(['rule:X'])
   })
 
+  it('a coverage run over a composed rule hits the composed definitions', () => {
+    const composed = compose([rules(g => ({ Entry: choice(g.A, g.B), A: literal('a'), B: literal('b') }))])
+    const collector = createGrammarCoverageCollector(composedGrammarCoverageDefinitions(composed, 'Entry'))
+    const { result, coverage } = runWithGrammarCoverage(composed.Entry!, 'a', { collector })
+    expect(result.ok).toBe(true)
+    expect(coverage.hits).toEqual(['choice:Entry/arm:0', 'rule:A', 'rule:Entry'])
+    expect(coverage.unhit).toEqual(['choice:Entry/arm:1', 'rule:B'])
+  })
+
   it('names an alias rule and the rule it aliases', () => {
     const composed = compose([rules(g => ({ Entry: g.A, A: literal('a') }))])
     expect(composedGrammarCoverageDefinitions(composed, 'Entry').map(definition => definition.id)).toEqual(['rule:A', 'rule:Entry'])

@@ -18,7 +18,7 @@ import { scanTo } from './combinators/scanTo.ts'
 import { sequence } from './combinators/sequence.ts'
 import { token, leaf, sourceLeaf } from './combinators/token.ts'
 import { withCtx } from './combinators/withCtx.ts'
-import { composedCoverageRules } from './compiler/linker.ts'
+import { composedCoverageRules, linkedWinnersOf } from './compiler/linker.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition, type GrammarCoveragePlan } from './compiler/grammar-coverage-ids.ts'
 
 export type { GrammarCoverageDefinition } from './compiler/grammar-coverage-ids.ts'
@@ -380,7 +380,9 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
 
 export function runWithGrammarCoverage(entry: Runnable, input: string, options: RunOptions & { collector?: GrammarCoverageCollector; trace?: GrammarTraceSink } = {}): { result: RunResult; coverage: GrammarCoverageSnapshot } {
   if (typeof entry === 'function') throw new TypeError('runWithGrammarCoverage currently requires an interpreter combinator entry')
-  const plan = buildGrammarPlan(entry)
+  // A runtime composition's rule is planned through its winner map, so its IDs are
+  // the ones `composedGrammarCoverageDefinitions` reports.
+  const plan = buildGrammarPlan(entry, linkedWinnersOf(entry))
   const definitions = plan.definitions
   const collector = options.collector ?? createGrammarCoverageCollector(definitions)
   const { collector: _collector, trace, ...runOptions } = options

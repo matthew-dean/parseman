@@ -80,7 +80,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     `compile(combinator)` does, and throws on an entry that is not a parser instead
     of dropping it. `compose([linkable(g)])` names `g`'s rules, not the artifact's
     fields. A coverage plan names every rule whose winner shares its body with
-    another rule's.
+    another rule's, and `runWithGrammarCoverage()` over a composed rule reports the IDs
+    `composedGrammarCoverageDefinitions()` lists (a composed rule could not be run
+    under coverage before).
   - `linkable()` and `compileRuleMap().rules` run the closure artifact. Railroad
     tooling holds railroad-diagrams as real code. `evalRuleMapIR` moves to
     `src/plugin/ir-eval.ts`, which only the build-time macro imports.
