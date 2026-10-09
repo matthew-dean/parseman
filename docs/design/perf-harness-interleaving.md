@@ -125,6 +125,122 @@ neutral   median-of-rounds 0.5439 → 0.5633 ms (+3.6%)   mean 0.5928 → 0.6014
           best min 0.4526 → 0.4628 ms (+2.3%)   head won 5/9 rounds
 ```
 
+## Two mechanisms behind it, found in the harness and fixed there
+
+Both are properties of how `bench/ab-harness.ts` built its instances, not of the
+code under test, and both are removed in `measurePasses`.
+
+### 1. V8's compilation cache made "fresh" instances one compiled object
+
+`compile()` assembles each parser with `new Function(...EMITTED_PARAMS, source)`.
+V8 caches that by source text: from the second compile of a given text on, it
+returns the cached SharedFunctionInfo **together with its feedback cell**, so
+every later instance shares one feedback vector and one optimized code object.
+Shown directly — three instances of one source, only the middle one optimized
+with `%OptimizeFunctionOnNextCall`: with the cache on, all three come back
+optimized; with `--no-compilation-cache`, only the middle one does. That holds on
+every Node from 16 to 24, and `test/bench/ab-harness.test.ts` asserts it on the
+running one.
+
+So whenever the two sides emit identical text — every self-check, and any change
+that does not touch the emitted source — the gate pair, the null pair and every
+"recompiled" pass ran ONE JIT profile, while each instance called its own module
+graph's helpers through `EMITTED_PARAMS`. Which instance drew the one private
+compile (the first) and which shared is fixed for the process. That is a stable
+offset within a run that changes between runs, which is the bimodality above.
+With identical sides it was also the null pair's whole experiment, so the null
+showed the same distortion as the gate pair and could not discount it.
+
+### 2. Runtime helpers are JIT-compiled once per module graph
+
+With the cache off, an identical-code A/A still false-failed the sign test:
+`graphql/document` read **+1.2% … +2.8% in all five passes, winning 0–3 of 12
+pairs** in each, while its null read flat. In another process the same graph read
+−3.3% against the same reference. The parser's runtime helpers are module-level
+functions, optimized once per graph and kept for the run. Passes recompiled the
+parsers but not the graphs, so every pass shared one draw per graph, and the
+majority-of-passes rule cannot absorb a draw that every pass shares. The null was
+two instances of the reference's single graph, so it could not see the term at all.
+
+A fresh graph per side per pass is still not enough. Every case compiled in one
+graph calls the same helpers, so their JIT state depends on the mix of grammars,
+and one draw then moves every case of that side together — a whole pass reading
+0/12 across the density cases. Over four identical-code runs of the density gate,
+one graph per side per pass breached 33 of 140 case-passes and false-failed a run;
+one graph per case breached 11 of 140 and failed none.
+
+### The fix
+
+`measurePasses` turns the compilation cache off before it builds anything
+(`isolateCompilation`; set with `v8.setFlagsFromString` so it holds however the
+gate was launched — a command-line flag would be silently missing from a direct
+`node --import tsx/esm bench/…` run), and the gates build every case of every
+side in a fresh module graph (`freshGraph`, a resolve hook that gives every module
+reached from a tagged entry the same tag). Every timed instance is now its own
+compile in its own graph, so the passes are independent in both, and the null —
+two reference instances, each case in its own graph — carries every term the gate
+pair does. CI needs no change: the gates set both themselves.
+
+The cost is memory, because a module graph is never unloaded: about 1.6 GiB of
+V8 heap for the density gate and 2.1 GiB for the workload gate with tsx's source
+maps cached per graph; turning that cache off for the loaded graphs roughly halved
+it in a quick run (the default heap limit is about 4 GiB). Loading a graph per case
+adds roughly a quarter to the density gate's run time.
+
+### Before and after
+
+`pnpm perf:workloads`, every workload, interleaved runs of each harness on one
+machine at load average 2–57 with other lanes running. A/A is `047f920` (0.51.2)
+against a second worktree of itself (`--head-ref=047f920f9a`), so the two sides
+are separate graphs of byte-identical code; release is `047f920` against `fae263d`
+(0.52.0). Center is the median of the five passes' paired medians; worst is the
+worst single pass.
+
+| workload | A/A worst pass, before | A/A worst pass, after | release worst pass, before | release worst pass, after |
+| --- | --- | --- | --- | --- |
+| `css/stylesheet` | +26.1% … +30.1% | +0.7%, +19.7% | +26.3% … +30.0% | +1.3%, +1.6% |
+| `graphql/document` | +35.2% … +37.7% | +0.9%, +1.1% | +33.6% … +34.8% | +0.9%, +2.9% |
+| `json/document` | +68.1% … +90.6% | +0.5%, +2.9% | +69.9% … +87.7% | +4.4%, +12.8% |
+| `less/mixins` | +0.9% … +2.9% | +2.5%, +4.0% | −0.5% … +2.7% | +2.6%, +4.0% |
+| `less/stylesheet` | +0.7% … +30.7% | +3.4%, +8.6% | +18.9% … +24.1% | +0.9%, +2.5% |
+
+Before, the A/A **false-failed two of four runs** (five failed rows) and the
+release comparison one of four; 33 and 31 of 100 workload-passes breached. After,
+no run failed and 3 of 50 passes breached in each. Centers mostly stayed within
+±3% in both, which is why the old gate mostly passed: the damage was one wild pass per
+run, which the majority rule usually absorbed and a second bad pass did not. The
+old null carried the same +25…+90% passes as the gate pair — it was the same
+compiled object — so it calibrated nothing. (Before: four runs each with the
+harness at `047f920`; after: two runs each with this harness, the run count cut
+short by machine time. An intermediate version with one graph per side per pass
+ran four more of each, also with no failure.)
+
+`pnpm perf:guard:grammars`, the same window, same load:
+
+| comparison | breached case-passes, before | breached case-passes, after |
+| --- | --- | --- |
+| A/A, two worktrees of `047f920` | 10 / 210 | 4 / 70 |
+| same sha, one worktree | 2 / 105 | 7 / 70 |
+| emitted text differs only by a comment | 4 / 105 | 4 / 70 |
+| `047f920` vs `fae263d` | 9 / 175 | 5 / 70 |
+
+No run failed with either harness. The density cases read QUIETER per pass with
+the old harness on a same-graph comparison, and that is the defect, not a
+virtue: every instance was one compiled object, so the per-instance JIT spread
+(single passes of ±5–13% here, the "compilation lottery" `perf-gates.md`
+documents) never appeared in a pass, and when it did it appeared in every pass at
+once. It is now sampled independently every pass, in the gate pair and the null
+alike, and the majority rule absorbs it. The documented `+25%, 0/12` same-sha
+reading did not reproduce with the old harness in three same-sha runs on this
+machine, so this page cannot show it gone directly; the run-fixed draw it needs
+is removed by construction.
+
+The rest of this page records the symptoms as they were found. Re-reading them
+with the two mechanisms above: the identical-code incidents fit mechanism 1,
+though they were not reproduced here to confirm it. Whether a *differently-sized* code image can still push a case off
+an inlining cliff by its presence alone is not ruled out by this fix, so a red
+that the cross-process check disagrees with is still worth the check below.
+
 ## How to tell
 
 None of these is conclusive alone. Together they are.
@@ -278,6 +394,13 @@ reported success because it could not see the failure, and whose passing result
 was therefore indistinguishable from a genuine pass. Treat "the self-check was
 clean" the same way — as the absence of one class of evidence, never as the
 presence of another.
+
+Since the two harness mechanisms above were fixed, `--self` builds every
+instance from its own module graph with its own compile, so it now does carry
+the cross-graph term every real A/B has, and the compiled-object sharing that
+identical source used to trigger. What it still cannot carry is a size
+difference between the two code images, so the limitation above stands for
+that one term.
 
 ### What to do instead
 

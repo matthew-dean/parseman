@@ -306,6 +306,16 @@ property of a case either: the skew lands on a different case in almost every
 session, which is why an offline per-case calibration table would have been
 wrong.
 
+> **Found later: the lottery had two concrete causes, and resampling as first
+> built could reach neither.** V8's compilation cache hands identical
+> `new Function` source back as the same compiled code and feedback, so a
+> "recompiled" instance of byte-identical emitted source was the instance before
+> it; and the parser's runtime helpers are optimized once per module graph, which
+> passes never rebuilt. The `--self` skew above fits the first cause — one module
+> graph, one source text — though it was not reproduced to confirm. `measurePasses()` now turns the cache off and
+> builds every instance from a fresh module graph. See
+> [Two mechanisms behind it](./perf-harness-interleaving.md#two-mechanisms-behind-it-found-in-the-harness-and-fixed-there).
+
 **The fix is resampling, in `measurePasses()` (`bench/ab-harness.ts`).**
 
 1. **Both sides are recompiled every pass.** `passes` independent passes are
