@@ -40,7 +40,7 @@ import { failAt } from '../combinators/probe.ts'
  * Dormant unless `completionsAt` set `_probe`, so an ordinary parse pays one
  * property read per terminal miss — the same price codegen pays.
  */
-import { committed, spanLines, stampRuleMap } from './stamp.ts'
+import { committed, spanLines, stampRuleMap, type ArtifactMetadata } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -1755,7 +1755,7 @@ export function execRules(
    * construction, and the parse path never sees an option.
    */
   opts: { leafSwap?: boolean } = {},
-  artifactMetadata: Readonly<Record<symbol, unknown>> = {},
+  artifactMetadata: ArtifactMetadata = {},
 ): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)

@@ -124,7 +124,7 @@ import {
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
-import { stampRuleMap } from './stamp.ts'
+import { stampRuleMap, type ArtifactMetadata } from './stamp.ts'
 import { computeSiteLabels, reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
@@ -4132,9 +4132,18 @@ export class AssemblyCache {
  * reads an option — `scripts/check-invariants.mjs` INV-6 asserts it. `forCtx`
  * carries the argument for why that read is irreducible rather than merely cheap.
  */
+/**
+ * One rule of a table program — what an emitted standalone parser selects. A plain
+ * call, so a pure-annotated `tableEntry(…)` is droppable by any bundler when nothing
+ * reads it; `tableRules(…)["Entry"]` is a member access on the call, which is not.
+ */
+export function tableEntry(source: TableProgram | CompactProgram, name: string): TableRule {
+  return tableRules(source)[name]!
+}
+
 export function tableRules(
   source: TableProgram | CompactProgram,
-  artifactMetadata: Readonly<Record<symbol, unknown>> = {},
+  artifactMetadata: ArtifactMetadata = {},
 ): Record<string, TableRule> {
   const prog = expandCompact(source)
   const resolved = resolveTable(prog)

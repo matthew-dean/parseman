@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/jesscss/jess",
+  "commit": "84d25c6130b20a6f07493dbac88caae03f629943",
+  "files": {
+    "packages/parser-shared/src/recognition.ts": "parser-shared/recognition.ts",
+    "packages/parser-shared/src/pseudo-consts.ts": "parser-shared/pseudo-consts.ts",
+    "packages/parser-shared/src/unknown-at-rule.ts": "parser-shared/unknown-at-rule.ts",
+    "packages/syntax/css/css-parser/src/grammar.ts": "css/grammar.ts",
+    "packages/syntax/less/less-parser/src/grammar.ts": "less/grammar.ts",
+    "packages/syntax/less/less-parser/src/grammar-helpers.ts": "less/grammar-helpers.ts",
+    "packages/syntax/less/less-parser/src/parse-error.ts": "less/parse-error.ts",
+    "packages/syntax/less/less-parser/src/parse-state.ts": "less/parse-state.ts",
+    "packages/syntax/scss/scss-parser/src/grammar.ts": "scss/grammar.ts",
+    "packages/syntax/scss/scss-parser/src/grammar-helpers.ts": "scss/grammar-helpers.ts",
+    "packages/syntax/scss/scss-parser/src/parse-error.ts": "scss/parse-error.ts",
+    "packages/syntax/jess/jess-parser/src/grammar.ts": "jess/grammar.ts",
+    "packages/syntax/jess/jess-parser/src/grammar-helpers.ts": "jess/grammar-helpers.ts"
+  }
+}

@@ -327,7 +327,7 @@ export const grammar = rules(g => ({
     const result = transform(code)!
 
     expect(result.warnings).toEqual([])
-    expect(result.code).toContain("Symbol.for('parseman.grammarReflection')")
+    expect(result.code).toMatch(/\br: \{ nodes: /)
     expect(result.code).toContain('"tags":["DirectAtRule"]')
     expect(result.code).toContain('"tags":["AtRule","Statement"]')
   })

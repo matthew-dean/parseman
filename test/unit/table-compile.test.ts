@@ -89,7 +89,8 @@ describe('compile() is a drop-in for the source-lowering compile()', () => {
     // The expression references the driver by name and carries no import of its
     // own, for an inliner splicing it into existing source.
     expect(compiled.inlineExpression).not.toBeNull()
-    expect(compiled.inlineExpression!).toContain('tableRules')
+    // An entry expression is one pure `tableEntry(program, name)` call.
+    expect(compiled.inlineExpression!).toContain('tableEntry(')
     expect(compiled.inlineExpression!.startsWith('import')).toBe(false)
   })
 

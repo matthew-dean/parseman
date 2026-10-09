@@ -20,7 +20,7 @@
  * than reach the source lowering through the macro — see the header of
  * `test/unit/macro-grammar-coverage.test.ts` for that ruling written out.
  */
-import { tableRules } from '../../src/table/index.ts'
+import { tableEntry, tableRules } from '../../src/table/index.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import type { TableProgram } from '../../src/table/program.ts'
 
@@ -41,8 +41,8 @@ function toFunctionBody(code: string): string {
  * in scope and never needs to be passed.
  */
 export function evalMacroModule<T>(code: string, want: string, bindings: Record<string, unknown> = {}): T {
-  const extra = Object.keys(bindings).filter(n => n !== 'tableRules')
-  const names = ['tableRules', ...extra]
+  const extra = Object.keys(bindings).filter(n => n !== 'tableRules' && n !== 'tableEntry')
+  const names = ['tableRules', 'tableEntry', ...extra]
   // A SUPPLIED `tableRules` WINS. It still never NEEDS to be passed — the default
   // is the real driver — but a harness that passes one is asking to see the
   // program the macro printed, which is the only way to compare artifacts rather
@@ -50,7 +50,7 @@ export function evalMacroModule<T>(code: string, want: string, bindings: Record<
   // driver and a capture list that stayed empty, which reads as "the macro
   // emitted no table" rather than as a harness that did not take effect.
   const driver = 'tableRules' in bindings ? bindings['tableRules'] : tableRules
-  const values: unknown[] = [driver, ...extra.map(n => bindings[n])]
+  const values: unknown[] = [driver, bindings['tableEntry'] ?? tableEntry, ...extra.map(n => bindings[n])]
   const fn = new Function(...names, `${toFunctionBody(code)}\nreturn (${want})`) as (...args: unknown[]) => T
   return fn(...values)
 }

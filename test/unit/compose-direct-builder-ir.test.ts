@@ -424,7 +424,7 @@ export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Documen
       expect(/new Function/.test(leaf.code)).toBe(false)
       expect(leaf.code).not.toContain('Object.defineProperty')
       expect(leaf.code).not.toContain('composedPieces')
-      expect(leaf.code).toContain('leafComposed')
+      expect(leaf.code).toMatch(/\bl: 1\b/)
       // `g.Atom` is intentionally absent from the local rules map. The evaluator
       // leaves it as a named external placeholder; leaf fusion must close that
       // placeholder over the imported recognition piece, not delegate to a host

@@ -15,7 +15,9 @@ import { ruleDependencies } from '../analysis/gating.ts'
 import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
 import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
+import { COMPOSED_PIECES, LEAF_COMPOSED } from '../grammar-metadata.ts'
 import { linkRules, RULE_ORDER, RULES_RECIPE, type LinkOptions, type RulesRecipe } from '../combinators/parser.ts'
+import { ref } from '../combinators/ref.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, ParseContext, ParseResult } from '../types.ts'
 import type { Runnable } from '../functional/run.ts'
 
@@ -181,7 +183,7 @@ export function fusedHostElidedOf(registry: object): boolean {
 /** The carried pieces a BUILD-compiled (`compose()` under the macro) grammar
  * holds: its pieces as serialized IR, re-lowered by the macro plugin at build
  * time. A runtime composition carries recipes instead (`RULES_RECIPE`). */
-export const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
+export { COMPOSED_PIECES }
 
 /** The carried pieces a build-compiled composed grammar holds, or `undefined`
  * when the value is not one. */
@@ -198,7 +200,6 @@ export function composedPiecesOf(
  * reduction over imported recognition-only IR: the local reductions stay in
  * their lexical module and therefore never become carried IR.
  */
-const LEAF_COMPOSED = Symbol.for('parseman.leafComposed')
 
 /** The composing trivia a runtime `compose()` applied, so a LATER composition
  * that declares none of its own keeps it (composing-wins survives re-composition). */
@@ -309,10 +310,16 @@ export function composedCoverageRules(grammar: Record<string, unknown>): Record<
   return link?.()
 }
 
-/** The recipes one `compose()` item contributes, in order. */
+/** The recipes one `compose()` item contributes, in order, each with its names. */
 function recipesOf(item: LinkableTable | Record<string, unknown>): readonly RulesRecipe[] {
   const recipes = (item as Record<symbol, unknown>)[RULES_RECIPE]
-  if (Array.isArray(recipes)) return recipes as RulesRecipe[]
+  if (Array.isArray(recipes)) {
+    // A plain `rules()` map is one recipe; its names are its declaration order.
+    const names = (item as Record<string, unknown>)[RULE_ORDER] as readonly string[] | undefined
+    return recipes.length === 1 && (item as Record<symbol, unknown>)[LINKED] === undefined && names !== undefined
+      ? [{ ...(recipes[0] as RulesRecipe), names }]
+      : recipes as RulesRecipe[]
+  }
   const what = isLinkableTable(item) ? `the table artifact "${item.ns}"`
     : composedPiecesOf(item as Record<string, unknown>) !== undefined ? 'a build-compiled compose() result'
       : 'a value that is not a rules() grammar'
@@ -354,12 +361,56 @@ function declaredNamesOf(items: Array<LinkableTable | Record<string, unknown>>):
   return [...names]
 }
 
+/**
+ * Each piece sees the composed namespace through its own view: a name the piece
+ * defines is the shared slot, any other an EXTERNAL reference to it — parsing
+ * through the winner, but labelled by name in expected sets, exactly as the
+ * macro's per-piece lowering labels a cross-piece hole. That keeps a runtime
+ * composition's diagnostics identical to its build-compiled table.
+ */
+function pieceViews(): Pick<LinkOptions, 'viewOf' | 'defined'> {
+  const externals: Array<[ReturnType<typeof ref>, string, Record<string, Combinator<unknown>>]> = []
+  return {
+    viewOf(recipe, shared) {
+      if (recipe.names === undefined) return shared
+      const own = new Set(recipe.names)
+      // Every rule gets its shared slot up front, so each winner is held in a fresh
+      // slot and no stamp lands on a combinator a factory returned from module scope.
+      for (const name of own) void shared[name]
+      const refs = new Map<string, ReturnType<typeof ref>>()
+      return new Proxy(shared, {
+        get(_target, key) {
+          if (typeof key !== 'string') return undefined
+          if (own.has(key)) return shared[key]
+          let r = refs.get(key)
+          if (r === undefined) {
+            r = ref()
+            ;(r as { _ruleName?: string })._ruleName = key
+            ;(r._def as { external?: true }).external = true
+            refs.set(key, r)
+            externals.push([r, key, shared])
+          }
+          return r
+        },
+      })
+    },
+    defined() {
+      for (const [r, key, shared] of externals) {
+        const target = shared[key]!
+        r.define(target)
+        r._meta.firstSet = target._meta.firstSet
+        r._meta.canMatchNewline = target._meta.canMatchNewline
+      }
+    },
+  }
+}
+
 /** Link recipes into one interpreter map, refusing a name nobody defines. */
 function linkComposition(
   recipes: readonly RulesRecipe[],
   link: LinkOptions,
 ): Record<string, Combinator<unknown>> {
-  const map = linkRules(recipes, link)
+  const map = linkRules(recipes, { ...link, ...pieceViews() })
   const missing: string[] = []
   for (const [name, rule] of Object.entries(map)) {
     if (rule._def.tag !== 'lazy') continue

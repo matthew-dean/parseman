@@ -97,7 +97,9 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
       // derivation used to stop short of the self-reference). Falling back to the rule
       // name, exactly as for an unresolved external ref, cuts the cycle. Removed again
       // on the way out, so a rule referenced twice NON-cyclically still derives fully.
-      if (seen.has(c)) return name ? [name] : []
+      // An EXTERNAL reference (a composed piece's `g.X` another piece defines) is
+      // named, as the macro's per-piece lowering names a cross-piece hole.
+      if (seen.has(c) || def.external) return name ? [name] : []
       seen.add(c)
       try { return deriveExpected(def.thunk()) }
       catch { return name ? [name] : [] }

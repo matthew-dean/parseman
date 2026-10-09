@@ -115,6 +115,7 @@
     "perf:guard:grammars:self": "node --import tsx/esm bench/grammar-perf-guard.ts --self",
     "perf:workloads:describe": "node --import tsx/esm bench/workloads/describe.ts",
     "size:guard": "node --import tsx/esm bench/size-guard.ts",
+    "size:guard:jess": "node --import tsx/esm bench/jess-grammar-size-guard.ts",
     "size:baseline": "node --import tsx/esm bench/size-guard.ts --update",
     "size:probe": "node --import tsx/esm bench/size/probe.ts",
     "choicecost:guard": "node --import tsx/esm bench/choice-cost-guard.ts",

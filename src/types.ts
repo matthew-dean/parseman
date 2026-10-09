@@ -83,7 +83,10 @@ export type ParserDef =
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'field';     name: string; parser: Combinator<unknown> }
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; rootCapture?: 'opaque'; trackLines: boolean; constructionTrackLines?: 'on' | 'off' | 'inherit'; constructionCaptureTriviaKinds?: readonly string[] }
-  | { tag: 'lazy';     thunk: () => Combinator<unknown> }
+  /** `external`: a composed piece's reference to a rule ANOTHER piece defines. It
+   * parses through that rule, but names it — rather than deriving its first token —
+   * as an expected label, exactly as the macro's per-piece lowering does. */
+  | { tag: 'lazy';     thunk: () => Combinator<unknown>; external?: true }
   | { tag: 'not';      parser: Combinator<unknown> }
   // Positive lookahead. Zero-width like `not`, but — unlike `not` — it KNOWS what
   // it requires, so it carries `parser`'s first-set and a leading `peek()` gates

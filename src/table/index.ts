@@ -71,7 +71,7 @@
  * was not a mistake anyone made twice — it was a shape that made the mistake
  * available.
  */
-export { tableRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
+export { tableRules, tableEntry, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
 /**
  * `compile()` for the table lowering — same `CompiledParser` contract, a table

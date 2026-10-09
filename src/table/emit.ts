@@ -34,8 +34,10 @@ function emitClassPool(classes: readonly string[]): string {
   if (classes.length < 2) return array
   const delimiter = '|/~?^`'.split('').find(ch => classes.every(spec => !spec.includes(ch)))
   if (delimiter === undefined) return array
-  const split = `${jsString(classes.join(delimiter))}.split(${jsString(delimiter)})`
-  return split.length < array.length ? split : array
+  // ONE string, led by its delimiter; `expandCompact` splits it. Pure data: a
+  // `.split()` CALL here survives when a bundler drops the dead table around it.
+  const joined = jsString(delimiter + classes.join(delimiter))
+  return joined.length < array.length ? joined : array
 }
 
 /**
@@ -380,17 +382,21 @@ export type ExpressionEmitOptions = EmitOptions & {
  * The caller owns the import. `emitTableModule` writes its own; an inliner
  * splicing this into existing source must ensure the binding is in scope.
  */
+/** The single-rule selector paired with each table runtime reference. */
+const ENTRY_REF: Readonly<Record<string, string>> = { tableRules: 'tableEntry' }
+
 export function emitTableExpression(prog: TableProgram, opts: ExpressionEmitOptions = {}): string {
   assertPrintable(prog, 'emitTableExpression')
   const entry = opts.entry === undefined ? 'grammar' : opts.entry
   const ref = opts.runtimeRef ?? 'tableRules'
   const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
   const close = `}${opts.metadataSource === undefined ? '' : `,${opts.metadataSource}`})`
-  return [
-    `/* @__PURE__ */ ${ref}({`,
-    ...programFields(prog, fns, opts),
-    entry === null ? close : `${close}[${jsString(entry)}]`,
-  ].join('\n')
+  // A selected entry is `tableEntry(program, name)`, one plain pure call:
+  // `tableRules(…)["Entry"]` is a member access on the call, which no bundler may
+  // drop, so an unused rule still built its table at import.
+  if (entry === null) return [`/* @__PURE__ */ ${ref}({`, ...programFields(prog, fns, opts), close].join('\n')
+  if (opts.metadataSource !== undefined) throw new TypeError('emitTableExpression: an entry expression carries no metadata')
+  return [`/* @__PURE__ */ ${ENTRY_REF[ref] ?? ref}({`, ...programFields(prog, fns, opts), `},${jsString(entry)})`].join('\n')
 }
 
 export type FoldedEmitOptions = EmitOptions & {

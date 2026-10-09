@@ -142,7 +142,7 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
   const options = (typeof a === 'function' ? b : a) as RulesOptions | undefined
   const recipe: RulesRecipe = { factory, options }
   const map = linkRules([recipe])
-  Object.defineProperty(map, RULES_RECIPE, { value: [recipe], enumerable: false })
+  Object.defineProperty(map, RULES_RECIPE, { value: [recipe] }) // non-enumerable by default
   return map as RulesResult<T>
 }
 
@@ -157,6 +157,9 @@ export const RULES_RECIPE = Symbol.for('parseman.rulesRecipe')
 export type RulesRecipe = {
   readonly factory: (self: any) => Record<string, Combinator<unknown>>
   readonly options: RulesOptions | undefined
+  /** The rule names this piece defines — attached by the linker, which resolves a
+   * piece's other `g.X` through an EXTERNAL reference (`linker.ts` `pieceViews`). */
+  readonly names?: readonly string[]
 }
 
 /**
@@ -167,6 +170,10 @@ export type RulesRecipe = {
 export type LinkOptions = {
   readonly trivia?: Combinator<unknown> | undefined
   readonly hostMode?: HostMode | undefined
+  /** The namespace a piece's factory sees (`linker.ts`: a per-piece view). */
+  readonly viewOf?: (recipe: RulesRecipe, shared: Record<string, Combinator<unknown>>) => object
+  /** Runs once every shared slot is defined. */
+  readonly defined?: () => void
 }
 
 /**
@@ -178,8 +185,8 @@ export type LinkOptions = {
  * composed slot for X, so an override reroutes a base piece's own calls (open
  * recursion) and every choice computes its first-set dispatch against the
  * winners. The graph is built fresh, so no shared rule of any piece is touched;
- * under `link` a winner is always held in a fresh slot, so the stamps below never
- * land on a combinator a factory returned from module scope either.
+ * the linker's per-piece views also give every winner a fresh slot, so the stamps
+ * below never land on a combinator a factory returned from module scope.
  */
 export function linkRules(
   recipes: readonly RulesRecipe[],
@@ -210,7 +217,7 @@ export function linkRules(
   // recipe's definition of a name WINS; the name keeps its first position.
   const winners = new Map<string, { parser: Combinator<unknown>; options: RulesOptions | undefined }>()
   for (const recipe of recipes) {
-    const definitions = recipe.factory(proxy)
+    const definitions = recipe.factory(link?.viewOf?.(recipe, proxy as Record<string, Combinator<unknown>>) ?? proxy)
     for (const key of Object.keys(definitions)) {
       winners.set(key, { parser: definitions[key]!, options: recipe.options })
     }
@@ -229,8 +236,7 @@ export function linkRules(
       // Propagate actual first-set so later choices wrapping this ref get correct dispatch.
       placeholder._meta.firstSet = parser._meta.firstSet
       placeholder._meta.canMatchNewline = parser._meta.canMatchNewline
-    } else if (isNamedRuleRefForAnotherRule(parser, key) || link !== undefined) {
-      if (!isNamedRuleRefForAnotherRule(parser, key)) tagRule(parser, key)
+    } else if (isNamedRuleRefForAnotherRule(parser, key)) {
       const alias = ref()
       tagRule(alias, key)
       alias.define(parser)
@@ -242,6 +248,8 @@ export function linkRules(
       cache[key] = parser
     }
   }
+
+  link?.defined?.()
 
   // Grammar-level stamps, per rule. Each touches only its own rule — a wrap
   // replaces that rule's entry, and references hold the placeholder — so one pass

@@ -23,7 +23,8 @@ describe('carried composedPieces are non-enumerable', () => {
     const code = out!.code
 
     // The pieces are still carried (re-composable downstream)…
-    expect(code).toMatch(/Symbol\.for\('parseman\.composedPieces'\)/)
+    // …as the compact `p` metadata key (`stamp.ts` maps it to the symbol).
+    expect(code).toMatch(/\{ p: \(\) => \[/)
     expect(code).not.toContain('Object.defineProperty')
     expect(code).not.toMatch(/Object\.assign\([^;]*parseman\.composedPieces/)
 

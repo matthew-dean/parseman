@@ -12,7 +12,8 @@
  */
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
-import { GRAMMAR_COVERAGE_DEFINITIONS } from '../grammar-metadata.ts'
+import { GRAMMAR_REFLECTION } from '../cst/reflection-symbols.ts'
+import { COMPOSED_PIECES, GRAMMAR_COVERAGE_DEFINITIONS, LEAF_COMPOSED } from '../grammar-metadata.ts'
 import { reachableIps } from './inspect.ts'
 import { OP_NODE, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_PLAIN } from './ops.ts'
 import { covDefinitions, resolveTable, type ResolvedTable, type TableProgram, type TableRule } from './program.ts'
@@ -73,6 +74,30 @@ export type RuleRunner = {
 }
 
 /**
+ * Construction-time artifact metadata. Emitted artifacts use the short string keys
+ * — `p` carried pieces, `r` grammar reflection, `l` terminal leaf — which read as
+ * the registry symbols below. Short plain keys keep the argument pure data, so a
+ * bundler may drop an unused table; a `Symbol.for(…)` computed key is a call it
+ * must keep.
+ */
+export type ArtifactMetadata = Readonly<Record<symbol, unknown>> & {
+  readonly p?: unknown
+  readonly r?: unknown
+  readonly l?: unknown
+}
+
+function symbolMetadata(meta: ArtifactMetadata): Record<symbol, unknown> {
+  const { p, r, l, ...symbols } = meta as ArtifactMetadata & Record<string, unknown>
+  return {
+    ...symbols,
+    // Carried pieces arrive as a thunk (pure to a bundler); read them now.
+    ...(p === undefined ? {} : { [COMPOSED_PIECES]: typeof p === 'function' ? (p as () => unknown)() : p }),
+    ...(r === undefined ? {} : { [GRAMMAR_REFLECTION]: r }),
+    ...(l === undefined ? {} : { [LEAF_COMPOSED]: true }),
+  }
+}
+
+/**
  * Wrap a driver's per-rule run into the map an artifact exports.
  *
  * The entries have the SAME signature as codegen rule functions, so `run()`, the
@@ -81,7 +106,7 @@ export type RuleRunner = {
 export function stampRuleMap(
   prog: TableProgram,
   d: RuleRunner,
-  artifactMetadata: Readonly<Record<symbol, unknown>> = {},
+  artifactMetadata: ArtifactMetadata = {},
   resolved: ResolvedTable = resolveTable(prog),
 ): Record<string, TableRule> {
   // `run()` reads trivia metadata off the ENTRY and takes its
@@ -127,7 +152,7 @@ export function stampRuleMap(
   // old non-enumerable stamps: no post-construction shape transition, WeakMap or
   // generated wrapper is involved.
   const metadataPrototype = {
-    ...artifactMetadata,
+    ...symbolMetadata(artifactMetadata),
     [FUSED_HOST_MODE]: mode,
     [FUSED_HOST_ELIDED]: elided,
     ...(coverageDefinitions === undefined

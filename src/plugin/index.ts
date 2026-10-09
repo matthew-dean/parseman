@@ -389,6 +389,10 @@ function isComposedPiecesSymbol(n: AnyNode | undefined): boolean {
 /** Walk an initializer subtree for the `Object.defineProperty(_,
  * Symbol.for('parseman.composedPieces'), { value: <LITERAL> })` the macro emits,
  * and return the source range of <LITERAL>. */
+function unparen(n: AnyNode | undefined): AnyNode | undefined {
+  return n?.type === 'ParenthesizedExpression' ? unparen(n.expression as AnyNode | undefined) : n
+}
+
 function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number } | null {
   let found: { start: number; end: number } | null = null
   const visit = (n: unknown): void => {
@@ -403,12 +407,17 @@ function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number }
       // Table lowering: `tableRules(program, { [Symbol.for('…composedPieces')]:
       // <literal>, … })`. The metadata object becomes the returned map's
       // prototype, so the symbol remains readable without becoming an own key.
+      const metadata = args?.[1] as AnyNode | undefined
       if ((callee as { type?: string; name?: string } | undefined)?.type === 'Identifier'
         && (callee as { name?: string }).name === 'tableRules'
-        && (args?.[1] as AnyNode | undefined)?.type === 'ObjectExpression') {
-        for (const p of ((args![1] as AnyNode).properties as AnyNode[] | undefined) ?? []) {
-          if ((p as { computed?: boolean }).computed && isComposedPiecesSymbol(p.key as AnyNode) && p.value) {
-            found = { start: (p.value as AnyNode).start, end: (p.value as AnyNode).end }
+        && metadata?.type === 'ObjectExpression') {
+        for (const p of (metadata.properties as AnyNode[] | undefined) ?? []) {
+          const plainKey = !(p as { computed?: boolean }).computed && (p.key as { name?: string } | undefined)?.name === 'p'
+          if (((p as { computed?: boolean }).computed && isComposedPiecesSymbol(p.key as AnyNode) || plainKey) && p.value) {
+            // `p: () => <literal>` — the literal is the thunk's body.
+            const v = p.value as AnyNode
+            const value = v.type === 'ArrowFunctionExpression' ? unparen(v.body as AnyNode) ?? v : v
+            found = { start: value.start, end: value.end }
             return
           }
         }
@@ -546,6 +555,7 @@ export function transformMacro(
   warnUnloweredRegex = false,
   recovery = false,
   grammarCoverage = false,
+  assemblyProfile?: AssemblyProfile,
 ): TransformMacroResult | null {
   const depth = degradationCaptureDepth()
   try {
@@ -555,7 +565,6 @@ export function transformMacro(
     setBuilderImportResolver(null)
     // Both are idempotent: on the success path the body already released them and these
     // are no-ops. On an aborted transform they are what stops the leak.
-  assemblyProfile?: AssemblyProfile,
     for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
   }
 }
@@ -567,6 +576,7 @@ function transformMacroImpl(
   warnUnloweredRegex: boolean,
   recovery: boolean,
   grammarCoverage: boolean,
+  assemblyProfile: AssemblyProfile | undefined,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -576,7 +586,6 @@ function transformMacroImpl(
   }
   if (result.errors.length > 0) return null
 
-  assemblyProfile: AssemblyProfile | undefined,
   const body = result.program.body
 
   // --- Pass 1: collect macro imports + non-macro import bindings ---
@@ -1149,14 +1158,15 @@ function transformMacroImpl(
    * readable but never copied by object spread/Object.assign. Coverage comes
    * directly from the emitted program's `cv` pool and host mode from `h`. */
   const staticTableMetadataSource = (metadata: StaticTableMetadata): string => {
+    // SHORT PLAIN KEYS (`stamp.ts` `ArtifactMetadata`): pure data, so a bundler may
+    // drop an unused table with it. Carried pieces SPREAD imported bindings, which is
+    // not pure, so they travel as a thunk, read only when the table is built —
+    // otherwise an unused table survives bundling (a css variant kept the 230 KB
+    // compose base).
     const fields = [
-      ...(metadata.carried === undefined ? [] : [
-        `[Symbol.for('parseman.composedPieces')]: ${serializeList(metadata.carried)}`,
-      ]),
-      ...(metadata.reflection === undefined ? [] : [
-        `[Symbol.for('parseman.grammarReflection')]: ${grammarReflectionSource(metadata.reflection)}`,
-      ]),
-      ...(metadata.leaf === true ? [`[Symbol.for('parseman.leafComposed')]: true`] : []),
+      ...(metadata.carried === undefined ? [] : [`p: () => ${serializeList(metadata.carried)}`]),
+      ...(metadata.reflection === undefined ? [] : [`r: ${grammarReflectionSource(metadata.reflection)}`]),
+      ...(metadata.leaf === true ? ['l: 1'] : []),
     ]
     return `{ ${fields.join(', ')} }`
   }
@@ -1248,7 +1258,9 @@ function transformMacroImpl(
     const imports = extractImportBindings(mod.body as AnyNode[])
     const stubNames: string[] = []
     const stubVals: unknown[] = []
-    const spreadRe = /\.\.\.\s*\(?\s*([A-Za-z_$][\w$]*)\s*\[\s*Symbol\s*\.\s*for\s*\(\s*['"]parseman\.composedPieces['"]/g
+    // A bundler may reprint the spread with a `/* @__PURE__ */` before `Symbol.for`
+    // (esbuild does), so comments are allowed there.
+    const spreadRe = /\.\.\.\s*\(?\s*([A-Za-z_$][\w$]*)\s*\[\s*(?:\/\*[^]*?\*\/\s*)*Symbol\s*\.\s*for\s*\(\s*['"]parseman\.composedPieces['"]/g
     const done = new Set<string>()
     for (let m: RegExpExecArray | null; (m = spreadRe.exec(literal)); ) {
       const local = m[1]!
@@ -1540,18 +1552,6 @@ function transformMacroImpl(
     assemblyBudget -= bytes
     return sites
   }
-  /** The fused table's replacement, with its selective default assembly if any. */
-  const selectiveReplacement = (compiled: CompiledRuleMapTable, metadata: string, select: ReadonlySet<number>): string => {
-    if (select.size === 0) return compiled.replacementWithMetadata(metadata)
-    return supercompileRuleMapReplacement(compiled.prog, compiled.replacementWithMetadata(metadata, { select }), select)
-  }
-
-  const compileComposeCall = (init: Expression): { replacement: string; exportedReplacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[]; coverageDefinitions?: readonly { id: string; kind: string }[] } | null => {
-    const args = (init as unknown as { arguments: Expression[] }).arguments
-    const arr = args[0]
-    if (!arr || arr.type !== 'ArrayExpression') {
-      warn(init.start, 'compose(): expected a static array of grammars/artifacts')
-      return null
   /** Measured site calls over the optional corpus, or `undefined` for the static
    * ranking. A file whose parse throws still contributes the calls it made. */
   const profileOf = (compiled: CompiledRuleMapTable): Int32Array | undefined => {
@@ -1577,6 +1577,18 @@ function transformMacroImpl(
     warnings.push(`${id} — assemblyProfile: no corpus file parsed from rule "${assemblyProfile.entry}"; using the static ranking`)
     return undefined
   }
+  /** The fused table's replacement, with its selective default assembly if any. */
+  const selectiveReplacement = (compiled: CompiledRuleMapTable, metadata: string, select: ReadonlySet<number>): string => {
+    if (select.size === 0) return compiled.replacementWithMetadata(metadata)
+    return supercompileRuleMapReplacement(compiled.prog, compiled.replacementWithMetadata(metadata, { select }), select)
+  }
+
+  const compileComposeCall = (init: Expression): { replacement: string; exportedReplacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[]; coverageDefinitions?: readonly { id: string; kind: string }[] } | null => {
+    const args = (init as unknown as { arguments: Expression[] }).arguments
+    const arr = args[0]
+    if (!arr || arr.type !== 'ArrayExpression') {
+      warn(init.start, 'compose(): expected a static array of grammars/artifacts')
+      return null
     }
     const elements = (arr as unknown as { elements: Expression[] }).elements
     // `compose(items, { hostMode })` — read and VALIDATE it, mirroring `rules()`. This
@@ -2348,7 +2360,8 @@ function transformMacroImpl(
   // acquire an import it never uses, and so the artifact of a source-lowered
   // module is unchanged.
   if (usedTableRuntime && applied.length > 0) {
-    ms.prepend(`import { tableRules } from ${JSON.stringify(TABLE_RUNTIME_SPECIFIER)}\n`)
+    const entries = applied.some(r => /\btableEntry\(/.test(r.replacement))
+    ms.prepend(`import { tableRules${entries ? ', tableEntry' : ''} } from ${JSON.stringify(TABLE_RUNTIME_SPECIFIER)}\n`)
   }
   /* Re-bind the direct-builder free names carried in on composed IR: a base
    * grammar's reducer calls `dimension` from '@jesscss/core/ast', that provenance

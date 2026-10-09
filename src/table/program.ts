@@ -291,7 +291,8 @@ export type TriviaSpec = {
 export type CompactProgram = {
   readonly c: readonly number[]
   readonly k: readonly unknown[]
-  readonly x: readonly string[]
+  /** Char classes: an array, or ONE string led by its delimiter (`"|a|b"`). */
+  readonly x: readonly string[] | string
   readonly e: readonly (readonly string[])[]
   readonly d: readonly (readonly number[])[]
   readonly r: Readonly<Record<string, number>>
@@ -316,7 +317,8 @@ export type CompactProgram = {
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   if ('code' in p) return p
   return ownTableProgram({
-    code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
+    code: p.c, k: p.k, cc: typeof p.x === 'string' ? p.x.slice(1).split(p.x[0]!) : p.x,
+    fx: p.e, disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
     ...(p.lx === undefined ? {} : { lex: p.lx }),
     ...(p.lp === undefined ? {} : { lexPrograms: p.lp }),

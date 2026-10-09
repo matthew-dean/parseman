@@ -403,7 +403,7 @@ const block = sequence(literal('{'), many(regex(/[a-z]+/)), literal('}'))
     expect(on.code).not.toContain('_rp[')        // NOT _rp → stays macro-inlinable
     const block = pm.sequence(pm.literal('{'), pm.many(pm.regex(/[a-z]+/)), pm.literal('}'))
     const lowered = compile(block, undefined, { recovery: true })
-    expect(lowered.inlineExpression).toContain('tableRules(')  // still inlined
+    expect(lowered.inlineExpression).toContain('tableEntry(')  // still inlined
   })
 
   it('emits NO recovery code by default — byte-identical to before', () => {
