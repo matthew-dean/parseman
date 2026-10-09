@@ -176,7 +176,7 @@ export const ALLOW = new Map([
   // (plus reflection), installed once per `compose()` / `composeLeaf()`, so a
   // composition costs nothing until a rule is read and the grammar you use is
   // linked once. Moved from `composeLeaf` to `linkedMap` when both began sharing
-  // the one linker (0.50.9); same mechanism, same argument. ARGUED, not debt —
+  // the one linker; same mechanism, same argument. ARGUED, not debt —
   // see the comment at the site. Listed rather than exempted by a rule carve-out
   // so that if the site changes the entry goes stale and someone must look again.
   ['INV-1:src/compiler/linker.ts:linkedMap',

@@ -1,11 +1,5 @@
 # Extending grammars
 
-::: danger Superseded in part
-Statements on this page about how runtime `compose()` behaves (it currently evaluates source and has no CSP fallback) are superseded by
-[the runtime and size contract](../design/runtime-and-size-contract.md), which is
-binding. See its "Superseded statements" list.
-:::
-
 Two grammars often overlap almost entirely: a base language and a dialect that adds or
 tweaks a few rules. Think JSON versus a lenient JSON with comments and trailing commas, or
 CSS versus a Less/Sass superset. Rather than copy the base and edit it, **compose** it —
@@ -107,16 +101,11 @@ computed — and reported — at each `compose()` / `composeLeaf()` that binds t
 
 ### There is one engine you ship
 
-`compose()` / `composeLeaf()` fuse by **codegen**, so a composed grammar is a map of
-compiled functions. That's the artifact you ship, and the macro is how you get it.
-
-Parseman also has a second, *interpreted* fuse, which runs the composition as a live
-combinator graph instead of reaching codegen. It exists for diagnostics that must not reach
-codegen — profiling, gating analysis, and differential tests that compare one engine
-against another — and it isn't part of the public API: it's a second engine over the same
-grammar, with different runtime characteristics, and picking between them isn't a decision
-a consumer should have to make. `run()` / `parseDoc()` accept the shape it produces so those
-internal tools keep working, but nothing you ship should depend on it.
+Under the macro, `compose()` / `composeLeaf()` lower to one static table: that's the
+compiled artifact you ship. Without the macro, they link the pieces into one interpreter
+grammar (see [the execution modes below](#how-this-behaves-in-each-execution-mode)), and
+`compile()` turns that into a table at runtime when you want one. Either way the
+composition is the same grammar, with the same overrides and the same parse.
 
 ## Building trees: swap the output shape
 
