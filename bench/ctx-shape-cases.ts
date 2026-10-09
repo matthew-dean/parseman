@@ -27,8 +27,8 @@
  * grammar with labelled trivia. It has to be a grammar that actually PARSES the
  * corpus — an earlier revision of this file used a toy grammar that failed
  * immediately, which made every case a measurement of `run()`'s fixed per-call
- * cost and produced a meaningless -62%. `buildCases` asserts the parse succeeds
- * so that cannot recur silently.
+ * cost and produced a meaningless -62%. Every instance `buildCases` makes
+ * asserts the parse succeeds, so that cannot recur silently.
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -100,15 +100,21 @@ export function buildCases(): Case[] {
 
   // A failing parse is not a workload. Both sides would agree on the failure and
   // the gate would happily report a large, meaningless delta on `run()`'s fixed
-  // cost. Refuse instead.
-  for (const c of cases) {
-    const r = c.make().parse() as { ok: boolean; unconsumedFrom: number | null }
-    if (!r.ok || r.unconsumedFrom !== null) {
-      throw new Error(
-        `ctx-shape-cases: ${c.id} did not parse the corpus (ok=${r.ok}, unconsumedFrom=${r.unconsumedFrom}).`
-        + ' Measuring a failed parse measures nothing.',
-      )
-    }
-  }
-  return cases
+  // cost. Refuse instead — on the instance being made, not up front: the A/B
+  // builds each case in a module graph of its own, and that graph must compile
+  // and run only the shape it measures.
+  return cases.map(c => ({
+    ...c,
+    make: () => {
+      const made = c.make()
+      const r = made.parse() as { ok: boolean; unconsumedFrom: number | null }
+      if (!r.ok || r.unconsumedFrom !== null) {
+        throw new Error(
+          `ctx-shape-cases: ${c.id} did not parse the corpus (ok=${r.ok}, unconsumedFrom=${r.unconsumedFrom}).`
+          + ' Measuring a failed parse measures nothing.',
+        )
+      }
+      return made
+    },
+  }))
 }

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import v8 from 'node:v8'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -130,7 +131,7 @@ function optimizedAfterOptimizingOne(isolate: boolean): boolean[] {
 }
 
 /** A repo file as a quoted absolute path, for a script run by `nodeModule`. */
-const at = (rel: string): string => JSON.stringify(new URL(rel, import.meta.url).pathname)
+const at = (rel: string): string => JSON.stringify(fileURLToPath(new URL(rel, import.meta.url)))
 
 /** Run `script` as an ES module under real node + tsx (vitest's own loader is not node's). */
 function nodeModule(script: string, flags: string[] = []): unknown {
