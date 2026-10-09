@@ -48,7 +48,8 @@ export function borrowedRuleReference(
         // is that root's body, which its own walk covers).
         if (!winnerWrapsReference(self, c)) {
           const name = nameOf(c)
-          const winner = name === undefined ? undefined : map[name]
+          // OWN rules only: an inherited name (`toString`) is not a rule of the map.
+          const winner = name !== undefined && Object.hasOwn(map, name) ? map[name] : undefined
           if (winner !== undefined) {
             // This map's own reference, or another slot to the very same rule.
             if (winnerWrapsReference(winner, c) || deref(c) === deref(winner)) return
@@ -57,11 +58,14 @@ export function borrowedRuleReference(
           }
         }
         // The root's body, or a rule this map does not define: both engines follow
-        // the slot, so its body matters only for what IT references.
+        // the slot, so its body matters only for what IT references. ONE step: the
+        // slot may resolve to another slot (an alias, `Entry: g.Atom`), and that one is
+        // a reference to judge too, not a hop to skip.
         if (seen.has(c)) return
         seen.add(c)
-        const body = deref(c)
-        if (body !== undefined) visit(body)
+        let body: Comb
+        try { body = c._def.thunk() } catch { return }
+        visit(body)
         return
       }
       if (seen.has(c)) return

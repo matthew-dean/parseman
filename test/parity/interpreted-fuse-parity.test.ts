@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import * as P from '../../src/index.ts'
+import { borrowedRuleReference } from '../../src/compiler/borrowed-rules.ts'
 import { fuseInterpreted, isInterpretedFuse, linkable } from '../../src/compiler/linker.ts'
 import { cases } from './helpers/compose-cases.ts'
 
@@ -300,6 +301,25 @@ describe('fuseInterpreted fuse-time contract', () => {
       expect(P.run(composed.Entry!, input).ok).toBe(ok)
       expect(P.run(table.Entry!, input).ok).toBe(ok)
     }
+  })
+
+  it('refuses a borrowed alias whose chain reaches another grammar\'s slot for a defined rule', () => {
+    // base.Entry is an alias (`Entry: g.Atom`): a slot whose target is base's Atom
+    // slot. Following the chain straight to the literal would skip that reference.
+    const base = P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Entry: g.Atom!, Atom: P.literal('a') }))
+    const override = P.rules(() => ({ Atom: P.literal('b') }))
+    const borrowed = P.compose([P.rules(() => ({ Doc: base.Entry })), override])
+    expect(() => borrowed.Doc).toThrow(/compose: rule "Doc" is a rule object borrowed from another grammar, and its graph references "Atom"/)
+    expect(() => P.compile(borrowed)).toThrow(/rule "Doc" is a rule object borrowed/)
+    expect(() => P.compile({ Doc: base.Entry, Atom: P.literal('b') } as Record<string, unknown>)).toThrow(/compile: rule "Doc" is a rule object borrowed/)
+  })
+
+  it('judges only the map\'s OWN rule names, never an inherited property', () => {
+    // A slot named like an Object.prototype member must not read that member as a rule.
+    const slot = P.ref<unknown>()
+    slot.define(P.literal('x'))
+    ;(slot as unknown as { _ruleName: string })._ruleName = 'toString'
+    expect(borrowedRuleReference({ Doc: P.sequence(slot, P.literal(';')) })).toBeUndefined()
   })
 
   it('links a borrowed rule object that references no rule the composition defines', () => {
