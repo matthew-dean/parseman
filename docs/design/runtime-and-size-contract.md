@@ -145,7 +145,7 @@ change that fixes the behaviour:
 
 | Rule | Work | Tracking | Status |
 |---|---|---|---|
-| 1, 2 | Runtime `compose()` links live pieces. Remove IR eval and the `buildSrc` eval from the runtime path. Bind composing trivia without mutating shared rules. Remove `railroad.ts`'s `new Function`. Add a test that runs `compose()` under `--disallow-code-generation-from-strings`. | jess#325 | fixed for 0.53.0: `test/unit/csp-runtime-paths.test.ts` |
+| 1, 2 | Runtime `compose()` links live pieces. Remove IR eval and the `buildSrc` eval from the runtime path. Bind composing trivia without mutating shared rules. Remove `railroad.ts`'s `new Function`. Add a test that runs `compose()` under `--disallow-code-generation-from-strings`. | jess#325 | fixed for 0.53.0 in [#149](https://github.com/matthew-dean/parseman/pull/149): `test/unit/csp-runtime-paths.test.ts` |
 | 4 | Remove the whole-grammar assembly. Add selective inline regions within 5× that keep most of the css win. Vendor the real grammars into a size gate that fails. | jess#322 | in progress |
 | 5 | Real-scale load benchmark with absolute budgets, run in CI | jess#322 / jess#325 | in progress |
 | 6 | Before/after steady-state, cold-start and browser-load tables for each grammar and mode in the release PR | release PR | in progress |
