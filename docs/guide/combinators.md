@@ -462,7 +462,8 @@ dispatched case.
 If the head parser itself fails, an enclosing `choice` can still try a later
 arm. But once the head succeeds and a `when` key matches, that tail is
 committed: its failure is returned immediately, and neither `otherwise` nor an
-outer fallback gets a turn.
+outer fallback gets a turn — unless an enclosing
+[`attempt(…, { contain: true })`](#attempt) contains it.
 
 Duplicate keys — including duplicates spread across grouped
 `when([keyA, keyB], tail)` arms — fail at grammar construction time.
@@ -508,6 +509,30 @@ parse(atomic, 'xa')
 
 It is not a lookahead — see
 [`attempt` vs `peek`](#committing-vs-looking-attempt-vs-peek).
+
+A committed failure — a `dispatch()` whose selected branch failed — passes
+through a plain `attempt()` still committed, so no enclosing `choice()` gets
+another turn. `attempt(parser, { contain: true })` contains that too: the
+failure is reported like any other, at the attempt's start, and the choice tries
+its next arm. Reach for it only where two readings of the same prefix are
+genuinely ambiguous until a later token, such as CSS reading a block item as a
+declaration and then, when that fails, as a nested rule (css-syntax-3 §5.4.4).
+Put the more common reading first: the other one is paid for by re-reading the
+prefix.
+
+```ts
+// [verify]
+import { attempt, choice, dispatch, literal, parse, sequence, when } from 'parseman'
+
+const routed = sequence(literal('a'), dispatch(literal('k'), when('k', literal('x'))))
+const other = sequence(literal('a'), literal('k'), literal('y'))
+
+parse(choice(attempt(routed), other), 'aky').ok
+// → false
+
+parse(choice(attempt(routed, { contain: true }), other), 'aky').value
+// → ['a', 'k', 'y']
+```
 
 ## Repetition
 

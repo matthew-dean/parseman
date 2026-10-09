@@ -378,7 +378,9 @@ export const OP_ARMGATE = 36
  */
 export const OP_LIVE = 37
 /**
- * `ATTEMPT c` — `attempt()`, the transactional ordered-choice arm.
+ * `ATTEMPT c k` — `attempt()`, the transactional ordered-choice arm. `k` is 1
+ * for `attempt(p, { contain: true })`: a committed inner failure is reported
+ * uncommitted — `_fc` cleared and `_fe` re-anchored, like any other failure.
  *
  * WAS A TRANSPARENT WRAPPER (`case 'attempt': return this.node(d.parser).ip`),
  * which is correct for exactly one placement — an arm of an `OP_CHOICE`, whose
@@ -389,10 +391,10 @@ export const OP_LIVE = 37
  * re-anchored at the transaction's entry. Both are `attempt()`'s whole contract
  * (`combinators/attempt.ts`), not a choice-arm detail.
  *
- * One child operand and no expected-set operand: on a non-committed inner
- * failure the row keeps the inner's `_fx` VERBATIM and only re-anchors `_fe` to
- * `pos`, exactly as `attempt.ts` returns `{ expected: result.expected, span:
- * { start: pos, end: pos } }`. A committed failure propagates untouched — the
+ * No expected-set operand: on a non-committed inner failure the row keeps the
+ * inner's `_fx` VERBATIM and only re-anchors `_fe` to `pos`, exactly as
+ * `attempt.ts` returns `{ expected: result.expected, span: { start: pos, end:
+ * pos } }`. A committed failure propagates untouched when `k` is 0 — the
  * rollback still happens, the re-anchor does not.
  *
  * The interpreter's first-set fail-fast guard is NOT lowered. It is an

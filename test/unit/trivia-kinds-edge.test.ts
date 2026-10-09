@@ -12,6 +12,25 @@ describe('analyzeLabeledTrivia() — single labeled arm', () => {
   })
 })
 
+/*
+ * Every labeled trivia scan asks for its trivia's spec. jess's Less grammar
+ * switches among more than four trivia tables, and a bounded four-slot memo
+ * re-derived the spec 4,149 times per parse of benchmark.less: arm objects, a
+ * label array and a spec, thrown away each time.
+ */
+describe('analyzeLabeledTrivia() — a trivia() combinator keeps its own spec', () => {
+  it('returns the same spec however many other trivia tables were analysed since', () => {
+    const names = ['a', 'b', 'c', 'd', 'e', 'f']
+    const tables = names.map(name => trivia(oneOrMore(label(name, regex(new RegExp(`${name}+`))))))
+    const first = tables.map(t => analyzeLabeledTrivia(t))
+    const again = tables.map(t => analyzeLabeledTrivia(t))
+    for (let i = 0; i < tables.length; i++) {
+      expect(again[i]).toBe(first[i])
+      expect(again[i]?.labels).toEqual([names[i]])
+    }
+  })
+})
+
 describe('scanLabeledTriviaChunks()', () => {
   it('returns no chunks when fewer than minRepeats matched', () => {
     const spec = {

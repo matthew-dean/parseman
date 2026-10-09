@@ -1344,24 +1344,24 @@ class Encoder {
         // 'cst'` forces them on, exactly as the emitted `cstOut` path does. The
         // driver reads a bit; it re-derives nothing and sees no setting.
         const cstOut = this.settings.hostMode === 'cst'
-        // THE THREE DERIVED CAPTURE BITS, mirroring `node.ts:215` term for term:
+        // THE THREE DERIVED CAPTURE BITS, mirroring `node.ts` term for term:
         //
-        //   capturesTrivia = captureTrivia || trailingTrivia
+        //   capturesTrivia = captureTrivia
         //                    || (build ? buildReadsTrivia(def) : project === undefined)
         //
         // `cstOut` is the static stand-in for "a CST host is coming", which the
         // interpreter reaches dynamically off `ctx.build`.
         //
-        // Two of these terms were MISSING and each was a real divergence:
+        // `captureTrivia` was once MISSING here and was a real divergence: an
+        // explicit request the arity analysis cannot express (an author can ask
+        // for capture on a 3-argument reducer). This used to REFUSE rather than
+        // lower, so a documented option no grammar could use through the table.
         //
-        //   `captureTrivia` — an explicit request the arity analysis cannot
-        //     express (an author can ask for capture on a 3-argument reducer).
-        //     This used to REFUSE rather than lower, so a documented option no
-        //     grammar could use through the table.
-        //   `trailingTrivia` — trivia consumed INSIDE the node's capture scope
-        //     lands in THIS node's log. The interpreter counts it; the table did
-        //     not, so a node with `trailingTrivia` and a non-trivia-reading
-        //     reducer captured under the interpreter and dropped under the table.
+        // `trailingTrivia` is NOT a capture term (bit 128 only). It moves the
+        // node's end past the trivia after the body; that trivia reaches the root
+        // table with or without a node log, and only a log the reducer reads is
+        // worth opening. Forcing bit 4 for it put every match of a
+        // non-trivia-reading node on the generic capture path.
         //
         // The `build ? … : project === undefined` split matters now that a
         // STRUCTURAL node lowers: with no builder the interpreter captures unless
@@ -1374,7 +1374,7 @@ class Encoder {
         // Field capture additionally requires the body to CONTAIN `field()`
         // captures: a node that reads fields but has none allocates nothing.
         const wantsFields = parserHasOwnFields(d.parser) && (cstOut || derivedFields)
-        const flags = (cstOut || d.captureTrivia === true || d.trailingTrivia === true || derivedTrivia ? 4 : 0)
+        const flags = (cstOut || d.captureTrivia === true || derivedTrivia ? 4 : 0)
           | (!cstOut && omitsRaw ? 2 : 0)
           | (cstOut || derivedState ? 8 : 0)
           | (wantsFields ? 16 : 0)
@@ -1596,7 +1596,7 @@ class Encoder {
       // A TRANSACTION IS A ROW. See `OP_ATTEMPT` for why the transparent
       // lowering was correct only for a choice arm.
       case 'attempt': {
-        const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip)
+        const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip, d.contain === true ? 1 : 0)
         if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(inner)
         // THE FIRST-SET FAIL-FAST GUARD, lowered as the `OP_GATE` row the `node()`
         // case already uses — it is the same guard, written twice in the

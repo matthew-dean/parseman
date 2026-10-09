@@ -295,9 +295,13 @@ class Encoder {
         return this.emit(OP_NOT, this.node(d.parser).ip)
       case 'peek':
         return this.emit(OP_PEEK, this.node(d.parser).ip)
+      // A contained transaction changes what an enclosing choice does next, so
+      // it cannot be transparent.
+      case 'attempt':
+        if (d.contain === true) throw new UnsupportedConstructBaseline('attempt(contain)')
+        return this.node(d.parser).ip
       // Transparent wrappers: no row of their own, no dispatch at run time.
       case 'token':
-      case 'attempt':
       case 'label':
       case 'trivia':
         return this.node(d.parser).ip
