@@ -115,6 +115,34 @@ export const shared = g => ({ Atom: literal('x') })
     expectCompiled(out)
   })
 
+  it('lowers a factory whose module imports something it does not use', () => {
+    fs.writeFileSync(path.join(dir, 'sidecar.ts'), 'export const extra = 1\n')
+    expectCompiled(lower(`
+${MACRO_IMPORT}
+import { extra } from './sidecar.ts'
+export const shared = g => ({ Atom: literal('x') })
+`))
+  })
+
+  it('resolves a terminal the factory module itself imports', () => {
+    fs.writeFileSync(path.join(dir, 'terminals.ts'), `${MACRO_IMPORT}\nexport const x = literal('x')\n`)
+    expectCompiled(lower(`
+${MACRO_IMPORT}
+import { x } from './terminals.ts'
+export const shared = g => ({ Atom: x })
+`))
+  })
+
+  it('fails the build when a declaration of the factory module reads an import it cannot resolve', () => {
+    fs.writeFileSync(path.join(dir, 'runtime-only.ts'), 'export const x = makeAtRuntime()\n')
+    expect(() => lower(`
+${MACRO_IMPORT}
+import { x } from './runtime-only.ts'
+const atom = [x]
+export const shared = g => ({ Atom: literal('x') })
+`)).toThrow(/imported rules\(\) factory `shared` can't be evaluated at build time; unresolved binding\(s\):\n {2}- `x` /)
+  })
+
   it('tolerates a bare `export { … }` list with no source', () => {
     const out = lower(`
 ${MACRO_IMPORT}
@@ -133,14 +161,6 @@ describe('an imported rules() factory whose module the macro cannot account for'
     ))).toBe(true)
   }
 
-  it('falls back when the factory module imports something other than the macro entry', () => {
-    fs.writeFileSync(path.join(dir, 'sidecar.ts'), 'export const extra = 1\n')
-    expectFallback(lower(`
-${MACRO_IMPORT}
-import { extra } from './sidecar.ts'
-export const shared = g => ({ Atom: literal('x') })
-`))
-  })
 
   it('falls back when the factory module re-exports from elsewhere', () => {
     fs.writeFileSync(path.join(dir, 'sidecar2.ts'), 'export const extra = 1\n')

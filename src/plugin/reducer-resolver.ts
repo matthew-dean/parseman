@@ -118,8 +118,11 @@ function patternNames(pat: unknown, out: string[]): void {
 }
 
 function declare(scope: ScopeNode, name: string, b: Binding): void {
-  // First declaration wins; a duplicate `var` re-declaration does not change the shape.
-  if (!scope.bindings.has(name)) scope.bindings.set(name, b)
+  // First declaration wins the shape, but a second one (`var x = a; … var x = b`, a
+  // repeated function) can rebind the name, so it counts as a reassignment.
+  const prev = scope.bindings.get(name)
+  if (prev) prev.reassigned = true
+  else scope.bindings.set(name, b)
 }
 
 /** `var` and function declarations hoist to the nearest FUNCTION scope, not the block. */
@@ -238,7 +241,10 @@ function markReassignments(body: unknown[], root: ScopeNode): void {
     if (Array.isArray(n)) { for (const item of n) walk(item); return }
     const node = n as AnyNode
     if (typeof node.type !== 'string') return
-    if (node.type === 'AssignmentExpression' || node.type === 'UpdateExpression') {
+    // `for (x of …)` / `for (x in …)` writes `x` too when its head declares nothing.
+    const loopWrite = (node.type === 'ForOfStatement' || node.type === 'ForInStatement')
+      && (node.left as AnyNode | undefined)?.type !== 'VariableDeclaration'
+    if (node.type === 'AssignmentExpression' || node.type === 'UpdateExpression' || loopWrite) {
       const target = (node.type === 'UpdateExpression' ? node.argument : node.left) as AnyNode | undefined
       const names: string[] = []
       if (target) patternNames(target, names)
@@ -253,6 +259,17 @@ function markReassignments(body: unknown[], root: ScopeNode): void {
     }
   }
   for (const stmt of body) walk(stmt)
+}
+
+/**
+ * Whether a top-level binding of a module is never reassigned or redeclared, so a `let` or
+ * `var` holds its initializer exactly as a `const` would. Bundlers emit top-level `const`
+ * as `var` (esbuild does), which is how a published entry's exports usually arrive.
+ */
+export function topLevelIsStable(body: unknown[], moduleEnd: number): (name: string) => boolean {
+  const root = buildScopeTree(body, moduleEnd)
+  markReassignments(body, root)
+  return name => root.bindings.get(name)?.reassigned !== true
 }
 
 // ---------------------------------------------------------------------------

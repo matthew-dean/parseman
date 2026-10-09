@@ -154,6 +154,69 @@ export type ScopeEntry = {
 }
 export type Scope = Map<string, ScopeEntry>
 
+/** How a {@link ModuleScope} answers a name it does not hold: a value, the reason a
+ * binding the module DOES have cannot be known at build time, or `null` — not a
+ * binding this scope can speak for (an ordinary miss). */
+export type FreeNameResolution = { value: unknown } | { unresolved: string } | null
+
+/**
+ * A module's scope whose IMPORTED (and, for a foreign module, top-level) bindings
+ * resolve on first read instead of being absent.
+ *
+ * Absent was the defect. `anyValue` answered an imported name with `null`, so
+ * `rules({ scanSkip: [importedUnit] })` evaluated to nothing, the option quietly
+ * became `undefined`, and the build succeeded with no ambient skip — and a terminal
+ * imported into a rule body could not be lowered at all. Lazy, because a grammar
+ * module imports far more than combinators (AST classes, helpers) and resolving each
+ * one eagerly would read every one of those modules for nothing.
+ *
+ * A binding that exists but cannot be resolved is RECORDED in `unresolved` (shared by
+ * every scope of one transform) as "`name` <reason>", so the plugin can fail the build
+ * naming it rather than warn about an anonymous "isn't statically evaluable". Only a
+ * VALUE read records: `has()` is how the evaluator probes a name it may legitimately
+ * leave to runtime (a named reducer), so a probe that misses is not a failure.
+ */
+export class ModuleScope extends Map<string, unknown> {
+  private readonly tried = new Map<string, string | undefined>()
+  private readonly resolveFree: (name: string) => FreeNameResolution
+  readonly unresolved: Set<string>
+  constructor(resolveFree: (name: string) => FreeNameResolution, unresolved: Set<string>) {
+    super()
+    this.resolveFree = resolveFree
+    this.unresolved = unresolved
+  }
+
+  override has(name: string): boolean {
+    return super.has(name) || this.resolve(name)
+  }
+
+  override get(name: string): unknown {
+    if (super.has(name) || this.resolve(name)) return super.get(name)
+    const why = this.tried.get(name)
+    if (why !== undefined) this.unresolved.add(`\`${name}\` ${why}`)
+    return undefined
+  }
+
+  /** A child scope (a factory body) that keeps resolving this module's free names. */
+  fork(): ModuleScope {
+    const child = new ModuleScope(this.resolveFree, this.unresolved)
+    for (const [k, v] of super.entries()) child.set(k, v)
+    return child
+  }
+
+  private resolve(name: string): boolean {
+    if (this.tried.has(name)) return false
+    const r = this.resolveFree(name)
+    if (r !== null && 'value' in r) {
+      super.set(name, r.value)
+      return true
+    }
+    // A name nothing binds YET is not remembered: a later declaration may bind it.
+    if (r !== null) this.tried.set(name, r.unresolved)
+    return false
+  }
+}
+
 // Internal XScope also holds non-Combinator values (g proxy objects etc.)
 type XScopeVal = ScopeEntry | unknown
 type XScope = Map<string, XScopeVal>
@@ -557,6 +620,20 @@ function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
 }
 
 /**
+ * `scanTo`/`balanced` options: `undefined` when absent, `UNKNOWN_OPTIONS` when present
+ * but not statically known. Passing the unknown value on as `null` is what built a
+ * region with NO skip units out of `balanced('(', ')', importedOpts)` — the options
+ * silently vanished.
+ */
+const UNKNOWN_OPTIONS = Symbol('parseman.unknownOptions')
+function scanOptions(optsArg: Expression | { type: 'SpreadElement' } | undefined, scope: XScope, code?: string): unknown {
+  if (optsArg === undefined) return undefined
+  if (optsArg.type === 'SpreadElement') return UNKNOWN_OPTIONS
+  const opts = anyValue(optsArg as Expression, scope, code, [])
+  return isHole(optsArg as Expression, opts, scope) ? UNKNOWN_OPTIONS : opts
+}
+
+/**
  * Evaluate a call expression to a Combinator.
  * `mfs` accumulates mapFn source texts in depth-first order — must match
  * what codegen pushes to ctx.mapFns when it traverses the same tree.
@@ -893,9 +970,8 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const open = anyValue(openArg as Expression, scope, code, [])
     const close = anyValue(closeArg as Expression, scope, code, [])
     if (typeof open !== 'string' || typeof close !== 'string') return null
-    const opts = optsArg && optsArg.type !== 'SpreadElement'
-      ? anyValue(optsArg as Expression, scope, code, [])
-      : undefined
+    const opts = scanOptions(optsArg, scope, code)
+    if (opts === UNKNOWN_OPTIONS) return null
     try { return parseman.balanced(open, close, opts as parseman.ScanToOptions | undefined) } catch { return null }
   }
 
@@ -906,9 +982,8 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     if (!sentinelArg || sentinelArg.type === 'SpreadElement') return null
     const sentinel = anyValue(sentinelArg as Expression, scope, code, [])
     if (!isCombinator(sentinel)) return null
-    const opts = optsArg && optsArg.type !== 'SpreadElement'
-      ? anyValue(optsArg as Expression, scope, code, [])
-      : undefined
+    const opts = scanOptions(optsArg, scope, code)
+    if (opts === UNKNOWN_OPTIONS) return null
     try { return parseman.scanTo(sentinel, opts as parseman.ScanToOptions | undefined) } catch { return null }
   }
 
@@ -1039,6 +1114,22 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
   } catch { return null }
 }
 
+/**
+ * An element that evaluated to `null` without BEING `null` — an unresolved name, a
+ * call the evaluator could not build. Kept as a `null` slot, it made the container
+ * look evaluated: `{ skip: [unknownUnit] }` became `{ skip: [null] }`, and an options
+ * object went missing piece by piece with no warning. So a hole fails the whole
+ * container. A function literal is exempt: it evaluates to `null` by design, its
+ * source being captured by the caller that needs it.
+ */
+function isHole(node: Expression, value: unknown, scope: XScope): boolean {
+  if (value !== null) return false
+  const n = unwrapStaticExpr(node) as { type: string; value?: unknown; name?: string }
+  if (n.type === 'Identifier') return !scope.has(n.name!) // a bound nullish const is a value
+  return !(n.type === 'Literal' && n.value === null)
+    && n.type !== 'ArrowFunctionExpression' && n.type !== 'FunctionExpression'
+}
+
 /** Evaluate any expression to its JS value (not necessarily a Combinator). */
 function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]): unknown {
   if (node.type === 'TSAsExpression'
@@ -1064,7 +1155,9 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
     for (const el of arr.elements) {
       if (el === null) { out.push(null); continue }
       if ((el as { type: string }).type === 'SpreadElement') return null
-      out.push(anyValue(el as Expression, scope, code, mfs))
+      const v = anyValue(el as Expression, scope, code, mfs)
+      if (isHole(el as Expression, v, scope)) return null
+      out.push(v)
     }
     return out
   }
@@ -1074,7 +1167,10 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
     for (const prop of node.properties) {
       const key = propName(prop as never)
       if (key === null) return null
-      obj[key] = anyValue((prop as unknown as ObjectProperty).value as Expression, scope, code, mfs)
+      const valueNode = (prop as unknown as ObjectProperty).value as Expression
+      const v = anyValue(valueNode, scope, code, mfs)
+      if (isHole(valueNode, v, scope)) return null
+      obj[key] = v
     }
     return obj
   }
@@ -1184,15 +1280,16 @@ export function evaluateExpr(
  * Evaluate a `const X = [combinator, …]` array literal into an array of
  * Combinators. Lets a shared option array (e.g. a `skip` set reused across
  * `scanTo`/`balanced` calls) be referenced by name — `{ skip: X }` — instead of
- * inlining the array at every call site. Returns null when `node` isn't an array
- * literal of statically-resolvable combinators.
+ * inlining the array at every call site. Returns null when `node` doesn't evaluate
+ * to an array of statically-resolvable combinators.
  */
 export function evaluateCombinatorArray(
   node: Expression,
   scope: Scope,
   code?: string,
 ): Combinator<unknown>[] | null {
-  if (node.type !== 'ArrayExpression') return null
+  // Any expression, not just an array literal: `rules({ scanSkip: sharedSkip })`
+  // names the array, and requiring a literal here is what dropped it.
   const val = anyValue(node, scope as XScope, code, [])
   if (!Array.isArray(val) || val.length === 0) return null
   if (!val.every(isCombinator)) return null
@@ -1453,7 +1550,7 @@ export function evaluateParserFactory(
     built = rules(options ?? {}, (g: Record<string, Combinator<unknown>>) => {
       // Outer ScopeEntry values carry their mfSrcs and are replayed by scopeGet()
       // when body statements or return expressions reference them.
-      const localScope: XScope = new Map(scope as XScope)
+      const localScope: XScope = scope instanceof ModuleScope ? scope.fork() : new Map(scope as XScope)
       localScope.set(proxyName, g)
 
       // ── Phase 1: the factory's own body statements ────────────────────────
@@ -1564,7 +1661,10 @@ export function applyDefineStatement(
 /** Check if an AST node references any name from the given scope or names set. */
 export function referencesAny(node: Node, names: Set<string>, scope: Scope): boolean {
   if (node.type === 'Identifier') {
-    return names.has(node.name) || scope.has(node.name)
+    // The names the module has BOUND so far, not every import it could resolve: this
+    // decides whether a declaration is macro code at all, and an ordinary
+    // `const x = importedThing` must not start reading modules to find out.
+    return names.has(node.name) || Map.prototype.has.call(scope, node.name)
   }
   for (const key of Object.keys(node) as (keyof typeof node)[]) {
     const child = node[key]

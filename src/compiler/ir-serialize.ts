@@ -161,6 +161,29 @@ export function serializeRuleMap(
  * evaluate the combinator-construction expression with every constructor in scope.
  * Used at fuse time (runtime linker + build-time plugin) to re-lower carried IR. */
 export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
+  return Object.entries(evalIR(ir, rules) as Record<string, Comb>)
+}
+
+/**
+ * ONE plain combinator as IR — what a compiled module carries on an exported terminal
+ * so another module can import it into a grammar (the macro evaluates grammars, and a
+ * compiled parser function is not a combinator it can evaluate).
+ *
+ * No new format: it is `serializeRuleMap`'s `scanSkip` channel over an empty map, which
+ * already serializes rule-free terminals OUTSIDE any factory — exactly this shape.
+ */
+export function serializeCombinator(c: Comb): string | null {
+  return serializeRuleMap([], [c])
+}
+
+/** The inverse of `serializeCombinator`: the same evaluation, with `rules` reading the
+ * one `scanSkip` unit back instead of building a grammar around it. */
+export function evalCombinatorIR(ir: string): Comb | null {
+  const units = evalIR(ir, (opts: { scanSkip?: Comb[] }) => opts.scanSkip) as Comb[] | undefined
+  return units?.length === 1 ? units[0]! : null
+}
+
+function evalIR(ir: string, rulesImpl: unknown): unknown {
   // `_tf`/`_nd` reconstruct a transform/node AND restore its captured callback
   // source (`_def.fnSrc`/`buildSrc`) so re-lowering inlines it statically. The live
   // fn is only needed for interpreted mode; a self-contained transform source is
@@ -268,12 +291,11 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     'scanTo', 'balanced', 'token', 'leaf', 'transform', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', 'adjacent', 'notAdjacent', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
-  const map = fn(
-    rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
+  return fn(
+    rulesImpl, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
     many, oneOrMore, optional, sepBy, keepSeparator, not, peek, node, parser,
     scanTo, balanced, token, leaf, transform, trivia, classifiedTrivia, label, field, expectC, adjacent, notAdjacent, _tf, _lf, _nd, _gch, _wc,
-  ) as Record<string, Comb>
-  return Object.entries(map)
+  )
 }
 
 /** A recursive combinator currently being emitted, and the local `ref()` var that
