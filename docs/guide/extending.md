@@ -165,6 +165,11 @@ macro](./modes):
   IR, which the plugin re-lowers in the bundler and links in one namespace, as the
   runtime link below does) and constructs no code at runtime, so it ships in strict-CSP
   contexts like browser extensions or some CDNs with no extra configuration.
+  An imported build-compiled grammar has to resolve at build time, including through a
+  bundled upstream (esbuild's inlined ancestors, renamed imports and `/* @__PURE__ */`
+  keys are followed). If it can't, the build fails and names the upstream, because a
+  runtime `compose()` can't link a compiled grammar
+  (`test/unit/compose-unresolved-upstream.test.ts`).
 - **Runtime (interpreter):** `compose([...])` only **links**. Each piece's `rules()`
   factory runs again against one shared namespace, a later piece's rule winning by name,
   so the result is the interpreter grammar one `rules()` over all the pieces would build.

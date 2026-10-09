@@ -71,6 +71,7 @@ describe('no runtime string-to-code outside compile()', () => {
     }
     expect(unrestricted['compiled base package']).toContain('"ok":true,"full":true')
     expect(unrestricted['compiled downstream package composing the base']).toContain('"ok":true,"full":true')
+    expect(unrestricted['compiled package composing an esbuild-bundled compiled package']).toContain('"ok":true,"full":true')
     expect(unrestricted['runtime compose() over a compiled base']).toMatch(/^refused: compose: /)
   })
 

@@ -85,6 +85,25 @@ export const less = compose([css, rules({ trivia: ws }, g => ({
   Value: choice(sequence(literal('@'), g.Word), g.Word),
 }))])`
 
+/*
+ * The same downstream shape over a BUNDLED upstream: `less-bundle` composes css and is
+ * then bundled by esbuild, which inlines css as a top-level `var`, renames the clashing
+ * `tableRules` import and reprints the carried-pieces key as
+ * `[/* @__PURE__ *\/ Symbol.for("parseman.composedPieces")]`. A dialect composing that
+ * bundle must still lower at build time: a runtime compose() cannot link it.
+ */
+const MID = `import { compose, rules, regex, trivia } from 'parseman' with { type: 'macro' }
+import { css } from './css.js'
+const ws = trivia(regex(/[ \\t\\n]*/))
+export const lessBundle = compose([css, rules({ trivia: ws }, g => ({ Word: regex(/[a-z0-9]+/) }))])`
+
+const OVER_BUNDLE = `import { compose, rules, literal, sequence, choice, trivia, regex } from 'parseman' with { type: 'macro' }
+import { lessBundle } from './less-bundle.js'
+const ws = trivia(regex(/[ \\t\\n]*/))
+export const dialect = compose([lessBundle, rules({ trivia: ws }, g => ({
+  Value: choice(sequence(literal('$'), g.Word), g.Word),
+}))])`
+
 /** The specifier of the parseman module a `parseman` / `parseman/<sub>` import names,
  * as SOURCE — what the published `dist/<sub>/index.js` is built from. */
 function parsemanSource(spec: string): string {
@@ -99,17 +118,29 @@ function parsemanSource(spec: string): string {
  */
 export async function buildCompiledPackages(dir: string): Promise<void> {
   const { transformMacro } = await import('../../src/plugin/index.ts')
+  const { build } = await import('esbuild')
   const emit = (source: string, name: string): void => {
     const out = transformMacro(source, path.join(dir, `${name}.ts`), new Set(['parseman']))
     if (!out) throw new Error(`the macro did not transform ${name}`)
     if (out.warnings.length > 0) throw new Error(`${name}: ${out.warnings.join('; ')}`)
     if (/\bcompose\s*\(\s*\[/.test(out.code)) throw new Error(`${name}: compose() was left to run at runtime`)
-    const code = out.code.replace(/(["'])(parseman(?:\/[\w-]+)?)\1/g, (_m, q: string, spec: string) => `${q}${parsemanSource(spec)}${q}`)
-    fs.writeFileSync(path.join(dir, `${name}.js`), code)
+    fs.writeFileSync(path.join(dir, `${name}.js`), out.code)
   }
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}')
   emit(COMPILED_BASE, 'css')
   emit(COMPILED_DOWNSTREAM, 'less')
+  emit(MID, 'less-bundle-src')
+  await build({
+    entryPoints: [path.join(dir, 'less-bundle-src.js')], outfile: path.join(dir, 'less-bundle.js'),
+    bundle: true, format: 'esm', external: ['parseman', 'parseman/*'], logLevel: 'silent',
+  })
+  emit(OVER_BUNDLE, 'dialect')
+  // Every module reaches parseman as SOURCE, so the run measures this checkout.
+  for (const name of ['css', 'less', 'less-bundle', 'dialect']) {
+    const file = path.join(dir, `${name}.js`)
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8')
+      .replace(/(["'])(parseman(?:\/[\w-]+)?)\1/g, (_m, q: string, spec: string) => `${q}${parsemanSource(spec)}${q}`))
+  }
 }
 
 /**
@@ -119,9 +150,11 @@ export async function buildCompiledPackages(dir: string): Promise<void> {
 export async function loadCompiledPaths(dir: string): Promise<Record<string, () => string>> {
   const { css } = await import(pathToFileURL(path.join(dir, 'css.js')).href) as { css: Record<string, unknown> }
   const { less } = await import(pathToFileURL(path.join(dir, 'less.js')).href) as { less: Record<string, unknown> }
+  const { dialect } = await import(pathToFileURL(path.join(dir, 'dialect.js')).href) as { dialect: Record<string, unknown> }
   return {
     'compiled base package': () => parsed(css.Doc, 'a = b c'),
     'compiled downstream package composing the base': () => parsed(less.Doc, 'a = @b9 c1'),
+    'compiled package composing an esbuild-bundled compiled package': () => parsed(dialect.Doc, 'a = $b9 c1'),
     // Runtime compose() links live interpreter grammars only. A compiled grammar
     // carries IR source, never live rules, so it is REFUSED rather than evaluated.
     'runtime compose() over a compiled base': () => {

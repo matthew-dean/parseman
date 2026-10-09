@@ -76,6 +76,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     a factory takes from another grammar (`Entry: base.Entry`): that object keeps
     `base`'s bindings, where the IR rebuild used to rebind it by name. Compose
     `base` itself to put its rules under the composition's names.
+  - A macro `compose()` over an esbuild-bundled compiled upstream lowers at build
+    time again. esbuild reprints the carried-pieces key as
+    `[/* @__PURE__ */ Symbol.for("parseman.composedPieces")]`, renames a clashing
+    `tableRules` import and inlines a composed ancestor as a top-level `var`. The macro
+    now follows all three; before, it warned and left a runtime `compose()`, which
+    under this release would throw at import. An imported build-compiled grammar the
+    macro still cannot resolve now fails the build, naming the upstream and the likely
+    bundler rewrite, instead of warning and falling back to runtime. An unresolvable
+    ancestor spread fails it too, where it used to be dropped silently.
   - `compile(ruleMap)` reports degradations in one aggregated block, as
     `compile(combinator)` does, and throws on an entry that is not a parser instead
     of dropping it. `compose([linkable(g)])` names `g`'s rules, not the artifact's
