@@ -1141,6 +1141,15 @@ function transformMacroImpl(
       for (const bi of def?.buildImports ?? []) {
         let m = pendingBuilderImports.get(bi.source)
         if (!m) { m = new Map(); pendingBuilderImports.set(bi.source, m) }
+        const prev = m.get(bi.local)
+        // Two builders reading one local name as different exports cannot share an import.
+        if (prev !== undefined && prev !== bi.imported) {
+          throw new Error(
+            `${id} — parseman will not emit this module: inlined builders read \`${bi.local}\` as both `
+            + `\`${prev}\` and \`${bi.imported}\` from ${JSON.stringify(bi.source)}. The builder source names `
+            + `\`${bi.local}\` verbatim, so one import cannot bind both; import them under different names.`,
+          )
+        }
         m.set(bi.local, bi.imported)
       }
       // An ANONYMOUS lazy is inline recursion — follow the thunk. A NAMED lazy is a

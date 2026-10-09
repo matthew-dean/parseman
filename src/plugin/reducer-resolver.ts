@@ -241,7 +241,10 @@ function markReassignments(body: unknown[], root: ScopeNode): void {
     if (Array.isArray(n)) { for (const item of n) walk(item); return }
     const node = n as AnyNode
     if (typeof node.type !== 'string') return
-    if (node.type === 'AssignmentExpression' || node.type === 'UpdateExpression') {
+    // `for (x of …)` / `for (x in …)` writes `x` too when its head declares nothing.
+    const loopWrite = (node.type === 'ForOfStatement' || node.type === 'ForInStatement')
+      && (node.left as AnyNode | undefined)?.type !== 'VariableDeclaration'
+    if (node.type === 'AssignmentExpression' || node.type === 'UpdateExpression' || loopWrite) {
       const target = (node.type === 'UpdateExpression' ? node.argument : node.left) as AnyNode | undefined
       const names: string[] = []
       if (target) patternNames(target, names)

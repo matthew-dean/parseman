@@ -68,7 +68,7 @@ beforeAll(() => {
   const rebound = path.join(dir, 'node_modules', '@t', 'rebound')
   fs.mkdirSync(rebound, { recursive: true })
   fs.writeFileSync(path.join(rebound, 'package.json'), JSON.stringify({ name: '@t/rebound', type: 'module', exports: { '.': './index.js' } }))
-  fs.writeFileSync(path.join(rebound, 'index.js'), "var identBoundary = '-_a-zA-Z0-9'\nidentBoundary = 'a-z'\nvar redeclared = 'a-z'\nif (globalThis.x) { var redeclared = '0-9' }\nexport { identBoundary, redeclared }\n")
+  fs.writeFileSync(path.join(rebound, 'index.js'), "var identBoundary = '-_a-zA-Z0-9'\nidentBoundary = 'a-z'\nvar redeclared = 'a-z'\nif (globalThis.x) { var redeclared = '0-9' }\nvar looped = 'a-z'\nfor (looped of ['0-9']) {}\nexport { identBoundary, redeclared, looped }\n")
   // A package whose terminal was compiled WITHOUT carried IR (an older parseman).
   const stale = path.join(dir, 'node_modules', '@t', 'stale')
   fs.mkdirSync(path.join(stale, 'lib'), { recursive: true })
@@ -77,6 +77,13 @@ beforeAll(() => {
   // A terminal whose node() builder calls a helper ITS module imports.
   fs.writeFileSync(path.join(dir, 'builders.ts'), BUILDERS('./ast.js'))
   fs.mkdirSync(path.join(dir, 'sub'))
+  for (const name of ['A', 'B']) {
+    fs.writeFileSync(path.join(dir, `alias-${name}.ts`), `
+import { node, regex } from 'parseman' with { type: 'macro' }
+import { make${name} as make } from './helpers.js'
+export const t${name} = node('${name}', regex(/${name.toLowerCase()}/), children => make(children))
+`.trim())
+  }
   for (const [name, helper, builder] of [['builders', '@t/ast'], ['builders-rel', './ast.js'], ['builders-named', '@t/ast', 'mkIdent']]) {
     const p = path.join(dir, 'node_modules', '@t', name!)
     fs.mkdirSync(path.join(p, 'lib'), { recursive: true })
@@ -278,6 +285,15 @@ export const grammar = rules(g => ({ Doc: sequence(literal('='), ident) }))
     expect(() => lower(grammar('@t/builders-rel'))).toThrow(/`ident` has a node\(\) builder reading `mkIdent` from '\.\/ast\.js' inside .*builders-rel/)
   })
 
+  it('refuses two builders that read one local name as different exports', () => {
+    expect(() => lower(`
+import { rules } from 'parseman' with { type: 'macro' }
+import { tA } from './alias-A.ts'
+import { tB } from './alias-B.ts'
+export const grammar = rules(g => ({ A: tA, B: tB }))
+`)).toThrow(/builders read `make` as both `makeA` and `makeB` from "\.\/helpers\.js"/)
+  })
+
   it('names the terminal whose carried builder IR cannot be rebuilt', () => {
     // A package builder that is an imported NAME, not an inline function, is carried
     // with a static error the IR cannot rebuild from.
@@ -409,7 +425,7 @@ export const grammar = rules(g => ({ Doc: sequence(literal('='), dq) }))
 `)).toThrow(/`dq` is a compiled parser in .*carries no combinator IR/)
   })
 
-  it('a bundled `var` the module reassigns or redeclares', () => {
+  it('a bundled `var` the module reassigns, redeclares or loops over', () => {
     expect(() => lower(`
 import { rules, word } from 'parseman' with { type: 'macro' }
 import { identBoundary } from '@t/rebound'
@@ -420,6 +436,11 @@ import { rules, word } from 'parseman' with { type: 'macro' }
 import { redeclared } from '@t/rebound'
 export const grammar = rules(g => ({ Doc: word('if', redeclared) }))
 `)).toThrow(/`redeclared` could not be resolved in .*rebound/)
+    expect(() => lower(`
+import { rules, word } from 'parseman' with { type: 'macro' }
+import { looped } from '@t/rebound'
+export const grammar = rules(g => ({ Doc: word('if', looped) }))
+`)).toThrow(/`looped` could not be resolved in .*rebound/)
   })
 
   it('a missing export and an unresolvable module', () => {

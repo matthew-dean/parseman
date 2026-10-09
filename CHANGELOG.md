@@ -22,12 +22,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   import instead of re-declaring them per grammar. An imported `rules()` factory's own
   imports resolve the same way. A bundled entry resolves too: a bundler such as esbuild
   emits each top-level `const` as `var` (and may requote the carried IR as a template
-  literal), so a top-level `let`/`var` that the module never reassigns or redeclares
-  is read as its initializer. An imported terminal whose inline `node()` builder calls a
-  helper its own module imports now brings that import along: the compiled grammar
-  re-imports the helper, re-spelled relative to the importing module. A package
+  literal), so a top-level `let`/`var` that the module never reassigns (including as a
+  `for…of`/`for…in` target) or redeclares is read as its initializer. An imported
+  terminal whose inline `node()` builder calls a helper its own module imports now
+  brings that import along: the compiled grammar re-imports the helper, re-spelled
+  relative to the importing module. A package
   terminal whose helper is a relative file inside that package fails the build naming
-  both, since the importing module has no stable path to it.
+  both, since the importing module has no stable path to it, and so do two builders that
+  read one local name as different exports.
 
 - Ordinary top-level code in a macro module is evaluated at build time only when a
   grammar reads it, so the imports it reads are never resolved for a value nothing
