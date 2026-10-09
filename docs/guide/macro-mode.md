@@ -346,8 +346,9 @@ interpreter, and why.
 
 Some things fail the build instead of falling back, because there's no correct fallback:
 
-- a `rules({ trivia })` or `rules({ scanSkip })` option the plugin can't evaluate, or an
-  options spread that could hide one. Building without the option would change what the
+- a `rules({ trivia })` or `rules({ scanSkip })` option the plugin can't evaluate, an
+  options spread that could hide one, or a trailing `rules(factory, options)` argument
+  that isn't an object literal. Building without the option would change what the
   grammar accepts.
 - an imported binding the plugin can't resolve, wherever the grammar uses it. At runtime a
   package's terminal is a compiled parser, which the interpreter can't use either.

@@ -835,7 +835,20 @@ function transformMacroImpl(
       }
     }
     const local = exportLocalName(m.body, name)
-    if (local === null) return { unresolved: `is not exported by ${m.file}` }
+    if (local === null) {
+      // A barrel: `export * from '…'`. ponytail: the first star that exports `name`
+      // wins; a name two stars both export is ambiguous in ES, which this does not flag.
+      for (const st of m.body) {
+        if (st.type !== 'ExportAllDeclaration' || (st as { exported?: unknown }).exported) continue
+        const file = depth < 16 ? resolveValueFile(m.file, (st.source as { value: string }).value) : null
+        const next = file ? valueModule(file) : null
+        if (!next) continue
+        const r = exportedValue(next, name, depth + 1)
+        if (r !== null && 'unresolved' in r && r.unresolved.startsWith('is not exported by ')) continue
+        return r
+      }
+      return { unresolved: `is not exported by ${m.file}` }
+    }
     const scope = moduleValueScope(m)
     if (!scope.has(local)) {
       scope.get(local) // records WHY, for the error
@@ -1188,6 +1201,11 @@ function transformMacroImpl(
     // map seeds them as the ambient defaults (build-time mirror of rules() tagging
     // grammarTrivia / grammarScanSkip at runtime).
     const optionsArg = (optionsFirst ? arg0 : arg1) as AnyNode | undefined
+    // `optionProp` reads an object LITERAL: a trailing `rules(factory, OPTS)` would hide
+    // every option from it and ship the grammar without them, as `compose()` would.
+    if (optionsArg !== undefined && optionsArg.type !== 'ObjectExpression' && !isStaticNullishExpression(optionsArg as unknown as Expression)) {
+      unevaluable(optionsArg.start as number, `${label}: rules() options`)
+    }
     const optionValue = (name: string): Expression | undefined => optionProp(optionsArg, name)
 
     // Read and VALIDATE hostMode before evaluating the factory, so a mode the macro
@@ -1234,8 +1252,13 @@ function transformMacroImpl(
      * Evaluated BEFORE the factory because they are now inputs to it.
      */
     const gTrivia = triviaOption(optionsArg, label)
-    const scanSkipArray = requiredOption(label, 'scanSkip', optionValue('scanSkip'), v =>
-      v.type === 'ArrayExpression' && v.elements.length === 0 ? [] : evaluateCombinatorArray(v, scope, code))
+    const scanSkipArray = requiredOption(label, 'scanSkip', optionValue('scanSkip'), v => {
+      const units = evaluateCombinatorArray(v, scope, code)
+      if (units) return units
+      // An empty array means no skip units, whether written `[]` or named by a const.
+      const value = evaluateStaticValue(v, scope, code)
+      return Array.isArray(value) && value.length === 0 ? [] : null
+    })
     const gScanSkip = scanSkipArray?.length ? scanSkipArray : undefined
 
     const why: { reason?: string } = {}

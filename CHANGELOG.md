@@ -15,17 +15,20 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - Resolve imported values wherever the macro evaluates a grammar: a terminal in a rule
   body, a combinator argument (`balanced(o, c, opts)`, `word(s, boundary)`), and
   `rules({ trivia, scanSkip })`. A relative import is read from its source. A package
-  import is read from its published entry. Exported compiled terminals (and any a
-  verbatim export still names) now carry their combinator IR under
+  import is read from its published entry. Named and `export * from` re-exports are
+  followed. Exported compiled terminals (and any a verbatim export still names) now
+  carry their combinator IR under
   `Symbol.for('parseman.combinatorIR')`, so a grammar family can share terminals by
   import instead of re-declaring them per grammar. An imported `rules()` factory's own
   imports resolve the same way.
 
 - Fail the build, naming the option or declaration, the grammar, and each unresolved
   binding with its reason, when an imported binding can't be resolved, when a
-  `trivia`/`scanSkip` option can't be evaluated, or when an options spread could hide
-  one. An options object or array containing an unresolved element is now unresolved
-  as a whole, instead of carrying a `null` in its place.
+  `trivia`/`scanSkip` option can't be evaluated, when an options spread could hide
+  one, or when a trailing `rules(factory, options)` argument isn't an object literal.
+  An options object or array containing an unresolved element is now unresolved as a
+  whole, instead of carrying a `null` in its place. An empty `scanSkip` array means no
+  skip units whether it's written `[]` or named by a `const`.
 
 - Re-anchor the grammar-density and broad-workload release comparisons to 0.52.0
   (`5ecb114`), the immediately preceding stable release. Peak baselines are unchanged.

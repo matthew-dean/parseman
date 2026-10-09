@@ -41,6 +41,7 @@ beforeAll(() => {
   fs.writeFileSync(path.join(dir, 'package.json'), '{ "name": "app", "type": "module" }')
   fs.writeFileSync(path.join(dir, 'terminals.ts'), TERMINALS)
   fs.writeFileSync(path.join(dir, 'runtime-only.ts'), 'export const opaque = makeAtRuntime()\n')
+  fs.writeFileSync(path.join(dir, 'barrel.ts'), "export * from './runtime-only.ts'\nexport * from './terminals.ts'\n")
   // A published package whose entry is the MACRO OUTPUT of the same terminals.
   const pkg = path.join(dir, 'node_modules', '@t', 'shared')
   fs.mkdirSync(path.join(pkg, 'lib'), { recursive: true })
@@ -166,6 +167,34 @@ export const grammar = rules({ scanSkip: SKIP }, g => ({ Doc: scanTo(literal(';'
 `)
     expect(endOf(g.Doc!, 'a ";" b;')).toBe(7)
   })
+
+  it('an EMPTY named skip array means no skip units, exactly as `[]` does', () => {
+    const g = build(`
+import { rules, literal, scanTo } from 'parseman' with { type: 'macro' }
+const SKIP = []
+export const grammar = rules({ scanSkip: SKIP }, g => ({ Doc: scanTo(literal(';')) }))
+`)
+    expect(endOf(g.Doc!, 'a ";" b;')).toBe(3)
+  })
+})
+
+describe('a terminal re-exported by a barrel (`export * from`)', () => {
+  it('resolves through the star export that has it', () => {
+    const g = build(`
+import { rules, sequence, literal } from 'parseman' with { type: 'macro' }
+import { dq } from './barrel.ts'
+export const grammar = rules(g => ({ Doc: sequence(literal('='), dq) }))
+`)
+    expect(endOf(g.Doc!, '="a b"')).toBe(6)
+  })
+
+  it('a name no star exports is still not exported by the barrel', () => {
+    expect(() => lower(`
+import { rules, sequence, literal } from 'parseman' with { type: 'macro' }
+import { nope } from './barrel.ts'
+export const grammar = rules(g => ({ Doc: sequence(literal('='), nope) }))
+`)).toThrow(/`nope` is not exported by .*barrel\.ts/)
+  })
 })
 
 describe('a compiled terminal carries its combinator IR only where another module can reach it', () => {
@@ -260,6 +289,15 @@ import { opaque } from './runtime-only.ts'
 const a = rules(g => ({ Doc: literal('a') }))
 export const grammar = compose([a], { ...opaque })
 `)).toThrow(/compose\(\): an options spread can't be evaluated/)
+  })
+
+  it('a trailing rules(factory, OPTS) options argument that is not an object literal', () => {
+    expect(() => lower(`
+import { rules, literal, regex, sequence, scanTo } from 'parseman' with { type: 'macro' }
+const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+const OPTS = { scanSkip: [dq] }
+export const grammar = rules(g => ({ Doc: scanTo(literal(';')) }), OPTS)
+`)).toThrow(/grammar: rules\(\) options can't be evaluated/)
   })
 
   it('a local declaration that reads an unresolvable import, named through the local', () => {
