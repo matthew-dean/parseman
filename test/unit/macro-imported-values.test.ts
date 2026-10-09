@@ -37,6 +37,12 @@ export const parenOpts = { skip: [dq] }
 export const identBoundary = '-_a-zA-Z0-9'
 `.trim()
 
+const BUILDERS = (helper: string) => `
+import { node, regex } from 'parseman' with { type: 'macro' }
+import { mkIdent } from '${helper}'
+export const ident = node('Ident', regex(/[a-z]+/), children => mkIdent(children))
+`.trim()
+
 let dir: string
 let seq = 0
 beforeAll(() => {
@@ -68,6 +74,15 @@ beforeAll(() => {
   fs.mkdirSync(path.join(stale, 'lib'), { recursive: true })
   fs.writeFileSync(path.join(stale, 'package.json'), JSON.stringify({ name: '@t/stale', type: 'module', exports: { '.': './lib/index.js' } }))
   fs.writeFileSync(path.join(stale, 'lib', 'index.js'), 'import { tableRules } from "parseman/table"\nexport const dq = /* @__PURE__ */ tableRules({ a: [] })["Entry"]\n')
+  // A terminal whose node() builder calls a helper ITS module imports.
+  fs.writeFileSync(path.join(dir, 'builders.ts'), BUILDERS('./ast.js'))
+  fs.mkdirSync(path.join(dir, 'sub'))
+  for (const [name, helper] of [['builders', '@t/ast'], ['builders-rel', './ast.js']]) {
+    const p = path.join(dir, 'node_modules', '@t', name!)
+    fs.mkdirSync(path.join(p, 'lib'), { recursive: true })
+    fs.writeFileSync(path.join(p, 'package.json'), JSON.stringify({ name: `@t/${name}`, type: 'module', exports: { '.': './lib/index.js' } }))
+    fs.writeFileSync(path.join(p, 'lib', 'index.js'), transformMacro(BUILDERS(helper!), path.join(p, 'src', 'index.ts'), new Set(['parseman']))!.code)
+  }
 })
 afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
@@ -234,6 +249,33 @@ const toSemi = scanTo(literal(';'))
 export const spaced = rules({ trivia: regex(/\\s+/), scanSkip: [dq] }, g => ({ Pair: ab, Doc: toSemi }))
 export const plain = rules(g => ({ Pair: ab, Doc: toSemi }))
 `)
+  })
+})
+
+describe('an imported terminal whose node() builder calls a helper its module imports', () => {
+  const grammar = (from: string) => `
+import { rules, sequence, literal } from 'parseman' with { type: 'macro' }
+import { ident } from '${from}'
+export const grammar = rules(g => ({ Doc: sequence(literal('='), ident) }))
+`
+  const mkIdent = (children: unknown) => ({ made: children })
+
+  it('re-imports the helper, re-spelled from this module, for a relative source', () => {
+    const out = transformMacro(grammar('../builders.ts').trim(), path.join(dir, 'sub', 'entry.ts'), new Set(['parseman']))!
+    expect(out.warnings).toEqual([])
+    expect(out.code).toMatch(/^import \{ mkIdent \} from "\.\.\/ast\.js"$/m)
+    const g = evalMacroModule<Record<string, (i: string, p: number, c: object) => { ok: boolean; value: unknown }>>(out.code, 'grammar', { mkIdent })
+    expect(g.Doc!('=ab', 0, {}).value).toMatchObject(['=', { made: [{ value: 'ab' }] }])
+  })
+
+  it('re-imports a helper a package imports by name', () => {
+    const out = lower(grammar('@t/builders'))
+    expect(out.warnings).toEqual([])
+    expect(out.code).toMatch(/^import \{ mkIdent \} from "@t\/ast"$/m)
+  })
+
+  it('refuses a helper a package imports by relative path, naming both', () => {
+    expect(() => lower(grammar('@t/builders-rel'))).toThrow(/`ident` has a node\(\) builder reading `mkIdent` from '\.\/ast\.js' inside .*builders-rel/)
   })
 })
 

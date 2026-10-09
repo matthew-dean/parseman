@@ -23,7 +23,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   imports resolve the same way. A bundled entry resolves too: a bundler such as esbuild
   emits each top-level `const` as `var` (and may requote the carried IR as a template
   literal), so a top-level `let`/`var` that the module never reassigns or redeclares
-  is read as its initializer.
+  is read as its initializer. An imported terminal whose inline `node()` builder calls a
+  helper its own module imports now brings that import along: the compiled grammar
+  re-imports the helper, re-spelled relative to the importing module. A package
+  terminal whose helper is a relative file inside that package fails the build naming
+  both, since the importing module has no stable path to it.
 
 - Fail the build, naming the option or declaration, the grammar, and each unresolved
   binding with its reason, when an imported binding can't be resolved, when a

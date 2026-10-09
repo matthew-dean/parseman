@@ -701,8 +701,23 @@ function transformMacroImpl(
   setReducerResolver(reducerResolver, code)
   /* A direct builder's free name is rescuable when THIS module imported it — the
    * artifact carries `{ source, imported }` and a downstream compose() re-emits the
-   * import (see the re-lower pass below). Module-private consts stay refusals. */
-  setBuilderImportResolver(name => importBindings.get(name) ?? null)
+   * import (see the re-lower pass below). Module-private consts stay refusals.
+   * While a terminal of ANOTHER module is evaluated, its own imports answer instead
+   * (`moduleConstValue`), so its builder's helpers are re-emitted here. */
+  let builderImports = (name: string): { source: string; imported: string } | null => importBindings.get(name) ?? null
+  setBuilderImportResolver(name => builderImports(name))
+  const ownRoot = nearestPackageRoot(id)
+  let ownDir = path.dirname(id)
+  try { ownDir = fs.realpathSync(ownDir) } catch { /* a virtual module: keep its path */ }
+  /** `spec`, imported by `from`, as THIS module must write it; null when it can't: a
+   * relative import of another package names a file this one has no stable path to. */
+  const rebaseSpecifier = (from: string, spec: string): string | null => {
+    if (!spec.startsWith('.')) return spec
+    const target = path.resolve(path.dirname(from), spec)
+    if (ownRoot === null || nearestPackageRoot(target) !== ownRoot) return null
+    const rel = path.relative(ownDir, target).split(path.sep).join('/')
+    return rel.startsWith('../') ? rel : `./${rel}`
+  }
 
   /*
    * IMPORTED VALUES — a terminal, a skip set, an options object or a boundary string
@@ -791,21 +806,61 @@ function transformMacroImpl(
     try { return getCompiledResolver().resolveFileSync(from, specifier).path ?? null } catch { return null }
   }
   const evaluatingConsts = new Set<string>()
+  /** Rewrite each carried builder import in `combi`'s graph (written in `from`) to THIS
+   * module's spelling; the first that can't be is returned, for the refusal. */
+  const rebaseCarriedBuilderImports = (combi: unknown, from: string): { local: string; source: string } | null => {
+    const seen = new Set<unknown>()
+    const walk = (v: unknown): { local: string; source: string } | null => {
+      if (v === null || typeof v !== 'object' || seen.has(v)) return null
+      seen.add(v)
+      const def = (v as { _def?: { buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }> } })._def
+      if (def?.buildImports) {
+        const out = []
+        for (const bi of def.buildImports) {
+          const source = rebaseSpecifier(from, bi.source)
+          if (source === null) return bi
+          out.push({ ...bi, source })
+        }
+        def.buildImports = out
+      }
+      for (const child of Object.values(v as Record<string, unknown>)) {
+        for (const c of Array.isArray(child) ? child : [child]) {
+          const stuck = walk(c)
+          if (stuck) return stuck
+        }
+      }
+      return null
+    }
+    return walk(combi)
+  }
   /** Evaluate one top-level `const` of a foreign module, as the macro would locally. */
   const moduleConstValue = (m: ValueModule, name: string): FreeNameResolution => {
     const key = `${m.file}\0${name}`
     if (evaluatingConsts.has(key)) return { unresolved: `is part of a declaration cycle in ${m.file}` }
     evaluatingConsts.add(key)
+    const outerBuilderImports = builderImports
     try {
       const init = m.consts.get(name)! as unknown as Expression
       const ir = carriedCombinatorIR(init as unknown as AnyNode)
       if (ir !== null) {
-        const combi = evalCombinatorIR(ir)
-        return combi ? { value: { combi, mfSrcs: [] } satisfies ScopeEntry } : { unresolved: `carries combinator IR that does not evaluate (${m.file})` }
+        let combi: Combinator<unknown> | null = null
+        let why = ''
+        try { combi = evalCombinatorIR(ir) } catch (e) { why = `: ${(e as Error).message}` }
+        if (!combi) return { unresolved: `carries combinator IR that does not evaluate (${m.file})${why}` }
+        const stuck = rebaseCarriedBuilderImports(combi, m.file)
+        return stuck
+          ? { unresolved: `has a node() builder reading \`${stuck.local}\` from '${stuck.source}' inside ${m.file}, which this module cannot import — import it there by package name` }
+          : { value: { combi, mfSrcs: [] } satisfies ScopeEntry }
       }
       const scope = moduleValueScope(m)
       // Offsets inside this module's reducers must be answered against ITS scope tree.
       reducerResolver.register(m.file)
+      // A builder's free names are THIS module's imports, re-spelled for the consumer.
+      builderImports = name => {
+        const b = m.imports.get(name)
+        const source = b ? rebaseSpecifier(m.file, b.source) : null
+        return b && source !== null ? { source, imported: b.imported } : null
+      }
       const mfs: string[] = []
       const combi = evaluateExpr(init, scope as unknown as Scope, m.src, mfs)
       if (combi) return { value: { combi, mfSrcs: mfs } satisfies ScopeEntry }
@@ -820,6 +875,7 @@ function transformMacroImpl(
       }
     } finally {
       evaluatingConsts.delete(key)
+      builderImports = outerBuilderImports
     }
   }
   const moduleValueScope = (m: ValueModule): ModuleScope =>
@@ -1314,6 +1370,8 @@ function transformMacroImpl(
     // inlined" leaves the author with a ~5x silent perf regression and no lead.
     const refusals: string[] = []
     const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage, refusals })
+    // An imported terminal's inlined builder reads ITS module's helpers; import them here.
+    if (compiled !== null) collectBuilderImports([...evaluated.ruleMap])
     // A table replacement names `tableRules`, which nothing in the consumer's
     // module binds. That reference is the whole reason the artifact is small (the
     // driver is SHARED, not inlined per grammar), so the import is owned here.
