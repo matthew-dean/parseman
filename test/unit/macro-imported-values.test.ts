@@ -19,6 +19,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { buildSync } from 'esbuild'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
@@ -51,6 +52,17 @@ beforeAll(() => {
   const lib = transformMacro(TERMINALS, path.join(pkg, 'src', 'index.ts'), new Set(['parseman']))!
   expect(lib.warnings).toEqual([])
   fs.writeFileSync(path.join(pkg, 'lib', 'index.js'), lib.code)
+  // The same entry as a bundler ships it: esbuild emits every top-level `const` as `var`.
+  const bundled = path.join(dir, 'node_modules', '@t', 'bundled')
+  fs.mkdirSync(path.join(bundled, 'lib'), { recursive: true })
+  fs.writeFileSync(path.join(bundled, 'package.json'), JSON.stringify({ name: '@t/bundled', type: 'module', exports: { '.': './lib/index.js' } }))
+  buildSync({ stdin: { contents: lib.code, resolveDir: pkg }, bundle: true, format: 'esm', external: ['parseman', 'parseman/*'], outfile: path.join(bundled, 'lib', 'index.js'), logLevel: 'silent' })
+  expect(fs.readFileSync(path.join(bundled, 'lib', 'index.js'), 'utf8')).toMatch(/^var dq = /m)
+  // A `var` the module reassigns does not hold its initializer.
+  const rebound = path.join(dir, 'node_modules', '@t', 'rebound')
+  fs.mkdirSync(rebound, { recursive: true })
+  fs.writeFileSync(path.join(rebound, 'package.json'), JSON.stringify({ name: '@t/rebound', type: 'module', exports: { '.': './index.js' } }))
+  fs.writeFileSync(path.join(rebound, 'index.js'), "var identBoundary = '-_a-zA-Z0-9'\nidentBoundary = 'a-z'\nvar redeclared = 'a-z'\nif (globalThis.x) { var redeclared = '0-9' }\nexport { identBoundary, redeclared }\n")
   // A package whose terminal was compiled WITHOUT carried IR (an older parseman).
   const stale = path.join(dir, 'node_modules', '@t', 'stale')
   fs.mkdirSync(path.join(stale, 'lib'), { recursive: true })
@@ -91,6 +103,7 @@ const endOf = (rule: Rule, input: string): number | null => {
 describe.each([
   ['a relative source module', './terminals.ts'],
   ['a published package entry', '@t/shared'],
+  ['a bundled package entry', '@t/bundled'],
 ])('imported from %s', (_, from) => {
   it('an imported terminal inside a rule body', () => {
     const g = build(`
@@ -303,6 +316,19 @@ import { rules, sequence, literal } from 'parseman' with { type: 'macro' }
 import { dq } from '@t/stale'
 export const grammar = rules(g => ({ Doc: sequence(literal('='), dq) }))
 `)).toThrow(/`dq` is a compiled parser in .*carries no combinator IR/)
+  })
+
+  it('a bundled `var` the module reassigns or redeclares', () => {
+    expect(() => lower(`
+import { rules, word } from 'parseman' with { type: 'macro' }
+import { identBoundary } from '@t/rebound'
+export const grammar = rules(g => ({ Doc: word('if', identBoundary) }))
+`)).toThrow(/`identBoundary` could not be resolved in .*rebound/)
+    expect(() => lower(`
+import { rules, word } from 'parseman' with { type: 'macro' }
+import { redeclared } from '@t/rebound'
+export const grammar = rules(g => ({ Doc: word('if', redeclared) }))
+`)).toThrow(/`redeclared` could not be resolved in .*rebound/)
   })
 
   it('a missing export and an unresolvable module', () => {

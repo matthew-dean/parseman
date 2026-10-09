@@ -28,7 +28,7 @@ import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
 import { compileRuleMap } from '../table/compile-rule-map.ts'
 import { compileLinkableTable } from '../compiler/compile-linkable-table.ts'
-import { createReducerResolver } from './reducer-resolver.ts'
+import { createReducerResolver, topLevelIsStable } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
 import { supercompileRuleMapReplacement } from './entry-supercompiler.ts'
 import {
@@ -372,8 +372,11 @@ function carriedCombinatorIR(init: AnyNode): string | null {
     || (callee.property as { name?: string } | undefined)?.name !== 'defineProperty'
     || !isSymbolFor(args[1], COMBINATOR_IR_KEY)) return null
   for (const p of (args[2]?.properties as AnyNode[] | undefined) ?? []) {
-    const v = p.value as { type?: string; value?: unknown } | undefined
-    if (propName(p as never) === 'value' && v?.type === 'Literal' && typeof v.value === 'string') return v.value
+    const v = p.value as { type?: string; value?: unknown; expressions?: unknown[]; quasis?: Array<{ value: { cooked?: string | null } }> } | undefined
+    if (propName(p as never) !== 'value') continue
+    if (v?.type === 'Literal' && typeof v.value === 'string') return v.value
+    // A bundler may requote it as a template (esbuild does when it holds both quote kinds).
+    if (v?.type === 'TemplateLiteral' && v.expressions?.length === 0) return v.quasis?.[0]?.value.cooked ?? null
   }
   return null
 }
@@ -757,12 +760,17 @@ function transformMacroImpl(
     let out: ValueModule | null = null
     if (mod) {
       const consts = new Map<string, AnyNode>()
+      // A `let`/`var` counts when nothing reassigns it: a bundled entry declares its
+      // exports `var dq = …; export { dq }`.
+      let stable: ((name: string) => boolean) | undefined
       for (const st of mod.body as Statement[]) {
         const vd = unwrapVd(st)
-        if (!vd || (vd as unknown as { kind?: string }).kind !== 'const') continue
+        if (!vd) continue
+        const isConst = (vd as unknown as { kind?: string }).kind === 'const'
         for (const d of vd.declarations) {
           const idn = d.id as unknown as { type?: string; name?: string }
-          if (idn.type === 'Identifier' && idn.name && d.init) consts.set(idn.name, d.init as unknown as AnyNode)
+          if (idn.type !== 'Identifier' || !idn.name || !d.init) continue
+          if (isConst || (stable ??= topLevelIsStable(mod.body, mod.src.length))(idn.name)) consts.set(idn.name, d.init as unknown as AnyNode)
         }
       }
       out = {

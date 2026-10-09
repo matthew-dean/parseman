@@ -20,7 +20,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   carry their combinator IR under
   `Symbol.for('parseman.combinatorIR')`, so a grammar family can share terminals by
   import instead of re-declaring them per grammar. An imported `rules()` factory's own
-  imports resolve the same way.
+  imports resolve the same way. A bundled entry resolves too: a bundler such as esbuild
+  emits each top-level `const` as `var` (and may requote the carried IR as a template
+  literal), so a top-level `let`/`var` that the module never reassigns or redeclares
+  is read as its initializer.
 
 - Fail the build, naming the option or declaration, the grammar, and each unresolved
   binding with its reason, when an imported binding can't be resolved, when a
