@@ -300,6 +300,20 @@ export const grammar = rules(g => ({ Doc: literal('a') }))
     expect(out.code).toContain('const table = opaque(N)')
   })
 
+  it('a local read by two grammars resolves for both', () => {
+    const out = lower(`
+import { rules, word } from 'parseman' with { type: 'macro' }
+const B = '-_a-zA-Z0-9'
+export const one = rules(g => ({ Doc: word('if', B) }))
+export const two = rules(g => ({ Doc: word('else', B) }))
+`)
+    expect(out.warnings).toEqual([])
+    const g = evalMacroModule<Record<string, Record<string, Rule>>>(out.code, '{ one, two }')
+    expect(endOf(g.one!.Doc!, 'if-x')).toBeNull()
+    expect(endOf(g.two!.Doc!, 'else-x')).toBeNull()
+    expect(endOf(g.two!.Doc!, 'else')).toBe(4)
+  })
+
   it('a local a grammar reads is still resolved, after a ref() pre-pass has looked for it', () => {
     const g = build(`
 import { rules, ref, literal, word } from 'parseman' with { type: 'macro' }

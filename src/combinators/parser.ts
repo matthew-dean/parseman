@@ -50,10 +50,16 @@ const claimedRules = new WeakSet<object>()
  * stamps. (A rule ref's `parse` still reads the meta it closes over — that is the other
  * grammar's rule carrying its own trivia, exactly as a `g.X` reference to it would.)
  */
-function ownRule(p: Combinator<unknown>): Combinator<unknown> {
-  if (!claimedRules.has(p)) return p
-  const { grammarTrivia: _t, grammarScanSkip: _s, grammarHostMode: _h, grammarTrackLines: _l, ...meta } = p._meta
-  return { ...p, _meta: meta }
+function ownRule(p: Combinator<unknown>, copies: Map<object, Combinator<unknown>>): Combinator<unknown> {
+  // A trivia rule is never stamped, and its identity is what ties it to `{ trivia }`.
+  if (!claimedRules.has(p) || p._meta.isTrivia) return p
+  let own = copies.get(p)
+  if (own === undefined) {
+    const { grammarTrivia: _t, grammarScanSkip: _s, grammarHostMode: _h, grammarTrackLines: _l, ...meta } = p._meta
+    // One copy per grammar, so a value under two keys stays one object here too.
+    copies.set(p, own = { ...p, _meta: meta })
+  }
+  return own
 }
 
 /**
@@ -184,9 +190,10 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
   const definitions = factory(proxy)
 
   // Fill each ref with its actual definition, or store directly if never accessed via proxy.
+  const copies = new Map<object, Combinator<unknown>>()
   for (const key of Object.keys(definitions)) {
     const placeholder = (cache as Record<string, Combinator<unknown>>)[key]
-    const parser = ownRule((definitions as Record<string, Combinator<unknown>>)[key]!)
+    const parser = ownRule((definitions as Record<string, Combinator<unknown>>)[key]!, copies)
     if (placeholder === parser) {
       throw new Error(`rules(): rule "${key}" cannot be a direct alias to itself`)
     }

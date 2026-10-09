@@ -930,8 +930,12 @@ function transformMacroImpl(
    * until a grammar reads the name. Ordinary code may read any import, and resolving a
    * module for a value nothing compiles is pure build cost — or a build failure. */
   const deferredLocals = new Map<string, Expression>()
+  /** Their results, once read: each grammar's factory reads through its own forked scope. */
+  const deferredResults = new Map<string, FreeNameResolution>()
   const mainOpaqueImports = opaqueImportsOf(body as unknown as AnyNode[])
   const resolveMainFree = (name: string): FreeNameResolution => {
+    const done = deferredResults.get(name)
+    if (done !== undefined) return done
     const deferred = deferredLocals.get(name)
     if (deferred !== undefined) {
       deferredLocals.delete(name)
@@ -942,8 +946,11 @@ function transformMacroImpl(
       const why = [...unresolvedImports]
       unresolvedImports.clear()
       for (const n of outer) unresolvedImports.add(n)
-      if (value !== null && value !== undefined || isStaticNullishExpression(deferred)) return { value }
-      return why.length > 0 ? { unresolved: `could not be evaluated at build time, because: ${why.join('; ')}` } : null
+      const result: FreeNameResolution = value !== null && value !== undefined || isStaticNullishExpression(deferred)
+        ? { value }
+        : why.length > 0 ? { unresolved: `could not be evaluated at build time, because: ${why.join('; ')}` } : null
+      deferredResults.set(name, result)
+      return result
     }
     const binding = importBindings.get(name)
     if (!binding) return mainOpaqueImports.has(name) ? { unresolved: OPAQUE_IMPORT } : null

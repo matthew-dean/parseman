@@ -218,6 +218,12 @@ describe('rules() — a rule value shared between two grammars', () => {
     expect(parse(plain.Doc, 'a ";" b;')).toMatchObject({ ok: true, span: { end: 3 } })
   })
 
+  it('one shared value under two keys is still one object in the later grammar', () => {
+    const twice = rules({ trivia: ws }, () => ({ A: ab, B: ab }))
+    expect(twice.A).toBe(twice.B)
+    expect(twice.A).not.toBe(ab)
+  })
+
   it('a rule of one grammar returned by another is not restamped', () => {
     const tight = rules(g => ({ Pair: sequence(literal('a'), literal('b')), Pairs: many(g.Pair) }))
     const loose = rules({ trivia: ws }, () => ({ Pair: tight.Pair }))
