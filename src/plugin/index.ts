@@ -722,9 +722,9 @@ function transformMacroImpl(
    *     value (a string, an options object, an array of terminals) is left verbatim by
    *     the macro and is evaluated as written.
    *
-   * Values are rebuilt per transform, never shared across modules: `rules()` stamps
-   * `_ruleName` and the ambient trivia onto a rule's value, so a terminal object shared
-   * between two grammars would carry one grammar's stamps into the other.
+   * Values are rebuilt per transform, and within one transform two grammars returning
+   * the same value is safe: `rules()` stamps its options onto a rule's value, so it
+   * gives each grammar after the first an unstamped copy (`ownRule`, parser.ts).
    *
    * A binding that exists but cannot be resolved is recorded in `unresolvedImports`,
    * and every place that fails for it fails the BUILD naming it (`failOnUnresolved`).

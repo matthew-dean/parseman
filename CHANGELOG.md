@@ -31,6 +31,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   skip units whether it's written `[]` or named by a `const`, and an option bound to a
   `null` const means no option, as the literal `null` does.
 
+- Fix two grammars that return the same rule value sharing their options. `rules()`
+  stamps `trivia`, `scanSkip`, `hostMode` and `trackLines` onto each rule object, so a
+  terminal returned by two grammars, or a rule of one grammar returned by another,
+  carried the first grammar's options into the second wherever it omitted one, and the
+  second parsed different input than it declared. This happened at runtime and under
+  the macro, for a local terminal as well as an imported one. `rules()` now gives each
+  grammar after the first its own unstamped copy of such a value.
+
 - Re-anchor the grammar-density and broad-workload release comparisons to 0.52.0
   (`5ecb114`), the immediately preceding stable release. Peak baselines are unchanged.
 

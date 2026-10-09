@@ -25,8 +25,10 @@ import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 type Rule = (input: string, pos: number, ctx: object) => { ok: boolean; span: { end: number } }
 
 const TERMINALS = `
-import { literal, regex, sequence } from 'parseman' with { type: 'macro' }
+import { literal, regex, sequence, scanTo } from 'parseman' with { type: 'macro' }
 export const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+export const ab = sequence(literal('a'), literal('b'))
+export const toSemi = scanTo(literal(';'))
 export const blockComment = regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//)
 const sq = sequence(literal("'"), regex(/[^']*/), literal("'"))
 export const skipUnits = [dq, blockComment, sq]
@@ -66,6 +68,19 @@ function build(src: string): Record<string, Rule> {
   expect(out.warnings).toEqual([])
   expect(out.code).not.toMatch(/from ['"]parseman['"]/)
   return evalMacroModule<Record<string, Rule>>(out.code, 'grammar')
+}
+
+/** Two grammars returning the SAME terminals, one with options and one without.
+ * `rules()` stamps options onto the rule object, so a shared one used to carry the
+ * first grammar's trivia and scanSkip into the second. */
+function expectOwnOptions(src: string): void {
+  const out = lower(src)
+  expect(out.warnings).toEqual([])
+  const g = evalMacroModule<Record<string, Record<string, Rule>>>(out.code, '{ spaced, plain }')
+  expect(endOf(g.spaced!.Pair!, 'a b')).toBe(3)
+  expect(endOf(g.plain!.Pair!, 'a b')).toBeNull()
+  expect(endOf(g.spaced!.Doc!, 'a ";" b;')).toBe(7)
+  expect(endOf(g.plain!.Doc!, 'a ";" b;')).toBe(3)
 }
 
 const endOf = (rule: Rule, input: string): number | null => {
@@ -129,6 +144,15 @@ export const grammar = rules(g => ({ Doc: word('if', identBoundary) }))
     expect(endOf(g.Doc!, 'if-x')).toBeNull()
   })
 
+  it('two grammars returning the same imported terminal keep their own options', () => {
+    expectOwnOptions(`
+import { rules, regex } from 'parseman' with { type: 'macro' }
+import { ab, toSemi, dq } from '${from}'
+export const spaced = rules({ trivia: regex(/\\s+/), scanSkip: [dq] }, g => ({ Pair: ab, Doc: toSemi }))
+export const plain = rules(g => ({ Pair: ab, Doc: toSemi }))
+`)
+  })
+
   it('drops the import the compiled grammar no longer reads', () => {
     const out = lower(`
 import { rules, sequence, literal } from 'parseman' with { type: 'macro' }
@@ -184,6 +208,19 @@ const NONE = null
 export const grammar = rules({ trivia: NONE, scanSkip: NONE }, g => ({ Doc: scanTo(literal(';')) }))
 `)
     expect(endOf(g.Doc!, 'a ";" b;')).toBe(3)
+  })
+})
+
+describe('a LOCAL terminal returned by two grammars', () => {
+  it('each grammar keeps its own options', () => {
+    expectOwnOptions(`
+import { rules, literal, regex, sequence, scanTo } from 'parseman' with { type: 'macro' }
+const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+const ab = sequence(literal('a'), literal('b'))
+const toSemi = scanTo(literal(';'))
+export const spaced = rules({ trivia: regex(/\\s+/), scanSkip: [dq] }, g => ({ Pair: ab, Doc: toSemi }))
+export const plain = rules(g => ({ Pair: ab, Doc: toSemi }))
+`)
   })
 })
 

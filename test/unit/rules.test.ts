@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rules, literal, regex, choice, sequence, transform, optional, sepBy, many,
-  parser, trivia, parse,
+  parser, trivia, parse, scanTo,
   type Combinator,
 } from '../../src/index.ts'
 
@@ -194,5 +194,34 @@ describe('rules() — non-recursive parser stored directly', () => {
     const r = parse(words, 'foo bar baz')
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.value).toEqual(['foo', 'bar', 'baz'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Options stay with their grammar when two grammars share one rule value
+// ---------------------------------------------------------------------------
+
+describe('rules() — a rule value shared between two grammars', () => {
+  // rules() stamps its options onto the rule object, so a shared one used to carry the
+  // first grammar's trivia / scanSkip into a second grammar that declared none.
+  const ws = trivia(regex(/\s+/))
+  const ab = sequence(literal('a'), literal('b'))
+  const toSemi = scanTo(literal(';'))
+  const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+  const spaced = rules({ trivia: ws, scanSkip: [dq] }, () => ({ Pair: ab, Doc: toSemi }))
+  const plain = rules(() => ({ Pair: ab, Doc: toSemi }))
+
+  it('each keeps its own options', () => {
+    expect(parse(spaced.Pair, 'a b').ok).toBe(true)
+    expect(parse(plain.Pair, 'a b').ok).toBe(false)
+    expect(parse(spaced.Doc, 'a ";" b;')).toMatchObject({ ok: true, span: { end: 7 } })
+    expect(parse(plain.Doc, 'a ";" b;')).toMatchObject({ ok: true, span: { end: 3 } })
+  })
+
+  it('a rule of one grammar returned by another is not restamped', () => {
+    const tight = rules(g => ({ Pair: sequence(literal('a'), literal('b')), Pairs: many(g.Pair) }))
+    const loose = rules({ trivia: ws }, () => ({ Pair: tight.Pair }))
+    expect(parse(tight.Pair, 'a b').ok).toBe(false)
+    expect(parse(loose.Pair, 'a b').ok).toBe(true)
   })
 })
