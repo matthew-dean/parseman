@@ -172,13 +172,15 @@ export const ALLOW = new Map([
   ['INV-1:src/functional/run.ts:<module>',
     { category: 'RULE-BUG', why: 'module-scope prototype install is the correct pattern; refine INV-1 to exempt it' }],
 
-  // INV-1. Lazy fuse on the composed rule map: one accessor per rule, once per
-  // `composeLeaf()`, so the grammar you actually use is fused on first access
-  // and a second conflicting one fails loudly. ARGUED, not debt — see the
-  // comment at the site. Listed rather than exempted by a rule carve-out so
-  // that if the site changes the entry goes stale and someone must look again.
-  ['INV-1:src/compiler/linker.ts:composeLeaf',
-    { category: 'BY-DESIGN', why: 'per-compose lazy fuse, not per parse; argued at the site' }],
+  // INV-1. Lazy link on a runtime composition's rule map: one accessor per rule
+  // (plus reflection), installed once per `compose()` / `composeLeaf()`, so a
+  // composition costs nothing until a rule is read and the grammar you use is
+  // linked once. Moved from `composeLeaf` to `linkedMap` when both began sharing
+  // the one linker; same mechanism, same argument. ARGUED, not debt —
+  // see the comment at the site. Listed rather than exempted by a rule carve-out
+  // so that if the site changes the entry goes stale and someone must look again.
+  ['INV-1:src/compiler/linker.ts:linkedMap',
+    { category: 'BY-DESIGN', why: 'per-compose lazy link, not per parse; argued at the site' }],
 
   // INV-3 x2. The planner now reaches token-alphabet from the table encoder;
   // scanner/dispatch remain historical groundwork until the runtime consumer

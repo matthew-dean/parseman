@@ -872,6 +872,17 @@ permits it and otherwise falls back to closure assembly. Its printable `.source`
 `.inlineExpression` retain the macro's explicit `a:[]` inventory and never require
 runtime source construction after import; see [The three modes](../guide/modes#compile-runtime-lowering).
 
+### `compile(grammar, { hostMode? })`
+
+Compile a whole rule map — a `rules()` grammar or a runtime `compose()` result — to one
+table, and return a map of runnable rules that `run()` / `parseDoc()` accept. The table
+specialises once with `new Function` when permitted and otherwise runs on the closure
+assembler. This is how a runtime composition opts into table speed.
+
+`compile()` is the only place Parseman constructs code at runtime;
+`test/unit/csp-runtime-paths.test.ts` checks every other path under
+`--disallow-code-generation-from-strings`.
+
 ## Spec generation
 
 Generate a formal grammar spec (EBNF + railroad diagrams) from a `rules()` grammar. Imported
@@ -963,18 +974,21 @@ carte, and you never need the base grammar's source. See
 
 ### `compose(items)`
 
-`compose([base, ext, …])` fuses grammars/artifacts into one runnable map of parse
-functions. Later entries **override** earlier ones by rule name, and because fusion
-re-binds every rule reference in one shared scope, an override reroutes the base's *own*
-calls too (open recursion). Each item is a grammar (a `rules()` result) or an
-already-compiled artifact.
+`compose([base, ext, …])` composes grammars into one rule map. Later entries **override**
+earlier ones by rule name, and because every piece is linked against one namespace, an
+override reroutes the base's *own* calls too (open recursion).
 
 - **With the macro (build time):** `compose([...])` becomes a compact table program that
-  imports the shared table runtime. **No `new Function`, no eval** in the emitted code or
-  at parse time.
-- **Without the macro (runtime):** `compose([...])` specialises its live table once with
-  `new Function` when permitted, then caches that assembly. A CSP rejection falls back
-  to the closure assembler.
+  imports the shared table runtime. Items may be `rules()` grammars or imported
+  build-compiled grammars, whose carried IR the plugin re-lowers in the bundler. **No
+  `new Function`, no eval** in the emitted code or at parse time.
+- **Without the macro (runtime):** `compose([...])` only links. Each piece's `rules()`
+  factory runs again against one shared namespace, lazily on the first rule read, and the
+  result is an interpreter grammar — the one a single `rules()` over all the pieces would
+  build. It builds no table, evaluates no source and mutates no piece. Items are `rules()`
+  grammars and other runtime compositions; a build-compiled grammar is refused, because
+  linking it would mean evaluating its carried IR. For a table, pass the result to
+  [`compile()`](#compile-grammar-hostmode).
 
 ## Error recovery
 
@@ -1136,12 +1150,12 @@ pass without checking this field is the mistake the field exists to prevent.
 
 Analyze a WHOLE grammar — a `rules()` map **or** a `compose()` result.
 
-`analyzeGating` / `analyzeGatingRules` walk combinators. A `compose()` result contains
-none: fusion lowers every rule to an executable function, so its map holds rule
-FUNCTIONS and walking it yields nothing. `analyzeGrammarGating` recovers the combinator
-graph from the composition's carried IR first, then analyzes the override-winner map
-with cross-artifact holes bound — so a choice that is `deferred` when you analyze the
-contributing `rules()` map alone resolves here to a real `yes` / `recoverable` / `no`.
+A runtime `compose()` result is already the override-winner combinator map, with
+cross-artifact holes bound, so it is walked directly — a choice that is `deferred` when you
+analyze the contributing `rules()` map alone resolves here to a real `yes` /
+`recoverable` / `no`. A COMPILED grammar (`compile()`, or a macro build) holds table rule
+FUNCTIONS, not combinators; its pieces are reported as opaque, because recovering them
+would mean evaluating carried IR. Analyze the interpreter grammar instead.
 
 Use it when you want the raw `GatingReport` for a composed grammar. `diagnoseGrammar`
 routes here for you and wraps the result in a gateable diagnosis.

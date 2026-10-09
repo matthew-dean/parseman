@@ -8,6 +8,9 @@ import { closureArtifact } from './program.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnostic, type DuplicationOption } from './duplication-hook.ts'
 import { beginCompileDegradationDrain } from '../compiler/degradation.ts'
+import { compileRuleMapRunnable } from './compile-rule-map.ts'
+import { borrowedRuleMessage, borrowedRuleReference } from '../compiler/borrowed-rules.ts'
+import type { TableRule } from './program.ts'
 
 /**
  * `compile()` FOR THE TABLE LOWERING — same contract, different artifact.
@@ -110,7 +113,65 @@ export type TableCompileOptions = {
   readonly fnSources?: readonly string[]
 }
 
+/**
+ * Compile a whole RULE MAP — a `rules()` grammar or a runtime `compose()` result —
+ * into a map of runnable rules that `run()` / `parseDoc()` take like any other.
+ *
+ * This is how a caller opts a runtime composition into speed: `compose()` only
+ * links an interpreter grammar, and `compile()` encodes it to one table and
+ * specialises that table once. Where the environment forbids generated code (a
+ * Content-Security-Policy without `'unsafe-eval'`) the specialisation throws
+ * `EvalError` and the same table runs on the closure assembler instead.
+ */
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: readonly string[], opts?: TableCompileOptions): CompiledParser<T>
+export function compile(grammar: Record<string, unknown> & { readonly _def?: never }, opts?: { readonly hostMode?: HostMode }): Record<string, TableRule>
 export function compile<T>(
+  target: Combinator<T> | Record<string, unknown>,
+  second?: readonly string[] | { readonly hostMode?: HostMode },
+  third?: TableCompileOptions,
+): CompiledParser<T> | Record<string, TableRule> {
+  if (!isCombinator(target)) return compileMap(target, second as { readonly hostMode?: HostMode } | undefined)
+  return compileRoot(target as Combinator<T>, second as readonly string[] | undefined, third)
+}
+
+function isCombinator(x: unknown): x is Combinator<unknown> {
+  return typeof x === 'object' && x !== null
+    && typeof (x as { parse?: unknown }).parse === 'function' && '_def' in x
+}
+
+function compileMap(grammar: Record<string, unknown>, opts: { readonly hostMode?: HostMode } = {}): Record<string, TableRule> {
+  const entries: Array<[string, Combinator<unknown>]> = []
+  for (const [key, value] of Object.entries(grammar)) {
+    if (!isCombinator(value)) throw new TypeError(`compile: grammar entry "${key}" is not a parser`)
+    // A referenced-but-undefined `g.X` is a hole, not a rule: it has nothing to encode.
+    if (value._def.tag === 'lazy') {
+      try { value._def.thunk() } catch { continue }
+    }
+    entries.push([key, value])
+  }
+  // A runtime composition was already checked when it linked; a plain map is checked
+  // here, because this encoder binds references by name.
+  const borrowed = borrowedRuleReference(Object.fromEntries(entries))
+  if (borrowed !== undefined) throw new Error(borrowedRuleMessage('compile', borrowed))
+  // One aggregated degradation block per compile, exactly as `compileRoot` drains it.
+  const drain = beginCompileDegradationDrain()
+  let done = false
+  try {
+    const refusals: string[] = []
+    const compiled = compileRuleMapRunnable(entries, {
+      ...(opts.hostMode ? { hostMode: opts.hostMode } : {}),
+      refusals,
+      specialise: true,
+    })
+    if (compiled === null) {
+      throw new Error(`compile: this grammar could not be encoded to a table${refusals.length ? ` — ${refusals.join('; ')}` : ''}`)
+    }
+    done = true
+    return compiled.rules
+  } finally { drain(done) }
+}
+
+function compileRoot<T>(
   combinator: Combinator<T>,
   mapFnSources?: readonly string[],
   opts: TableCompileOptions = {},

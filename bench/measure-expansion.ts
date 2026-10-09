@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { compile } from '../src/index.ts'
+import { compile, type CompiledParser } from '../src/index.ts'
 import { jsonDoc } from '../examples/json/parser.ts'
 import { csvParser } from '../examples/csv/parser.ts'
 import { graphqlDoc } from '../examples/graphql/parser.ts'
@@ -37,7 +37,7 @@ type Row = {
   lineMult: string
 }
 
-const cases: { name: string; parser: ReturnType<typeof compile>; file: string }[] = [
+const cases: { name: string; parser: CompiledParser<unknown>; file: string }[] = [
   { name: 'JSON',    parser: compile(jsonDoc),     file: join(examples, 'json', 'parser.ts') },
   { name: 'CSV',     parser: compile(csvParser),   file: join(examples, 'csv', 'parser.ts') },
   { name: 'GraphQL', parser: compile(graphqlDoc),  file: join(examples, 'graphql', 'parser.ts') },

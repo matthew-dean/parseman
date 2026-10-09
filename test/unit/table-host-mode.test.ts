@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
-import { compose, cstBuildHost } from '../../src/compiler/linker.ts'
+import { cstBuildHost } from '../../src/compiler/linker.ts'
+import { compile } from '../../src/table/compile.ts'
 import { FUSED_HOST_MODE } from '../../src/cst/host-mode.ts'
 import { hostNodes } from '../../bench/table-grammars.ts'
 import { many, node, regex, rules, sequence, type Combinator } from '../../src/index.ts'
@@ -93,7 +94,7 @@ describe('encodeTable({ hostMode })', () => {
     expect((ast.Doc as unknown as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('ast')
     // The compiled artifact for the same grammar carries the same stamp — this
     // table is not inventing a convention of its own.
-    const compiled = compose([hostNodes as never], { hostMode: 'cst' } as never) as unknown as Record<symbol, unknown>
+    const compiled = compile(hostNodes as Record<string, unknown>, { hostMode: 'cst' }) as unknown as Record<symbol, unknown>
     expect(compiled[FUSED_HOST_MODE]).toBe('cst')
   })
 
@@ -121,7 +122,7 @@ describe('encodeTable({ hostMode })', () => {
     expect(fromCst.t).toBeUndefined()
     // The message is the engine's own, not a table-specific one: a compiled
     // artifact refuses the same pairing in the same words.
-    const compiledCst = (compose([hostNodes as never], { hostMode: 'cst' } as never) as unknown as Record<string, unknown>).Doc!
+    const compiledCst = compile(hostNodes as Record<string, unknown>, { hostMode: 'cst' }).Doc!
     expect(() => run(compiledCst as never, 'abc')).toThrow(/host mode "cst"/)
   })
 
@@ -136,7 +137,7 @@ describe('encodeTable({ hostMode })', () => {
     expect((declared.Doc!._meta as { grammarHostMode?: string }).grammarHostMode).toBe('cst')
 
     const table = execRules(encodeTable(declared))
-    const compiled = compose([declared as never]) as unknown as Record<string, unknown>
+    const compiled = compile(declared as Record<string, unknown>) as unknown as Record<string, unknown>
     expect((table as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
     expect((compiled as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
     expect(() => run(table.Doc! as never, 'abc')).toThrow(/host mode "cst"/)

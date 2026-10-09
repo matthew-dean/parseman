@@ -178,13 +178,13 @@ describe('direct node child raw source', () => {
     if (interpreted.ok) expect(interpreted.value).toEqual({ kind: 'direct' })
 
     const composed = compose([directRules])
-    const linked = composed.Direct!('x', 0, { build: customHost })
+    const linked = run(composed.Direct!, 'x', { build: customHost })
     expect(linked.ok).toBe(true)
     expect(linked.value).toEqual({ kind: 'direct' })
 
     // The CST view is a SECOND fusion of the same pieces, compiled for 'cst'.
     const composedCst = compose([directRules], { hostMode: 'cst' })
-    const cst = composedCst.Root!('x', 0, { build: cstBuildHost() })
+    const cst = run(composedCst.Root!, 'x', { build: cstBuildHost() })
     expect(cst.ok).toBe(true)
     expect(cst.value).toMatchObject({
       _tag: 'node', type: 'Root', children: [{ _tag: 'node', type: 'Direct' }],

@@ -1,8 +1,8 @@
 # Macro mode
 
 ::: danger Superseded in part
-Statements on this page about the `composeLeaf` precompiled assembly, the size budget,
-and runtime `compose()` under CSP are superseded by
+Statements on this page about the `composeLeaf` precompiled assembly and the size budget
+are superseded by
 [the runtime and size contract](../design/runtime-and-size-contract.md), which is
 binding. See its "Superseded statements" list.
 :::

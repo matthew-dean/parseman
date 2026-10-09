@@ -127,13 +127,13 @@ change that fixes the behaviour:
 - `docs/guide/modes.md`:
   - the mode table's "a large terminal `composeLeaf` also embeds one strict assembly";
   - "A big enough terminal `composeLeaf()` gets one extra thing";
-  - the CSP warning's "Runtime `compose()` follows the same rule";
+  - the CSP warning's "Runtime `compose()` follows the same rule" (corrected in 0.53.0);
   - "Terminal large `composeLeaf()` artifacts carry one ordinary function literal".
 - `docs/guide/macro-mode.md`, "The budget": the 10× ceiling is replaced by rule 4, and
   "enforced on every PR" is false (row B).
 - `docs/guide/extending.md`, "How this behaves in each execution mode": runtime
   `compose()` "fuses … using the same code generation `compile()` uses" and "falls back to
-  the closure assembler". Both break rules 1 and 2, and the fallback claim is false (row D).
+  the closure assembler". Both break rules 1 and 2, and the fallback claim is false (row D) Corrected in 0.53.0.
 - `docs/guide/performance.md`: "a large enough terminal (a `composeLeaf`) it may also
   materialize one strict assembly" (row A).
 - `docs/reference/api.md`: "Once its canonical table reaches 1,024 instruction words, the
@@ -145,7 +145,7 @@ change that fixes the behaviour:
 
 | Rule | Work | Tracking | Status |
 |---|---|---|---|
-| 1, 2 | Runtime `compose()` links live pieces. Remove IR eval and the `buildSrc` eval from the runtime path. Bind composing trivia without mutating shared rules. Remove `railroad.ts`'s `new Function`. Add a test that runs `compose()` under `--disallow-code-generation-from-strings`. | jess#325 | in progress |
+| 1, 2 | Runtime `compose()` links live pieces. Remove IR eval and the `buildSrc` eval from the runtime path. Bind composing trivia without mutating shared rules. Remove `railroad.ts`'s `new Function`. Add a test that runs `compose()` under `--disallow-code-generation-from-strings`. | jess#325 | fixed for 0.53.0 in [#149](https://github.com/matthew-dean/parseman/pull/149): `test/unit/csp-runtime-paths.test.ts` |
 | 4 | Remove the whole-grammar assembly. Add selective inline regions within 5× that keep most of the css win. Vendor the real grammars into a size gate that fails. | jess#322 | in progress |
 | 5 | Real-scale load benchmark with absolute budgets, run in CI | jess#322 / jess#325 | in progress |
 | 6 | Before/after steady-state, cold-start and browser-load tables for each grammar and mode in the release PR | release PR | in progress |

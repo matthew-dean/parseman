@@ -60,7 +60,10 @@ function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>)
         return []
       }
       const name = (resolved as Combinator<unknown> & { _ruleName?: string })._ruleName
-      return name && winners?.[name] ? [winners[name]!] : [resolved]
+      const winner = name ? winners?.[name] : undefined
+      // A slot that IS its rule's winner (a runtime composition's) descends into
+      // its own body; any other reference reroutes to the winner.
+      return winner !== undefined && winner._def !== def ? [winner] : [resolved]
     }
     default: return []
   }
@@ -92,18 +95,41 @@ export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinato
       }
     }
   }
+  /** The body behind a slot that is itself its rule's winner — how a runtime
+   * composition holds every rule. Transparent: its body owns the rule. */
+  const selfWinnerBody = (parser: Combinator<unknown>): Combinator<unknown> | undefined => {
+    if (parser._def.tag !== 'lazy' || winners === undefined) return undefined
+    const name = winnerNames.get(parser)
+    if (name === undefined || winners[name] !== parser) return undefined
+    try { return parser._def.thunk() } catch { return undefined }
+  }
+  // A body that SEVERAL winners' slots resolve to (`X: shared, Y: shared`) can carry
+  // only one name, so there each slot owns its own rule and the body owns none.
+  const slotsPerBody = new Map<Combinator<unknown>, number>()
+  if (winners) {
+    for (const winner of Object.values(winners)) {
+      const body = selfWinnerBody(winner)
+      if (body !== undefined) slotsPerBody.set(body, (slotsPerBody.get(body) ?? 0) + 1)
+    }
+  }
+  const sharedBody = (parser: Combinator<unknown>): boolean => (slotsPerBody.get(parser) ?? 0) > 1
+  const ownRule = (parser: Combinator<unknown>, rule: string): void => {
+    const id = `rule:${rule}`
+    definitions.set(id, { id, kind: 'rule' })
+    rules.set(parser, id)
+  }
   const seen = new Set<Combinator<unknown>>()
   const visit = (parser: Combinator<unknown>, path: string): void => {
     if (seen.has(parser)) return
     seen.add(parser)
     const rule = winnerNames.get(parser) ?? (parser as Combinator<unknown> & { _ruleName?: string })._ruleName
+    const body = selfWinnerBody(parser)
     // `rules()` references are tagged too for linker naming, but only the final
     // rule definition owns execution coverage; otherwise ref + target double-hit.
-    if (rule && (winnerNames.has(parser) || parser._def.tag !== 'lazy')) {
-      const id = `rule:${rule}`
-      definitions.set(id, { id, kind: 'rule' })
-      rules.set(parser, id)
+    if (rule && body === undefined && !sharedBody(parser) && (winnerNames.has(parser) || parser._def.tag !== 'lazy')) {
+      ownRule(parser, rule)
     }
+    if (rule && body !== undefined && sharedBody(body)) ownRule(parser, rule)
     if (parser._def.tag === 'choice') {
       const ids = parser._def.parsers.map((_, index) => `choice:${path}/arm:${index}`)
       choices.set(parser, ids)
@@ -128,7 +154,10 @@ export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinato
     // caller's winner map is then the only durable public identity for each
     // root; using the generic `entry` path would merge separate roots' choice
     // IDs and omit their rule definitions.
-    visit(root, winnerNames.get(root) ?? (root as Combinator<unknown> & { _ruleName?: string })._ruleName ?? 'entry')
+    const name = winnerNames.get(root) ?? (root as Combinator<unknown> & { _ruleName?: string })._ruleName ?? 'entry'
+    const body = selfWinnerBody(root)
+    if (body !== undefined && sharedBody(body) && !seen.has(root)) { seen.add(root); ownRule(root, name) }
+    visit(body ?? root, name)
   }
   return { definitions: [...definitions.values()].sort((a, b) => a.id.localeCompare(b.id)), choices, dispatches, attempts, labels, rules }
 }

@@ -53,6 +53,71 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   the macro, for a local terminal as well as an imported one. `rules()` now gives each
   grammar after the first its own unstamped copy of such a value.
 
+- Nothing outside `compile()` turns a string into code at runtime
+  (`docs/design/runtime-and-size-contract.md`, rules 1 and 2). Runtime `compose()`
+  serialized every `rules()` piece to IR text and rebuilt it with `eval` and
+  `new Function` (`evalRuleMapIR`, called from `src/compiler/linker.ts`), then
+  encoded and specialised a table. Under a Content Security Policy without
+  `'unsafe-eval'` it threw `EvalError`, so jess's interpreter grammar could not load
+  in a strict-CSP page, and the rebuild cost 24.0G instructions to import jess's Less
+  interpreter grammar.
+  - Runtime `compose()` and `composeLeaf()` now only link. `rules()` keeps its recipe
+    (factory and options), and a composition runs every piece's recipe against one
+    namespace, lazily on the first rule read. The result is the interpreter grammar a
+    single `rules()` over all the pieces would build. It builds no table, evaluates no
+    source and mutates no piece, and the composing trivia is bound per composition.
+  - **Breaking:** runtime `compose()` returns an interpreter map of combinators, not
+    table functions, and refuses a build-compiled grammar: one carries only IR, and
+    linking it would mean evaluating that IR. Compose compiled grammars at build time
+    with the macro, which is unchanged in that respect. For a table at runtime, pass
+    the composition to `compile()`, which now also takes a whole rule map and is the
+    one runtime path that specialises. It falls back to closures under CSP.
+  - **Breaking:** `compose()`, and `compile()` of a plain rule map, refuse a rule
+    object borrowed from another grammar (`Entry: base.Entry`) whose graph
+    references a rule the composition also defines. Its references are `base`'s
+    slots: the interpreter would keep `base`'s rule while a compiled table binds the
+    composition's by name, so the two engines would accept different input. The IR
+    rebuild used to rebind it by name. The error names the rule and the reference;
+    compose `base` itself instead. A borrowed rule that references nothing the
+    composition defines still links.
+  - A macro `compose()` over an esbuild-bundled compiled upstream lowers at build
+    time again. esbuild reprints the carried-pieces key as
+    `[/* @__PURE__ */ Symbol.for("parseman.composedPieces")]`, renames a clashing
+    `tableRules` import and inlines a composed ancestor as a top-level `var`. The macro
+    now follows all three; before, it warned and left a runtime `compose()`, which
+    under this release would throw at import. An imported build-compiled grammar the
+    macro still cannot resolve now fails the build, naming the upstream and the likely
+    bundler rewrite, instead of warning and falling back to runtime. An unresolvable
+    ancestor spread fails it too, where it used to be dropped silently.
+  - `compile(ruleMap)` reports degradations in one aggregated block, as
+    `compile(combinator)` does, and throws on an entry that is not a parser instead
+    of dropping it. `compose([linkable(g)])` names `g`'s rules, not the artifact's
+    fields. A coverage plan names every rule whose winner shares its body with
+    another rule's, and `runWithGrammarCoverage()` over a composed rule reports the IDs
+    `composedGrammarCoverageDefinitions()` lists (a composed rule could not be run
+    under coverage before).
+  - `linkable()` and `compileRuleMap().rules` run the closure artifact. Railroad
+    tooling holds railroad-diagrams as real code. `evalRuleMapIR` moves to
+    `src/plugin/ir-eval.ts`, which only the build-time macro imports.
+  - The macro links a composition's carried pieces in one namespace too, so first
+    sets, nullability and expected sets agree across the macro, the interpreter and
+    `compile()`. Expected sets grow the compose size probes by 11–14 B (0.5–0.9%),
+    and those four `bench/size-baseline.json` ceilings move with them. jess's
+    compiled Less AST artifact grows 1,994 B (0.28%).
+  - An undefined `ref()`'s thunk throws one preallocated error, so construction-time
+    probes no longer capture a stack each.
+  - Measured on jess's Less grammar and `benchmark.less` (106,802 B), instructions
+    retired, median of five processes. Interpreter build: import 24.01G → 1.33G, link
+    0.15G, import to first AST 25.94G → 8.01G, steady-state parse 0.663G → 0.685G
+    (+3.3%, the interpreter instead of the table runtime `compose()` used to build).
+    Compiled build: import 0.837G → 0.826G, first parse 2.102G → 2.109G,
+    steady-state parse 0.695G → 0.691G. Parseman's own workloads through `compile()`:
+    −0.1% to −7.1% instructions per parse.
+  - `test/unit/csp-runtime-paths.test.ts` runs every runtime path, macro-built
+    grammar packages included, with `Function` and `eval` spied and again under
+    `--disallow-code-generation-from-strings`, and statically pins the one remaining
+    string-to-code site to `compile()`'s specialisation.
+
 - Re-anchor the grammar-density and broad-workload release comparisons to 0.52.0
   (`5ecb114`), the immediately preceding stable release. Peak baselines are unchanged.
 

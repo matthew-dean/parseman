@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, literal, many, regex, rules, sequence, transform } from '../../src/index.ts'
+import { choice, compile, compose, literal, many, regex, rules, sequence, transform } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { fuseInterpreted } from '../../src/compiler/linker.ts'
@@ -38,8 +38,14 @@ import type { Combinator } from '../../src/types.ts'
 
 type Entries = Array<[string, Combinator<unknown>]>
 
-const entriesOf = (g: object): Entries =>
-  Object.entries(g as Record<string, Combinator<unknown>>) as Entries
+/** The `rules()` map each piece's entries came from: runtime `compose()` links
+ * recipes, so the reference side needs the map, not a copy of its entries. */
+const sourceOf = new WeakMap<Entries, Record<string, unknown>>()
+const entriesOf = (g: object): Entries => {
+  const entries = Object.entries(g as Record<string, Combinator<unknown>>) as Entries
+  sourceOf.set(entries, g as Record<string, unknown>)
+  return entries
+}
 
 /** Merge pieces the way `compose()` composes them: later names win. */
 function mergeMaps(pieces: Entries[]): Record<string, Combinator<unknown>> {
@@ -61,10 +67,7 @@ function differential(
 ): { table: ReturnType<typeof run>; interp: ReturnType<typeof run> } {
   return {
     table: run(tabledMerge(build())[rule] as never, input),
-    // A fresh build per side: an interpreted fuse binds the shared placeholder
-    // objects IN PLACE, so reusing the table's pieces would hand the table a
-    // grammar the reference had already rewritten.
-    interp: run(fuseInterpreted(build().map(p => Object.fromEntries(p)) as never)[rule] as never, input),
+    interp: run(fuseInterpreted(build().map(p => sourceOf.get(p)!))[rule] as never, input),
   }
 }
 
@@ -181,5 +184,19 @@ describe('a MERGED rule map encodes to the parser compose() means', () => {
     for (const input of ['ab:12', '1:2', 'ab:', ':x', '']) {
       expectIdentical(build, 'Pair', input)
     }
+  })
+})
+
+describe('compile(ruleMap): a runtime composition opted into a table', () => {
+  it('encodes the linked winners, override included', () => {
+    const base = rules(g => ({ Doc: sequence(g.Atom, literal('!')), Atom: literal('a') }))
+    const table = compile(compose([base, rules(() => ({ Atom: literal('b') }))]))
+    expect(run(table.Doc!, 'b!').ok).toBe(true)
+    expect(run(table.Doc!, 'a!').ok).toBe(false)
+  })
+
+  it('refuses an entry that is not a parser instead of dropping its rule', () => {
+    expect(() => compile({ Doc: literal('a'), Typo: 'literal' } as unknown as Record<string, unknown>))
+      .toThrow(TypeError)
   })
 })

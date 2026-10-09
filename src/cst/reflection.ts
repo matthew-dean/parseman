@@ -115,6 +115,11 @@ export function collectGrammarReflection(
 ): GrammarReflection {
   const byType = new Map<string, string[]>()
   const followLazy = opts?.followLazy !== false
+  // ONE walk over the whole map. A node already visited from an earlier rule had
+  // its whole subgraph visited then, and `addNode` is idempotent, so a fresh set
+  // per rule only re-walked shared structure — O(rules × graph), and every unbound
+  // cross-piece hole threw (a stack-capturing Error) once per rule reaching it.
+  const seen = new Set<Combinator<unknown>>()
   for (const [, rule] of ruleMap) {
     if (!followLazy && rule._def.tag === 'lazy') {
       try {
@@ -123,7 +128,7 @@ export function collectGrammarReflection(
       } catch {}
       continue
     }
-    collectFromCombinator(rule, byType, new Set(), followLazy)
+    collectFromCombinator(rule, byType, seen, followLazy)
   }
   return { nodes: [...byType].map(([type, tags]) => ({ type, tags })) }
 }

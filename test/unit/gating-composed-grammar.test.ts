@@ -3,8 +3,9 @@
  *
  * `compose([importedArtifact, rules(…)])` is the shape every real parseman grammar
  * uses — it is how parseman's own reference implementation (the four jess CSS-dialect
- * grammars) is built. A `compose()` result is a map of FUSED rule FUNCTIONS: fusion
- * lowers each rule to executable code and the combinator graph is gone from the map.
+ * grammars) is built. At runtime a `compose()` result is a linked combinator map and
+ * walks directly; a COMPILED grammar (`compile()`, or the macro) is a map of table
+ * rule FUNCTIONS, whose combinator graph is gone from the map.
  *
  * `analyzeGatingRules` walks combinators, so on a composed grammar it read `_def` off
  * a function and threw `TypeError: Cannot read properties of undefined (reading
@@ -21,7 +22,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
-  analyzeGating, analyzeGatingRules, analyzeGrammarGating, choice, compose, diagnoseGrammar,
+  analyzeGating, analyzeGatingRules, analyzeGrammarGating, choice, compile, compose, diagnoseGrammar,
   formatGatingWarnings, literal, regex, rules, sequence, withCtx,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
@@ -34,6 +35,9 @@ const baseShape = (): Record<string, Combinator<unknown>> => rules(g => ({
 
 const composedGrammar = (): Record<string, unknown> =>
   compose([baseShape(), rules(_g => ({ Value: regex(/[a-z]+/) }))]) as unknown as Record<string, unknown>
+
+/** The same grammar COMPILED: a map of table rule functions, with no combinator graph. */
+const compiledGrammar = (): Record<string, unknown> => compile(composedGrammar()) as Record<string, unknown>
 
 describe('a composed grammar is ANALYSABLE', () => {
   it('analyzeGrammarGating recovers the combinator graph from the carried IR', () => {
@@ -67,7 +71,7 @@ describe('a composed grammar is ANALYSABLE', () => {
 
 describe('SILENCE IS NOT A POSSIBLE OUTCOME', () => {
   it('walking a fused rule reports `unanalysable` instead of throwing', () => {
-    const composed = composedGrammar()
+    const composed = compiledGrammar()
     // The pre-fix behaviour was an uncaught TypeError here.
     const report = analyzeGating(composed.Term as never)
     expect(report.unanalysable).toHaveLength(1)
@@ -80,7 +84,7 @@ describe('SILENCE IS NOT A POSSIBLE OUTCOME', () => {
     // This is the assertion the old code could not have satisfied: both cases
     // produced `totalChoices: 0`-equivalent silence with no findings.
     const blind = analyzeGatingRules(
-      Object.entries(composedGrammar()) as Array<[string, Combinator<unknown>]>,
+      Object.entries(compiledGrammar()) as Array<[string, Combinator<unknown>]>,
     )
     const clean = analyzeGatingRules([['R', sequence(literal('a'), literal('b'))]])
 
@@ -95,7 +99,7 @@ describe('SILENCE IS NOT A POSSIBLE OUTCOME', () => {
 
   it('formatGatingWarnings reports a partial walk even with zero findings', () => {
     const report = analyzeGatingRules(
-      Object.entries(composedGrammar()) as Array<[string, Combinator<unknown>]>,
+      Object.entries(compiledGrammar()) as Array<[string, Combinator<unknown>]>,
     )
     const lines = formatGatingWarnings(report)
     // An empty line list here is exactly the shipped-blind failure mode.
@@ -122,11 +126,10 @@ describe('ENGINE PARITY — the runtime linker and the macro plugin agree', () =
     const linker = await import('../../src/compiler/linker.ts')
     // Runtime engine: the detailed variant exists and is shaped as the diagnostic needs.
     expect(typeof linker.carriedRuleMapsDetailed).toBe('function')
+    // A runtime composition needs no recovery at all: it IS the winner map.
     const composed = composedGrammar()
-    const recovered = linker.recoverComposedRules(composed)
-    expect(recovered).toBeDefined()
-    expect(recovered!.opaque).toEqual([])
-    expect([...recovered!.rules.keys()].sort()).toEqual(['Term', 'Value'])
+    expect(linker.recoverComposedRules(composed)).toBeUndefined()
+    expect(Object.keys(composed).sort()).toEqual(['Term', 'Value'])
   })
 
   it('a runtime compose() prints nothing, and the deliberate report is clean', () => {

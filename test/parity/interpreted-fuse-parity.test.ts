@@ -1,32 +1,32 @@
 import { describe, it, expect } from 'vitest'
 import * as P from '../../src/index.ts'
+import { borrowedRuleReference } from '../../src/compiler/borrowed-rules.ts'
 import { fuseInterpreted, isInterpretedFuse, linkable } from '../../src/compiler/linker.ts'
 import { cases } from './helpers/compose-cases.ts'
 
 /**
- * THE feature test: an interpreted fuse and the compiled fuse must produce the SAME
- * parse, or every diagnostic built on the interpreted one describes a parser nobody
+ * THE feature test: a runtime composition must parse exactly as the compiled table
+ * of the same grammar, or every diagnostic built on it describes a parser nobody
  * ships.
  *
- * Two batteries, both comparing `compose()` (codegen, `new Function`) against
- * `fuseInterpreted()` (no codegen at all) over the SAME grammar objects' source:
+ * Runtime `compose()` and `fuseInterpreted()` are the same link (every piece's
+ * `rules()` factory re-run against one namespace), so the independent leg is
+ * `compile()` of the composition — one encoded, specialised table:
  *
  *   1. the shared compose case battery (`helpers/compose-cases.ts`) — the same cases
- *      that already pin interpreter ≡ macro, so all three engines are pinned to one
- *      set of composition shapes: cross-piece refs, composing-wins trivia,
+ *      that already pin interpreter ≡ macro, so all engines are pinned to one set of
+ *      composition shapes: cross-piece refs, composing-wins trivia,
  *      `noTrivia`/`parser({trivia})` overrides, and multi-level composing;
  *   2. a realistic 3-piece stylesheet grammar (recognition piece → dialect delta →
  *      leaf with `node()` builders) over a corpus, compared on ok / end / VALUE, so
  *      the built tree is compared and not just how far each engine got.
  *
- * The comparison is per input and asserts the full result, not a sampled property:
- * a fuse that agreed on `ok` while producing a different tree is exactly the failure
- * this exists to catch.
+ * The comparison is per input and asserts the full result, not a sampled property.
  */
 
 /** Evaluate one case module twice: once with the real `compose()` and once with
- * `compose` REBOUND to `fuseInterpreted`. Same source, same rule objects' shape, so
- * the two paths cannot drift apart through the harness. */
+ * `compose` REBOUND to `fuseInterpreted`. Same source, so the two paths cannot drift
+ * apart through the harness. (A TEST evaluating fixture source; not a runtime path.) */
 function evalModule(code: string, lib: Record<string, unknown>, want: string): Record<string, any> {
   const body = code.replace(/^\s*import[^\n]*\n/gm, '').replace(/\bexport\s+/g, '')
   const names = Object.keys(lib)
@@ -49,11 +49,18 @@ describe('fuseInterpreted ≡ compose over the shared composition battery', () =
       expect(isInterpretedFuse(interpreted)).toBe(true)
       expect(Object.keys(interpreted).sort()).toEqual(Object.keys(compiled).sort())
 
+      // `compose()` at runtime is the same link, so the independent leg is the
+      // TABLE: `compile()` of the composition encodes and specialises it.
+      const table = P.compile(compiled as Record<string, unknown>)
       for (const input of c.inputs) {
         expect(
           shape(P.run(interpreted[c.entry], input)),
-          `${c.name}: interpreted vs compiled on ${JSON.stringify(input)}`,
+          `${c.name}: fuseInterpreted vs compose on ${JSON.stringify(input)}`,
         ).toEqual(shape(P.run(compiled[c.entry], input)))
+        expect(
+          shape(P.run(interpreted[c.entry], input)),
+          `${c.name}: interpreted vs compiled table on ${JSON.stringify(input)}`,
+        ).toEqual(shape(P.run(table[c.entry]!, input)))
       }
     })
   }
@@ -135,12 +142,11 @@ const CORPUS = [
   '.x{a:1;b:2;c:3;d:4;e:5;f:6;g:7;h:8;i:9;j:10;}',
 ]
 
-describe('fuseInterpreted ≡ compose on a 3-piece stylesheet grammar over a corpus', () => {
+describe('fuseInterpreted ≡ compose ≡ compile on a 3-piece stylesheet grammar over a corpus', () => {
   const items = () => [recognition(), dialect(), leaf()]
-  // Separate instances: an interpreted fuse binds the shared placeholder objects in
-  // place, so the two engines must not be handed the SAME piece objects.
   const compiled = P.compose(items())
   const interpreted = fuseInterpreted(items())
+  const table = P.compile(compiled as Record<string, unknown>)
 
   it('fuses the same rule set', () => {
     expect(Object.keys(interpreted).sort()).toEqual(Object.keys(compiled).sort())
@@ -153,6 +159,10 @@ describe('fuseInterpreted ≡ compose on a 3-piece stylesheet grammar over a cor
           shape(P.run(interpreted[entry]!, input)),
           `entry ${entry} on ${JSON.stringify(input)}`,
         ).toEqual(shape(P.run(compiled[entry]!, input)))
+        expect(
+          shape(P.run(interpreted[entry]!, input)),
+          `table: entry ${entry} on ${JSON.stringify(input)}`,
+        ).toEqual(shape(P.run(table[entry]!, input)))
       }
     })
   }
@@ -186,9 +196,12 @@ describe('per-piece ambient scanSkip survives the interpreted fuse', () => {
   it('agrees with compose() on every input', () => {
     const compiled = P.compose(items())
     const interpreted = fuseInterpreted(items())
+    const table = P.compile(compiled as Record<string, unknown>)
     for (const input of inputs) {
       expect(shape(P.run(interpreted.Entry!, input)), input)
         .toEqual(shape(P.run(compiled.Entry!, input)))
+      expect(shape(P.run(interpreted.Entry!, input)), `table: ${input}`)
+        .toEqual(shape(P.run(table.Entry!, input)))
     }
     // …and the skip is actually in force (not "both engines ignored it").
     expect(P.run(fuseInterpreted(items()).Entry!, '"x;y";').span.end).toBe(6)
@@ -251,11 +264,16 @@ describe('fuseInterpreted fuse-time contract', () => {
     expect(P.run(fuseInterpreted(items).Doc!, 'xy').ok).toBe(true)
   })
 
-  it('refuses a CONFLICTING second fusion over a shared piece instead of rewriting the first', () => {
+  it('two fusions over one shared piece each keep their own winner — neither touches the piece', () => {
     const shared = P.rules((g: any) => ({ Doc: P.sequence(P.literal('x'), g.Tail) }))
-    fuseInterpreted([shared, P.rules(() => ({ Tail: P.literal('y') }))])
-    expect(() => fuseInterpreted([shared, P.rules(() => ({ Tail: P.literal('z') }))]))
-      .toThrow('already bound by a DIFFERENT interpreted fusion')
+    const y = fuseInterpreted([shared, P.rules(() => ({ Tail: P.literal('y') }))])
+    const z = fuseInterpreted([shared, P.rules(() => ({ Tail: P.literal('z') }))])
+    expect(P.run(y.Doc!, 'xy').ok).toBe(true)
+    expect(P.run(y.Doc!, 'xz').ok).toBe(false)
+    expect(P.run(z.Doc!, 'xz').ok).toBe(true)
+    expect(P.run(z.Doc!, 'xy').ok).toBe(false)
+    // The piece's own hole is still unbound: linking rebuilt the graph instead.
+    expect(() => P.run(shared.Doc!, 'xy')).toThrow('used before .define()')
   })
 
   it('can be fused AGAIN as an item (later piece still wins)', () => {
@@ -265,18 +283,72 @@ describe('fuseInterpreted fuse-time contract', () => {
     expect(P.run(second.Doc!, 'QQ').ok).toBe(true)
   })
 
-  it('INTERPRETS a precompiled artifact rather than rejecting it', () => {
-    const artifact = P.compose([P.rules(() => ({ A: P.literal('a') }))])
-    // A compiled compose() result re-lowers from carried IR; a `linkable()` artifact
-    // does not, and must say so.
-    expect(isInterpretedFuse(artifact)).toBe(false)
-    // THIS USED TO THROW. A source-lowered `linkable()` artifact carried compiled rule
-    // FUNCTIONS and no combinator graph, so fusing it interpreted could only have
-    // dropped its rules, and throwing was the honest answer. A table artifact always
-    // carries its IR — that is what makes table-to-table composition a rule-map merge —
-    // so the graph is recoverable and the fuse simply works.
-    const fused = fuseInterpreted([linkable({ A: P.literal('a') })])
+  it('refuses a borrowed rule object whose graph references a rule the composition defines', () => {
+    // A factory may return another grammar's rule object. Its references are that
+    // grammar's slots: the interpreter would keep `base`'s Atom while compile() of the
+    // composition binds Atom by name, so the two engines would accept different input.
+    const base = P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Entry: P.sequence(g.Atom!, P.literal('!')), Atom: P.literal('a') }))
+    const override = P.rules(() => ({ Atom: P.literal('b') }))
+    const borrowed = P.compose([P.rules(() => ({ Entry: base.Entry })), override])
+    expect(() => borrowed.Entry).toThrow(/compose: rule "Entry" is a rule object borrowed from another grammar, and its graph references "Atom"/)
+    expect(() => P.compile(borrowed)).toThrow(/rule "Entry" is a rule object borrowed/)
+    // A plain map handed to compile() is refused the same way.
+    expect(() => P.compile({ Entry: base.Entry, Atom: P.literal('b') } as Record<string, unknown>)).toThrow(/compile: rule "Entry" is a rule object borrowed/)
+    // Composing `base` itself is the supported route, and both engines agree on it.
+    const composed = P.compose([base, override])
+    const table = P.compile(composed)
+    for (const [input, ok] of [['b!', true], ['a!', false]] as const) {
+      expect(P.run(composed.Entry!, input).ok).toBe(ok)
+      expect(P.run(table.Entry!, input).ok).toBe(ok)
+    }
+  })
+
+  it('refuses a borrowed alias whose chain reaches another grammar\'s slot for a defined rule', () => {
+    // base.Entry is an alias (`Entry: g.Atom`): a slot whose target is base's Atom
+    // slot. Following the chain straight to the literal would skip that reference.
+    const base = P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Entry: g.Atom!, Atom: P.literal('a') }))
+    const override = P.rules(() => ({ Atom: P.literal('b') }))
+    const borrowed = P.compose([P.rules(() => ({ Doc: base.Entry })), override])
+    expect(() => borrowed.Doc).toThrow(/compose: rule "Doc" is a rule object borrowed from another grammar, and its graph references "Atom"/)
+    expect(() => P.compile(borrowed)).toThrow(/rule "Doc" is a rule object borrowed/)
+    expect(() => P.compile({ Doc: base.Entry, Atom: P.literal('b') } as Record<string, unknown>)).toThrow(/compile: rule "Doc" is a rule object borrowed/)
+  })
+
+  it('judges only the map\'s OWN rule names, never an inherited property', () => {
+    // A slot named like an Object.prototype member must not read that member as a rule.
+    const slot = P.ref<unknown>()
+    slot.define(P.literal('x'))
+    ;(slot as unknown as { _ruleName: string })._ruleName = 'toString'
+    expect(borrowedRuleReference({ Doc: P.sequence(slot, P.literal(';')) })).toBeUndefined()
+  })
+
+  it('links a borrowed rule object that references no rule the composition defines', () => {
+    const word = P.rules(() => ({ Word: P.regex(/[a-z]+/) }))
+    const base = P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Entry: P.sequence(g.Atom!, P.literal('!')), Atom: P.literal('a') }))
+    const cases = [
+      [P.compose([P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Doc: P.sequence(g.W!, P.literal(';')), W: word.Word }))]), 'abc;'],
+      // base.Entry references base's Atom, which this composition does not define.
+      [P.compose([P.rules(() => ({ Doc: base.Entry }))]), 'a!'],
+    ] as const
+    for (const [composed, input] of cases) {
+      expect(P.run(composed.Doc!, input).ok).toBe(true)
+      expect(P.run(P.compile(composed).Doc!, input).ok).toBe(true)
+    }
+  })
+
+  it('links a runtime linkable() artifact through its recipe, and refuses an IR-only one', () => {
+    // A runtime compose() result is itself an interpreter link.
+    expect(isInterpretedFuse(P.compose([P.rules(() => ({ A: P.literal('a') }))]))).toBe(true)
+    const fused = fuseInterpreted([linkable(P.rules(() => ({ A: P.literal('a') })))])
     expect(P.run(fused.A!, 'a').ok).toBe(true)
+    // Through compose()'s public map too: its rule names come from the artifact's
+    // `keys`, never from the artifact's own fields.
+    const composed = P.compose([linkable(P.rules(() => ({ A: P.literal('a') })))])
+    expect(Object.keys(composed)).toEqual(['A'])
+    expect(P.run(composed.A!, 'a').ok).toBe(true)
+    // A table built from a bare map has no recipe: linking it would mean evaluating
+    // carried IR, which never happens at runtime.
+    expect(() => fuseInterpreted([linkable({ A: P.literal('a') })])).toThrow('has no live rules to link')
   })
 })
 

@@ -18,7 +18,7 @@ import { scanTo } from './combinators/scanTo.ts'
 import { sequence } from './combinators/sequence.ts'
 import { token, leaf, sourceLeaf } from './combinators/token.ts'
 import { withCtx } from './combinators/withCtx.ts'
-import { composedCoverageRules } from './compiler/linker.ts'
+import { composedCoverageRules, linkedWinnersOf } from './compiler/linker.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition, type GrammarCoveragePlan } from './compiler/grammar-coverage-ids.ts'
 
 export type { GrammarCoverageDefinition } from './compiler/grammar-coverage-ids.ts'
@@ -156,11 +156,11 @@ export function grammarCoverageDefinitions(entry: Combinator<unknown>, winners?:
 }
 
 /** Definitions for a runtime `compose()` result, normalized through its final
- * IR winner map. Opaque precompiled pieces intentionally fail rather than
+ * winner map. Anything else — a compiled table, a plain map — fails rather than
  * reporting source-piece identities as though they were final grammar IDs. */
 export function composedGrammarCoverageDefinitions(grammar: Record<string, unknown>, startRule: string): readonly GrammarCoverageDefinition[] {
   const winners = composedCoverageRules(grammar)
-  if (!winners) throw new TypeError('semantic coverage needs re-lowerable composed IR; this composition contains an opaque artifact')
+  if (!winners) throw new TypeError('semantic coverage needs a runtime compose() result (a linked interpreter grammar); this is not one')
   const entry = winners[startRule]
   if (!entry) throw new TypeError(`semantic coverage start rule ${JSON.stringify(startRule)} is not a final winner`)
   return grammarCoverageDefinitions(entry, winners)
@@ -380,7 +380,9 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
 
 export function runWithGrammarCoverage(entry: Runnable, input: string, options: RunOptions & { collector?: GrammarCoverageCollector; trace?: GrammarTraceSink } = {}): { result: RunResult; coverage: GrammarCoverageSnapshot } {
   if (typeof entry === 'function') throw new TypeError('runWithGrammarCoverage currently requires an interpreter combinator entry')
-  const plan = buildGrammarPlan(entry)
+  // A runtime composition's rule is planned through its winner map, so its IDs are
+  // the ones `composedGrammarCoverageDefinitions` reports.
+  const plan = buildGrammarPlan(entry, linkedWinnersOf(entry))
   const definitions = plan.definitions
   const collector = options.collector ?? createGrammarCoverageCollector(definitions)
   const { collector: _collector, trace, ...runOptions } = options

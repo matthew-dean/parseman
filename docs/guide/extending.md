@@ -1,11 +1,5 @@
 # Extending grammars
 
-::: danger Superseded in part
-Statements on this page about how runtime `compose()` behaves (it currently evaluates source and has no CSP fallback) are superseded by
-[the runtime and size contract](../design/runtime-and-size-contract.md), which is
-binding. See its "Superseded statements" list.
-:::
-
 Two grammars often overlap almost entirely: a base language and a dialect that adds or
 tweaks a few rules. Think JSON versus a lenient JSON with comments and trailing commas, or
 CSS versus a Less/Sass superset. Rather than copy the base and edit it, **compose** it —
@@ -17,7 +11,7 @@ take the base grammar and fuse your changes on top.
 earlier ones by rule name:
 
 ```ts
-import { rules, regex, choice, compose } from 'parseman'
+import { rules, regex, choice, compose, run } from 'parseman'
 
 const base = rules(g => ({
   Value: choice(g.Num, g.Word),
@@ -29,9 +23,9 @@ const base = rules(g => ({
 const dialect = rules(() => ({ Num: regex(/[0-9]+!/) }))
 
 const parser = compose([base, dialect])
-parser.Value('12!', 0, {})   // ✅ matches — via the overridden Num
-parser.Value('12',  0, {})   // ✗ no match — dialect's Num needs '!'
-parser.Value('abc', 0, {})   // ✅ Word still works
+run(parser.Value, '12!')   // ✅ matches — via the overridden Num
+run(parser.Value, '12')    // ✗ no match — dialect's Num needs '!'
+run(parser.Value, 'abc')   // ✅ Word still works
 ```
 
 A grammar (the result of `rules(...)`) is composable as-is. There's no wrapper to opt into
@@ -44,6 +38,15 @@ rule reroutes **every reference to it, including references inside the base's ow
 Above, `base.Value` calls `g.Num` — and after `compose`, that call resolves to the
 *dialect's* `Num`. Composition re-binds all rule references in one shared scope, so the
 base's internals see your overrides too.
+
+The references it re-binds are the `g.X` references in each composed grammar's own
+`rules()` factory. A factory that returns a rule object taken from another grammar
+(`Entry: base.Entry`) brings that grammar's references with it, so `compose()` refuses one
+whose graph references a rule the composition also defines: the interpreter would keep
+`base`'s rule while `compile()` binds the composition's, and they'd accept different input.
+`compile()` of a plain rule map refuses it the same way. Compose `base` itself instead, so
+its references resolve to the composition's rules. A borrowed rule that references nothing
+the composition defines is fine (`test/parity/interpreted-fuse-parity.test.ts`).
 
 ## Assembling one grammar from parts of several
 
@@ -107,16 +110,11 @@ computed — and reported — at each `compose()` / `composeLeaf()` that binds t
 
 ### There is one engine you ship
 
-`compose()` / `composeLeaf()` fuse by **codegen**, so a composed grammar is a map of
-compiled functions. That's the artifact you ship, and the macro is how you get it.
-
-Parseman also has a second, *interpreted* fuse, which runs the composition as a live
-combinator graph instead of reaching codegen. It exists for diagnostics that must not reach
-codegen — profiling, gating analysis, and differential tests that compare one engine
-against another — and it isn't part of the public API: it's a second engine over the same
-grammar, with different runtime characteristics, and picking between them isn't a decision
-a consumer should have to make. `run()` / `parseDoc()` accept the shape it produces so those
-internal tools keep working, but nothing you ship should depend on it.
+Under the macro, `compose()` / `composeLeaf()` lower to one static table: that's the
+compiled artifact you ship. Without the macro, they link the pieces into one interpreter
+grammar (see [the execution modes below](#how-this-behaves-in-each-execution-mode)), and
+`compile()` turns that into a table at runtime when you want one. Either way the
+composition is the same grammar, with the same overrides and the same parse.
 
 ## Building trees: swap the output shape
 
@@ -125,11 +123,11 @@ If your grammar's `node()` rules build an AST, `compose()` still lets a caller c
 `ctx.build`. `cstBuildHost` yields a uniform positioned CST from any grammar:
 
 ```ts
-import { compose, cstBuildHost } from 'parseman'
+import { compose, cstBuildHost, run } from 'parseman'
 
 const parser = compose([base])
-parser.Value('12', 0, {})                      // → the grammar's own AST
-parser.Value('12', 0, { build: cstBuildHost }) // → a positioned CST node
+run(parser.Value, '12')                          // → the grammar's own AST
+run(parser.Value, '12', { build: cstBuildHost }) // → a positioned CST node
 ```
 
 This is how the same composed grammar can serve an evaluator (its own AST) and a language
@@ -166,17 +164,32 @@ published, compiled-only package composes just fine.
 `compose()` works whether a grammar [runs interpreted, via `compile()`, or via the
 macro](./modes):
 
-- **Macro (build):** `compose([...])` is fused at **build time** into one static parser —
-  a plain closure of direct rule calls, emitted as ordinary source. It needs no base
-  grammar source (the pieces travel on the imported value) and runs under any CSP, so it
-  ships in strict-CSP contexts like browser extensions or some CDNs with no extra
-  configuration.
-- **`compile()` / interpreter (runtime):** `compose([...])` fuses when it's called, using
-  the same code generation `compile()` uses. Like `compile()`, it tries to specialize the
-  fused parser via `new Function` once; under a strict CSP that throws, and it falls back
-  to the closure assembler — so it still runs without `'unsafe-eval'`, just via the
-  slower path for that one-time construction. Parsing afterward runs at full speed either
-  way.
+- **Macro (build):** `compose([...])` is fused at **build time** into one static table.
+  It needs no base grammar source (the pieces travel on the imported value as carried
+  IR, which the plugin re-lowers in the bundler and links in one namespace, as the
+  runtime link below does) and constructs no code at runtime, so it ships in strict-CSP
+  contexts like browser extensions or some CDNs with no extra configuration.
+  An imported build-compiled grammar has to resolve at build time, including through a
+  bundled upstream (esbuild's inlined ancestors, renamed imports and `/* @__PURE__ */`
+  keys are followed). If it can't, the build fails and names the upstream, because a
+  runtime `compose()` can't link a compiled grammar
+  (`test/unit/compose-unresolved-upstream.test.ts`).
+- **Runtime (interpreter):** `compose([...])` only **links**. Each piece's `rules()`
+  factory runs again against one shared namespace, a later piece's rule winning by name,
+  so the result is the interpreter grammar one `rules()` over all the pieces would build.
+  It builds no table, evaluates no source and never touches the pieces, so it runs under
+  any CSP, and it links lazily: `compose()` itself only reads the pieces' rule names.
+  Runtime `compose()` takes interpreter grammars — `rules()` maps and other runtime
+  compositions. It refuses a build-compiled grammar, because linking one would mean
+  evaluating its carried IR; compose that at build time instead.
+- **`compile()` (runtime, opt-in):** pass the composition to `compile()` for a table.
+  `compile(composed)` encodes it once and specialises the table with `new Function`; under
+  a strict CSP that throws `EvalError` and the same table runs on the closure assembler.
 
-Either way, the parse is identical: a single fused scope of direct rule calls, with
-overrides resolved across the whole set.
+All three produce the same parse, with overrides resolved across the whole set, and
+report the same expected set when it fails (`test/unit/compose-expected-parity.test.ts`).
+`test/unit/csp-runtime-paths.test.ts` runs every runtime path under
+`--disallow-code-generation-from-strings` and asserts that nothing but `compile()` ever
+reaches `Function` or `eval`; `test/parity/interpreted-fuse-parity.test.ts` pins the
+runtime link to the compiled table.
+
