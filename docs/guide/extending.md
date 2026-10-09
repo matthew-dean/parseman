@@ -11,7 +11,7 @@ take the base grammar and fuse your changes on top.
 earlier ones by rule name:
 
 ```ts
-import { rules, regex, choice, compose } from 'parseman'
+import { rules, regex, choice, compose, run } from 'parseman'
 
 const base = rules(g => ({
   Value: choice(g.Num, g.Word),
@@ -23,9 +23,9 @@ const base = rules(g => ({
 const dialect = rules(() => ({ Num: regex(/[0-9]+!/) }))
 
 const parser = compose([base, dialect])
-parser.Value('12!', 0, {})   // ✅ matches — via the overridden Num
-parser.Value('12',  0, {})   // ✗ no match — dialect's Num needs '!'
-parser.Value('abc', 0, {})   // ✅ Word still works
+run(parser.Value, '12!')   // ✅ matches — via the overridden Num
+run(parser.Value, '12')    // ✗ no match — dialect's Num needs '!'
+run(parser.Value, 'abc')   // ✅ Word still works
 ```
 
 A grammar (the result of `rules(...)`) is composable as-is. There's no wrapper to opt into
@@ -38,6 +38,11 @@ rule reroutes **every reference to it, including references inside the base's ow
 Above, `base.Value` calls `g.Num` — and after `compose`, that call resolves to the
 *dialect's* `Num`. Composition re-binds all rule references in one shared scope, so the
 base's internals see your overrides too.
+
+The references it re-binds are the `g.X` references in each composed grammar's own
+`rules()` factory. A factory that returns a rule object taken from another grammar
+(`Entry: base.Entry`) gets that grammar's bindings with it. To put `base`'s rules under the
+composition's names, compose `base` itself.
 
 ## Assembling one grammar from parts of several
 
@@ -114,11 +119,11 @@ If your grammar's `node()` rules build an AST, `compose()` still lets a caller c
 `ctx.build`. `cstBuildHost` yields a uniform positioned CST from any grammar:
 
 ```ts
-import { compose, cstBuildHost } from 'parseman'
+import { compose, cstBuildHost, run } from 'parseman'
 
 const parser = compose([base])
-parser.Value('12', 0, {})                      // → the grammar's own AST
-parser.Value('12', 0, { build: cstBuildHost }) // → a positioned CST node
+run(parser.Value, '12')                          // → the grammar's own AST
+run(parser.Value, '12', { build: cstBuildHost }) // → a positioned CST node
 ```
 
 This is how the same composed grammar can serve an evaluator (its own AST) and a language

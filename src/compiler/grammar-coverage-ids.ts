@@ -103,18 +103,33 @@ export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinato
     if (name === undefined || winners[name] !== parser) return undefined
     try { return parser._def.thunk() } catch { return undefined }
   }
+  // A body that SEVERAL winners' slots resolve to (`X: shared, Y: shared`) can carry
+  // only one name, so there each slot owns its own rule and the body owns none.
+  const slotsPerBody = new Map<Combinator<unknown>, number>()
+  if (winners) {
+    for (const winner of Object.values(winners)) {
+      const body = selfWinnerBody(winner)
+      if (body !== undefined) slotsPerBody.set(body, (slotsPerBody.get(body) ?? 0) + 1)
+    }
+  }
+  const sharedBody = (parser: Combinator<unknown>): boolean => (slotsPerBody.get(parser) ?? 0) > 1
+  const ownRule = (parser: Combinator<unknown>, rule: string): void => {
+    const id = `rule:${rule}`
+    definitions.set(id, { id, kind: 'rule' })
+    rules.set(parser, id)
+  }
   const seen = new Set<Combinator<unknown>>()
   const visit = (parser: Combinator<unknown>, path: string): void => {
     if (seen.has(parser)) return
     seen.add(parser)
     const rule = winnerNames.get(parser) ?? (parser as Combinator<unknown> & { _ruleName?: string })._ruleName
+    const body = selfWinnerBody(parser)
     // `rules()` references are tagged too for linker naming, but only the final
     // rule definition owns execution coverage; otherwise ref + target double-hit.
-    if (rule && selfWinnerBody(parser) === undefined && (winnerNames.has(parser) || parser._def.tag !== 'lazy')) {
-      const id = `rule:${rule}`
-      definitions.set(id, { id, kind: 'rule' })
-      rules.set(parser, id)
+    if (rule && body === undefined && !sharedBody(parser) && (winnerNames.has(parser) || parser._def.tag !== 'lazy')) {
+      ownRule(parser, rule)
     }
+    if (rule && body !== undefined && sharedBody(body)) ownRule(parser, rule)
     if (parser._def.tag === 'choice') {
       const ids = parser._def.parsers.map((_, index) => `choice:${path}/arm:${index}`)
       choices.set(parser, ids)
@@ -139,7 +154,10 @@ export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinato
     // caller's winner map is then the only durable public identity for each
     // root; using the generic `entry` path would merge separate roots' choice
     // IDs and omit their rule definitions.
-    visit(selfWinnerBody(root) ?? root, winnerNames.get(root) ?? (root as Combinator<unknown> & { _ruleName?: string })._ruleName ?? 'entry')
+    const name = winnerNames.get(root) ?? (root as Combinator<unknown> & { _ruleName?: string })._ruleName ?? 'entry'
+    const body = selfWinnerBody(root)
+    if (body !== undefined && sharedBody(body) && !seen.has(root)) { seen.add(root); ownRule(root, name) }
+    visit(body ?? root, name)
   }
   return { definitions: [...definitions.values()].sort((a, b) => a.id.localeCompare(b.id)), choices, dispatches, attempts, labels, rules }
 }

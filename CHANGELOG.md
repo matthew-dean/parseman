@@ -23,7 +23,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     linking it would mean evaluating that IR. Compose compiled grammars at build time
     with the macro, which is unchanged in that respect. For a table at runtime, pass
     the composition to `compile()`, which now also takes a whole rule map and is the
-    one runtime path that specialises. It falls back to closures under CSP.
+    one runtime path that specialises. It falls back to closures under CSP. An
+    override reaches each composed factory's `g.X` references, but not a rule object
+    a factory takes from another grammar (`Entry: base.Entry`): that object keeps
+    `base`'s bindings, where the IR rebuild used to rebind it by name. Compose
+    `base` itself to put its rules under the composition's names.
+  - `compile(ruleMap)` reports degradations in one aggregated block, as
+    `compile(combinator)` does, and throws on an entry that is not a parser instead
+    of dropping it. `compose([linkable(g)])` names `g`'s rules, not the artifact's
+    fields. A coverage plan names every rule whose winner shares its body with
+    another rule's.
   - `linkable()` and `compileRuleMap().rules` run the closure artifact. Railroad
     tooling holds railroad-diagrams as real code. `evalRuleMapIR` moves to
     `src/plugin/ir-eval.ts`, which only the build-time macro imports.

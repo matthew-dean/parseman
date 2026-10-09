@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, literal, many, regex, rules, sequence, transform } from '../../src/index.ts'
+import { choice, compile, compose, literal, many, regex, rules, sequence, transform } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { fuseInterpreted } from '../../src/compiler/linker.ts'
@@ -184,5 +184,19 @@ describe('a MERGED rule map encodes to the parser compose() means', () => {
     for (const input of ['ab:12', '1:2', 'ab:', ':x', '']) {
       expectIdentical(build, 'Pair', input)
     }
+  })
+})
+
+describe('compile(ruleMap): a runtime composition opted into a table', () => {
+  it('encodes the linked winners, override included', () => {
+    const base = rules(g => ({ Doc: sequence(g.Atom, literal('!')), Atom: literal('a') }))
+    const table = compile(compose([base, rules(() => ({ Atom: literal('b') }))]))
+    expect(run(table.Doc!, 'b!').ok).toBe(true)
+    expect(run(table.Doc!, 'a!').ok).toBe(false)
+  })
+
+  it('refuses an entry that is not a parser instead of dropping its rule', () => {
+    expect(() => compile({ Doc: literal('a'), Typo: 'literal' } as unknown as Record<string, unknown>))
+      .toThrow(TypeError)
   })
 })

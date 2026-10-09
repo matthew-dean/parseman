@@ -139,22 +139,31 @@ function isCombinator(x: unknown): x is Combinator<unknown> {
 }
 
 function compileMap(grammar: Record<string, unknown>, opts: { readonly hostMode?: HostMode } = {}): Record<string, TableRule> {
-  // A referenced-but-undefined `g.X` is a hole, not a rule: it has nothing to encode.
-  const entries = Object.entries(grammar).filter(([, value]) => {
-    if (!isCombinator(value)) return false
-    if (value._def.tag !== 'lazy') return true
-    try { value._def.thunk(); return true } catch { return false }
-  }) as Array<[string, Combinator<unknown>]>
-  const refusals: string[] = []
-  const compiled = compileRuleMapRunnable(entries, {
-    ...(opts.hostMode ? { hostMode: opts.hostMode } : {}),
-    refusals,
-    specialise: true,
-  })
-  if (compiled === null) {
-    throw new Error(`compile: this grammar could not be encoded to a table${refusals.length ? ` — ${refusals.join('; ')}` : ''}`)
+  const entries: Array<[string, Combinator<unknown>]> = []
+  for (const [key, value] of Object.entries(grammar)) {
+    if (!isCombinator(value)) throw new TypeError(`compile: grammar entry "${key}" is not a parser`)
+    // A referenced-but-undefined `g.X` is a hole, not a rule: it has nothing to encode.
+    if (value._def.tag === 'lazy') {
+      try { value._def.thunk() } catch { continue }
+    }
+    entries.push([key, value])
   }
-  return compiled.rules
+  // One aggregated degradation block per compile, exactly as `compileRoot` drains it.
+  const drain = beginCompileDegradationDrain()
+  let done = false
+  try {
+    const refusals: string[] = []
+    const compiled = compileRuleMapRunnable(entries, {
+      ...(opts.hostMode ? { hostMode: opts.hostMode } : {}),
+      refusals,
+      specialise: true,
+    })
+    if (compiled === null) {
+      throw new Error(`compile: this grammar could not be encoded to a table${refusals.length ? ` — ${refusals.join('; ')}` : ''}`)
+    }
+    done = true
+    return compiled.rules
+  } finally { drain(done) }
 }
 
 function compileRoot<T>(

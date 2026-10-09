@@ -282,11 +282,31 @@ describe('fuseInterpreted fuse-time contract', () => {
     expect(P.run(second.Doc!, 'QQ').ok).toBe(true)
   })
 
+  it('an override reaches g.X references, not a rule object borrowed from another grammar', () => {
+    // A factory may return another grammar's rule object. Its references were bound
+    // when THAT grammar was built, so an override of `Atom` here does not reach
+    // inside it. Composing `base` itself is what puts its rules under the
+    // composition's names (docs/guide/extending.md, "Override is open-recursive").
+    const base = P.rules((g: Record<string, P.Combinator<unknown>>) => ({ Entry: P.sequence(g.Atom!, P.literal('!')), Atom: P.literal('a') }))
+    const override = P.rules(() => ({ Atom: P.literal('b') }))
+    const borrowed = P.compose([P.rules(() => ({ Entry: base.Entry })), override])
+    expect(P.run(borrowed.Entry!, 'a!').ok).toBe(true)
+    expect(P.run(borrowed.Entry!, 'b!').ok).toBe(false)
+    const composed = P.compose([base, override])
+    expect(P.run(composed.Entry!, 'b!').ok).toBe(true)
+    expect(P.run(composed.Entry!, 'a!').ok).toBe(false)
+  })
+
   it('links a runtime linkable() artifact through its recipe, and refuses an IR-only one', () => {
     // A runtime compose() result is itself an interpreter link.
     expect(isInterpretedFuse(P.compose([P.rules(() => ({ A: P.literal('a') }))]))).toBe(true)
     const fused = fuseInterpreted([linkable(P.rules(() => ({ A: P.literal('a') })))])
     expect(P.run(fused.A!, 'a').ok).toBe(true)
+    // Through compose()'s public map too: its rule names come from the artifact's
+    // `keys`, never from the artifact's own fields.
+    const composed = P.compose([linkable(P.rules(() => ({ A: P.literal('a') })))])
+    expect(Object.keys(composed)).toEqual(['A'])
+    expect(P.run(composed.A!, 'a').ok).toBe(true)
     // A table built from a bare map has no recipe: linking it would mean evaluating
     // carried IR, which never happens at runtime.
     expect(() => fuseInterpreted([linkable({ A: P.literal('a') })])).toThrow('has no live rules to link')

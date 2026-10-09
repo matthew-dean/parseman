@@ -348,7 +348,10 @@ function declaredNamesOf(items: Array<LinkableTable | Record<string, unknown>>):
   const names = new Set<string>()
   for (const item of items) {
     const linked = (item as Record<symbol, unknown>)[LINKED] !== undefined
-    const order = linked ? Object.keys(item) : (item as Record<string, unknown>)[RULE_ORDER] as readonly string[] | undefined
+    // A `linkable()` artifact names its rules in `keys`; its own fields are not rules.
+    const order = linked ? Object.keys(item)
+      : isLinkableTable(item) ? item.keys
+        : (item as Record<string, unknown>)[RULE_ORDER] as readonly string[] | undefined
     for (const name of order ?? Object.keys(item)) names.add(name)
   }
   return [...names]

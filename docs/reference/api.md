@@ -988,7 +988,7 @@ override reroutes the base's *own* calls too (open recursion).
   build. It builds no table, evaluates no source and mutates no piece. Items are `rules()`
   grammars and other runtime compositions; a build-compiled grammar is refused, because
   linking it would mean evaluating its carried IR. For a table, pass the result to
-  [`compile()`](#compile-grammar).
+  [`compile()`](#compile-grammar-hostmode).
 
 ## Error recovery
 

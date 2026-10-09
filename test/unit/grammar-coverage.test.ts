@@ -77,6 +77,25 @@ describe('grammar semantic coverage', () => {
     ])
   })
 
+  it('names every winner whose rule shares one body with another', () => {
+    const shared = literal('s')
+    const composed = compose([rules(g => ({ Entry: choice(g.X, g.Y), X: shared, Y: shared }))])
+    expect(composedGrammarCoverageDefinitions(composed, 'Entry').map(definition => definition.id)).toEqual([
+      'choice:Entry/arm:0',
+      'choice:Entry/arm:1',
+      'rule:Entry',
+      'rule:X',
+      'rule:Y',
+    ])
+    // A shared body that is itself the start rule's: the start rule keeps its name.
+    expect(composedGrammarCoverageDefinitions(composed, 'X').map(definition => definition.id)).toEqual(['rule:X'])
+  })
+
+  it('names an alias rule and the rule it aliases', () => {
+    const composed = compose([rules(g => ({ Entry: g.A, A: literal('a') }))])
+    expect(composedGrammarCoverageDefinitions(composed, 'Entry').map(definition => definition.id)).toEqual(['rule:A', 'rule:Entry'])
+  })
+
   it('traces rule and selected-arm events through the same plan with bounded retention', () => {
     const trace = createGrammarTraceSink({ capacity: 3 })
     const { result } = runWithGrammarCoverage(grammar.Entry, 'w', { trace })
