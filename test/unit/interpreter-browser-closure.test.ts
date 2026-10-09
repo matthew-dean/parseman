@@ -7,12 +7,13 @@ import { resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '../..')
 const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
-// Bumped +208B for the compose open-recursion recognizer fix: `first-set.ts`
-// `winnerForRef` resolves a named ref to its compose WINNER (with the transparent-alias
-// guard the encoder's `winnerWrapsReference` applies) so first-set / nullability gating
-// reroutes to a delta-overridden rule. The winners resolver is table-encoder-only, so
-// this code is dead weight in the browser bundle, but the shared module carries it.
-const BASELINE_RAW_BYTES = 58_165
+// Bumped +76B for scanTo paired-sentinel recovery. The public interpreter owns
+// the cursor checkpoint/parity loop; the compiler and table plumbing tree-shake
+// out of this browser entry. Measured from 58,198B at parent 8ff324c to 58,274B.
+// Bumped +105B for the labeled-trivia spec `trivia()` now carries on its meta
+// (58,288B at parent 5740595 to 58,393B): every labeled trivia scan reads it,
+// and re-deriving it cost 1.8% of a jess Less parse.
+const BASELINE_RAW_BYTES = 58_393
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

@@ -68,7 +68,10 @@ export function parserUsesRouted(parser: Combinator<unknown>, seen: Set<Combinat
     case 'grammar':
       return parserUsesRouted(def.parser, seen) || (def.triviaParser ? parserUsesRouted(def.triviaParser, seen) : false)
     case 'scanTo':
-      return parserUsesRouted(def.sentinel, seen) || def.skip.some(entry => parserUsesRouted(entry, seen))
+      return parserUsesRouted(def.sentinel, seen)
+        || def.skip.some(entry => parserUsesRouted(entry, seen))
+        || (def.recoverAt !== undefined && parserUsesRouted(def.recoverAt, seen))
+        || (def.stopAt !== undefined && parserUsesRouted(def.stopAt, seen))
     case 'recover':
       return parserUsesRouted(def.parser, seen) || parserUsesRouted(def.sentinel, seen)
     case 'lazy':

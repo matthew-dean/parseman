@@ -15,7 +15,7 @@ import {
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
 } from '../cst/capture-buffer.ts'
 import {
-  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
+  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
@@ -1371,7 +1371,8 @@ function makeDriver(
         return fn(v, { start: pos, end: EC.e })
       }
 
-      case OP_LEAF: {
+      case OP_LEAF:
+      case OP_SOURCE_LEAF: {
         // Mirrors src/combinators/token.ts:89-127. `leaf()` is a CAPTURE
         // BOUNDARY: it suppresses the interior's own CST captures and exposes
         // exactly ONE leaf carrying the reducer's value. Running the interior
@@ -1410,7 +1411,11 @@ function makeDriver(
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         if (COUNT) siteFn('LEAF fn()', fn)
         const out = fn(v, { start: pos, end })
-        if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
+        if (wasCapturing) pushCstLeaf(ctx, {
+          _tag: 'leaf',
+          value: code[ip] === OP_SOURCE_LEAF && HOSTCST ? input.slice(pos, end) : out,
+          span: { start: pos, end },
+        })
         EC.e = end
         return out
       }
@@ -1530,7 +1535,8 @@ function makeDriver(
         // `attempt()` verbatim: mark, run, and on failure restore every capture
         // sink and re-anchor the report at the transaction's entry. A COMMITTED
         // failure is still rolled back and then propagated untouched — the
-        // interpreter returns `result` itself on that branch.
+        // interpreter returns `result` itself on that branch — unless the row
+        // contains commitment (`k`), where it is reported like any other failure.
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -1542,7 +1548,10 @@ function makeDriver(
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v !== FAIL) return v
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        if (ctx._fc === true) return FAIL
+        if (ctx._fc === true) {
+          if (code[ip + 2] !== 1) return FAIL
+          ctx._fc = false
+        }
         ctx._fe = pos
         return FAIL
       }
@@ -1666,7 +1675,13 @@ function makeDriver(
     const sentDef: ParserDef | undefined = typeof s.sent === 'string'
       ? { tag: 'literal', value: s.sent, caseInsensitive: false } as unknown as ParserDef
       : undefined
-    return scanTo(subtreeComb(s.sentinel!, sentDef), { skip, raw, orEOF: (s.flags & 2) !== 0 }) as Combinator<unknown>
+    return scanTo(subtreeComb(s.sentinel!, sentDef), {
+      skip,
+      raw,
+      orEOF: (s.flags & 2) !== 0,
+      ...(s.recoverAt === undefined ? {} : { recoverAt: subtreeComb(s.recoverAt) }),
+      ...(s.stopAt === undefined ? {} : { stopAt: subtreeComb(s.stopAt) }),
+    }) as Combinator<unknown>
   })
 
   const scanSkip: readonly (readonly Combinator<unknown>[])[] =

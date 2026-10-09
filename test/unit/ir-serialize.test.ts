@@ -105,14 +105,19 @@ describe('IR serialize round-trip', () => {
       Digits: oneOrMore(regex(/[0-9]/)),
       Named: label('ident', regex(/[a-z]+/)),
       Semi: expectC(literal(';'), 'semicolon'),
-      ToEnd: trivia(scanTo(literal('.'), { skip: [regex(/\s+/)], orEOF: true })),
+      ToEnd: trivia(scanTo(literal('.'), {
+        skip: [regex(/\s+/)],
+        orEOF: true,
+        recoverAt: literal(';'),
+        stopAt: literal('\n'),
+      })),
       Tok: token(sequence(literal('!'), regex(/important/i))),
       Ci: literal('url(', { caseInsensitive: true }),
     })))
     roundTrip(rm, 'Kw', ['if', 'else', 'iffy'])
     roundTrip(rm, 'Digits', ['1', '123', 'x'])
     roundTrip(rm, 'Named', ['abc', '9'])
-    roundTrip(rm, 'ToEnd', ['a b.', 'xyz', ''])
+    roundTrip(rm, 'ToEnd', ['a b.', 'xyz', '', 'a;b.', 'a\nb.'])
     roundTrip(rm, 'Tok', ['!important', '!IMPORTANT', '! important'])
     roundTrip(rm, 'Ci', ['url(', 'URL(', 'nope'])
   })

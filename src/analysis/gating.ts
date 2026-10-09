@@ -222,7 +222,12 @@ export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
     ]
     case 'sepBy': return [d.parser, d.separator]
     case 'recover': return [d.parser, d.sentinel]
-    case 'scanTo': return [d.sentinel, ...d.skip]
+    case 'scanTo': return [
+      d.sentinel,
+      ...d.skip,
+      ...(d.recoverAt === undefined ? [] : [d.recoverAt]),
+      ...(d.stopAt === undefined ? [] : [d.stopAt]),
+    ]
     case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
     case 'routed': return d.fallback ? [d.fallback] : []
     // A `lazy` is a REFERENCE, not a subtree. Descending through it would make

@@ -16,8 +16,7 @@ import { label, field, transform, trivia } from './combinators/map.ts'
 import { many, oneOrMore, optional, sepBy } from './combinators/repeat.ts'
 import { scanTo } from './combinators/scanTo.ts'
 import { sequence } from './combinators/sequence.ts'
-import { token } from './combinators/token.ts'
-import { leaf } from './combinators/token.ts'
+import { token, leaf, sourceLeaf } from './combinators/token.ts'
 import { withCtx } from './combinators/withCtx.ts'
 import { composedCoverageRules } from './compiler/linker.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition, type GrammarCoveragePlan } from './compiler/grammar-coverage-ids.ts'
@@ -328,7 +327,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'oneOrMore': return oneOrMore(build(def.parser))
         case 'optional': return optional(build(def.parser))
         case 'attempt': {
-          const base = attempt(build(def.parser))
+          const base = attempt(build(def.parser), def.contain === true ? { contain: true } : undefined)
           const id = maps.attempts.get(parser)
           return id === undefined ? base : {
             ...base,
@@ -343,7 +342,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'transform': return transform(build(def.parser), def.fn)
         case 'trivia': return trivia(build(def.parser))
         case 'token': return token(build(def.parser))
-        case 'leaf': return leaf(build(def.parser), def.fn)
+        case 'leaf': return def.cstValue === 'source' ? sourceLeaf(build(def.parser), def.fn) : leaf(build(def.parser), def.fn)
         case 'field': return field(def.name, build(def.parser))
         case 'grammar': return grammarParser({
           ...(def.triviaParser === undefined ? (def.clearTrivia ? { trivia: null } : {}) : { trivia: build(def.triviaParser) }),
@@ -359,7 +358,13 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'guard': return gate(def.predicate)
         case 'withCtx': return withCtx(def.extra, build(def.parser))
         case 'expect': return expect(build(def.parser), def.label)
-        case 'scanTo': return scanTo(build(def.sentinel), { skip: def.skip.map(build), orEOF: def.orEOF })
+        case 'scanTo': return scanTo(build(def.sentinel), {
+          skip: def.skip.map(build),
+          raw: def.raw,
+          orEOF: def.orEOF,
+          ...(def.recoverAt === undefined ? {} : { recoverAt: build(def.recoverAt) }),
+          ...(def.stopAt === undefined ? {} : { stopAt: build(def.stopAt) }),
+        })
         // Zero-width assertion with no coverage-bearing child; reuse it verbatim so
         // the rebuilt sequence still recognises the boundary marker.
         case 'adjacency': return parser

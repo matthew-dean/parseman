@@ -305,7 +305,7 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   word:      (...a) => parseman.word(a[0] as string, a[1] as string | undefined, a[2] as Omit<parseman.KeywordsOptions, 'boundary'> | undefined),
   sequence:  (...a) => (parseman.sequence as (...p: Combinator<unknown>[]) => Combinator<unknown[]>)(...(a as Combinator<unknown>[])),
   choice:    (...a) => (parseman.choice as (...p: Combinator<unknown>[]) => Combinator<unknown>)(...(a as Combinator<unknown>[])),
-  attempt:   (...a) => parseman.attempt(a[0] as Combinator<unknown>),
+  attempt:   (...a) => parseman.attempt(a[0] as Combinator<unknown>, a[1] as parseman.AttemptOptions | undefined),
   optional:  (...a) => parseman.optional(a[0] as Combinator<unknown>),
   trivia:    (...a) => parseman.trivia(a[0] as Combinator<unknown>),
   classifiedTrivia: (...a) =>
@@ -686,9 +686,10 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     } catch { return null }
   }
 
-  // leaf(inner, fn) — like transform(), but suppresses inner CST captures and
-  // publishes one reducer-selected terminal leaf to its parent.
-  if (callee.name === 'leaf' && code !== undefined && mfs !== undefined) {
+  // leaf(inner, fn) / sourceLeaf(inner, fn) — like transform(), but suppresses
+  // inner CST captures. sourceLeaf keeps the semantic result for evaluation
+  // while publishing the matched source text to the CST parent.
+  if ((callee.name === 'leaf' || callee.name === 'sourceLeaf') && code !== undefined && mfs !== undefined) {
     const [parserArg, fnArg] = node.arguments
     if (!parserArg || !fnArg || parserArg.type === 'SpreadElement' || fnArg.type === 'SpreadElement') return null
     const inner = anyValue(parserArg as Expression, scope, code, mfs)
@@ -696,7 +697,9 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const fnSrc = stripTsFromSource(fnArg as Node, code)
     mfs.push(fnSrc)
     try {
-      const combi = parseman.leaf(inner, (v: unknown) => v)
+      const combi = callee.name === 'sourceLeaf'
+        ? parseman.sourceLeaf(inner, (v: unknown) => v)
+        : parseman.leaf(inner, (v: unknown) => v)
       if (combi._def.tag === 'leaf') combi._def.fnSrc = fnSrc
       return combi
     } catch { return null }

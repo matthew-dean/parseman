@@ -9,7 +9,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes } from '../../bench/table-grammars.ts'
-import { balanced, choice, keywords, literal, many, node, optional, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
+import { balanced, choice, expect as expectCombinator, keywords, literal, many, node, optional, peek, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
 import type { TableProgram } from '../../src/table/program.ts'
 
 /**
@@ -551,6 +551,52 @@ function objectFromPairs(pairs) {
       .toEqual(run(g.Doc as never, 'no brace here').expected)
     expect(run(emitted.Doc as never, 'no brace here').expected).toEqual(['"{"'])
     expect(run(emitted.Tail as never, 'no brace here').ok).toBe(true)
+  })
+
+  it('scanTo() emits paired-sentinel recovery and hard-stop subtrees', async () => {
+    const diagnosticBoundary = sequence(
+      literal('!'),
+      expectCombinator(literal('?')),
+      literal('#'),
+    )
+    const diagnosticMatchedBoundary = sequence(
+      literal('~'),
+      expectCombinator(literal('?')),
+    )
+    const nextDeclaration = sequence(
+      literal(';'),
+      regex(/[ \t\n\r\f]*/),
+      peek(sequence(regex(/[a-z-]+/), literal(':'))),
+    )
+    const source = scanTo(literal('`'), {
+      recoverAt: choice(
+        literal(';'), literal('{'), literal('}'), literal(')'),
+        diagnosticBoundary, diagnosticMatchedBoundary,
+      ),
+      stopAt: choice(literal('\\\n'), nextDeclaration),
+      skip: [balanced('{', '}', { strict: true })],
+    })
+    const prog = encodeTable({ Doc: source })
+    expect(prog.runtimeOnly).toBeUndefined()
+    const emitted = await loadEmitted(prog, 'scanto-recovery')
+    const memory = execRules(prog)
+    for (const input of [
+      'let x = 1; x`;',
+      '{ answer: 42 }` {',
+      'bad; second: `good`;',
+      'function);\n  calc-value: calc(`calc);',
+      'fn(; next: `good`;',
+      'one! still one`;',
+      'one~ still one`;',
+      'unfinished\\\nnext: `value`;',
+    ]) {
+      expect(outcome(memory.Doc, input), `memory ${input}`).toBe(outcome(source, input))
+      expect(outcome(emitted.Doc, input), `emitted ${input}`).toBe(outcome(source, input))
+      expect(run(memory.Doc as never, input).errors, `memory errors ${input}`)
+        .toEqual(run(source, input).errors)
+      expect(run(emitted.Doc as never, input).errors, `emitted errors ${input}`)
+        .toEqual(run(source, input).errors)
+    }
   })
 
   it('ambient scanSkip survives emission, PER RULE, and a raw scan still ignores it', async () => {

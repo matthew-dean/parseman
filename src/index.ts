@@ -19,6 +19,7 @@ export { choice } from './combinators/choice.ts'
 export { dispatch, endsWith, makeWhen, matches, otherwise, routed, startsWith, when } from './combinators/dispatch.ts'
 export type { DispatchArm, DispatchOtherwise, DispatchStringMatcher, DispatchWhen, DispatchWhenFactory, DispatchWhenOptions, DispatchWhenMatcher } from './combinators/dispatch.ts'
 export { attempt } from './combinators/attempt.ts'
+export type { AttemptOptions } from './combinators/attempt.ts'
 export { many, oneOrMore, optional, sepBy, oneOrMoreSep, keepSeparator } from './combinators/repeat.ts'
 export type { RepeatOptions, SepByOptions, TrailingSeparator, KeptSeparator } from './combinators/repeat.ts'
 export { rules } from './combinators/parser.ts'
@@ -31,7 +32,7 @@ export type { BuildNode, NodeCombinator, NodeOptions, NodeProjectOptions } from 
 export { transform, trivia, classifiedTrivia, label, field } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
-export { token, leaf } from './combinators/token.ts'
+export { token, leaf, sourceLeaf } from './combinators/token.ts'
 
 export { compile } from './table/compile.ts'
 /*

@@ -80,7 +80,7 @@ import {
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
 import {
-  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
+  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
@@ -487,6 +487,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   for (const s of prog.scans ?? []) {
     for (const r of s.skip) labelExtraIps.push(r[0])
     if (s.sentinel !== undefined) labelExtraIps.push(s.sentinel[0])
+    if (s.recoverAt !== undefined) labelExtraIps.push(s.recoverAt[0])
+    if (s.stopAt !== undefined) labelExtraIps.push(s.stopAt[0])
   }
   for (const set of prog.scanSkip ?? []) for (const r of set) labelExtraIps.push(r[0])
   const closureLabels = computeSiteLabels(
@@ -521,8 +523,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * exact AST workloads execute the three shapes below 42k/66k/205k times per
    * CSS/Less/generated parse. Keep their bodies scalar and keep every other
    * shape on the generic oracle below.
+   *
+   * `trailing` is the node's `trailingTrivia` bit: consume the active trivia
+   * after a successful body, inside the node's span, exactly where the generic
+   * body does. It opens no capture: these shapes are the reducers that read no
+   * trivia log.
    */
-  function plainBuildNode(child: Piece, build: NodeBuilder): Piece {
+  function plainBuildNode(child: Piece, build: NodeBuilder, trailing: boolean): Piece {
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
@@ -540,6 +547,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
+      if (trailing && value !== FAIL && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
       const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
       const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
       ctx._fields = savedFields
@@ -576,7 +584,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /** Direct reducer whose declared arity proves `rawChildren` is unobservable.
    * Use the existing split children/leaves collector instead of opening a
    * duplicate raw capture buffer. The body shape is selected while linking. */
-  function childrenOnlyBuildNode(child: Piece, build: NodeBuilder): Piece {
+  function childrenOnlyBuildNode(child: Piece, build: NodeBuilder, trailing: boolean): Piece {
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
@@ -594,6 +602,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
+      if (trailing && value !== FAIL && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
       const captured = capturedFlatChildren(kids)
       ctx._fields = savedFields
       ctx._cstBuf = sBuf
@@ -1910,6 +1919,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_ATTEMPT: {
         const child = link(code[ip + 1]!)
+        const contain = code[ip + 2] === 1
         return (input, pos, ctx) => {
           const need = markCst(ctx)
           const mRaw = MRAW
@@ -1922,8 +1932,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const v = child(input, pos, ctx)
           if (v !== FAIL) return v
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          // A committed failure propagates VERBATIM — rolled back, not re-anchored.
-          if (committed(ctx)) return FAIL
+          // A committed failure propagates VERBATIM — rolled back, not re-anchored —
+          // unless the row contains commitment, where it is reported like any other.
+          if (committed(ctx)) {
+            if (!contain) return FAIL
+            ctx._fc = false
+          }
           ctx._fe = pos
           return FAIL
         }
@@ -2147,7 +2161,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
-      case OP_LEAF: {
+      case OP_LEAF:
+      case OP_SOURCE_LEAF: {
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const child = link(code[ip + 2]!)
         return (input, pos, ctx) => {
@@ -2177,7 +2192,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (v === FAIL) return FAIL
           const end = EC.e
           const out = fn(v, { start: pos, end })
-          if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
+          if (wasCapturing) pushCstLeaf(ctx, {
+            _tag: 'leaf',
+            value: op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out,
+            span: { start: pos, end },
+          })
           EC.e = end
           return out
         }
@@ -3455,11 +3474,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // data plus this assembly's fixed option set; direct/custom contexts and
         // every richer node shape retain the generic implementation below.
         if (!hostCst && !tracked) {
-          if (build !== undefined && proj < 0 && flags === 0) {
-            return plainBuildNode(child, build)
+          // The trailing-trivia bit (128) rides on the two leanest shapes; it adds
+          // a consume, not a capture.
+          if (build !== undefined && proj < 0 && (flags & ~128) === 0) {
+            return plainBuildNode(child, build, trailingTrivia)
           }
-          if (build !== undefined && proj < 0 && flags === 2) {
-            return childrenOnlyBuildNode(child, build)
+          if (build !== undefined && proj < 0 && (flags & ~128) === 2) {
+            return childrenOnlyBuildNode(child, build, trailingTrivia)
           }
           if (build !== undefined && proj < 0 && flags === 18) {
             return childrenOnlyFieldsBuildNode(child, build)
@@ -3659,6 +3680,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     for (const s of prog.scans ?? []) {
       for (const r of s.skip) extraIps.push(r[0])
       if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
+      if (s.recoverAt !== undefined) extraIps.push(s.recoverAt[0])
+      if (s.stopAt !== undefined) extraIps.push(s.stopAt[0])
     }
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
     const roots = [...Object.values(prog.rules), ...extraIps]
@@ -3855,7 +3878,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const sentDef: ParserDef | undefined = typeof s.sent === 'string'
       ? { tag: 'literal', value: s.sent, caseInsensitive: false } as unknown as ParserDef
       : undefined
-    scansArr.push(scanTo(subtreeComb(s.sentinel!, sentDef), { skip, raw, orEOF: (s.flags & 2) !== 0 }) as Combinator<unknown>)
+    scansArr.push(scanTo(subtreeComb(s.sentinel!, sentDef), {
+      skip,
+      raw,
+      orEOF: (s.flags & 2) !== 0,
+      ...(s.recoverAt === undefined ? {} : { recoverAt: subtreeComb(s.recoverAt) }),
+      ...(s.stopAt === undefined ? {} : { stopAt: subtreeComb(s.stopAt) }),
+    }) as Combinator<unknown>)
   }
   const scans: readonly Combinator<unknown>[] = scansArr
 

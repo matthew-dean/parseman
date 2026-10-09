@@ -360,7 +360,12 @@ function slotLabel(d: ParserDef, index: number): string {
     case 'dispatch': return index === 0 ? 'dispatch.selector' : `dispatch[${index - 1}]`
     case 'sepBy':    return index === 0 ? 'sepBy.item' : 'sepBy.sep'
     case 'recover':  return index === 0 ? 'recover.parser' : 'recover.sentinel'
-    case 'scanTo':   return index === 0 ? 'scanTo.sentinel' : `scanTo.skip[${index - 1}]`
+    case 'scanTo': {
+      if (index === 0) return 'scanTo.sentinel'
+      if (index <= d.skip.length) return `scanTo.skip[${index - 1}]`
+      if (d.recoverAt !== undefined && index === d.skip.length + 1) return 'scanTo.recoverAt'
+      return 'scanTo.stopAt'
+    }
     case 'grammar':  return index === 0 ? 'grammar' : 'grammar.trivia'
     case 'node':     return `node(${d.type ?? 'anonymous'})`
     case 'label':    return `label(${d.label})`

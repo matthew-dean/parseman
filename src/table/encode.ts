@@ -9,7 +9,7 @@ import { buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/bu
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators/dispatch.ts'
 import {
-  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
+  OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
@@ -1005,6 +1005,8 @@ class Encoder {
         flags: (d.raw ? 1 : 0) | (d.orEOF ? 2 : 0),
         skip: d.skip.map(c => this.subtree(c)),
         sentinel: this.subtree(d.sentinel),
+        ...(d.recoverAt === undefined ? {} : { recoverAt: this.subtree(d.recoverAt) }),
+        ...(d.stopAt === undefined ? {} : { stopAt: this.subtree(d.stopAt) }),
         sent: sentDef.tag === 'literal' ? sentDef.value : null,
       }))
     }
@@ -1320,7 +1322,7 @@ class Encoder {
       }
       case 'leaf': {
         const child = this.node(d.parser).ip
-        return this.emit(OP_LEAF, this.fn(d.fn, d.fnSrc ?? null), child)
+        return this.emit(d.cstValue === 'source' ? OP_SOURCE_LEAF : OP_LEAF, this.fn(d.fn, d.fnSrc ?? null), child)
       }
       case 'node': {
         // A node legally has NO builder when its value comes from a selection:
@@ -1342,24 +1344,24 @@ class Encoder {
         // 'cst'` forces them on, exactly as the emitted `cstOut` path does. The
         // driver reads a bit; it re-derives nothing and sees no setting.
         const cstOut = this.settings.hostMode === 'cst'
-        // THE THREE DERIVED CAPTURE BITS, mirroring `node.ts:215` term for term:
+        // THE THREE DERIVED CAPTURE BITS, mirroring `node.ts` term for term:
         //
-        //   capturesTrivia = captureTrivia || trailingTrivia
+        //   capturesTrivia = captureTrivia
         //                    || (build ? buildReadsTrivia(def) : project === undefined)
         //
         // `cstOut` is the static stand-in for "a CST host is coming", which the
         // interpreter reaches dynamically off `ctx.build`.
         //
-        // Two of these terms were MISSING and each was a real divergence:
+        // `captureTrivia` was once MISSING here and was a real divergence: an
+        // explicit request the arity analysis cannot express (an author can ask
+        // for capture on a 3-argument reducer). This used to REFUSE rather than
+        // lower, so a documented option no grammar could use through the table.
         //
-        //   `captureTrivia` — an explicit request the arity analysis cannot
-        //     express (an author can ask for capture on a 3-argument reducer).
-        //     This used to REFUSE rather than lower, so a documented option no
-        //     grammar could use through the table.
-        //   `trailingTrivia` — trivia consumed INSIDE the node's capture scope
-        //     lands in THIS node's log. The interpreter counts it; the table did
-        //     not, so a node with `trailingTrivia` and a non-trivia-reading
-        //     reducer captured under the interpreter and dropped under the table.
+        // `trailingTrivia` is NOT a capture term (bit 128 only). It moves the
+        // node's end past the trivia after the body; that trivia reaches the root
+        // table with or without a node log, and only a log the reducer reads is
+        // worth opening. Forcing bit 4 for it put every match of a
+        // non-trivia-reading node on the generic capture path.
         //
         // The `build ? … : project === undefined` split matters now that a
         // STRUCTURAL node lowers: with no builder the interpreter captures unless
@@ -1372,7 +1374,7 @@ class Encoder {
         // Field capture additionally requires the body to CONTAIN `field()`
         // captures: a node that reads fields but has none allocates nothing.
         const wantsFields = parserHasOwnFields(d.parser) && (cstOut || derivedFields)
-        const flags = (cstOut || d.captureTrivia === true || d.trailingTrivia === true || derivedTrivia ? 4 : 0)
+        const flags = (cstOut || d.captureTrivia === true || derivedTrivia ? 4 : 0)
           | (!cstOut && omitsRaw ? 2 : 0)
           | (cstOut || derivedState ? 8 : 0)
           | (wantsFields ? 16 : 0)
@@ -1594,7 +1596,7 @@ class Encoder {
       // A TRANSACTION IS A ROW. See `OP_ATTEMPT` for why the transparent
       // lowering was correct only for a choice arm.
       case 'attempt': {
-        const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip)
+        const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip, d.contain === true ? 1 : 0)
         if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(inner)
         // THE FIRST-SET FAIL-FAST GUARD, lowered as the `OP_GATE` row the `node()`
         // case already uses — it is the same guard, written twice in the
@@ -1735,7 +1737,7 @@ class Encoder {
       switch (this.code[ip]) {
         case OP_GATE: return [ip + 2]
         case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: return [ip + 1]
-        case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
+        case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_SOURCE_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
         // ARMS START AT ip+4. `ip+3` is the choice's own EXPECTED-SET index, and
@@ -1764,6 +1766,8 @@ class Encoder {
     const refs: SubtreeRef[] = []
     for (const s of this.scans) {
       if (s.sentinel !== undefined) refs.push(s.sentinel)
+      if (s.recoverAt !== undefined) refs.push(s.recoverAt)
+      if (s.stopAt !== undefined) refs.push(s.stopAt)
       refs.push(...s.skip)
     }
     for (const set of this.scanSkipSets) refs.push(...set)
@@ -1784,6 +1788,8 @@ class Encoder {
       ...s,
       skip: s.skip.map(res),
       ...(s.sentinel === undefined ? {} : { sentinel: res(s.sentinel) }),
+      ...(s.recoverAt === undefined ? {} : { recoverAt: res(s.recoverAt) }),
+      ...(s.stopAt === undefined ? {} : { stopAt: res(s.stopAt) }),
     }))
     this.scanSkipSets = this.scanSkipSets.map(set => set.map(res))
   }

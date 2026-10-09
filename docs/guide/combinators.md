@@ -40,6 +40,7 @@ Three words that sound alike but play different roles:
 | `transform(c, fn)` | Map the result: `fn(value, span) → newValue`. |
 | `token(c)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
 | `leaf(c, reducer)` | Treat a structural grammar as one semantic leaf, without touching trivia. |
+| `sourceLeaf(c, reducer)` | Return a reduced semantic value while exposing the matched source as one CST leaf. |
 | `label(name, c)` | Attach a string label to a combinator arm (metadata; used for per-chunk trivia kinds). |
 | `field(name, c)` | Capture a named value/span for the nearest enclosing `node()` builder. |
 | `not(c)` | **Negative** lookahead — succeeds (consuming nothing) when `c` fails. |
@@ -461,7 +462,8 @@ dispatched case.
 If the head parser itself fails, an enclosing `choice` can still try a later
 arm. But once the head succeeds and a `when` key matches, that tail is
 committed: its failure is returned immediately, and neither `otherwise` nor an
-outer fallback gets a turn.
+outer fallback gets a turn — unless an enclosing
+[`attempt(…, { contain: true })`](#attempt) contains it.
 
 Duplicate keys — including duplicates spread across grouped
 `when([keyA, keyB], tail)` arms — fail at grammar construction time.
@@ -507,6 +509,30 @@ parse(atomic, 'xa')
 
 It is not a lookahead — see
 [`attempt` vs `peek`](#committing-vs-looking-attempt-vs-peek).
+
+A committed failure — a `dispatch()` whose selected branch failed — passes
+through a plain `attempt()` still committed, so no enclosing `choice()` gets
+another turn. `attempt(parser, { contain: true })` contains that too: the
+failure is reported like any other, at the attempt's start, and the choice tries
+its next arm. Reach for it only where two readings of the same prefix are
+genuinely ambiguous until a later token, such as CSS reading a block item as a
+declaration and then, when that fails, as a nested rule (css-syntax-3 §5.4.4).
+Put the more common reading first: the other one is paid for by re-reading the
+prefix.
+
+```ts
+// [verify]
+import { attempt, choice, dispatch, literal, parse, sequence, when } from 'parseman'
+
+const routed = sequence(literal('a'), dispatch(literal('k'), when('k', literal('x'))))
+const other = sequence(literal('a'), literal('k'), literal('y'))
+
+parse(choice(attempt(routed), other), 'aky').ok
+// → false
+
+parse(choice(attempt(routed, { contain: true }), other), 'aky').value
+// → ['a', 'k', 'y']
+```
 
 ## Repetition
 
@@ -1120,10 +1146,19 @@ opaque regions by default — `scanTo` two kinds, `balanced` one:
 | `skip: [...]` | Extra opaque units for *this* call. **Extends** (doesn't replace) what the combinator already skips ambiently — trivia + `scanSkip` for `scanTo`, `scanSkip` alone for `balanced`. |
 | `raw: true` | Hard opt-out: skip nothing ambiently — the pre-ambient raw byte walk. |
 | `orEOF: true` | *(scanTo only)* Reaching end-of-input without the sentinel succeeds, returning everything consumed. |
+| `recoverAt` | *(scanTo only)* Remember the first surrounding-grammar boundary while continuing to look for a real paired sentinel. At an outer boundary or EOF, an odd number of later sentinels accepts the first sentinel; an even number recovers at the remembered boundary. |
+| `stopAt` | *(scanTo only)* Stop speculative paired-sentinel recovery at this hard boundary. At the current scan position it is checked before opaque skippers; a skipper that began earlier remains opaque throughout its matched span. |
 
-The sentinel is always checked **before** any skipper, so a sentinel that also
-starts a skip region still wins. `balanced` consults ambient `scanSkip` only (not
-trivia) — its delimiters are structural.
+The sentinel is always checked first. A `stopAt` hard boundary is checked next,
+before any skipper; `recoverAt` remains behind opaque skippers so a delimiter in
+a string, comment, or balanced group remains payload. `balanced` consults ambient
+`scanSkip` only (not trivia) — its delimiters are structural.
+
+`recoverAt` handles removed or invalid delimited constructs without confusing a
+valid delimiter inside their payload with the enclosing language boundary. For
+example, a backtick scanner may recover at `;` while preserving the complete
+payload in `` `let x = 1; x` ``. Once recovery has begun, the sentinel must
+consume input; Parseman throws if a zero-width sentinel is used in this mode.
 
 **Gating:** both have an `any` first-set by nature, so a choice arm leading with
 either won't first-char-gate. That is often fine for an error-recovery fallback arm;

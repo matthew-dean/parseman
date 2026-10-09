@@ -104,6 +104,8 @@ function emitRef(r: import('./program.ts').SubtreeRef): string {
 function emitScanSpec(s: import('./program.ts').ScanSpec): string {
   const parts = [`kind:${s.kind}`, `flags:${s.flags}`, `skip:[${s.skip.map(emitRef).join(',')}]`]
   if (s.sentinel !== undefined) parts.push(`sentinel:${emitRef(s.sentinel)}`)
+  if (s.recoverAt !== undefined) parts.push(`recoverAt:${emitRef(s.recoverAt)}`)
+  if (s.stopAt !== undefined) parts.push(`stopAt:${emitRef(s.stopAt)}`)
   if (s.sent !== undefined) parts.push(`sent:${s.sent === null ? 'null' : jsString(s.sent)}`)
   if (s.open !== undefined) parts.push(`open:${jsString(s.open)}`)
   if (s.close !== undefined) parts.push(`close:${jsString(s.close)}`)
@@ -197,6 +199,8 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
   for (const s of prog.scans ?? []) {
     for (const r of s.skip) extraIps.push(r[0])
     if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
+    if (s.recoverAt !== undefined) extraIps.push(s.recoverAt[0])
+    if (s.stopAt !== undefined) extraIps.push(s.stopAt[0])
   }
   for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
 

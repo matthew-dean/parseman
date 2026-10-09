@@ -33,7 +33,7 @@ import { peek } from '../combinators/peek.ts'
 import { node } from '../combinators/node.ts'
 import { parser } from '../combinators/grammar.ts'
 import { scanTo, balanced, type BalancedAmbient } from '../combinators/scanTo.ts'
-import { token, leaf } from '../combinators/token.ts'
+import { token, leaf, sourceLeaf } from '../combinators/token.ts'
 import { classifiedTrivia, transform, trivia, label, field } from '../combinators/map.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { expect as expectC } from '../combinators/expect.ts'
@@ -65,7 +65,12 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'expect':    return [def.parser]
     case 'grammar':   return def.triviaParser ? [def.parser, def.triviaParser] : [def.parser]
     case 'sepBy':     return [def.parser, def.separator]
-    case 'scanTo':    return [def.sentinel, ...def.skip]
+    case 'scanTo':    return [
+      def.sentinel,
+      ...def.skip,
+      ...(def.recoverAt === undefined ? [] : [def.recoverAt]),
+      ...(def.stopAt === undefined ? [] : [def.stopAt]),
+    ]
     case 'routed':    return def.fallback ? [def.fallback] : []
     case 'lazy':
     case 'literal':
@@ -96,7 +101,7 @@ const ruleNameOf = (c: Comb): string | undefined =>
  * the serializer treats it as an atom: it is not descended for sharing/recursion
  * analysis (the interior's `self` ref is internal and must not surface as a cycle).
  */
-const balancedOf = (c: Comb): { open: string; close: string; ownSkip: Comb[] } | undefined =>
+const balancedOf = (c: Comb): { open: string; close: string; ownSkip: Comb[]; strict?: boolean } | undefined =>
   (c as BalancedAmbient)._balancedAmbient
 
 /** Resolve a lazy's target, or null if it isn't defined yet (external ref). */
@@ -194,11 +199,11 @@ function evalIR(ir: string, rulesImpl: unknown): unknown {
     if (recognitionOnly) (t._def as { recognitionOnly?: boolean }).recognitionOnly = true
     return t as Comb
   }
-  const _lf = (child: Comb, src: string): Comb => {
+  const _lf = (child: Comb, src: string, source = false): Comb => {
     let fn: (...a: unknown[]) => unknown
     // eslint-disable-next-line no-eval
     try { fn = (0, eval)(`(${src})`) } catch { fn = () => { throw new Error('IR leaf fn not materialized') } }
-    const l = leaf(child as never, fn as never)
+    const l = source ? sourceLeaf(child as never, fn as never) : leaf(child as never, fn as never)
     ;(l._def as { fnSrc?: string }).fnSrc = src
     return l as Comb
   }
@@ -522,8 +527,12 @@ class Serializer {
     // which is correct — they opt out of ambient resolution by definition.
     const bal = balancedOf(c)
     if (bal) {
-      const skipArg = bal.ownSkip.length === 0 ? '' : `, { skip: [${bal.ownSkip.map(kid).join(', ')}] }`
-      return `balanced(${JSON.stringify(bal.open)}, ${JSON.stringify(bal.close)}${skipArg})`
+      const options = [
+        ...(bal.ownSkip.length === 0 ? [] : [`skip: [${bal.ownSkip.map(kid).join(', ')}]`]),
+        ...(bal.strict ? ['strict: true'] : []),
+      ]
+      const optionsArg = options.length === 0 ? '' : `, { ${options.join(', ')} }`
+      return `balanced(${JSON.stringify(bal.open)}, ${JSON.stringify(bal.close)}${optionsArg})`
     }
     switch (def.tag) {
       case 'lazy': {
@@ -587,7 +596,7 @@ class Serializer {
         ? `oneOrMore(${kid(def.parser)})`
         : `many(${kid(def.parser)}${repeatOpts(def.min, def.max)})`
       case 'optional':  return `optional(${kid(def.parser)})`
-      case 'attempt':   return `attempt(${kid(def.parser)})`
+      case 'attempt':   return `attempt(${kid(def.parser)}${def.contain === true ? ', { contain: true }' : ''})`
       // `keepSeparators` is an opt-in expressed at the SEPARATOR, not in the options
       // bag, so it must round-trip as `keepSeparator(sep)` — serializing it as an
       // option would reconstruct a grammar whose call site no longer states its own
@@ -600,13 +609,13 @@ class Serializer {
       case 'token':     return `token(${kid(def.parser)})`
       case 'leaf': {
         if (def.fnSrc === undefined) throw new Unserializable('leaf without fnSrc')
-        return `_lf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)})`
+        return `_lf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)}${def.cstValue === 'source' ? ', true' : ''})`
       }
       case 'label':     return `label(${JSON.stringify(def.label)}, ${kid(def.parser)})`
       case 'field':     return `field(${JSON.stringify(def.name)}, ${kid(def.parser)})`
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`
       case 'scanTo':
-        return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}]${def.raw ? ', raw: true' : ''}, orEOF: ${def.orEOF} })`
+        return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}]${def.raw ? ', raw: true' : ''}, orEOF: ${def.orEOF}${def.recoverAt === undefined ? '' : `, recoverAt: ${kid(def.recoverAt)}`}${def.stopAt === undefined ? '' : `, stopAt: ${kid(def.stopAt)}`} })`
       case 'transform': {
         if (def.fnSrc === undefined) throw new Unserializable('transform without fnSrc')
         // `_tf` sets `_def.fnSrc` so re-lowering INLINES the callback (a plain

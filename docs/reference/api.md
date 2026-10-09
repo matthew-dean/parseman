@@ -382,6 +382,22 @@ This is useful when a parent reducer needs a flat terminal (here `'*'` or `'/'`)
 but the language accepts structured comments or spacing around it. Static `leaf()`
 calls macro-compile and retain the inner grammar's normal coverage and trace IDs.
 
+### `sourceLeaf(combinator, reducer)`
+
+Reduce a structural grammar for semantic consumers while exposing its complete
+matched source as one CST leaf. The returned parse value is the reducer result;
+only the CST leaf value uses source text.
+
+```ts
+const escapedName = sourceLeaf(
+  sequence(nameStart, many(namePart)),
+  parts => decodeName(parts),
+)
+```
+
+Use this when AST construction needs decoded or classified grammar facts while a
+syntax tree must retain the authored token spelling and its single-leaf shape.
+
 ### `not(combinator)` · `peek(combinator)`
 
 The two lookaheads. Both are zero-width — they assert and consume nothing.
@@ -577,7 +593,8 @@ dynamic selection, filtering, or reconstructing values from several tokens.
 plain combinators own no log. A direct build that declares the fifth `triviaLog` parameter
 keeps the established arity-based capture behavior. See [CST / AST nodes](../guide/ast).
 `opts.trailingTrivia` is a document-boundary opt-in: after a successful node body it commits
-the active trivia once into that node's log (and therefore forces this node's trivia capture).
+the active trivia once inside that node's span, into its log when the node keeps one. It
+does not force capture: a direct `build` that doesn't declare `triviaLog` gets no log.
 Use it for a repeating document root at EOF, not for blocks with a closing delimiter; their
 ordinary following `}` already owns the preceding trivia.
 
@@ -999,7 +1016,15 @@ Consume text up to (not including) `sentinel`; return it. Skips the grammar's am
 `trivia` **and** `scanSkip` opaque units (strings/brackets) by default, so a sentinel
 hidden in a string or comment is never matched. `opts.skip` declares EXTRA opaque
 regions for this call (extends the ambient set); `opts.raw` opts out of all ambient
-skipping (raw byte walk); `opts.orEOF` makes EOF a success.
+skipping (raw byte walk); `opts.orEOF` makes EOF a success. `opts.recoverAt`
+remembers the first surrounding-grammar boundary while continuing to seek a real
+paired sentinel. At the next outer boundary or EOF, sentinel parity chooses the
+first sentinel for a complete payload or the remembered boundary for an unfinished
+one. `opts.stopAt` ends that speculative search at a hard boundary and is checked
+before an opaque skipper at the same scan position. A skipper that began earlier
+remains opaque throughout its matched span. Opaque `skip` regions take precedence over
+`recoverAt`, so recovery delimiters inside a skipped string, comment, or balanced
+group remain payload.
 
 ### `balanced(open, close, opts?)`
 
@@ -1007,6 +1032,11 @@ Match one balanced delimited region — **string** delimiters — including the 
 counting nested same-type pairs. Skips the grammar's ambient `scanSkip` opaque units in
 its interior, so a delimiter hidden inside a string doesn't close the balance early.
 `opts.skip` declares EXTRA regions (extends the ambient set); `opts.raw` opts out.
+By default, a missing `close` is tolerant: the balance records an expected-token
+diagnostic and succeeds through the recovered span. With `opts.strict: true`, a
+missing close fails the whole balance and rolls back to `open`, so an enclosing
+`choice()`, `not()`, or opaque scan skipper can reject that arm. Nested same-type
+groups inherit strictness.
 
 Under a `node()` it contributes **one** CST leaf — the whole matched source slice —
 exactly like `scanTo`. Changed in 0.47.0: it previously contributed its shredded
