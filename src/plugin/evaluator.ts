@@ -314,7 +314,7 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
       a[0] as Readonly<Record<string, Combinator<unknown>>>,
     ),
   label:     (...a) => parseman.label(a[0] as string, a[1] as Combinator<unknown>),
-  field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),
+  field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>, a[2] as parseman.FieldOptions | undefined),
   noTrivia:  (...a) => parseman.noTrivia(a[0] as Combinator<unknown>),
   token:     (...a) => parseman.token(a[0] as Combinator<unknown>),
   // `routed(fallback)` — the fallback must be forwarded. A zero-arg entry here read

@@ -83,7 +83,7 @@ export type ParserDef =
   | { tag: 'routed';    fallback?: Combinator<unknown> }
   | { tag: 'leaf';      parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; cstValue?: 'source' }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
-  | { tag: 'field';     name: string; parser: Combinator<unknown> }
+  | { tag: 'field';     name: string; parser: Combinator<unknown>; leadingTrivia?: true; trailingTrivia?: true }
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; rootCapture?: 'opaque'; trackLines: boolean; constructionTrackLines?: 'on' | 'off' | 'inherit'; constructionCaptureTriviaKinds?: readonly string[] }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
@@ -203,6 +203,16 @@ export type BuildHost = ((
 export type FieldCapture<T = unknown> = {
   value: T
   span: Span
+  /**
+   * `field(…, { leadingTrivia: true })` only: the source text of the trivia the
+   * enclosing sequence or separated list skipped right before this field, or `''`.
+   */
+  leading?: string
+  /**
+   * `field(…, { trailingTrivia: true })` only: the source text of the trivia the
+   * field consumed after its match, or `''`.
+   */
+  trailing?: string
 }
 
 export type FieldMap = Record<string, FieldCapture | FieldCapture[]>
@@ -382,7 +392,7 @@ export type ParseContext = {
    */
   _cstTriviaLog?: number[] | undefined
   /** Framework-internal: active node() field captures, enabled only when needed. */
-  _fields?: Array<{ name: string; value: unknown; span: Span }> | undefined
+  _fields?: Array<{ name: string; value: unknown; span: Span; leading?: string; trailing?: string }> | undefined
   /** Framework-internal: lazy capture buffer for active node() parse. */
   _cstBuf?: CstCaptureBuf | undefined
   /** Framework-internal: value/span already consumed by an enclosing dispatch(). */

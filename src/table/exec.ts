@@ -72,6 +72,8 @@ import { scalarTerminalNotChild } from './scalar-terminal.ts'
  * a successful match to the other engine.
  */
 import { FAIL, newEndCell, type EndCell } from './cell.ts'
+import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
+import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA, LEAD, triviaFieldCapture } from '../combinators/field-trivia.ts'
 
 /**
  * DIAGNOSTIC ROW COUNTER — off unless `PM_TABLE_COUNT=1` at process start.
@@ -645,11 +647,21 @@ function makeDriver(
       }
 
       case OP_FIELD: {
+        const spec = fieldSpec(k[code[ip + 1]!])
+        const leadFrom = LEAD.at
+        if (spec.bits !== 0) LEAD.at = -1
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if (v === FAIL) return FAIL
         // Conditional on a live sink, exactly as src/combinators/map.ts has it:
         // a `field()` outside any field-reading node costs nothing.
-        ctx._fields?.push({ name: k[code[ip + 1]!] as string, value: v, span: { start: pos, end: EC.e } })
+        if (spec.bits === 0) {
+          ctx._fields?.push({ name: spec.name, value: v, span: { start: pos, end: EC.e } })
+          return v
+        }
+        const end = EC.e
+        const trailEnd = (spec.bits & FIELD_TRAILING_TRIVIA) !== 0 && ctx.trivia !== undefined ? consumeTrivia(input, end, ctx) : end
+        ctx._fields?.push(triviaFieldCapture(spec.name, v, input, pos, end, (spec.bits & FIELD_LEADING_TRIVIA) !== 0 ? leadFrom : -1, trailEnd))
+        EC.e = trailEnd
         return v
       }
 
@@ -885,6 +897,7 @@ function makeDriver(
             const scanTl = need ? cstTlLen(ctx) : 0
             const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            if (leadingTriviaFieldAt(code, k, child)) LEAD.at = cur
             const v = exec(child, input, scanEnd, ctx)
             if (v === FAIL) { if (REC) ctx._sync = inheritedSync; return FAIL }
             if (EC.e > scanEnd) cur = EC.e
@@ -1256,6 +1269,7 @@ function makeDriver(
             let sp = cur
             if (hasTrivia) sp = skipTrivia(input, sp, ctx)
             ctx._fc = false
+            if (leadingTriviaFieldAt(code, k, sep)) LEAD.at = cur
             const sv = exec(sep, input, sp, ctx)
             if (sv === FAIL) {
               if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)

@@ -226,74 +226,35 @@ function plainRegexSource(p: Combinator<unknown>): string | null {
   return d.tag === 'regex' && d.flags === '' ? d.source : null
 }
 
-let visitSpec0: LabeledTriviaSpec | undefined
-let visitSpec1: LabeledTriviaSpec | undefined
-let visitSpec2: LabeledTriviaSpec | undefined
-let visitSpec3: LabeledTriviaSpec | undefined
-let visitValue0: CssTriviaVisitor | null | undefined
-let visitValue1: CssTriviaVisitor | null | undefined
-let visitValue2: CssTriviaVisitor | null | undefined
-let visitValue3: CssTriviaVisitor | null | undefined
+/** The fields of a spec the char-level lowerings below are computed from. */
+type TriviaArmsSpec = Pick<LabeledTriviaSpec, 'arms' | 'minRepeats'>
 
-/** A direct classified scanner for the four canonical CSS/Less trivia tuples. */
-export function commonLabeledTriviaVisitor(spec: LabeledTriviaSpec): CssTriviaVisitor | null {
-  if (spec === visitSpec0) return visitValue0!
-  if (spec === visitSpec1) return visitValue1!
-  if (spec === visitSpec2) return visitValue2!
-  if (spec === visitSpec3) return visitValue3!
-  const sources = spec.minRepeats <= 1 ? spec.arms.map(arm => plainRegexSource(arm.parser)) : []
-  const visitor = commonCssTriviaVisitor(sources)
-  visitSpec3 = visitSpec2
-  visitValue3 = visitValue2
-  visitSpec2 = visitSpec1
-  visitValue2 = visitValue1
-  visitSpec1 = visitSpec0
-  visitValue1 = visitValue0
-  visitSpec0 = spec
-  visitValue0 = visitor
-  return visitor
+/**
+ * A direct classified scanner for the four canonical CSS/Less trivia tuples.
+ * Computed once per spec, by `analyzeLabeledTrivia`, and read off it as
+ * `spec.visitor`: a scan never asks again.
+ */
+export function commonLabeledTriviaVisitor(spec: TriviaArmsSpec): CssTriviaVisitor | null {
+  return commonCssTriviaVisitor(spec.minRepeats <= 1 ? spec.arms.map(arm => plainRegexSource(arm.parser)) : [])
 }
-
-let armSpec0: LabeledTriviaSpec | undefined
-let armSpec1: LabeledTriviaSpec | undefined
-let armSpec2: LabeledTriviaSpec | undefined
-let armSpec3: LabeledTriviaSpec | undefined
-let armValue0: readonly TriviaArmMatcher[] | null | undefined
-let armValue1: readonly TriviaArmMatcher[] | null | undefined
-let armValue2: readonly TriviaArmMatcher[] | null | undefined
-let armValue3: readonly TriviaArmMatcher[] | null | undefined
 
 /**
  * The character-level matchers for a spec's arms — index-parallel to `spec.arms`,
  * so a matcher's index IS its kind index — or `null` when any arm has no lowering.
+ * Computed once per spec, as `spec.charArms`.
  *
  * `spec.minRepeats > 1` is excluded: the loops below report only an END, and a run
  * that fails a minimum of two must report NOTHING. `classifiedTrivia()` never
  * produces one, and the combinator path still handles it if a host writes one.
  */
-export function charArmsFor(spec: LabeledTriviaSpec): readonly TriviaArmMatcher[] | null {
-  if (spec === armSpec0) return armValue0!
-  if (spec === armSpec1) return armValue1!
-  if (spec === armSpec2) return armValue2!
-  if (spec === armSpec3) return armValue3!
-  let arms: TriviaArmMatcher[] | null = []
-  if (spec.minRepeats > 1) {
-    arms = null
-  } else {
-    for (const arm of spec.arms) {
-      const c = classifyParser(arm.parser)
-      if (!c) { arms = null; break }
-      arms.push(c)
-    }
+export function charArmsFor(spec: TriviaArmsSpec): readonly TriviaArmMatcher[] | null {
+  if (spec.minRepeats > 1) return null
+  const arms: TriviaArmMatcher[] = []
+  for (const arm of spec.arms) {
+    const c = classifyParser(arm.parser)
+    if (!c) return null
+    arms.push(c)
   }
-  armSpec3 = armSpec2
-  armValue3 = armValue2
-  armSpec2 = armSpec1
-  armValue2 = armValue1
-  armSpec1 = armSpec0
-  armValue1 = armValue0
-  armSpec0 = spec
-  armValue0 = arms
   return arms
 }
 

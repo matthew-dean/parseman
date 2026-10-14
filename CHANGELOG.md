@@ -3,6 +3,71 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.54.0 — 2026-10-14
+
+- A standalone terminal the macro lowers (`const ident = regex(…)`, `word(…)`) is
+  emitted as `/* @__PURE__ */ tableRules({…}, "Entry")` instead of
+  `/* @__PURE__ */ tableRules({…})["Entry"]`. `@__PURE__` covers a call, not a
+  property read after it, so when a rule table inlined the terminal's pattern and
+  nothing else read the binding, bundlers kept the whole table as a discarded
+  statement that still ran at import. Built with esbuild/rolldown, jess's Less grammar
+  module carried 77 such statements (40 KB of 767 KB), its CSS grammar 40 (21 KB), and
+  a shared recognition module 80 (33 KB, 46% of the file); all are gone. `tableRules`
+  takes the entry name as its second argument (`tableRules(program, "Entry")` returns
+  that rule and throws on an unknown name); a module printed by an older parseman,
+  which indexes the map, still loads.
+
+- The compiled table skips a choice arm whose leading literal is absent before
+  entering it. First-char dispatch can't separate `@{name}`, `@@name` and `@name`, so
+  every arm sharing the char was entered, and under a CST host each entered `node()`
+  opened a capture frame before failing on the second char. A choice of more than
+  three arms now pretests an arm that must begin with a literal of two or more
+  characters (or one of a family of them) on either host, and the two- and
+  three-arm pretest that already ran on an AST host now runs on a CST host too. A
+  skipped arm reports the static expected set a char-excluded arm does; values, spans
+  and expected sets are unchanged. The emitted engine already pretested these arms and
+  now selects them through the same function.
+
+- A labeled trivia spec carries the char-level scanners every scan of it reads
+  (`visitor`, `charArms`), built with the spec. They sat behind two four-slot
+  module memos, which a grammar switching among more trivia tables than that
+  rebuilt on every miss: jess's Less grammar missed 4,114 times per `benchmark.less`
+  parse and 5,291 times per parse of the Less unit corpus.
+
+  Marginal instructions per parse, `(I(N2)−I(N1))/(N2−N1)`, medians of 5, two
+  interleaved rounds each, same tables on both sides:
+
+  | workload | host | before | after |
+  | --- | --- | --- | --- |
+  | parseman `less/mixins` (60 KB) | CST | 282.9 / 280.8M | 272.9 / 273.0M (−3.2%) |
+  | parseman `less/stylesheet` | CST | 261.8 / 262.4M | 254.6 / 254.8M (−2.8%) |
+  | parseman `less/*`, `css/stylesheet` | AST | | within the A/A spread |
+  | jess Less, Less unit corpus (136 files) | CST | 651.5 / 651.4M | 636.2 / 637.0M (−2.3%) |
+  | jess Less, Less unit corpus | AST | 591.6 / 591.6M | 589.0 / 588.3M (−0.5%) |
+
+- Add `field(name, parser, { leadingTrivia, trailingTrivia })`. A comment written
+  beside a separator (`@media screen /* a */, /* b */ print`) belongs to no term: the
+  list's own loop skips it before the `,`, so before this only the owning node's trivia
+  log held it, and a builder that wanted it back paid for trivia capture, and for its
+  parse state to read the text, on every match. Now the separator's capture carries the
+  text: `leading` is the trivia the enclosing `sequence()` (any term after the first) or
+  separated list (its separator) skipped right before the field, and `trailing` is the
+  trivia the field consumes after its match, as `node({ trailingTrivia })` does. The
+  field must be the term or separator itself; anywhere else `leading` is `''`. The
+  interpreter, the reference driver, the closure and emitted assemblies, the macro and
+  the IR carry it identically; a plain `field()` is unchanged, and a program printed by
+  an older parseman still loads.
+
+  The option is on the field, not a lazily materialised node trivia log, because the
+  log was not where the cost was. On jess's CSS media-query list (test-data-css, AST,
+  marginal instructions), dropping only the trivia-log tier measured 233.9M → 234.4M,
+  no change; the state and fields tiers and the whitespace-absorbing separator regex
+  were the cost. With this option the list reads fields only, with `literal(',')` as
+  its separator, and keeps byte-identical layouts over 244 inputs. test-data-css moves
+  233.6M → 233.4M, inside the run-to-run spread; a 1,000-prelude media file moves
+  156.9M → 155.0M (−1.2%, with a ±2% spread). What remains between that and a list that
+  keeps no comments at all is the fields tier and the builder's own layout work.
+
 ## 0.53.0 — 2026-10-09
 
 - Fix the macro silently dropping a `rules()` option whose value names an imported

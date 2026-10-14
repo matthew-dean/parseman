@@ -66,6 +66,7 @@
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
+import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA, LEAD, triviaFieldCapture } from '../combinators/field-trivia.ts'
 import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
@@ -129,7 +130,7 @@ import { computeSiteLabels, reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
-  leadingLiteralFamily, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
+  largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
   scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
@@ -146,6 +147,7 @@ const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | 
 
 /** Failure sentinel — SHARED with the other two engines, see `cell.ts`. */
 import { FAIL, newEndCell } from './cell.ts'
+import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
 /** `finishCstBuf`'s two empty sentinels, held here so the node piece can inline it. */
@@ -1053,6 +1055,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return cur
   }
 
+  /**
+   * A `field(…, { leadingTrivia: true })` term. The pre-scan cursor reaches the
+   * field AFTER `step`'s scan, right before the field runs, so a field inside the
+   * trivia grammar cannot take it first. One closure per call; only such terms pay.
+   */
+  function leadingFieldTerm(step: typeof nextTerm, child: Piece, input: string, cur: number, ctx: ParseContext): number {
+    return step((i, p, c) => { LEAD.at = cur; return child(i, p, c) }, input, cur, ctx)
+  }
+
   function committed(c: ParseContext): boolean {
     return c._fc === true
   }
@@ -1793,12 +1804,27 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_FIELD: {
-        const name = k[code[ip + 1]!] as string
+        const { name, bits } = fieldSpec(k[code[ip + 1]!])
         const child = link(code[ip + 2]!)
+        if (bits === 0) {
+          return (input, pos, ctx) => {
+            const v = child(input, pos, ctx)
+            if (v === FAIL) return FAIL
+            ctx._fields?.push({ name, value: v, span: { start: pos, end: EC.e } })
+            return v
+          }
+        }
+        const leading = (bits & FIELD_LEADING_TRIVIA) !== 0
+        const trailing = (bits & FIELD_TRAILING_TRIVIA) !== 0
         return (input, pos, ctx) => {
+          const leadFrom = leading ? LEAD.at : -1
+          LEAD.at = -1
           const v = child(input, pos, ctx)
           if (v === FAIL) return FAIL
-          ctx._fields?.push({ name, value: v, span: { start: pos, end: EC.e } })
+          const end = EC.e
+          const trailEnd = trailing && ctx.trivia !== undefined ? consumeTrivia(input, end, ctx) : end
+          ctx._fields?.push(triviaFieldCapture(name, v, input, pos, end, leadFrom, trailEnd))
+          EC.e = trailEnd
           return v
         }
       }
@@ -2322,6 +2348,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
+              if (leadingTriviaFieldAt(code, k, kidIp)) {
+                return (input, cur, ctx, inherited) => {
+                  ctx._sync = sync ?? inherited
+                  return leadingFieldTerm(step, kid, input, cur, ctx)
+                }
+              }
               return (input, cur, ctx, inherited) => {
                 ctx._sync = sync ?? inherited
                 return step(kid, input, cur, ctx)
@@ -2389,14 +2421,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
         }
 
+        // A `field(…, { leadingTrivia: true })` term is a boundary fact too: the
+        // runner hands it the cursor from BEFORE the scan (`LEAD`, cell.ts).
         let hasAdj = false
-        for (let i = 1; i < n; i++) if (code[code[base + i]!] === OP_ADJ) { hasAdj = true; break }
+        for (let i = 1; i < n; i++) {
+          const kidIp = code[base + i]!
+          if (code[kidIp] === OP_ADJ || leadingTriviaFieldAt(code, k, kidIp)) { hasAdj = true; break }
+        }
         if (hasAdj) {
           const first = link(code[base]!)
           const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
+              if (leadingTriviaFieldAt(code, k, kidIp)) {
+                return (input, cur, ctx) => leadingFieldTerm(step, kid, input, cur, ctx)
+              }
               return (input, cur, ctx) => step(kid, input, cur, ctx)
             }
             const negated = code[kidIp + 1] === 1
@@ -2791,7 +2831,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (n === 2 || n === 3) {
           const a0 = link(code[base]!), a1 = link(code[base + 1]!)
           const a2 = n === 3 ? link(code[base + 2]!) : undefined
-          const predecide = !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines
+          const predecide = !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines
           const p0ip = predecide ? leadingScalarTerminal(code, code[base]!, 2, true, true) : -1
           const p1ip = predecide ? leadingScalarTerminal(code, code[base + 1]!, 2, true, true) : -1
           const p2ip = predecide && n === 3 ? leadingScalarTerminal(code, code[base + 2]!, 2, true, true) : -1
@@ -2958,6 +2998,56 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             )
           }
           const masked = bindMasked(0, EMPTY_EXPECTED_PREFIX)
+          // LITERAL PRETESTS. First-char dispatch cannot tell `@{…}` or `@@x` from
+          // `@x`, so every arm sharing the char is entered, and under a CST host
+          // each entered node opens a capture frame before failing on the second
+          // char. An arm that must begin with a literal of two or more chars (or
+          // one of a family of them) is tested on the literal first and, on a
+          // miss, skipped exactly as a char-excluded arm is: its static expected
+          // set is the one reported. The test is pure, so a miss leaves no
+          // capture, trivia or field to roll back.
+          const pBit: number[] = []
+          const pRec: ScalarRecognizer[] = []
+          if (!REC && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
+            for (let i = 0; i < n; i++) {
+              for (const terminal of largeChoiceLiteralPretest(code, k, code[base + i]!) ?? []) {
+                pBit.push(1 << i)
+                pRec.push(scalarFor(terminal)!)
+              }
+            }
+          }
+          const pn = pBit.length
+          if (pn !== 0) {
+            return (input, pos, ctx) => {
+              const c = lead(input, pos)
+              const need = markCst(ctx)
+              const mRaw = MRAW
+              const mTl = MTL
+              const mLv = MLV
+              const mFl = need ? ctx._fields?.length ?? 0 : 0
+              const mEr = need ? ctx._errors?.length ?? 0 : 0
+              const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+              const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+              if (c < 128) {
+                const bits = mask[c < 0 ? 128 : c]!
+                let tested = 0
+                let hit = 0
+                for (let i = 0; i < pn; i++) {
+                  const b = pBit[i]!
+                  if ((bits & b) === 0 || (hit & b) !== 0) continue
+                  tested |= b
+                  if (pRec[i]!(input, pos) >= 0) hit |= b
+                }
+                return masked(
+                  input, pos, ctx, bits & (~tested | hit),
+                  need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+                )
+              }
+              return general(
+                input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+              )
+            }
+          }
           return (input, pos, ctx) => {
             const c = lead(input, pos)
             const need = markCst(ctx)
@@ -3100,6 +3190,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const max = code[ip + 3]!
         const sepIp = code[ip + 4]!
         const sep = sepIp >= 0 ? link(sepIp) : undefined
+        // A `field(…, { leadingTrivia: true })` separator reads the pre-scan cursor.
+        const sepLeads = sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp)
         const flags = code[ip + 5]!
         const keepSeparators = (flags & 2) !== 0
         const trailingAllowed = (flags & 1) !== 0
@@ -3183,6 +3275,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 let sp = cur
                 if (hasTrivia) sp = skipTrivia(input, sp, ctx)
                 ctx._fc = false
+                if (sepLeads) LEAD.at = cur
                 const sv = sep(input, sp, ctx)
                 if (sv === FAIL) {
                   if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
@@ -3283,6 +3376,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               let sp = cur
               if (hasTrivia) sp = skipTrivia(input, sp, ctx)
               ctx._fc = false
+              if (sepLeads) LEAD.at = cur
               const sv = sep(input, sp, ctx)
               if (sv === FAIL) {
                 if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
@@ -3706,20 +3800,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (child >= 0) scalarFor(child)
               continue
             }
-            if (child >= 0) {
-              const spec = k[code[child + 1]!]
-              if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
-                scalarFor(child)
-                continue
-              }
-            }
-            const family = leadingLiteralFamily(code, k, armIp)
-            if (family !== undefined && family.length >= 2 && family.every(terminal => {
-              const value = k[code[terminal + 1]!]
-              return typeof value === 'string' && value.length >= 2
-            })) {
-              for (const terminal of family) scalarFor(terminal)
-            }
+            const literals = largeChoiceLiteralPretest(code, k, armIp)
+            if (literals !== undefined) for (const terminal of literals) scalarFor(terminal)
+            if (literals !== undefined && literals.length === 1 && literals[0] === child) continue
             const sequence = leadingScalarSequence(code, armIp)
             if (sequence !== undefined && (sequence.trivia < 0
               || triviaScan[sequence.trivia] != null)) {
@@ -3767,6 +3850,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        LEAD, triviaFieldCapture,
       )
       emitReached = new Set(pre.reached)
     }
@@ -3848,6 +3932,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        LEAD, triviaFieldCapture,
       )
       emitReached = em.reached
     } catch (e) {
@@ -4068,6 +4153,13 @@ export class AssemblyCache {
 }
 
 /**
+ * One rule of the map. A lowered terminal is emitted as this call, not as
+ * `tableRules(…)["Entry"]`: `@__PURE__` covers a call and not a property read
+ * after it, so a bundler had to keep the whole table of every terminal nothing
+ * referenced. With the lookup inside the call the statement is droppable.
+ */
+export function tableRules(source: TableProgram | CompactProgram, entry: string): TableRule
+/**
  * The ASSEMBLED rule map — the same artifact contract as `tableRules`, run
  * through linked closures instead of the bytecode interpreter.
  *
@@ -4076,11 +4168,19 @@ export class AssemblyCache {
  * assembly built for it. Everything past that point is pieces, and no piece body
  * reads an option — `scripts/check-invariants.mjs` INV-6 asserts it. `forCtx`
  * carries the argument for why that read is irreducible rather than merely cheap.
+ *
+ * Declared last, so `ReturnType<typeof tableRules>` stays the map.
  */
 export function tableRules(
   source: TableProgram | CompactProgram,
-  artifactMetadata: Readonly<Record<symbol, unknown>> = {},
-): Record<string, TableRule> {
+  artifactMetadata?: Readonly<Record<symbol, unknown>>,
+): Record<string, TableRule>
+export function tableRules(
+  source: TableProgram | CompactProgram,
+  metadataOrEntry: Readonly<Record<symbol, unknown>> | string = {},
+): Record<string, TableRule> | TableRule {
+  const entry = typeof metadataOrEntry === 'string' ? metadataOrEntry : undefined
+  const artifactMetadata = typeof metadataOrEntry === 'string' ? {} : metadataOrEntry
   const prog = expandCompact(source)
   const resolved = resolveTable(prog)
   const cache = new AssemblyCache(prog, resolved)
@@ -4105,7 +4205,7 @@ export function tableRules(
    * `runRule`, after the outer read.
    */
   let selected: Assembly | undefined
-  return stampRuleMap(prog, {
+  const map = stampRuleMap(prog, {
     runRule: (ri, input, pos, ctx) => {
       const a = selected ?? cache.forCtx(ctx)
       selected = undefined
@@ -4128,4 +4228,8 @@ export function tableRules(
       return a.scanSkip[skipOf?.[ri] ?? -1]
     },
   }, artifactMetadata, resolved)
+  if (entry === undefined) return map
+  // Own properties only: the map inherits `toString`, `constructor` and the rest.
+  if (!Object.hasOwn(map, entry)) throw new Error(`tableRules: the program has no rule ${JSON.stringify(entry)}`)
+  return map[entry]!
 }

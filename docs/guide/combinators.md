@@ -42,7 +42,7 @@ Three words that sound alike but play different roles:
 | `leaf(c, reducer)` | Treat a structural grammar as one semantic leaf, without touching trivia. |
 | `sourceLeaf(c, reducer)` | Return a reduced semantic value while exposing the matched source as one CST leaf. |
 | `label(name, c)` | Attach a string label to a combinator arm (metadata; used for per-chunk trivia kinds). |
-| `field(name, c)` | Capture a named value/span for the nearest enclosing `node()` builder. |
+| `field(name, c, opts?)` | Capture a named value/span for the nearest enclosing `node()` builder; `{ leadingTrivia, trailingTrivia }` add the trivia either side as text. |
 | `not(c)` | **Negative** lookahead — succeeds (consuming nothing) when `c` fails. |
 | `peek(c)` | **Positive** lookahead — succeeds (consuming nothing) when `c` matches, carrying its first-set. |
 | `node(c, build?, opts?)` / `node(type, c, build?, opts?)` | CST/AST rule: captures terminals + trivia. `opts.tags` declares visitor categories; inside `rules()`, the node type is inferred from the rule key. See [CST / AST nodes](./ast). |
@@ -838,6 +838,33 @@ parse(Attr, '[href=x]').value
 
 Repeated field names become arrays. Field capture is emitted only for node subtrees
 that contain a `field()`.
+
+A comment written beside a separator belongs to no term. `leadingTrivia` and
+`trailingTrivia` hand it to the separator's field as source text, so the builder needs
+neither the node's trivia log nor its parse state to put it back:
+
+```ts
+// [verify]
+import { classifiedTrivia, field, literal, node, oneOrMoreSep, parser, regex, parse } from 'parseman'
+
+const List = parser(
+  { trivia: classifiedTrivia({ ws: regex(/[ \t\n]+/), comment: regex(/\/\*[^*]*\*\//) }) },
+  node('List',
+    oneOrMoreSep(regex(/[a-z]+/), field('sep', literal(','), { leadingTrivia: true, trailingTrivia: true })),
+    (_children, fields) => {
+      const sep = fields!.sep
+      return (Array.isArray(sep) ? sep : [sep]).map(s => `${s.leading}${s.value}${s.trailing}`)
+    },
+  ),
+)
+
+parse(List, 'a /* x */ , b,c').value
+// → [' /* x */ , ', ',']
+```
+
+`leading` is the trivia the enclosing `sequence()` or separated list skipped right before
+the field; `trailing` is the trivia the field consumes after its match. Each is `''` when
+there is none. Test: `test/unit/field-trivia.test.ts`.
 
 ### `node`
 

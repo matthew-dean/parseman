@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { trivia, label, regex, oneOrMore } from '../../src/index.ts'
-import { analyzeLabeledTrivia, triviaKindLabels, scanLabeledTriviaChunks, scanLabeledTriviaEnd, visitLabeledTrivia, recordTriviaChunks } from '../../src/cst/trivia-kinds.ts'
+import { trivia, label, regex, oneOrMore, choice } from '../../src/index.ts'
+import { analyzeLabeledTrivia, labeledTriviaSpec, triviaKindLabels, scanLabeledTriviaChunks, scanLabeledTriviaEnd, visitLabeledTrivia, recordTriviaChunks } from '../../src/cst/trivia-kinds.ts'
 import type { ParseContext } from '../../src/types.ts'
 
 describe('analyzeLabeledTrivia() — single labeled arm', () => {
@@ -33,25 +33,17 @@ describe('analyzeLabeledTrivia() — a trivia() combinator keeps its own spec', 
 
 describe('scanLabeledTriviaChunks()', () => {
   it('returns no chunks when fewer than minRepeats matched', () => {
-    const spec = {
-      labels: ['ws'],
-      arms: [{ label: 'ws', kindIndex: 0, parser: regex(/[ \t]+/) }],
-      minRepeats: 2,
-    }
+    const spec = labeledTriviaSpec([{ label: 'ws', kindIndex: 0, parser: regex(/[ \t]+/) }], 2)
     const { end, chunks } = scanLabeledTriviaChunks(' x', 0, spec)
     expect(end).toBe(0)
     expect(chunks).toEqual([])
   })
 
   it('finds the same end without constructing chunk records when no capture is requested', () => {
-    const spec = {
-      labels: ['ws', 'annotation'],
-      arms: [
+    const spec = labeledTriviaSpec([
         { label: 'ws', kindIndex: 0, parser: regex(/[ \t]+/) },
         { label: 'annotation', kindIndex: 1, parser: regex(/#[^\n]*/) },
-      ],
-      minRepeats: 1,
-    }
+      ], 1)
     const input = ' \t# note\nx'
     const end = input.indexOf('\n')
     expect(scanLabeledTriviaEnd(input, 0, spec)).toBe(end)
@@ -59,14 +51,10 @@ describe('scanLabeledTriviaChunks()', () => {
   })
 
   it('visits only retained matches while keeping the recognition scan object-free', () => {
-    const spec = {
-      labels: ['ws', 'comment'],
-      arms: [
+    const spec = labeledTriviaSpec([
         { label: 'ws', kindIndex: 0, parser: regex(/[ \t]+/) },
         { label: 'comment', kindIndex: 1, parser: regex(/\/\*[^]*?\*\//) },
-      ],
-      minRepeats: 1,
-    }
+      ], 1)
     const retained: number[] = []
     const end = visitLabeledTrivia(' /*x*/ ', 0, spec, undefined, (start, matchEnd, kind) => {
       if (kind === 1) retained.push(start, matchEnd)
@@ -115,5 +103,28 @@ describe('recordTriviaChunks()', () => {
     recordTriviaChunks(ctx, [{ start: 0, end: 7, kindIndex: 0 }])
 
     expect(rootLog).toEqual([])
+  })
+})
+
+describe('a labeled trivia spec carries its scanners', () => {
+  it('scans with the visitor and char arms built into the spec, for any number of tables', () => {
+    // More tables than the four memo slots the scanners used to sit behind.
+    const tables = [' ', '\t', '\n', '\f', '\r', '  '].map((_, i) => trivia(oneOrMore(choice(
+      label('ws', regex(/[ \t\n\r\f]+/)),
+      label('block', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
+      ...(i % 2 === 0 ? [label('line', regex(/\/\/[^\n]*/))] : []),
+    ))))
+    const specs = tables.map(t => analyzeLabeledTrivia(t)!)
+    const seen: string[] = []
+    for (let round = 0; round < 2; round++) {
+      for (const [i, spec] of specs.entries()) {
+        const sentinel = { ...spec, visitor: () => { seen.push(`v${i}`); return 3 }, charArms: null }
+        expect(visitLabeledTrivia(' /**/ x', 0, sentinel, undefined, () => {})).toBe(3)
+        const arms = { ...spec, visitor: null }
+        expect(visitLabeledTrivia(' /**/ x', 0, arms, undefined, () => {})).toBe(6)
+        expect(scanLabeledTriviaEnd(' /**/ x', 0, { ...spec, charArms: [() => 4] })).toBe(4)
+      }
+    }
+    expect(seen).toEqual([0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5].map(i => `v${i}`))
   })
 })

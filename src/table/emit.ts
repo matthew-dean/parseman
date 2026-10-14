@@ -352,12 +352,16 @@ export type ExpressionEmitOptions = EmitOptions & {
    *
    * `null` is what a `rules()` call site needs: its initialiser evaluates to the
    * `{ name: fn, … }` object, exactly what `tableRules(…)` already returns, so
-   * the map form is the expression WITHOUT the trailing index — not a second
+   * the map form is the expression WITHOUT the entry argument — not a second
    * emitter. `compileRuleMap`'s replacement has the same shape and the same
    * splice point, which is what makes the two lowerings interchangeable there.
    */
   readonly entry?: string | null
-  /** Static metadata object passed to `tableRules` as its second argument. */
+  /**
+   * Static metadata object passed to `tableRules` as its second argument. Only
+   * the rule-map form (`entry: null`) takes it; with an entry, that argument is
+   * the entry's name.
+   */
   readonly metadataSource?: string
 }
 
@@ -379,11 +383,18 @@ export function emitTableExpression(prog: TableProgram, opts: ExpressionEmitOpti
   const entry = opts.entry === undefined ? 'grammar' : opts.entry
   const ref = opts.runtimeRef ?? 'tableRules'
   const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
-  const close = `}${opts.metadataSource === undefined ? '' : `,${opts.metadataSource}`})`
+  // The entry is an ARGUMENT, never a trailing `[entry]`: `@__PURE__` covers the
+  // call and not a property read after it, so `tableRules({…})["Entry"]` left an
+  // unreferenced terminal's whole table in every bundle.
+  const meta = opts.metadataSource
+  if (entry !== null && meta !== undefined) {
+    throw new Error('emitTableExpression: metadataSource is for the rule-map form (entry: null); a single entry carries none')
+  }
+  const tail = entry !== null ? `,${jsString(entry)}` : meta === undefined ? '' : `,${meta}`
   return [
     `/* @__PURE__ */ ${ref}({`,
     ...programFields(prog, fns, opts),
-    entry === null ? close : `${close}[${jsString(entry)}]`,
+    `}${tail})`,
   ].join('\n')
 }
 

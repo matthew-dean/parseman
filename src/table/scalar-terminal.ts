@@ -261,3 +261,28 @@ export function leadingLiteralFamily(
 
   return walk(ip, 0)
 }
+
+/**
+ * The literal terminals an arm of a LARGE ordered choice (more than three arms)
+ * may be pretested on before it is entered, or `undefined` when it has none.
+ *
+ * A pretest runs again when the arm then matches, so a large choice only takes
+ * literals of two or more characters: one `startsWith` is the price of skipping an
+ * arm that first-char dispatch could not exclude (`@{` and `@@` beside `@name`).
+ * A one-character literal is exactly what the dispatch mask already decided.
+ * The emitted and the closure engines both select through this function.
+ */
+export function largeChoiceLiteralPretest(
+  code: ArrayLike<number>, constants: readonly unknown[], armIp: number,
+): readonly number[] | undefined {
+  const child = leadingScalarTerminal(code, armIp, 2, true, true)
+  if (child >= 0) {
+    const spec = constants[code[child + 1]!]
+    if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) return [child]
+  }
+  const family = leadingLiteralFamily(code, constants, armIp)
+  return family !== undefined && family.length >= 2 && family.every(terminal => {
+    const value = constants[code[terminal + 1]!]
+    return typeof value === 'string' && value.length >= 2
+  }) ? family : undefined
+}

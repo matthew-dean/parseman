@@ -389,7 +389,7 @@ function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
       return n === undefined ? `ref\u0000#${anonId(p)}` : `ref\u0000${n}`
     }
     case 'label':     return `label\u0000${d.label}`
-    case 'field':     return `field\u0000${d.name}`
+    case 'field':     return `field\u0000${d.name}\u0000${d.leadingTrivia === true}\u0000${d.trailingTrivia === true}`
     case 'node':      return `node\u0000${d.type ?? ''}\u0000${d.unwrap === true}\u0000${d.collapse === true}\u0000${fnKey(d.buildSrc, d.build)}`
     case 'transform': return `transform\u0000${fnKey(d.fnSrc, d.fn)}\u0000${d.recognitionOnly === true}`
     case 'leaf':      return `leaf\u0000${d.cstValue ?? 'value'}\u0000${fnKey(d.fnSrc, d.fn)}`

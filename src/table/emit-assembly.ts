@@ -63,10 +63,12 @@ import {
   computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import {
-  leadingLiteralFamily, leadingScalarSequence, leadingScalarTerminal,
+  largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
   scalarTerminalNodeChild, scalarTerminalNotChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
+import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
+import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -122,6 +124,9 @@ export const EMITTED_PARAMS = [
   'adjacencyHolds',
   // Appended for selected composite lexical programs; old factories ignore it.
   'LEXPROG',
+  // Appended for trivia-attributing fields (`field(…, { leadingTrivia })`);
+  // old factories ignore them.
+  'LEAD', 'triviaFieldCapture',
 ] as const
 
 /**
@@ -607,20 +612,12 @@ export function emitAssemblySource(
           if (child >= 0) scalarSpecs.add(code[child + 1]!)
           continue
         }
-        if (child >= 0) {
-          const spec = k[code[child + 1]!]
-          if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
-            largeChoiceScalarSpecs.add(code[child + 1]!)
-            continue
-          }
+        const literals = largeChoiceLiteralPretest(code, k, armIp)
+        if (literals !== undefined && literals.length === 1 && literals[0] === child) {
+          largeChoiceScalarSpecs.add(code[child + 1]!)
+          continue
         }
-        const family = leadingLiteralFamily(code, k, armIp)
-        if (family !== undefined && family.length >= 2 && family.every(terminal => {
-          const value = k[code[terminal + 1]!]
-          return typeof value === 'string' && value.length >= 2
-        })) {
-          largeChoiceLiteralFamilies.set(armIp, family)
-        }
+        if (literals !== undefined) largeChoiceLiteralFamilies.set(armIp, literals)
         const sequence = leadingScalarSequence(code, armIp)
         // A labelled trivia scanner is still recognition authority here. This
         // pretest is pure: on a miss the ordinary arm's trivia log would have
@@ -1307,16 +1304,33 @@ return v
       }
 
       case OP_FIELD: {
-        const name = q(k[code[ip + 1]!] as string)
+        const spec = fieldSpec(k[code[ip + 1]!])
+        const name = q(spec.name)
         const child = link(code[ip + 2]!)
         // `ctx._fields?.push(…)` — conditional on a field-reading node being
         // open, exactly as `map.ts` has it, so a field outside one costs a load
         // and a branch. The ARRAY is what `OP_NODE` hands to `buildFieldMap`.
-        return `${head}
+        if (spec.bits === 0) {
+          return `${head}
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
 const f=ctx._fields
 if(f!==undefined)f.push({name:${name},value:v,span:{start:pos,end:EC.e}})
+return v
+}`
+        }
+        const leading = (spec.bits & FIELD_LEADING_TRIVIA) !== 0
+        const trailing = (spec.bits & FIELD_TRAILING_TRIVIA) !== 0
+        return `${head}
+const lf=${leading ? 'LEAD.at' : '-1'}
+LEAD.at=-1
+const v=${child}(input,pos,ctx)
+if(v===FAIL)return FAIL
+const e=EC.e
+const te=${trailing ? 'ctx.trivia!==undefined?consumeTrivia(input,e,ctx):e' : 'e'}
+const f=ctx._fields
+if(f!==undefined)f.push(triviaFieldCapture(${name},v,input,pos,e,lf,te))
+EC.e=te
 return v
 }`
       }
@@ -1687,7 +1701,13 @@ return v
               `if(!adjacencyHolds(input,cur,ctx,${negated ? 'true' : 'false'},${kinds})){ctx._fe=cur;ctx._fx=${expected};return FAIL}`,
               `${vn}=null`,
             )
-          } else parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
+          } else {
+            // A leading-trivia field reads the cursor from before the term's scan.
+            // The callee expression hands it over AFTER the scan statement, right
+            // before the call, so a field inside the trivia grammar cannot take it.
+            const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
+            parts.push(emitTerm(callee, vn, tmp(), L, skipFor(L)))
+          }
           names.push(vn)
         }
         parts.push('EC.e=cur')
@@ -2232,7 +2252,7 @@ ${sep !== undefined ? `if(count>0){
 const lb=cstLeavesLen(ctx)
 let sp=cur
 ${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}ctx._fc=false
-const sv=${sep}(input,sp,ctx)
+${sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp) ? 'LEAD.at=cur\n' : ''}const sv=${sep}(input,sp,ctx)
 if(sv===FAIL){
 ${rb}
 if(ctx._fc===true)return FAIL
