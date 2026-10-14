@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.54.0 — unreleased
+## 0.54.0 — 2026-10-14
 
 - A standalone terminal the macro lowers (`const ident = regex(…)`, `word(…)`) is
   emitted as `/* @__PURE__ */ tableRules({…}, "Entry")` instead of
