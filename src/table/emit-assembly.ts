@@ -1703,8 +1703,10 @@ return v
             )
           } else {
             // A leading-trivia field reads the cursor from before the term's scan.
-            if (leadingTriviaFieldAt(code, k, childIp)) parts.push('LEAD.at=cur')
-            parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
+            // The callee expression hands it over AFTER the scan statement, right
+            // before the call, so a field inside the trivia grammar cannot take it.
+            const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
+            parts.push(emitTerm(callee, vn, tmp(), L, skipFor(L)))
           }
           names.push(vn)
         }

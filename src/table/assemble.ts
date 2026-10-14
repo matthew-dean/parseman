@@ -1055,6 +1055,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return cur
   }
 
+  /**
+   * A `field(…, { leadingTrivia: true })` term. The pre-scan cursor reaches the
+   * field AFTER `step`'s scan, right before the field runs, so a field inside the
+   * trivia grammar cannot take it first. One closure per call; only such terms pay.
+   */
+  function leadingFieldTerm(step: typeof nextTerm, child: Piece, input: string, cur: number, ctx: ParseContext): number {
+    return step((i, p, c) => { LEAD.at = cur; return child(i, p, c) }, input, cur, ctx)
+  }
+
   function committed(c: ParseContext): boolean {
     return c._fc === true
   }
@@ -2342,8 +2351,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (leadingTriviaFieldAt(code, k, kidIp)) {
                 return (input, cur, ctx, inherited) => {
                   ctx._sync = sync ?? inherited
-                  LEAD.at = cur
-                  return step(kid, input, cur, ctx)
+                  return leadingFieldTerm(step, kid, input, cur, ctx)
                 }
               }
               return (input, cur, ctx, inherited) => {
@@ -2427,10 +2435,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
               if (leadingTriviaFieldAt(code, k, kidIp)) {
-                return (input, cur, ctx) => {
-                  LEAD.at = cur
-                  return step(kid, input, cur, ctx)
-                }
+                return (input, cur, ctx) => leadingFieldTerm(step, kid, input, cur, ctx)
               }
               return (input, cur, ctx) => step(kid, input, cur, ctx)
             }
@@ -4224,7 +4229,7 @@ export function tableRules(
     },
   }, artifactMetadata, resolved)
   if (entry === undefined) return map
-  const rule = map[entry]
-  if (rule === undefined) throw new Error(`tableRules: the program has no rule ${JSON.stringify(entry)}`)
-  return rule
+  // Own properties only: the map inherits `toString`, `constructor` and the rest.
+  if (!Object.hasOwn(map, entry)) throw new Error(`tableRules: the program has no rule ${JSON.stringify(entry)}`)
+  return map[entry]!
 }

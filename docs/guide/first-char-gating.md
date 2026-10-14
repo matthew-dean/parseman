@@ -109,8 +109,7 @@ a family of them, such as `choice(literal('@{'), literal('@@'))`), it tests that
 before it enters the arm. On a miss the arm is skipped the way a char-excluded arm is,
 and the choice reports the same expected set. This matters most under a CST host, where
 entering a `node()` opens a capture frame even when the arm fails on its second char.
-A one-character literal is what the dispatch mask already decided, so it is not
-pretested.
+Test: `test/unit/table-choice-literal-pretest.test.ts`.
 
 ## Common mistakes (and what the diagnosis tells you)
 

@@ -864,7 +864,7 @@ parse(List, 'a /* x */ , b,c').value
 
 `leading` is the trivia the enclosing `sequence()` or separated list skipped right before
 the field; `trailing` is the trivia the field consumes after its match. Each is `''` when
-there is none.
+there is none. Test: `test/unit/field-trivia.test.ts`.
 
 ### `node`
 

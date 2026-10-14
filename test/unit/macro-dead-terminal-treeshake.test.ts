@@ -67,6 +67,9 @@ describe('emitted terminal tables are tree-shakeable', () => {
     const single = tableRules(seen!, 'Entry')
     expect(typeof single).toBe('function')
     expect(() => tableRules(seen!, 'Nope')).toThrow(/no rule "Nope"/)
+    for (const inherited of ['toString', 'constructor', '__proto__']) {
+      expect(() => tableRules(seen!, inherited)).toThrow(/no rule/)
+    }
     // Metadata belongs to the rule-map form; the emitter refuses to drop it.
     expect(() => emitTableExpression(expandCompact(seen!), { entry: 'Entry', metadataSource: '{}' })).toThrow(/metadataSource/)
   })

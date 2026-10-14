@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { choice, cstBuildHost, literal, node, regex, rules, run, sequence, type Combinator } from '../../src/index.ts'
+import { choice, cstBuildHost, literal, node, regex, rules, sequence, type Combinator } from '../../src/index.ts'
+// The interpreter's own driver: `run` from the package root lowers a combinator to a
+// table first, which would make the interpreter leg a second table leg.
+import { run } from '../../src/functional/run.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import type { BuildHost } from '../../src/types.ts'

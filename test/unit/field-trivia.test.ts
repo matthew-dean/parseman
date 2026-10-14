@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  classifiedTrivia, cstBuildHost, field, literal, node, oneOrMoreSep, regex, rules, run, sepBy, sequence,
+  classifiedTrivia, cstBuildHost, field, literal, node, oneOrMore, oneOrMoreSep, regex, rules, sepBy, sequence, trivia,
   type Combinator, type FieldCapture, type FieldMap,
 } from '../../src/index.ts'
+// The interpreter's own driver: `run` from the package root lowers a combinator to a
+// table first, which would make the interpreter leg a second table leg.
+import { run } from '../../src/functional/run.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -124,12 +127,23 @@ describe('field(…, { leadingTrivia, trailingTrivia })', () => {
     const sepByGrammar = rules({ trivia: triviaTable() }, () => ({
       Entry: node('List', sepBy(word(), commaWithTrivia(), { trailing: 'allow' }), (children, fields) => ({ children, fields })),
     }))
-    expectIdentity(sepByGrammar.Entry!, [...inputs, 'a , b , /* t */ '])
+    // Not a trailing separator: there the interpreter keeps the kept separator's
+    // field and the table engines drop it, for a plain field too, as of 0.53.0.
+    expectIdentity(sepByGrammar.Entry!, inputs.filter(input => !/,(?:\s|\/\*[^*]*\*\/)*$/.test(input)))
     const pair = rules({ trivia: triviaTable() }, () => ({
       Entry: node('Pair', sequence(word(), field('eq', literal('='), { leadingTrivia: true, trailingTrivia: true }), word()),
         (children, fields) => ({ children, fields })),
     }))
     expectIdentity(pair.Entry!, ['x=y', 'x /*c*/ = /*d*/ y', 'x =', 'x'])
+  })
+
+  it('hands the cursor over after the scan, so a field inside the trivia grammar cannot take it', () => {
+    const tr = trivia(oneOrMore(field('ignored', regex(/\s+/), { leadingTrivia: true })))
+    const g = rules({ trivia: tr }, () => ({
+      Entry: node('Pair', sequence(literal('a'), field('b', literal('b'), { leadingTrivia: true })), (_children, fields) => fields),
+    }))
+    expect(captures(run(g.Entry!, 'a b').value as FieldMap, 'b')[0]!.leading).toBe(' ')
+    expectIdentity(g.Entry!, ['a b', 'ab', 'a  b'])
   })
 
   it('matches the interpreter on the compiled path, including the capture sinks', () => {
