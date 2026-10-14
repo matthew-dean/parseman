@@ -100,6 +100,18 @@ first-set to `any` — or makes two arms overlap — and breaks that proof:
 | **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | the ref is resolved at fuse time; if it is still `any`, the target rule is itself ungated — fix it there. In a [shared shape](#shared-shapes-the-verdict-belongs-to-the-fuse) the ref is a HOLE, and the finding is reported against the artifact that binds it |
 | **shared prefix** — two arms starting with the same terminal | first-sets overlap, so no unique dispatch key | left-factor: parseman auto-detects `sharedPrefix` for bare sequences — make the arms bare sequences with the common leading terminal |
 
+### Arms that share a first char but not a leading literal
+
+Some overlap is not a factoring mistake. `@{name}`, `@@name` and `@name` all start with
+`@`, and each can be its own `node()`. The compiled table can't dispatch them on one
+char, so for an arm that must begin with a literal of two or more characters (or one of
+a family of them, such as `choice(literal('@{'), literal('@@'))`), it tests that literal
+before it enters the arm. On a miss the arm is skipped the way a char-excluded arm is,
+and the choice reports the same expected set. This matters most under a CST host, where
+entering a `node()` opens a capture frame even when the arm fails on its second char.
+A one-character literal is what the dispatch mask already decided, so it is not
+pretested.
+
 ## Common mistakes (and what the diagnosis tells you)
 
 These are the exact mistakes real authors — humans and LLMs — make. The point of the

@@ -17,6 +17,34 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   that rule and throws on an unknown name); a module printed by an older parseman,
   which indexes the map, still loads.
 
+- The compiled table skips a choice arm whose leading literal is absent before
+  entering it. First-char dispatch can't separate `@{name}`, `@@name` and `@name`, so
+  every arm sharing the char was entered, and under a CST host each entered `node()`
+  opened a capture frame before failing on the second char. A choice of more than
+  three arms now pretests an arm that must begin with a literal of two or more
+  characters (or one of a family of them) on either host, and the two- and
+  three-arm pretest that already ran on an AST host now runs on a CST host too. A
+  skipped arm reports the static expected set a char-excluded arm does; values, spans
+  and expected sets are unchanged. The emitted engine already pretested these arms and
+  now selects them through the same function.
+
+- A labeled trivia spec carries the char-level scanners every scan of it reads
+  (`visitor`, `charArms`), built with the spec. They sat behind two four-slot
+  module memos, which a grammar switching among more trivia tables than that
+  rebuilt on every miss: jess's Less grammar missed 4,114 times per `benchmark.less`
+  parse and 5,291 times per parse of the Less unit corpus.
+
+  Marginal instructions per parse, `(I(N2)−I(N1))/(N2−N1)`, medians of 5, two
+  interleaved rounds each, same tables on both sides:
+
+  | workload | host | before | after |
+  | --- | --- | --- | --- |
+  | parseman `less/mixins` (60 KB) | CST | 282.9 / 280.8M | 272.9 / 273.0M (−3.2%) |
+  | parseman `less/stylesheet` | CST | 261.8 / 262.4M | 254.6 / 254.8M (−2.8%) |
+  | parseman `less/*`, `css/stylesheet` | AST | | within the A/A spread |
+  | jess Less, Less unit corpus (136 files) | CST | 651.5 / 651.4M | 636.2 / 637.0M (−2.3%) |
+  | jess Less, Less unit corpus | AST | 591.6 / 591.6M | 589.0 / 588.3M (−0.5%) |
+
 ## 0.53.0 — 2026-10-09
 
 - Fix the macro silently dropping a `rules()` option whose value names an imported

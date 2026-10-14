@@ -63,7 +63,7 @@ import {
   computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import {
-  leadingLiteralFamily, leadingScalarSequence, leadingScalarTerminal,
+  largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
   scalarTerminalNodeChild, scalarTerminalNotChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
@@ -607,20 +607,12 @@ export function emitAssemblySource(
           if (child >= 0) scalarSpecs.add(code[child + 1]!)
           continue
         }
-        if (child >= 0) {
-          const spec = k[code[child + 1]!]
-          if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
-            largeChoiceScalarSpecs.add(code[child + 1]!)
-            continue
-          }
+        const literals = largeChoiceLiteralPretest(code, k, armIp)
+        if (literals !== undefined && literals.length === 1 && literals[0] === child) {
+          largeChoiceScalarSpecs.add(code[child + 1]!)
+          continue
         }
-        const family = leadingLiteralFamily(code, k, armIp)
-        if (family !== undefined && family.length >= 2 && family.every(terminal => {
-          const value = k[code[terminal + 1]!]
-          return typeof value === 'string' && value.length >= 2
-        })) {
-          largeChoiceLiteralFamilies.set(armIp, family)
-        }
+        if (literals !== undefined) largeChoiceLiteralFamilies.set(armIp, literals)
         const sequence = leadingScalarSequence(code, armIp)
         // A labelled trivia scanner is still recognition authority here. This
         // pretest is pure: on a miss the ordinary arm's trivia log would have

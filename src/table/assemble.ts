@@ -129,7 +129,7 @@ import { computeSiteLabels, reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
-  leadingLiteralFamily, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
+  largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
   scalarTerminalNotChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
@@ -2791,7 +2791,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (n === 2 || n === 3) {
           const a0 = link(code[base]!), a1 = link(code[base + 1]!)
           const a2 = n === 3 ? link(code[base + 2]!) : undefined
-          const predecide = !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines
+          const predecide = !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines
           const p0ip = predecide ? leadingScalarTerminal(code, code[base]!, 2, true, true) : -1
           const p1ip = predecide ? leadingScalarTerminal(code, code[base + 1]!, 2, true, true) : -1
           const p2ip = predecide && n === 3 ? leadingScalarTerminal(code, code[base + 2]!, 2, true, true) : -1
@@ -2958,6 +2958,56 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             )
           }
           const masked = bindMasked(0, EMPTY_EXPECTED_PREFIX)
+          // LITERAL PRETESTS. First-char dispatch cannot tell `@{…}` or `@@x` from
+          // `@x`, so every arm sharing the char is entered, and under a CST host
+          // each entered node opens a capture frame before failing on the second
+          // char. An arm that must begin with a literal of two or more chars (or
+          // one of a family of them) is tested on the literal first and, on a
+          // miss, skipped exactly as a char-excluded arm is: its static expected
+          // set is the one reported. The test is pure, so a miss leaves no
+          // capture, trivia or field to roll back.
+          const pBit: number[] = []
+          const pRec: ScalarRecognizer[] = []
+          if (!REC && !cfg.probe && !cfg.coverage && !cfg.trackLines) {
+            for (let i = 0; i < n; i++) {
+              for (const terminal of largeChoiceLiteralPretest(code, k, code[base + i]!) ?? []) {
+                pBit.push(1 << i)
+                pRec.push(scalarFor(terminal)!)
+              }
+            }
+          }
+          const pn = pBit.length
+          if (pn !== 0) {
+            return (input, pos, ctx) => {
+              const c = lead(input, pos)
+              const need = markCst(ctx)
+              const mRaw = MRAW
+              const mTl = MTL
+              const mLv = MLV
+              const mFl = need ? ctx._fields?.length ?? 0 : 0
+              const mEr = need ? ctx._errors?.length ?? 0 : 0
+              const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+              const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+              if (c < 128) {
+                const bits = mask[c < 0 ? 128 : c]!
+                let tested = 0
+                let hit = 0
+                for (let i = 0; i < pn; i++) {
+                  const b = pBit[i]!
+                  if ((bits & b) === 0 || (hit & b) !== 0) continue
+                  tested |= b
+                  if (pRec[i]!(input, pos) >= 0) hit |= b
+                }
+                return masked(
+                  input, pos, ctx, bits & (~tested | hit),
+                  need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+                )
+              }
+              return general(
+                input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+              )
+            }
+          }
           return (input, pos, ctx) => {
             const c = lead(input, pos)
             const need = markCst(ctx)
@@ -3706,20 +3756,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (child >= 0) scalarFor(child)
               continue
             }
-            if (child >= 0) {
-              const spec = k[code[child + 1]!]
-              if (code[child] === OP_LIT && typeof spec === 'string' && spec.length >= 2) {
-                scalarFor(child)
-                continue
-              }
-            }
-            const family = leadingLiteralFamily(code, k, armIp)
-            if (family !== undefined && family.length >= 2 && family.every(terminal => {
-              const value = k[code[terminal + 1]!]
-              return typeof value === 'string' && value.length >= 2
-            })) {
-              for (const terminal of family) scalarFor(terminal)
-            }
+            const literals = largeChoiceLiteralPretest(code, k, armIp)
+            if (literals !== undefined) for (const terminal of literals) scalarFor(terminal)
+            if (literals !== undefined && literals.length === 1 && literals[0] === child) continue
             const sequence = leadingScalarSequence(code, armIp)
             if (sequence !== undefined && (sequence.trivia < 0
               || triviaScan[sequence.trivia] != null)) {

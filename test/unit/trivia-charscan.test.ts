@@ -95,14 +95,12 @@ describe('char-level labelled trivia — agreement with the arms it replaces', (
     it(`agrees on ${name}`, () => {
       const spec = cssLikeSpec()
       const arms = charArmsFor(spec)!
-      const bare: LabeledTriviaSpec = { labels: spec.labels, arms: spec.arms, minRepeats: spec.minRepeats }
-      // `bare` is a fresh spec object, so it takes the combinator path.
       expect(charArmsFor(spec)).not.toBeNull()
       for (let pos = 0; pos <= input.length; pos++) {
         const got: Array<[number, number, number]> = []
         const gotEnd = visitLabeledTrivia(input, pos, spec, undefined, (s, e, k) => { got.push([s, e, k]) })
         const want: Array<[number, number, number]> = []
-        const wantEnd = visitLabeledTriviaViaCombinators(input, pos, bare, want)
+        const wantEnd = visitLabeledTriviaViaCombinators(input, pos, spec, want)
         expect([name, pos, gotEnd, got]).toEqual([name, pos, wantEnd, want])
         expect(scanLabeledTriviaEnd(input, pos, spec)).toBe(wantEnd)
         expect(triviaKindMaskAt(input, pos, spec)).toBe(want.reduce((m, r) => m | (1 << r[2]), 0))

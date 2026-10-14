@@ -2,7 +2,10 @@ import type { Combinator, ParseContext } from '../types.ts'
 import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
-import { charArmsFor, charTriviaEnd, charTriviaKindMask, charTriviaVisit, commonLabeledTriviaVisitor } from './trivia-charscan.ts'
+import {
+  charArmsFor, charTriviaEnd, charTriviaKindMask, charTriviaVisit, commonLabeledTriviaVisitor, type TriviaArmMatcher,
+} from './trivia-charscan.ts'
+import type { CssTriviaVisitor } from './trivia-css-scanner.ts'
 
 export type TriviaChunk = { start: number; end: number; kindIndex: number }
 
@@ -10,6 +13,13 @@ export type LabeledTriviaSpec = {
   readonly labels: readonly string[]
   readonly arms: ReadonlyArray<{ label: string; kindIndex: number; parser: Combinator<unknown> }>
   readonly minRepeats: number
+  /**
+   * The spec's char-level scanners, built with it. A scan reads them here: the
+   * four-slot memo they used to sit behind thrashed on a grammar with more trivia
+   * tables than slots, and rebuilt one on every miss.
+   */
+  readonly visitor: CssTriviaVisitor | null
+  readonly charArms: readonly TriviaArmMatcher[] | null
 }
 
 /** See `trivia-skip.ts`: bounded scalar memoisation avoids a WeakMap in the
@@ -93,12 +103,18 @@ export function analyzeLabeledTrivia(trivia: Combinator<unknown>): LabeledTrivia
     arms.push({ label: peeled.label, kindIndex: 0, parser: peeled.parser })
   }
 
-  const spec = {
+  return cacheLabeledTrivia(trivia, labeledTriviaSpec(arms, minRepeats))
+}
+
+/** A spec, with the char-level scanners every scan of it reads. */
+export function labeledTriviaSpec(arms: LabeledTriviaSpec['arms'], minRepeats: number): LabeledTriviaSpec {
+  return {
     labels: arms.map(a => a.label),
     arms,
     minRepeats,
+    visitor: commonLabeledTriviaVisitor({ arms, minRepeats }),
+    charArms: charArmsFor({ arms, minRepeats }),
   }
-  return cacheLabeledTrivia(trivia, spec)
 }
 
 /** Label table on a `trivia()` combinator, if all arms are labeled. */
@@ -169,9 +185,9 @@ export function scanLabeledTriviaEnd(
   spec: LabeledTriviaSpec,
   state?: unknown,
 ): number {
-  // `charArmsFor` only lowers `minRepeats <= 1`, where "no chunk matched" and
+  // `charArms` only lowers `minRepeats <= 1`, where "no chunk matched" and
   // "the minimum was not met" are the same position — so an end IS the answer.
-  const chars = charArmsFor(spec)
+  const chars = spec.charArms
   if (chars !== null) return charTriviaEnd(input, cur, chars)
 
   let pos = cur
@@ -205,9 +221,9 @@ export function visitLabeledTrivia(
   visit: (start: number, end: number, kindIndex: number) => void,
 ): number | undefined {
   if (spec.minRepeats > 1) return undefined
-  const common = commonLabeledTriviaVisitor(spec)
+  const common = spec.visitor
   if (common !== null) return common(input, cur, visit)
-  const chars = charArmsFor(spec)
+  const chars = spec.charArms
   if (chars !== null) return charTriviaVisit(input, cur, chars, visit)
 
   let pos = cur
@@ -331,7 +347,7 @@ export function triviaKindMaskAt(
   spec: LabeledTriviaSpec,
   state?: unknown,
 ): number {
-  const chars = charArmsFor(spec)
+  const chars = spec.charArms
   if (chars !== null) return charTriviaKindMask(input, pos, chars)
 
   let cur = pos
