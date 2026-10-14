@@ -491,7 +491,10 @@ and an unreferenced local function-valued `const` — the dead-code case above.
 Three call sites, one shared factory — a factory can be passed by name, as here. The
 macro emits independent top-level artifacts, so each bundle tree-shakes away the one
 it doesn't import: your compiler ships the AST image, your language service ships the
-CST image, and neither pays for the other.
+CST image, and neither pays for the other. The same holds for a standalone terminal
+(`const ident = regex(…)`) that a rule table inlines: the macro emits it as
+`/* @__PURE__ */ tableRules({…}, "Entry")`, with the entry name inside the call, so a
+bundler drops its table when nothing reads the binding.
 
 That's two compilations on purpose, not one switchable artifact. `hostMode` doesn't just
 pick a build expression — it decides what each node captures. A per-parse choice would

@@ -4068,6 +4068,13 @@ export class AssemblyCache {
 }
 
 /**
+ * One rule of the map. A lowered terminal is emitted as this call, not as
+ * `tableRules(…)["Entry"]`: `@__PURE__` covers a call and not a property read
+ * after it, so a bundler had to keep the whole table of every terminal nothing
+ * referenced. With the lookup inside the call the statement is droppable.
+ */
+export function tableRules(source: TableProgram | CompactProgram, entry: string): TableRule
+/**
  * The ASSEMBLED rule map — the same artifact contract as `tableRules`, run
  * through linked closures instead of the bytecode interpreter.
  *
@@ -4076,11 +4083,19 @@ export class AssemblyCache {
  * assembly built for it. Everything past that point is pieces, and no piece body
  * reads an option — `scripts/check-invariants.mjs` INV-6 asserts it. `forCtx`
  * carries the argument for why that read is irreducible rather than merely cheap.
+ *
+ * Declared last, so `ReturnType<typeof tableRules>` stays the map.
  */
 export function tableRules(
   source: TableProgram | CompactProgram,
-  artifactMetadata: Readonly<Record<symbol, unknown>> = {},
-): Record<string, TableRule> {
+  artifactMetadata?: Readonly<Record<symbol, unknown>>,
+): Record<string, TableRule>
+export function tableRules(
+  source: TableProgram | CompactProgram,
+  metadataOrEntry: Readonly<Record<symbol, unknown>> | string = {},
+): Record<string, TableRule> | TableRule {
+  const entry = typeof metadataOrEntry === 'string' ? metadataOrEntry : undefined
+  const artifactMetadata = typeof metadataOrEntry === 'string' ? {} : metadataOrEntry
   const prog = expandCompact(source)
   const resolved = resolveTable(prog)
   const cache = new AssemblyCache(prog, resolved)
@@ -4105,7 +4120,7 @@ export function tableRules(
    * `runRule`, after the outer read.
    */
   let selected: Assembly | undefined
-  return stampRuleMap(prog, {
+  const map = stampRuleMap(prog, {
     runRule: (ri, input, pos, ctx) => {
       const a = selected ?? cache.forCtx(ctx)
       selected = undefined
@@ -4128,4 +4143,8 @@ export function tableRules(
       return a.scanSkip[skipOf?.[ri] ?? -1]
     },
   }, artifactMetadata, resolved)
+  if (entry === undefined) return map
+  const rule = map[entry]
+  if (rule === undefined) throw new Error(`tableRules: the program has no rule ${JSON.stringify(entry)}`)
+  return rule
 }

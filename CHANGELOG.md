@@ -3,6 +3,20 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.54.0 — unreleased
+
+- A standalone terminal the macro lowers (`const ident = regex(…)`, `word(…)`) is
+  emitted as `/* @__PURE__ */ tableRules({…}, "Entry")` instead of
+  `/* @__PURE__ */ tableRules({…})["Entry"]`. `@__PURE__` covers a call, not a
+  property read after it, so when a rule table inlined the terminal's pattern and
+  nothing else read the binding, bundlers kept the whole table as a discarded
+  statement that still ran at import. Built with esbuild/rolldown, jess's Less grammar
+  module carried 77 such statements (40 KB of 767 KB), its CSS grammar 40 (21 KB), and
+  a shared recognition module 80 (33 KB, 46% of the file); all are gone. `tableRules`
+  takes the entry name as its second argument (`tableRules(program, "Entry")` returns
+  that rule and throws on an unknown name); a module printed by an older parseman,
+  which indexes the map, still loads.
+
 ## 0.53.0 — 2026-10-09
 
 - Fix the macro silently dropping a `rules()` option whose value names an imported
