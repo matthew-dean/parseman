@@ -8,6 +8,7 @@ import { cstTlLen } from '../cst/capture-buffer.ts'
 import { firstSetSentinel } from '../recovery/scan.ts'
 import { adjacencyFail, adjacencyOf, holdsAdjacency, type AdjacencyDef } from './adjacency.ts'
 import { scalarOf } from './scalar.ts'
+import { LEAD, leadsTrivia } from './field-trivia.ts'
 
 type UnwrapParsers<T extends Combinator<unknown>[]> = {
   [K in keyof T]: T[K] extends Combinator<infer U> ? U : never
@@ -37,6 +38,12 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
     ;(adjacency ??= Array.from({ length: parsers.length }, () => null))[i] = a
   }
   const hasAdjacency = adjacency !== null
+  // `field(…, { leadingTrivia: true })` after the first term reads the cursor
+  // this boundary had before its trivia skip (`LEAD`, table/cell.ts).
+  let leading: boolean[] | null = null
+  for (let i = 1; i < parsers.length; i++) {
+    if (leadsTrivia(parsers[i]!)) (leading ??= Array.from({ length: parsers.length }, () => false))[i] = true
+  }
   const strictArity = !hasAdjacency
     && ((parsers.length === 2 && !matchesEmpty(parsers[1]!))
       || (parsers.length === 3 && parsers.every(p => !matchesEmpty(p))))
@@ -95,7 +102,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
     _tag: 'sequence',
     _meta: meta,
     _def: def,
-    _parseScalar: hasAdjacency ? undefined : parseScalar,
+    _parseScalar: hasAdjacency || leading !== null ? undefined : parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnwrapParsers<T>> {
       const tolerant = ctx._tolerant === true
       if (tolerant) {
@@ -130,6 +137,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           const scanTlog = deferredTrivia ? cstTlLen(ctx) : 0
           const scanLog = deferredTrivia ? (ctx._triviaLog?.length ?? 0) : 0
           const scanRootLog = deferredTrivia ? (ctx._rootTriviaLog?.length ?? 0) : 0
+          if (leading?.[i] === true) LEAD.at = cur
           const result = parsers[i]!.parse(input, termPos, ctx)
           if (!result.ok) return result as ParseFail
           if (values !== undefined) values.push(result.value)

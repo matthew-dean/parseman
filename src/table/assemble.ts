@@ -66,6 +66,7 @@
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
+import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA, LEAD, triviaFieldCapture } from '../combinators/field-trivia.ts'
 import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
@@ -146,6 +147,7 @@ const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | 
 
 /** Failure sentinel — SHARED with the other two engines, see `cell.ts`. */
 import { FAIL, newEndCell } from './cell.ts'
+import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
 /** `finishCstBuf`'s two empty sentinels, held here so the node piece can inline it. */
@@ -1793,12 +1795,27 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_FIELD: {
-        const name = k[code[ip + 1]!] as string
+        const { name, bits } = fieldSpec(k[code[ip + 1]!])
         const child = link(code[ip + 2]!)
+        if (bits === 0) {
+          return (input, pos, ctx) => {
+            const v = child(input, pos, ctx)
+            if (v === FAIL) return FAIL
+            ctx._fields?.push({ name, value: v, span: { start: pos, end: EC.e } })
+            return v
+          }
+        }
+        const leading = (bits & FIELD_LEADING_TRIVIA) !== 0
+        const trailing = (bits & FIELD_TRAILING_TRIVIA) !== 0
         return (input, pos, ctx) => {
+          const leadFrom = leading ? LEAD.at : -1
+          LEAD.at = -1
           const v = child(input, pos, ctx)
           if (v === FAIL) return FAIL
-          ctx._fields?.push({ name, value: v, span: { start: pos, end: EC.e } })
+          const end = EC.e
+          const trailEnd = trailing && ctx.trivia !== undefined ? consumeTrivia(input, end, ctx) : end
+          ctx._fields?.push(triviaFieldCapture(name, v, input, pos, end, leadFrom, trailEnd))
+          EC.e = trailEnd
           return v
         }
       }
@@ -2322,6 +2339,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
+              if (leadingTriviaFieldAt(code, k, kidIp)) {
+                return (input, cur, ctx, inherited) => {
+                  ctx._sync = sync ?? inherited
+                  LEAD.at = cur
+                  return step(kid, input, cur, ctx)
+                }
+              }
               return (input, cur, ctx, inherited) => {
                 ctx._sync = sync ?? inherited
                 return step(kid, input, cur, ctx)
@@ -2389,14 +2413,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
         }
 
+        // A `field(…, { leadingTrivia: true })` term is a boundary fact too: the
+        // runner hands it the cursor from BEFORE the scan (`LEAD`, cell.ts).
         let hasAdj = false
-        for (let i = 1; i < n; i++) if (code[code[base + i]!] === OP_ADJ) { hasAdj = true; break }
+        for (let i = 1; i < n; i++) {
+          const kidIp = code[base + i]!
+          if (code[kidIp] === OP_ADJ || leadingTriviaFieldAt(code, k, kidIp)) { hasAdj = true; break }
+        }
         if (hasAdj) {
           const first = link(code[base]!)
           const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
+              if (leadingTriviaFieldAt(code, k, kidIp)) {
+                return (input, cur, ctx) => {
+                  LEAD.at = cur
+                  return step(kid, input, cur, ctx)
+                }
+              }
               return (input, cur, ctx) => step(kid, input, cur, ctx)
             }
             const negated = code[kidIp + 1] === 1
@@ -3150,6 +3185,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const max = code[ip + 3]!
         const sepIp = code[ip + 4]!
         const sep = sepIp >= 0 ? link(sepIp) : undefined
+        // A `field(…, { leadingTrivia: true })` separator reads the pre-scan cursor.
+        const sepLeads = sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp)
         const flags = code[ip + 5]!
         const keepSeparators = (flags & 2) !== 0
         const trailingAllowed = (flags & 1) !== 0
@@ -3233,6 +3270,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 let sp = cur
                 if (hasTrivia) sp = skipTrivia(input, sp, ctx)
                 ctx._fc = false
+                if (sepLeads) LEAD.at = cur
                 const sv = sep(input, sp, ctx)
                 if (sv === FAIL) {
                   if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
@@ -3333,6 +3371,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               let sp = cur
               if (hasTrivia) sp = skipTrivia(input, sp, ctx)
               ctx._fc = false
+              if (sepLeads) LEAD.at = cur
               const sv = sep(input, sp, ctx)
               if (sv === FAIL) {
                 if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
@@ -3806,6 +3845,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        LEAD, triviaFieldCapture,
       )
       emitReached = new Set(pre.reached)
     }
@@ -3887,6 +3927,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        LEAD, triviaFieldCapture,
       )
       emitReached = em.reached
     } catch (e) {

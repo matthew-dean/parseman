@@ -423,7 +423,7 @@ Attach a metadata label (used for per-chunk trivia kinds; see
 [Whitespace & trivia](../guide/trivia#capturing-trivia-kinds)). Parse behavior is
 unchanged.
 
-### `field(name, combinator)`
+### `field(name, combinator, options?)`
 
 Capture the wrapped parser's value and span for the nearest enclosing `node()` build
 callback. Parse behavior and the normal returned value are unchanged.
@@ -441,6 +441,21 @@ const AttributeSelector = node(sequence(
 `fields.name` is `{ value, span }`; repeated field names become arrays. Field capture is
 emitted only for node subtrees containing `field()` and only when the callback/host can
 read fields.
+
+`field(name, combinator, { leadingTrivia, trailingTrivia })` also records the trivia on
+either side of the match, as source text:
+
+- `leadingTrivia: true` — `leading` is the trivia the enclosing `sequence()` skipped
+  before this term (any term after the first), or the trivia a separated list skipped
+  before this separator. The field must be that term or separator itself, not wrapped;
+  anywhere else `leading` is `''`.
+- `trailingTrivia: true` — after the match the field consumes the trivia that follows,
+  as `node({ trailingTrivia })` does, and `trailing` is its text.
+
+A field with either option always carries both strings. This is how a builder keeps a
+comment written beside a separator, which belongs to no term: before, only the node's
+trivia log held it, so the node paid for trivia capture (and, to read the text, for its
+parse state) on every match.
 
 ## Recursion
 

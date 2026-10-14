@@ -45,6 +45,29 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   | jess Less, Less unit corpus (136 files) | CST | 651.5 / 651.4M | 636.2 / 637.0M (−2.3%) |
   | jess Less, Less unit corpus | AST | 591.6 / 591.6M | 589.0 / 588.3M (−0.5%) |
 
+- Add `field(name, parser, { leadingTrivia, trailingTrivia })`. A comment written
+  beside a separator (`@media screen /* a */, /* b */ print`) belongs to no term: the
+  list's own loop skips it before the `,`, so before this only the owning node's trivia
+  log held it, and a builder that wanted it back paid for trivia capture, and for its
+  parse state to read the text, on every match. Now the separator's capture carries the
+  text: `leading` is the trivia the enclosing `sequence()` (any term after the first) or
+  separated list (its separator) skipped right before the field, and `trailing` is the
+  trivia the field consumes after its match, as `node({ trailingTrivia })` does. The
+  field must be the term or separator itself; anywhere else `leading` is `''`. The
+  interpreter, the reference driver, the closure and emitted assemblies, the macro and
+  the IR carry it identically; a plain `field()` is unchanged, and a program printed by
+  an older parseman still loads.
+
+  The option is on the field, not a lazily materialised node trivia log, because the
+  log was not where the cost was. On jess's CSS media-query list (test-data-css, AST,
+  marginal instructions), dropping only the trivia-log tier measured 233.9M → 234.4M,
+  no change; the state and fields tiers and the whitespace-absorbing separator regex
+  were the cost. With this option the list reads fields only, with `literal(',')` as
+  its separator, and keeps byte-identical layouts over 244 inputs. test-data-css moves
+  233.6M → 233.4M, inside the run-to-run spread; a 1,000-prelude media file moves
+  156.9M → 155.0M (−1.2%, with a ±2% spread). What remains between that and a list that
+  keeps no comments at all is the fields tier and the builder's own layout work.
+
 ## 0.53.0 — 2026-10-09
 
 - Fix the macro silently dropping a `rules()` option whose value names an imported

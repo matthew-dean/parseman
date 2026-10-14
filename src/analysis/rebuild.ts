@@ -220,7 +220,7 @@ export function rebuildCombinator(
         }); break
       case 'transform': out = transform(one(d.parser), d.fn); break
       case 'label': out = label(d.label, one(d.parser)); break
-      case 'field': out = field(d.name, one(d.parser)); break
+      case 'field': out = field(d.name, one(d.parser), { leadingTrivia: d.leadingTrivia === true, trailingTrivia: d.trailingTrivia === true }); break
       case 'token': out = token(one(d.parser)); break
       case 'leaf': out = d.cstValue === 'source' ? sourceLeaf(one(d.parser), d.fn) : leaf(one(d.parser), d.fn); break
       // A LABELLED expect reproduces `d.expected` exactly (`expect` sets it to `[label]`).

@@ -5,6 +5,7 @@ import { deriveExpected } from './expect.ts'
 import { matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
 import { demoteCapturedToRaw } from '../cst/capture-buffer.ts'
 import { scalarOf, type ScalarParser } from './scalar.ts'
+import { LEAD, leadsTrivia } from './field-trivia.ts'
 
 /**
  * Parse one repetition item at `cur`, first skipping (and, in capture mode,
@@ -438,6 +439,9 @@ export function sepBy<T, S>(
   opts: SepByOptions = {},
 ): Combinator<T[]> {
   const { sep: separator, keep: keepSeparators } = unwrapSeparator(separatorArg)
+  // A `field(…, { leadingTrivia: true })` separator reads the cursor this loop
+  // had before the trivia it skipped (`LEAD`, table/cell.ts).
+  const separatorLeads = leadsTrivia(separator)
   const { min, max } = resolveBounds('sepBy()', opts)
   const trailing = opts.trailing ?? 'forbid'
   const meta: ParserMeta = {
@@ -517,7 +521,7 @@ export function sepBy<T, S>(
       // this option surface already; parity is held by test/parity, not by hope.
       ...(keepSeparators ? { keepSeparators: true } : {}),
     },
-    _parseScalar: keepSeparators ? undefined : parseScalar,
+    _parseScalar: keepSeparators || separatorLeads ? undefined : parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       const first = combinator.parse(input, pos, ctx)
       const values: T[] = []
@@ -574,6 +578,7 @@ export function sepBy<T, S>(
             sepPos = advanceTrivia(input, cur, ctx)
           }
         }
+        if (separatorLeads) LEAD.at = cur
         const sep = separator.parse(input, sepPos, ctx)
         if (!sep.ok) {
           rollbackTrivia(ctx, loopMark)

@@ -3,7 +3,8 @@ import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { choice } from './choice.ts'
 import { matchesEmpty } from './first-set.ts'
 import { oneOrMore } from './repeat.ts'
-import { fastTriviaScanner } from './trivia-skip.ts'
+import { consumeTrivia, fastTriviaScanner } from './trivia-skip.ts'
+import { LEAD, triviaFieldCapture } from './field-trivia.ts'
 import { scalarOf } from './scalar.ts'
 
 const JSON_STRING_BODY = String.raw`(?:[^"\\]|\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4}))*`
@@ -151,20 +152,61 @@ export function label<T>(name: string, combinator: Combinator<T>): Combinator<T>
   }
 }
 
+export type FieldOptions = {
+  /**
+   * Record, as the capture's `leading`, the source text of the trivia that the
+   * enclosing `sequence()` (as any term after the first) or separated list (as
+   * its separator) skipped right before this field. A comment written before a
+   * `,` belongs to no term, so a builder could only read it from its node's
+   * trivia log; this hands it to the separator instead. The field must be the
+   * term or separator itself, not wrapped; anywhere else `leading` is `''`.
+   */
+  leadingTrivia?: boolean
+  /**
+   * After the match, consume the trivia that follows (as `node({ trailingTrivia })`
+   * does) and record its source text as the capture's `trailing`.
+   */
+  trailingTrivia?: boolean
+}
+
 /**
  * Capture a named parse result for the nearest enclosing node() builder.
- * Parse behavior and the normal returned value are unchanged.
+ * Parse behavior and the normal returned value are unchanged, except that
+ * `trailingTrivia` also consumes the trivia after the match.
  */
-export function field<T>(name: string, combinator: Combinator<T>): Combinator<T> {
+export function field<T>(name: string, combinator: Combinator<T>, opts?: FieldOptions): Combinator<T> {
+  const leadingTrivia = opts?.leadingTrivia === true
+  const trailingTrivia = opts?.trailingTrivia === true
+  if (!leadingTrivia && !trailingTrivia) {
+    return {
+      _tag: combinator._tag,
+      _meta: combinator._meta,
+      _def: { tag: 'field', name, parser: combinator as Combinator<unknown> },
+      parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
+        const result = combinator.parse(input, pos, ctx)
+        if (!result.ok) return result
+        ctx._fields?.push({ name, value: result.value, span: result.span })
+        return result
+      },
+    }
+  }
   return {
     _tag: combinator._tag,
     _meta: combinator._meta,
-    _def: { tag: 'field', name, parser: combinator as Combinator<unknown> },
+    _def: {
+      tag: 'field', name, parser: combinator as Combinator<unknown>,
+      ...(leadingTrivia ? { leadingTrivia: true } : {}),
+      ...(trailingTrivia ? { trailingTrivia: true } : {}),
+    },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
+      const leadFrom = LEAD.at
+      LEAD.at = -1
       const result = combinator.parse(input, pos, ctx)
       if (!result.ok) return result
-      ctx._fields?.push({ name, value: result.value, span: result.span })
-      return result
+      const end = result.span.end
+      const trailEnd = trailingTrivia && ctx.trivia ? consumeTrivia(input, end, ctx) : end
+      ctx._fields?.push(triviaFieldCapture(name, result.value, input, result.span.start, end, leadingTrivia ? leadFrom : -1, trailEnd))
+      return trailEnd === end ? result : { ok: true, value: result.value, span: { start: result.span.start, end: trailEnd } }
     },
   }
 }

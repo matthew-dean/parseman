@@ -484,7 +484,7 @@ class Serializer {
         return `_lf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)}${def.cstValue === 'source' ? ', true' : ''})`
       }
       case 'label':     return `label(${JSON.stringify(def.label)}, ${kid(def.parser)})`
-      case 'field':     return `field(${JSON.stringify(def.name)}, ${kid(def.parser)})`
+      case 'field':     return `field(${JSON.stringify(def.name)}, ${kid(def.parser)}${fieldOptionsSrc(def)})`
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`
       case 'scanTo':
         return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}]${def.raw ? ', raw: true' : ''}, orEOF: ${def.orEOF}${def.recoverAt === undefined ? '' : `, recoverAt: ${kid(def.recoverAt)}`}${def.stopAt === undefined ? '' : `, stopAt: ${kid(def.stopAt)}`} })`
@@ -568,4 +568,10 @@ class Serializer {
         throw new Unserializable(`unsupported tag ${def.tag}`)
     }
   }
+}
+
+/** The options argument of a trivia-attributing `field()`, or nothing for a plain one. */
+function fieldOptionsSrc(def: Extract<ParserDef, { tag: 'field' }>): string {
+  if (def.leadingTrivia !== true && def.trailingTrivia !== true) return ''
+  return `, { ${[def.leadingTrivia === true ? 'leadingTrivia: true' : '', def.trailingTrivia === true ? 'trailingTrivia: true' : ''].filter(Boolean).join(', ')} }`
 }

@@ -16,7 +16,11 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +271B for `rules()` giving a grammar its own copy of a rule value another
 // grammar already holds (58,393B at parent 4ddd49b to 58,664B), so one grammar's
 // trivia/scanSkip no longer leaks into another that shares a terminal.
-const BASELINE_RAW_BYTES = 58_664
+// Moved to 58,734B: the labeled-trivia spec carrying its own scanners dropped the
+// two four-slot memos (58,485B at a246ecf, -179B), and `field(…, { leadingTrivia,
+// trailingTrivia })` added the option and the boundary hand-off in `sequence()`
+// and `sepBy()` (+249B).
+const BASELINE_RAW_BYTES = 58_734
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

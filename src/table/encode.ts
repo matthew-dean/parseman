@@ -7,6 +7,7 @@ import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
 import { buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
+import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
 import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators/dispatch.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
@@ -552,6 +553,17 @@ class Encoder {
     const i = this.k.length
     this.k.push(v)
     this.kIndex.set(key, i)
+    return i
+  }
+
+  private fieldSpecIndex = new Map<string, number>()
+  private fieldSpecSlot(name: string, bits: number): number {
+    const key = JSON.stringify([name, bits])
+    const hit = this.fieldSpecIndex.get(key)
+    if (hit !== undefined) return hit
+    const i = this.k.length
+    this.k.push([name, bits])
+    this.fieldSpecIndex.set(key, i)
     return i
   }
 
@@ -1518,8 +1530,12 @@ class Encoder {
         for (let i = 0; i < arms.length; i++) this.code[head + 6 + i] = arms[i]!
         return head
       }
-      case 'field':
-        return this.emit(OP_FIELD, this.constant(d.name), this.node(d.parser).ip)
+      case 'field': {
+        // A trivia-attributing field carries `[name, bits]` in the name slot
+        // (`FIELD_LEADING_TRIVIA`/`FIELD_TRAILING_TRIVIA`); a plain one the name.
+        const bits = (d.leadingTrivia === true ? FIELD_LEADING_TRIVIA : 0) | (d.trailingTrivia === true ? FIELD_TRAILING_TRIVIA : 0)
+        return this.emit(OP_FIELD, bits === 0 ? this.constant(d.name) : this.fieldSpecSlot(d.name, bits), this.node(d.parser).ip)
+      }
       case 'lazy': {
         // A named reference is not a hop: it resolves to the target's row.
         // Emitting a trampoline here cost one dispatch per reference for nothing.

@@ -183,11 +183,13 @@ export function parserEnablesTriviaCapture(p: Combinator<unknown>, seen: Set<Com
   }
 }
 
-export function buildFieldMap(captures: ReadonlyArray<{ name: string; value: unknown; span: { start: number; end: number } }> | undefined): FieldMap | undefined {
+export function buildFieldMap(captures: ReadonlyArray<{ name: string; value: unknown; span: { start: number; end: number }; leading?: string; trailing?: string }> | undefined): FieldMap | undefined {
   if (!captures?.length) return undefined
   const out: FieldMap = {}
   for (const cap of captures) {
-    const entry = { value: cap.value, span: cap.span }
+    const entry = cap.leading === undefined
+      ? { value: cap.value, span: cap.span }
+      : { value: cap.value, span: cap.span, leading: cap.leading, trailing: cap.trailing! }
     const current = out[cap.name]
     if (current === undefined) out[cap.name] = entry
     else if (Array.isArray(current)) current.push(entry)
@@ -195,3 +197,4 @@ export function buildFieldMap(captures: ReadonlyArray<{ name: string; value: unk
   }
   return out
 }
+
