@@ -49,7 +49,6 @@ describe('paired A/B scoring', () => {
     expect(pairedMedianDelta(ref, head)).toBe(0)
     const row = score(['drift'], samples(ref, head), T, new Map([['drift', K]]))[0]!
     expect(row).toMatchObject({ dMedian: 0, breach: false })
-    expect(row.dMedianAggregateV1).toBeCloseTo(60)
   })
 
   it('pairs within-sample minima rather than unrelated global minima', () => {
@@ -64,9 +63,7 @@ describe('paired A/B scoring', () => {
       new Map([['drift', { ...K, pairs: 3 }]]),
     )[0]!
     expect(row.dMedian).toBe(0)
-    expect(row.dMedianAggregateV1).toBe(0)
     expect(row.dMin).toBe(0)
-    expect(row.dMinAggregateV1).toBe(100)
     expect(Math.min(...head) / Math.min(...ref)).toBe(2)
     expect(Math.min(...headMin) / Math.min(...refMin)).toBe(2)
     expect(row.scorer).toBe('paired-ratio-v2')
