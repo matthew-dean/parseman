@@ -518,6 +518,18 @@ offset-zero tie remains a subset relation until §6 is addressed.
 
 ## 8. The 0.47 parse-time regression — REAL, REPRODUCED AT SCALE, and shelved on a justification that has since been withdrawn
 
+> **Shelf closed on 0.54.0.** Both A/B gates were re-anchored to the 0.53.0 base
+> (`daf3d90`) in the 0.54.0 release, and both reported every shelved entry
+> `RECOVERED`: the seven grammar-density cases in `bench/grammar-perf-guard.ts`
+> (`rollback/{none,sparse,medium,dense}`, `expected/{none,narrow,wide}`) and the
+> five workloads in `bench/workload-perf-guard.ts` (`less/stylesheet`,
+> `less/mixins`, `css/stylesheet`, `graphql/document`, `json/document`). The
+> entries were removed, along with the shelf machinery that only they used
+> (`bench/grammar-perf-shelf.ts`, `bench/workload-perf-shelf.ts`, their unit tests,
+> and the retired `aggregate-v1` deltas the harness kept only for shelf ceilings).
+> Every case is now held to the ordinary gate with no exception. The ceilings and
+> envelopes below are historical evidence of what the shelf admitted.
+
 **What.** `bench/perf-guard.ts` blocks commits. Measured on `release/0.47.0`
 itself, with no lane branches applied, against baseline `2a83f9b` (captured when
 `compile()` was codegen):
