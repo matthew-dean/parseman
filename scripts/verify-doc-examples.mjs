@@ -156,6 +156,19 @@ const tmp = SCRATCH
 /** Verified blocks discovered across every doc, for the discovery floor below. */
 let blocksFound = 0
 
+/**
+ * Each block marked `// [verify] [typed]`, written out as authored, for the
+ * type-check pass. OPT-IN because most of the guide reads `parse(…).value`
+ * without narrowing on `ok` first — fine for a shown output, a compile error
+ * when pasted — and making every block compile is its own change. A block that
+ * shows an API whose TYPES are the point (an inferred callback parameter) is
+ * marked, so its types cannot regress.
+ */
+const TYPED_MARK = '// [verify] [typed]'
+/** The compiler the pass runs. `DOCS_VERIFY_TSC` swaps it, so the no-output failure path is testable. */
+const TSC = process.env.DOCS_VERIFY_TSC ?? join(ROOT, 'node_modules/typescript/bin/tsc')
+const typedBlocks = []
+
 for (const file of DOCS) {
   const original = readFileSync(file, 'utf8')
   let out = original
@@ -211,6 +224,21 @@ for (const file of DOCS) {
 
     const modPath = join(tmp, `b${results.length}_${blockIndex}.ts`)
     writeFileSync(modPath, mod)
+    // The same block AS AUTHORED, for the type-check pass below: each checked
+    // expression stays a bare statement instead of disappearing into the emit
+    // closure, so what the compiler sees is what a reader would paste.
+    const typed = lines
+      .map((l, i) => {
+        if (l.includes('// [verify]') || l.trim().startsWith('import ')) return ''
+        const c = checkAt.get(i)
+        return c ? `;(${c.expr})` : l
+      })
+      .join('\n')
+    if (code.includes(TYPED_MARK)) {
+      const typedPath = join(tmp, `t${typedBlocks.length}.ts`)
+      writeFileSync(typedPath, `${imports}\n${typed}\nexport {}\n`)
+      typedBlocks.push({ path: typedPath, id, heading })
+    }
     let emitted
     try {
       const stdout = execFileSync(process.execPath, ['--import', 'tsx/esm', modPath], {
@@ -253,6 +281,50 @@ for (const file of DOCS) {
   if (FIX && rewrites.length) {
     for (const r of rewrites) out = out.replace(r.from, r.to)
     if (out !== original) writeFileSync(file, out)
+  }
+}
+
+/**
+ * TYPE-CHECK every `[typed]` block, under the repo's own compiler settings.
+ *
+ * Running a block proves its output; it says nothing about whether a reader who
+ * pastes it gets a compile error. tsx strips types without checking them, so an
+ * example that only works with its types erased — an unannotated callback whose
+ * parameter is `unknown` — passed here and failed for every user. One `tsc` over
+ * all marked blocks, each its own module; an error is reported against the block it is in.
+ */
+if (typedBlocks.length > 0) {
+  writeFileSync(join(tmp, 'tsconfig.json'), JSON.stringify({
+    extends: '../../tsconfig.json',
+    compilerOptions: { types: ['node'] },
+    include: typedBlocks.map(b => b.path.slice(tmp.length + 1)),
+  }))
+  let tscOut = ''
+  try {
+    execFileSync(process.execPath, [TSC, '-p', join(tmp, 'tsconfig.json'), '--pretty', 'false'], {
+      cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (e) {
+    // A spawn failure (timeout, ENOBUFS, a missing compiler) can throw with both
+    // streams empty; that is tsc NOT RUNNING, never a pass.
+    tscOut = String(e.stdout || '') + String(e.stderr || '') || String(e.message || 'tsc failed')
+  }
+  const byPath = new Map(typedBlocks.map(b => [b.path, b]))
+  const errors = new Map()
+  for (const line of tscOut.split('\n')) {
+    const m = /^(.*?\.ts)\((\d+),\d+\): error (TS\d+: .*)$/.exec(line)
+    if (!m) continue
+    const block = byPath.get(resolve(ROOT, m[1])) ?? byPath.get(m[1])
+    const key = block ? block.id : m[1]
+    if (!errors.has(key)) errors.set(key, [])
+    errors.get(key).push(m[3])
+  }
+  for (const [id, list] of errors) {
+    results.push({ id, expr: '(type check)', status: 'ERROR', detail: list.join('\n      ') })
+  }
+  // tsc failing with nothing attributable (a broken config, a crash) is not a pass.
+  if (tscOut !== '' && errors.size === 0) {
+    results.push({ id: 'tsc', expr: '(type check)', status: 'ERROR', detail: tscOut.slice(0, 600) })
   }
 }
 

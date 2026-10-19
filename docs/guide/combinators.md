@@ -48,7 +48,7 @@ Three words that sound alike but play different roles:
 | `node(c, build?, opts?)` / `node(type, c, build?, opts?)` | CST/AST rule: captures terminals + trivia. `opts.tags` declares visitor categories; inside `rules()`, the node type is inferred from the rule key. See [CST / AST nodes](./ast). |
 | `ref<T>()` | Low-level forward-declaration slot (prefer `rules()`). |
 | `gate(predicate)` | Zero-width ASSERT: succeeds only when `predicate(ctx.state)` is true. See [Context](./context). (`guard()` is a deprecated alias.) |
-| `withCtx(extra, c)` | Merge `extra` into the user context for the duration of `c`. |
+| `withCtx(extra, c)` | Set the user context to `extra` — or, given a function, derive it from the outer context — for the duration of `c`. |
 | `expect(c, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Skips ambient trivia + `scanSkip` opaque units by default. |
 | `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` — including the delimiters. |
@@ -983,11 +983,12 @@ isn't on the compile path — ask for it explicitly with
 
 ### `gate` and `withCtx`
 
-`gate(predicate)` is a zero-width ASSERT on `ctx.state`. `withCtx(extra, c)` merges
-values into that state for the duration of `c`. See [Context](./context).
+`gate(predicate)` is a zero-width ASSERT on `ctx.state`. `withCtx(extra, c)` sets that
+state for the duration of `c`; `withCtx(state => next, c)` derives it from the outer state
+instead, so outer fields survive. See [Context](./context).
 
 ```ts
-// [verify]
+// [verify] [typed]
 import { gate, withCtx, sequence, literal, regex, parse } from 'parseman'
 
 const inFunction = (s: unknown) => (s as { inFunction?: boolean } | undefined)?.inFunction === true
@@ -1005,6 +1006,16 @@ parse(withCtx({ inFunction: true }, returnStmt), 'return 1').ok
 // the sequence rather than selecting a different branch.
 parse(withCtx({ inFunction: false }, returnStmt), 'return 1').ok
 // → false
+
+// A value REPLACES the state; a function DERIVES it from the state at entry, so
+// an outer field survives into the subtree.
+const strict = (s: unknown) => (s as { strict?: boolean } | undefined)?.strict === true
+const both = sequence(gate(inFunction), gate(strict), literal('x'))
+parse(withCtx({ strict: true }, withCtx({ inFunction: true }, both)), 'x').ok
+// → false
+
+parse(withCtx({ strict: true }, withCtx(s => ({ ...s, inFunction: true }), both)), 'x').ok
+// → true
 ```
 
 **Gating:** `gate()`'s first-set is `any`. Use it only *after* a concrete leading

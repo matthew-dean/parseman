@@ -3,6 +3,33 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.55.0 — 2026-10-19
+
+- `withCtx` takes a function to DERIVE the subtree's state from the state in force at
+  entry: `withCtx(s => ({ ...s, stop: 'comparison' }), value)`. The value form
+  replaces `ctx.state` for the subtree, so a grammar that needed one extra flag lost
+  every outer field inside it — the options its reducers read, the sinks they write
+  to. The derive form keeps them: gates read the new field, reducers still see the
+  outer ones. The function runs once per entry, and the outer state is restored on
+  exit. An unannotated callback parameter is typed
+  `Readonly<Record<string, unknown>> | undefined`, so `s => ({ ...s, flag: true })`
+  compiles as written. It works the same in the interpreter, the compiled table (the function is
+  parked with the other author callbacks and printed from its source) and the macro,
+  and it round-trips through a composed grammar's IR. A grammar that does not use it
+  runs exactly the code it ran before: the form is chosen when the combinator is
+  built (interpreter) or linked (table), never per entry.
+
+  **Breaking:** a function passed as `extra` used to be installed AS the state. It is
+  now always the derive form; to install a function value, wrap it
+  (`withCtx(() => fn, c)`). The types enforce it: a callable no longer type-checks as a
+  replacement value. The guides also said the value form "merges" `extra`
+  into the state; it never did, and they now say it replaces it.
+
+- `pnpm docs:verify` type-checks a guide example marked `// [verify] [typed]` under the
+  repo's compiler settings, and reports a type error against the block it is in.
+  Running an example erases its types, so one that compiled only with its types erased
+  passed the check and failed for anyone who pasted it. The `withCtx` example is marked.
+
 ## 0.54.0 — 2026-10-14
 
 - A standalone terminal the macro lowers (`const ident = regex(…)`, `word(…)`) is

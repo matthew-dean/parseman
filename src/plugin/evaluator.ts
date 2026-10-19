@@ -96,6 +96,9 @@ function stripTsFromSource(node: Node, code: string): string {
 class UnevaluatedExtra {}
 const UNEVALUATED_EXTRA: unknown = new UnevaluatedExtra()
 
+/** The stand-in for a derive-form `withCtx(s => next, …)`; see the `withCtx` case. */
+const DERIVE_STAND_IN = (state: unknown): unknown => state
+
 // ---------------------------------------------------------------------------
 // Reducer resolution
 //
@@ -1028,10 +1031,17 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       // survives only when it cannot be evaluated, and then it is `emittableConst`
       // that decides — a plain `{}` extras object is indistinguishable from an
       // author's `{}`, so an unevaluable one must NOT masquerade as empty state.
-      const evaluated = anyValue(extraArg as Expression, scope, code, [])
+      //
+      // A function literal is the DERIVE form, `withCtx(s => next, inner)`. Its
+      // value is never needed here — the encoder prints `extraSrc` into the
+      // artifact — but the def must hold a FUNCTION so the encoder lowers the
+      // derive form at all; the stand-in is that function, like `gate`'s.
+      const extraType = (unwrapStaticExpr(extraArg as Expression) as { type: string }).type
+      const derives = extraType === 'ArrowFunctionExpression' || extraType === 'FunctionExpression'
+      const evaluated = derives ? null : anyValue(extraArg as Expression, scope, code, [])
       const usable = typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)
         && Object.getPrototypeOf(evaluated) === Object.prototype
-      const combi = parseman.withCtx(usable ? evaluated : UNEVALUATED_EXTRA, inner)
+      const combi = parseman.withCtx(derives ? DERIVE_STAND_IN : usable ? evaluated : UNEVALUATED_EXTRA, inner)
       if (combi._def.tag !== 'withCtx') return null
       combi._def.extraSrc = extraSrc
       return combi

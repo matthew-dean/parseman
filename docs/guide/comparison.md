@@ -105,7 +105,7 @@ into three camps on how they cope.
 
 The grammar can read and thread state as it parses.
 
-- **Parséman** — [`withCtx`](./context) merges state for a sub-parse, [`gate`](./context)
+- **Parséman** — [`withCtx`](./context) sets or derives state for a sub-parse, [`gate`](./context)
   gates a rule on a predicate, and `choice` arms can be gated too. Each node also records
   the context snapshot it parsed under, so [incremental re-parsing](./incremental) can
   replay the exact context a rule saw the first time. Context sensitivity and incremental

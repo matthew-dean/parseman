@@ -20,13 +20,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const SCRIPT = join(ROOT, 'scripts/verify-doc-examples.mjs')
 
 /** Run the verifier over one fixture doc; returns its report text. */
-function verify(markdown: string): { out: string; ok: boolean } {
+function verify(markdown: string, env: Record<string, string> = {}): { out: string; ok: boolean } {
   const dir = mkdtempSync(join(tmpdir(), 'pm-docverify-'))
   const file = join(dir, 'fixture.md')
   writeFileSync(file, markdown)
   try {
     const out = execFileSync(process.execPath, [SCRIPT, file], {
       cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
+      env: { ...process.env, ...env },
     })
     return { out, ok: true }
   } catch (e) {
@@ -154,5 +155,43 @@ describe('doc-example verifier — the discovery floor', () => {
     const r = verify(block('const x = 1\nx // → 1'))
     expect(r.ok).toBe(true)
     expect(r.out).not.toMatch(/DISCOVERY FLOOR/)
+  })
+})
+
+describe('doc-example verifier — `[typed]` blocks are type-checked', () => {
+  const typed = (body: string): string => `# Fixture\n\n\`\`\`ts\n// [verify] [typed]\n${body}\n\`\`\`\n`
+  // Runs fine with types erased; a compile error for anyone who pastes it.
+  const erasedOnly = 'const n: number = 1\nconst s: string = n\ns\n// → 1'
+
+  it('reports a type error in a [typed] block against that block', () => {
+    const bad = verify(typed(erasedOnly))
+    expect(bad.ok).toBe(false)
+    expect(bad.out).toContain('(type check)')
+    expect(bad.out).toContain('TS2322')
+  })
+
+  it('leaves an unmarked block to the run alone', () => {
+    const plain = verify(block(erasedOnly))
+    expect(plain.ok).toBe(true)
+    expect(plain.out).toContain('1 pass, 0 fixed, 0 fail, 0 error')
+  })
+
+  it('fails when the compiler dies without a word, rather than reading silence as a pass', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-docverify-tsc-'))
+    const mute = join(dir, 'mute-tsc.mjs')
+    writeFileSync(mute, 'process.exit(2)\n')
+    try {
+      const r = verify(typed(`import { literal, parse } from 'parseman'\nparse(literal('x'), 'x').ok\n// → true`), { DOCS_VERIFY_TSC: mute })
+      expect(r.ok).toBe(false)
+      expect(r.out).toContain('ERROR  tsc  (type check)')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('passes a [typed] block that compiles', () => {
+    const good = verify(typed(`import { withCtx, literal, parse } from 'parseman'\nparse(withCtx(s => ({ ...s, on: true }), literal('x')), 'x').ok\n// → true`))
+    expect(good.out).toContain('1 pass, 0 fixed, 0 fail, 0 error')
+    expect(good.ok).toBe(true)
   })
 })
