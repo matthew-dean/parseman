@@ -3,6 +3,31 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.55.1 — 2026-10-19
+
+- Linking a grammar no longer takes exponential time over recursive rules. For each
+  ordered-choice arm, optional and attempt, the table encoder asks whether a failed
+  attempt can leave a field, a recovered error or a scanner's output behind for the
+  enclosing choice to undo. That walk stopped at a combinator already on its own path,
+  and kept no answer for any combinator whose walk had stopped that way, so it walked
+  that combinator again along every path that reached it: on value rules that recurse
+  through each other, along every path through all of them. It now finds the
+  combinators that reach each other (strongly connected components) and answers for
+  each group at once, so every combinator it enters keeps an exact answer and is
+  entered once per link. Every answer is the same as before: the encoded tables of
+  jess's four grammars, in all four AST/CST × line-tracking variants, are identical
+  before and after.
+
+  Instructions to load jess's SCSS interpreter grammar in all four variants and parse
+  one rule with each, which links each one (loading alone is ~2.0G):
+
+  | jess SCSS grammar | before | after |
+  | --- | --- | --- |
+  | as shipped | 13.6–13.8G | 12.9–13.3G |
+  | without the two `field()` wrappers it carries to keep this walk short | 295.6G | 12.8G |
+
+  With or without those wrappers the link now costs the same.
+
 ## 0.55.0 — 2026-10-19
 
 - `withCtx` takes a function to DERIVE the subtree's state from the state in force at
