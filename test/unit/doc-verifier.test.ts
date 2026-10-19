@@ -20,13 +20,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const SCRIPT = join(ROOT, 'scripts/verify-doc-examples.mjs')
 
 /** Run the verifier over one fixture doc; returns its report text. */
-function verify(markdown: string): { out: string; ok: boolean } {
+function verify(markdown: string, env: Record<string, string> = {}): { out: string; ok: boolean } {
   const dir = mkdtempSync(join(tmpdir(), 'pm-docverify-'))
   const file = join(dir, 'fixture.md')
   writeFileSync(file, markdown)
   try {
     const out = execFileSync(process.execPath, [SCRIPT, file], {
       cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
+      env: { ...process.env, ...env },
     })
     return { out, ok: true }
   } catch (e) {
@@ -173,6 +174,19 @@ describe('doc-example verifier — `[typed]` blocks are type-checked', () => {
     const plain = verify(block(erasedOnly))
     expect(plain.ok).toBe(true)
     expect(plain.out).toContain('1 pass, 0 fixed, 0 fail, 0 error')
+  })
+
+  it('fails when the compiler dies without a word, rather than reading silence as a pass', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-docverify-tsc-'))
+    const mute = join(dir, 'mute-tsc.mjs')
+    writeFileSync(mute, 'process.exit(2)\n')
+    try {
+      const r = verify(typed(`import { literal, parse } from 'parseman'\nparse(literal('x'), 'x').ok\n// → true`), { DOCS_VERIFY_TSC: mute })
+      expect(r.ok).toBe(false)
+      expect(r.out).toContain('ERROR  tsc  (type check)')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('passes a [typed] block that compiles', () => {

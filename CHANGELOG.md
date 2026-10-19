@@ -21,7 +21,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
   **Breaking:** a function passed as `extra` used to be installed AS the state. It is
   now always the derive form; to install a function value, wrap it
-  (`withCtx(() => fn, c)`). The guides also said the value form "merges" `extra`
+  (`withCtx(() => fn, c)`). The types enforce it: a callable no longer type-checks as a
+  replacement value. The guides also said the value form "merges" `extra`
   into the state; it never did, and they now say it replaces it.
 
 - `pnpm docs:verify` type-checks a guide example marked `// [verify] [typed]` under the

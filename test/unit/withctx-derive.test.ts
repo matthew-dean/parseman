@@ -102,6 +102,23 @@ describe('withCtx derive form — every engine', () => {
     expect(run(printed.grammar.Entry as never, 'a<b<c').value).toEqual(EXPECTED)
   })
 
+  it('types: an unannotated deriver compiles, and a callable can never pass as a replacement value', () => {
+    // Checked by `tsc` (test/ is in the project); never called.
+    const typeLevel = (): void => {
+      withCtx(s => ({ ...s, stop: 'comparison' }), Item)
+      withCtx((s: { mode: string }) => ({ ...s, stop: 'x' }), Item)
+      withCtx({ mode: 'm' }, Item)
+      withCtx('less-var-fallback', Item)
+      withCtx<{ on: boolean }, unknown>({ on: true }, Item)
+      // @ts-expect-error — two required parameters: not a deriver, and the runtime would call it as one
+      withCtx((_a: string, _b: string) => 'x', Item)
+      const fnOrState = ((): ((a: string, b: string) => string) | { mode: string } => ({ mode: 'm' }))()
+      // @ts-expect-error — may be callable at runtime, so it is not a replacement value either
+      withCtx(fnOrState, Item)
+    }
+    expect(typeof typeLevel).toBe('function')
+  })
+
   it('replace form is unchanged: the outer field is gone inside', () => {
     expect(run(withCtx({ mode: 'm' }, withCtx({ stop: 'comparison' }, Item)), 'a').value).toBe('undefined:comparison@0')
   })

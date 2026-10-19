@@ -28,7 +28,11 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
 // state in force is absent at the root, and otherwise conventionally an object.
 // Annotate the parameter when the grammar's state is something else.
 export function withCtx<S = Readonly<Record<string, unknown>> | undefined, U = unknown, T = unknown>(derive: (state: S) => U, combinator: Combinator<T>): Combinator<T>
-export function withCtx<U, T>(extra: U, combinator: Combinator<T>): Combinator<T>
+// A callable `extra` is excluded here because the runtime ALWAYS takes a function
+// as the derive form; without this, a function the derive overload rejects (two
+// required parameters, say) would type-check as a replacement value and then be
+// called as a deriver.
+export function withCtx<U, T>(extra: U extends (...args: never[]) => unknown ? never : U, combinator: Combinator<T>): Combinator<T>
 export function withCtx<T>(extra: unknown, combinator: Combinator<T>): Combinator<T> {
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,

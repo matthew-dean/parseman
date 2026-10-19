@@ -165,6 +165,8 @@ let blocksFound = 0
  * marked, so its types cannot regress.
  */
 const TYPED_MARK = '// [verify] [typed]'
+/** The compiler the pass runs. `DOCS_VERIFY_TSC` swaps it, so the no-output failure path is testable. */
+const TSC = process.env.DOCS_VERIFY_TSC ?? join(ROOT, 'node_modules/typescript/bin/tsc')
 const typedBlocks = []
 
 for (const file of DOCS) {
@@ -299,11 +301,13 @@ if (typedBlocks.length > 0) {
   }))
   let tscOut = ''
   try {
-    execFileSync(process.execPath, [join(ROOT, 'node_modules/typescript/bin/tsc'), '-p', join(tmp, 'tsconfig.json'), '--pretty', 'false'], {
+    execFileSync(process.execPath, [TSC, '-p', join(tmp, 'tsconfig.json'), '--pretty', 'false'], {
       cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     })
   } catch (e) {
-    tscOut = String(e.stdout || '') + String(e.stderr || '')
+    // A spawn failure (timeout, ENOBUFS, a missing compiler) can throw with both
+    // streams empty; that is tsc NOT RUNNING, never a pass.
+    tscOut = String(e.stdout || '') + String(e.stderr || '') || String(e.message || 'tsc failed')
   }
   const byPath = new Map(typedBlocks.map(b => [b.path, b]))
   const errors = new Map()
