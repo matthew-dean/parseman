@@ -147,19 +147,11 @@ class Encoder {
   private nonCommittingChoiceSites = new Set<number>()
   private failureRollbackCleanSites = new Set<number>()
   /**
-   * `hasSideWriter` memo for `failureNeedsRollback`, shared across every call
-   * for the lifetime of this `Encoder`. A cached entry is written only when
-   * `complete` is true, which means the answer is a path-independent fact
-   * about that combinator node — it does not depend on which root's traversal
-   * asked, only on the node's own reachable subgraph. Scoping the memo per call
-   * (as a local inside `failureNeedsRollback`) was correct but discarded that
-   * fact after every arm, so a grammar with many ordered-choice arms / optional
-   * / attempt sites re-walked the SAME shared rule graph from scratch for each
-   * site — O(sites × graph size) instead of O(graph size). Measured on the
-   * scss-parser grammar (composed CSS-base superset, the deepest/largest of the
-   * four grammars): 47-50s for one `compileRuleMap` with the per-call memo,
-   * versus the whole macro transform completing in under a second once this
-   * memo is hoisted here.
+   * `reachesSideWriter`'s answers, shared by every `failureNeedsRollback` call
+   * for the lifetime of this `Encoder`. Every entry is exact — it depends only on
+   * the node's own reachable subgraph, never on which root's walk asked — so each
+   * combinator is walked once per encode however many choice arms, optionals and
+   * attempt sites reach it.
    */
   private sideWriterMemo = new Map<Combinator<unknown>, boolean>()
   labels: readonly string[] | undefined = undefined
@@ -653,8 +645,7 @@ class Encoder {
    * writer census covers the side sinks that proof deliberately does not model:
    * fields, recovered errors, and interpreted scanners. Strict assemblies do
    * not run repeat recovery, but these rows can still publish through a caller's
-   * context. Cycles are safe to stop: revisiting the same combinator cannot
-   * discover a writer the first traversal did not already reach.
+   * context.
    */
   private failureNeedsRollback(
     p: Combinator<unknown>,
@@ -663,61 +654,94 @@ class Encoder {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     const winner = refName === undefined ? undefined : this.winners?.[refName]
     const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
-    const sideWriterMemo = this.sideWriterMemo
-    // A single mutable `seen` set threaded through the whole call, rather than
-    // copied at every recursion level: this DFS visits children strictly
-    // sequentially, so marking `current` in progress before recursing and
-    // clearing it once its subtree is fully explored reproduces the exact same
-    // ancestor-path membership an immutable copy-per-level would have computed,
-    // without the O(depth) allocation on every node.
-    const seen = new Set<Combinator<unknown>>()
-    const hasSideWriter = (current: Combinator<unknown>): { found: boolean; complete: boolean } => {
-      const cached = sideWriterMemo.get(current)
-      if (cached !== undefined) return { found: cached, complete: true }
-      if (seen.has(current)) return { found: false, complete: false }
-      seen.add(current)
-      const def = current._def
-      let result: { found: boolean; complete: boolean }
-      switch (def.tag) {
-        case 'field':
-        case 'expect':
-        case 'recover':
-        case 'scanTo':
-        case 'unknown':
-          result = { found: true, complete: true }
-          break
-        case 'lazy': {
-          const name = (current as unknown as { _ruleName?: string })._ruleName
-          const resolvedWinner = name === undefined ? undefined : this.winners?.[name]
-          if (resolvedWinner !== undefined && !winnerWrapsReference(resolvedWinner, current)) {
-            result = hasSideWriter(resolvedWinner)
-            break
+    return mayLeavePartialCapture(root, new Set(), true)
+      || this.reachesSideWriter(root)
+      || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
+  }
+
+  /**
+   * Whether a field, recovered error, interpreted scanner or unresolvable shape
+   * is reachable from `root` — the writer census of `failureNeedsRollback`.
+   *
+   * Reachability over a cyclic graph, decided with Tarjan's strongly connected
+   * components so that every node the walk enters leaves with its exact answer
+   * memoized: the members of one component reach each other, so they share one
+   * answer, settled when the walk returns to the component's first node. A DFS
+   * that instead cuts a cycle at its own ancestor path learns nothing it can
+   * keep about a node whose walk hit the cut, and re-walks that node along
+   * every path that reaches it — exponential over recursive value rules (linking
+   * jess's SCSS grammar cost ~290G instructions). This walk enters each node
+   * once per `Encoder`.
+   */
+  private reachesSideWriter(root: Combinator<unknown>): boolean {
+    const memo = this.sideWriterMemo
+    const known = memo.get(root)
+    if (known !== undefined) return known
+    const order = new Map<Combinator<unknown>, number>()
+    const low: number[] = []
+    const found: boolean[] = []
+    const stack: Combinator<unknown>[] = []
+    const visit = (node: Combinator<unknown>): number => {
+      const at = low.length
+      order.set(node, at)
+      low.push(at)
+      found.push(false)
+      stack.push(node)
+      const next = this.sideWriterSuccessors(node)
+      if (next === true) found[at] = true
+      else {
+        for (const child of next) {
+          const hit = memo.get(child)
+          if (hit !== undefined) {
+            if (hit) found[at] = true
+            continue
           }
-          try { result = hasSideWriter(def.thunk()) }
-          catch { result = { found: true, complete: true } }
-          break
-        }
-        default: {
-          let complete = true
-          result = { found: false, complete: true }
-          for (const child of childrenOf(def)) {
-            const childResult = hasSideWriter(child)
-            if (childResult.found) {
-              result = { found: true, complete: true }
-              break
-            }
-            complete &&= childResult.complete
+          const seen = order.get(child)
+          if (seen !== undefined) {
+            // Unmemoized but entered: still on the stack, so in this node's
+            // component. Its answer reaches the component's first node by the
+            // tree edges, not through here.
+            if (seen < low[at]!) low[at] = seen
+            continue
           }
-          if (!result.found) result = { found: false, complete }
+          const k = visit(child)
+          if (low[k]! < low[at]!) low[at] = low[k]!
+          if (found[k]) found[at] = true
         }
       }
-      seen.delete(current)
-      if (result.found || result.complete) sideWriterMemo.set(current, result.found)
-      return result
+      if (low[at] === at) {
+        const answer = found[at]!
+        let member: Combinator<unknown>
+        do {
+          member = stack.pop()!
+          memo.set(member, answer)
+        } while (member !== node)
+      }
+      return at
     }
-    return mayLeavePartialCapture(root, new Set(), true)
-      || hasSideWriter(root).found
-      || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
+    return found[visit(root)]!
+  }
+
+  /** The census's edges out of `node`, or `true` when `node` is itself a writer. */
+  private sideWriterSuccessors(node: Combinator<unknown>): readonly Combinator<unknown>[] | true {
+    const def = node._def
+    switch (def.tag) {
+      case 'field':
+      case 'expect':
+      case 'recover':
+      case 'scanTo':
+      case 'unknown':
+        return true
+      case 'lazy': {
+        const name = (node as unknown as { _ruleName?: string })._ruleName
+        const winner = name === undefined ? undefined : this.winners?.[name]
+        if (winner !== undefined && !winnerWrapsReference(winner, node)) return [winner]
+        try { return [def.thunk()] }
+        catch { return true }
+      }
+      default:
+        return childrenOf(def)
+    }
   }
 
   /** A first set becomes a char class string, or −1 for `any`. */
