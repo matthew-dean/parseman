@@ -988,7 +988,7 @@ state for the duration of `c`; `withCtx(state => next, c)` derives it from the o
 instead, so outer fields survive. See [Context](./context).
 
 ```ts
-// [verify]
+// [verify] [typed]
 import { gate, withCtx, sequence, literal, regex, parse } from 'parseman'
 
 const inFunction = (s: unknown) => (s as { inFunction?: boolean } | undefined)?.inFunction === true
@@ -1014,7 +1014,7 @@ const both = sequence(gate(inFunction), gate(strict), literal('x'))
 parse(withCtx({ strict: true }, withCtx({ inFunction: true }, both)), 'x').ok
 // → false
 
-parse(withCtx({ strict: true }, withCtx((s: object) => ({ ...s, inFunction: true }), both)), 'x').ok
+parse(withCtx({ strict: true }, withCtx(s => ({ ...s, inFunction: true }), both)), 'x').ok
 // → true
 ```
 

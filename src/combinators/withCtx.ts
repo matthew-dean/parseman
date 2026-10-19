@@ -24,7 +24,10 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
  *
  * Read back with gate() or from within a transform's span argument.
  */
-export function withCtx<S, U, T>(derive: (state: S) => U, combinator: Combinator<T>): Combinator<T>
+// `S` defaults to what a derive callback can assume without an annotation: the
+// state in force is absent at the root, and otherwise conventionally an object.
+// Annotate the parameter when the grammar's state is something else.
+export function withCtx<S = Readonly<Record<string, unknown>> | undefined, U = unknown, T = unknown>(derive: (state: S) => U, combinator: Combinator<T>): Combinator<T>
 export function withCtx<U, T>(extra: U, combinator: Combinator<T>): Combinator<T>
 export function withCtx<T>(extra: unknown, combinator: Combinator<T>): Combinator<T> {
   const meta: ParserMeta = {

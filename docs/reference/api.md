@@ -1098,6 +1098,9 @@ Run `combinator` with `ctx.state` scoped for its duration, restored on exit. A v
 REPLACES the state; a function DERIVES it — `withCtx(s => ({ ...s, stop: true }), c)` calls
 the function once per entry with the state in force there, so outer fields stay visible to
 the gates and reducers inside. A function argument always means the derive form.
+The callback's parameter is typed `Readonly<Record<string, unknown>> | undefined` unless you
+annotate it, so `s => ({ ...s, flag: true })` compiles as written; annotate it when your
+grammar's state has a known shape, or is not an object.
 
 ### `diagnoseGrammar(grammar, opts?)` → `GrammarDiagnosis`
 

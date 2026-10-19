@@ -156,3 +156,28 @@ describe('doc-example verifier — the discovery floor', () => {
     expect(r.out).not.toMatch(/DISCOVERY FLOOR/)
   })
 })
+
+describe('doc-example verifier — `[typed]` blocks are type-checked', () => {
+  const typed = (body: string): string => `# Fixture\n\n\`\`\`ts\n// [verify] [typed]\n${body}\n\`\`\`\n`
+  // Runs fine with types erased; a compile error for anyone who pastes it.
+  const erasedOnly = 'const n: number = 1\nconst s: string = n\ns\n// → 1'
+
+  it('reports a type error in a [typed] block against that block', () => {
+    const bad = verify(typed(erasedOnly))
+    expect(bad.ok).toBe(false)
+    expect(bad.out).toContain('(type check)')
+    expect(bad.out).toContain('TS2322')
+  })
+
+  it('leaves an unmarked block to the run alone', () => {
+    const plain = verify(block(erasedOnly))
+    expect(plain.ok).toBe(true)
+    expect(plain.out).toContain('1 pass, 0 fixed, 0 fail, 0 error')
+  })
+
+  it('passes a [typed] block that compiles', () => {
+    const good = verify(typed(`import { withCtx, literal, parse } from 'parseman'\nparse(withCtx(s => ({ ...s, on: true }), literal('x')), 'x').ok\n// → true`))
+    expect(good.out).toContain('1 pass, 0 fixed, 0 fail, 0 error')
+    expect(good.ok).toBe(true)
+  })
+})
