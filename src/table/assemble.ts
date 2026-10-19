@@ -1861,8 +1861,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_WITHCTX: {
         // `extra` and the child are both bound HERE; the piece only swaps a field.
-        const extra = k[code[ip + 1]!]
+        const ki = code[ip + 1]!
         const child = link(code[ip + 2]!)
+        if (ki < 0) {
+          const derive = fns[~ki] as (s: unknown) => unknown
+          return (input, pos, ctx) => {
+            const saved = ctx.state
+            ctx.state = derive(saved)
+            try { return child(input, pos, ctx) }
+            finally { ctx.state = saved }
+          }
+        }
+        const extra = k[ki]
         return (input, pos, ctx) => {
           const saved = ctx.state
           ctx.state = extra

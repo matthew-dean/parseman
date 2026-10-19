@@ -1592,6 +1592,11 @@ class Encoder {
           this.expected([adjacencyExpected(d)]),
         )
       case 'withCtx': {
+        // The DERIVE form is an author callback, parked in `fns` like a gate
+        // predicate and told apart from a const-pool index by its sign.
+        if (typeof d.extra === 'function') {
+          return this.emit(OP_WITHCTX, ~this.fn(d.extra, d.extraSrc ?? null), this.node(d.parser).ip)
+        }
         // `extra` is arbitrary user data in the const pool. `emitConst` takes
         // scalars, arrays of scalars, and plain objects of those — anything
         // richer (a class instance, a function value) RUNS fine but cannot be

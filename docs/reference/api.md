@@ -1094,7 +1094,10 @@ Alias of `gate(predicate)` (documented just above). Prefer `gate()`.
 
 ### `withCtx(extra, combinator)`
 
-Run `combinator` with `extra` merged into `ctx.state`, restored on exit.
+Run `combinator` with `ctx.state` scoped for its duration, restored on exit. A value
+REPLACES the state; a function DERIVES it — `withCtx(s => ({ ...s, stop: true }), c)` calls
+the function once per entry with the state in force there, so outer fields stay visible to
+the gates and reducers inside. A function argument always means the derive form.
 
 ### `diagnoseGrammar(grammar, opts?)` → `GrammarDiagnosis`
 

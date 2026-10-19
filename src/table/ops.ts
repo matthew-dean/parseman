@@ -217,7 +217,9 @@ export const OP_TOKEN = 29
  */
 export const OP_SCOPE_CAP = 30
 /**
- * `WITHCTX k c` — `withCtx(extra, c)`. `k` is `extra` in the const pool.
+ * `WITHCTX k c` — `withCtx(extra, c)`. `k >= 0` is `extra` in the const pool
+ * (the replace form); `k < 0` is the derive form, `~k` indexing the author's
+ * `(state) => state` in `prog.fns`, called once per entry with the outer state.
  *
  * SAVE / RESTORE, matching `withCtx.ts`. Both used to CLONE the context, which
  * scoped far more than the state: every scalar the child wrote on `ctx` landed

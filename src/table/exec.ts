@@ -803,7 +803,8 @@ function makeDriver(
 
       case OP_WITHCTX: {
         const saved = ctx.state
-        ctx.state = k[code[ip + 1]!]
+        const ki = code[ip + 1]!
+        ctx.state = ki >= 0 ? k[ki] : (fns[~ki] as (s: unknown) => unknown)(saved)
         try { return exec(code[ip + 2]!, input, pos, ctx) }
         finally { ctx.state = saved }
       }

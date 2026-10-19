@@ -102,6 +102,8 @@ export type ParserDef =
   // asserts that something did. `kinds` (notAdjacent only) narrows the assertion to
   // trivia CATEGORIES from `classifiedTrivia({...})`. See combinators/adjacency.ts.
   | { tag: 'adjacency'; polarity: 'adjacent' | 'notAdjacent'; kinds?: readonly string[] }
+  // `extra` is the subtree's state (replace form) or, when it is a function, the
+  // `(state) => state` that derives it from the state in force at entry.
   | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown>; extraSrc?: string }
   | { tag: 'recover';  parser: Combinator<unknown>; sentinel: Combinator<unknown> }
   | { tag: 'expect';   parser: Combinator<unknown>; label: string | undefined; expected: string[] }

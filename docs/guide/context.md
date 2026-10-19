@@ -7,8 +7,12 @@ re-parsing can replay the exact context a node was parsed under.
 
 ## `withCtx` and `gate`
 
-- **`withCtx(extra, combinator)`** merges `extra` into the user context (`ctx.state`) for
-  the duration of `combinator`, then restores it on exit.
+- **`withCtx(extra, combinator)`** sets the user context (`ctx.state`) to `extra` for the
+  duration of `combinator`, then restores it on exit. Pass a **function** instead and the
+  subtree's state is *derived* from the state in force at entry —
+  `withCtx(s => ({ ...s, inFn: true }), body)` adds `inFn` while every outer field (an
+  option, a document-wide sink a reducer writes to) stays visible inside. The function runs
+  once per entry, not per token.
 - **`gate(predicate)`** succeeds, consuming nothing, only when `predicate(ctx.state)`
   returns true — it asserts something about the runtime context mid-sequence.
 
