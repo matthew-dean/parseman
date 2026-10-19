@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.55.0 — unreleased
+## 0.55.0 — 2026-10-19
 
 - `withCtx` takes a function to DERIVE the subtree's state from the state in force at
   entry: `withCtx(s => ({ ...s, stop: 'comparison' }), value)`. The value form
