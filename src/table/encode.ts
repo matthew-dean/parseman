@@ -1,7 +1,7 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
-import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture } from '../analysis/commitment.ts'
+import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
@@ -154,6 +154,13 @@ class Encoder {
    * attempt sites reach it.
    */
   private sideWriterMemo = new Map<Combinator<unknown>, boolean>()
+  /**
+   * `mayCommitFailure`'s answers, shared by every choice site for the lifetime
+   * of this `Encoder` — exact for the graph and the `winners` resolver it is
+   * encoding, so the rule graph is walked once per encode rather than once per
+   * choice site.
+   */
+  private commitFailureMemo = new Map<Combinator<unknown>, boolean>()
   labels: readonly string[] | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
@@ -661,65 +668,11 @@ class Encoder {
 
   /**
    * Whether a field, recovered error, interpreted scanner or unresolvable shape
-   * is reachable from `root` — the writer census of `failureNeedsRollback`.
-   *
-   * Reachability over a cyclic graph, decided with Tarjan's strongly connected
-   * components so that every node the walk enters leaves with its exact answer
-   * memoized: the members of one component reach each other, so they share one
-   * answer, settled when the walk returns to the component's first node. A DFS
-   * that instead cuts a cycle at its own ancestor path learns nothing it can
-   * keep about a node whose walk hit the cut, and re-walks that node along
-   * every path that reaches it — exponential over recursive value rules (linking
-   * jess's SCSS grammar cost ~290G instructions). This walk enters each node
-   * once per `Encoder`.
+   * is reachable from `root` — the writer census of `failureNeedsRollback`,
+   * entering each combinator once per `Encoder` (see `reachesMarked`).
    */
   private reachesSideWriter(root: Combinator<unknown>): boolean {
-    const memo = this.sideWriterMemo
-    const known = memo.get(root)
-    if (known !== undefined) return known
-    const order = new Map<Combinator<unknown>, number>()
-    const low: number[] = []
-    const found: boolean[] = []
-    const stack: Combinator<unknown>[] = []
-    const visit = (node: Combinator<unknown>): number => {
-      const at = low.length
-      order.set(node, at)
-      low.push(at)
-      found.push(false)
-      stack.push(node)
-      const next = this.sideWriterSuccessors(node)
-      if (next === true) found[at] = true
-      else {
-        for (const child of next) {
-          const hit = memo.get(child)
-          if (hit !== undefined) {
-            if (hit) found[at] = true
-            continue
-          }
-          const seen = order.get(child)
-          if (seen !== undefined) {
-            // Unmemoized but entered: still on the stack, so in this node's
-            // component. Its answer reaches the component's first node by the
-            // tree edges, not through here.
-            if (seen < low[at]!) low[at] = seen
-            continue
-          }
-          const k = visit(child)
-          if (low[k]! < low[at]!) low[at] = low[k]!
-          if (found[k]) found[at] = true
-        }
-      }
-      if (low[at] === at) {
-        const answer = found[at]!
-        let member: Combinator<unknown>
-        do {
-          member = stack.pop()!
-          memo.set(member, answer)
-        } while (member !== node)
-      }
-      return at
-    }
-    return found[visit(root)]!
+    return reachesMarked(root, node => this.sideWriterSuccessors(node), this.sideWriterMemo)
   }
 
   /** The census's edges out of `node`, or `true` when `node` is itself a writer. */
@@ -1268,7 +1221,7 @@ class Encoder {
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
-        if (arms.every(arm => !mayCommitFailure(arm, new Set(), rr))) {
+        if (arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))) {
           this.nonCommittingChoiceSites.add(head)
         }
         return head

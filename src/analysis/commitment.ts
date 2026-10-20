@@ -441,24 +441,41 @@ export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<u
   }
 }
 
-/** True when `p` can report a committed failure through emitFallible's failure channel. */
+/**
+ * True when `p` can report a committed failure through emitFallible's failure
+ * channel: a `dispatch`, or a shape this analysis cannot see into, is reachable
+ * along `commitFailureSuccessors`' edges.
+ *
+ * `memo` carries exact answers between calls over one graph and one `resolve`;
+ * a caller asking at many sites passes the same map to every call, so the graph
+ * is walked once rather than once per site.
+ */
 export function mayCommitFailure(
   p: Combinator<unknown>,
-  seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
+  memo: Map<Combinator<unknown>, boolean> = new Map(),
 ): boolean {
-  if (seen.has(p)) return false
-  seen.add(p)
+  return reachesMarked(p, node => commitFailureSuccessors(node, resolve), memo)
+}
+
+const NO_EDGES: readonly Combinator<unknown>[] = []
+
+/** `mayCommitFailure`'s edges out of `p`, or `true` when `p` itself can commit. */
+function commitFailureSuccessors(
+  p: Combinator<unknown>,
+  resolve: RefResolver | undefined,
+): readonly Combinator<unknown>[] | true {
   const d = p._def
   switch (d.tag) {
     case 'dispatch':
+    case 'unknown':
       return true
     case 'choice':
     case 'sequence':
-      return d.parsers.some(x => mayCommitFailure(x, seen, resolve))
+      return d.parsers
     // A contained transaction reports every failure uncommitted.
     case 'attempt':
-      return d.contain !== true && mayCommitFailure(d.parser, seen, resolve)
+      return d.contain === true ? NO_EDGES : [d.parser]
     case 'many':
     case 'oneOrMore':
     case 'optional':
@@ -467,32 +484,102 @@ export function mayCommitFailure(
     case 'field':
     case 'grammar':
     case 'node':
-      return mayCommitFailure(d.parser, seen, resolve)
-    case 'sepBy':
-      return mayCommitFailure(d.parser, seen, resolve) || mayCommitFailure(d.separator, seen, resolve)
     case 'token':
     case 'leaf':
-      return mayCommitFailure(d.parser, seen, resolve)
     case 'withCtx':
-      return mayCommitFailure(d.parser, seen, resolve)
+      return [d.parser]
+    case 'sepBy':
+      return [d.parser, d.separator]
     case 'scanTo':
-      return mayCommitFailure(d.sentinel, seen, resolve)
-        || d.skip.some(x => mayCommitFailure(x, seen, resolve))
-        || (d.recoverAt !== undefined && mayCommitFailure(d.recoverAt, seen, resolve))
-        || (d.stopAt !== undefined && mayCommitFailure(d.stopAt, seen, resolve))
+      return [
+        d.sentinel,
+        ...d.skip,
+        ...(d.recoverAt === undefined ? NO_EDGES : [d.recoverAt]),
+        ...(d.stopAt === undefined ? NO_EDGES : [d.stopAt]),
+      ]
     case 'lazy': {
-      try { return mayCommitFailure(d.thunk(), seen, resolve) }
+      try { return [d.thunk()] }
       catch {
         const name = (p as unknown as { _ruleName?: string })._ruleName
         const target = name === undefined ? undefined : resolve?.(name)
-        return target === undefined ? true : mayCommitFailure(target, seen, resolve)
+        return target === undefined ? true : [target]
       }
     }
-    case 'unknown':
-      return true
     default:
-      return false
+      return NO_EDGES
   }
+}
+
+/**
+ * Whether a MARKED node — one `successors` answers `true` for — is reachable
+ * from `root`.
+ *
+ * Reachability over a cyclic graph, decided with Tarjan's strongly connected
+ * components so that every node the walk enters leaves with its exact answer in
+ * `memo`: the members of one component reach each other, so they share one
+ * answer, settled when the walk returns to the component's first node. A DFS
+ * that instead cuts a cycle at its own ancestor path learns nothing it can keep
+ * about a node whose walk hit the cut; one that keeps a visited set per call
+ * keeps nothing past the call. Shared across calls, `memo` makes every node
+ * entered once however many roots are asked about.
+ *
+ * `memo` must only ever be used with one `successors`: its entries are answers
+ * about that graph.
+ */
+export function reachesMarked<T>(
+  root: T,
+  successors: (node: T) => readonly T[] | true,
+  memo: Map<T, boolean>,
+): boolean {
+  const known = memo.get(root)
+  if (known !== undefined) return known
+  const order = new Map<T, number>()
+  const low: number[] = []
+  const found: boolean[] = []
+  const stack: T[] = []
+  const visit = (node: T): number => {
+    const at = low.length
+    order.set(node, at)
+    low.push(at)
+    found.push(false)
+    stack.push(node)
+    const next = successors(node)
+    if (next === true) found[at] = true
+    else {
+      for (const child of next) {
+        // Settled: a node that reaches a marked node is answered, and so is
+        // every node still above it on the stack, since each reaches it. The
+        // children left unentered stay unmemoized for a later walk to settle.
+        if (found[at]) break
+        const hit = memo.get(child)
+        if (hit !== undefined) {
+          if (hit) found[at] = true
+          continue
+        }
+        const seen = order.get(child)
+        if (seen !== undefined) {
+          // Unmemoized but entered: still on the stack, so in this node's
+          // component. Its answer reaches the component's first node by the
+          // tree edges, not through here.
+          if (seen < low[at]!) low[at] = seen
+          continue
+        }
+        const k = visit(child)
+        if (low[k]! < low[at]!) low[at] = low[k]!
+        if (found[k]) found[at] = true
+      }
+    }
+    if (low[at] === at) {
+      const answer = found[at]!
+      let member: T
+      do {
+        member = stack.pop()!
+        memo.set(member, answer)
+      } while (member !== node)
+    }
+    return at
+  }
+  return found[visit(root)]!
 }
 
 /** A leaf-composed imported piece may carry Parseman's own structural balanced

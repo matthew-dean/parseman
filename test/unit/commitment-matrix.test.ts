@@ -223,9 +223,9 @@ describe('commitment proof predicates', () => {
 
     const imported = throwingRef() as Combinator<unknown> & { _ruleName?: string }
     imported._ruleName = 'Imported'
-    expect(mayCommitFailure(imported, new Set(), name =>
+    expect(mayCommitFailure(imported, name =>
       name === 'Imported' ? literal('x') : undefined)).toBe(false)
-    expect(mayCommitFailure(imported, new Set(), name =>
+    expect(mayCommitFailure(imported, name =>
       name === 'Imported' ? cut : undefined)).toBe(true)
   })
 })
