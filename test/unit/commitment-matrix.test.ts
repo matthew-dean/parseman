@@ -228,6 +228,30 @@ describe('commitment proof predicates', () => {
     expect(mayCommitFailure(imported, name =>
       name === 'Imported' ? cut : undefined)).toBe(true)
   })
+
+  it('answers every node of a cycle exactly from one shared memo, whichever is asked first', () => {
+    // A → B → A, where B reaches a dispatch only through the arm AFTER the one
+    // that loops back: the walk meets the cycle before it meets the dispatch.
+    const cycle = (committing: boolean): Combinator<unknown>[] => {
+      const a = ref<unknown>()
+      const b = ref<unknown>()
+      const loop = sequence(literal('('), a)
+      const later = committing ? sequence(literal('['), dispatch(literal('x'), when('x', literal('!')))) : literal('[')
+      const aBody = sequence(literal('a'), b)
+      b.define(choice(loop, later))
+      a.define(aBody)
+      return [a, aBody, b, loop]
+    }
+    for (const committing of [true, false]) {
+      const nodes = cycle(committing)
+      for (let first = 0; first < nodes.length; first++) {
+        const memo = new Map<Combinator<unknown>, boolean>()
+        for (const n of [...nodes.slice(first), ...nodes.slice(0, first)].reverse()) {
+          expect(mayCommitFailure(n, undefined, memo)).toBe(committing)
+        }
+      }
+    }
+  })
 })
 
 describe('rule-map semantic classification', () => {
