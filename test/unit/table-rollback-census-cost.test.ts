@@ -54,13 +54,14 @@ function rollbackMasks(n: number, withField: boolean): number[] {
 describe('link-time rollback census over recursive rules', () => {
   // Each rule's two arms both reach the next rule, so a walk that keeps no
   // answer for a node whose walk was cut at a cycle re-enters every rule along
-  // all 2^n paths: doubling the depth squared the link's work. The census
-  // enters each node once; the rest of the link is at most quadratic in the
-  // number of choice sites, so doubling the depth may at most quadruple it.
-  it('does polynomial, not exponential, link work over recursive rules', () => {
-    const small = linkReads(8)
-    const large = linkReads(16)
-    expect(large / small).toBeLessThan(4)
+  // all 2^n paths: doubling the depth squared the link's work. One that keeps a
+  // visited set only for the length of one call walks the whole ring again at
+  // every choice site: doubling the depth quadrupled it. Every link-time census
+  // enters each node once per encode, so doubling the ring doubles the work.
+  it('does linear link work over recursive rules', () => {
+    const small = linkReads(16)
+    const large = linkReads(32)
+    expect(large / small).toBeLessThan(2.5)
   })
 
   it('keeps the rollback of every arm that reaches a field only around the cycle', () => {
