@@ -3,6 +3,30 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.55.2 — 2026-10-20
+
+- Linking a grammar no longer takes quadratic time in its size. For each ordered
+  choice, the table encoder asks whether any arm can fail after committing to a
+  `dispatch` branch. That walk kept a visited set for one question only, so it walked
+  the whole rule graph reachable from each choice again: on rules that recurse through
+  each other, every choice walked all of them. It now uses the same
+  strongly-connected-components walk 0.55.1 gave the rollback check, sharing its
+  answers across every choice in the link, so each combinator is entered at most once
+  per link. Every answer is the same as before: the encoded tables of jess's four
+  grammars, in all four AST/CST × line-tracking variants, are identical before and
+  after.
+
+  Combinator reads to link a ring of rules, each a choice of two arms over the next:
+
+  | rules in the ring | before | after |
+  | --- | --- | --- |
+  | 16 | 2,848 | 1,360 |
+  | 32 | 8,768 | 2,720 |
+  | 64 | 29,824 | 5,440 |
+
+  Jess's four grammars mostly reach a `dispatch` within a few steps, so the old walk
+  stopped early there: their link cost is unchanged within noise.
+
 ## 0.55.1 — 2026-10-19
 
 - Linking a grammar no longer takes exponential time over recursive rules. For each
