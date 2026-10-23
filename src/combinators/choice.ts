@@ -128,8 +128,7 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       // could have started here" the in-bounds miss below gives. Falling through to
       // firstMatch instead made this position the ONE place a gated-off arm was
       // dropped from the report — firstMatch `continue`s past it and contributes
-      // nothing — while the in-bounds miss runs `parsers.flatMap` ignoring gates and
-      // DOES name it. Same gate state, same "no arm can match", two different
+      // nothing — while the in-bounds miss names every arm, gates ignored. Same gate state, same "no arm can match", two different
       // answers; codegen and both table drivers only ever gave the union. Accept and
       // reject are untouched: every arm fails at EOF on either path.
       if (disjoint) {
@@ -154,14 +153,13 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
           if (result.committed) return { ok: false, expected, span: { start: pos, end: pos }, committed: true }
           return { ok: false, expected, span: { start: pos, end: pos } }
         }
-        return {
-          ok: false,
-          expected: parsers.flatMap(p => {
-            const r = p.parse(input, pos, ctx)
-            return r.ok ? [] : r.expected
-          }),
-          span: { start: pos, end: pos },
-        }
+        // No arm's first set holds this character (or the input has ended), so
+        // every arm fails here without reading it. The report is the arms' static
+        // expectations: the set this choice's scalar path and both table drivers
+        // report for the same miss. A completion probe or recovery sink still sees
+        // each arm fail, as it does behind node/attempt/repeat's first-set guards.
+        if (ctx._probe !== undefined || ctx._tolerant) for (const p of parsers) p.parse(input, pos, ctx)
+        return { ok: false, expected: [...scalarExpected], span: { start: pos, end: pos } }
       }
 
       // ── greedyClassify: run one regex, classify by string equality ─────────

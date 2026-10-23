@@ -117,30 +117,19 @@ function reducerSource(fn: unknown): string {
  * KNOWN, PINNED table-vs-interpreter `expected` divergences — `${id}|${input}`.
  *
  * Not a suppression: both sides are written down, and both are asserted exactly.
- * If either moves, or if the divergence is repaired, this test fails and says so
+ * If either moves, or if a divergence is repaired, this test fails and says so
  * — which is the opposite of the silence that let css and jsonc sit unprintable.
  *
- * THE ONE ENTRY, and why it is recorded here rather than fixed here. A failing
- * `keywords()` reports the CATEGORY, `['keyword']`, not the family's literals
- * (combinators/keywords.ts:137), and `table/encode.ts:505-515` deliberately
- * matches that for the keywords ROW. The CHOICE row a few cases down
- * (`encode.ts:640`) builds its expected set from `deriveExpected`, which recites
- * the literals instead (`combinators/expect.ts:44`) — so a choice OVER a
- * keywords arm reports what the settled decision at `encode.ts:515` says it must
- * not. `graphqlDoc` is `choice(operationDefinition, fragmentDefinition)` over
- * `keywords(['query','mutation','subscription'])` and `kw('fragment')`, so it
- * lands exactly on that seam.
- *
- * The repair belongs in `deriveExpected`, which is shared by BOTH lowerings and
- * by `expect()`; changing it is a semantics change to error reporting across the
- * whole library, and it is not this lane's. Pinned and reported instead.
+ * The table is empty: every shipped example reports one expected set from both
+ * engines. At `###`, `graphqlDoc`'s disjoint choice misses on its first
+ * character, and both engines report its arms' derived set. Note what that set
+ * recites for a `keywords()` arm: its literals (`combinators/expect.ts`), where a
+ * failing `keywords()` itself reports the category `['keyword']`
+ * (`combinators/keywords.ts`, matched by the keywords ROW in `table/encode.ts`).
+ * Both engines agree on it; aligning `deriveExpected` with the category is a
+ * library-wide change to error reporting, outside this table.
  */
-const EXPECTED_DIVERGENCE: Readonly<Record<string, { interpreter: readonly string[]; table: readonly string[] }>> = {
-  'example/graphql|###': {
-    interpreter: ['"{"', 'keyword', 'keyword'],
-    table: ['"{"', '"subscription"', '"mutation"', '"query"', '"fragment"'],
-  },
-}
+const EXPECTED_DIVERGENCE: Readonly<Record<string, { interpreter: readonly string[]; table: readonly string[] }>> = {}
 
 /** The parse facts a consumer can observe, as one comparable string. */
 function outcome(rule: unknown, input: string, dropExpected = false): string {

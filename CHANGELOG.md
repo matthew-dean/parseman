@@ -3,6 +3,27 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.55.3 — 2026-10-23
+
+- A disjoint `choice` whose first-character dispatch finds no arm for the next
+  character, or meets the end of the input, fails without running any arm. It reports
+  its arms' derived expectations, the set its scalar path, `run()` and `compile()`
+  report for the same miss, so the interpreter and the table name the same tokens
+  there. A completion probe or recovery still runs each arm, so `completionsAt` and
+  tolerant parses see every arm fail. A miss costs one dispatch lookup, where running
+  the arms cost all of them at every position a lexer probes. A two-arm fence-opener
+  choice probed at each character of 460 KB:
+
+  | per miss | before | after |
+  | --- | --- | --- |
+  | interpreter `choice.parse` | 175.7 ns | 22.4 ns |
+
+  The report changes where an arm's own failure differed from its derived set: an arm
+  with a nullable prefix names the prefix's tokens too, and a `keywords()` or `word()`
+  arm names its literals. Those are the sets `run()` reported. `example/graphql` at
+  `###` held the one pinned interpreter-and-table divergence in the shipped examples;
+  both report `["{", "subscription", "mutation", "query", "fragment"]` there.
+
 ## 0.55.2 — 2026-10-20
 
 - Linking a grammar no longer takes quadratic time in its size. For each ordered
