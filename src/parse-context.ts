@@ -48,6 +48,8 @@ export function createParseContext(): ParseContext {
     _triviaCaptureMask: undefined,
     trackLines: false,
     state: undefined,
+    lineView: undefined,
+    _columnsSplit: undefined,
     build: undefined,
     _errors: undefined,
     _tolerant: undefined,

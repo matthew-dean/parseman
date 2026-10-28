@@ -5,7 +5,7 @@
  * `run()` and the macro build.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, columns, compile, lines, literal, many, not, optional, peek, regex, rules, run, sequence, sourceOffset, transform } from '../../src/index.ts'
+import { choice, columns, compile, expect as required, lines, literal, many, not, optional, parse, peek, regex, rules, run, sequence, sourceOffset, transform } from '../../src/index.ts'
 import type { Combinator, LineView, ParseContext } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { assertMacroCompiled, evalMacroModule } from '../helpers/eval-macro-module.ts'
@@ -81,6 +81,21 @@ describe('lines()', () => {
     const result = lines(quotePrefix, paragraphs).parse('a\n> b', 0, ctx())
     expect(result).toMatchObject({ ok: false, span: { start: 0, end: 0 } })
     expect(compile(lines(quotePrefix, paragraphs)).parse('a\n> b', 0, ctx()).ok).toBe(false)
+  })
+
+  it('takes no tab columns from a prefix that looks ahead or a branch it rejects', () => {
+    // `peek(columns(2))` and the rejected arm each stop before the tab without consuming it.
+    for (const prefix of [peek(columns(2)), choice(sequence(columns(2), literal('x')), literal(''))]) {
+      expect(lines(prefix, columns(4)).parse('\ty', 0, ctx())).toMatchObject({ ok: true, value: '\t', span: { start: 0, end: 1 } })
+    }
+  })
+
+  it('records line positions and recovered errors in its own input', () => {
+    const quoteLine = lines(literal('> '), regex(/[^\n]*\n?/))
+    expect(parse(quoteLine, '> a\n> b', { trackLines: true }).span).toEqual({ start: 0, end: 4, startLine: 1, startColumn: 1, endLine: 2, endColumn: 1 })
+    // The body misses `;` after `a`, which sits at offset 1 of its input and 5 of the run's.
+    expect(run(sequence(literal('x\n'), lines(literal('> '), sequence(literal('a'), required(literal(';'))))), 'x\n> a').errors)
+      .toEqual([{ _tag: 'parseError', span: { start: 5, end: 5 }, expected: ['";"'] }])
   })
 
   it('keeps each prefix on its own line', () => {

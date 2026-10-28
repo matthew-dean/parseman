@@ -29,7 +29,7 @@ export type TriviaScan = { end: number; commit: () => void }
 export type CompactTriviaScan = number | TriviaScan
 
 /** Saved lengths for rolling back speculative trivia commits. */
-export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; log: number; rootLog: number }
+export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; split: ParseContext['_columnsSplit']; log: number; rootLog: number }
 
 const NOOP_COMMIT = () => {}
 
@@ -86,6 +86,7 @@ export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
     leaves: m.leaves,
     fields: m.fields,
     errors: m.errors,
+    split: m.split,
     log: ctx._triviaLog ? ctx._triviaLog.length : 0,
     rootLog: ctx._rootTriviaLog ? ctx._rootTriviaLog.length : 0,
   }
@@ -113,7 +114,7 @@ export function rollbackTriviaAt(
 }
 
 export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): void {
-  rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields, errors: mark.errors })
+  rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields, errors: mark.errors, split: mark.split })
   // Guarded like every other truncation — see rollbackCstCapture.
   if (ctx._triviaLog && ctx._triviaLog.length !== mark.log) ctx._triviaLog.length = mark.log
   if (ctx._rootTriviaLog && ctx._rootTriviaLog.length !== mark.rootLog) ctx._rootTriviaLog.length = mark.rootLog

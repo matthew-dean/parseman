@@ -13,14 +13,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   after the last line `body` consumed, so lines it leaves are the enclosing
   grammar's. While `body` runs, `ctx.lineView` lists each line's offsets, column,
   split tab and lazy flag, and `sourceOffset(view, offset)` maps a body offset
-  back to the run's input. Prefix and lazy checks run as detached probes, and a
-  first line without its prefix fails uncommitted, so `lines()` works as a
-  `choice()` arm.
+  back to the run's input. Errors the body recovers from are recorded at their
+  offsets in the run's input, and line tracking records the run's lines there.
+  Prefix and lazy checks run as detached probes, and a first line without its
+  prefix fails uncommitted, so `lines()` works as a `choice()` arm.
 - `columns(n)` matches `n` columns of spaces and tabs with tab stops every four
   columns, counted from the line's column in the outermost input through every
   enclosing run. When the `n`th column falls inside a tab it stops before the tab,
   and a `lines()` prefix ending there leaves the tab's remaining columns in the
-  content.
+  content. A lookahead or a rejected branch takes no columns from the tab.
 - `compile()`, `run()`, the macro build and the grammar analyses handle both
   combinators; the table runs them through its scan opcode.
 - Perf gates `bench/grammar-density/config.json` and `bench/workloads/config.json`

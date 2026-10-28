@@ -1,6 +1,7 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any } from './first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 
 /**
  * One line of a run that `lines()` hands its body.
@@ -146,8 +147,13 @@ export function columns(n: number): Combinator<string> {
  * and `lines()` count tab stops from the right column. The result spans from
  * `pos` to where the body stopped, mapped back to this input: a run ends after
  * the last line the body consumed, so lines it leaves are the enclosing
- * grammar's. Spans inside the body's value are offsets in the body's input;
- * `sourceOffset(view, offset)` maps them back.
+ * grammar's. Spans inside the body's value and its CST are offsets in the
+ * body's input; `sourceOffset(view, offset)` maps them back. Recovered errors
+ * the body records are mapped back to this input. Line tracking records the
+ * run's lines in this input, and completion probes see the run as a whole.
+ *
+ * The run is read before the body runs, so a body that leaves most of its run
+ * makes a repeated run reread the lines it left: a body reads its run to the end.
  */
 export function lines<T>(prefix: Combinator<unknown>, body: Combinator<T>, options: LinesOptions = {}): Combinator<T> {
   const { first, lazy } = options
@@ -195,11 +201,19 @@ export function lines<T>(prefix: Combinator<unknown>, body: Combinator<T>, optio
         if (!newline) break
       }
       const view: LineView = { lines: run, parent: c.lineView }
-      const saved = c.lineView
-      c.lineView = view
+      // The body parses another string: what records positions in this input
+      // (the line index, the completion probe) stays out of its way.
+      const saved = c.lineView, starts = c._lineStarts, lineIndex = c._lineIndex, scanned = c._lineScannedTo, probing = c._probe
+      const errors = c._errors?.length ?? 0
+      c.lineView = view; c._lineStarts = undefined; c._lineIndex = undefined; c._lineScannedTo = undefined; c._probe = undefined
       let result: ParseResult<T>
       try { result = body.parse(parts.join(''), 0, ctx) }
-      finally { c.lineView = saved }
+      finally { c.lineView = saved; c._lineStarts = starts; c._lineIndex = lineIndex; c._lineScannedTo = scanned; c._probe = probing }
+      // Errors the body recovered from move to where they are in this input.
+      if (c._errors !== undefined) for (let i = errors; i < c._errors.length; i++) {
+        const error = c._errors[i] as { span: { start: number; end: number } }
+        error.span = { start: sourceOffset(view, error.span.start), end: sourceOffset(view, error.span.end) }
+      }
       if (!result.ok) {
         const at = sourceOffset(view, result.span.start)
         return { ...result, span: { start: at, end: at } }
@@ -212,6 +226,7 @@ export function lines<T>(prefix: Combinator<unknown>, body: Combinator<T>, optio
       const end = stop === line.offset && index > 0 ? run[index - 1]!.end + 1
         : stop - line.offset > line.end - line.source ? line.end + 1
         : line.source + (stop - line.offset)
+      recordLineRangeFromContext(c, input, pos, end)
       return { ok: true, value: result.value, span: { start: pos, end } }
     },
   }

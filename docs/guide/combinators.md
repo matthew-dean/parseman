@@ -1262,7 +1262,12 @@ its column, the columns of a split tab, and whether it joined lazily, plus the
 enclosing run's view. Spans inside `body`'s value are offsets in the body's
 input; `sourceOffset(ctx.lineView, offset)` maps one back to the run's input. A
 hand-written body combinator reads `ctx.lineView` to place what it builds in the
-source.
+source. Errors the body recovers from are recorded at their offsets in the run's
+input, and line tracking records the run's lines there too.
+
+`lines()` reads its whole run before `body` runs. A body that consumes one line
+of a long run leaves the rest for the next run to read again, so a body reads
+its run to the end.
 
 Prefixes and lazy checks run as probes: they add no CST leaves, trivia or errors
 to the enclosing parse, and a prefix never reaches past its own line. A first
