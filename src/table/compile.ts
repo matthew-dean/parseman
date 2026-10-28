@@ -277,8 +277,11 @@ function compileImpl<T>(
     // falls back to regex-scanning generated hooks; a table has no hooks to scan,
     // so this is the channel.
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    parse(input: string, pos = 0): ParseResult<T> {
-      return runOnce(input, pos, createParseContext())
+    // The same three arguments as a combinator's own `parse`, so a compiled
+    // parser runs where a combinator does. A caller probing many positions
+    // passes one context and pays for none per call.
+    parse(input: string, pos = 0, ctx?: ParseContext): ParseResult<T> {
+      return runOnce(input, pos, ctx ?? createParseContext())
     },
     parseWithContext(input: string, parseCtx: ParseContext, pos = 0): ParseResult<T> {
       return runOnce(input, pos, parseCtx)

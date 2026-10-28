@@ -82,6 +82,10 @@ compiled.source                                  // printable table module sourc
 compiled.inlineExpression                        // table expression (requires tableRules)
 ```
 
+`parse(input, pos, ctx)` takes the same arguments as a combinator's own `parse`. A
+lexer that asks a compiled grammar what starts at many positions passes one context
+to every call; without one, each call makes its own.
+
 `compile()` also takes a whole rule map — a `rules()` grammar or a runtime `compose()`
 result — and returns a map of runnable table rules that `run()` and `parseDoc()` accept:
 

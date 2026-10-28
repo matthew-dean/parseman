@@ -1814,6 +1814,9 @@ export function execRules(
     // set instead gave a `composeLeaf` piece's rules a skip list the interpreter
     // never gives them — a divergence that is invisible, because the parse
     // succeeds having skipped over a delimiter it should have stopped at.
-    scanSkipFor: ri => d.scanSkip[prog.scanSkipOf?.[ri] ?? -1],
+    scanSkipFor: ri => {
+      const slot = prog.scanSkipOf?.[ri]
+      return slot === undefined || slot < 0 ? undefined : d.scanSkip[slot]
+    },
   }, artifactMetadata, t)
 }
