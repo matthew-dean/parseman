@@ -1,3 +1,4 @@
+import type { LineView } from './combinators/lines.ts'
 import type { LabeledTriviaSpec } from './cst/trivia-kinds.ts'
 
 export type Span = {
@@ -113,6 +114,11 @@ export type ParserDef =
   // pre-ambient raw byte-walk.
   | { tag: 'scanTo';   sentinel: Combinator<unknown>; skip: Combinator<unknown>[]; raw: boolean; orEOF: boolean; recoverAt?: Combinator<unknown>; stopAt?: Combinator<unknown> }
   | { tag: 'keywords'; words: readonly string[]; caseInsensitive: boolean; boundary: string | undefined }
+  // `lines()`: `body` parses a run of lines with `prefix` (`first` on the first
+  // line) removed from each; `lazy` admits a line the prefix does not match.
+  | { tag: 'lines';    prefix: Combinator<unknown>; body: Combinator<unknown>; first?: Combinator<unknown>; lazy?: Combinator<unknown> }
+  // `columns(n)`: n columns of indentation, a tab reaching the next stop of four.
+  | { tag: 'columns';  n: number }
   | { tag: 'unknown' }
 
 export type Combinator<T> = {
@@ -280,6 +286,14 @@ export type ParseContext = {
   trackLines: boolean
   /** Grammar-author-provided state, scoped with withCtx() and read in guard(). */
   state?: unknown
+  /**
+   * Inside a `lines()` body, the run's lines: where each line's content sits in
+   * the body's input and in the run's own input, and the column it starts at.
+   * Undefined outside any run.
+   */
+  lineView?: LineView | undefined
+  /** Framework-internal: where `columns()` last stopped inside a tab, for `lines()`. */
+  _columnsSplit?: { at: number; split: number } | undefined
   /**
    * Mode host (RULE_ABI_PLAN §7): when set, a linkable/fused grammar's `node()`
    * rules build via `build(type, children, fields, span, rawChildren, triviaLog, state)`

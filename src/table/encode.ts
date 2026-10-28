@@ -1,3 +1,4 @@
+import { scanRefs } from './program.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
@@ -683,6 +684,7 @@ class Encoder {
       case 'expect':
       case 'recover':
       case 'scanTo':
+      case 'lines':
       case 'unknown':
         return true
       case 'lazy': {
@@ -987,6 +989,17 @@ class Encoder {
       open: bal.open,
       close: bal.close,
     }))
+    // `lines()` and `columns()` lower as their constructor arguments too: the
+    // table rebuilds each and runs it, the body and prefixes being table subtrees.
+    if (d.tag === 'lines') {
+      return this.emit(OP_SCAN, this.scanSlot({
+        kind: 2, flags: 0, skip: [],
+        prefix: this.subtree(d.prefix), body: this.subtree(d.body),
+        ...(d.first === undefined ? {} : { first: this.subtree(d.first) }),
+        ...(d.lazy === undefined ? {} : { lazy: this.subtree(d.lazy) }),
+      }))
+    }
+    if (d.tag === 'columns') return this.emit(OP_SCAN, this.scanSlot({ kind: 3, flags: 0, skip: [], n: d.n }))
     if (d.tag === 'scanTo') {
       const sentDef = d.sentinel._def
       return this.emit(OP_SCAN, this.scanSlot({
@@ -1762,12 +1775,7 @@ class Encoder {
     // interiors uncollapsed and — worse — left the spec's own offset pointing at
     // a trampoline whose target had been rewritten around it.
     const refs: SubtreeRef[] = []
-    for (const s of this.scans) {
-      if (s.sentinel !== undefined) refs.push(s.sentinel)
-      if (s.recoverAt !== undefined) refs.push(s.recoverAt)
-      if (s.stopAt !== undefined) refs.push(s.stopAt)
-      refs.push(...s.skip)
-    }
+    for (const s of this.scans) refs.push(...scanRefs(s))
     for (const set of this.scanSkipSets) refs.push(...set)
     const stack = [...Object.values(this.rules), ...refs.map(r => r[0])]
     while (stack.length > 0) {
@@ -1788,6 +1796,10 @@ class Encoder {
       ...(s.sentinel === undefined ? {} : { sentinel: res(s.sentinel) }),
       ...(s.recoverAt === undefined ? {} : { recoverAt: res(s.recoverAt) }),
       ...(s.stopAt === undefined ? {} : { stopAt: res(s.stopAt) }),
+      ...(s.prefix === undefined ? {} : { prefix: res(s.prefix) }),
+      ...(s.body === undefined ? {} : { body: res(s.body) }),
+      ...(s.first === undefined ? {} : { first: res(s.first) }),
+      ...(s.lazy === undefined ? {} : { lazy: res(s.lazy) }),
     }))
     this.scanSkipSets = this.scanSkipSets.map(set => set.map(res))
   }

@@ -72,6 +72,8 @@ function childrenOf(def: ParserDef): Comb[] {
       ...(def.stopAt === undefined ? [] : [def.stopAt]),
     ]
     case 'routed':    return def.fallback ? [def.fallback] : []
+    case 'lines':     return [def.prefix, def.body, ...(def.first === undefined ? [] : [def.first]), ...(def.lazy === undefined ? [] : [def.lazy])]
+    case 'columns':
     case 'lazy':
     case 'literal':
     case 'regex':
@@ -488,6 +490,14 @@ class Serializer {
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`
       case 'scanTo':
         return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}]${def.raw ? ', raw: true' : ''}, orEOF: ${def.orEOF}${def.recoverAt === undefined ? '' : `, recoverAt: ${kid(def.recoverAt)}`}${def.stopAt === undefined ? '' : `, stopAt: ${kid(def.stopAt)}`} })`
+      case 'lines': {
+        const options = [
+          ...(def.first === undefined ? [] : [`first: ${kid(def.first)}`]),
+          ...(def.lazy === undefined ? [] : [`lazy: ${kid(def.lazy)}`]),
+        ]
+        return `lines(${kid(def.prefix)}, ${kid(def.body)}${options.length === 0 ? '' : `, { ${options.join(', ')} }`})`
+      }
+      case 'columns':   return `columns(${def.n})`
       case 'transform': {
         if (def.fnSrc === undefined) throw new Unserializable('transform without fnSrc')
         // `_tf` sets `_def.fnSrc` so re-lowering INLINES the callback (a plain

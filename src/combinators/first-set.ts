@@ -217,6 +217,9 @@ function matchesEmptyBody(
       try { return me(d.thunk()) }
       catch { return true }
     }
+    // A run consumes at least its first line's prefix, and its body after that.
+    case 'lines':     return me(d.first ?? d.prefix) && me(d.body)
+    case 'columns':   return d.n === 0
     default:          return true          // scanTo / guard / unknown → assume nullable (safe)
   }
 }
@@ -431,7 +434,12 @@ function firstSetBody(
       resolve,
       d.clearTrivia ? null : (d.triviaParser ?? activeTrivia),
     )
-    default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
+    // A run starts with its first line's prefix; a nullable prefix starts with anything.
+    case 'lines': {
+      const opening = d.first ?? d.prefix
+      return empties(opening) ? any() : fs(opening)
+    }
+    default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / columns / unknown
   }
 }
 

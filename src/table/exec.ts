@@ -1,3 +1,4 @@
+import { rebuildLineScan } from './line-scan.ts'
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
@@ -1682,6 +1683,8 @@ function makeDriver(
    * drift.
    */
   const scans: readonly Combinator<unknown>[] = (prog.scans ?? []).map(s => {
+    const rebuilt = rebuildLineScan(s, subtreeComb)
+    if (rebuilt !== undefined) return rebuilt
     const skip = s.skip.map(r => subtreeComb(r))
     const raw = (s.flags & 1) !== 0
     if (s.kind === 1) {

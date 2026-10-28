@@ -39,6 +39,7 @@ function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>)
       ...(def.recoverAt === undefined ? [] : [def.recoverAt]),
       ...(def.stopAt === undefined ? [] : [def.stopAt]),
     ]
+    case 'lines': return [def.prefix, def.body, ...(def.first === undefined ? [] : [def.first]), ...(def.lazy === undefined ? [] : [def.lazy])]
     case 'lazy': {
       let resolved: Combinator<unknown>
       try { resolved = def.thunk() } catch (e) {

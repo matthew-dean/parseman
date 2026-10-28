@@ -56,7 +56,7 @@ import { parser } from '../combinators/grammar.ts'
 
 /** A node kind reused verbatim: no public factory reconstructs it without loss. */
 const FROZEN_TAGS: ReadonlySet<string> = new Set([
-  'dispatch', 'recover', 'scanTo', 'guard', 'withCtx', 'routed', 'trivia', 'unknown',
+  'dispatch', 'recover', 'scanTo', 'guard', 'withCtx', 'routed', 'trivia', 'unknown', 'lines', 'columns',
 ])
 
 /** A subtree that was reused verbatim instead of rebuilt. */
@@ -105,7 +105,7 @@ function subtreeContains(p: Combinator<unknown>, targets: ReadonlySet<Combinator
     const kids: Combinator<unknown>[] = []
     if (Array.isArray(rec.parsers)) kids.push(...(rec.parsers as Combinator<unknown>[]))
     if (Array.isArray(rec.skip)) kids.push(...(rec.skip as Combinator<unknown>[]))
-    for (const k of ['parser', 'main', 'skipped', 'separator', 'sentinel', 'recoverAt', 'stopAt', 'selector', 'otherwise', 'fallback', 'triviaParser'])
+    for (const k of ['parser', 'main', 'skipped', 'separator', 'sentinel', 'recoverAt', 'stopAt', 'selector', 'otherwise', 'fallback', 'triviaParser', 'prefix', 'body', 'first', 'lazy'])
       if (rec[k]) kids.push(rec[k] as Combinator<unknown>)
     if (d.tag === 'dispatch') {
       for (const c2 of d.cases) kids.push(c2.parser)

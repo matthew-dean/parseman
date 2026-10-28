@@ -152,6 +152,8 @@ export { isParseError } from './combinators/expect.ts'
 export { expect } from './combinators/expect.ts'
 export { completionsAt } from './combinators/completions.ts'
 export { scanTo, balanced } from './combinators/scanTo.ts'
+export { lines, columns, sourceOffset } from './combinators/lines.ts'
+export type { LinesOptions, LineView, RunLine } from './combinators/lines.ts'
 export type { ScanToOptions } from './combinators/scanTo.ts'
 
 export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, NodeLike } from './cst/types.ts'

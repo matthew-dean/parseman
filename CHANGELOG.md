@@ -3,6 +3,31 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.56.0 — 2026-10-28
+
+- `lines(prefix, body, { first, lazy })` parses `body` over a run of lines with
+  `prefix` removed from each: a Markdown block quote's `>`, a list item's
+  indentation. `first` opens the run when its first line differs (a list marker);
+  a line `prefix` misses joins whole when `lazy` matches at its start (Markdown's
+  lazy continuation). `body` parses the contents joined by `\n`, and the run ends
+  after the last line `body` consumed, so lines it leaves are the enclosing
+  grammar's. While `body` runs, `ctx.lineView` lists each line's offsets, column,
+  split tab and lazy flag, and `sourceOffset(view, offset)` maps a body offset
+  back to the run's input. Prefix and lazy checks run as detached probes, and a
+  first line without its prefix fails uncommitted, so `lines()` works as a
+  `choice()` arm.
+- `columns(n)` matches `n` columns of spaces and tabs with tab stops every four
+  columns, counted from the line's column in the outermost input through every
+  enclosing run. When the `n`th column falls inside a tab it stops before the tab,
+  and a `lines()` prefix ending there leaves the tab's remaining columns in the
+  content.
+- `compile()`, `run()`, the macro build and the grammar analyses handle both
+  combinators; the table runs them through its scan opcode.
+- Perf gates `bench/grammar-density/config.json` and `bench/workloads/config.json`
+  anchor on the v0.55.4 main base, 1ab22a4.
+- The browser interpreter closure grows 332 B, to 59,074 B, for the two
+  combinators.
+
 ## 0.55.4 — 2026-10-28
 
 - `compile(g).parse(input, pos, ctx)` runs in the context it is given, as a

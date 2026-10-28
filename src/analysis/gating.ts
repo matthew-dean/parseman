@@ -230,6 +230,8 @@ export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
     ]
     case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
     case 'routed': return d.fallback ? [d.fallback] : []
+    case 'lines': return [d.prefix, d.body, ...(d.first === undefined ? [] : [d.first]), ...(d.lazy === undefined ? [] : [d.lazy])]
+    case 'columns': return []
     // A `lazy` is a REFERENCE, not a subtree. Descending through it would make
     // every rule's walk cover the whole reachable grammar — site paths become
     // nonsense, and a structural hash includes half the grammar. Treated as a
@@ -409,6 +411,9 @@ function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmC
         return walk(d.parser)
       case 'scanTo':
         return { cause: 'broad-recognizer', detail: 'scanTo (any first char)' }
+      // A run opens with its first line's prefix.
+      case 'lines':
+        return walk(d.first ?? d.prefix)
       // `guard` (the `gate()` state predicate) has a genuinely-`any` first-set of
       // its own — it is the poison. `withCtx`/`recover` FORWARD their inner
       // first-set (see firstSetOf), so a broad result comes from the inner parser:

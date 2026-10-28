@@ -477,6 +477,11 @@ class Builder {
         return this.walk(def.parser)
       case 'scanTo':
         return { kind: 'annotation', text: '…' }
+      // A run of lines: its body, each line opened by the prefix.
+      case 'lines':
+        return this.walk(def.body)
+      case 'columns':
+        return { kind: 'annotation', text: `${def.n} columns` }
 
       // Trivia — elided by default; included as an annotation when asked.
       case 'trivia':

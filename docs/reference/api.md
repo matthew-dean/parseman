@@ -1080,6 +1080,30 @@ around that is now redundant and should be removed.
 Declare the ambient set once with `rules({ scanSkip: [...] }, factory)` (see
 [Whitespace & trivia](/guide/trivia#grammar-level-scanskip-opaque-units-for-scans)).
 
+### `lines(prefix, body, opts?)`
+
+Parse `body` over a run of lines with `prefix` removed from each. The run opens
+where `opts.first` (default `prefix`) matches at `pos`; each following line joins
+while `prefix` matches at its start and ends within the line, or, failing that,
+whole while `opts.lazy` matches there. `body` parses the lines' contents joined
+by `\n` from offset 0, with `ctx.lineView` set to a [`LineView`](./types#lineview)
+of the run. The result spans from `pos` to the end of the last line `body`
+consumed. A first line without its prefix fails with the prefix's expectations,
+uncommitted. See [Line runs](../guide/combinators#lines-and-columns).
+
+### `columns(n)`
+
+Match `n` columns of spaces and tabs, a tab reaching the next stop of four.
+Columns count from the start of the line, or inside a `lines()` body from the
+line's column in the run's input. When the `n`th column falls inside a tab, the
+match stops before that tab, and a `lines()` prefix ending there records the
+columns it took as the line's `split`. Fails when the indentation is narrower
+than `n`.
+
+### `sourceOffset(view, offset)`
+
+Map an offset in a `lines()` body's input to the offset in the run's own input.
+
 ## Context
 
 ### `gate(predicate)`

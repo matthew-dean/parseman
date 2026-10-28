@@ -207,7 +207,11 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
     case 'leaf':
     case 'scanTo':
     case 'unknown':
+    case 'columns':
       return false
+    // A run's prefixes are probed detached; only its body can capture.
+    case 'lines':
+      return mayLeavePartialCapture(d.body, seen, triviaActive)
     // node() captures into its own private buffers and rolls them back on
     // failure (emitNode restores _ctx.* and never pushes on the !ok path).
     case 'node':
@@ -337,6 +341,10 @@ export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknow
       return capturesLeaf(d.parser, seen)
     case 'scanTo':
       return true
+    case 'lines':
+      return capturesLeaf(d.body, seen)
+    case 'columns':
+      return true
     case 'lazy': {
       try { return capturesLeaf(d.thunk(), seen) } catch { return true }
     }
@@ -377,6 +385,7 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
       || d.skip.some(x => hasNodeDef(x, seen))
       || (d.recoverAt !== undefined && hasNodeDef(d.recoverAt, seen))
       || (d.stopAt !== undefined && hasNodeDef(d.stopAt, seen))
+    case 'lines':     return hasNodeDef(d.body, seen)
     case 'recover':   return hasNodeDef(d.parser, seen) || hasNodeDef(d.sentinel, seen)
     case 'expect':    return hasNodeDef(d.parser, seen)
     case 'withCtx':   return hasNodeDef(d.parser, seen)
@@ -435,6 +444,7 @@ export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<u
       || d.skip.some(x => hasDirectBuildDef(x, seen))
       || (d.recoverAt !== undefined && hasDirectBuildDef(d.recoverAt, seen))
       || (d.stopAt !== undefined && hasDirectBuildDef(d.stopAt, seen))
+    case 'lines':     return hasDirectBuildDef(d.body, seen)
     case 'recover':   return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.sentinel, seen)
     case 'routed':    return d.fallback ? hasDirectBuildDef(d.fallback, seen) : false
     default:          return false
@@ -497,6 +507,9 @@ function commitFailureSuccessors(
         ...(d.recoverAt === undefined ? NO_EDGES : [d.recoverAt]),
         ...(d.stopAt === undefined ? NO_EDGES : [d.stopAt]),
       ]
+    // A run's prefixes are probed detached; a committed failure reaches it only from its body.
+    case 'lines':
+      return [d.body]
     case 'lazy': {
       try { return [d.thunk()] }
       catch {
