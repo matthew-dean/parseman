@@ -554,7 +554,11 @@ export type GatedArm<T = unknown> = {
  * deleted.
  */
 export type CompiledParser<T> = {
-  parse(input: string, pos?: number): ParseResult<T>
+  /**
+   * Parse from `pos`. With `ctx`, the parse runs in that context, as a combinator's
+   * own `parse(input, pos, ctx)` does; without it, in a fresh one.
+   */
+  parse(input: string, pos?: number, ctx?: ParseContext): ParseResult<T>
   /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
   parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
   /**

@@ -4235,7 +4235,10 @@ export function tableRules(
     scanSkipFor: (ri, ctx) => {
       const a = cache.forCtx(ctx)
       selected = a
-      return a.scanSkip[skipOf?.[ri] ?? -1]
+      // An array read at -1 is a named-property miss that walks the prototype
+      // chain on every call; a rule without a scan-skip set never indexes.
+      const slot = skipOf?.[ri]
+      return slot === undefined || slot < 0 ? undefined : a.scanSkip[slot]
     },
   }, artifactMetadata, resolved)
   if (entry === undefined) return map

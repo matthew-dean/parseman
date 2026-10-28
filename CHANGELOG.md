@@ -3,6 +3,25 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.55.4 — 2026-10-28
+
+- `compile(g).parse(input, pos, ctx)` runs in the context it is given, as a
+  combinator's own `parse(input, pos, ctx)` does, and as `docs/guide/modes.md` shows.
+  Without `ctx` it makes a fresh one. A lexer that probes many positions
+  passes one context to every call.
+- A table-backed entry looks up its rule's scan-skip set only when the rule has one.
+  Reading the pool at index `-1`, for a rule without a set, is a property miss that
+  walks the array's prototype chain on every call. Per call, at every position
+  of 460 KB (Node 24.11.1, M4 Pro):
+
+  | grammar | interpreter | `parseWithContext` before | after | `parse(input, pos)` before | after |
+  | --- | --- | --- | --- | --- | --- |
+  | one regex | 12.2 ns | 49.7 ns | 23.5 ns | 65.6 ns | 34.4 ns |
+  | text run | 29.1 ns | 87.9 ns | 50.1 ns | 99.6 ns | 56.6 ns |
+  | two-arm choice | 27.4 ns | 67.5 ns | 35.1 ns | 74.2 ns | 41.4 ns |
+
+  `parse(input, pos, ctx)` with a shared context costs what `parseWithContext` does.
+
 ## 0.55.3 — 2026-10-23
 
 - A disjoint `choice` whose first-character dispatch finds no arm for the next

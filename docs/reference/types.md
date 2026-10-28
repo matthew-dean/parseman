@@ -164,7 +164,7 @@ What `compile()` returns:
 
 ```ts
 type CompiledParser<T> = {
-  parse(input: string, pos?: number, opts?: ParseOptions): ParseResult<T>
+  parse(input: string, pos?: number, ctx?: ParseContext): ParseResult<T>  // ctx as a combinator's parse takes it
   parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
   parseWithErrors(input: string, pos?: number): ParseResult<T>  // enables the _errors channel
   source: string             // the generated JS source
