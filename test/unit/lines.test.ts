@@ -5,7 +5,7 @@
  * `run()` and the macro build.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, columns, compile, expect as required, lines, literal, many, not, optional, parse, peek, regex, rules, run, sequence, sourceOffset, transform } from '../../src/index.ts'
+import { choice, columns, compile, completionsAt, expect as required, lines, literal, many, not, optional, parse, peek, regex, rules, run, sequence, sourceOffset, transform } from '../../src/index.ts'
 import type { Combinator, LineView, ParseContext } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { assertMacroCompiled, evalMacroModule } from '../helpers/eval-macro-module.ts'
@@ -96,6 +96,12 @@ describe('lines()', () => {
     // The body misses `;` after `a`, which sits at offset 1 of its input and 5 of the run's.
     expect(run(sequence(literal('x\n'), lines(literal('> '), sequence(literal('a'), required(literal(';'))))), 'x\n> a').errors)
       .toEqual([{ _tag: 'parseError', span: { start: 5, end: 5 }, expected: ['";"'] }])
+  })
+
+  it('offers what the body expects at a cursor inside a line', () => {
+    const quote = lines(literal('> '), sequence(literal('a'), required(literal(';'))))
+    expect(completionsAt(quote, '> a', 3, { tolerant: true })).toContain('";"')
+    expect(completionsAt(sequence(literal('x\n'), quote), 'x\n> a', 5, { tolerant: true })).toContain('";"')
   })
 
   it('keeps each prefix on its own line', () => {

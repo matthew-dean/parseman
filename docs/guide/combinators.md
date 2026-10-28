@@ -1263,7 +1263,8 @@ enclosing run's view. Spans inside `body`'s value are offsets in the body's
 input; `sourceOffset(ctx.lineView, offset)` maps one back to the run's input. A
 hand-written body combinator reads `ctx.lineView` to place what it builds in the
 source. Errors the body recovers from are recorded at their offsets in the run's
-input, and line tracking records the run's lines there too.
+input, line tracking records the run's lines there too, and `completionsAt` at a
+cursor inside a line's content offers what the body expects there.
 
 `lines()` reads its whole run before `body` runs. A body that consumes one line
 of a long run leaves the rest for the next run to read again, so a body reads

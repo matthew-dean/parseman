@@ -14,7 +14,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   grammar's. While `body` runs, `ctx.lineView` lists each line's offsets, column,
   split tab and lazy flag, and `sourceOffset(view, offset)` maps a body offset
   back to the run's input. Errors the body recovers from are recorded at their
-  offsets in the run's input, and line tracking records the run's lines there.
+  offsets in the run's input, line tracking records the run's lines there, and
+  a completion probe at a cursor inside a line's content sees what the body
+  expects there.
   Prefix and lazy checks run as detached probes, and a first line without its
   prefix fails uncommitted, so `lines()` works as a `choice()` arm.
 - `columns(n)` matches `n` columns of spaces and tabs with tab stops every four

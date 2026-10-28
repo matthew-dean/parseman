@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
 import { any } from './first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
+import { failAt } from './probe.ts'
 
 /**
  * One line of a run that `lines()` hands its body.
@@ -149,8 +150,9 @@ export function columns(n: number): Combinator<string> {
  * the last line the body consumed, so lines it leaves are the enclosing
  * grammar's. Spans inside the body's value and its CST are offsets in the
  * body's input; `sourceOffset(view, offset)` maps them back. Recovered errors
- * the body records are mapped back to this input. Line tracking records the
- * run's lines in this input, and completion probes see the run as a whole.
+ * the body records are mapped back to this input, line tracking records the
+ * run's lines in this input, and a completion probe at a cursor inside a
+ * line's content sees what the body expects there.
  *
  * The run is read before the body runs, so a body that leaves most of its run
  * makes a repeated run reread the lines it left: a body reads its run to the end.
@@ -202,13 +204,21 @@ export function lines<T>(prefix: Combinator<unknown>, body: Combinator<T>, optio
       }
       const view: LineView = { lines: run, parent: c.lineView }
       // The body parses another string: what records positions in this input
-      // (the line index, the completion probe) stays out of its way.
+      // (the line index, the completion probe) stays out of its way. A probe
+      // whose cursor lies in a line's content gets its own, at the body's offset.
       const saved = c.lineView, starts = c._lineStarts, lineIndex = c._lineIndex, scanned = c._lineScannedTo, probing = c._probe
       const errors = c._errors?.length ?? 0
-      c.lineView = view; c._lineStarts = undefined; c._lineIndex = undefined; c._lineScannedTo = undefined; c._probe = undefined
+      let cursor = -1
+      if (probing !== undefined) for (const line of run) {
+        if (probing.offset >= line.source && probing.offset <= line.end) { cursor = line.offset + probing.offset - line.source; break }
+      }
+      const inner: ParseContext['_probe'] = cursor < 0 ? undefined : { offset: cursor, best: null }
+      c.lineView = view; c._lineStarts = undefined; c._lineIndex = undefined; c._lineScannedTo = undefined; c._probe = inner
       let result: ParseResult<T>
       try { result = body.parse(parts.join(''), 0, ctx) }
       finally { c.lineView = saved; c._lineStarts = starts; c._lineIndex = lineIndex; c._lineScannedTo = scanned; c._probe = probing }
+      // The body's deepest failure at the cursor counts where it is in this input.
+      if (inner?.best) failAt(c, inner.best.expected, sourceOffset(view, inner.best.span.start))
       // Errors the body recovered from move to where they are in this input.
       if (c._errors !== undefined) for (let i = errors; i < c._errors.length; i++) {
         const error = c._errors[i] as { span: { start: number; end: number } }
