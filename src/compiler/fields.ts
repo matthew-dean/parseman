@@ -30,6 +30,7 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
       || (d.recoverAt !== undefined && parserHasOwnFields(d.recoverAt, seen))
       || (d.stopAt !== undefined && parserHasOwnFields(d.stopAt, seen))
     case 'recover': return parserHasOwnFields(d.parser, seen) || parserHasOwnFields(d.sentinel, seen)
+    case 'lines': return parserHasOwnFields(d.body, seen)
     case 'routed': return d.fallback ? parserHasOwnFields(d.fallback, seen) : false
     case 'many':
     case 'oneOrMore':
@@ -98,6 +99,7 @@ function hasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator<unknown>>, t
     case 'sepBy':
     case 'scanTo':
     case 'recover':
+    case 'lines':
       return true
     // Nested node manages its own trivia frame; none logs into THIS frame. The
     // root log has no frames, so it must look inside.
@@ -159,6 +161,7 @@ export function parserEnablesTriviaCapture(p: Combinator<unknown>, seen: Set<Com
       || (d.recoverAt !== undefined && parserEnablesTriviaCapture(d.recoverAt, seen))
       || (d.stopAt !== undefined && parserEnablesTriviaCapture(d.stopAt, seen))
     case 'recover': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.sentinel, seen)
+    case 'lines': return parserEnablesTriviaCapture(d.body, seen)
     case 'routed': return d.fallback ? parserEnablesTriviaCapture(d.fallback, seen) : false
     case 'many':
     case 'oneOrMore':

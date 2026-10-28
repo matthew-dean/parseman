@@ -66,6 +66,28 @@ The mutable state threaded through a parse — trivia settings, CST collectors, 
 `state`, the error channel (`_errors`), and probe data. Passed to `parse` methods; you
 only touch it when writing a low-level combinator.
 
+Inside a [`lines()`](./api#lines-prefix-body-opts) body, `ctx.lineView` holds the
+run's [`LineView`](#lineview); elsewhere it is `undefined`.
+
+### `LineView` · `RunLine` {#lineview}
+
+```ts
+type LineView = {
+  lines: readonly RunLine[]       // the run's lines, in order
+  parent: LineView | undefined    // the run enclosing this one
+}
+type RunLine = {
+  offset: number   // where the line's content starts in the body's input
+  source: number   // where the same content starts in the run's input
+  end: number      // where the line ends in the run's input, before its newline
+  column: number   // the column at `source`, tab stops every four, from the outermost line start
+  split: number    // columns of the tab at `source` a prefix already took
+  lazy: boolean    // the line joined through `lazy`, with nothing removed
+}
+```
+
+`LinesOptions` is `{ first?: Combinator<unknown>; lazy?: Combinator<unknown> }`.
+
 ## Options
 
 ### `ParseOptions`

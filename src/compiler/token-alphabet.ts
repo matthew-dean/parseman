@@ -1698,6 +1698,8 @@ function normalizeLexicalBody(
     case 'adjacency': return done({ refusal: 'adjacency depends on parser state' })
     case 'recover': return done({ refusal: 'recover is effectful' })
     case 'scanTo': return done({ refusal: 'scanTo is not a lexical run' })
+    case 'lines': return done({ refusal: 'lines removes prefixes from its input' })
+    case 'columns': return done({ refusal: 'columns counts tab stops' })
     case 'sepBy': return done({ refusal: 'separated repetition is not a lexical run' })
     case 'dispatch': return done({ refusal: 'nested dispatch has semantic outcomes' })
     case 'routed': return done({ refusal: 'routed depends on an outer dispatch' })
@@ -2026,7 +2028,7 @@ function decisionLead(
       return finish({ gap: 'repeated or nullable leading language needs a range-partition proof' })
     case 'peek': return finish({ gap: 'positive lookahead needs an exact effect-free compatible view' })
     case 'not': return finish({ gap: 'negative lookahead needs a decidable complement' })
-    case 'withCtx': case 'guard': case 'adjacency': case 'recover': case 'scanTo': case 'routed': case 'unknown':
+    case 'withCtx': case 'guard': case 'adjacency': case 'recover': case 'scanTo': case 'routed': case 'unknown': case 'lines': case 'columns':
       return finish({ gap: `leading ${def.tag} language is not represented` })
     case 'literal': case 'keywords': case 'regex':
       throw new Error('parseman: decision lead terminal escaped its direct case')

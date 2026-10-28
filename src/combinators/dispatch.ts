@@ -74,6 +74,9 @@ export function parserUsesRouted(parser: Combinator<unknown>, seen: Set<Combinat
         || (def.stopAt !== undefined && parserUsesRouted(def.stopAt, seen))
     case 'recover':
       return parserUsesRouted(def.parser, seen) || parserUsesRouted(def.sentinel, seen)
+    // The body parses its own input, so only the checks on this one can reuse a routed head.
+    case 'lines':
+      return [def.prefix, def.first, def.lazy].some(entry => entry !== undefined && parserUsesRouted(entry, seen))
     case 'lazy':
       try { return parserUsesRouted(def.thunk(), seen) } catch { return false }
     case 'many':

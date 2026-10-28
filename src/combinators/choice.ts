@@ -193,9 +193,12 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
         if (gates[i] && !gates[i]!(ctx.state)) continue   // gate blocks this arm
         // Save leaf-array lengths so a failed/rejected arm can be rolled back.
         const mark = saveTriviaMark(ctx)
+        // A rejected arm takes no columns of a tab: `lines()` reads `columns()`'s split mark.
+        const split = ctx._columnsSplit
         const result = parsers[i]!.parse(input, pos, ctx)
         if (!result.ok) {
           rollbackTrivia(ctx, mark)
+          ctx._columnsSplit = split
           const at = result.span.start
           if (at > expectedAt) { expectedAt = at; expected.length = 0 }
           if (at === expectedAt) expected.push(...result.expected)

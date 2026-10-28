@@ -3,6 +3,39 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.56.0 — 2026-10-28
+
+- `lines(prefix, body, { first, lazy })` parses `body` over a run of lines with
+  `prefix` removed from each: a Markdown block quote's `>`, a list item's
+  indentation. `first` opens the run when its first line differs (a list marker);
+  a line `prefix` misses joins whole when `lazy` matches at its start (Markdown's
+  lazy continuation). `body` parses the contents joined by `\n`, and the run ends
+  after the last line `body` consumed, so lines it leaves are the enclosing
+  grammar's. While `body` runs, `ctx.lineView` lists each line's offsets, column,
+  split tab and lazy flag, and `sourceOffset(view, offset)` maps a body offset
+  back to the run's input. Errors the body recovers from are recorded at their
+  offsets in the run's input, line tracking records the run's lines there, and
+  a completion probe at a cursor inside a line's content sees what the body
+  expects there.
+  Prefix and lazy checks run as detached probes, and a first line without its
+  prefix fails uncommitted, so `lines()` works as a `choice()` arm.
+- `columns(n)` matches `n` columns of spaces and tabs with tab stops every four
+  columns, counted from the line's column in the outermost input through every
+  enclosing run. When the `n`th column falls inside a tab it stops before the tab,
+  and a `lines()` prefix ending there leaves the tab's remaining columns in the
+  content. A lookahead or a rejected branch takes no columns from the tab.
+- `compile()`, `run()`, the macro build and the grammar analyses handle both
+  combinators; the table runs them through its scan opcode. An opening prefix
+  that matches empty gives a run an `any` first-set, and the derived expectations
+  include the body's. A `dispatch()` branch whose `lines()` body uses `routed()`
+  starts after the selector, since the body parses its own input. Generated specs
+  show a run's prefix, first-line prefix and lazy check.
+- Perf gates `bench/grammar-density/config.json` and `bench/workloads/config.json`
+  anchor on the v0.55.4 main base, 1ab22a4.
+- The browser interpreter closure grows 442 B, to 59,184 B, for the two
+  combinators and the tab-split mark lookahead, `choice()` and `attempt()`
+  restore.
+
 ## 0.55.4 — 2026-10-28
 
 - `compile(g).parse(input, pos, ctx)` runs in the context it is given, as a

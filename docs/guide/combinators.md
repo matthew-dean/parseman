@@ -52,6 +52,8 @@ Three words that sound alike but play different roles:
 | `expect(c, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Skips ambient trivia + `scanSkip` opaque units by default. |
 | `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` — including the delimiters. |
+| `lines(prefix, body, opts?)` | Parse `body` over a run of lines with `prefix` removed from each; `opts.first` opens the run and `opts.lazy` continues it. See [Line runs](#lines-and-columns). |
+| `columns(n)` | `n` columns of indentation, a tab reaching the next stop of four. See [Line runs](#lines-and-columns). |
 | `routed(fallback?)` | With no argument, use the value/span already consumed by an enclosing `dispatch()` branch. With a fallback, reuse that value when routed or parse the fallback when the same production is used standalone. |
 
 ## Helpers (produce combinators at definition time)
@@ -1202,6 +1204,91 @@ consume input; Parseman throws if a zero-width sentinel is used in this mode.
 either won't first-char-gate. That is often fine for an error-recovery fallback arm;
 if it is intentional, accept that choice in the
 [gating snapshot allowlist](./first-char-gating).
+
+## Line runs
+
+### `lines` and `columns`
+
+`lines(prefix, body)` reads a run of lines that each start with `prefix` — a
+Markdown block quote's `>`, a list item's indentation — and parses `body` over
+their contents with the prefixes removed and the lines joined by `\n`. The run
+starts where `opts.first` (default `prefix`) matches and takes each following
+line whose start matches `prefix`. A line `prefix` misses joins whole when
+`opts.lazy` matches at its start; the first line that joins neither way ends the
+run. The result spans from the run's start to where `body` stopped, mapped back
+to the run's input; a body that consumes a whole line ends at the next line's
+start, so lines `body` leaves belong to the grammar around the run, and so does
+the rest of a line where `body` stops partway. Tests: `test/unit/lines.test.ts`,
+"a body that leaves a lazy line to the outside" and "describes its lines to the
+body, and maps body offsets back".
+
+```ts
+// [verify]
+import { lines, many, regex, transform, sequence, optional, literal, not, parse } from 'parseman'
+
+const prefix = sequence(literal('>'), optional(literal(' ')))
+const para = many(transform(regex(/[^\n]+\n?/), line => line.trimEnd()))
+const quote = lines(prefix, para, { lazy: not(regex(/[ \t]*(\n|$)/)) })
+
+parse(quote, '> one\n> two\nthree\n\nafter').value
+// → ['one', 'two', 'three']
+parse(quote, '> one\n> two\nthree\n\nafter').span
+// → { start: 0, end: 18 }
+```
+
+`columns(n)` matches `n` columns of spaces and tabs, a tab reaching the next stop
+of four columns. Inside a run's body it counts columns from the line's real
+column in the outer input, so a nested prefix sees the same tab stops the source
+has. When the `n`th column falls inside a tab, `columns(n)` stops before that
+tab; as a `lines()` prefix it leaves the tab in the content, with the columns it
+took recorded, and a `columns()` in the body counts only the tab's remainder. A
+lookahead or a rejected `choice()` arm takes no columns. Tests:
+`test/unit/lines.test.ts`, "counts tab stops from a split tab inside its body"
+and "takes no tab columns from a prefix that looks ahead or a branch it rejects".
+
+```ts
+// [verify]
+import { lines, columns, peek, choice, regex, many, literal, parse } from 'parseman'
+
+// A list item: `- ` opens it; later lines belong while indented two columns or blank.
+const item = lines(
+  peek(choice(columns(2), regex(/[ \t]*(\n|$)/))),
+  many(regex(/[^\n]*\n|[^\n]+/)),
+  { first: literal('- ') },
+)
+
+parse(item, '- a\n  b\nc').value
+// → ['a\n', '  b\n']
+parse(item, '- a\n  b\nc').span
+// → { start: 0, end: 8 }
+```
+
+While `body` runs, `ctx.lineView` describes the run: one `RunLine` per line, with
+the content's offset in the body's input and in the run's input, the line's end,
+its column, the columns of a split tab, and whether it joined lazily, plus the
+enclosing run's view. Spans inside `body`'s value are offsets in the body's
+input; `sourceOffset(ctx.lineView, offset)` maps one back to the run's input. A
+hand-written body combinator reads `ctx.lineView` to place what it builds in the
+source. Errors the body recovers from are recorded at their offsets in the run's
+input, line tracking records the run's lines there too, and `completionsAt` at a
+cursor inside a line's content offers what the body expects there. Tests:
+`test/unit/lines.test.ts`, "records line positions and recovered errors in its
+own input" and "offers what the body expects at a cursor inside a line".
+
+`lines()` reads its whole run before `body` runs. A body that consumes one line
+of a long run leaves the rest for the next run to read again, so a body reads
+its run to the end.
+
+Prefixes and lazy checks run as probes that record no errors in the enclosing
+parse, and a prefix never reaches past its own line. A first line without its
+prefix fails the run without committing, so `lines()` works as a `choice()` arm,
+and an opening prefix that matches empty lets a run start at any character.
+`compile()`, `run()` and the macro build run `lines()` and `columns()` as the
+interpreter does. Tests: `test/unit/lines.test.ts`, "records no errors from its
+prefix checks", "keeps each prefix on its own line", "fails where the first line
+has no prefix, naming the prefix", "starts at any character when its opening
+matches empty, and expects its body there", the "interpreter, compile() and
+run() agree" cases and "compiles lines() and columns() to the same results".
 
 ## IDE and composition helpers
 

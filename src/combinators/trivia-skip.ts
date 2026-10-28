@@ -188,15 +188,17 @@ function parseTriviaNoCapture(
  * `peek(sequence(literal('a'), literal('zzz')))` over `"ab"` offered `"zzz"` as
  * the ONLY completion, though no input can ever reach it there.
  */
-export type LookaheadMark = TriviaRollbackMark & { probeBest: ParseFail | null }
+export type LookaheadMark = TriviaRollbackMark & { probeBest: ParseFail | null; split: ParseContext['_columnsSplit'] }
 
 export function saveLookaheadMark(ctx: ParseContext): LookaheadMark {
-  return { ...saveTriviaMark(ctx), probeBest: ctx._probe ? ctx._probe.best : null }
+  return { ...saveTriviaMark(ctx), probeBest: ctx._probe ? ctx._probe.best : null, split: ctx._columnsSplit }
 }
 
 export function rollbackLookahead(ctx: ParseContext, mark: LookaheadMark): void {
   rollbackTrivia(ctx, mark)
   if (ctx._probe) ctx._probe.best = mark.probeBest
+  // A lookahead takes no columns of a tab: `lines()` reads `columns()`'s split mark.
+  ctx._columnsSplit = mark.split
 }
 
 function scanWithLabels(input: string, cur: number, ctx: ParseContext): CompactTriviaScan {

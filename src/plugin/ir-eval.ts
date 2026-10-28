@@ -2,6 +2,7 @@
  * The macro plugin's IR evaluator: turns a composed grammar's carried IR back
  * into combinators so the build can re-lower it. Build time only — see below.
  */
+import { columns, lines } from '../combinators/lines.ts'
 import type { Combinator } from '../types.ts'
 import { rules } from '../combinators/parser.ts'
 import { ref } from '../combinators/ref.ts'
@@ -155,11 +156,13 @@ function evalIR(ir: string, rulesImpl: unknown): unknown {
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'startsWith', 'endsWith', 'matches', 'otherwise', 'routed', 'attempt',
     'many', 'oneOrMore', 'optional', 'sepBy', 'keepSeparator', 'not', 'peek', 'node', 'parser',
     'scanTo', 'balanced', 'token', 'leaf', 'transform', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', 'adjacent', 'notAdjacent', '_tf', '_lf', '_nd', '_gch', '_wc',
+    'lines', 'columns',
     `return (${ir})`,
   )
   return fn(
     rulesImpl, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
     many, oneOrMore, optional, sepBy, keepSeparator, not, peek, node, parser,
     scanTo, balanced, token, leaf, transform, trivia, classifiedTrivia, label, field, expectC, adjacent, notAdjacent, _tf, _lf, _nd, _gch, _wc,
+    lines, columns,
   )
 }

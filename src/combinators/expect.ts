@@ -68,6 +68,11 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     case 'withCtx':
     case 'recover':   return deriveExpected(def.parser)
     case 'expect':    return def.expected
+    case 'lines': {
+      const opening = def.first ?? def.prefix
+      return matchesEmpty(opening) ? [...deriveExpected(opening), ...deriveExpected(def.body)] : deriveExpected(opening)
+    }
+    case 'columns':   return [`columns(${def.n})`]
     case 'node':
     case 'grammar':
     case 'trivia':

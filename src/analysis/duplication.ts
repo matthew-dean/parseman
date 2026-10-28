@@ -398,6 +398,8 @@ function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
     case 'dispatch':  return `dispatch\u0000${d.cases.map(c => JSON.stringify(c.keys)).join('\u0002')}\u0000${d.otherwise !== undefined}`
     case 'expect':    return `expect\u0000${d.label ?? ''}\u0000${d.expected.join('\u0001')}`
     case 'scanTo':    return `scanTo\u0000${d.raw}\u0000${d.orEOF}\u0000${d.recoverAt !== undefined}\u0000${d.stopAt !== undefined}`
+    case 'lines':     return `lines\u0000${d.first !== undefined}\u0000${d.lazy !== undefined}`
+    case 'columns':   return `columns\u0000${d.n}`
     case 'guard':     return `guard\u0000${fnKey(d.predSrc, d.predicate)}`
     case 'adjacency': return `adjacency\u0000${d.polarity}\u0000${d.kinds ? d.kinds.join(',') : ''}`
     case 'withCtx':   return `withCtx\u0000${d.extraSrc ?? safeJson(d.extra)}`
@@ -499,6 +501,7 @@ function segment(d: ParserDef, index: number): string {
       if (d.recoverAt !== undefined && index === d.skip.length + 1) return 'scanTo.recoverAt'
       return 'scanTo.stopAt'
     }
+    case 'lines': return ['lines.prefix', 'lines.body', d.first === undefined ? 'lines.lazy' : 'lines.first', 'lines.lazy'][index] ?? 'lines'
     default: return d.tag
   }
 }

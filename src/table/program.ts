@@ -241,13 +241,13 @@ export type SubtreeRef = readonly [ip: number, cls: number]
 /**
  * A scanning construct as its CONSTRUCTOR ARGUMENTS.
  *
- * `kind` 0 is `scanTo`, 1 is `balanced`. `flags` bit 0 = `raw`, bit 1 = `orEOF`
+ * `kind` 0 is `scanTo`, 1 is `balanced`, 2 is `lines`, 3 is `columns`. `flags` bit 0 = `raw`, bit 1 = `orEOF`
  * (scanTo), bit 2 = `strict` (balanced). `sent` is the sentinel's literal text
  * when it is a `literal()`, so the rebuilt scan reports the same expected set as
  * the interpreter, and `null` otherwise (which reports `"sentinel"`).
  */
 export type ScanSpec = {
-  readonly kind: 0 | 1
+  readonly kind: 0 | 1 | 2 | 3
   readonly flags: number
   readonly skip: readonly SubtreeRef[]
   readonly sentinel?: SubtreeRef
@@ -256,6 +256,21 @@ export type ScanSpec = {
   readonly sent?: string | null
   readonly open?: string
   readonly close?: string
+  /** `lines()` (kind 2): the continuation prefix, the body, and the optional first-line prefix and lazy check. */
+  readonly prefix?: SubtreeRef
+  readonly body?: SubtreeRef
+  readonly first?: SubtreeRef
+  readonly lazy?: SubtreeRef
+  /** `columns()` (kind 3): the column count. */
+  readonly n?: number
+}
+
+/** Every subtree a scan spec references, which the table links as roots. */
+export function scanRefs(s: ScanSpec): SubtreeRef[] {
+  const refs: SubtreeRef[] = []
+  for (const r of [s.sentinel, s.recoverAt, s.stopAt, s.prefix, s.body, s.first, s.lazy]) if (r !== undefined) refs.push(r)
+  refs.push(...s.skip)
+  return refs
 }
 
 /** A trivia combinator as data. `arms` empty means a plain `trivia(regex)`. */

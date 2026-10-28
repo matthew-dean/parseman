@@ -1,3 +1,4 @@
+import { lines } from './combinators/lines.ts'
 import { run, type RunOptions, type RunResult, type Runnable } from './functional/run.ts'
 import { GRAMMAR_COVERAGE_DEFINITIONS } from './grammar-metadata.ts'
 export { GRAMMAR_COVERAGE_DEFINITIONS } from './grammar-metadata.ts'
@@ -365,6 +366,11 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
           ...(def.recoverAt === undefined ? {} : { recoverAt: build(def.recoverAt) }),
           ...(def.stopAt === undefined ? {} : { stopAt: build(def.stopAt) }),
         })
+        case 'lines': return lines(build(def.prefix), build(def.body), {
+          ...(def.first === undefined ? {} : { first: build(def.first) }),
+          ...(def.lazy === undefined ? {} : { lazy: build(def.lazy) }),
+        })
+        case 'columns': return parser
         // Zero-width assertion with no coverage-bearing child; reuse it verbatim so
         // the rebuilt sequence still recognises the boundary marker.
         case 'adjacency': return parser

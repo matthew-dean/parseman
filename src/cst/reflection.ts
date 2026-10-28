@@ -66,6 +66,9 @@ function childrenOf(def: ParserDef): readonly Combinator<unknown>[] {
       ]
     case 'routed':
       return def.fallback ? [def.fallback] : []
+    case 'lines':
+      return [def.prefix, def.body, ...(def.first === undefined ? [] : [def.first]), ...(def.lazy === undefined ? [] : [def.lazy])]
+    case 'columns':
     case 'literal':
     case 'regex':
     case 'keywords':

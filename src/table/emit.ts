@@ -1,3 +1,4 @@
+import { scanRefs } from './program.ts'
 import type { FoldedProgram, TableProgram } from './program.ts'
 import { resolveTable } from './program.ts'
 import { EMITTED_PARAMS, Unemittable, emitAssemblySource } from './emit-assembly.ts'
@@ -109,6 +110,11 @@ function emitScanSpec(s: import('./program.ts').ScanSpec): string {
   if (s.sent !== undefined) parts.push(`sent:${s.sent === null ? 'null' : jsString(s.sent)}`)
   if (s.open !== undefined) parts.push(`open:${jsString(s.open)}`)
   if (s.close !== undefined) parts.push(`close:${jsString(s.close)}`)
+  for (const key of ['prefix', 'body', 'first', 'lazy'] as const) {
+    const r = s[key]
+    if (r !== undefined) parts.push(`${key}:${emitRef(r)}`)
+  }
+  if (s.n !== undefined) parts.push(`n:${s.n}`)
   return `{${parts.join(',')}}`
 }
 
@@ -196,12 +202,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
   // The scan pool and the scan-skip sets are linked from subtrees, so their
   // sites need emitted names too — same list `assemble.ts` builds.
   const extraIps: number[] = []
-  for (const s of prog.scans ?? []) {
-    for (const r of s.skip) extraIps.push(r[0])
-    if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
-    if (s.recoverAt !== undefined) extraIps.push(s.recoverAt[0])
-    if (s.stopAt !== undefined) extraIps.push(s.stopAt[0])
-  }
+  for (const s of prog.scans ?? []) for (const r of scanRefs(s)) extraIps.push(r[0])
   for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
 
   const out: string[] = []

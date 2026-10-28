@@ -63,6 +63,8 @@
  * Semantics are `exec.ts`'s, case for case. That file remains the reference and
  * the three-way identity sweep gates this against it.
  */
+import { rebuildLineScan } from './line-scan.ts'
+import { scanRefs } from './program.ts'
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
@@ -486,12 +488,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   const labelExtraIps: number[] = []
-  for (const s of prog.scans ?? []) {
-    for (const r of s.skip) labelExtraIps.push(r[0])
-    if (s.sentinel !== undefined) labelExtraIps.push(s.sentinel[0])
-    if (s.recoverAt !== undefined) labelExtraIps.push(s.recoverAt[0])
-    if (s.stopAt !== undefined) labelExtraIps.push(s.stopAt[0])
-  }
+  for (const s of prog.scans ?? []) for (const r of scanRefs(s)) labelExtraIps.push(r[0])
   for (const set of prog.scanSkip ?? []) for (const r of set) labelExtraIps.push(r[0])
   const closureLabels = computeSiteLabels(
     code, [...Object.values(prog.rules), ...labelExtraIps], hostCst,
@@ -3781,12 +3778,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // sites need emitted names too or `subtreeComb` would have to fall back to
     // a closure for them and the two engines would both be live in one parse.
     const extraIps: number[] = []
-    for (const s of prog.scans ?? []) {
-      for (const r of s.skip) extraIps.push(r[0])
-      if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
-      if (s.recoverAt !== undefined) extraIps.push(s.recoverAt[0])
-      if (s.stopAt !== undefined) extraIps.push(s.stopAt[0])
-    }
+    for (const s of prog.scans ?? []) for (const r of scanRefs(s)) extraIps.push(r[0])
     for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
     const roots = [...Object.values(prog.rules), ...extraIps]
     for (const ip of reachableSites(code, roots)) {
@@ -3964,6 +3956,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   for (const s of prog.scans ?? []) {
+    const rebuilt = rebuildLineScan(s, subtreeComb)
+    if (rebuilt !== undefined) { scansArr.push(rebuilt); continue }
     const skip = s.skip.map(r => subtreeComb(r))
     const raw = (s.flags & 1) !== 0
     if (s.kind === 1) {

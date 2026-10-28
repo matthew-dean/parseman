@@ -477,6 +477,21 @@ class Builder {
         return this.walk(def.parser)
       case 'scanTo':
         return { kind: 'annotation', text: '…' }
+      // A run of lines: each line opens with the prefix, the first with `first`
+      // when given, and the body reads the lines' contents.
+      case 'lines':
+        return {
+          kind: 'seq',
+          items: [
+            { kind: 'annotation', text: 'each line begins with' },
+            this.walk(def.prefix),
+            ...(def.first === undefined ? [] : [{ kind: 'annotation', text: 'the first with' } as SpecNode, this.walk(def.first)]),
+            ...(def.lazy === undefined ? [] : [{ kind: 'annotation', text: 'or continues where' } as SpecNode, this.walk(def.lazy)]),
+            this.walk(def.body),
+          ],
+        }
+      case 'columns':
+        return { kind: 'annotation', text: `${def.n} columns` }
 
       // Trivia — elided by default; included as an annotation when asked.
       case 'trivia':

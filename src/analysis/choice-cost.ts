@@ -366,6 +366,7 @@ function slotLabel(d: ParserDef, index: number): string {
       if (d.recoverAt !== undefined && index === d.skip.length + 1) return 'scanTo.recoverAt'
       return 'scanTo.stopAt'
     }
+    case 'lines': return ['lines.prefix', 'lines.body', d.first === undefined ? 'lines.lazy' : 'lines.first', 'lines.lazy'][index] ?? 'lines'
     case 'grammar':  return index === 0 ? 'grammar' : 'grammar.trivia'
     case 'node':     return `node(${d.type ?? 'anonymous'})`
     case 'label':    return `label(${d.label})`
