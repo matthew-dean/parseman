@@ -28,7 +28,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   combinators; the table runs them through its scan opcode.
 - Perf gates `bench/grammar-density/config.json` and `bench/workloads/config.json`
   anchor on the v0.55.4 main base, 1ab22a4.
-- The browser interpreter closure grows 405 B, to 59,147 B, for the two
+- The browser interpreter closure grows 444 B, to 59,186 B, for the two
   combinators and the tab-split mark lookahead, `choice()` and `attempt()`
   restore.
 
