@@ -25,10 +25,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   and a `lines()` prefix ending there leaves the tab's remaining columns in the
   content. A lookahead or a rejected branch takes no columns from the tab.
 - `compile()`, `run()`, the macro build and the grammar analyses handle both
-  combinators; the table runs them through its scan opcode.
+  combinators; the table runs them through its scan opcode. An opening prefix
+  that matches empty gives a run an `any` first-set, and the derived expectations
+  include the body's. A `dispatch()` branch whose `lines()` body uses `routed()`
+  starts after the selector, since the body parses its own input. Generated specs
+  show a run's prefix, first-line prefix and lazy check.
 - Perf gates `bench/grammar-density/config.json` and `bench/workloads/config.json`
   anchor on the v0.55.4 main base, 1ab22a4.
-- The browser interpreter closure grows 444 B, to 59,186 B, for the two
+- The browser interpreter closure grows 442 B, to 59,184 B, for the two
   combinators and the tab-split mark lookahead, `choice()` and `attempt()`
   restore.
 

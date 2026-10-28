@@ -1215,8 +1215,12 @@ their contents with the prefixes removed and the lines joined by `\n`. The run
 starts where `opts.first` (default `prefix`) matches and takes each following
 line whose start matches `prefix`. A line `prefix` misses joins whole when
 `opts.lazy` matches at its start; the first line that joins neither way ends the
-run. The result spans from the run's start to the end of the last line `body`
-consumed, so lines `body` leaves belong to the grammar around the run.
+run. The result spans from the run's start to where `body` stopped, mapped back
+to the run's input; a body that consumes a whole line ends at the next line's
+start, so lines `body` leaves belong to the grammar around the run, and so does
+the rest of a line where `body` stops partway. Tests: `test/unit/lines.test.ts`,
+"a body that leaves a lazy line to the outside" and "describes its lines to the
+body, and maps body offsets back".
 
 ```ts
 // [verify]
@@ -1237,7 +1241,10 @@ of four columns. Inside a run's body it counts columns from the line's real
 column in the outer input, so a nested prefix sees the same tab stops the source
 has. When the `n`th column falls inside a tab, `columns(n)` stops before that
 tab; as a `lines()` prefix it leaves the tab in the content, with the columns it
-took recorded, and a `columns()` in the body counts only the tab's remainder.
+took recorded, and a `columns()` in the body counts only the tab's remainder. A
+lookahead or a rejected `choice()` arm takes no columns. Tests:
+`test/unit/lines.test.ts`, "counts tab stops from a split tab inside its body"
+and "takes no tab columns from a prefix that looks ahead or a branch it rejects".
 
 ```ts
 // [verify]
@@ -1264,17 +1271,24 @@ input; `sourceOffset(ctx.lineView, offset)` maps one back to the run's input. A
 hand-written body combinator reads `ctx.lineView` to place what it builds in the
 source. Errors the body recovers from are recorded at their offsets in the run's
 input, line tracking records the run's lines there too, and `completionsAt` at a
-cursor inside a line's content offers what the body expects there.
+cursor inside a line's content offers what the body expects there. Tests:
+`test/unit/lines.test.ts`, "records line positions and recovered errors in its
+own input" and "offers what the body expects at a cursor inside a line".
 
 `lines()` reads its whole run before `body` runs. A body that consumes one line
 of a long run leaves the rest for the next run to read again, so a body reads
 its run to the end.
 
-Prefixes and lazy checks run as probes: they add no CST leaves, trivia or errors
-to the enclosing parse, and a prefix never reaches past its own line. A first
-line without its prefix fails the run without committing, so `lines()` works as a
-`choice()` arm. `compile()`, `run()` and the macro build run `lines()` and
-`columns()` as the interpreter does.
+Prefixes and lazy checks run as probes that record no errors in the enclosing
+parse, and a prefix never reaches past its own line. A first line without its
+prefix fails the run without committing, so `lines()` works as a `choice()` arm,
+and an opening prefix that matches empty lets a run start at any character.
+`compile()`, `run()` and the macro build run `lines()` and `columns()` as the
+interpreter does. Tests: `test/unit/lines.test.ts`, "records no errors from its
+prefix checks", "keeps each prefix on its own line", "fails where the first line
+has no prefix, naming the prefix", "starts at any character when its opening
+matches empty, and expects its body there", the "interpreter, compile() and
+run() agree" cases and "compiles lines() and columns() to the same results".
 
 ## IDE and composition helpers
 

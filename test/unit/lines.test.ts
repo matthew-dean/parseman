@@ -5,9 +5,10 @@
  * `run()` and the macro build.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, columns, compile, completionsAt, expect as required, lines, literal, many, not, optional, parse, peek, regex, rules, run, sequence, sourceOffset, transform } from '../../src/index.ts'
+import { choice, columns, compile, completionsAt, dispatch, expect as required, routed, when, lines, literal, many, not, optional, parse, peek, regex, rules, run, sequence, sourceOffset, transform } from '../../src/index.ts'
 import type { Combinator, LineView, ParseContext } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { toEBNF } from '../../src/spec/index.ts'
 import { assertMacroCompiled, evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 const ctx = (): ParseContext => ({ trackLines: false })
@@ -102,6 +103,28 @@ describe('lines()', () => {
     const quote = lines(literal('> '), sequence(literal('a'), required(literal(';'))))
     expect(completionsAt(quote, '> a', 3, { tolerant: true })).toContain('";"')
     expect(completionsAt(sequence(literal('x\n'), quote), 'x\n> a', 5, { tolerant: true })).toContain('";"')
+  })
+
+  it('starts at any character when its opening matches empty, and expects its body there', () => {
+    const optionalQuote = lines(optional(literal('>')), literal('x'))
+    expect(choice(optionalQuote, literal('y')).parse('x', 0, ctx())).toMatchObject({ ok: true, value: 'x' })
+    expect(run(sequence(required(optionalQuote), regex(/.*/)), 'z').errors[0]!.expected).toContain('"x"')
+  })
+
+  it('starts a dispatch branch after its selector when only its body is routed', () => {
+    const grammar = dispatch(literal('x'), when('x', lines(literal('>'), routed(literal('a')))))
+    expect(grammar.parse('x>a', 0, ctx())).toMatchObject({ ok: true, span: { start: 0, end: 3 } })
+  })
+
+  it('shows its prefix in a generated spec', () => {
+    const spec = toEBNF(rules(() => ({ Quote: lines(literal('>'), literal('a')) })))
+    expect(spec).toContain('">"')
+    expect(spec).toContain('"a"')
+  })
+
+  it('records no errors from its prefix checks', () => {
+    // The prefix recovers a missing space inside its probe; the parse around the run sees no error.
+    expect(run(lines(sequence(literal('>'), required(literal(' '))), literal('a')), '>a')).toMatchObject({ errors: [] })
   })
 
   it('keeps each prefix on its own line', () => {

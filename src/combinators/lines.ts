@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
-import { any } from './first-set.ts'
+import { any, matchesEmpty } from './first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
 import { failAt } from './probe.ts'
@@ -146,9 +146,9 @@ export function columns(n: number): Combinator<string> {
  * `body` parses the lines' contents joined by `\n`, starting at 0. While it
  * runs, `ctx.lineView` describes the lines (`RunLine`), so nested `columns()`
  * and `lines()` count tab stops from the right column. The result spans from
- * `pos` to where the body stopped, mapped back to this input: a run ends after
- * the last line the body consumed, so lines it leaves are the enclosing
- * grammar's. Spans inside the body's value and its CST are offsets in the
+ * `pos` to where the body stopped, mapped back to this input: a body that
+ * consumes a whole line ends at the next line's start, so lines it leaves, and
+ * the rest of a line where it stops partway, are the enclosing grammar's. Spans inside the body's value and its CST are offsets in the
  * body's input; `sourceOffset(view, offset)` maps them back. Recovered errors
  * the body records are mapped back to this input, line tracking records the
  * run's lines in this input, and a completion probe at a cursor inside a
@@ -161,7 +161,8 @@ export function lines<T>(prefix: Combinator<unknown>, body: Combinator<T>, optio
   const { first, lazy } = options
   const opening = first ?? prefix
   const meta: ParserMeta = {
-    firstSet: opening._meta.firstSet,
+    // An opening that matches empty starts a run at any character.
+    firstSet: matchesEmpty(opening) ? any() : opening._meta.firstSet,
     canMatchNewline: true,
     isTrivia: false,
   }

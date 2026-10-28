@@ -1087,8 +1087,8 @@ where `opts.first` (default `prefix`) matches at `pos`; each following line join
 while `prefix` matches at its start and ends within the line, or, failing that,
 whole while `opts.lazy` matches there. `body` parses the lines' contents joined
 by `\n` from offset 0, with `ctx.lineView` set to a [`LineView`](./types#lineview)
-of the run. The result spans from `pos` to the end of the last line `body`
-consumed. A first line without its prefix fails with the prefix's expectations,
+of the run. The result spans from `pos` to where `body` stopped, mapped back to
+this input; a body that consumes a whole line ends at the next line's start. A first line without its prefix fails with the prefix's expectations,
 uncommitted. See [Line runs](../guide/combinators#lines-and-columns).
 
 ### `columns(n)`

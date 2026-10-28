@@ -29,9 +29,7 @@ export type TriviaScan = { end: number; commit: () => void }
 export type CompactTriviaScan = number | TriviaScan
 
 /** Saved lengths for rolling back speculative trivia commits. */
-// `split` is `columns()`'s tab-split mark, which a `lines()` prefix reads: a
-// rejected branch leaves the one it found before.
-export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; split: ParseContext['_columnsSplit']; log: number; rootLog: number }
+export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; log: number; rootLog: number }
 
 const NOOP_COMMIT = () => {}
 
@@ -88,7 +86,6 @@ export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
     leaves: m.leaves,
     fields: m.fields,
     errors: m.errors,
-    split: ctx._columnsSplit,
     log: ctx._triviaLog ? ctx._triviaLog.length : 0,
     rootLog: ctx._rootTriviaLog ? ctx._rootTriviaLog.length : 0,
   }
@@ -117,7 +114,6 @@ export function rollbackTriviaAt(
 
 export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): void {
   rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields, errors: mark.errors })
-  if (ctx._columnsSplit !== mark.split) ctx._columnsSplit = mark.split
   // Guarded like every other truncation — see rollbackCstCapture.
   if (ctx._triviaLog && ctx._triviaLog.length !== mark.log) ctx._triviaLog.length = mark.log
   if (ctx._rootTriviaLog && ctx._rootTriviaLog.length !== mark.rootLog) ctx._rootTriviaLog.length = mark.rootLog
@@ -192,15 +188,17 @@ function parseTriviaNoCapture(
  * `peek(sequence(literal('a'), literal('zzz')))` over `"ab"` offered `"zzz"` as
  * the ONLY completion, though no input can ever reach it there.
  */
-export type LookaheadMark = TriviaRollbackMark & { probeBest: ParseFail | null }
+export type LookaheadMark = TriviaRollbackMark & { probeBest: ParseFail | null; split: ParseContext['_columnsSplit'] }
 
 export function saveLookaheadMark(ctx: ParseContext): LookaheadMark {
-  return { ...saveTriviaMark(ctx), probeBest: ctx._probe ? ctx._probe.best : null }
+  return { ...saveTriviaMark(ctx), probeBest: ctx._probe ? ctx._probe.best : null, split: ctx._columnsSplit }
 }
 
 export function rollbackLookahead(ctx: ParseContext, mark: LookaheadMark): void {
   rollbackTrivia(ctx, mark)
   if (ctx._probe) ctx._probe.best = mark.probeBest
+  // A lookahead takes no columns of a tab: `lines()` reads `columns()`'s split mark.
+  ctx._columnsSplit = mark.split
 }
 
 function scanWithLabels(input: string, cur: number, ctx: ParseContext): CompactTriviaScan {

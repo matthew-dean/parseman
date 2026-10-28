@@ -23,10 +23,10 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +332B for `lines()` and `columns()` (58,742B at parent 247505b to 59,074B):
 // the first-set, nullability, expected-set and routed walks every combinator shares
 // name both tags; `lines.ts` itself tree-shakes out of a grammar that never calls it.
-// Bumped +112B to 59,186B: the trivia rollback mark (lookahead, `choice()` arms)
-// and `attempt()` restore `columns()`'s tab-split mark, and the context factory
-// initializes `lineView` and `_columnsSplit`.
-const BASELINE_RAW_BYTES = 59_186
+// Bumped +110B to 59,184B: lookahead, a rejected `choice()` arm and `attempt()`
+// restore `columns()`'s tab-split mark, a nullable `lines()` opening widens its
+// first-set, and the context factory initializes `lineView` and `_columnsSplit`.
+const BASELINE_RAW_BYTES = 59_184
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([
