@@ -52,9 +52,11 @@ export function attempt<T>(parser: Combinator<T>, options?: AttemptOptions): Com
       const mark = saveCstMark(ctx)
       const log = ctx._triviaLog?.length
       const rootLog = ctx._rootTriviaLog?.length
+      const split = ctx._columnsSplit
       const result = parser.parse(input, pos, ctx)
       if (result.ok) return result
       rollbackCstCapture(ctx, mark)
+      ctx._columnsSplit = split
       if (log !== undefined && ctx._triviaLog && ctx._triviaLog.length !== log) ctx._triviaLog.length = log
       if (rootLog !== undefined && ctx._rootTriviaLog && ctx._rootTriviaLog.length !== rootLog) ctx._rootTriviaLog.length = rootLog
       if (result.committed && !contain) return result

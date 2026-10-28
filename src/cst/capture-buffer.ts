@@ -136,9 +136,7 @@ export function cstTlLen(ctx: ParseContext): number {
   return ctx._cstTriviaLog?.length ?? 0
 }
 
-// `split` is `columns()`'s tab-split mark, which a `lines()` prefix reads: a
-// rejected branch or a lookahead leaves the one it found before.
-export type CstRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; split?: ParseContext['_columnsSplit'] }
+export type CstRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number }
 
 export function saveCstMark(ctx: ParseContext): CstRollbackMark {
   return {
@@ -152,7 +150,6 @@ export function saveCstMark(ctx: ParseContext): CstRollbackMark {
     // must remove BOTH, or the flat error survives as a GHOST that a tree walk
     // can't see (flat run().errors would disagree with the embedded set).
     errors: ctx._errors?.length ?? 0,
-    split: ctx._columnsSplit,
   }
 }
 
@@ -213,7 +210,6 @@ export function demoteCapturedToRaw(ctx: ParseContext, childrenLen: number): voi
 
 export function rollbackCstCapture(ctx: ParseContext, mark: CstRollbackMark): void {
   rollbackCstCaptureAt(ctx, mark.raw, mark.tlog, mark.leaves, mark.fields, mark.errors)
-  if (ctx._columnsSplit !== mark.split) ctx._columnsSplit = mark.split
 }
 
 /**
