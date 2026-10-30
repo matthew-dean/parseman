@@ -3,6 +3,27 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.57.0 — 2026-10-30
+
+- The table emitter lowers gated choice arms (`choice({ gate, combinator })`) and
+  `withCtx(…)`, site for site with the closure assembler. A precompiled assembly
+  containing either was refused, so a terminal `composeLeaf()` that used them ran on
+  the closure engine. Jess's composed Less, SCSS and Jess grammars use both; these were
+  the only opcodes they reach that the emitter could not lower.
+- When the build asks for a precompiled assembly and the emitter refuses it, the
+  macro plugin warns with the refused construct, e.g. `composeLeaf(): its precompiled
+  assembly cannot emit OP_GREEDY`. The artifact still parses, on the closure engine.
+  Before, that fallback was silent.
+- Fixed in 0.56.0: a grammar with a scan skip set (`scanTo(…, { skip })`,
+  `balanced(…, { skip })`) shipped its precompiled assembly without the
+  supercompiler's joins. The supercompiler and the emitter listed the scan pool's
+  sites in different orders, so the supercompiler's splice check failed and it
+  discarded its result without a warning. All three assemblers now read one list.
+  Jess's CSS grammar goes back from 1,575 unjoined assembly functions to 950.
+- `compose()` artifacts are unchanged: they stay compact closure tables.
+- Perf gates `bench/grammar-density/config.json` and `bench/workloads/config.json`
+  anchor on the v0.56.0 main base, ffe1e86.
+
 ## 0.56.0 — 2026-10-28
 
 - `lines(prefix, body, { first, lazy })` parses `body` over a run of lines with
