@@ -9,7 +9,7 @@
  * - An assembly the emitter refuses is a build warning naming the construct.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, literal, rules, run, sequence, withCtx } from '../../src/index.ts'
+import { choice, literal, run, sequence, withCtx } from '../../src/index.ts'
 import { run as interpret } from '../../src/functional/run.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
