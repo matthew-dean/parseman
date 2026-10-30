@@ -116,7 +116,7 @@ export type CompiledRuleMapTable = {
   /** Re-emit the same table call with construction-time artifact metadata. */
   replacementWithMetadata(
     metadataSource: string,
-    options?: { readonly precompileDefault?: boolean },
+    options?: { readonly precompileDefault?: boolean; readonly refusals?: string[] },
   ): string
   hostMode: HostMode
   hostBranchElided: boolean
@@ -331,7 +331,7 @@ export function compileRuleMap(
 
   const replacementWithMetadata = (
     metadataSource?: string,
-    options: { readonly precompileDefault?: boolean } = {},
+    options: { readonly precompileDefault?: boolean; readonly refusals?: string[] } = {},
   ): string => emitTableExpression(artifact, {
     entry: null,
     runtimeRef: opts.runtimeRef ?? 'tableRules',
@@ -341,6 +341,7 @@ export function compileRuleMap(
       ? { assemblies: defaultAssemblyCfgs(artifact).slice(0, 1) }
       : {}),
     ...(metadataSource === undefined ? {} : { metadataSource }),
+    ...(options.refusals === undefined ? {} : { refusals: options.refusals }),
   })
   const replacement = replacementWithMetadata()
 

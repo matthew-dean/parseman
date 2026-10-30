@@ -64,7 +64,7 @@
  * the three-way identity sweep gates this against it.
  */
 import { rebuildLineScan } from './line-scan.ts'
-import { scanRefs } from './program.ts'
+import { assemblyExtraIps } from './program.ts'
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
@@ -487,9 +487,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return recognize
   }
 
-  const labelExtraIps: number[] = []
-  for (const s of prog.scans ?? []) for (const r of scanRefs(s)) labelExtraIps.push(r[0])
-  for (const set of prog.scanSkip ?? []) for (const r of set) labelExtraIps.push(r[0])
+  const labelExtraIps = assemblyExtraIps(prog)
   const closureLabels = computeSiteLabels(
     code, [...Object.values(prog.rules), ...labelExtraIps], hostCst,
   )
@@ -3777,9 +3775,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // The scan pool and the scan-skip sets are built FROM subtrees, so their
     // sites need emitted names too or `subtreeComb` would have to fall back to
     // a closure for them and the two engines would both be live in one parse.
-    const extraIps: number[] = []
-    for (const s of prog.scans ?? []) for (const r of scanRefs(s)) extraIps.push(r[0])
-    for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
+    const extraIps = assemblyExtraIps(prog)
     const roots = [...Object.values(prog.rules), ...extraIps]
     for (const ip of reachableSites(code, roots)) {
       if (code[ip] === OP_DISPATCH) {

@@ -2135,14 +2135,21 @@ function transformMacroImpl(
         )
         if (compiled !== null) {
           usedTableRuntime = true
-          return {
-            replacement: supercompileRuleMapReplacement(
-              compiled.prog,
-              compiled.replacementWithMetadata(
-                staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
-                { precompileDefault: true },
-              ),
+          // A refused assembly still parses, on the closure engine, but the build
+          // asked for one: say which construct refused it rather than fall back silently.
+          const assemblyRefusals: string[] = []
+          const replacement = supercompileRuleMapReplacement(
+            compiled.prog,
+            compiled.replacementWithMetadata(
+              staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
+              { precompileDefault: true, refusals: assemblyRefusals },
             ),
+          )
+          if (assemblyRefusals.length > 0) {
+            warn(init.start, `composeLeaf(): its precompiled assembly cannot emit ${[...new Set(assemblyRefusals)].join(', ')}; the artifact falls back to the closure engine`)
+          }
+          return {
+            replacement,
             ...(importedFactories.length ? { importedFactories } : {}),
           }
         }
