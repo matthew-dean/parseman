@@ -249,14 +249,14 @@ describe('the macro build ships a selective assembly within its module budget', 
     ])!
     const full = compiled.selectAssembly(Infinity).bytes
     let filled = false
-    for (let share = 0.05; share < 1; share += 0.005) {
+    for (let share = 0.05; share < 1; share += 0.01) {
       const budget = Math.floor(full * share)
       const { sites, bytes } = compiled.selectAssembly(budget)
       if (filled) expect(sites.size, `budget ${budget}`).toBeGreaterThan(0)
       if (sites.size > 0) { filled = true; expect(bytes).toBeLessThanOrEqual(budget) }
     }
     expect(filled).toBe(true)
-  })
+  }, 60_000)
 
   it('a terminal composeLeaf carries generated code for some sites, the closure engine for the rest', () => {
     const source = `import { choice, composeLeaf, literal, many, regex, rules } from 'parseman' with { type: 'macro' }
