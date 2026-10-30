@@ -1183,7 +1183,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (next !== undefined) {
         return next(input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best)
       }
-      if (best === pos) acc = through(total, prev, acc)
+      // No arm entered (`prev` 0, `acc` unset): the catch-up would rebuild
+      // `choiceFx`, the arms' flatMap, set by set. It IS the answer.
+      if (best === pos && prev !== 0) acc = through(total, prev, acc)
       ctx._fe = pos; ctx._fx = acc ?? choiceFx
       return FAIL
     }
@@ -1252,7 +1254,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (next !== undefined) {
         return next(input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best)
       }
-      if (best === pos) acc = through(total, prev, acc)
+      // No arm entered (`prev` 0, `acc` unset): the catch-up would rebuild
+      // `choiceFx`, the arms' flatMap, set by set. It IS the answer.
+      if (best === pos && prev !== 0) acc = through(total, prev, acc)
       ctx._fe = pos; ctx._fx = acc ?? choiceFx
       return FAIL
     }
@@ -2952,6 +2956,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
                 if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               }
+              if (prev === 0) { ctx._fe = pos; ctx._fx = choiceFx; return FAIL }
               if (best === pos && prev < 1) acc = accSet(e0, acc)
               if (best === pos && prev < 2) acc = accSet(e1, acc)
               if (best === pos && n === 3 && prev < 3) acc = accSet(e2, acc)

@@ -2128,6 +2128,9 @@ ${rollbackFor(i)}
           // A zero compatible-arm mask is stronger than a speculative miss: no
           // arm can run, so the choice's encoded flat expected set is already
           // the exact result. Do not walk the arm ladder merely to rebuild it.
+          // The same holds when the mask admitted arms but none was entered
+          // (`prev` still 0, so `acc` is unset): the catch-up would rebuild
+          // `choiceFx`, the arms' flatMap, set by set.
           return `${head}
 const c=${directAsciiMask ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
 ${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
@@ -2138,7 +2141,7 @@ const bits=${maskName}[${directAsciiMask ? 'c' : 'c<0?128:c'}]
 if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
 ${startFailureExact ? '' : 'let prev=0'}
 ${maskArms}
-${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${n},prev,acc)`}
+${startFailureExact ? '' : `if(best===pos&&prev!==0)acc=${catchName}(${n},prev,acc)`}
 ctx._fe=pos;ctx._fx=${startFailureExact ? `best===pos?${choiceFx}:acc??${choiceFx}` : `acc??${choiceFx}`}
 return FAIL
 }
