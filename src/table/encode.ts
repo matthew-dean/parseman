@@ -747,14 +747,21 @@ class Encoder {
     return i
   }
 
-  /** Bind a guard only when its class is already part of the program. Repeat
-   * gating must not grow the compact artifact merely to avoid a failed call. */
-  private existingCharClass(fs: FirstSet): number {
-    if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
-    const hit = this.ccIndex.get(encodeClassSpec(fs.ranges))
-    // This reuses the recovery row's existing `-1` slot. Keep its decimal width
-    // at two bytes or less so a speed hint cannot grow a compact artifact.
-    return hit !== undefined && hit < 100 ? hit : -1
+  /**
+   * The first set a node's or an attempt's fail-fast gate tests. A bare
+   * cross-rule ref resolves through `winners` (a compose OVERRIDE may widen
+   * it). Any other body keeps its construction-time `_meta.firstSet`, except
+   * where that is `any`: under `compose()` a body that reaches a rule of
+   * another piece is built before that rule exists, so its cached set is
+   * `any` and the node got NO gate (jess's `CompoundSelector` was entered at
+   * `{`, `Call` at `}`). The resolved set is the one a choice arm's gate uses,
+   * over the final merged map.
+   */
+  private gateFirstSet(p: Combinator<unknown>): FirstSet {
+    const cached = p._meta.firstSet
+    return p._def.tag === 'lazy' || cached.kind === 'any'
+      ? firstSetOf(p, new Set(), this.refResolver(), this.activeTrivia)
+      : cached
   }
 
   /**
@@ -1290,7 +1297,7 @@ class Encoder {
         const rr = this.refResolver()
         const itemClass = matchesEmpty(d.parser, new Set(), rr)
           ? -1
-          : this.existingCharClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
+          : this.charClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
@@ -1454,16 +1461,14 @@ class Encoder {
         // `deriveExpected(body)`, which for a body with nullable leading terms
         // names tokens the run would have skipped — `['"@"', '"(", '"x"']` where
         // running the body reports `['"x"']` alone.
-        if (matchesEmpty(d.parser)) return body
+        if (matchesEmpty(d.parser, new Set(), this.refResolver())) return body
         // A node whose BODY is a bare cross-rule ref (`node('X', g.Y, …)`) caches its
         // first set from the ref's base binding. Under a compose OVERRIDE the winner
         // for `Y` may be WIDER, so the cached set gates out input the merged rule
         // accepts (the reducer reroutes via `winners`, but this recognizer gate did
         // not). Resolve the ref's gate through `winners`, exactly as the `lazy` case
         // resolves the call. Non-ref bodies keep the cached set (byte-identical).
-        const fs = d.parser._def.tag === 'lazy'
-          ? firstSetOf(d.parser, new Set(), this.refResolver(), this.activeTrivia)
-          : d.parser._meta.firstSet
+        const fs = this.gateFirstSet(d.parser)
         if (fs.kind === 'any') return body
         const cls = this.charClass(fs)
         if (cls < 0) return body
@@ -1664,10 +1669,8 @@ class Encoder {
         // not a slower equivalent.
         // Same override-aware resolution as the node gate: a bare-ref inner resolves
         // its gate through `winners` so a widened winner is not gated out.
-        const fs = d.parser._def.tag === 'lazy'
-          ? firstSetOf(d.parser, new Set(), this.refResolver(), this.activeTrivia)
-          : d.parser._meta.firstSet
-        if (fs.kind === 'any' || matchesEmpty(d.parser)) return inner
+        const fs = this.gateFirstSet(d.parser)
+        if (fs.kind === 'any' || matchesEmpty(d.parser, new Set(), this.refResolver())) return inner
         const cls = this.charClass(fs)
         if (cls < 0) return inner
         const e = deriveExpected(d.parser)
