@@ -2145,8 +2145,10 @@ function transformMacroImpl(
               { precompileDefault: true, refusals: assemblyRefusals },
             ),
           )
+          // Not `warn()`: nothing falls back to the interpreter and every declaration
+          // still lowers, so the module stays fully resolved.
           if (assemblyRefusals.length > 0) {
-            warn(init.start, `composeLeaf(): its precompiled assembly cannot emit ${[...new Set(assemblyRefusals)].join(', ')}; the artifact falls back to the closure engine`)
+            warnings.push(`${id}:${lineOf(init.start)} — composeLeaf(): its precompiled assembly cannot emit ${[...new Set(assemblyRefusals)].join(', ')}; the artifact runs on the closure engine`)
           }
           return {
             replacement,

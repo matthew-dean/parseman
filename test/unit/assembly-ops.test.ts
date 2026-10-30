@@ -129,6 +129,9 @@ const grammar = composeLeaf([recognition, rules(g => ({ Entry: choice(regex(/[a-
 `, 'leaf-precompile-refused.ts', new Set(['parseman']))
     expect(out?.code).toContain('a:[],')
     expect(out?.warnings.some(w => /composeLeaf\(\): its precompiled assembly cannot emit OP_GREEDY/.test(w))).toBe(true)
+    // The refusal costs the assembly only: the module still lowers completely.
+    expect(out?.warnings.some(w => w.includes('running via the interpreter'))).toBe(false)
+    expect(out?.code).not.toContain("from 'parseman'")
   })
 })
 
