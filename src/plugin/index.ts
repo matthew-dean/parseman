@@ -26,7 +26,7 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
-import { compileRuleMap } from '../table/compile-rule-map.ts'
+import { compileRuleMap, type CompiledRuleMapTable } from '../table/compile-rule-map.ts'
 import { compileLinkableTable } from '../compiler/compile-linkable-table.ts'
 import { createReducerResolver, topLevelIsStable } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
@@ -1985,8 +1985,8 @@ function transformMacroImpl(
           reflection: compiled.reflection,
         })
         return {
-          replacement: compiled.replacementWithMetadata(reflectionMetadata),
-          exportedReplacement: compiled.replacementWithMetadata(exportedMetadata),
+          replacement: precompiledReplacement(init.start, 'compose()', compiled, reflectionMetadata),
+          exportedReplacement: precompiledReplacement(init.start, 'compose()', compiled, exportedMetadata),
           carried,
           ...(composing ? { trivia: composing } : {}),
           ...(importedFactories.length ? { importedFactories } : {}),
@@ -2004,6 +2004,31 @@ function transformMacroImpl(
     }
     warn(init.start, 'compose(): a carried piece has no re-lowerable IR; leaving the runtime compose() in place')
     return null
+  }
+
+  /**
+   * The table replacement a composed grammar ships, with its default assembly
+   * precompiled and supercompiled. `compose()` and `composeLeaf()` both print
+   * through here, so a composed grammar gets the same compiled fast path as a
+   * leaf one. An assembly the emitter refuses is a warning naming the
+   * construct: the artifact still parses, on the closure engine, and nothing
+   * about that may be silent.
+   */
+  const precompiledReplacement = (
+    pos: number,
+    label: string,
+    compiled: CompiledRuleMapTable,
+    metadataSource: string,
+  ): string => {
+    const refusals: string[] = []
+    const replacement = supercompileRuleMapReplacement(
+      compiled.prog,
+      compiled.replacementWithMetadata(metadataSource, { precompileDefault: true, refusals }),
+    )
+    if (refusals.length > 0) {
+      warn(pos, `${label}: its precompiled assembly cannot emit ${[...new Set(refusals)].join(', ')}; the artifact falls back to the closure engine`)
+    }
+    return replacement
   }
 
   /**
@@ -2136,12 +2161,11 @@ function transformMacroImpl(
         if (compiled !== null) {
           usedTableRuntime = true
           return {
-            replacement: supercompileRuleMapReplacement(
-              compiled.prog,
-              compiled.replacementWithMetadata(
-                staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
-                { precompileDefault: true },
-              ),
+            replacement: precompiledReplacement(
+              init.start,
+              'composeLeaf()',
+              compiled,
+              staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
             ),
             ...(importedFactories.length ? { importedFactories } : {}),
           }

@@ -47,10 +47,10 @@
 import type { ParseContext } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
-  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
+  OP_ADJ, OP_ARMGATE, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
-  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import {
@@ -1276,6 +1276,32 @@ if(${staticBuild && isAsciiOnlyClass(resolved)
     ? `${cls}.ascii[input.charCodeAt(pos)]!==1`
     : `!classHas(${cls},lead(input,pos))`}){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 return ${child}(input,pos,ctx)
+}`
+      }
+
+      case OP_ARMGATE: {
+        // `choice({ gate, combinator })`, as `assemble.ts` lowers it. A blocked
+        // arm is SKIPPED, not failed (choice.ts `continue`), so it clears the cut
+        // and reports the arm's own expected set for the dispatch path.
+        const pred = fnRef(code[ip + 1]!)
+        const child = link(code[ip + 2]!)
+        const xf = fxRef(code[ip + 3]!)
+        return `${head}
+if(!${pred}(ctx.state)){ctx._fc=false;ctx._fe=pos;ctx._fx=${xf};return FAIL}
+return ${child}(input,pos,ctx)
+}`
+      }
+
+      case OP_WITHCTX: {
+        // `withCtx(extra | derive, p)`, as `assemble.ts` lowers it: a negative
+        // operand is a derive callback over the outer state, else a constant.
+        // `finally` restores the outer state on every exit, a throw included.
+        const ki = code[ip + 1]!
+        const child = link(code[ip + 2]!)
+        return `${head}
+const saved=ctx.state
+ctx.state=${ki < 0 ? `${fnRef(~ki)}(saved)` : kRef(ki)}
+try{return ${child}(input,pos,ctx)}finally{ctx.state=saved}
 }`
       }
 
