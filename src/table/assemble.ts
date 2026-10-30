@@ -477,6 +477,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   // Value/CST/failure/cursor effects stay in those consumers.
   const scalarRecognizers: Array<ScalarRecognizer | undefined> = []
   const rawScalarSpecs = new Set<number>()
+  /**
+   * The class of an `optional`/`not`/`peek` child's first-character gate
+   * (`encode.ts` `lookaheadGate`), tested before the wrapper takes its mark.
+   * `null` where there is none, or where a probe or tolerant parse forwards
+   * through the gate (`OP_GATE` below).
+   */
+  function lookaheadClass(child: number): ResolvedClass | null {
+    return code[child] === OP_GATE && !cfg.tolerant && !cfg.probe ? cc[code[child + 1]!]! : null
+  }
   function scalarFor(child: number): ScalarRecognizer | undefined {
     const spec = code[child + 1]!
     let recognize = scalarRecognizers[spec]
@@ -2018,7 +2027,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
+        const gate = lookaheadClass(code[ip + 1]!)
         return (input, pos, ctx) => {
+          if (gate !== null && !classHas(gate, lead(input, pos))) { EC.e = pos; return null }
           const need = markCst(ctx)
           const mRaw = MRAW
           const mTl = MTL
@@ -2040,7 +2051,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_PEEK: {
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
+        const gate = lookaheadClass(code[ip + 1]!)
         return (input, pos, ctx) => {
+          if (gate !== null && !classHas(gate, lead(input, pos))) { ctx._fe = pos; ctx._fx = xf; return FAIL }
           const need = markCst(ctx)
           const mRaw = MRAW
           const mTl = MTL
@@ -2060,7 +2073,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_OPT: {
         const child = link(code[ip + 1]!)
+        const gate = lookaheadClass(code[ip + 1]!)
         return (input, pos, ctx) => {
+          if (gate !== null && !classHas(gate, lead(input, pos))) { EC.e = pos; return null }
           const need = markCst(ctx)
           const mRaw = MRAW
           const mTl = MTL

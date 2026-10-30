@@ -699,6 +699,38 @@ class Encoder {
     }
   }
 
+  /**
+   * THE FIRST-CHARACTER GATE OF AN `optional`, `not` OR `peek` CHILD.
+   *
+   * A non-nullable child cannot match at a character outside its first set, so
+   * the wrapper's outcome there is already decided: `optional` yields `null`,
+   * `not` succeeds, `peek` fails with its own set. The interpreter's `optional`
+   * makes that test itself (`repeat.ts` `startsFirstSet`); the table entered the
+   * child — a rollback mark, the call, the child's own failure — to learn it.
+   *
+   * The gate is an `OP_GATE` row around the child, so every engine runs it
+   * unchanged, a probe or tolerant parse forwards through it as for a node's
+   * gate, and the wrapper's row keeps its layout. The engines test the class
+   * before taking the wrapper's mark. The first set is resolved through
+   * `winners`, the analysis a choice arm's gate uses, so a composed rule's set
+   * is the merged one. A scalar `not` child stays bare: `scalarTerminalNotChild`
+   * already reduces it to one recognizer call.
+   */
+  private lookaheadGate(p: Combinator<unknown>, child: number): number {
+    // By opcode FAMILY: a line-tracked variant spells the same terminal
+    // `OP_LIT_TRACK`/`OP_RX_TRACK`, and every variant of one grammar must lay
+    // down the same words (`foldPrograms`).
+    const op = this.code[child]
+    if (op === OP_GATE || op === OP_LIT || op === OP_LIT_CI || op === OP_LIT_TRACK || op === OP_LIT_CI_TRACK
+      || op === OP_RX || op === OP_RX_TRACK) return child
+    const rr = this.refResolver()
+    if (matchesEmpty(p, new Set(), rr)) return child
+    const cls = this.charClass(firstSetOf(p, new Set(), rr, this.activeTrivia))
+    if (cls < 0) return child
+    const e = deriveExpected(p)
+    return this.emit(OP_GATE, cls, child, this.expected(e.length > 0 ? e : [p._tag]))
+  }
+
   /** A first set becomes a char class string, or −1 for `any`. */
   private charClass(fs: FirstSet): number {
     if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
@@ -1301,7 +1333,7 @@ class Encoder {
           : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
       }
       case 'optional': {
-        const head = this.emit(OP_OPT, this.node(d.parser).ip)
+        const head = this.emit(OP_OPT, this.lookaheadGate(d.parser, this.node(d.parser).ip))
         if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(head)
         return head
       }
@@ -1571,7 +1603,7 @@ class Encoder {
       // other engine reported `['not(literal)']`. It hid because `expected` is a
       // TOP-LEVEL field on `RunResult` and is NOT part of the identity digest.
       case 'not':
-        return this.emit(OP_NOT, this.node(d.parser).ip, this.expected(assertionFailureExpected(false, d.parser._tag)))
+        return this.emit(OP_NOT, this.lookaheadGate(d.parser, this.node(d.parser).ip), this.expected(assertionFailureExpected(false, d.parser._tag)))
       case 'guard':
         // `'gate'`, the public name — see gate.ts. The def tag stays `'guard'`.
         return this.emit(OP_GUARD, this.fn(d.predicate, d.predSrc ?? null), this.expected(['gate']))
@@ -1616,7 +1648,7 @@ class Encoder {
         // lookahead's failure is "the guard did not hold", and naming the body's
         // internals offers a token the parse never asked the author for. The
         // table propagated the body's set instead.
-        return this.emit(OP_PEEK, this.node(d.parser).ip, this.expected(assertionFailureExpected(true, d.parser._tag)))
+        return this.emit(OP_PEEK, this.lookaheadGate(d.parser, this.node(d.parser).ip), this.expected(assertionFailureExpected(true, d.parser._tag)))
       // A TRANSACTION IS A ROW. See `OP_ATTEMPT` for why the transparent
       // lowering was correct only for a choice arm.
       case 'attempt': {

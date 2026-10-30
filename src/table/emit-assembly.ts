@@ -967,6 +967,28 @@ return 1
    * site property — nothing in `src` writes it except a caller-supplied
    * `ParseContext` (`types.ts:524`) — so it stays the one runtime read.
    */
+  /** The test an `OP_GATE` row at `gip` fails on, with its class hoisted. */
+  function gateMissTest(gip: number): string {
+    const resolved = t.cc[code[gip + 1]!]!
+    const ci = classes.push([resolved]) - 1
+    classPlan.push([code[gip + 1]!])
+    const cls = hoist('cl', `CLS[${ci}][0]`)
+    return staticBuild && isAsciiOnlyClass(resolved)
+      ? `${cls}.ascii[input.charCodeAt(pos)]!==1`
+      : `!classHas(${cls},lead(input,pos))`
+  }
+
+  /**
+   * An `optional`/`not`/`peek` child's first-character gate (`encode.ts`
+   * `lookaheadGate`), tested BEFORE the wrapper's mark: a miss is the wrapper's
+   * decided outcome, `miss`. Nothing where the child has no gate, or where a
+   * probe or tolerant parse forwards through it (`aliasOf`).
+   */
+  function lookaheadMiss(child: number, miss: string): string {
+    if (code[child] !== OP_GATE || cfg.tolerant || cfg.probe) return ''
+    return `if(${gateMissTest(child)}){${miss}}\n`
+  }
+
   function skipFor(l: SiteLabel): string {
     if (l.tri < 0) return '_skipTrivia'
     const ki = l.tri
@@ -1362,15 +1384,9 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 
       case OP_GATE: {
         const child = link(code[ip + 2]!)
-        const resolved = t.cc[code[ip + 1]!]!
-        const ci = classes.push([resolved]) - 1
-        classPlan.push([code[ip + 1]!])
-        const cls = hoist('cl', `CLS[${ci}][0]`)
         const xf = fxRef(code[ip + 3]!)
         return `${head}
-if(${staticBuild && isAsciiOnlyClass(resolved)
-    ? `${cls}.ascii[input.charCodeAt(pos)]!==1`
-    : `!classHas(${cls},lead(input,pos))`}){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+if(${gateMissTest(ip)}){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 return ${child}(input,pos,ctx)
 }`
       }
@@ -1712,7 +1728,7 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 ${emitRollback(p, L.buf, L.raw, sinks)}
 if(v===FAIL){EC.e=pos;return null}
@@ -1727,7 +1743,7 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, `ctx._fe=pos;ctx._fx=${xf};return FAIL`)}${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 ${emitRollback(p, L.buf, L.raw, sinks)}
 if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
@@ -1741,7 +1757,7 @@ return null
         const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
         return `${head}
-${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
