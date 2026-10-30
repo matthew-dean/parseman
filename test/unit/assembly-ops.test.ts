@@ -133,6 +133,24 @@ const grammar = composeLeaf([recognition, rules(g => ({ Entry: choice(regex(/[a-
     expect(out?.warnings.some(w => w.includes('running via the interpreter'))).toBe(false)
     expect(out?.code).not.toContain("from 'parseman'")
   })
+
+  it('a refused assembly beside a ref() cluster still strips the cluster\'s define()', () => {
+    // A module marked unresolved keeps its `x.define(…)` statements while `x` itself
+    // becomes a compiled parser with no `define`, so importing the module throws.
+    const out = transformMacro(`
+import { choice, composeLeaf, literal, optional, ref, regex, rules, sequence } from 'parseman' with { type: 'macro' }
+${RECOGNITION}
+const item = ref()
+item.define(sequence(literal('['), optional(item), literal(']')))
+export const brackets = item
+export const grammar = composeLeaf([recognition, rules(g => ({ Entry: choice(regex(/[a-z]+/), literal('if')) }))])
+`, 'leaf-precompile-refused-ref.ts', new Set(['parseman']))
+    expect(out?.warnings.some(w => /cannot emit OP_GREEDY/.test(w))).toBe(true)
+    expect(out?.code).not.toMatch(/^item\.define\(/m)
+    const { brackets, grammar } = evalMacroModule<Record<string, ParseFn | Record<string, ParseFn>>>(out!.code, '{ brackets, grammar }')
+    expect((brackets as ParseFn)('[[]]', 0, {}).ok).toBe(true)
+    expect((grammar as Record<string, ParseFn>).Entry!('if', 0, {}).ok).toBe(true)
+  })
 })
 
 describe('the emitter lowers gated choice arms and withCtx', () => {
