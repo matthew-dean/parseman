@@ -3,6 +3,45 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.57.0 — 2026-10-30
+
+- A grammar built with `compose()` now ships the same compiled fast path as one
+  built with `composeLeaf()`. Once its table reaches 1,024 instruction words, the
+  default AST/no-lines artifact embeds one precompiled, supercompiled assembly; the
+  line-tracking and CST artifacts stay compact closure tables, as for `composeLeaf()`.
+  Before, every `compose()` artifact ran on the closure engine.
+- The table emitter lowers gated choice arms (`choice({ gate, combinator })`) and
+  `withCtx(…)`. An assembly containing either was refused, so a composed grammar that
+  used them ran on the closure engine even where an assembly was requested.
+- When the build asks for a precompiled assembly and the emitter refuses it, the
+  macro plugin warns with the refused construct, e.g. `compose(): its precompiled
+  assembly cannot emit OP_GREEDY`. The artifact still parses, on the closure engine.
+  Before, that fallback was silent.
+- Fixed in 0.56.0: grammars with a scan skip set (`scanTo(…, { skip })`,
+  `balanced(…, { skip })`) shipped their precompiled assembly without the
+  supercompiler's joins. The supercompiler and the emitter listed the scan pool's
+  sites in different orders, so the supercompiler's splice check failed and it
+  discarded its result without a warning. All three assemblers now read one list.
+- Measured on jess's Less grammar against parseman 0.55.2, AST parse of
+  `benchmark.less` (104 KB), Node 24.11.1, M4 Pro:
+
+  | | 0.55.2 | 0.57.0 |
+  | --- | --- | --- |
+  | marginal instructions per parse, `(I(40) − I(10)) / 30`, median of 5 interleaved | 496.9M | 375.6M (−24.4%) |
+  | wall time per parse, median of 6 interleaved runs of 30 | 27.6 ms | 18.7 ms (−32.5%) |
+  | import of the grammar module | 38 ms | 86 ms |
+  | first parse after import | 75 ms | 110 ms |
+  | `lib/grammar/ast.js` | 775,379 B | 5,613,058 B |
+
+  Rendered CSS is byte-identical across 360 fixtures × 6 output modes. The larger
+  artifact costs load time, and it is 20.8× its 270 KB grammar source, above the 5×
+  budget in `docs/design/runtime-and-size-contract.md` rule 4. Jess's SCSS and Jess
+  grammars grow the same way (4,187,436 B and 4,516,840 B), and so does the CSS
+  `cssBaseRules` artifact they compose over (2,334,702 B), though nothing parses with
+  it directly.
+- Perf gates `bench/grammar-density/config.json` and `bench/workloads/config.json`
+  anchor on the v0.56.0 main base, ffe1e86.
+
 ## 0.56.0 — 2026-10-28
 
 - `lines(prefix, body, { first, lazy })` parses `body` over a run of lines with

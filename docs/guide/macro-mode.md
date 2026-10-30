@@ -301,8 +301,9 @@ Each extra variant costs real bytes, but no longer a full copy. Measured by
 | 4 | 3,732 B | 2.90× |
 
 Variant growth stays sublinear, but it isn't free. Measure the variants you actually
-ship — the selected strict assembly applies only to the large terminal default
-AST/no-lines leaf, while the tracked and CST siblings stay compact.
+ship — the selected strict assembly applies only to the large default AST/no-lines
+artifact of a `compose()` or terminal `composeLeaf()`, while the tracked and CST siblings
+stay compact.
 
 Other measured axes, same probe and same baseline:
 
