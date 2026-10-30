@@ -1281,13 +1281,14 @@ return ${child}(input,pos,ctx)
 
       case OP_ARMGATE: {
         // `choice({ gate, combinator })`, as `assemble.ts` lowers it. A blocked
-        // arm is SKIPPED, not failed (choice.ts `continue`), so it clears the cut
-        // and reports the arm's own expected set for the dispatch path.
+        // arm is SKIPPED, not failed (choice.ts `continue`): it clears the cut,
+        // sets no failure position for the ordered path to rank, and leaves the
+        // arm's own expected set for the dispatch path.
         const pred = fnRef(code[ip + 1]!)
         const child = link(code[ip + 2]!)
         const xf = fxRef(code[ip + 3]!)
         return `${head}
-if(!${pred}(ctx.state)){ctx._fc=false;ctx._fe=pos;ctx._fx=${xf};return FAIL}
+if(!${pred}(ctx.state)){ctx._fc=false;ctx._fe=-1;ctx._fx=${xf};return FAIL}
 return ${child}(input,pos,ctx)
 }`
       }

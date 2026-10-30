@@ -1123,7 +1123,10 @@ function makeDriver(
           // choice.ts:150 is a `continue`, not a failure — the arm is treated as
           // never entered, so a cut it might have raised must not cut the choice.
           ctx._fc = false
-          ctx._fe = pos
+          // No failure POSITION: an ordered choice ranks arms by `_fe`, and a skipped
+          // arm must not rank. A dispatched choice reads `_fx` alone, so this arm's
+          // set is still the answer when it is the one selected.
+          ctx._fe = -1
           ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }

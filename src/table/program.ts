@@ -657,6 +657,17 @@ export function classHas(cls: ResolvedClass, code: number): boolean {
   return false
 }
 
+/**
+ * Whether a choice with these arm classes (indices into the class-spec pool `cc`)
+ * takes the O(1) exclusive dispatch — the same decision `resolveDispatch` makes,
+ * for an encoder that has only the specs.
+ */
+export function dispatchIsExclusive(arms: readonly number[], cc: readonly string[]): boolean {
+  const resolved: ResolvedClass[] = []
+  for (const ci of arms) if (ci >= 0) resolved[ci] = resolveClass(cc[ci]!)
+  return resolveDispatch(arms, resolved).exclusive
+}
+
 function resolveDispatch(arms: readonly number[], cc: readonly ResolvedClass[]): ResolvedDispatch {
   const ascii = new Uint8Array(128)
   const hi: number[] = []

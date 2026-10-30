@@ -3132,9 +3132,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (input, pos, ctx) => {
           if (!pred(ctx.state)) {
             // A `continue` in the interpreter (choice.ts:150), not a failure —
-            // so no cut survives to the enclosing choice.
+            // so no cut survives to the enclosing choice, and no failure position
+            // ranks it on the ordered path. A dispatched choice reads `_fx` alone.
             ctx._fc = false
-            ctx._fe = pos
+            ctx._fe = -1
             ctx._fx = xf
             return FAIL
           }

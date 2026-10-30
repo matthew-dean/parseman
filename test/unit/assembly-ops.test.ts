@@ -9,7 +9,8 @@
  * - An assembly the emitter refuses is a build warning naming the construct.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, literal, run, sequence, withCtx } from '../../src/index.ts'
+import { choice, literal, rules, run, sequence, withCtx } from '../../src/index.ts'
+import { run as interpret } from '../../src/functional/run.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -29,8 +30,13 @@ function precompiled(prog: TableProgram): TableProgram {
   return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
-function projection(entry: Entry, input: string, state: unknown): unknown {
-  const r = run(entry, input, { state })
+/**
+ * `run` from the package entry encodes a combinator into a TABLE before running it,
+ * so it is not the interpreter. The interpreter leg goes through
+ * `functional/run.ts`, which parses with the combinators themselves.
+ */
+function projection(entry: Entry, input: string, state: unknown, engine: typeof run = run): unknown {
+  const r = engine(entry, input, { state })
   return { ok: r.ok, value: r.value, span: r.span, expected: r.expected, unconsumedFrom: r.unconsumedFrom }
 }
 
@@ -45,8 +51,9 @@ function expectIdentity(grammar: Combinator<unknown>, inputs: readonly string[],
   }
   for (const state of states) {
     for (const input of inputs) {
-      const expected = projection(engines.interpreter!, input, state)
+      const expected = projection(engines.interpreter!, input, state, interpret)
       for (const [name, entry] of Object.entries(engines)) {
+        if (name === 'interpreter') continue
         expect(projection(entry, input, state), `${name}: ${JSON.stringify(input)} @ ${JSON.stringify(state)}`)
           .toEqual(expected)
       }
@@ -160,6 +167,20 @@ describe('the emitter lowers gated choice arms and withCtx', () => {
       ['ab', 'a', 'x', ''],
       [undefined, { on: true }],
     )
+  })
+
+  it('ARMGATE on an ordered choice: a blocked arm contributes no expected set', () => {
+    // The interpreter skips a gated-off arm, so on 'x' only the open arm's "a" is
+    // expected. Counting the blocked arm as a failure, or adding its static set
+    // because a char gate skipped it, reports "a" twice.
+    for (const grammar of [
+      choice({ gate: on, combinator: sequence(literal('a'), literal('b')) }, literal('a')),
+      choice({ gate: on, combinator: sequence(literal('a'), literal('b')) }, sequence(literal('a'), literal('c'))),
+      choice(literal('a'), { gate: on, combinator: literal('a') }, literal('b')),
+      choice({ gate: on, combinator: literal('z') }, literal('a'), literal('ab')),
+    ]) {
+      expectIdentity(grammar, ['x', 'z', 'a', 'ab', 'ac', ''], [undefined, { on: true }])
+    }
   })
 
   it('ARMGATE on a dispatched choice: a blocked arm fails the choice with its expected set', () => {

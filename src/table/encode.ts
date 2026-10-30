@@ -32,7 +32,7 @@ import {
   LEX_NODE_SEQUENCE2, LEX_NODE_SEQUENCE3, LEX_NODE_SEQUENCE4, LEX_NODE_SEQUENCE5,
   LEX_NODE_TERMINAL,
 } from './lex-program.ts'
-import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
+import { covKindCode, dispatchIsExclusive, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
@@ -1200,6 +1200,19 @@ class Encoder {
           }
           if (!overlap) for (let i = 0; i < classes.length; i++) {
             if (transactionalFirst[i] !== undefined) classes[i] = -1
+          }
+        }
+        // A STATE-GATED ARM ON THE ORDERED PATH IS ALWAYS ENTERED. The interpreter
+        // skips a gated-off arm and contributes nothing for it (choice.ts
+        // firstMatch), and gates it on only by running it. A char-gated skip would
+        // instead add the arm's static opener set whatever the gate says, so an
+        // ordered site leaves the decision to `OP_ARMGATE`. An exclusive site keeps
+        // its classes: there the dispatched arm's gate failing IS the choice
+        // failing, with that arm's set, as in the interpreter's disjoint path.
+        if (d.gates.some(g => g !== null && g !== undefined) && !dispatchIsExclusive(classes, this.cc)) {
+          for (let k = 0; k < classes.length; k++) {
+            const gate = d.gates[order[k]!]
+            if (gate !== null && gate !== undefined) classes[k] = -1
           }
         }
         const dispIdx = this.disp.length
