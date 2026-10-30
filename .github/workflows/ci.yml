@@ -424,11 +424,11 @@ jobs:
           # by Jess. Materialize the exact fixture the pinned harness requires.
           node --input-type=module -e "import { writeFileSync } from 'node:fs'; import { generate } from './packages/jess/benchmark/gen-workload.mjs'; writeFileSync('./packages/jess/benchmark/gen-workload.less', generate('less'))"
         working-directory: .cache/jess
-      - name: Macro semantic identity vs 0.50.2
+      - name: Macro semantic identity vs 0.58.0
         run: pnpm bench:macro-optimize -- --mode=correctness
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
-      - name: Macro timing gate vs 0.50.2 with adjacent self-control
+      - name: Macro timing gate vs 0.58.0 with adjacent self-control
         run: pnpm bench:macro-optimize
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
@@ -466,6 +466,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Code-size gate vs the committed absolute baseline
         run: pnpm size:guard
+      - name: Real-grammar size gate — jess's grammars within 5x their source
+        run: pnpm size:guard:jess
 
   # GRAMMAR WASTED-WORK GATE (bench/choice-cost-guard.ts)
   #

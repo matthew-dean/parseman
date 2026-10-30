@@ -1,0 +1,31 @@
+{
+  "repository": "https://github.com/jesscss/jess",
+  "commit": "4dc689087c14e970c1e4b34c7c03e8554700d173",
+  "files": {
+    "css/grammar.ts": "packages/syntax/css/css-parser/src/grammar.ts",
+    "jess/curly-list.ts": "packages/syntax/jess/jess-parser/src/curly-list.ts",
+    "jess/grammar-helpers.ts": "packages/syntax/jess/jess-parser/src/grammar-helpers.ts",
+    "jess/grammar.ts": "packages/syntax/jess/jess-parser/src/grammar.ts",
+    "jess/parse-error.ts": "packages/syntax/jess/jess-parser/src/parse-error.ts",
+    "less/css-if-condition.ts": "packages/syntax/less/less-parser/src/css-if-condition.ts",
+    "less/delim-runs.ts": "packages/syntax/less/less-parser/src/delim-runs.ts",
+    "less/grammar-helpers.ts": "packages/syntax/less/less-parser/src/grammar-helpers.ts",
+    "less/grammar.ts": "packages/syntax/less/less-parser/src/grammar.ts",
+    "less/mixin-list.ts": "packages/syntax/less/less-parser/src/mixin-list.ts",
+    "less/mixin-reference-base.ts": "packages/syntax/less/less-parser/src/mixin-reference-base.ts",
+    "less/mixin-reference-source.ts": "packages/syntax/less/less-parser/src/mixin-reference-source.ts",
+    "less/paren-list.ts": "packages/syntax/less/less-parser/src/paren-list.ts",
+    "less/parse-error.ts": "packages/syntax/less/less-parser/src/parse-error.ts",
+    "less/parse-state.ts": "packages/syntax/less/less-parser/src/parse-state.ts",
+    "less/selector-capture.ts": "packages/syntax/less/less-parser/src/selector-capture.ts",
+    "less/trivia-layout.ts": "packages/syntax/less/less-parser/src/trivia-layout.ts",
+    "less/url-argument.ts": "packages/syntax/less/less-parser/src/url-argument.ts",
+    "parser-shared/pseudo-consts.ts": "packages/parser-shared/src/pseudo-consts.ts",
+    "parser-shared/recognition.ts": "packages/parser-shared/src/recognition.ts",
+    "parser-shared/unknown-at-rule.ts": "packages/parser-shared/src/unknown-at-rule.ts",
+    "scss/grammar-helpers.ts": "packages/syntax/scss/scss-parser/src/grammar-helpers.ts",
+    "scss/grammar.ts": "packages/syntax/scss/scss-parser/src/grammar.ts",
+    "scss/parse-error.ts": "packages/syntax/scss/scss-parser/src/parse-error.ts",
+    "scss/plus-chain.ts": "packages/syntax/scss/scss-parser/src/plus-chain.ts"
+  }
+}

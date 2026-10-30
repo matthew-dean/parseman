@@ -122,7 +122,7 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  * property read per terminal miss — the same price codegen pays.
  */
 import {
-  classHas, decodeClassSpec, expandCompact, resolveTable,
+  classHas, decodeClassSpec, expandCompact, ownTableProgram, resolveTable,
   validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
@@ -501,6 +501,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * scanner a scope installs is now a `const` in that scope's piece.
    */
   let SCAN: FastTriviaScanner | null = null
+
+  /**
+   * A SELECTIVE build-time assembly: emitted bodies for its selected sites, this
+   * engine for the rest. `link` hands out its exported sites, wrapped so the
+   * callee sees this engine's installed scanner — the one slot both engines keep
+   * separately (the end cell `EC` is already shared).
+   */
+  let HYBRID: EmittedAssembly | undefined
+  function hybridPiece(piece: Piece): Piece {
+    const setScan = HYBRID!.scan!
+    return (input, pos, ctx) => {
+      const saved = setScan(SCAN)
+      const value = piece(input, pos, ctx)
+      setScan(saved)
+      return value
+    }
+  }
 
   const memo = new Map<number, Piece>()
   const reached = new Set<number>()
@@ -1337,6 +1354,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (done !== undefined) return done
     const flight = inFlight.get(ip)
     if (flight !== undefined) return flight.fwd
+    const selected = HYBRID?.byIp[ip]
+    if (selected !== undefined) {
+      const piece = hybridPiece(selected as Piece)
+      memo.set(ip, piece)
+      reached.add(ip)
+      return piece
+    }
 
     let target: Piece | undefined
     const fwd: Piece = (input, pos, ctx) => target!(input, pos, ctx)
@@ -1352,7 +1376,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       && code[ip + 1]! >= 0
       && closureLabels.at(ip).tri === code[ip + 1]!
       ? link(code[ip + 2]!)
-      : lower(ip)
+      : countedPiece(lower(ip), ip)
 
     inFlight.delete(ip)
     holder.set(piece)
@@ -3852,6 +3876,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         LEAD, triviaFieldCapture,
       )
       emitReached = new Set(pre.reached)
+      if (emitted.ext !== undefined) HYBRID = emitted
     }
     /**
      * ONCE A PROGRAM CARRIES ASSEMBLIES, THE CONSTRUCTOR IS OFF FOR IT — for
@@ -3944,7 +3969,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /** One piece for a site, from whichever engine this assembly is running. */
   function pieceAt(ip: number): Piece {
     const em = emitted
-    if (em !== undefined) {
+    if (em !== undefined && HYBRID === undefined) {
       const p = em.byIp[ip]
       if (p === undefined) throw new Error(`table emitter: no emitted body for site ${ip}`)
       return p as Piece
@@ -3978,6 +4003,28 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     (prog.scanSkip ?? []).map(set => set.map(r => subtreeComb(r)))
 
   /* ── link the rules ──────────────────────────────────────────────────────── */
+
+  if (HYBRID !== undefined) {
+    const em = HYBRID
+    em.bind!(
+      s => { const saved = SCAN; SCAN = s as FastTriviaScanner | null; return saved },
+      em.ext!.map(ip => link(ip)),
+    )
+    const pieces: Record<string, Piece> = {}
+    for (const [name, entryIp] of Object.entries(prog.rules)) {
+      pieces[name] = (em.pieces[name] as Piece | undefined) ?? link(entryIp)
+    }
+    for (const ip of emitReached!) reached.add(ip)
+    return {
+      pieces,
+      end: () => EC.e,
+      begin: ctx => { begin(ctx); em.begin(ctx) },
+      finish: () => { em.finish(); finish() },
+      scanSkip,
+      reached,
+      emitRefusal: undefined,
+    }
+  }
 
   if (emitted !== undefined) {
     const em = emitted
@@ -4029,6 +4076,43 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   return { pieces, end: () => EC.e, begin, finish, scanSkip, reached, emitRefusal }
+}
+
+/**
+ * BUILD-TIME SITE PROFILING (`countSiteVisits`). Set only while that call runs;
+ * `link` reads it when it LOWERS a site, never per parse, so an ordinary assembly
+ * carries no counter and no branch.
+ */
+let SITE_COUNTS: Int32Array | undefined
+
+function countedPiece(piece: Piece, ip: number): Piece {
+  const counts = SITE_COUNTS
+  if (counts === undefined) return piece
+  return (input, pos, ctx) => {
+    counts[ip]!++
+    return piece(input, pos, ctx)
+  }
+}
+
+/**
+ * How many times each table site runs while `parse` drives the program — the
+ * profile an optional corpus gives selective assembly (`select-hot.ts`). Runs the
+ * CLOSURE engine, so it constructs no code; `counts[ip]` is the number of calls
+ * of the piece lowered for site `ip` (an alias site counts at its target).
+ */
+export function countSiteVisits(
+  prog: TableProgram,
+  parse: (rules: Record<string, TableRule>) => void,
+  /** A replacement callback pool (same indices), e.g. stand-ins for inert builders. */
+  fns: readonly unknown[] = prog.fns,
+): Int32Array {
+  const counts = new Int32Array(prog.code.length)
+  // A fresh program, not a spread: a spread keeps the source's cached resolution,
+  // which holds the ORIGINAL callback pool.
+  const profiled = ownTableProgram({ ...prog, fns, asm: [] })
+  SITE_COUNTS = counts
+  try { parse(tableRules(profiled)) } finally { SITE_COUNTS = undefined }
+  return counts
 }
 
 /**

@@ -4,19 +4,16 @@ import type { HostMode } from '../cst/host-mode.ts'
 import { collectGrammarReflection, GRAMMAR_REFLECTION, type GrammarReflection } from '../cst/reflection.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { defaultAssemblyCfgs, emitTableExpression } from './emit.ts'
+import { emitAssemblySource, Unemittable } from './emit-assembly.ts'
+import { selectHotSites } from './select-hot.ts'
+
+/** The most the entry supercompiler may grow an assembly (`entry-supercompiler.ts`, its 5% source cap). */
+const SUPERCOMPILE_GROWTH = 1.05
 import { tableRules } from './assemble.ts'
-import { closureArtifact } from './program.ts'
+import { assemblyExtraIps, closureArtifact, resolveTable } from './program.ts'
 import type { TableProgram, TableRule } from './program.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplication-hook.ts'
-
-/**
- * Static assembly has a fixed source cost that tiny grammars cannot amortize.
- * The canonical size probe's composeLeaf is 62 words and grows by ~12 kB with
- * a factory; the shipping Jess leaves are 6,365/10,892 words. Keep the policy
- * between those measured populations so small artifacts retain table density.
- */
-const DEFAULT_PRECOMPILE_MIN_WORDS = 1_024
 
 /**
  * `compileRuleMap()` FOR THE TABLE LOWERING — the counterpart that did not exist.
@@ -116,8 +113,16 @@ export type CompiledRuleMapTable = {
   /** Re-emit the same table call with construction-time artifact metadata. */
   replacementWithMetadata(
     metadataSource: string,
-    options?: { readonly precompileDefault?: boolean; readonly refusals?: string[] },
+    options?: { readonly select?: ReadonlySet<number> },
   ): string
+  /**
+   * The sites a SELECTIVE default assembly emits within `budget` bytes — its
+   * fixed prelude plus the site bodies `select-hot.ts` ranks highest — and the
+   * bytes that spends. Empty for a CST or line-tracking table (only the default
+   * AST/no-lines option set is pre-compiled), for a budget smaller than the
+   * prelude, and for a table the emitter refuses, which names the construct.
+   */
+  selectAssembly(budget: number, profile?: ArrayLike<number>): { readonly sites: ReadonlySet<number>; readonly bytes: number; readonly refusal?: string }
   hostMode: HostMode
   hostBranchElided: boolean
   reflection: GrammarReflection
@@ -234,7 +239,7 @@ function withAmbient(
 export function compileRuleMapRunnable(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts: TableRuleMapOptions = {},
-): Omit<CompiledRuleMapTable, 'replacement' | 'replacementWithMetadata'> | null {
+): Omit<CompiledRuleMapTable, 'replacement' | 'replacementWithMetadata' | 'selectAssembly'> | null {
   const encoded = encodeForRun(ruleMap, opts)
   if (encoded === null) return null
   const { prog, hostMode, plan } = encoded
@@ -331,24 +336,55 @@ export function compileRuleMap(
 
   const replacementWithMetadata = (
     metadataSource?: string,
-    options: { readonly precompileDefault?: boolean; readonly refusals?: string[] } = {},
+    options: { readonly select?: ReadonlySet<number> } = {},
   ): string => emitTableExpression(artifact, {
     entry: null,
     runtimeRef: opts.runtimeRef ?? 'tableRules',
     fnSources: sources as string[],
-    ...(options.precompileDefault === true && hostMode === 'ast' && prog.lines !== 1
-      && prog.code.length >= DEFAULT_PRECOMPILE_MIN_WORDS
-      ? { assemblies: defaultAssemblyCfgs(artifact).slice(0, 1) }
+    ...(options.select !== undefined && options.select.size > 0
+      ? { assemblies: [{ ...defaultAssemblyCfgs(artifact)[0]!, select: options.select }] }
       : {}),
     ...(metadataSource === undefined ? {} : { metadataSource }),
-    ...(options.refusals === undefined ? {} : { refusals: options.refusals }),
   })
   const replacement = replacementWithMetadata()
+  const selectAssembly = (budget: number, profile?: ArrayLike<number>): { sites: ReadonlySet<number>; bytes: number; refusal?: string } => {
+    const none = { sites: new Set<number>(), bytes: 0 }
+    if (hostMode !== 'ast' || prog.lines === 1) return none
+    const table = resolveTable(artifact)
+    const cfg = defaultAssemblyCfgs(artifact)[0]!
+    const roots = assemblyExtraIps(artifact)
+    let siteBytes, fixed
+    try {
+      siteBytes = emitAssemblySource(table, artifact, cfg, roots, true).siteBytes
+      // What any selective assembly costs before its first site body: the shared
+      // prelude and the factory's tail. A budget that cannot cover it buys nothing.
+      fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set()).source.length
+    } catch (e) {
+      if (e instanceof Unemittable) return { ...none, refusal: e.construct }
+      throw e
+    }
+    // The estimate (prelude plus site bodies) leaves out what selected sites add
+    // around their bodies — shared helpers and the `_px` wrappers of the closure
+    // sites they call — and the supercompiler may grow the source by up to 5%. So
+    // the selection is judged by the source it actually emits, scaled for that 5%,
+    // and narrowed until that fits.
+    const ceiling = budget / SUPERCOMPILE_GROWTH
+    let target = ceiling
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const sites = selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, target - fixed, profile)
+      if (sites.size === 0) return none
+      const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites).source.length
+      if (bytes <= ceiling) return { sites, bytes: Math.ceil(bytes * SUPERCOMPILE_GROWTH) }
+      target *= ceiling / bytes
+    }
+    return none
+  }
 
   return {
     keys: ruleMap.map(([key]) => key),
     replacement,
     replacementWithMetadata,
+    selectAssembly,
     hostMode,
     // WHAT THE FLAG MEANS is "a DIRECT BUILDER's positioned-CST branch was
     // dropped", which is what the driver's `'ast' artifact + CST host` check keys

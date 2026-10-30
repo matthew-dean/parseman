@@ -9,8 +9,10 @@
  * - An assembly the emitter refuses is a build warning naming the construct.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, literal, run, sequence, withCtx } from '../../src/index.ts'
+import { balanced, choice, literal, node, run, scanTo, sequence, withCtx } from '../../src/index.ts'
 import { run as interpret } from '../../src/functional/run.ts'
+import { supercompileRuleMapReplacement } from '../../src/plugin/entry-supercompiler.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -90,7 +92,7 @@ export const grammar = composeLeaf([recognition, rules(g => ({
   Entry: choice(sequence(literal('['), withCtx({ on: true }, g.Item), literal(']')), g.Item),
   Item: choice({ gate: (s) => !!(s && s.on), combinator: literal('&') }, g.R0),
 }))])
-`, 'leaf-precompile-gated.ts', new Set(['parseman']))
+${'// the assembly budget is a share of the module source\n'.repeat(2000)}`, 'leaf-precompile-gated.ts', new Set(['parseman']))
     expect(out?.warnings).toEqual([])
     expect(out?.code.match(/a:\[\{/g)).toHaveLength(1)
 
@@ -108,20 +110,15 @@ export const grammar = composeLeaf([recognition, rules(g => ({
     // re-emitted byte-identical source, and the source names the scan pool's
     // sites in order. It listed them in its own order, so any scan with a skip set
     // made the splice bail and the artifact shipped unjoined `_pf` pieces.
-    const out = transformMacro(`
-import { balanced, composeLeaf, literal, node, rules, scanTo, sequence } from 'parseman' with { type: 'macro' }
-${RECOGNITION}
-const grammar = composeLeaf([recognition, rules(g => ({
-  Entry: node('Decl', sequence(
-    g.R0, literal(':'), node('Value', scanTo(literal(';'), { skip: [balanced('(', ')')] })), literal(';'),
-  )),
-}))])
-`, 'leaf-precompile-scan.ts', new Set(['parseman']))
-    expect(out?.warnings).toEqual([])
-    expect(out?.code.match(/a:\[\{/g)).toHaveLength(1)
-    expect(out?.code).toMatch(/\b_z\d+:\{/)
+    const compiled = compileRuleMap([['Entry', node('Decl', sequence(
+      literal('value-0'), literal(':'), node('Value', scanTo(literal(';'), { skip: [balanced('(', ')')] })), literal(';'),
+    ))]])!
+    const { sites } = compiled.selectAssembly(Infinity)
+    const out = supercompileRuleMapReplacement(compiled.prog, compiled.replacementWithMetadata('{}', { select: sites }), sites)
+    expect(out).toMatch(/a:\[\{/)
+    expect(out).toMatch(/\b_z\d+:\{/)
 
-    const grammar = evalMacroModule<Record<string, ParseFn>>(out!.code, 'grammar')
+    const grammar = evalMacroModule<Record<string, ParseFn>>(`const grammar = ${out}`, 'grammar')
     expect(grammar.Entry!('value-0:a(;)b;', 0, {}).ok).toBe(true)
     expect(grammar.Entry!('value-0:a(;b', 0, {}).ok).toBe(false)
   })

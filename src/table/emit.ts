@@ -170,7 +170,7 @@ export function defaultAssemblyCfgs(prog: TableProgram): RunCfg[] {
  * not lower; that option set simply gets no entry, and `assemble.ts` runs the
  * closure engine for it and RECORDS why on `Assembly.emitRefusal`.
  */
-function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[], refusals?: string[]): string[] {
+function emitAssemblies(prog: TableProgram, cfgs: readonly AssemblyCfg[]): string[] {
   /**
    * `a:[]` IS NOT `a` ABSENT, and the difference is the whole property.
    *
@@ -211,12 +211,9 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[], refusals?: 
     seen.add(key)
     let em
     try {
-      em = emitAssemblySource(t, prog, cfg, extraIps, true)
+      em = emitAssemblySource(t, prog, cfg, extraIps, true, cfg.select)
     } catch (e) {
-      if (e instanceof Unemittable) {
-        refusals?.push(e.construct)
-        continue
-      }
+      if (e instanceof Unemittable) continue
       throw e
     }
     const plan = em.plan
@@ -234,6 +231,9 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[], refusals?: 
   return [`a:[${out.join(',')}],`]
 }
 
+/** One pre-compiled option set; `select` makes it SELECTIVE (see `emitAssemblySource`). */
+export type AssemblyCfg = RunCfg & { readonly select?: ReadonlySet<number> }
+
 export type EmitOptions = {
   /** Name of the exported binding. */
   readonly name?: string
@@ -245,13 +245,7 @@ export type EmitOptions = {
    * Supplying factories here is a low-level serialization experiment, not a
    * second normal compilation path; it is not used by the macro plugin.
    */
-  readonly assemblies?: readonly RunCfg[]
-  /**
-   * Receives the construct each refused assembly names. A refusal still prints
-   * no factory for that option set; this lets a build that ASKED for one say so
-   * instead of shipping the closure engine without a word.
-   */
-  readonly refusals?: string[]
+  readonly assemblies?: readonly AssemblyCfg[]
   /**
    * Sources for the author callbacks, in `prog.fns` order. A build has these
    * from the module it is lowering; pass `undefined` to emit a placeholder and
@@ -296,7 +290,7 @@ function assertPrintable(prog: TableProgram, who: string): void {
  */
 function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOptions = {}): string[] {
   return [
-    ...emitAssemblies(prog, opts.assemblies ?? [], opts.refusals),
+    ...emitAssemblies(prog, opts.assemblies ?? []),
     `c:[${prog.code.join(',')}],`,
     `k:[${prog.k.map(emitConst).join(',')}],`,
     `x:${emitClassPool(prog.cc)},`,

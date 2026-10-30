@@ -1,0 +1,1361 @@
+/**
+ * Jess grammar reducer helpers, hoisted out of `jess-parser/src/grammar.ts`.
+ *
+ * These are the module-private helpers the Jess grammar's `node(...)`/`leaf(...)`
+ * reducers call. They lived inside `grammar.ts` as free module scope, which is
+ * fine for a standalone `composeLeaf(...)` grammar but not for a COMPOSABLE
+ * delta: the parseman compose analyzer can only carry a reducer across a package
+ * boundary when every name the reducer reads has import provenance. A free
+ * module-private helper has none, so `compose([cssBaseRules, rules(jessDelta)])`
+ * refused them. Hoisting them into this importable module gives each one a
+ * resolvable import, and the analyzer re-emits those imports into the composing
+ * module. A relative same-package import is sufficient (proven by B0-less):
+ * parseman carries same-package relative-import provenance, not only
+ * workspace-package imports.
+ *
+ * These are Jess's OWN helpers. A helper Jess shares with another dialect lives
+ * in `@jesscss/core/ast` (`css-grammar-helpers.ts`) and is imported from there;
+ * the bindings below only supply the Jess name and value set it is
+ * parameterised by.
+ */
+
+import type { FieldCapture, FieldMap, Span } from 'parseman';
+import { LeadingSeparatorValueError } from '@jesscss/core/diagnostics';
+import { JessArithmeticOutsideExpressionError, JessSelectorCaptureArgumentError, type JessRecoveredError } from './parse-error.js';
+import { NO_SPAN, adoptForgivenSelectorItems, any, authoredSource, anonymousMixin, appendCustomValueParts as appendCustomValuePartsIn, block, selectorBranchCanonical, selectorCaptureOf, isSpannedToken, customValueFromChildren as customValueFromChildrenIn, declarationReference, interpolation, interpolationFromTemplateChildren as interpolationFromTemplateChildrenIn, isAtRuleBlock, isAtRuleStatement, isExtendInstruction, isFor, isGuardNodeOf, isIf, isInterpolation, isMathOperator, isMixinCall, isMixinDefinition, isModuleImport, isParamArray, isQuoted, isReference, isRuleset, isSelectorBranch, isSimpleToken, isStyleImport, isToken, isUnknownAtRuleBlock, isValueSlotOf, isWhile, list, lookupStep, operation, cssBaseMathOutsideParens, propertyReference, quoted, reference, requireForBinding as requireForBindingIn, requireGuardNodeOf, requireInterpolation as requireInterpolationIn, requireSelectorList as requireSelectorListIn, requireString as requireStringIn, requireToken as requireTokenIn, selectorTermFromTokens, selist, url, valueSlot, variableDeclaration, variableReference, withBlockBody, sourceSpanOf, withSourceSpan, valueLayoutOf, withValueLayout, isValueSlotArray, branch, ifValue, inParens, funcCall, callArg, queryFeatureNameValue } from '@jesscss/core/ast';
+import type { Any, SelectorCapture, Token, AnonymousMixin, Apply, Declaration, CollectionItem, ExtendInstruction, ForBinding, IfBranch, InterpPart, Interpolation, Keyword, MixinCall, Quoted, Reference, SelectorBranch, SelectorTerm, SelectorList, Statement, Url, ValueNode, ValueSlot, VariableDeclaration, Lookup, GuardNode, FunctionCall, IfValue, IfValueBranch } from '@jesscss/core/ast';
+
+type ExpressionFact = { readonly value: ValueNode; readonly src: string };
+type JessOperatorFact = { readonly value: string; readonly src: string; readonly start: number };
+type JessReferenceTail = { readonly step: Reference['steps'][number]; readonly src: string };
+type JessComplexTail = { readonly combinator: ' ' | '>' | '+' | '~' | '||'; readonly term: SelectorTerm };
+type JessAtRuleHeader = { readonly name: string; readonly prelude: ValueNode | null };
+type JessMixinCallArgument = MixinCall['args'][number];
+
+/** A call argument after the first, with the padded comma written before it. */
+type JessCallArgument = { readonly separator: string; readonly value: ValueSlot };
+
+/*
+ * Core's shared reducer helpers, bound to this grammar: its name is the only
+ * part of their error messages that differs between dialects, and
+ * `isValueNode` is the value set its guards and value slots accept.
+ */
+const DIALECT = 'Jess';
+const requireToken = (value: unknown): Token => requireTokenIn(value, DIALECT);
+const requireString = (value: unknown): string => requireStringIn(value, DIALECT);
+const requireInterpolation = (value: unknown): Interpolation => requireInterpolationIn(value, DIALECT);
+const requireSelectorList = (value: unknown): SelectorList => requireSelectorListIn(value, DIALECT);
+const requireForBinding = (value: unknown): ForBinding => requireForBindingIn(value, DIALECT);
+const requireGuardNode = (value: unknown): GuardNode => requireGuardNodeOf(value, isValueNode, DIALECT);
+const isJessValueSlotValue = (value: unknown): value is ValueSlot => isValueSlotOf(value, isValueNode);
+const interpolationFromTemplateChildren = (children: readonly unknown[]): Interpolation => interpolationFromTemplateChildrenIn(children, DIALECT);
+const customValueFromChildren = (children: readonly unknown[]): Any | Interpolation => customValueFromChildrenIn(children, DIALECT);
+const appendCustomValueParts = (children: readonly unknown[], parts: Interpolation['parts'], seen: { interpolated: boolean }): void => appendCustomValuePartsIn(children, parts, seen, DIALECT);
+
+function requireFields(fields: FieldMap | undefined, name: string): readonly FieldCapture[] {
+  const field = fields?.[name];
+  if (field === undefined) {
+    throw new TypeError(`Jess grammar lost required ${name} field.`);
+  }
+  return Array.isArray(field) ? field : [field];
+}
+
+function jessCombinator(value: Token): JessComplexTail['combinator'] {
+  if (value.value === '>' || value.value === '+' || value.value === '~' || value.value === '||') {
+    return value.value;
+  }
+  return ' ';
+}
+
+/*
+ * A NESTING leading combinator (`.parent { > .child }`) is one of `>`/`+`/`~`,
+ * mirroring css's `relativeSelectorCombinator`. The column combinator `||` is a
+ * compound separator, not a relative one, so it is excluded here.
+ */
+function jessRelativeCombinator(child: unknown): '>' | '+' | '~' {
+  if (isToken(child) && (child.value === '>' || child.value === '+')) {
+    return child.value;
+  }
+  return '~';
+}
+
+function isExpressionFact(value: unknown): value is ExpressionFact {
+  return typeof value === 'object' && value !== null && 'value' in value && 'src' in value;
+}
+
+function isJessAtRuleHeader(value: unknown): value is JessAtRuleHeader {
+  return typeof value === 'object'
+    && value !== null
+    && 'name' in value
+    && typeof value.name === 'string'
+    && 'prelude' in value;
+}
+
+function requireJessAtRuleHeader(value: unknown): JessAtRuleHeader {
+  if (!isJessAtRuleHeader(value)) {
+    throw new TypeError('Jess grammar produced an invalid at-rule header.');
+  }
+  return value;
+}
+
+function isAtRuleNameToken(value: unknown): value is Token {
+  return isToken(value)
+    && !('type' in value)
+    && value.value.startsWith('@');
+}
+
+function isJessReferenceTail(value: unknown): value is JessReferenceTail {
+  return typeof value === 'object' && value !== null
+    && 'step' in value && 'src' in value && typeof value.src === 'string';
+}
+
+function requireJessReferenceTail(value: unknown): JessReferenceTail {
+  if (!isJessReferenceTail(value)) {
+    throw new TypeError('Jess grammar produced an invalid reference tail.');
+  }
+  return value;
+}
+
+function requireKeyword(value: unknown): Keyword {
+  if (!isValueNode(value) || value.type !== 'Keyword') {
+    throw new TypeError('Jess grammar produced a non-keyword child.');
+  }
+  return value;
+}
+
+function staticSelectorText(selector: SelectorList): string {
+  return selector.selectors.map(selectorBranchCanonical).join(', ');
+}
+
+function isMixinCallArray(value: unknown): value is MixinCall[] {
+  return Array.isArray(value) && value.length > 0 && value.every(isMixinCall);
+}
+
+function isExtendInstructionArray(value: unknown): value is ExtendInstruction[] {
+  return Array.isArray(value) && value.length > 0 && value.every(isExtendInstruction);
+}
+
+function isValueNode(value: unknown): value is ValueNode {
+  return typeof value === 'object'
+    && value !== null
+    && 'type' in value
+
+    /*
+     * `Any` is verbatim authored text: the reduced form of a custom-property
+     * value, which Jess never evaluates.
+     */
+    && (value.type === 'Any'
+      || value.type === 'Keyword'
+      || value.type === 'Null'
+      || value.type === 'Quoted'
+      || value.type === 'Lookup'
+      || value.type === 'Reference'
+      || value.type === 'Color'
+      || value.type === 'Dimension'
+      || value.type === 'SelectorCapture'
+      || value.type === 'FunctionCall'
+      || value.type === 'Operation'
+      || value.type === 'Condition'
+      || value.type === 'Interpolation'
+      || value.type === 'Sequence'
+      || value.type === 'List'
+      || value.type === 'Block'
+      || value.type === 'Expression'
+      || value.type === 'Url'
+      || value.type === 'AnonymousMixin'
+      || value.type === 'Collection'
+      || value.type === 'Range'
+      || value.type === 'Branch'
+      || value.type === 'IfValue');
+}
+
+function isValueNodeArray(value: unknown): value is ValueNode[] {
+  return Array.isArray(value) && value.every(isValueNode);
+}
+
+function requireValueSlot(value: unknown): ValueSlot {
+  return isValueNodeArray(value) ? value : valueSlot(requireValueNode(value));
+}
+
+function isJessMixinCallArgument(value: unknown): value is JessMixinCallArgument {
+  /* `name` is ALWAYS present — `undefined` is what positional means — so its
+   * absence is a reduced-shape defect, not a positional argument. */
+  return typeof value === 'object' && value !== null && 'value' in value && isJessValueSlotValue(value.value)
+    && 'name' in value && (value.name === undefined || typeof value.name === 'string');
+}
+
+function isJessCallArgument(value: unknown): value is JessCallArgument {
+  return typeof value === 'object' && value !== null && 'separator' in value && typeof value.separator === 'string'
+    && 'value' in value && isJessValueSlotValue(value.value);
+}
+
+function requireValueNode(value: unknown): ValueNode {
+  if (!isValueNode(value)) {
+    throw new TypeError('Jess grammar produced a non-value child.');
+  }
+  return value;
+}
+
+function isInterpolationLiteral(part: InterpPart): part is { readonly lit: string } {
+  return 'lit' in part;
+}
+
+function requireExpressionFact(value: unknown): ExpressionFact {
+  if (typeof value !== 'object' || value === null || !('value' in value) || !('src' in value)
+    || typeof value.src !== 'string' || !isValueNode(value.value)) {
+    throw new TypeError('Jess grammar produced an invalid expression fact.');
+  }
+  return { value: value.value, src: value.src };
+}
+
+/*
+ * An arithmetic/comparison operator boundary carries two facts: the operator
+ * symbol itself and the exact authored bytes around it. They are identical for a
+ * plain whitespace-flanked operator token, and differ only when the boundary
+ * also carries a block comment, which the operator-boundary productions recognize
+ * as grammar structure rather than trimming out of a token. `start` is where the
+ * boundary begins, which is where the operand before it ends.
+ */
+function isJessOperatorFact(value: unknown): value is JessOperatorFact {
+  return typeof value === 'object' && value !== null && 'value' in value && 'src' in value && 'start' in value
+    && typeof value.value === 'string' && typeof value.src === 'string' && typeof value.start === 'number';
+}
+
+function requireJessOperatorFact(value: unknown): JessOperatorFact {
+  if (isJessOperatorFact(value)) {
+    return value;
+  }
+  throw new TypeError('Jess grammar produced an invalid operator fact.');
+}
+
+/**
+ * Fold one `noTrivia` run of `$( … )` operands left to right. Every operation
+ * of a left fold starts where the run starts and ends where the next operator's
+ * boundary begins (the run's end for the last), so each gets its exact source
+ * span — what a unit error or warning points at, as a Less operation's does.
+ */
+function foldExpression(children: readonly unknown[], span: { readonly start: number; readonly end: number }): ExpressionFact {
+  let fact = requireExpressionFact(children[0]);
+  for (let index = 1; index < children.length; index += 2) {
+    const operator = requireJessOperatorFact(children[index]);
+    const right = requireExpressionFact(children[index + 1]);
+    const next = children[index + 2];
+    fact = {
+      value: withSourceSpan(operation(
+        operator.value,
+        fact.value,
+        right.value,
+        false,
+        cssBaseMathOutsideParens(operator.value)
+      ), { start: span.start, end: next === undefined ? span.end : requireJessOperatorFact(next).start }),
+      src: `${fact.src}${operator.src}${right.src}`
+    };
+  }
+  return fact;
+}
+
+/**
+ * A {@link Lookup} name is `string | ValueNode` now that `@@indirect` is spelled
+ * as a node-valued name; a literal name is its own spelling, a node-valued one
+ * defers to the expression printer.
+ */
+function lookupNameSource(name: string | ValueNode): string {
+  return typeof name === 'string' ? name : expressionSource(name);
+}
+
+function expressionSource(value: ValueNode): string {
+  switch (value.type) {
+    case 'Keyword': case 'Null': case 'Color': case 'Dimension': case 'Quoted': case 'Any': return value.src;
+    case 'Lookup': return value.kind === 'var'
+      ? `${value.scope === 'scoped' ? '^' : '$'}${lookupNameSource(value.name)}`
+      : value.raw;
+    case 'Reference': return value.raw;
+    case 'Operation': return `${expressionSource(value.left)} ${value.operator} ${expressionSource(value.right)}`;
+    case 'Expression': return `$(${referenceArgSource(value.value)})`;
+    case 'Condition': return value.src;
+    case 'Interpolation': return value.parts.map(part => 'lit' in part ? part.lit : expressionSource(part.ref)).join('');
+    default: throw new TypeError(`Jess expression cannot preserve source for ${value.type}.`);
+  }
+}
+
+/**
+ * Fold one logical rung left-associatively (§4.5.5). The result is an
+ * `Operation` carrying the word itself as its operator — the node that means
+ * "return one of these operands, short-circuiting" — so the transpiled `.jess`
+ * still reads `$a or $default` rather than a rewritten `$if` that duplicates
+ * the operand and no direct author would write.
+ */
+function foldLogicalExpression(kind: 'and' | 'or', children: readonly unknown[]): ExpressionFact {
+  const facts = children.filter(isExpressionFact);
+  let fact = requireExpressionFact(facts[0]);
+  for (let index = 1; index < facts.length; index += 1) {
+    const right = facts[index]!;
+    fact = {
+      value: operation(kind, fact.value, right.value, false, cssBaseMathOutsideParens(kind)),
+      src: `${fact.src} ${kind} ${right.src}`
+    };
+  }
+  return fact;
+}
+
+function referenceBaseSource(value: ValueNode): string {
+  switch (value.type) {
+    case 'Lookup':
+      if (value.kind === 'var') {
+        return `${value.scope === 'scoped' ? '^' : '$'}${lookupNameSource(value.name)}`;
+      }
+      if (value.kind === 'entry') {
+        return value.raw;
+      }
+      throw new TypeError(`Jess expression reference cannot start from ${value.type}.`);
+    default: throw new TypeError(`Jess expression reference cannot start from ${value.type}.`);
+  }
+}
+
+/** A member step is a `LookupStep` whose name is a literal — the old `DotLookup`. */
+function isMemberStep(step: JessReferenceTail['step'] | undefined): boolean {
+  return step?.type === 'LookupStep' && typeof step.name === 'string';
+}
+
+function declarationMemberReferenceFromVariableBase(
+  base: Lookup,
+  tails: readonly JessReferenceTail[]
+): Reference | null {
+  if (base.scope !== 'live' || base.name === 'type' || !isMemberStep(tails[0]?.step)) {
+    return null;
+  }
+
+  /* The `$ns` the author wrote is the base's source: a failed member read reports there. */
+  const span = sourceSpanOf(base);
+  const root = declarationReference('$');
+  return reference(
+    span === undefined ? root : withSourceSpan(root, span),
+    [
+      lookupStep('member', base.name),
+      ...tails.map(tail => tail.step)
+    ],
+    `$${lookupNameSource(base.name)}${tails.map(tail => tail.src).join('')}`
+  );
+}
+
+function interpolationFromChildren(
+  children: readonly unknown[],
+  span?: { readonly start: number; readonly end: number }
+): Interpolation {
+  const first = requireToken(children[1]).value;
+  if (first === '$') {
+    const ref = variableReference(
+      requireToken(children[2]).value,
+      'live'
+    );
+    if (span) {
+      withSourceSpan(
+        ref,
+        span
+      );
+    }
+    return interpolation([{ ref: variableReference(
+      ref,
+      'live'
+    ), unquote: true }]);
+  }
+  if (children.length === 3) {
+    const ref = variableReference(
+      first,
+      'live'
+    );
+    if (span) {
+      withSourceSpan(
+        ref,
+        span
+      );
+    }
+    return interpolation([{ ref, unquote: true }]);
+  }
+  const text = first === '"' || first === '\'' ? requireToken(children[2]).value : first;
+  return interpolation([{ ref: propertyReference(
+    text,
+    tokenSource(children)
+  ), unquote: true }]);
+}
+
+/**
+ * Reduce a `${…}` interpolation. BARE-vs-BRACKETED selects the namespace:
+ *
+ * - `${foo}`      → the VARIABLE `$foo`
+ * - `${[foo]}`    → a LOOKUP, i.e. the PROPERTY `foo` declared in scope
+ * - `${["a b"]}`  → the same lookup; the quotes are only escaping, because
+ *                   `a b` is not a valid identifier. `[foo]` and `["foo"]` are
+ *                   the same plain-string key (ledger P14), so quoting never
+ *                   carries meaning here.
+ * - `${[$k]}`     → a lookup whose key is computed from `$k`.
+ */
+function dollarBraceInterpolation(
+  children: readonly unknown[],
+  span?: { readonly start: number; readonly end: number }
+): Interpolation {
+  if (requireToken(children[1]).value !== '[') {
+    const ref = variableReference(
+      requireToken(children[1]).value,
+      'live'
+    );
+    if (span) {
+      withSourceSpan(
+        ref,
+        span
+      );
+    }
+    return interpolation([{ ref, unquote: true }]);
+  }
+  const head = requireToken(children[2]).value;
+  if (head === '$') {
+    const named = variableReference(
+      requireToken(children[3]).value,
+      'live'
+    );
+    if (span) {
+      withSourceSpan(
+        named,
+        span
+      );
+    }
+    return interpolation([{ ref: variableReference(
+      named,
+      'live'
+    ), unquote: true }]);
+  }
+  const name = head === '"' || head === '\'' ? requireToken(children[3]).value : head;
+  return interpolation([{ ref: propertyReference(
+    name,
+    tokenSource(children)
+  ), unquote: true }]);
+}
+
+/*
+ * The authored-ish source of one reference-call argument, used only to rebuild a
+ * `Reference.raw` fallback string. It never feeds recognition, and it never
+ * throws: a value with no direct spelling contributes nothing rather than
+ * failing the parse.
+ */
+function referenceArgSource(value: JessMixinCallArgument['value']): string {
+  if (Array.isArray(value)) {
+    return value.map(referenceArgSource).join(' ');
+  }
+  if (!isValueNode(value)) {
+    return '';
+  }
+  switch (value.type) {
+    case 'Keyword': case 'Null': case 'Color': case 'Dimension': case 'Quoted': case 'Any': return value.src;
+    case 'Lookup': return value.kind === 'var'
+      ? `${value.scope === 'scoped' ? '$^' : '$'}${lookupNameSource(value.name)}`
+      : value.raw;
+    case 'Reference': return value.raw;
+    case 'FunctionCall': return `${value.name}(${value.args.map(arg => referenceArgSource(arg.value)).join(value.modern ? ' ' : ', ')})`;
+    case 'Operation': case 'Condition': case 'Interpolation': return expressionSource(value);
+    case 'Expression': return `$(${referenceArgSource(value.value)})`;
+    case 'Block': return `${value.escaped === true ? '~' : ''}${value.delimiter === 'square' ? '[' : '('}${referenceArgSource(value.value)}${value.delimiter === 'square' ? ']' : ')'}`;
+    case 'Sequence': return value.parts.map(referenceArgSource).join(' ');
+    case 'List': return value.value.map(referenceArgSource).join(value.sep === ',' ? ', ' : ' / ');
+    case 'Url': return `url(${referenceArgSource(value.value)})`;
+    case 'SelectorCapture': return value.src;
+    default: return '';
+  }
+}
+
+function tokenSource(children: readonly unknown[]): string {
+  return children.map(requireToken).map(token => token.value).join('');
+}
+
+function sourceFromState(state: unknown): string | undefined {
+  return typeof state === 'object'
+    && state !== null
+    && 'source' in state
+    && typeof state.source === 'string'
+    ? state.source
+    : undefined;
+}
+
+/**
+ * A problem the grammar recovered from (P45), kept on the run's
+ * `state.diagnostics`. A raw-grammar run keeps none, and a reducer can run in
+ * an attempt the parser abandons, so without a sink the report is dropped,
+ * never thrown.
+ */
+function reportRecovered(error: JessRecoveredError, state: unknown): void {
+  const sink: unknown = typeof state === 'object' && state !== null && 'diagnostics' in state ? state.diagnostics : null;
+  if (Array.isArray(sink)) {
+    sink.push(error);
+  }
+}
+
+/**
+ * `selector(…)` in a value (owner 2026-10-16, ledger P49): the capture, or —
+ * when the argument is not a selector list — an error at the rest the list
+ * could not read (the whole call when the argument holds nothing), and the
+ * call kept as its value (P45).
+ */
+function selectorCaptureFrom(children: readonly unknown[], span: Span, state: unknown): SelectorCapture | Any {
+  const found = selectorCaptureOf(children, span);
+  if ('type' in found) {
+    return adoptForgivenSelectorItems(children, found, state);
+  }
+  const value = any(found.written ?? authoredSource(span, state, 'A selector capture'));
+  reportRecovered(new JessSelectorCaptureArgumentError(found.start, found.end, value), state);
+  return value;
+}
+
+/**
+ * A value led by a `/` or `*` (ledger P33): the separator, then the rest of the
+ * value as written, and the error at the value it leads (P45).
+ */
+function leadingSeparatorValue(children: readonly unknown[], span: Span, state: unknown): ValueSlot {
+  const operator = any(requireToken(children[0]).value);
+  reportRecovered(new LeadingSeparatorValueError(span.start, span.end, operator.src, operator), state);
+  return [operator, customValueFromChildren(children.slice(1))];
+}
+
+/**
+ * A call component's reduction: its run, or — when a delim opens it
+ * (`<length>`) — that delim and the run after it, glued, as one run.
+ */
+function callComponentFrom(children: readonly unknown[]): ValueSlot {
+  const run = requireValueSlot(children[children.length - 1]);
+  if (children.length === 1) {
+    return run;
+  }
+  const delim = requireValueNode(children[0]);
+  if (!Array.isArray(run)) {
+    return withValueLayout([delim, run], ['']);
+  }
+  const layout = valueLayoutOf(run);
+  return withValueLayout([delim, ...run], ['', ...run.slice(1).map((_, index) => layout?.[index] ?? ' ')]);
+}
+
+/** A comma list's reduction: its one item, or the `,` List of its items. */
+function commaList(children: readonly unknown[]): ValueSlot {
+  const values = children.filter(isJessValueSlotValue);
+  return values.length === 1
+    ? values[0]!
+    : list(
+        values,
+        ','
+      );
+}
+
+function interpolationValue(fact: ExpressionFact): Interpolation {
+  if (!isInterpolation(fact.value)) {
+    throw new TypeError('Jess quoted expression produced a non-interpolation fact.');
+  }
+  return fact.value;
+}
+
+/**
+ * One `.jess` string — `"…"`, `'…'`, optionally escaped `~"…"` — whether or
+ * not it interpolates (ledger V3, C2). The `~` and the quotes are syntax, not
+ * content: `src`/`value` are the authored spelling and content, each `${…}` /
+ * `$(…)` hole spelled by its source fact, and an interpolating string also
+ * carries its content as a template.
+ */
+function quotedFromChildren(children: readonly unknown[]): Quoted {
+  const escaped = requireToken(children[0]).value === '~';
+  const quote = requireToken(children[escaped ? 1 : 0]).value;
+  const content = children.slice(escaped ? 2 : 1, -1);
+  let value = '';
+  let interpolates = false;
+  for (const child of content) {
+    if (isExpressionFact(child)) {
+      value += child.src;
+      interpolates = true;
+    } else {
+      value += requireToken(child).value;
+    }
+  }
+  return quoted(
+    `${escaped ? '~' : ''}${quote}${value}${quote}`,
+    value,
+    quote,
+    escaped,
+    interpolates
+      ? interpolation(content.flatMap(child => isExpressionFact(child) ? interpolationValue(child).parts : [{ lit: requireToken(child).value }]))
+      : null
+  );
+}
+
+function quotedExpressionFact(children: readonly unknown[]): ExpressionFact {
+  const value = quotedFromChildren(children);
+  return { value, src: value.src };
+}
+
+/* A `( name )` or `( name : value )` feature: the name (`QueryFeatureName`) comes first. */
+function reduceColonFeature(children: readonly unknown[], lostMessage: string): ValueNode {
+  const index = children.findIndex(child => typeof child === 'string' || isInterpolation(child));
+  const name = children[index];
+  if (typeof name !== 'string' && !isInterpolation(name)) {
+    throw new TypeError(lostMessage);
+  }
+  const property = queryFeatureNameValue(name);
+  const last = children.findLast(isValueNode);
+  const value = last === name ? undefined : last;
+  return value === undefined
+    ? block(property)
+    : block(operation(
+        ':',
+        property,
+        value,
+        false,
+        cssBaseMathOutsideParens(':')
+      ));
+}
+
+function jessFunctionOpenName(child: unknown): string {
+  const value = requireToken(child).value;
+  return value.endsWith('(') ? value.slice(0, -1) : value;
+}
+
+function requireStatements(children: readonly unknown[]): Statement[] {
+  const statements: Statement[] = [];
+  for (const child of children) {
+    if (!isVarDeclaration(child) && !isMixinDefinition(child) && !isMixinCall(child) && !isApply(child) && !isReference(child) && !isRuleset(child) && !isFor(child) && !isIf(child) && !isWhile(child) && !isJessDeclaration(child) && !isStyleImport(child) && !isModuleImport(child) && !isAtRuleBlock(child) && !isAtRuleStatement(child) && !isUnknownAtRuleBlock(child)) {
+      throw new TypeError('Jess grammar produced a non-statement child.');
+    }
+    statements.push(child);
+  }
+  return statements;
+}
+
+/*
+ * Block bodies whose grammar admits array-producing arms (`$extend`) and a bare
+ * `;` arm: flatten mixin-call arrays, drop other arrays and stray tokens.
+ */
+function collectBlockStatements(children: readonly unknown[], open: number): Statement[] {
+  return requireStatements(children.slice(
+    open,
+    -1
+  )
+    .flatMap(child => isMixinCallArray(child) ? child : Array.isArray(child) ? [] : [child])
+    .filter(child => !isToken(child)));
+}
+
+/*
+ * Nested-scope bodies (mixin/for/if) whose grammar produces no array or bare
+ * token arms other than mixin-call expansion: flatten mixin-call arrays only.
+ */
+function collectBodyStatements(children: readonly unknown[], open: number): Statement[] {
+  return requireStatements(children.slice(
+    open,
+    -1
+  )
+    .flatMap(child => isMixinCallArray(child) ? child : [child]));
+}
+
+function requireStatementList(value: unknown): Statement[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError('Jess grammar produced a non-statement list.');
+  }
+  return requireStatements(value);
+}
+
+function isIfBranch(value: unknown): value is IfBranch {
+  return typeof value === 'object' && value !== null
+    && 'guard' in value && (value.guard === null || isGuardNodeOf(value.guard, isValueNode))
+    && 'rules' in value && Array.isArray(value.rules);
+}
+
+function requireIfBranch(value: unknown): IfBranch {
+  if (!isIfBranch(value)) {
+    throw new TypeError('Jess grammar produced an invalid conditional branch.');
+  }
+  return { guard: value.guard, rules: requireStatementList(value.rules) };
+}
+
+function requireIfBranchArray(value: unknown): IfBranch[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError('Jess grammar produced an invalid conditional branch list.');
+  }
+  return value.map(requireIfBranch);
+}
+
+function requireIfBranchTuple(value: IfBranch[]): [IfBranch, ...IfBranch[]] {
+  const first = value[0];
+  if (first === undefined) {
+    throw new TypeError('Jess grammar produced an empty conditional branch list.');
+  }
+  return [first, ...value.slice(1)];
+}
+
+function isApply(value: unknown): value is Apply {
+  return typeof value === 'object' && value !== null && 'type' in value && value.type === 'Apply';
+}
+
+function isUrl(value: unknown): value is Url {
+  return typeof value === 'object'
+    && value !== null
+    && 'type' in value
+    && value.type === 'Url'
+    && 'value' in value
+    && isValueNode(value.value);
+}
+
+function urlFromChildren(children: readonly unknown[]): Url {
+  if (children.length === 2) {
+    return url(any(''));
+  }
+  const body = children[1];
+  return isValueNode(body) ? url(body) : url(any(requireToken(body).value));
+}
+
+function requireLiteralQuoted(value: unknown): Quoted {
+  if (!isQuoted(value) || value.interp !== null) {
+    throw new TypeError('Jess module syntax requires a literal quoted path.');
+  }
+  return value;
+}
+
+function isJessDeclaration(value: unknown): value is Declaration {
+  return typeof value === 'object'
+    && value !== null
+    && 'type' in value
+    && value.type === 'Declaration'
+    && 'name' in value
+    && (typeof value.name === 'string' || isInterpolation(value.name))
+    && 'value' in value
+    && (isValueNode(value.value)
+      || (Array.isArray(value.value) && value.value.every(isValueNode)));
+}
+
+function isCollectionItem(value: unknown): value is CollectionItem {
+  if (typeof value !== 'object' || value === null || !('type' in value) || !('value' in value)) {
+    return false;
+  }
+  if (value.type === 'CollectionSpread') {
+    return isJessValueSlotValue(value.value);
+  }
+  return value.type === 'CollectionEntry'
+    && 'key' in value
+    && isJessValueSlotValue(value.key)
+    && isJessValueSlotValue(value.value);
+}
+
+function requireExactToken(value: unknown, expected: string): void {
+  if (requireToken(value).value !== expected) {
+    throw new TypeError(`Jess grammar produced ${requireToken(value).value} where ${expected} was required.`);
+  }
+}
+
+function isVarDeclaration(value: unknown): value is VariableDeclaration {
+  return typeof value === 'object'
+    && value !== null
+    && 'type' in value
+    && value.type === 'VariableDeclaration'
+    && 'name' in value
+    && typeof value.name === 'string'
+    && 'value' in value
+    && isJessValueSlotValue(value.value);
+}
+
+/*
+ * Shared guard reducers. `$if` and mixin guards recognize the same GuardNode
+ * shapes through distinct combinator arms, so the logical and truth reductions
+ * are identical and shared here. COMPARISON is the one rung where the two
+ * positions genuinely differ (§4.2a) and it gets a reducer each, below.
+ */
+function reduceGuardTruth(children: readonly unknown[]): GuardNode {
+  return { g: 'truth', value: requireExpressionFact(children[0]).value, parens: 0 };
+}
+
+/*
+ * The two comparison POSITIONS (§4.2a). `$if` asserts — a groundless relational
+ * pair raises, because the author asked which value is greater and there is no
+ * answer. A mixin `when` clause TESTS — a groundless pair means this definition
+ * does not apply, which is an answer, and raising there would turn a non-match
+ * into a hard compile stop. Same operands, same ground; only the verdict on a
+ * groundless pair differs, so they are two `g` spellings over one shape rather
+ * than one node plus an eval-time context read.
+ */
+function reduceIfCompare(children: readonly unknown[]): GuardNode {
+  return {
+    g: 'cmp',
+    op: requireToken(children[1]).value.trim(),
+    left: requireExpressionFact(children[0]).value,
+    right: requireExpressionFact(children[2]).value,
+    implied: false,
+    parens: 0
+  };
+}
+function reduceGuardCompare(children: readonly unknown[]): GuardNode {
+  return {
+    g: 'match',
+    op: requireToken(children[1]).value.trim(),
+    left: requireExpressionFact(children[0]).value,
+    right: requireExpressionFact(children[2]).value,
+    implied: false,
+    parens: 0
+  };
+}
+function reduceGuardAnd(children: readonly unknown[]): GuardNode {
+  let result = requireGuardNode(children[0]);
+  for (let index = 2; index < children.length; index += 2) {
+    result = { g: 'and', left: result, right: requireGuardNode(children[index]), word: requireToken(children[index - 1]).value, gluedAt: NO_SPAN, parens: 0 };
+  }
+  return result;
+}
+function reduceGuardOr(children: readonly unknown[]): GuardNode {
+  let result = requireGuardNode(children[0]);
+  for (let index = 2; index < children.length; index += 2) {
+    result = { g: 'or', left: result, right: requireGuardNode(children[index]), word: requireToken(children[index - 1]).value, gluedAt: NO_SPAN, parens: 0 };
+  }
+  return result;
+}
+function reduceVarDeclaration(children: readonly unknown[]): VariableDeclaration {
+  const operatorIndex = children.findIndex(child => isToken(child)
+    && (child.value === ':' || child.value === '?:' || child.value === ':=' || child.value === '::='));
+  if (operatorIndex < 1) {
+    throw new TypeError('Jess variable declaration lost its assignment operator.');
+  }
+  const operator = requireToken(children[operatorIndex]).value;
+  const lookup = operatorIndex === 3 ? 'scoped' as const : 'live' as const;
+  const write = operator === '?:'
+    ? { mode: 'if-absent' as const, scope: lookup }
+    : operator === ':='
+      ? { mode: 'reassign' as const, scope: lookup }
+      : operator === '::='
+        ? { mode: 'reassign-or-declare' as const, scope: lookup }
+        : { mode: 'declare' as const };
+  return variableDeclaration(
+    requireToken(children[operatorIndex - 1]).value,
+    valueSlot(requireValueSlot(children[operatorIndex + 1])),
+    write
+  );
+}
+
+/**
+ * A `*` delim, located, and noted on the run's `state.stars` so the parse can
+ * look for arithmetic outside `$( … )` only when a document holds a `*`
+ * ({@link bareArithmeticIn}).
+ */
+function noteStar(span: Span, state: unknown): Any {
+  const star = withSourceSpan(any('*'), span);
+  const stars: unknown = typeof state === 'object' && state !== null && 'stars' in state ? state.stars : null;
+  if (Array.isArray(stars)) {
+    stars.push(star);
+  }
+  return star;
+}
+
+/** A number or a variable: what `$( … )` would compute with. */
+function isArithmeticOperand(value: ValueSlot | undefined): boolean {
+  return value !== undefined && !isValueSlotArray(value)
+    && (value.type === 'Dimension' || value.type === 'Lookup' || value.type === 'Reference');
+}
+
+/**
+ * Each `*` the parse read (`stars`) that sits between two numbers or variables
+ * at a value's top level — a declaration's, a variable's, a collection
+ * entry's, a mixin argument's: arithmetic, which `.jess` writes only inside
+ * `$( … )` (ledger P17), an error at the `*`, the value kept as written (P45).
+ * The boundary is P18(a)'s: a paren or square group and a function's
+ * arguments are not entered; `$( … )` builds operations, not runs. Walks the
+ * document, so the parse calls it only when it read a `*`.
+ */
+function bareArithmeticIn(root: object, stars: readonly object[]): JessArithmeticOutsideExpressionError[] {
+  const read = new Set(stars);
+  const errors: JessArithmeticOutsideExpressionError[] = [];
+  const seen = new Set<object>();
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const item = stack.pop();
+    if (typeof item !== 'object' || item === null || seen.has(item)) {
+      continue;
+    }
+    seen.add(item);
+    if ('type' in item && (item.type === 'Block' || item.type === 'FunctionCall')) {
+      continue;
+    }
+    if (isValueSlotArray(item)) {
+      for (let index = 1; index < item.length - 1; index++) {
+        const star = item[index]!;
+        const span = read.has(star) ? sourceSpanOf(star) : undefined;
+        if (span !== undefined && isArithmeticOperand(item[index - 1]) && isArithmeticOperand(item[index + 1])) {
+          errors.push(new JessArithmeticOutsideExpressionError(span.start, span.end, star));
+        }
+      }
+    }
+    for (const value of Object.values(item)) {
+      if (typeof value === 'object' && value !== null) {
+        stack.push(value);
+      }
+    }
+  }
+  return errors;
+}
+
+/*
+ * Every block-bodied lambda spelling reduces the same way: an `AnonymousMixin`
+ * over the body statements, carrying the declared params. The `params` field is
+ * OMITTED for an empty list so the plain `@{ … }` block keeps the monomorphic
+ * shape core's value paths already expect. The body span records where the
+ * block's comments are, so a call replays them.
+ */
+function reduceLambda(
+  children: readonly unknown[],
+  _fields: unknown,
+  _span: unknown,
+  rawChildren: readonly unknown[]
+): AnonymousMixin {
+  const bodyOpen = children.findIndex(child => isToken(child) && child.value === '{');
+  if (bodyOpen < 0) {
+    throw new TypeError('Jess grammar produced a lambda without a body.');
+  }
+  const params = children.find(isParamArray) ?? [];
+  return withBlockBody(anonymousMixin(
+    collectBodyStatements(
+      children,
+      bodyOpen + 1
+    ),
+    params.length > 0 ? params : undefined
+  ), rawChildren);
+}
+
+/*
+ * Shared selector reducers. The static and dynamic selector families differ only
+ * in their recognition arms (static excludes interpolation); the compound,
+ * complex, tail, and list reductions are structurally identical.
+ */
+function reduceCompound(children: readonly unknown[]): SelectorTerm {
+  return selectorTermFromTokens(children.filter(isSimpleToken));
+}
+function reduceSelectorTail(children: readonly unknown[]): SelectorBranch {
+  return children.find(isSelectorBranch)!;
+}
+function reduceSelectorList(children: readonly unknown[]): SelectorList {
+  return selist(...children.filter(isSelectorBranch));
+}
+
+/*
+ * Operands and operator characters, in authored order, with the operators'
+ * padding interleaved. The pads are their own terms, so an operator no longer
+ * sits a constant distance from its operand and the fold reads the shape rather
+ * than a fixed stride — and a pad can hold a comment whose own `/` and `*` would
+ * defeat any attempt to recover the operator from the padded text.
+ */
+function dollarValueFromChildren(
+  children: readonly unknown[],
+  _fields: unknown,
+  span: { readonly start: number; readonly end: number }
+): ValueNode {
+  const base = requireValueNode(children[0]);
+  if (children.length === 1) {
+    if (base.type !== 'Lookup' || base.kind !== 'var') {
+      throw new TypeError('Jess reference base must be a variable reference.');
+    }
+    return base;
+  }
+  const rest = children.slice(1);
+  if (base.type === 'Lookup' && base.kind === 'entry') {
+    const name = requireToken(rest[0]).value;
+    const tails = rest.slice(1).map(requireJessReferenceTail);
+    return withSourceSpan(reference(
+      base,
+      [
+        lookupStep('member', name),
+        ...tails.map(tail => tail.step)
+      ],
+      `${base.raw}.${name}${tails.map(tail => tail.src).join('')}`
+    ), span);
+  }
+  if (base.type !== 'Lookup' || base.kind !== 'var') {
+    throw new TypeError('Jess reference base must be a variable reference.');
+  }
+  if (isJessReferenceTail(rest[0])) {
+    const tails = rest.map(requireJessReferenceTail);
+    const memberReference = declarationMemberReferenceFromVariableBase(base, tails);
+    return withSourceSpan(memberReference ?? reference(
+      base,
+      tails.map(tail => tail.step),
+      `${base.scope === 'scoped' ? '$^' : '$'}${lookupNameSource(base.name)}${tails.map(tail => tail.src).join('')}`
+    ), span);
+  }
+  if (rest.some(child => isToken(child) && child.value === '/')) {
+    return list(
+      [base, requireValueNode(rest.at(-1))],
+      '/'
+    );
+  }
+  throw new TypeError('Jess dollar value matched an unknown continuation.');
+}
+
+function foldCalcOperation(children: readonly unknown[]): ValueNode {
+  const first = children.find(isValueNode);
+  if (first === undefined) {
+    throw new TypeError('Jess calc grammar requires an operand.');
+  }
+  let result = first;
+  let operator: string | undefined;
+  for (let index = children.indexOf(first) + 1; index < children.length; index += 1) {
+    const child = children[index];
+    if (isValueNode(child)) {
+      if (operator === undefined) {
+        throw new TypeError('Jess calc grammar lost an operator operand.');
+      }
+
+      /*
+       * `inMathFunction` is TRUE for every pair this fold builds: the ladder is
+       * reachable only from a css-values-4 §10 math function, so an operation
+       * arriving here was AUTHORED inside one. The flag records that positional
+       * fact and nothing more — whether it then folds is decided downstream,
+       * together with `unitMode` and `mathMode`.
+       */
+      result = operation(
+        operator,
+        result,
+        child,
+        true,
+        cssBaseMathOutsideParens(operator)
+      );
+      operator = undefined;
+      continue;
+    }
+    if (child === undefined || child === null) {
+      continue;
+    }
+    const text = requireToken(child).value;
+    if (isMathOperator(text)) {
+      operator = text;
+    }
+  }
+  if (operator !== undefined) {
+    throw new TypeError('Jess calc grammar lost an operator operand.');
+  }
+  return result;
+}
+
+/**
+ * Whether the parse is reading a CSS `if()` condition, where `media()`,
+ * `supports()` and `style()` are CSS tests (css-values-5 §8.3), read with
+ * css's query grammar.
+ */
+function isIfTest(state: unknown): boolean {
+  return typeof state === 'object' && state !== null && 'ifTest' in state && state.ifTest === true;
+}
+
+/** The parse state inside an `if()` call: its conditions are read as CSS `if()` conditions. */
+function enterIfTest(state: unknown): object {
+  return typeof state === 'object' && state !== null ? { ...state, ifTest: true } : { ifTest: true };
+}
+
+/**
+ * Whether the parse is reading a `media()` or `supports()` test's argument: a
+ * value position, where `${name}` substitutes as `$name` does (owner
+ * 2026-10-20: "intuitively it can be $bp or ${bp}"), unlike any other value
+ * position (ledger P13).
+ */
+function isTestValue(state: unknown): boolean {
+  return typeof state === 'object' && state !== null && 'testValue' in state && state.testValue === true;
+}
+
+/** The parse state inside a `media()` or `supports()` test's argument. */
+function enterTestValue(state: unknown): object {
+  return typeof state === 'object' && state !== null ? { ...state, testValue: true } : { testValue: true };
+}
+
+/** The parse state of a value inside an `if()` call that is not a condition: the state it had outside, unchanged when it was not set. */
+function leaveIfTest(state: unknown): unknown {
+  return isIfTest(state) && typeof state === 'object' && state !== null ? { ...state, ifTest: false } : state;
+}
+
+/** One `;` group of a call: its first component, the branch value after a `:` if it has one, and the comma arguments after. */
+interface CallGroup {
+  readonly lead: ValueSlot | undefined;
+  branch: ValueSlot | undefined;
+  readonly args: ValueSlot[];
+  readonly separators: string[];
+}
+
+function isElse(value: ValueSlot): boolean {
+  return !isValueSlotArray(value) && value.type === 'Keyword' && value.src.length === 4 && value.src.toLowerCase() === 'else';
+}
+
+/** A `$name` read alone, the name of a named argument (`foo($a: 1px)`). */
+function namedArgument(value: ValueSlot | undefined): string | undefined {
+  return value !== undefined && !isValueSlotArray(value) && value.type === 'Lookup' && value.kind === 'var' && typeof value.name === 'string'
+    ? value.name
+    : undefined;
+}
+
+const groupValue = (values: readonly ValueSlot[], separators: readonly string[]): ValueSlot =>
+  values.length === 1 ? values[0]! : withValueLayout(list([...values], ','), [...separators]);
+
+/**
+ * A CSS `if()` condition (css-values-5 §8.3 `<if-condition>`), the guard SCSS
+ * builds for it: `$( … )` is decided when the stylesheet compiles (the
+ * comparison written in it, or its value's truth); `not`, `and`, `or` and a
+ * paren group are the condition's own; anything else — a CSS test, whose
+ * arguments the grammar kept as written, or any other component — is the
+ * browser's. A run that mixes `and` and `or`, or holds more than operands and
+ * keywords, is one CSS test, as css-values-5 has no reading for it.
+ */
+function ifCondition(value: ValueSlot): GuardNode {
+  if (isValueSlotArray(value)) {
+    const items: readonly ValueSlot[] = value;
+    const word = (item: ValueSlot | undefined): string | undefined => {
+      if (item === undefined || isValueSlotArray(item) || item.type !== 'Keyword') {
+        return undefined;
+      }
+      const lower = item.src.toLowerCase();
+      return lower === 'and' || lower === 'or' || lower === 'not' ? item.src : undefined;
+    };
+    const negation = word(items[0]);
+    if (items.length === 2 && negation !== undefined && negation.toLowerCase() === 'not') {
+      return { g: 'not', inner: ifCondition(items[1]!), word: negation, gluedAt: NO_SPAN, parens: 0 };
+    }
+    const keyword = (index: number): 'and' | 'or' | undefined => {
+      const lower = word(items[index])?.toLowerCase();
+      return lower === 'and' || lower === 'or' ? lower : undefined;
+    };
+    if (items.length > 1 && items.length % 2 === 1 && items.every((_, index) => (index % 2 === 1) === (keyword(index) !== undefined))) {
+      /*
+       * Operands joined by `and`/`or`, `and` binding tighter, as SCSS's Sass
+       * expression reads the same run, so both dialects build one tree
+       * (css-values-5 allows no mixing without parens; it is written as is).
+       */
+      const disjuncts: Array<{ readonly word: string; readonly operand: GuardNode }> = [];
+      let conjunction = ifCondition(items[0]!);
+      let joiner = '';
+      for (let index = 1; index < items.length; index += 2) {
+        const right = ifCondition(items[index + 1]!);
+        if (keyword(index) === 'and') {
+          conjunction = { g: 'and', left: conjunction, right, word: word(items[index])!, gluedAt: NO_SPAN, parens: 0 };
+        } else {
+          disjuncts.push({ word: joiner, operand: conjunction });
+          joiner = word(items[index])!;
+          conjunction = right;
+        }
+      }
+      disjuncts.push({ word: joiner, operand: conjunction });
+      return disjuncts.slice(1).reduce<GuardNode>(
+        (left, next) => ({ g: 'or', left, right: next.operand, word: next.word, gluedAt: NO_SPAN, parens: 0 }),
+        disjuncts[0]!.operand
+      );
+    }
+  } else if (value.type === 'Interpolation' && value.parts.length === 1) {
+    /* `$( … )` in value position is the template of that one expression. */
+    const [part] = value.parts;
+    if (part !== undefined && 'ref' in part && part.ref.type === 'Expression' && part.ref._asCall === null) {
+      const inner = part.ref.value;
+      return !isValueSlotArray(inner) && inner.type === 'Condition' ? inner.guard : { g: 'truth', value: inner, parens: 0 };
+    }
+  } else if (value.type === 'Block' && value.delimiter === 'paren' && value.escaped !== true) {
+    return inParens(ifCondition(value.value));
+  }
+  return { g: 'css', value, parens: 0 };
+}
+
+/**
+ * CSS `if()` as the value-position conditional SCSS builds for it (owner
+ * 2026-10-19: "parse to the equivalent structure that would be intepreted the
+ * same way in .jess"): each `;` group a branch, `else` the one with no
+ * condition. A group that is not a branch leaves the call css's branch list.
+ */
+function lowerCssIf(groups: readonly CallGroup[], name: string): IfValue | undefined {
+  const branches: IfValueBranch[] = [];
+  let trailingSemicolon = false;
+  for (const [index, group] of groups.entries()) {
+    if (group.lead === undefined && index === groups.length - 1 && index > 0) {
+      trailingSemicolon = true;
+      continue;
+    }
+    if (group.lead === undefined || group.branch === undefined) {
+      return undefined;
+    }
+    branches.push({
+      guard: isElse(group.lead) ? null : ifCondition(group.lead),
+      value: groupValue([group.branch, ...group.args], group.separators)
+    });
+  }
+  const [first, ...others] = branches;
+  return first === undefined ? undefined : ifValue([first, ...others], null, trailingSemicolon, name);
+}
+
+/**
+ * A plain call's reduction. Its arguments are `;` groups of comma arguments
+ * (css-values-5 §8.3); a group whose first component is followed by a `:` is a
+ * branch (ledger P38), `if()`'s branch list is CSS `if()` ({@link lowerCssIf}),
+ * and `$name:` before any `;` is a named argument, never a branch condition.
+ */
+function genericCallFrom(children: readonly unknown[]): FunctionCall | IfValue {
+  const name = jessFunctionOpenName(children[0]);
+  const groups: CallGroup[] = [{ lead: undefined, branch: undefined, args: [], separators: [] }];
+  for (let index = 1; index < children.length - 1; index++) {
+    const child = children[index];
+    const group = groups[groups.length - 1]!;
+    if (isJessCallArgument(child)) {
+      group.separators.push(child.separator);
+      group.args.push(child.value);
+    } else if (isJessValueSlotValue(child)) {
+      if (group.lead === undefined) {
+        groups[groups.length - 1] = { ...group, lead: child };
+      } else {
+        group.branch = child;
+      }
+    } else if (isToken(child) && child.value === ':' && group.branch === undefined) {
+      group.branch = [];
+    } else if (isToken(child) && child.value === ';') {
+      groups.push({ lead: undefined, branch: undefined, args: [], separators: [] });
+    }
+  }
+  const [first] = groups;
+  const named = groups.length === 1 && first!.branch !== undefined ? namedArgument(first!.lead) : undefined;
+  if (named !== undefined) {
+    return funcCall(name, [callArg(first!.branch!, named, false, '$'), ...first!.args.map(arg => callArg(arg))]);
+  }
+  if (groups.length === 1 && first!.branch === undefined) {
+    const args = first!.lead === undefined ? [] : [first!.lead, ...first!.args];
+    const call = funcCall(name, args);
+    if (first!.separators.length > 0) {
+      withValueLayout(call.args, first!.separators);
+    }
+    return call;
+  }
+  const lowered = name.toLowerCase() === 'if' ? lowerCssIf(groups.map(gluedBranch), name) : undefined;
+  if (lowered !== undefined) {
+    return lowered;
+  }
+  const branched = first!.branch !== undefined;
+  const items = groups.map((group): ValueSlot => {
+    if (group.lead === undefined) {
+      return [];
+    }
+    if (branched && group.branch !== undefined) {
+      return branch(group.lead, groupValue([group.branch, ...group.args], group.separators));
+    }
+    const lead = group.branch === undefined ? group.lead : withValueLayout([...asRun(group.lead), any(':'), ...asRun(group.branch)], []);
+    return groupValue([lead, ...group.args], group.separators);
+  });
+  return funcCall(name, [items.length === 1 ? items[0]! : list(items, ';')]);
+}
+
+/**
+ * In `if()`, a group whose first component is a run holding a glued `:` delim
+ * (`if(media(print):1px;else:2px)`, minified CSS) is the branch css reads
+ * there: the run before that parsed `:` is the condition, after it the value
+ * (css-values-5 §8.3's condition has no top-level colon). Elsewhere the glued
+ * `:` stays the run's (`foo(a:b)`, ledger N18).
+ */
+function gluedBranch(group: CallGroup): CallGroup {
+  const lead = group.lead;
+  if (group.branch !== undefined || lead === undefined || !isValueSlotArray(lead)) {
+    return group;
+  }
+  const colon = lead.findIndex((item, index) => index > 0 && !isValueSlotArray(item) && item.type === 'Any' && item.src === ':');
+  if (colon < 0) {
+    return group;
+  }
+  const part = (items: readonly ValueSlot[]): ValueSlot => (items.length === 1 ? items[0]! : [...items]);
+  return { ...group, lead: part(lead.slice(0, colon)), branch: colon === lead.length - 1 ? [] : part(lead.slice(colon + 1)) };
+}
+
+const asRun = (value: ValueSlot): ValueSlot[] => (isValueSlotArray(value) ? [...value] : [value]);
+
+export {
+  isIfTest,
+  enterIfTest,
+  leaveIfTest,
+
+  isTestValue,
+  enterTestValue,
+  genericCallFrom,
+  selectorCaptureFrom,
+  leadingSeparatorValue,
+  noteStar,
+  bareArithmeticIn,
+  commaList,
+  callComponentFrom,
+  requireToken,
+  requireFields,
+  jessCombinator,
+  jessRelativeCombinator,
+  isExpressionFact,
+  isJessAtRuleHeader,
+  requireJessAtRuleHeader,
+  isAtRuleNameToken,
+  isJessReferenceTail,
+  requireSelectorList,
+  requireJessReferenceTail,
+  requireString,
+  requireInterpolation,
+  requireKeyword,
+  staticSelectorText,
+  isMixinCallArray,
+  isExtendInstructionArray,
+  isValueNode,
+  isValueNodeArray,
+  isJessValueSlotValue,
+  reportRecovered,
+  requireValueSlot,
+  isJessMixinCallArgument,
+  isJessCallArgument,
+  requireValueNode,
+  requireGuardNode,
+  isInterpolationLiteral,
+  interpolationFromTemplateChildren,
+  appendCustomValueParts,
+  customValueFromChildren,
+  requireExpressionFact,
+  requireJessOperatorFact,
+  foldExpression,
+  lookupNameSource,
+  expressionSource,
+  foldLogicalExpression,
+  referenceBaseSource,
+  isMemberStep,
+  declarationMemberReferenceFromVariableBase,
+  interpolationFromChildren,
+  dollarBraceInterpolation,
+  referenceArgSource,
+  tokenSource,
+  sourceFromState,
+  interpolationValue,
+  quotedFromChildren,
+  quotedExpressionFact,
+  reduceColonFeature,
+  jessFunctionOpenName,
+  requireStatements,
+  collectBlockStatements,
+  collectBodyStatements,
+  requireStatementList,
+  isIfBranch,
+  requireIfBranch,
+  requireIfBranchArray,
+  requireIfBranchTuple,
+  requireForBinding,
+  isApply,
+  isUrl,
+  urlFromChildren,
+  requireLiteralQuoted,
+  isJessDeclaration,
+  isCollectionItem,
+  requireExactToken,
+  isVarDeclaration,
+  reduceGuardTruth,
+  reduceIfCompare,
+  reduceGuardCompare,
+  reduceGuardAnd,
+  reduceGuardOr,
+  reduceVarDeclaration,
+  reduceLambda,
+  reduceCompound,
+  reduceSelectorTail,
+  reduceSelectorList,
+  dollarValueFromChildren,
+  foldCalcOperation
+};
+
+export type {
+  ExpressionFact,
+  JessOperatorFact,
+  JessReferenceTail,
+  JessComplexTail,
+  JessAtRuleHeader,
+  JessMixinCallArgument,
+  JessCallArgument
+};

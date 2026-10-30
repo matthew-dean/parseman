@@ -26,7 +26,7 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
-import { compileRuleMap } from '../table/compile-rule-map.ts'
+import { compileRuleMap, type CompiledRuleMapTable } from '../table/compile-rule-map.ts'
 import { compileLinkableTable } from '../compiler/compile-linkable-table.ts'
 import { createReducerResolver, topLevelIsStable } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
@@ -38,7 +38,9 @@ import {
 import type { HostMode } from '../cst/host-mode.ts'
 import { COMPOSED_PIECES } from '../compiler/linker.ts'
 import { serializeCombinator, serializeRuleMap } from '../compiler/ir-serialize.ts'
-import { evalCombinatorIR, evalRulesIR } from './ir-eval.ts'
+import { evalCombinatorIR, evalRulesIR, INERT_BUILDER } from './ir-eval.ts'
+import { countSiteVisits } from '../table/assemble.ts'
+import { run } from '../functional/run.ts'
 import { linkRules, RULES_RECIPE, type LinkOptions, type RulesRecipe } from '../combinators/parser.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { grammarReflectionSource, type GrammarReflection } from '../cst/reflection.ts'
@@ -87,9 +89,58 @@ export type ParsecraftPluginOptions = {
   /** Emit grammar-coverage hooks in macro output. Off by default, so ordinary
    * macro output remains byte-identical. */
   grammarCoverage?: boolean
+  /**
+   * OPTIONAL TUNING for selective assemblies. **Off by default.**
+   *
+   * A grammar gets generated code only for its hottest sites, within a byte budget.
+   * Without this option the build ranks sites by a static estimate. With it, the
+   * build parses `files` from rule `entry` on the closure engine (nothing is
+   * generated to measure) and ranks sites by measured calls per byte instead. It
+   * changes which sites are generated, never what a parse returns.
+   */
+  assemblyProfile?: AssemblyProfile
+  /**
+   * Generated assembly bytes each module may spend, as a multiple of its own source
+   * length. **Default `0.25`.** `0` ships no assembly. The right number is
+   * per grammar: a larger one parses faster in steady state and costs import and
+   * first-parse time, so measure both, and keep the artifact within 5× its source
+   * (docs/design/runtime-and-size-contract.md, rules 4 and 6).
+   */
+  assemblyBudget?: number
+}
+
+/** A corpus a build parses to rank selective-assembly sites — see `assemblyProfile`. */
+export type AssemblyProfile = {
+  /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar
+   * without this rule keeps the static ranking. */
+  readonly entry: string
+  /** Paths of representative inputs. */
+  readonly files: readonly string[]
+}
+
+/** Corpus file contents, re-read when a file's mtime moves, so a watch build that
+ * re-lowers after a corpus edit ranks by the edited corpus. */
+const corpusCache = new Map<string, { readonly mtimeMs: number; readonly text: string }>()
+function corpusTexts(profile: AssemblyProfile): readonly string[] {
+  return profile.files.map(file => {
+    const mtimeMs = fs.statSync(file).mtimeMs
+    const hit = corpusCache.get(file)
+    if (hit !== undefined && hit.mtimeMs === mtimeMs) return hit.text
+    const text = fs.readFileSync(file, 'utf8')
+    corpusCache.set(file, { mtimeMs, text })
+    return text
+  })
 }
 
 const PARSEMAN_MODULE = 'parseman'
+
+/**
+ * The default `assemblyBudget`: generated assembly bytes a module may spend, as a
+ * multiple of its own source length. A quarter of the source keeps every jess
+ * grammar far under the 5x ceiling (contract rule 4); the 0.58.0 CHANGELOG has the
+ * measured curve.
+ */
+const DEFAULT_ASSEMBLY_BUDGET = 0.25
 
 /**
  * The REASON a lowering refused, appended to the warning that reports it.
@@ -280,11 +331,14 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
     return /\.[jt]sx?$/.test(id) && !id.includes('node_modules')
   },
 
-  transform(this: { warn?: (msg: string) => void }, code: string, id: string) {
+  transform(this: { warn?: (msg: string) => void; addWatchFile?: (file: string) => void }, code: string, id: string) {
     if (!code.includes('parseman')) return null
     if (!code.includes('macro')) return null
+    // A corpus edit changes which sites a profiled build generates, so a watch
+    // build re-lowers when one does.
+    for (const file of opts.assemblyProfile?.files ?? []) this?.addWatchFile?.(file)
     const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
-    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true)
+    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true, opts.assemblyProfile, opts.assemblyBudget)
     if (result?.warnings.length) {
       for (const w of result.warnings) {
         if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -544,10 +598,12 @@ export function transformMacro(
   warnUnloweredRegex = false,
   recovery = false,
   grammarCoverage = false,
+  assemblyProfile?: AssemblyProfile,
+  assemblyBudget = DEFAULT_ASSEMBLY_BUDGET,
 ): TransformMacroResult | null {
   const depth = degradationCaptureDepth()
   try {
-    return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage)
+    return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage, assemblyProfile, assemblyBudget)
   } finally {
     setReducerResolver(null)
     setBuilderImportResolver(null)
@@ -564,6 +620,8 @@ function transformMacroImpl(
   warnUnloweredRegex: boolean,
   recovery: boolean,
   grammarCoverage: boolean,
+  assemblyProfile: AssemblyProfile | undefined,
+  assemblyBudgetShare: number,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -1984,9 +2042,10 @@ function transformMacroImpl(
           carried,
           reflection: compiled.reflection,
         })
+        const select = selectAssembly(init.start, 'compose()', compiled, !declaresLeaf())
         return {
-          replacement: compiled.replacementWithMetadata(reflectionMetadata),
-          exportedReplacement: compiled.replacementWithMetadata(exportedMetadata),
+          replacement: assembledReplacement(compiled, reflectionMetadata, select),
+          exportedReplacement: assembledReplacement(compiled, exportedMetadata, select),
           carried,
           ...(composing ? { trivia: composing } : {}),
           ...(importedFactories.length ? { importedFactories } : {}),
@@ -2005,6 +2064,74 @@ function transformMacroImpl(
     warn(init.start, 'compose(): a carried piece has no re-lowerable IR; leaving the runtime compose() in place')
     return null
   }
+
+  /**
+   * SELECTIVE ASSEMBLY, BUDGETED PER MODULE. A fused grammar's default AST/no-lines
+   * table carries generated code for its hottest sites only (`select-hot.ts`); the
+   * closure engine runs the rest. The site bodies of every fused grammar in this
+   * module together may not exceed `assemblyBudget` times the module's own source.
+   *
+   * A module that declares a `composeLeaf` has named its terminal parser, so its
+   * `compose()` results are composable PIECES: another build re-lowers them and
+   * never parses through their table, so they spend nothing. Without a
+   * `composeLeaf`, a `compose()` result is the module's parser.
+   */
+  let assemblyBudget = Math.floor(code.length * assemblyBudgetShare)
+  let leafDeclared: boolean | undefined
+  const declaresLeaf = (): boolean => leafDeclared ??= (body as Statement[]).some(stmt => {
+    const vd = unwrapVd(stmt)
+    return vd !== null && vd.declarations.some(d => d.init != null && isComposeLeafCall(d.init as Expression))
+  })
+  const selectAssembly = (
+    pos: number,
+    label: string,
+    compiled: CompiledRuleMapTable,
+    terminal: boolean,
+  ): ReadonlySet<number> => {
+    // A coverage build instruments the table; its counters are not the shipping
+    // parser, so it carries no assembly.
+    if (!terminal || grammarCoverage) return new Set()
+    const { sites, bytes, refusal } = compiled.selectAssembly(assemblyBudget, profileOf(compiled))
+    // The artifact still parses, on the closure engine, but a build that would
+    // have generated code says which construct stopped it rather than fall back
+    // silently. Not `warn()`: every declaration still lowers, so the module stays
+    // fully resolved.
+    if (refusal !== undefined) {
+      warnings.push(`${id}:${lineOf(pos)} — ${label}: its precompiled assembly cannot emit ${refusal}; the artifact runs on the closure engine`)
+    }
+    assemblyBudget -= bytes
+    return sites
+  }
+  /** Measured site calls over the optional corpus, or `undefined` for the static
+   * ranking. A file whose parse throws still contributes the calls it made. */
+  const profileOf = (compiled: CompiledRuleMapTable): Int32Array | undefined => {
+    // Only the default AST/no-lines table carries an assembly, so only it is profiled.
+    if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1
+      || !(assemblyProfile.entry in compiled.prog.rules)) return undefined
+    let parsed = 0
+    // A builder re-lowered from carried IR is inert at build time; for COUNTING
+    // only, a plain node stands in for it, so the corpus can run past it.
+    const fns = compiled.prog.fns.map(fn => {
+      const type = (fn as { [INERT_BUILDER]?: string } | null)?.[INERT_BUILDER]
+      return type === undefined ? fn
+        : (children: unknown, _fields: unknown, span: unknown) => ({ type, span, children })
+    })
+    const counts = countSiteVisits(compiled.prog, rules => {
+      const entry = rules[assemblyProfile.entry]!
+      for (const text of corpusTexts(assemblyProfile)) {
+        try { if (run(entry, text).ok) parsed++ } catch { /* the calls it made still count */ }
+      }
+    }, fns)
+    if (parsed > 0) return counts
+    // Not `warn()`: nothing fell back to the interpreter — the build is only untuned.
+    warnings.push(`${id} — assemblyProfile: no corpus file parsed from rule "${assemblyProfile.entry}"; using the static ranking`)
+    return undefined
+  }
+  /** The fused table's replacement, with its selective default assembly if any. */
+  const assembledReplacement = (compiled: CompiledRuleMapTable, metadata: string, select: ReadonlySet<number>): string =>
+    select.size === 0
+      ? compiled.replacementWithMetadata(metadata)
+      : supercompileRuleMapReplacement(compiled.prog, compiled.replacementWithMetadata(metadata, { select }), select)
 
   /**
    * Compile a terminal composition. Imported/base pieces still travel as normal
@@ -2135,23 +2262,12 @@ function transformMacroImpl(
         )
         if (compiled !== null) {
           usedTableRuntime = true
-          // A refused assembly still parses, on the closure engine, but the build
-          // asked for one: say which construct refused it rather than fall back silently.
-          const assemblyRefusals: string[] = []
-          const replacement = supercompileRuleMapReplacement(
-            compiled.prog,
-            compiled.replacementWithMetadata(
-              staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
-              { precompileDefault: true, refusals: assemblyRefusals },
-            ),
-          )
-          // Not `warn()`: nothing falls back to the interpreter and every declaration
-          // still lowers, so the module stays fully resolved.
-          if (assemblyRefusals.length > 0) {
-            warnings.push(`${id}:${lineOf(init.start)} — composeLeaf(): its precompiled assembly cannot emit ${[...new Set(assemblyRefusals)].join(', ')}; the artifact runs on the closure engine`)
-          }
           return {
-            replacement,
+            replacement: assembledReplacement(
+              compiled,
+              staticTableMetadataSource({ reflection: compiled.reflection, leaf: true }),
+              selectAssembly(init.start, 'composeLeaf()', compiled, true),
+            ),
             ...(importedFactories.length ? { importedFactories } : {}),
           }
         }

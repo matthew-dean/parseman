@@ -229,7 +229,11 @@ export function supercompileEntryAssembly(
  * then finds the precompiled assembly through the table object's AST shape and
  * replaces only that factory body. Any mismatch returns the canonical source.
  */
-export function supercompileRuleMapReplacement(prog: TableProgram, replacement: string): string {
+export function supercompileRuleMapReplacement(
+  prog: TableProgram,
+  replacement: string,
+  select?: ReadonlySet<number>,
+): string {
   const cfg = defaultAssemblyCfgs(prog)[0]
   if (cfg === undefined) return replacement
   const extraIps = assemblyExtraIps(prog)
@@ -237,7 +241,7 @@ export function supercompileRuleMapReplacement(prog: TableProgram, replacement: 
   let canonical: EmitResult
   let candidate: EntrySupercompileResult
   try {
-    canonical = emitAssemblySource(resolveTable(prog), prog, cfg, extraIps, true)
+    canonical = emitAssemblySource(resolveTable(prog), prog, cfg, extraIps, true, select)
     candidate = supercompileEmittedAssembly(prog, cfg, extraIps, canonical)
   } catch {
     return replacement
