@@ -205,6 +205,64 @@ if(starts===undefined)return
 for(let i=from;i<end;i++)if(input.charCodeAt(i)===10)starts.push(i+1)
 ctx._lineScannedTo=end
 }
+let _mR=0,_mT=0,_mL=0,_mG=0,_mRt=0
+function _mkLogs(ctx){
+_mG=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+_mRt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+}
+function _mkBC(ctx){
+const b=ctx._cstBuf,r=b.raw,h=b.ch,l=b.tl
+_mR=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+_mL=h!==undefined?h.length:b.single!==undefined?1:0
+_mT=l!==undefined?l.length:0
+_mkLogs(ctx)
+}
+function _mkBO(ctx){
+const b=ctx._cstBuf,h=b.ch,l=b.tl
+_mR=b.rawLen
+_mL=h!==undefined?h.length:b.single!==undefined?1:0
+_mT=l!==undefined?l.length:0
+_mkLogs(ctx)
+}
+function _mkBU(ctx){
+const b=ctx._cstBuf,r=b.raw,h=b.ch,l=b.tl
+_mR=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)
+_mL=h!==undefined?h.length:b.single!==undefined?1:0
+_mT=l!==undefined?l.length:0
+_mkLogs(ctx)
+}
+function _mkN(ctx){
+if(ctx._cstBuf!==undefined){_mkBU(ctx);return true}
+if(ctx._cstLeaves!==undefined||ctx._cstRawChildren!==undefined||ctx._cstTriviaLog!==undefined||ctx._fields!==undefined||ctx._errors!==undefined||ctx._triviaLog!==undefined||ctx._rootTriviaLog!==undefined){
+_mR=ctx._cstRawChildren!==undefined?ctx._cstRawChildren.length:0
+_mT=ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0
+_mL=ctx._cstLeaves!==undefined?ctx._cstLeaves.length:0
+_mkLogs(ctx)
+return true
+}
+_mR=0;_mT=0;_mL=0;_mG=0;_mRt=0
+return false
+}
+let _skm=null
+function _tlLen(ctx){
+const b=ctx._cstBuf
+return b!==undefined?(b.tl!==undefined?b.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+}
+function _scanMark(ctx,a,g,r){
+const a1=_tlLen(ctx),g1=ctx._triviaLog!==undefined?ctx._triviaLog.length:0,r1=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+return a1===a&&g1===g&&r1===r?null:[a,a1,g,g1,r,r1]
+}
+function _unscan(ctx,m){rollbackScannedTriviaAt(ctx,m[0],m[1],m[2],m[3],m[4],m[5])}
+function _fdLen(ctx){return ctx._fields!==undefined?ctx._fields.length:0}
+function _erLen(ctx){return ctx._errors!==undefined?ctx._errors.length:0}
+function _fdTo(ctx,n){if(ctx._fields!==undefined&&ctx._fields.length!==n)ctx._fields.length=n}
+function _erTo(ctx,n){if(ctx._errors!==undefined&&ctx._errors.length!==n)ctx._errors.length=n}
+let _fB=0
+function _fm(at,ex,best,acc,lo){
+if(at>best){_fB=at;return at>lo?_accSet(ex,undefined):undefined}
+_fB=best
+return at===best&&at>lo?_accSet(ex,acc):acc
+}
 function _rollbackNeeded(ctx){
 return ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined||ctx._cstRawChildren!==undefined||ctx._cstTriviaLog!==undefined||ctx._fields!==undefined||ctx._errors!==undefined||ctx._triviaLog!==undefined||ctx._rootTriviaLog!==undefined
 }
@@ -315,46 +373,34 @@ function sinkSlots(t: string, s: Sinks): string {
   return `${s.fd ? `,${t}fd=0` : ''}${s.er ? `,${t}er=0` : ''}`
 }
 function sinkReads(t: string, s: Sinks): string {
-  return `${s.fd ? `\n${t}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${s.er ? `\n${t}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
+  return `${s.fd ? `\n${t}fd=_fdLen(ctx)` : ''}${s.er ? `\n${t}er=_erLen(ctx)` : ''}`
 }
 
 function emitMark(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SINKS, decl = true): string {
-  // THE SITE IS INSIDE A NODE. `OP_NODE` opens `ctx._cstBuf` unconditionally and
-  // closes it on the way out, so the whole discriminating chain below — which
-  // sink is live, and whether a mark is needed at all — has ONE answer here, and
-  // the pass knows it. What is left is the five loads a mark actually is.
+  // THE MARK IS A SHARED HELPER PLUS SCALAR COPIES. The helper takes no piece,
+  // so the header's sharing rule admits it, and it writes the five lengths into
+  // module slots that the site copies into its own locals on the next line —
+  // nothing runs between the write and the copies, so no other mark can
+  // overwrite them. The values, and the order they are read in, are exactly the
+  // inline form's; only the text is shared.
+  //
+  // THE SITE IS INSIDE A NODE when `buf`: `OP_NODE` opens `ctx._cstBuf`
+  // unconditionally, so the discriminating chain has one answer and the helper
+  // is the buffer arm for the label's raw mode.
   //
   // `decl === false` RE-TAKES a mark into locals that already exist —
   // `OP_DISPATCH` marks, rolls back to the selector's mark, and marks again.
+  const copy = `${t}raw=_mR,${t}tl=_mT,${t}lv=_mL,${t}lg=_mG,${t}rt=_mRt`
   if (buf) {
-    const raw = rawMode === RAW_OMIT
-      ? `${t}raw=b.rawLen`
-      : rawMode === RAW_CAPTURE
-        ? `const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0`
-        : `const r=b.raw;${t}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)`
-    return `${decl ? `let ${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : ''}{const b=ctx._cstBuf
-${raw}
-const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
-const l=b.tl;${t}tl=l!==undefined?l.length:0
-${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
-${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, s)}}`
+    const fn = rawMode === RAW_OMIT ? '_mkBO' : rawMode === RAW_CAPTURE ? '_mkBC' : '_mkBU'
+    return decl
+      ? `${fn}(ctx)\nlet ${copy}${sinkSlots(t, s)}${sinkReads(t, s)}`
+      : `${fn}(ctx)\n${copy.replaceAll(',', ';')}${sinkReads(t, s)}`
   }
-  return `${decl ? `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : `${t}n=false\n`}{const b=ctx._cstBuf
-if(b!==undefined){
-const r=b.raw;${t}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)
-const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
-const l=b.tl;${t}tl=l!==undefined?l.length:0
-${t}n=true
-}else if(ctx._cstLeaves!==undefined||ctx._cstRawChildren!==undefined||ctx._cstTriviaLog!==undefined||ctx._fields!==undefined||ctx._errors!==undefined||ctx._triviaLog!==undefined||ctx._rootTriviaLog!==undefined){
-${t}raw=ctx._cstRawChildren!==undefined?ctx._cstRawChildren.length:0
-${t}tl=ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0
-${t}lv=ctx._cstLeaves!==undefined?ctx._cstLeaves.length:0
-${t}n=true
-}
-if(${t}n){
-${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
-${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, s)}
-}}`
+  const sinks = s.fd || s.er ? `\nif(${t}n){${sinkReads(t, s)}\n}` : ''
+  return decl
+    ? `let ${t}n=_mkN(ctx),${copy}${sinkSlots(t, s)}${sinks}`
+    : `${t}n=_mkN(ctx);${copy.replaceAll(',', ';')}${sinks}`
 }
 
 /**
@@ -384,8 +430,8 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
   // would make every grammar pay the two extra pushes to serve the ones that
   // carry a field. Both are emitted only from a defined mark; the generic
   // helper applies the same `undefined` sentinel when a site cannot write one.
-  const fd = s.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${t}fd)ctx._fields.length=${t}fd` : ''
-  const er = s.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${t}er)ctx._errors.length=${t}er` : ''
+  const fd = s.fd ? `\n_fdTo(ctx,${t}fd)` : ''
+  const er = s.er ? `\n_erTo(ctx,${t}er)` : ''
   if (buf && rawMode === RAW_OMIT) return `_rbNoRawBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
   if (buf && rawMode === RAW_CAPTURE) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
   if (buf) return `rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)`
@@ -407,24 +453,24 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, skipMarked: (skip: string) => string): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
   if (l.tri === TRI_NONE) return fast
-  const scanned = `const ${t}tl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
-const ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
-const ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
-const ${t}s=${skip}(input,cur,ctx)
-const ${t}stl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
-const ${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
-const ${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+  // The scan's six log lengths (before and after) are taken inside the marked
+  // skip helper, which hands back `null` when the scan appended nothing — the
+  // common case, in which `rollbackScannedTriviaAt` would remove six empty
+  // ranges. A `CstCaptureBuf.tl` is never an empty array (it is created with
+  // its first row and reset to `undefined` when truncated to zero), so a null
+  // mark loses no effect of that call.
+  const scanned = `const ${t}s=${skipMarked(skip)}(input,cur,ctx),${t}m=_skm
 const ${t}v=${callee}(input,${t}s,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(EC.e>${t}s)cur=EC.e
-else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt)}`
+else if(${t}m!==null)_unscan(ctx,${t}m)`
   if (l.tri !== TRI_UNKNOWN) return scanned
   return `if(ctx.trivia===undefined){
 ${fast}
@@ -740,6 +786,8 @@ export function emitAssemblySource(
   const skipDefs: string[] = []
   const choiceDefs: string[] = []
   const skipPool = new Map<string, string>()
+  const skipFast = new Map<string, { guard: string; sc: string }>()
+  const skipMarkedDone = new Set<string>()
   const pool = new Map<string, string>()
   const masks: Uint32Array[] = []
   const classes: (ResolvedClass | null)[][] = []
@@ -960,7 +1008,28 @@ return advanceTrivia(input,cur,ctx)}`)
     skipDefs.push(`function ${nm}(input,cur,ctx){
 if(${guard})return ${sc}(input,cur)
 return skipTriviaScanned(${sc},input,cur,ctx)}`)
+    skipFast.set(nm, { guard, sc })
     return nm
+  }
+
+  /**
+   * THE MARKED TWIN OF A SKIP, for a sequence term that may have to undo its
+   * scan. It takes the three log lengths, runs the skip, and leaves the scan's
+   * mark in `_skm`. Where the skip has a bare-scanner arm, that arm writes no
+   * log (its guard says no sink is open and the trivia is unlabelled), so it
+   * takes no lengths and its mark is `null`. Minted once per skip, like the skip.
+   */
+  function skipMarked(nm: string): string {
+    const name = `${nm}M`
+    if (skipMarkedDone.has(name)) return name
+    skipMarkedDone.add(name)
+    const fast = skipFast.get(nm)
+    skipDefs.push(`function ${name}(input,cur,ctx){
+${fast === undefined ? '' : `if(${fast.guard}){_skm=null;return ${fast.sc}(input,cur)}\n`}const a=_tlLen(ctx),g=ctx._triviaLog!==undefined?ctx._triviaLog.length:0,r=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+const s=${nm}(input,cur,ctx)
+_skm=_scanMark(ctx,a,g,r)
+return s}`)
+    return name
   }
 
   /**
@@ -1760,7 +1829,7 @@ return v
             // The callee expression hands it over AFTER the scan statement, right
             // before the call, so a field inside the trivia grammar cannot take it.
             const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
-            parts.push(emitTerm(callee, vn, tmp(), L, skipFor(L)))
+            parts.push(emitTerm(callee, vn, tmp(), L, skipFor(L), skipMarked))
           }
           names.push(vn)
         }
@@ -1987,18 +2056,14 @@ if(${decision}===0){
 ctx._fc=false
 ${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
 prev=${i + 1}`}
-{const at=_pfTokEnd
-if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)}
+acc=_fm(_pfTokEnd,${pretest.token.expected},best,acc,${startFailureExact ? 'pos' : '-1'});best=_fB
 }`
             const sequenceMiss = pretest?.sequence === undefined ? '' : `
 else if((bits&${1 << i})!==0&&${decision}<0){
 ctx._fc=false
 ${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
 prev=${i + 1}`}
-{const at=_pfSeqEnd
-if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},acc)}
+acc=_fm(_pfSeqEnd,${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},best,acc,${startFailureExact ? 'pos' : '-1'});best=_fB
 }`
             return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
@@ -2006,9 +2071,7 @@ ctx._fc=false
 if(v!==FAIL)return v}
 ${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
 prev=${i + 1}`}
-{const at=ctx._fe??pos
-if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
+acc=_fm(ctx._fe??pos,ctx._fx,best,acc,${startFailureExact ? 'pos' : '-1'});best=_fB
 if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
 }${routeMiss}${sequenceMiss}`
@@ -2028,25 +2091,19 @@ ${rollbackFor(i)}
             const miss = pretest?.sequence !== undefined
               ? `else if(${decision}<0){
 ctx._fc=false
-const at=_pfSeqEnd
-if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},acc)
+acc=_fm(_pfSeqEnd,${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},best,acc,${startFailureExact ? 'pos' : '-1'});best=_fB
 }${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
               : pretest?.token === undefined
                 ? startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`
                 : `else if(${decision}===0){
 ctx._fc=false
-const at=_pfTokEnd
-if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)
+acc=_fm(_pfTokEnd,${pretest.token.expected},best,acc,${startFailureExact ? 'pos' : '-1'});best=_fB
 }${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
             return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
 ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
-{const at=ctx._fe??pos
-if(at>best){best=at;acc=undefined}
-if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(ctx._fx,acc)}
+acc=_fm(ctx._fe??pos,ctx._fx,best,acc,${startFailureExact ? 'pos' : '-1'});best=_fB
 if(ctx._fc===true){${startFailureExact ? `if(best===pos){acc=${catchName}(${i},0,undefined);acc=_accSet(ctx._fx,acc)}` : ''}if(acc!==undefined)ctx._fx=acc;return FAIL}
 ${rollbackFor(i)}
 }${miss}`
@@ -2211,11 +2268,11 @@ return [key,v]
         const per = sinks.er ? `${p}er` : 'undefined'
         const rbHelper = L.raw === RAW_OMIT ? '_rbNoRawBuf' : '_rbBuf'
         const rb = L.buf && L.raw !== 0
-          ? `${rbHelper}(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
+          ? `${rbHelper}(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\n_fdTo(ctx,${p}fd)` : ''}${sinks.er ? `\n_erTo(ctx,${p}er)` : ''}`
           : L.buf
             ? `rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
           : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
-        const markSinks = `${sinks.fd ? `\n${p}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${sinks.er ? `\n${p}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
+        const markSinks = `${sinks.fd ? `\n${p}fd=_fdLen(ctx)` : ''}${sinks.er ? `\n${p}er=_erLen(ctx)` : ''}`
         const markRaw = L.raw === RAW_OMIT
           ? `${p}raw=b.rawLen`
           : L.raw === RAW_CAPTURE
