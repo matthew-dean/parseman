@@ -3,6 +3,53 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.58.0 — 2026-10-30
+
+- **Selective assembly replaces the whole-grammar assembly.** A module's terminal
+  grammar — its `composeLeaf()`, or a `compose()` in a module that declares no
+  `composeLeaf()` — gets generated code for its hottest sites only. The plugin's new
+  `assemblyBudget` option sets how much: a multiple of the module's own source length,
+  `0.25` by default, `0` for none, checked against the source the selection actually
+  emits. The closure engine runs every other site, and the two engines hand the
+  installed trivia scanner across each boundary. Before, a large `composeLeaf()`
+  generated every site (jess's CSS grammar: 11.8× its source) and a `compose()`
+  generated none.
+- Sites are ranked by a static estimate of how often they run. The plugin's new optional
+  `assemblyProfile: { entry, files }` ranks them by measured calls instead: the build
+  parses the corpus on the closure engine, nothing is generated to measure, and the
+  corpus files are watched.
+- `pnpm size:guard:jess` builds a vendored snapshot of jess's four grammars
+  (`fixtures/jess-grammars/`, refreshed by `pnpm vendor:jess-grammars`) the way jess
+  ships them, loads each bundle it measures, and fails when any variant exceeds 5× its
+  grammar source. It runs in CI.
+- The macro timing gate (`bench:macro-optimize`) times against this release instead of
+  0.50.2, whose whole-grammar assembly the runtime and size contract removes.
+- Measured per grammar on jess `origin/dev` 4dc6890 against parseman 0.55.2, Node
+  24.11.1, M4 Pro, interleaved. Instructions are marginal per parse; cold is import plus
+  first parse, median of 10. A budget of 0 is the same artifact as 0.55.2 and gives the
+  run-to-run noise: about ±1% instructions on Less, CSS and Jess (more on SCSS's
+  sass-spec corpus), and about ±3% cold.
+
+  | grammar | budget | `ast.js` (× source) | instructions | wall | cold |
+  | --- | --- | --- | --- | --- | --- |
+  | Less | 0 | 773,379 B (2.87×) | +0.1% | +0.5% | +1.1% |
+  | Less | 0.1 | 842,528 B (3.12×) | −1.6% | −0.3% | +2.0% |
+  | Less | 0.25 | 898,687 B (3.33×) | −4.1% | −0.7% | +2.4% |
+  | SCSS | 0 | 492,921 B (2.47×) | +0.8% | +1.2% | +1.5% |
+  | SCSS | 0.1 | 540,494 B (2.71×) | +1.6% | −0.9% | +3.5% |
+  | SCSS | 0.25 | 579,638 B (2.91×) | +1.2% | −3.1% | +5.7% |
+  | Jess | 0 | 564,115 B (2.48×) | +0.5% | +5.5% (0.45 ms; noise) | −2.7% |
+  | Jess | 0.25 | 666,818 B (2.93×) | +1.3% | +10.2% (0.48 ms; noise) | +3.0% |
+  | CSS, static ranking | 0.25 | 234,564 B (1.31×) | −2.1% | +19.0% | −19.0% |
+  | CSS, static ranking | 1 | 419,867 B (2.34×) | +0.3% | +17.1% | −15.0% |
+  | CSS, static ranking | 2.5 | 767,204 B (4.27×) | +5.1% | +4.3% | −5.6% |
+  | CSS, profile ranking | 1 | 413,418 B (2.30×) | +0.6% | +4.7% | −15.5% |
+  | CSS, profile ranking | 2.5 | 759,303 B (4.23×) | +0.6% | +2.9% | −10.0% |
+
+  0.55.2's CSS artifact is the whole-grammar assembly at 2,116,083 B (11.78×); no CSS
+  budget within 5× matches its wall time. Rendered CSS is byte-identical across jess's
+  360 fixtures × 6 output modes.
+
 ## 0.57.0 — 2026-10-30
 
 - The table emitter lowers gated choice arms (`choice({ gate, combinator })`) and
