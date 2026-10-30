@@ -237,6 +237,27 @@ describe('the macro build ships a selective assembly within its module budget', 
     }
   })
 
+  it('never comes back empty from a budget that a smaller budget already filled', () => {
+    // The narrowing loop scales its target by ceiling/bytes. Near the ceiling a
+    // whole site is the step, so that ratio can stall a few bytes over it; the
+    // loop must still land on a fitting selection rather than give up and ship
+    // no assembly at all.
+    const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(/[0-9]*/))] as const)
+    const compiled = compileRuleMap([
+      ['Doc', many(choice(...words.map(([, w]) => w) as [Combinator<unknown>, ...Combinator<unknown>[]]))],
+      ...words,
+    ])!
+    const full = compiled.selectAssembly(Infinity).bytes
+    let filled = false
+    for (let share = 0.05; share < 1; share += 0.005) {
+      const budget = Math.floor(full * share)
+      const { sites, bytes } = compiled.selectAssembly(budget)
+      if (filled) expect(sites.size, `budget ${budget}`).toBeGreaterThan(0)
+      if (sites.size > 0) { filled = true; expect(bytes).toBeLessThanOrEqual(budget) }
+    }
+    expect(filled).toBe(true)
+  })
+
   it('a terminal composeLeaf carries generated code for some sites, the closure engine for the rest', () => {
     const source = `import { choice, composeLeaf, literal, many, regex, rules } from 'parseman' with { type: 'macro' }
 const recognition = rules(g => ({ A: literal('a'), B: regex(/b ?/), C: regex(/c+/) }))

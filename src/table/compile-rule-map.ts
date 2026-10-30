@@ -370,12 +370,15 @@ export function compileRuleMap(
     // and narrowed until that fits.
     const ceiling = budget / SUPERCOMPILE_GROWTH
     let target = ceiling
-    for (let attempt = 0; attempt < 8; attempt++) {
+    for (let attempt = 0; attempt < 16; attempt++) {
       const sites = selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, target - fixed, profile)
       if (sites.size === 0) return none
       const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites).source.length
       if (bytes <= ceiling) return { sites, bytes: Math.ceil(bytes * SUPERCOMPILE_GROWTH) }
-      target *= ceiling / bytes
+      // Scale by the overshoot, and by at least 1%: near the ceiling a site is
+      // the unit, and the ratio alone can stall a few bytes over it until the
+      // attempts run out and nothing ships.
+      target *= Math.min(ceiling / bytes, 0.99)
     }
     return none
   }
