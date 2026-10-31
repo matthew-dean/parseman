@@ -99,6 +99,11 @@ jobs:
         run: |
           echo "commit=$(node scripts/release.mjs stamp "$VERSION")" >> "$GITHUB_OUTPUT"
           git log -1 --stat --format='%H %s'
+          # The plan built dist/ stamped with the LATEST release's version, and tests
+          # that import the built package run before the preflight's own build. Rebuild
+          # so everything below sees the version being released.
+          pnpm build
+          grep -qF "\"$VERSION\"" dist/index.js || { echo "::error::dist/index.js does not stamp $VERSION"; exit 1; }
 
       - name: Version is converged and unpublished
         if: steps.plan.outputs.release == 'true'
