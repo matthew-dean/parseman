@@ -7,9 +7,10 @@ import { cfgKey, type RunCfg } from './assemble.ts'
 /**
  * Print a program as the module a build emits.
  *
- * Everything here is DATA plus the author's own reducers. The recognizer is not
- * in this string — it is `exec.ts`, imported from the runtime, shared by every
- * grammar in the bundle and by every variant of each.
+ * Everything here is DATA plus the author's own reducers, and any assemblies
+ * the build pre-compiled (`a:`). The recognizer is not in this string: it is
+ * `tableRules` from `parseman/table`, shared by every grammar in the bundle and
+ * by every variant of each.
  */
 
 function jsString(s: string): string {
@@ -162,11 +163,10 @@ export function defaultAssemblyCfgs(prog: TableProgram): RunCfg[] {
  * Print the assemblies a build pre-compiled, as the `a:` field of the program
  * literal — see `TableProgram.asm`.
  *
- * THE FACTORY IS A REAL FUNCTION LITERAL. This is a low-level experiment, not
- * a normal compiler route: normal `compile()` and macro output both serialize
- * `a:[]` and use the compact closure assembler. If a future specialization can
- * meet semantic identity and the size budget, it must preserve that one public
- * artifact contract rather than recreate the old runtime/macro split.
+ * THE FACTORY IS A REAL FUNCTION LITERAL. A macro build emits one here for the
+ * AST, no-line-tracking option set, holding only the sites it selected within its
+ * budget (`compile-rule-map.ts`, `selectAssembly`); every other option set gets
+ * no entry and runs the closure assembler.
  *
  * A refusal is not an error. `Unemittable` names a construct the emitter does
  * not lower; that option set simply gets no entry, and `assemble.ts` runs the
@@ -178,7 +178,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly AssemblyCfg[]): strin
    *
    * The field's PRESENCE is the compiler artifact contract. That is what switches
    * the runtime `Function` constructor off (`assemble.ts`), and it costs four
-   * bytes. Its CONTENTS are optional experimental factories; with none, the
+   * bytes. Its CONTENTS are the build's selected factories; with none, the
    * artifact runs the closure engine — no eval, no
    * size growth, and the refusal readable on `Assembly.emitRefusal`.
    *
@@ -240,12 +240,11 @@ export type EmitOptions = {
   /** Name of the exported binding. */
   readonly name?: string
   /**
-   * Optional experimental emitted factories — see `defaultAssemblyCfgs`.
+   * Emitted factories to pre-compile — see `defaultAssemblyCfgs`.
    *
-   * The normal compiler and macro both emit `a:[]`: that is the canonical
-   * compact closure artifact and it never reaches the `Function` constructor.
-   * Supplying factories here is a low-level serialization experiment, not a
-   * second normal compilation path; it is not used by the macro plugin.
+   * Without them the artifact prints `a:[]`, the compact closure artifact, which
+   * never reaches the `Function` constructor. The macro plugin passes one
+   * selective assembly here (`compile-rule-map.ts`, `replacementWithMetadata`).
    */
   readonly assemblies?: readonly AssemblyCfg[]
   /**

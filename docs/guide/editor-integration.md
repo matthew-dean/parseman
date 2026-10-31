@@ -11,34 +11,24 @@ There are three layers:
 
 1. **The grammar** — combinators (`rules`, `sequence`, `many`, `sepBy`, `node`, …).
    You write it once, it compiles for speed, and it has no IDE surface at all.
-2. **Recovery and completions in the compiled parser** — automatic, opt-in at
-   compile time, so the compiled artifact an editor actually loads can recover
-   past broken input and answer completions on the fast path.
+2. **Recovery and completions in the compiled parser** — always compiled in, so
+   the compiled artifact an editor actually loads can recover past broken input
+   and answer completions on the fast path.
 3. **`parseman/language-service`** — an external, grammar-agnostic layer that
    turns the parser's raw signals into editor features like diagnostics and
    semantic completions, configured by whoever's consuming it.
 
-## 1. Compile the grammar with recovery
+## 1. Recovery in the compiled grammar
 
-Recovery sits dormant unless you opt in. A normal strict parse of an opted-in
-grammar barely notices it's there — about 1% overhead from the dormant
-branches — and the output stays macro-inlinable.
+Every compiled grammar can recover, whether it comes from the macro build or from
+`compile()`; there is nothing to turn on. A parse runs strict unless you pass
+`tolerant: true`, and a strict parse never runs a recovery piece: the tolerant
+pieces are a separate assembly, built only when a tolerant parse first asks for one.
 
-**Build-time (macro):**
+The `recovery` option on `compile()` and the macro plugin is a deprecated no-op and
+will be removed in the next minor release.
 
-```ts
-// vite/rollup/esbuild config
-parseman({ recovery: true })
-```
-
-**Or at runtime:**
-
-```ts
-import { compile } from 'parseman'
-const parser = compile(grammar, undefined, { recovery: true })
-```
-
-Run a recovery-compiled grammar tolerantly, and here's what happens when it
+Run a compiled grammar tolerantly, and here's what happens when it
 hits a malformed list element: it skips ahead to an *inferred* sync point —
 the enclosing delimiter, or a `sepBy`'s separator, with no grammar annotation
 needed — embeds a `parseError` node in the CST over the skipped span, and

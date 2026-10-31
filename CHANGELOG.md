@@ -83,6 +83,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   A budgeted selection is priced without these marks, so they move no site in or
   out of it. See `test/unit/table-lex-program-scan-errors.test.ts` and
   `test/unit/table-scan-sink-selection.test.ts`.
+- **The `recovery` option is marked `@deprecated`.** It has had no effect since recovery
+  became part of every compiled table: `compile()`, `compileRuleMap()` and the macro
+  plugin accept it and ignore it. It is removed at the next minor release. Source
+  comments that cited the deleted `codegen.ts`, line numbers that no longer exist, or
+  said `exec.ts` ships, now name what they mean.
 
 ## 0.58.0 — 2026-10-31
 

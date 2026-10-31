@@ -6,6 +6,11 @@ When you compile a grammar — with [`compile()`](./modes#compile-runtime-jit) o
 tight `charCodeAt` scan loop instead — no regex engine, no match object, no allocation on
 the hot path.
 
+The rewrite happens in *emitted* code: all of a grammar under runtime `compile()`, and the
+sites a macro build selects within its byte budget
+([Macro mode](./macro-mode)). The other sites of a macro build run on the closure engine,
+which keeps `RegExp.exec` for most terminals.
+
 This page explains what gets lowered, why, into what, how we test that the rewrite is both
 correct and actually faster, and how we keep the generated code from ballooning.
 
@@ -248,7 +253,8 @@ example grammar — see [Macro mode → Code size](./macro-mode#code-size-what-t
 ## Where this lives in the repo
 
 The recognizer and emitters live in
-[`src/compiler/scannable-run.ts`](https://github.com/matthew-dean/parseman/blob/main/src/compiler/scannable-run.ts).
+[`src/table/scan-shapes.ts`](https://github.com/matthew-dean/parseman/blob/main/src/table/scan-shapes.ts),
+used by the emitted engine (`src/table/emit-assembly.ts`).
 The per-shape catalog, with rationale and measurements, is in
 [`notes/PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/notes/PERF_IDEAS.md).
 This page is the conceptual overview; the catalog is the shape-by-shape detail.

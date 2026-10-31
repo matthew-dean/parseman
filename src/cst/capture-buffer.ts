@@ -262,8 +262,8 @@ export function rollbackCstCaptureAt(
   // speculative branch leaves no ghost error (see saveCstMark). Guarded on a
   // present sink + a defined mark (rollbackTrivia forwards the same field).
   //
-  // Each truncation is guarded on `length !== mark`, mirroring the compiled
-  // engine (codegen.ts `captureRestoreBody`). Assigning `array.length` runs V8's
+  // Each truncation is guarded on `length !== mark`, as the source lowering's
+  // `captureRestoreBody` did. Assigning `array.length` runs V8's
   // length setter — a backing-store trim decision — and costs the same when the
   // value is unchanged, which is the overwhelmingly common case here: a
   // speculative branch that captured nothing still pays for every store. The

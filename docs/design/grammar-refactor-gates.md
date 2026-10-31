@@ -131,8 +131,9 @@ documented:
    would otherwise re-baseline it.
 2. It is stamped into every report, and `compareReports` returns `incomparable`
    when two reports disagree on it.
-3. `test/unit/oracle-identity.test.ts` pins it to a literal. Changing the
-   projection requires editing that constant in the same diff.
+3. `test/unit/oracle-identity.test.ts` pinned it to a literal. Changing the
+   projection required editing that constant in the same diff. (`HARNESS_DIGEST`
+   and that test were removed in `731fefce` with the rest of this design.)
 
 Together: there is no edit to the projection that changes a digest and stays quiet.
 
