@@ -662,7 +662,7 @@ class Encoder {
    * simply parses it with the gate switched off at every choice arm that reaches
    * a hole.
    *
-   * Measured on jess's less grammar (`bench/jess/macro-program-diff.ts`): 195 of
+   * Measured on jess's less grammar (with the one-off `macro-program-diff` bench, last at `acb421e2`): 195 of
    * 562 reachable choice arms carried NO first set in the shipped artifact
    * against 103 of 540 in the runtime encode, and 10 dispatch sites lost the O(1)
    * `exclusive` piece (`assemble.ts:1758`) for the candidate-mask loop. With this

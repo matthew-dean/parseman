@@ -2,6 +2,11 @@
 
 ## `parse-consumed.jsonl`
 
+> **Not tracked.** The file reached 61 MB, and 39,718 of its rows are labelled
+> `"engine":"table"` for a run of the reference driver (`notes/history/RELEASE-0.48-TARGET.md`),
+> so it is gitignored. Append to a local copy; the last committed version is at
+> `acb421e2`.
+
 **Bytes consumed**, one JSON record per line, per
 `(build × engine × dialect × fixture)` over jess's four shipping grammars and
 their real corpora.

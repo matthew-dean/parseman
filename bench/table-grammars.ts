@@ -82,7 +82,7 @@ export function nodeLadder(n: number): Record<string, Combinator<unknown>> {
 }
 
 /**
- * The probe's BASE grammar (notes/size-reduction.md, bench/size/probe.ts
+ * The probe's BASE grammar (notes/history/size-reduction.md, bench/size/probe.ts
  * `baseModule`): five node() rules that actually BUILD a tree, unlike the
  * node-scale ladder — whose greedy `[a-z]+` prefix means no N-rule can ever
  * match, making it a size ruler and not a semantic one. Identity has to be

@@ -4,7 +4,7 @@
 typechecked. Bringing it in surfaced **82 errors**. All but the items below are
 fixed; this file tracks what is knowingly left, so none of it is a silent drop.
 
-## 1. `bench/table-alloc-ablation.ts` — RESOLVED, fixed and no longer excluded
+## 1. `bench/table-alloc-ablation.ts` (last at `acb421e2`) — RESOLVED, fixed and no longer excluded
 
 Two errors, both real:
 
@@ -55,7 +55,7 @@ in the hands of whoever tried to use it.
   profile — correct, but it left the option advertised in the type.
 - Nothing depended on the capability except this one bench, and the half of the
   bench that still worked (GC scavenge count + heap delta over a parse batch)
-  duplicates `bench/alloc-count.ts`, which measures the same thing over the same
+  duplicates `bench/alloc-count.ts` (last at `acb421e2`), which measures the same thing over the same
   model for both host variants. So the bench was deleted rather than rewritten.
 
 **What was removed:** `RunOptions.profile`, `RunResult.profile`, the exported
@@ -63,7 +63,7 @@ in the hands of whoever tried to use it.
 the `ProfilePhase` / `ProfileState` plumbing and `phase` / `profileState`
 parameters of `runOnce`, the `skipGlobalSinks` branch that built the profiling
 context, `ParseContext._pmProfile`, `bench/alloc-profile.ts`, and the `entry`
-export in `bench/alloc-model.ts` that only that bench used.
+export in `bench/alloc-model.ts` (last at `acb421e2`) that only that bench used.
 
 **What was deliberately kept:** the `profileRecognizer` / `profileCapture`
 emission-time gates in `src/compiler/codegen.ts`. They are the literal string
@@ -93,7 +93,7 @@ If it comes back, it must come back as a *working* option. The previous shape �
 declared in the public type, unimplemented underneath — is the defect this entry
 records, and it is worse than having no option at all.
 
-## 3. `bench/alloc-model.ts` — grammar-wide trivia capture was never enabled
+## 3. `bench/alloc-model.ts` (last at `acb421e2`) — grammar-wide trivia capture was never enabled
 
 `rules({ trivia: ws, captureTrivia: true })` silently dropped `captureTrivia`:
 it is a `parser()`/`node()` option, not a `rules()` one. The invalid key is

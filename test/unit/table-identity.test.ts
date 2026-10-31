@@ -14,8 +14,8 @@ import type { Combinator } from '../../src/types.ts'
 /**
  * CI gate for the table lowering (`src/table/`, design ledger G5).
  *
- * The lane's own gate is `bench/table-lowering-sweep.ts`, which is run by hand over seven
- * grammars. This is the subset that has to stay true on every commit, because a
+ * The lane's own gate was a hand-run sweep over seven grammars (`table-lowering-sweep`,
+ * last at `acb421e2`); its full form is promoted below. This is the subset that has to stay true on every commit, because a
  * table lowering that silently disagrees with the compiled path is exactly the
  * failure the three-way digest exists to catch — every defect it caught this far
  * PARSED FINE and moved only the tree, so no ordinary assertion would have seen
@@ -115,7 +115,7 @@ describe('table lowering — tree identity', () => {
     expect(plain.lines).toBe(0)
     expect(tracked.code).not.toEqual(plain.code)
     // And the driver never reads a setting: comments stripped, no option survives.
-    // (The full check lives in bench/table-variants.ts; this pins the table half.)
+    // (A one-off `table-variants` bench checked the driver half; this pins the table half.)
   })
 
   it('line tracking is observable in the parse output', () => {
@@ -148,7 +148,7 @@ describe('table lowering — tree identity', () => {
 })
 
 /**
- * The full sweep, promoted from `bench/table-lowering-sweep.ts` into CI.
+ * The full sweep, promoted from the hand-run `table-lowering-sweep` bench into CI.
  *
  * That file ran seven grammars by hand. A hand-run gate is one forgotten command
  * from being no gate, and every defect this lowering has produced PARSED FINE and

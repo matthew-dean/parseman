@@ -22,7 +22,7 @@
   // parsers, and `createLanguage<Spec>` in `bench/parsimmon-*.ts`.
   "include": ["src/**/*", "test/**/*", "bench/**/*"],
   // NOTHING under `bench/` is excluded, and nothing may be added here. The last
-  // exclusion — `bench/table-alloc-ablation.ts`, which held the `ReferenceError`
+  // exclusion — `bench/table-alloc-ablation.ts` (deleted since; last at `acb421e2`), which held the `ReferenceError`
   // that prompted this whole change — is gone: the bench builds one `Map` and
   // iterates the contest list it populated it from. See
   // `docs/future/bench-typecheck-followups.md` §1.

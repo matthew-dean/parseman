@@ -5,7 +5,7 @@
  * making the swaps on rules / sub-rules (leaves) at that point, then run with NO
  * logic branching for that option input"*. `exec.ts` builds the same table and
  * then interprets it: one `switch (code[ip])` over every opcode (29 then), executed ONCE PER
- * ROW — 497,360 rows for `benchmark.less` (`bench/jess/g5-rows.ts`) — each
+ * ROW — 497,360 rows for `benchmark.less` (measured with a one-off `g5-rows` bench, last at `acb421e2`) — each
  * re-reading its opcode and re-decoding its operands from the `Int32Array`, and
  * re-testing the same per-parse options. That is the per-node branching the
  * design exists to remove.
@@ -20,13 +20,13 @@
  *
  * The numbers that make this obviously the right trade, measured not assumed:
  *
- *   2,241  distinct reachable sites in the less table (`bench/jess/g5-sites.ts`)
+ *   2,241  distinct reachable sites in the less table (`g5-sites`)
  * 497,360  rows executed for one parse of `benchmark.less`
  *
  * Pieces are GRAMMAR-sized; rows are INPUT-sized. Assembly allocates ~2.2k
  * closures once per process and removes a dispatch plus an operand decode from
  * ~497k executions — a 222x ratio. Assembly cost is paid once and is not the
- * metric; it is measured anyway (`bench/jess/g5-ms.ts`, `bench/jess/g5-profile.ts`).
+ * metric; it is measured anyway (`g5-ms`, `g5-profile`).
  *
  * ## Why this is not "just tuning the switch"
  *
@@ -4227,7 +4227,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       // Two engines that can only be compared across two checkouts cannot be
       // compared at all: the bench harness's own guidance is that a
       // cross-worktree measurement carries a bias no repetition removes. Same
-      // spelling as `PM_TABLE_COUNT` (`bench/table-opcode-gaps.ts`).
+      // spelling as the removed `PM_TABLE_COUNT` counters.
       if (!EMIT_ENABLED) throw new Unemittable('PM_TABLE_EMIT=0 (measurement toggle)')
       const em = emitAssemblySource(t, prog, cfg, extraIps)
       /**
@@ -4498,7 +4498,7 @@ export class AssemblyCache {
    * That is not a hole in G5, it is G5's own first clause: "quickly building the
    * grammar reference ON RUN START, making some swaps on rules or sub-rules, and
    * then the run actually runs with no logic branching for that option input"
-   * (`notes/TABLE-DRIVER.md`). This IS the run-start step. What the criterion
+   * (`notes/history/TABLE-DRIVER.md`). This IS the run-start step. What the criterion
    * forbids is the second sentence, and past this call there is no option read
    * anywhere — `scripts/check-invariants.mjs` INV-6 decides that mechanically.
    *
