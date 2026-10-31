@@ -13,6 +13,7 @@
  * reads only its arguments.
  */
 import type { ParseContext } from '../types.ts'
+import { popCstChild, pushCstChild } from '../cst/capture-buffer.ts'
 
 export type Span = { start: number; end: number }
 export type LineSpan = Span & {
@@ -63,4 +64,38 @@ export function lead(input: string, pos: number): number {
   const c = input.charCodeAt(pos)
   if (c < 0xd800 || c > 0xdbff) return c
   return input.codePointAt(pos) ?? c
+}
+
+const EMPTY_KIDS: readonly unknown[] = Object.freeze([])
+const EMPTY_TRIVIA: readonly number[] = Object.freeze([])
+
+type CollapseBuild = (
+  children: readonly unknown[], fields: undefined, span: { start: number; end: number },
+  rawChildren: readonly unknown[], triviaLog: readonly number[], state: undefined,
+) => unknown
+
+/**
+ * A PASS-THROUGH COLLAPSE whose one child built `undefined` (`site-labels.ts`
+ * `passCollapse`).
+ *
+ * A collapse over a single node is that node: the node publishes its value into
+ * the collector the collapse's parent opened, exactly where the collapse would
+ * have published it, over the same span. So both engines run the body with no
+ * frame of the collapse's own and hand its value up. The one value a frame would
+ * have treated differently is `undefined`, which a frame does not count as a
+ * child: the collapse then builds from no children. This is that case — take the
+ * child's publication back and publish the build instead, as the frame would
+ * have. The caller has already set `EC.e`.
+ */
+export function collapseEmpty(
+  ctx: ParseContext, build: CollapseBuild, input: string, pos: number, end: number, readsRaw: boolean,
+): unknown {
+  const collected = ctx._cstBuf !== undefined || ctx._cstChildren !== undefined
+  if (collected) popCstChild(ctx)
+  // A frame keeps the raw entry of the child it does not count, for a reducer
+  // that reads `rawChildren`.
+  const raw = readsRaw ? [rawEntry(undefined, input, pos, end)] : EMPTY_KIDS
+  const nd = build(EMPTY_KIDS, undefined, { start: pos, end }, raw, EMPTY_TRIVIA, undefined)
+  if (collected) pushCstChild(ctx, nd, ctx._cstBuf?.noRaw === true ? undefined : rawEntry(nd, input, pos, end))
+  return nd
 }

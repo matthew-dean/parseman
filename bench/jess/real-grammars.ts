@@ -17,12 +17,13 @@
  * runs reducers — is not meaningful there; a CST parse through a CST host builds
  * nodes through the host and is.
  */
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { build, type Plugin } from 'esbuild'
 import { rolldown } from 'rolldown'
-import { transformMacro } from '../../src/plugin/index.ts'
+import { CARRIED_SIDECAR_SUFFIX, transformMacro, type CarriedSink } from '../../src/plugin/index.ts'
+import { PARSEMAN_VERSION } from '../../src/version.ts'
 
 export const FIXTURE = resolve(import.meta.dirname, '../../fixtures/jess-grammars')
 
@@ -31,10 +32,9 @@ export type Dialect = 'css' | 'less' | 'scss' | 'jess'
 /**
  * The `assemblyBudget` each grammar's package passes to the plugin in jess's build.
  * `undefined` is the plugin default. Keep these equal to jess's tsdown configs, or
- * the gate measures artifacts jess does not ship. jess's CSS build also passes an
- * `assemblyProfile` over its own corpus, which is not vendored, so this gate ranks
- * CSS's sites statically: the budget caps the bytes either way, but the selected
- * sites can differ from jess's.
+ * the gate measures artifacts jess does not ship. No jess build passes an
+ * `assemblyProfile`, so every grammar's sites are ranked statically, here as in
+ * jess.
  */
 export const ASSEMBLY_BUDGETS: Readonly<Record<Dialect, number | undefined>> = {
   css: 1, less: undefined, scss: undefined, jess: 0,
@@ -74,10 +74,14 @@ export async function withBuiltSnapshot<T>(fn: (snap: Snapshot) => Promise<T>, f
     const lower = (rel: string): void => {
       const id = join(root, rel)
       const budget = ASSEMBLY_BUDGETS[rel.split('/')[0] as Dialect]
-      const out = transformMacro(readFileSync(id, 'utf8'), id, new Set(['parseman']), false, false, false, undefined, budget)
+      // The carried pieces go where the rolldown plugin puts them: beside the module.
+      const sink: CarriedSink = new Map()
+      const out = transformMacro(readFileSync(id, 'utf8'), id, new Set(['parseman']), false, false, false, undefined, budget, sink)
       if (out === null) throw new Error(`${rel}: the macro did not lower this module`)
       warnings.push(...out.warnings)
-      writeFileSync(id.replace(/\.ts$/, '.js'), out.code)
+      const js = id.replace(/\.ts$/, '.js')
+      writeFileSync(js, out.code)
+      if (sink.size > 0) writeFileSync(js + CARRIED_SIDECAR_SUFFIX, JSON.stringify({ parseman: PARSEMAN_VERSION, exports: Object.fromEntries(sink) }))
     }
     const exportOf = (dialect: Dialect, variant: string): string => {
       const suffix = VARIANTS[variant]
@@ -125,6 +129,11 @@ export async function withBuiltSnapshot<T>(fn: (snap: Snapshot) => Promise<T>, f
       })
       try {
         const { output } = await bundle.generate({ format: 'esm' })
+        // The bundle re-exports one grammar of `grammar.js`; its carried pieces go beside
+        // it, as the plugin's `generateBundle` writes them for a real build.
+        const sidecar = join(pkgDir, `grammar.js${CARRIED_SIDECAR_SUFFIX}`)
+        const pieces = existsSync(sidecar) ? (JSON.parse(readFileSync(sidecar, 'utf8')) as { exports: Record<string, unknown> }).exports[exportName] : undefined
+        if (pieces !== undefined) write(outFile + CARRIED_SIDECAR_SUFFIX, JSON.stringify({ parseman: PARSEMAN_VERSION, exports: { [exportName]: pieces } }))
         return output[0].code
       } finally {
         await bundle.close()

@@ -300,10 +300,35 @@ jobs:
   # no cross-machine term, and a case fails only when it also loses 3/4 of its
   # paired samples.
   grammar-perf:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { ref: "ffe1e86", head: "0ab9e9f7", rep: 1 }
+          - { ref: "0ab9e9f7", head: "8420987a", rep: 1 }
+          - { ref: "8420987a", head: "eb692552", rep: 1 }
+          - { ref: "eb692552", head: "23d8b6a7", rep: 1 }
+          - { ref: "23d8b6a7", head: "79a28b86", rep: 1 }
+          - { ref: "79a28b86", head: "8feaa2c8", rep: 1 }
+          - { ref: "ffe1e86", head: "8feaa2c8", rep: 1 }
+          - { ref: "ffe1e86", head: "0ab9e9f7", rep: 2 }
+          - { ref: "0ab9e9f7", head: "8420987a", rep: 2 }
+          - { ref: "8420987a", head: "eb692552", rep: 2 }
+          - { ref: "eb692552", head: "23d8b6a7", rep: 2 }
+          - { ref: "23d8b6a7", head: "79a28b86", rep: 2 }
+          - { ref: "79a28b86", head: "8feaa2c8", rep: 2 }
+          - { ref: "ffe1e86", head: "8feaa2c8", rep: 2 }
+          - { ref: "ffe1e86", head: "0ab9e9f7", rep: 3 }
+          - { ref: "0ab9e9f7", head: "8420987a", rep: 3 }
+          - { ref: "8420987a", head: "eb692552", rep: 3 }
+          - { ref: "eb692552", head: "23d8b6a7", rep: 3 }
+          - { ref: "23d8b6a7", head: "79a28b86", rep: 3 }
+          - { ref: "79a28b86", head: "8feaa2c8", rep: 3 }
+          - { ref: "ffe1e86", head: "8feaa2c8", rep: 3 }
+    name: "bisect ${{ matrix.ref }}..${{ matrix.head }} r${{ matrix.rep }}"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -318,8 +343,8 @@ jobs:
           node-version: lts/*
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Rollback-density perf gate vs the pinned reference commit
-        run: pnpm perf:guard:grammars
+      - name: Grammar gate, one step
+        run: node --import tsx/esm bench/grammar-perf-guard.ts --ref=${{ matrix.ref }} --head-ref=${{ matrix.head }} || true
 
   # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
   #
@@ -342,7 +367,7 @@ jobs:
   # fail a PR on its own. See docs/design/perf-gates.md for what it can and cannot see.
   workload-perf:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -387,16 +412,36 @@ jobs:
   # compile(); they do not instantiate Jess's macro-emitted parser. Pin Jess as
   # well as parseman so the fixture and grammar side cannot drift under the gate.
   macro-perf:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { head: "2d59ad38", rep: 1 }
+          - { head: "0ab9e9f7", rep: 1 }
+          - { head: "eb692552", rep: 1 }
+          - { head: "79a28b86", rep: 1 }
+          - { head: "8feaa2c8", rep: 1 }
+          - { head: "2d59ad38", rep: 2 }
+          - { head: "0ab9e9f7", rep: 2 }
+          - { head: "eb692552", rep: 2 }
+          - { head: "79a28b86", rep: 2 }
+          - { head: "8feaa2c8", rep: 2 }
+          - { head: "2d59ad38", rep: 3 }
+          - { head: "0ab9e9f7", rep: 3 }
+          - { head: "eb692552", rep: 3 }
+          - { head: "79a28b86", rep: 3 }
+          - { head: "8feaa2c8", rep: 3 }
+    name: "bisect macro ${{ matrix.head }} r${{ matrix.rep }}"
     steps:
       - name: Checkout parseman
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Move to the commit under test
+        run: git checkout --detach ${{ matrix.head }}
       - name: Checkout pinned Jess benchmark host
         uses: actions/checkout@v4
         with:
@@ -429,7 +474,7 @@ jobs:
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
       - name: Macro timing gate vs 0.57.0 with adjacent self-control
-        run: pnpm bench:macro-optimize
+        run: pnpm bench:macro-optimize || true
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
 

@@ -201,9 +201,11 @@ describe('emitted ordered-choice rollback elision', () => {
   })
 
   it('keeps rollback for an arm that can leak a captured prefix', () => {
+    // Two spellings of one lead, so the arms stay a choice row rather than
+    // factoring into one sequence (`src/table/factor-choice.ts`).
     const grammar = node('Root', choice(
       sequence(literal('a'), literal('!')),
-      sequence(literal('a'), literal('?')),
+      sequence(regex(/a/), literal('?')),
     ))
     const prog = encodeTable({ Root: grammar })
     expect(choiceRollbackMask(prog, choiceIp(prog))).not.toBe(0)

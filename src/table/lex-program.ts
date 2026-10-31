@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext } from '../types.ts'
 import { failAt } from '../combinators/probe.ts'
+import { lead } from './run-support.ts'
 import type { LexBodyRecognizer } from './lex-body.ts'
 import type { LexProgramSpec, ResolvedClass } from './program.ts'
 
@@ -16,11 +17,15 @@ export const LEX_NODE_SEQUENCE2 = 1
 export const LEX_NODE_SEQUENCE3 = 2
 export const LEX_NODE_SEQUENCE4 = 3
 export const LEX_NODE_SEQUENCE5 = 4
-export const LEX_NODE_CHOICE2 = 5
-export const LEX_NODE_CHOICE4 = 6
-export const LEX_NODE_CHOICE8 = 7
+/**
+ * `[op, armCount, exclusive, choiceFx, (armClass, armFx) × armCount]`: any arity,
+ * no padding. `exclusive` is the character choice's one-arm dispatch decision.
+ */
+export const LEX_NODE_CHOICE = 5
 export const LEX_NODE_NOT = 8
 export const LEX_NODE_OPTIONAL = 9
+/** `[op, min, max]` after the item: a separator-less repeat, `max` −1 unbounded. */
+export const LEX_NODE_REPEAT = 10
 
 export function lexProgramDigest(words: readonly number[]): number {
   let hash = 0x811C9DC5
@@ -60,73 +65,88 @@ function terminalNode(
   failure: readonly string[],
   tracksLines: boolean,
 ): BuiltLexNode {
-  const match: PureLexRunner = (input, pos) => {
-    const result = matcher(input, pos)
-    return result < 0 ? -1 : result / 2
-  }
   return {
-    match,
+    match: (input, pos) => {
+      const result = matcher(input, pos)
+      return result < 0 ? -1 : result / 2
+    },
     run: (input, pos, ctx) => {
-      const end = match(input, pos)
-      if (end < 0) {
+      const result = matcher(input, pos)
+      if (result < 0) {
         ctx._fe = pos
         ctx._fx = failure as string[]
         if (ctx._probe !== undefined) failAt(ctx, ctx._fx, pos)
         return -1
       }
+      const end = result / 2
       if (tracksLines) trackLexLines(ctx, input, end)
       return end
     },
   }
 }
 
+// Each sequence captures its parts' runners as scalars: a part is reached by a
+// direct call, not a property read, and no arity nests another sequence.
 function sequence2(a: BuiltLexNode, b: BuiltLexNode): BuiltLexNode {
+  const am = a.match, bm = b.match, ar = a.run, br = b.run
   return {
     match: (input, pos) => {
-      const e0 = a.match(input, pos)
-      return e0 < 0 ? -1 : b.match(input, e0)
+      const e0 = am(input, pos)
+      return e0 < 0 ? -1 : bm(input, e0)
     },
     run: (input, pos, ctx) => {
-      const e0 = a.run(input, pos, ctx)
+      const e0 = ar(input, pos, ctx)
       if (e0 < 0) return -1
       ctx._fc = false
-      return b.run(input, e0, ctx)
+      return br(input, e0, ctx)
     },
   }
 }
 
 function sequence3(a: BuiltLexNode, b: BuiltLexNode, c: BuiltLexNode): BuiltLexNode {
+  const am = a.match, bm = b.match, cm = c.match, ar = a.run, br = b.run, cr = c.run
   return {
     match: (input, pos) => {
-      const e0 = a.match(input, pos)
+      const e0 = am(input, pos)
       if (e0 < 0) return -1
-      const e1 = b.match(input, e0)
-      return e1 < 0 ? -1 : c.match(input, e1)
+      const e1 = bm(input, e0)
+      return e1 < 0 ? -1 : cm(input, e1)
     },
     run: (input, pos, ctx) => {
-      const e0 = a.run(input, pos, ctx)
+      const e0 = ar(input, pos, ctx)
       if (e0 < 0) return -1
       ctx._fc = false
-      const e1 = b.run(input, e0, ctx)
+      const e1 = br(input, e0, ctx)
       if (e1 < 0) return -1
       ctx._fc = false
-      return c.run(input, e1, ctx)
+      return cr(input, e1, ctx)
     },
   }
 }
 
 function sequence4(a: BuiltLexNode, b: BuiltLexNode, c: BuiltLexNode, d: BuiltLexNode): BuiltLexNode {
-  const abc = sequence3(a, b, c)
+  const am = a.match, bm = b.match, cm = c.match, dm = d.match
+  const ar = a.run, br = b.run, cr = c.run, dr = d.run
   return {
     match: (input, pos) => {
-      const end = abc.match(input, pos)
-      return end < 0 ? -1 : d.match(input, end)
+      const e0 = am(input, pos)
+      if (e0 < 0) return -1
+      const e1 = bm(input, e0)
+      if (e1 < 0) return -1
+      const e2 = cm(input, e1)
+      return e2 < 0 ? -1 : dm(input, e2)
     },
     run: (input, pos, ctx) => {
-      const end = abc.run(input, pos, ctx)
-      if (end < 0) return -1
+      const e0 = ar(input, pos, ctx)
+      if (e0 < 0) return -1
       ctx._fc = false
-      return d.run(input, end, ctx)
+      const e1 = br(input, e0, ctx)
+      if (e1 < 0) return -1
+      ctx._fc = false
+      const e2 = cr(input, e1, ctx)
+      if (e2 < 0) return -1
+      ctx._fc = false
+      return dr(input, e2, ctx)
     },
   }
 }
@@ -134,17 +154,33 @@ function sequence4(a: BuiltLexNode, b: BuiltLexNode, c: BuiltLexNode, d: BuiltLe
 function sequence5(
   a: BuiltLexNode, b: BuiltLexNode, c: BuiltLexNode, d: BuiltLexNode, e: BuiltLexNode,
 ): BuiltLexNode {
-  const abcd = sequence4(a, b, c, d)
+  const am = a.match, bm = b.match, cm = c.match, dm = d.match, em = e.match
+  const ar = a.run, br = b.run, cr = c.run, dr = d.run, er = e.run
   return {
     match: (input, pos) => {
-      const end = abcd.match(input, pos)
-      return end < 0 ? -1 : e.match(input, end)
+      const e0 = am(input, pos)
+      if (e0 < 0) return -1
+      const e1 = bm(input, e0)
+      if (e1 < 0) return -1
+      const e2 = cm(input, e1)
+      if (e2 < 0) return -1
+      const e3 = dm(input, e2)
+      return e3 < 0 ? -1 : em(input, e3)
     },
     run: (input, pos, ctx) => {
-      const end = abcd.run(input, pos, ctx)
-      if (end < 0) return -1
+      const e0 = ar(input, pos, ctx)
+      if (e0 < 0) return -1
       ctx._fc = false
-      return e.run(input, end, ctx)
+      const e1 = br(input, e0, ctx)
+      if (e1 < 0) return -1
+      ctx._fc = false
+      const e2 = cr(input, e1, ctx)
+      if (e2 < 0) return -1
+      ctx._fc = false
+      const e3 = dr(input, e2, ctx)
+      if (e3 < 0) return -1
+      ctx._fc = false
+      return er(input, e3, ctx)
     },
   }
 }
@@ -169,9 +205,9 @@ function choiceNode(
 ): BuiltLexNode {
   let matchTail: PureLexRunner = () => -1
   for (let i = arms.length - 1; i >= 0; i--) {
-    const arm = arms[i]!, next = matchTail
+    const armMatch = arms[i]!.match, next = matchTail
     matchTail = (input, pos) => {
-      const end = arm.match(input, pos)
+      const end = armMatch(input, pos)
       return end < 0 ? next(input, pos) : end
     }
   }
@@ -181,7 +217,7 @@ function choiceNode(
     return -1
   }
   for (let i = arms.length - 1; i >= 0; i--) {
-    const arm = arms[i]!, cls = classes[i], staticExpected = armExpected[i]!, next = tail
+    const armRun = arms[i]!.run, cls = classes[i], staticExpected = armExpected[i]!, next = tail
     tail = (input, pos, ctx, lead, acc, best) => {
       if (cls !== undefined && !classHas(cls, lead)) {
         return next(
@@ -191,7 +227,7 @@ function choiceNode(
         )
       }
       ctx._fc = false
-      const end = arm.run(input, pos, ctx)
+      const end = armRun(input, pos, ctx)
       if (end >= 0) return end
       const at = ctx._fe ?? pos
       if (at > best) { best = at; acc = undefined }
@@ -211,11 +247,66 @@ function choiceNode(
   }
 }
 
-function notNode(body: BuiltLexNode, failure: readonly string[]): BuiltLexNode {
+/**
+ * A choice whose arms' classes are disjoint, as the character choice's exclusive
+ * dispatch: the arm the lead selects runs alone, its failure is the choice's at
+ * the choice's position, and a lead no arm claims reports the arms' openers. The
+ * selected index reaches its arm through a fixed chain, never an array.
+ */
+function exclusiveChoiceNode(
+  arms: readonly BuiltLexNode[],
+  classes: readonly ResolvedClass[],
+  choiceFx: readonly string[],
+): BuiltLexNode {
+  const ascii = new Int32Array(128).fill(-1)
+  const hi: number[] = []
+  for (let i = 0; i < classes.length; i++) {
+    const cls = classes[i]!
+    for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) ascii[c] = i
+    for (let r = 0; r < cls.hi.length; r += 2) hi.push(cls.hi[r]!, cls.hi[r + 1]!, i)
+  }
+  const select = (code: number): number => {
+    if (code < 0) return -1
+    if (code < 128) return ascii[code]!
+    for (let r = 0; r < hi.length; r += 3) if (code >= hi[r]! && code <= hi[r + 1]!) return hi[r + 2]!
+    return -1
+  }
+  let matchArm: (arm: number, input: string, pos: number) => number = () => -1
+  let selectRun: (arm: number, input: string, pos: number, ctx: ParseContext) => number = () => -1
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const armMatch = arms[i]!.match, armRun = arms[i]!.run, nextMatch = matchArm, nextRun = selectRun
+    matchArm = (selected, input, pos) => selected === i ? armMatch(input, pos) : nextMatch(selected, input, pos)
+    selectRun = (selected, input, pos, ctx) => selected === i ? armRun(input, pos, ctx) : nextRun(selected, input, pos, ctx)
+  }
+  const runArm: LexProgramRunner = (input, pos, ctx) => {
+    const arm = select(lead(input, pos))
+    if (arm >= 0) {
+      ctx._fc = false
+      const end = selectRun(arm, input, pos, ctx)
+      if (end >= 0) return end
+      if (committed(ctx)) return -1
+      const failed = ctx._fx
+      if (failed !== undefined && failed.length > 0) { ctx._fe = pos; return -1 }
+    }
+    ctx._fe = pos
+    ctx._fx = choiceFx as string[]
+    return -1
+  }
   return {
-    match: (input, pos) => body.match(input, pos) < 0 ? pos : -1,
+    match: (input, pos) => {
+      const arm = select(lead(input, pos))
+      return arm < 0 ? -1 : matchArm(arm, input, pos)
+    },
+    run: runArm,
+  }
+}
+
+function notNode(body: BuiltLexNode, failure: readonly string[]): BuiltLexNode {
+  const bodyMatch = body.match
+  return {
+    match: (input, pos) => bodyMatch(input, pos) < 0 ? pos : -1,
     run: (input, pos, ctx) => {
-      if (body.match(input, pos) < 0) return pos
+      if (bodyMatch(input, pos) < 0) return pos
       ctx._fe = pos
       ctx._fx = failure as string[]
       return -1
@@ -224,15 +315,61 @@ function notNode(body: BuiltLexNode, failure: readonly string[]): BuiltLexNode {
 }
 
 function optionalNode(body: BuiltLexNode): BuiltLexNode {
+  const bodyMatch = body.match, bodyRun = body.run
   return {
     match: (input, pos) => {
-      const end = body.match(input, pos)
+      const end = bodyMatch(input, pos)
       return end < 0 ? pos : end
     },
     run: (input, pos, ctx) => {
       ctx._fc = false
-      const end = body.run(input, pos, ctx)
+      const end = bodyRun(input, pos, ctx)
       return end < 0 && !committed(ctx) ? pos : end
+    },
+  }
+}
+
+/**
+ * The table's separator-less `OP_REP` under `token()`: no trivia, no separator,
+ * nothing to roll back. Only an optional item stops at end of input or on a
+ * zero-width match (`repItem`); a failed item ends the loop with its own
+ * failure published, and a committed one fails the repeat.
+ */
+function repeatNode(item: BuiltLexNode, min: number, max: number): BuiltLexNode {
+  const itemMatch = item.match, itemRun = item.run
+  return {
+    match: (input, pos) => {
+      let cur = pos
+      let count = 0
+      for (;;) {
+        if (max >= 0 && count >= max) break
+        const optional = count >= min && (count > 0 || min === 0)
+        if (optional && cur >= input.length) break
+        const end = itemMatch(input, cur)
+        if (end < 0 || (optional && end === cur)) break
+        cur = end
+        count++
+      }
+      return count < min ? -1 : cur
+    },
+    run: (input, pos, ctx) => {
+      let cur = pos
+      let count = 0
+      for (;;) {
+        if (max >= 0 && count >= max) break
+        const optional = count >= min && (count > 0 || min === 0)
+        if (optional && cur >= input.length) break
+        ctx._fc = false
+        const end = itemRun(input, cur, ctx)
+        if (end < 0) {
+          if (committed(ctx)) return -1
+          break
+        }
+        if (optional && end === cur) break
+        cur = end
+        count++
+      }
+      return count < min ? -1 : cur
     },
   }
 }
@@ -269,9 +406,14 @@ function fixedTreeRunner(
       else stack.push(sequence5(nodes[0]!, nodes[1]!, nodes[2]!, nodes[3]!, nodes[4]!))
       continue
     }
-    if (op >= LEX_NODE_CHOICE2 && op <= LEX_NODE_CHOICE8) {
-      const count = op === LEX_NODE_CHOICE2 ? 2 : op === LEX_NODE_CHOICE4 ? 4 : 8
+    if (op === LEX_NODE_CHOICE) {
+      const count = words[at++]!
+      const exclusive = words[at++]!
+      if (exclusive !== 0 && exclusive !== 1) throw new TypeError('table lexical tree choice has an invalid dispatch mode')
       const choiceFx = expected[words[at++]!]
+      if (!Number.isInteger(count) || count < 2 || count > stack.length) {
+        throw new TypeError('table lexical tree choice has an invalid arm count')
+      }
       if (choiceFx === undefined) throw new TypeError('table lexical tree choice has an invalid expected set')
       const armClasses: Array<ResolvedClass | undefined> = []
       const armFx: Array<readonly string[]> = []
@@ -284,7 +426,9 @@ function fixedTreeRunner(
         armFx.push(fx)
       }
       const arms = Array.from({ length: count }, pop).reverse()
-      stack.push(choiceNode(arms, armClasses, armFx, choiceFx))
+      stack.push(exclusive === 1
+        ? exclusiveChoiceNode(arms, armClasses as ResolvedClass[], choiceFx)
+        : choiceNode(arms, armClasses, armFx, choiceFx))
       continue
     }
     if (op === LEX_NODE_NOT) {
@@ -294,6 +438,14 @@ function fixedTreeRunner(
       continue
     }
     if (op === LEX_NODE_OPTIONAL) { stack.push(optionalNode(pop())); continue }
+    if (op === LEX_NODE_REPEAT) {
+      const min = words[at++]!, max = words[at++]!
+      if (!Number.isInteger(min) || min < 0 || !Number.isInteger(max) || (max >= 0 && max < min)) {
+        throw new TypeError('table lexical tree repeat has invalid bounds')
+      }
+      stack.push(repeatNode(pop(), min, max))
+      continue
+    }
     throw new TypeError('table lexical tree has an unknown fixed body')
   }
   if (stack.length !== 1) throw new TypeError('table lexical tree does not resolve to one root body')

@@ -479,6 +479,14 @@ export const OP_LEX_PROGRAM = 43
 /** `SOURCE_LEAF f c` — `sourceLeaf()`: reduce semantically, capture source text. */
 export const OP_SOURCE_LEAF = 44
 /**
+ * `RGATE cls child fx` — a choice arm that opens with the token its `dispatch()`
+ * already routed. `cls` is what may follow that token (the arm's next term,
+ * with the sequence's trivia), tested at the routed token's END; a miss fails
+ * there with the next term's set `fx`, as running the arm would. No routed token
+ * at this position, a completions probe, or tolerant recovery enters the arm.
+ */
+export const OP_RGATE = 45
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -501,7 +509,7 @@ export const OP_NAMES: Record<number, string> = {
   [OP_LIT]: 'LIT', [OP_RX]: 'RX', [OP_SEQ]: 'SEQ', [OP_SEQV]: 'SEQV',
   [OP_CHOICE]: 'CHOICE', [OP_REP]: 'REP', [OP_REPV]: 'REPV', [OP_OPT]: 'OPT',
   [OP_XFORM]: 'XFORM', [OP_NODE]: 'NODE', [OP_RULE]: 'RULE', [OP_GATE]: 'GATE',
-  [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_SOURCE_LEAF]: 'SOURCE_LEAF', [OP_EMPTY]: 'EMPTY',
+  [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_SOURCE_LEAF]: 'SOURCE_LEAF', [OP_RGATE]: 'RGATE', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_SCAN]: 'SCAN',
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',

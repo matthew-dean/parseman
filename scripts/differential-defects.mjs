@@ -143,6 +143,59 @@ export const DEFECTS = {
    * CI step still succeeds. This plant lives in benchmark protocol code because
    * that protocol—not the browser/runtime package—is the behavior under test.
    */
+  /**
+   * A lexical choice ranks every arm where the character choice dispatches one.
+   *
+   * The defect class: a selected lexical body parses the same text but reports a
+   * different failure than the character lowering it replaces. Only a failing
+   * input shows it, and only when the selected arm fails at the choice's own
+   * position.
+   */
+  'lex-choice-exclusive-off': {
+    why: 'lexical body: a disjoint choice never takes the one-arm dispatch',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'words.push(LEX_NODE_CHOICE, node.arms.length, exclusive ? 1 : 0, this.expected(node.expected))',
+      replace: 'words.push(LEX_NODE_CHOICE, node.arms.length, 0, this.expected(node.expected))',
+    }],
+  },
+
+  /** A lexical repeat accepts one item fewer than its `min`. */
+  'lex-repeat-min-short': {
+    why: 'lexical body: a repeat succeeds one item short of its minimum',
+    edits: [{
+      file: 'src/table/lex-program.ts',
+      find: "        cur = end\n        count++\n      }\n      return count < min ? -1 : cur\n    },\n  }\n}",
+      replace: "        cur = end\n        count++\n      }\n      return count < min - 1 ? -1 : cur\n    },\n  }\n}",
+    }],
+  },
+
+  /**
+   * A rule reference that reinstalls its trivia is lowered as if glued.
+   *
+   * The defect class: the parse of a trivia-separated rule inside a token stops
+   * at the first gap, with the lexical body and the character lowering
+   * disagreeing on what the token spans.
+   */
+  'lex-rule-trivia-glued': {
+    why: 'lexical body: a reference that reinstalls its rule trivia is lowered without it',
+    edits: [{
+      file: 'src/compiler/token-alphabet.ts',
+      find: '  return (reference._meta.grammarTrivia ?? target._meta.grammarTrivia) !== undefined\n    && hasOwnTriviaBoundary(target)',
+      replace: '  return false && (reference._meta.grammarTrivia ?? target._meta.grammarTrivia) !== undefined\n    && hasOwnTriviaBoundary(target)',
+    }],
+  },
+
+  /** A routed-arm gate miss reports less than the arm's next term would. */
+  'rgate-miss-set-short': {
+    why: 'closure engine: a routed-arm gate miss drops the first label of the next term',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '            ctx._fe = item.span.end; ctx._fx = xf\n',
+      replace: '            ctx._fe = item.span.end; ctx._fx = xf.slice(1)\n',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{

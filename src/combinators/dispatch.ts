@@ -105,10 +105,19 @@ export function branchUsesRouted(branch: { parser: Combinator<unknown>; usesRout
 }
 
 export function asciiFoldKey(key: string): string {
-  let out = ''
-  for (let i = 0; i < key.length; i++) {
+  // A key with no ASCII capital is its own fold: every dispatch on a lowercase
+  // word asks, and building the same string again a character at a time cost an
+  // allocation per character.
+  let i = 0
+  for (; i < key.length; i++) {
     const c = key.charCodeAt(i)
-    out += String.fromCharCode(c >= 65 && c <= 90 ? c + 32 : c)
+    if (c >= 65 && c <= 90) break
+  }
+  if (i === key.length) return key
+  let out = key.slice(0, i)
+  for (; i < key.length; i++) {
+    const c = key.charCodeAt(i)
+    out += c >= 65 && c <= 90 ? String.fromCharCode(c + 32) : key[i]!
   }
   return out
 }

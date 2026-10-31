@@ -3,6 +3,102 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.58.0 — 2026-10-31
+
+- **Breaking: under rollup, rolldown and Vite, a grammar's carried pieces ship beside
+  the chunk, not in it.** The composable form a downstream `compose()` build reads was
+  inline IR on the exported grammar: 23–31% of each composed jess grammar artifact,
+  and its `...upstream[Symbol.for('parseman.composedPieces')]` spread kept every
+  ancestor's module in the import graph of every parse. Nothing at runtime reads it.
+  The plugin now records each exported grammar's pieces at build time and writes them
+  to `<chunk>.parseman.json` beside the chunk (`lib/index.js` →
+  `lib/index.js.parseman.json`). Ship that file with a package whose grammars other
+  builds compose. An ancestor imported from another package is recorded as a
+  reference to that export and resolved from the artifact's location; one from a
+  relative module, which the bundler folds into the chunk, is written out. A
+  downstream build reads the sidecar first and an inline literal second, so artifacts
+  built by other bundlers, which keep the inline form, still compose. In jess's build
+  the Less, SCSS and .jess grammars no longer load css's compose base at import, and
+  Less's `ast.js` is 675,537 B with this release against 910,838 B with 0.57.0. See
+  `docs/guide/extending.md` and `test/unit/carried-pieces-sidecar.test.ts`.
+- **Breaking: a compiled grammar with neither inline pieces nor a sidecar entry fails
+  the downstream build that composes it,** naming the artifact and the missing
+  `<file>.parseman.json`. It used to warn and fall back to a runtime `compose()` that
+  could not link a compiled grammar and threw at import.
+- **Collapse nodes cost no frame where their value is one child.** A `collapse: true`
+  node whose body is one node now runs as that node in both table engines, with no
+  capture frame of its own. One whose body is `optional(…)` terms and then a node does
+  the same wherever the character it starts at opens none of those terms and no
+  trivia. Trees are unchanged.
+- **A choice whose arms differ in one term is that term's choice.** Arms that are the
+  same leaf and trivia-scope wrappers over one sequence, the same but for one term, are
+  encoded as those wrappers over the sequence with a choice in that place, so the
+  shared terms run once and the choice dispatches on the character after them.
+- A `token()` whose body holds an ordered choice of any number of arms is one
+  lexical recognizer; before, only choices of two, four or eight arms were.
+- A `token()` body may hold a no-trivia scope (`noTrivia(…)`, a rule defined as one, or
+  a token over one) at any position: inside a token the table already runs such a scope
+  as its child. A rule reference that reinstalls the rule's own trivia stays on the
+  character lowering, since its terms are then trivia-separated.
+- A `token()` whose body holds a separator-less `many()`/`oneOrMore()` is one lexical
+  recognizer, with the table's own repeat rules: only an optional item stops at the
+  end of input or on an empty match, and a failed item's diagnostics stand.
+- A `withCtx()` scope no longer keeps a whole program off the lexical lowering: the
+  capability record still listed its child as having no named binding, which the
+  emitter has had since it learned `withCtx()`.
+- A scan skipper that holds a nested `balanced()` (`sequence('@', balanced('{', '}'))`)
+  is recorded as that scanner, not refused as a transform, and a scope with no trivia
+  of its own that only sets line tracking is its child inside a token. With these,
+  the CSS, Less, SCSS and Jess grammars of Jess close lexical capability in every
+  variant, so their tokens lower to lexical bodies.
+- A choice arm that opens with the token its `dispatch()` already routed is gated on
+  the character after that token (its next term's first characters, with the
+  sequence's trivia), so a statement name read once can be followed by a
+  first-character decision: `(` a call, `:` a declaration, `{` a ruleset. A miss
+  fails there with the next term's expected set, as entering the arm would.
+- `peek()` of a direct literal or regex is one recognizer call, as `not()` of one
+  already was.
+- A `not()`/`peek()` lookahead between two gaps in a sequence no longer makes the
+  sequence scan the gap twice: when the next term cannot match empty, the gap is kept
+  for it instead of being unrecorded and scanned again.
+- A case-insensitive dispatch on a key with no ASCII capital looks the key up as it
+  is, without building its folded copy.
+- The closure engine takes no rollback mark for a child whose failure writes nothing:
+  an `optional()`, a choice and a repeat item whose child is a terminal, a node over
+  one, or a sequence that can only fail in its first term, skip the mark and the
+  restore. The answer is derived from the table once, when the assembly links.
+- The closure engine's `dispatch()` keeps its rollback mark in scalars, as a choice
+  does, instead of allocating mark objects for the selector and each arm.
+- In the closure engine, a node whose body opens with `not()`/`peek()` of a literal or
+  regex decides that lookahead before it opens its capture frame: a node that fails
+  there opens none, and on success the lookahead is not recognized again.
+- A scope with no trivia, inside a `token()` or another such scope, runs as its child
+  in both table engines, as a scope that reinstalls the ambient trivia already did:
+  it would write the trivia, kind labels and scanner already in force.
+- A selective assembly hands the installed trivia scanner across an engine boundary
+  only where the code on the other side reads it.
+- A printed table's compact char-class pool (`"…".split("|")`) is annotated
+  `/* @__PURE__ */`, so a bundler drops the pool of a variant it shook out.
+- Fixed: a lexical body's choice whose arms start with disjoint characters reported
+  every arm's expected label when the selected arm failed at the choice's position;
+  it reports the selected arm's, as the character choice and the interpreter do. Its
+  arm classes are now the character choice's own, taken under the same trivia.
+- Fixed: a build whose assembly budget covered the prelude could ship no precompiled
+  assembly without saying so, when no site fit under the ceiling or the narrowing ran
+  out of its 16 attempts. Narrowing now runs until the selection fits or empties, and
+  an empty one is a build warning naming the ceiling and the prelude.
+- Fixed: completions (`completionsAt`) from a table artifact offered tokens raised
+  inside a `not()`/`peek()` lookahead, which the enclosing grammar cannot reach; a
+  lookahead now hides them in both table engines, as the interpreter does. The
+  reference driver also reports a sequence term that fails, as the other engines do.
+- Fixed: a failed choice whose arms share leading terms listed those terms' expected
+  labels once per arm when no arm was entered; it lists them once. The failure's span
+  and position are unchanged.
+- Fixed: `pnpm check:differentials` ran the jess differentials against one machine's
+  jess checkout by default. `JESS_ROOT` now has no default: unset, those differentials
+  are unproven and say why; set to a checkout whose packages were built before their
+  last source commit, the gate exits 2.
+
 ## 0.57.0 — 2026-10-30
 
 - **Breaking: `node.state` and a builder's `state` argument are the active

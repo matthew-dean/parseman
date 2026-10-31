@@ -54,6 +54,14 @@ export function scalarTerminalNotChild(code: ArrayLike<number>, ip: number): num
   return op === OP_RX || op === OP_LIT ? child : -1
 }
 
+/** The same terminal under `peek()`: its match decides the lookahead, and nothing it captured survives it. */
+export function scalarTerminalPeekChild(code: ArrayLike<number>, ip: number): number {
+  if (code[ip] !== OP_PEEK) return -1
+  const child = code[ip + 1]!
+  const op = code[child]
+  return op === OP_RX || op === OP_LIT ? child : -1
+}
+
 /**
  * A direct scalar terminal that every successful execution of `ip` must match
  * first, through wrappers that cannot consume or select before their child.
