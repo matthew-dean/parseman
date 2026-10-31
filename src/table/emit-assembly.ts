@@ -2679,10 +2679,19 @@ bind:function(xs,ps){_xScan=xs
 ${externals.map((ip, i) => `_xp${ip}=ps[${i}]`).join('\n')}},
 scan:function(s){const o=_pfScan;_pfScan=s;return o}`
   // One wrapper per external: the closure engine reads its OWN installed trivia
-  // scanner, so the emitted one is handed across for the call and restored.
+  // scanner, so the emitted one is handed across for the call and restored. A
+  // site whose label names its trivia hands that trivia's own scanner, which is
+  // what any scope installing it would have installed: the emitted slot is read
+  // only where the labels cannot say (`site-labels.ts` `scanHandoffNeeded`).
+  const scannerFor = (ip: number): string => {
+    const ki = labels.at(ip).tri
+    if (ki === TRI_UNKNOWN) return '_pfScan'
+    if (ki === TRI_NONE) return 'null'
+    return swapLegal && !triviaLabelled[ki]! && t.triviaScan[ki] != null ? hoist('ts', `TRIVIASCAN[${ki}]`) : 'null'
+  }
   const externalDefs = select === undefined ? '' : `let _xScan
 ${externals.map(ip => `let _xp${ip}
-function _px${ip}(input,pos,ctx){const o=_xScan(_pfScan);const v=_xp${ip}(input,pos,ctx);_xScan(o);return v}`).join('\n')}
+function _px${ip}(input,pos,ctx){const o=_xScan(${scannerFor(ip)});const v=_xp${ip}(input,pos,ctx);_xScan(o);return v}`).join('\n')}
 `
 
   // The per-label trivia scans sit AFTER the hoisted pool they close over: they

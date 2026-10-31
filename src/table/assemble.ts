@@ -129,7 +129,7 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { computeSiteLabels, passCollapse, reachableSites } from './site-labels.ts'
+import { computeSiteLabels, passCollapse, reachableSites, scanHandoffNeeded } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -1380,7 +1380,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (flight !== undefined) return flight.fwd
     const selected = HYBRID?.byIp[ip]
     if (selected !== undefined) {
-      const piece = hybridPiece(selected as Piece)
+      // The scanner handoff only where the emitted body reads the slot
+      // (`scanHandoffNeeded`); elsewhere the body runs on its labels' scanners.
+      const piece = scanHandoffNeeded(code, ip, closureLabels) ? hybridPiece(selected as Piece) : selected as Piece
       memo.set(ip, piece)
       reached.add(ip)
       return piece

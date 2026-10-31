@@ -62,7 +62,7 @@
 import {
   OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_SOURCE_LEAF,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE,
-  OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 import { childSlots } from './child-slots.ts'
 
@@ -274,4 +274,41 @@ export function computeSiteLabels(
   }
 
   return { at: (ip: number): SiteLabel => labels.get(ip) ?? TOP }
+}
+
+/**
+ * Does a piece entered at `ip` need the caller's INSTALLED trivia scanner handed
+ * across an engine boundary?
+ *
+ * Each table engine keeps its own installed-scanner slot, and the two hand theirs
+ * across at every call between them. A site whose label names its trivia (`tri`)
+ * reads no slot: both engines lower its skips onto that trivia's own scanner, and
+ * a call out of it can hand that scanner across instead of the slot. Only a site
+ * whose trivia the labels cannot name (`TRI_UNKNOWN`) reads the slot. So the
+ * handoff is needed exactly when such a site is reachable from `ip` before a
+ * scope installs a scanner of its own (an aliased scope, which installs what is
+ * already installed, does not). `false` is also the answer for a body with no
+ * trivia at all.
+ */
+export function scanHandoffNeeded(code: Int32Array, ip: number, labels: SiteLabels): boolean {
+  const seen = new Set<number>()
+  const stack = [ip]
+  const kids: number[] = []
+  while (stack.length > 0) {
+    const at = stack.pop()!
+    if (seen.has(at)) continue
+    seen.add(at)
+    const l = labels.at(at)
+    if (l.tri === TRI_UNKNOWN) return true
+    const op = code[at]
+    // A scan runs interpreted combinators that reach pieces through `prog.scans`.
+    if (op === OP_SCAN) return true
+    if (op === OP_TOKEN || op === OP_SCOPE_CAP) continue
+    if ((op === OP_SCOPE_PLAIN || op === OP_SCOPE) && !(code[at + 1]! >= 0 && l.tri === code[at + 1]!
+      && (op === OP_SCOPE_PLAIN || code[at + 3]! === 0))) continue
+    kids.length = 0
+    if (!childSlots(code, at, kids)) return true
+    for (const c of kids) stack.push(c)
+  }
+  return false
 }
