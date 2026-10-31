@@ -60,7 +60,7 @@ import {
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
-  computeSiteLabels, passCollapse, reachableSites, type SiteLabel,
+  computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, triviaLeadRanges, type SiteLabel,
 } from './site-labels.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
@@ -2456,6 +2456,25 @@ if(v!==undefined)return v
 return collapseEmpty(ctx,${build},input,pos,EC.e,${flags === 32})
 }`
         }
+        // A GATED PASS COLLAPSE (`site-labels.ts` `gatedPassCollapse`): where the
+        // character at `pos` opens none of the body's optional terms and no
+        // trivia, the body is its node term, run as a pass-through collapse.
+        // Not under recovery or a probe: there a gated-out term still runs.
+        const gated = build !== undefined && !cfg.tolerant && !cfg.probe ? gatedPassCollapse(code, ip, hostCst) : undefined
+        const triviaLead = gated === undefined ? undefined : triviaLeadRanges(labels.at(code[ip + 2]!).tri, t.trivia)
+        const gp = gated !== undefined && triviaLead !== undefined && triviaLead.length <= 16
+          ? `const gc=lead(input,pos)
+if(!(${[
+  ...gated.leads.map(g => `!(${gateMissTest(g)})`),
+  ...gated.lits.map(i => `gc===${(k[i] as string).codePointAt(0)!}`),
+  ...triviaLead.map(r => r.lo === r.hi ? `gc===${r.lo}` : `(gc>=${r.lo}&&gc<=${r.hi})`),
+].join('||') || 'false'})){
+const gv=${link(gated.last)}(input,pos,ctx)
+if(gv!==undefined)return gv
+return collapseEmpty(ctx,${build},input,pos,EC.e,${flags === 32})
+}
+`
+          : ''
         if (!hostCst && !tracked && build !== undefined && proj < 0
           && (leanFlags === 2 || (flags === 18 || flags === 34))) {
           const fields = flags === 18
@@ -2493,7 +2512,7 @@ sCh.push(nd)
 if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
 }`
           return `${head}
-const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+${gp}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf,sFields=ctx._fields
 const flat=[]
 ctx._cstBuf=undefined
@@ -2588,7 +2607,7 @@ const hostKids=kids
 const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
 const tlog=buf.tl??EMPTY_TLOG`
         return `${head}
-const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+${!hostCst && !tracked ? gp : ''}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf
 ${openCapture}
 ctx.captureTrivia=${captureWide}

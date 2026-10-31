@@ -123,13 +123,13 @@ import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
  * property read per terminal miss — the same price codegen pays.
  */
 import {
-  classHas, decodeClassSpec, expandCompact, ownTableProgram, resolveTable,
+  classHas, decodeClassSpec, encodeClassSpec, expandCompact, ownTableProgram, resolveClass, resolveTable,
   validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { computeSiteLabels, passCollapse, reachableSites, scanHandoffNeeded } from './site-labels.ts'
+import { computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, triviaLeadRanges } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -771,6 +771,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function passCollapseNode(child: Piece, build: NodeBuilder, readsRaw: boolean): Piece {
     return (input, pos, ctx) => {
       const v = child(input, pos, ctx)
+      if (v !== undefined) return v
+      return collapseEmpty(ctx, build, input, pos, EC.e, readsRaw)
+    }
+  }
+
+  /**
+   * A collapse whose body is `optional`/`not` terms and then one node: where the
+   * character at `pos` opens none of those terms and no trivia, the body is that
+   * node (`site-labels.ts` `gatedPassCollapse`), so it runs as a pass-through
+   * collapse; anywhere else the node keeps its frame.
+   */
+  function gatedPassCollapseNode(
+    blockers: readonly ResolvedClass[], last: Piece, classic: Piece, build: NodeBuilder, readsRaw: boolean,
+  ): Piece {
+    return (input, pos, ctx) => {
+      const c = lead(input, pos)
+      for (let i = 0; i < blockers.length; i++) if (classHas(blockers[i]!, c)) return classic(input, pos, ctx)
+      const v = last(input, pos, ctx)
       if (v !== undefined) return v
       return collapseEmpty(ctx, build, input, pos, EC.e, readsRaw)
     }
@@ -3660,6 +3678,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           if (build !== undefined && passCollapse(code, ip, hostCst)) {
             return passCollapseNode(child, build, flags === 32)
+          }
+          // Not under recovery or a probe: there a gated-out term still runs.
+          const gated = build !== undefined && !cfg.tolerant && !cfg.probe ? gatedPassCollapse(code, ip, hostCst) : undefined
+          const triviaLead = gated === undefined ? undefined : triviaLeadRanges(closureLabels.at(code[ip + 2]!).tri, trivia)
+          if (build !== undefined && gated !== undefined && triviaLead !== undefined) {
+            const classic = flags === 32 ? collapseBuildNode(child, build) : childrenOnlyCollapseBuildNode(child, build)
+            return gatedPassCollapseNode(
+              [
+                ...gated.leads.map(g => cc[code[g + 1]!]!),
+                resolveClass(encodeClassSpec([
+                  ...triviaLead,
+                  ...gated.lits.map(i => { const c = (k[i] as string).codePointAt(0)!; return { lo: c, hi: c } }),
+                ])),
+              ],
+              link(gated.last), classic, build, flags === 32,
+            )
           }
           if (build !== undefined && proj < 0 && flags === 32) {
             return collapseBuildNode(child, build)

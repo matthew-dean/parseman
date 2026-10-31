@@ -60,7 +60,7 @@
  * label licenses at a leaf is dropping the TEST — never the capture.
  */
 import {
-  OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_SOURCE_LEAF,
+  OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_SOURCE_LEAF,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE,
   OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
@@ -164,6 +164,40 @@ export function passCollapse(code: Int32Array, ip: number, hostCst: boolean): bo
 }
 
 /**
+ * A collapse that a FIRST CHARACTER can reduce to a pass-through: its body is a
+ * sequence of `optional`/`not` terms, each behind a first-character gate, then
+ * one node. Where the character at the collapse's start opens none of those
+ * terms (nor its sequence's trivia — the engines test that against the site's
+ * label), every one of them matches empty there and the body is that node alone.
+ * `leads` are the gate rows, `lits` the constant indices of direct literal terms,
+ * `last` the node term. Not a `passCollapse`.
+ */
+export function gatedPassCollapse(code: Int32Array, ip: number, hostCst: boolean): { leads: number[]; lits: number[]; last: number } | undefined {
+  const flags = code[ip + 3]!
+  if (hostCst || code[ip] !== OP_NODE || code[ip + 1]! < 0 || code[ip + 4]! >= 0) return undefined
+  if (flags !== 32 && flags !== 34) return undefined
+  const seq = code[ip + 2]!
+  if (code[seq] !== OP_SEQ && code[seq] !== OP_SEQV) return undefined
+  const n = code[seq + 1]!
+  if (n < 2) return undefined
+  const leads: number[] = []
+  const lits: number[] = []
+  for (let i = 0; i < n - 1; i++) {
+    const t = code[seq + 2 + i]!
+    if (code[t] !== OP_OPT && code[t] !== OP_NOT) return undefined
+    const g = code[t + 1]!
+    // A gate row carries the term's first characters; a direct literal is its own.
+    if (code[g] === OP_GATE) leads.push(g)
+    else if (code[g] === OP_LIT) lits.push(code[g + 1]!)
+    else return undefined
+  }
+  const last = code[seq + 2 + n - 1]!
+  let at = last
+  for (let k = 0; k < 8 && (code[at] === OP_GATE || code[at] === OP_RULE); k++) at = code[at] === OP_RULE ? code[at + 1]! : code[at + 2]!
+  return code[at] === OP_NODE ? { leads, lits, last } : undefined
+}
+
+/**
  * What a site hands DOWN to its children. Every op but the two that write the
  * context passes its own label through unchanged.
  */
@@ -183,6 +217,7 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
     // A pass-through collapse opens nothing: its body runs in its parent's
     // collector and capture setting.
     if (passCollapse(code, ip, hostCst)) return at
+    const gated = gatedPassCollapse(code, ip, hostCst) !== undefined
     // The same selection `emit-assembly.ts` makes: the trailing-trivia bit (128)
     // keeps the children-only shape.
     const directChildren = !hostCst && op === OP_NODE && code[ip + 1]! >= 0 && code[ip + 4]! < 0
@@ -192,7 +227,9 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
       // arrays instead of a CstCaptureBuf. Descendants still capture, but they
       // must take the generic collector branch rather than dereference `_cstBuf`.
       // False means UNKNOWN in this lattice, which is exactly the safe answer.
-      return { tri: at.tri, buf: false, raw: RAW_UNKNOWN, cap: CAP_OFF }
+      const framed = { tri: at.tri, buf: false, raw: RAW_UNKNOWN, cap: CAP_OFF }
+      // A gated pass collapse runs its node term in its parent's collector too.
+      return gated ? meet(at, framed) : framed
     }
     // `ctx._cstBuf = buf` and `ctx.captureTrivia = <literal>`, both unconditional
     // — `emit-assembly.ts`'s `OP_NODE` body opens the buffer before it descends
@@ -202,7 +239,8 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
       ? RAW_OMIT
       : RAW_CAPTURE
     if (at.buf && raw === at.raw && cap === at.cap) return at
-    return { tri: at.tri, buf: true, raw, cap }
+    const framed = { tri: at.tri, buf: true, raw, cap }
+    return gated ? meet(at, framed) : framed
   }
   // THE TWO BOUNDARIES clear every capture sink for their child and contribute
   // ONE leaf for the whole match; `token()` clears `ctx.trivia` as well. So a
@@ -311,4 +349,20 @@ export function scanHandoffNeeded(code: Int32Array, ip: number, labels: SiteLabe
     for (const c of kids) stack.push(c)
   }
   return false
+}
+
+/**
+ * The first characters that can start trivia at a site labelled `tri`, as code
+ * point ranges: none for `TRI_NONE`, `undefined` where the labels cannot name the
+ * trivia or its first set is unbounded.
+ */
+export function triviaLeadRanges(
+  tri: number, trivia: readonly ({ _meta: { firstSet: { kind: string; ranges?: readonly { lo: number; hi: number }[] } } } | undefined)[],
+): readonly { lo: number; hi: number }[] | undefined {
+  if (tri === TRI_NONE) return []
+  if (tri < 0) return undefined
+  const fs = trivia[tri]?._meta.firstSet
+  if (fs === undefined) return undefined
+  if (fs.kind === 'empty') return []
+  return fs.kind === 'ranges' && fs.ranges !== undefined ? fs.ranges : undefined
 }
