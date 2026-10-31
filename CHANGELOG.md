@@ -27,6 +27,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   restore. The answer is derived from the table once, when the assembly links.
 - The closure engine's `dispatch()` keeps its rollback mark in scalars, as a choice
   does, instead of allocating mark objects for the selector and each arm.
+- A scope with no trivia, inside a `token()` or another such scope, runs as its child
+  in both table engines, as a scope that reinstalls the ambient trivia already did:
+  it would write the trivia, kind labels and scanner already in force.
 - A selective assembly hands the installed trivia scanner across an engine boundary
   only where the code on the other side reads it.
 - A printed table's compact char-class pool (`"…".split("|")`) is annotated

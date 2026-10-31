@@ -60,7 +60,7 @@ import {
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
-  computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, triviaLeadRanges, type SiteLabel,
+  computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scopeIsIdentity, triviaLeadRanges, type SiteLabel,
 } from './site-labels.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
@@ -1145,17 +1145,9 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // The label is what makes this decidable: `tri >= 0` can ONLY have come from
     // an enclosing scope carrying that slot, and that scope set
     // `ctx.triviaKindLabels` and `_pfScan` from the same slot, so all three are
-    // already the values this row would write. `OP_SCOPE_PLAIN` has no root
-    // policy by construction; a policy-bearing `OP_SCOPE` aliases only when its
-    // literal policy is zero. `OP_SCOPE_CAP` also raises `captureTrivia`.
-    //
-    // `ki >= 0` is required rather than implied: `TRI_NONE` and `TRI_UNKNOWN` are
-    // themselves negative, so comparing a negative operand against a lattice
-    // element would read "unknown" as a match.
-    if ((op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0)) && code[ip + 1]! >= 0
-      && labels.at(ip).tri === code[ip + 1]!) {
-      return code[ip + 2]!
-    }
+    // already the values this row would write. A scope with no trivia under
+    // `TRI_NONE` is the same case (`scopeIsIdentity`).
+    if (scopeIsIdentity(code, ip, labels.at(ip))) return code[ip + 2]!
     return undefined
   }
 

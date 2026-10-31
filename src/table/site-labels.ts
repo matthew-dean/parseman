@@ -328,6 +328,22 @@ export function computeSiteLabels(
  * already installed, does not). `false` is also the answer for a body with no
  * trivia at all.
  */
+/**
+ * A trivia scope that writes only what its label proves is already in force, so
+ * it runs as its child. A slot scope under that same slot is one; so is a scope
+ * with no trivia where the label proves none (inside `token()` or another such
+ * scope), since every way to `TRI_NONE` leaves no trivia, no kind labels and no
+ * scanner — what this scope would write. `OP_SCOPE_PLAIN` has no root policy; a
+ * policy-bearing `OP_SCOPE` is one only with policy zero, and `OP_SCOPE_CAP`
+ * never is, since it raises `captureTrivia`. `TRI_UNKNOWN` matches nothing.
+ */
+export function scopeIsIdentity(code: Int32Array, ip: number, at: SiteLabel): boolean {
+  const op = code[ip]
+  if (op !== OP_SCOPE_PLAIN && !(op === OP_SCOPE && code[ip + 3]! === 0)) return false
+  const ki = code[ip + 1]!
+  return at.tri === (ki < 0 ? TRI_NONE : ki)
+}
+
 export function scanHandoffNeeded(code: Int32Array, ip: number, labels: SiteLabels): boolean {
   const seen = new Set<number>()
   const stack = [ip]

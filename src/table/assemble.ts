@@ -131,7 +131,7 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, triviaLeadRanges } from './site-labels.ts'
+import { computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -1429,14 +1429,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const holder = { fwd, set: (p: Piece) => { target = p } }
     inFlight.set(ip, holder)
 
-    const op = code[ip]
-    // Match the emitted assembly's label-proven scope alias: rule entries in a
-    // single ambient trivia scope otherwise reinstall and restore the exact
-    // same trivia, labels and scanner on every call. Install the forwarding
+    // Match the emitted assembly's label-proven scope alias (`scopeIsIdentity`):
+    // rule entries in a single ambient trivia scope, and no-trivia scopes inside
+    // a token, otherwise reinstall and restore the exact same trivia, labels and
+    // scanner on every call. Install the forwarding
     // holder first so a recursive child can still link back through this site.
-    const piece = (op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0))
-      && code[ip + 1]! >= 0
-      && closureLabels.at(ip).tri === code[ip + 1]!
+    const piece = scopeIsIdentity(code, ip, closureLabels.at(ip))
       ? link(code[ip + 2]!)
       : countedPiece(lower(ip), ip)
 
