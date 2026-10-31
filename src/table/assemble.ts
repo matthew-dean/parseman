@@ -75,8 +75,8 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
-  saveTriviaMark, scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
+  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
+  scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
@@ -243,13 +243,14 @@ type GeneralChoiceBlock = (
 type ExclusiveChoiceBlock = (arm: number, input: string, pos: number, ctx: ParseContext) => unknown
 type DispatchMatcher = (key: string) => boolean
 type DispatchMatcherBlock = (key: string) => number | undefined
+/** The selector's rollback mark rides as the eight scalars a choice block takes. */
 type DispatchBranch = (
-  input: string, pos: number, selEnd: number, key: string,
-  selectorMark: ReturnType<typeof saveTriviaMark>, ctx: ParseContext,
+  input: string, pos: number, selEnd: number, key: string, ctx: ParseContext,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mLog: number, mRoot: number,
 ) => unknown
 type DispatchArmBlock = (
-  arm: number, input: string, pos: number, selEnd: number, key: string,
-  selectorMark: ReturnType<typeof saveTriviaMark>, ctx: ParseContext,
+  arm: number, input: string, pos: number, selEnd: number, key: string, ctx: ParseContext,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mLog: number, mRoot: number,
 ) => unknown
 
 /**
@@ -1327,21 +1328,30 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   function dispatchBranch(child: Piece, usesRouted: boolean): DispatchBranch {
     if (!usesRouted) {
-      return (input, _pos, selEnd, key, _selectorMark, ctx) => {
-        const mark = saveTriviaMark(ctx)
+      // The arm runs after the selector's match, so it marks where it starts.
+      return (input, _pos, selEnd, key, ctx) => {
+        const need = markCst(ctx)
+        const mRaw = MRAW
+        const mTl = MTL
+        const mLv = MLV
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+        const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = child(input, selEnd, ctx)
         if (v === FAIL) {
-          rollbackTrivia(ctx, mark)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           ctx._fc = true
           return FAIL
         }
         return [key, v]
       }
     }
-    return (input, pos, selEnd, key, selectorMark, ctx) => {
+    // A routed arm re-reads the selector's match from `pos`: undo the selector,
+    // which leaves every sink at the selector's mark, so that mark is the arm's too.
+    return (input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot) => {
       const savedRouted = ctx._routed
-      rollbackTrivia(ctx, selectorMark)
-      const mark = saveTriviaMark(ctx)
+      if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       ctx._routed = { value: key, span: { start: pos, end: selEnd } }
       let v: unknown
       try {
@@ -1350,7 +1360,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._routed = savedRouted
       }
       if (v === FAIL) {
-        rollbackTrivia(ctx, mark)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         ctx._fc = true
         return FAIL
       }
@@ -1363,12 +1373,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     a0: DispatchBranch, a1: DispatchBranch, a2: DispatchBranch, a3: DispatchBranch,
     next: DispatchArmBlock | undefined,
   ): DispatchArmBlock {
-    return (arm, input, pos, selEnd, key, selectorMark, ctx) => {
-      if (arm === start) return a0(input, pos, selEnd, key, selectorMark, ctx)
-      if (arm === start + 1) return a1(input, pos, selEnd, key, selectorMark, ctx)
-      if (arm === start + 2) return a2(input, pos, selEnd, key, selectorMark, ctx)
-      if (arm === start + 3) return a3(input, pos, selEnd, key, selectorMark, ctx)
-      return next === undefined ? FAIL : next(arm, input, pos, selEnd, key, selectorMark, ctx)
+    return (arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot) => {
+      if (arm === start) return a0(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      if (arm === start + 1) return a1(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      if (arm === start + 2) return a2(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      if (arm === start + 3) return a3(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      return next === undefined
+        ? FAIL
+        : next(arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
     }
   }
 
@@ -3612,7 +3624,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const runOther = other === undefined ? undefined : dispatchBranch(other, otherRouted)
 
         return (input, pos, ctx) => {
-          const selectorMark = saveTriviaMark(ctx)
+          const need = markCst(ctx)
+          const mRaw = MRAW
+          const mTl = MTL
+          const mLv = MLV
+          const mFl = need ? ctx._fields?.length ?? 0 : 0
+          const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const selVal = selector(input, pos, ctx)
           if (selVal === FAIL) return FAIL
           const selEnd = EC.e
@@ -3625,9 +3644,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               ctx._fx = expected
               return FAIL
             }
-            return runOther(input, pos, selEnd, key, selectorMark, ctx)
+            return runOther(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           }
-          return runArm!(arm, input, pos, selEnd, key, selectorMark, ctx)
+          return runArm!(arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         }
       }
 

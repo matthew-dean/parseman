@@ -25,6 +25,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   an `optional()`, a choice and a repeat item whose child is a terminal, a node over
   one, or a sequence that can only fail in its first term, skip the mark and the
   restore. The answer is derived from the table once, when the assembly links.
+- The closure engine's `dispatch()` keeps its rollback mark in scalars, as a choice
+  does, instead of allocating mark objects for the selector and each arm.
 - A selective assembly hands the installed trivia scanner across an engine boundary
   only where the code on the other side reads it.
 - A printed table's compact char-class pool (`"…".split("|")`) is annotated

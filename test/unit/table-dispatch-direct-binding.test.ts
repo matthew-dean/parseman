@@ -163,8 +163,8 @@ describe('direct-bound dispatch topology', () => {
     const armBlock = source.slice(
       source.indexOf('function dispatchArmBlock('), source.indexOf('function trackLinesInto('),
     )
-    expect(armBlock).toMatch(/a0\(input, pos, selEnd, key, selectorMark, ctx\)/)
-    expect(armBlock).toMatch(/a3\(input, pos, selEnd, key, selectorMark, ctx\)/)
+    expect(armBlock).toMatch(/a0\(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot\)/)
+    expect(armBlock).toMatch(/a3\(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot\)/)
     expect(armBlock).not.toMatch(/arms\[|routed\[|target\(/)
 
     const allRouted = dispatch(regex(/[a-z]+/), when('a', routed()), otherwise(routed()))
