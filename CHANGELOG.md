@@ -80,21 +80,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   selective-assembly commit `ac33bd8` instead of 0.50.2, whose whole-grammar assembly
   the runtime and size contract removes. Perf gates `bench/grammar-density/config.json`
   and `bench/workloads/config.json` anchor on the v0.56.0 main base, ffe1e86.
-- Measured per grammar on jess `dev` against parseman 0.55.2, with the budgets jess
-  ships (CSS `1` with a corpus profile, `.jess` `0`, Less and SCSS the default).
-  Instructions are JIT marginal per parse, `(I(25) − I(5)) / 20`; cold is import plus
-  first parse; each a median of 5. ASTs are byte-identical to 0.55.2's on jess's four
-  benchmark fixtures.
+- Measured per grammar on jess `dev` against parseman 0.55.2, each side with its own
+  parser libs, `parser-shared` lib and runtime, with the budgets jess ships (CSS `1` with
+  a corpus profile, `.jess` `0`, Less and SCSS the default). Node 24.11.1, Apple M4 Pro,
+  interleaved. Instructions are hardware-counted marginal per AST parse: JIT
+  `(I(25) − I(5)) / 20` and `--jitless` `I(2) − I(1)`, median of 5; wall is the median of
+  20 warm parses, median of 5 runs; cold is import plus first parse, median of 11 (31 for
+  Less). The machine was loaded (load average about 20), so wall and cold within ±3% are
+  noise. ASTs are byte-identical to 0.55.2's on jess's four benchmark fixtures.
 
-  | grammar | `ast.js` (× source) | instructions | wall | cold |
-  | --- | --- | --- | --- | --- |
-  | Less | 914,206 B (3.39×) | 523.9 → 449.2M (−14.3%) | 26.4 → 22.4 ms | 99.9 → 99.0 ms |
-  | SCSS | 585,107 B (2.94×) | 1553.4 → 1293.1M (−16.8%) | 72.7 → 60.9 ms | 144.3 → 139.6 ms |
-  | .jess | 573,045 B (2.52×) | 317.5 → 294.5M (−7.2%) | 15.3 → 14.2 ms | 74.5 → 75.2 ms |
-  | CSS | 429,630 B (2.39×, was 11.78×) | 212.4 → 212.5M (flat, spread 2%) | 8.85 → 8.65 ms | 76.7 → 64.2 ms |
+  | grammar | `ast.js` (× source) | JIT instructions | `--jitless` instructions | wall | cold |
+  | --- | --- | --- | --- | --- | --- |
+  | Less | 912,227 B (3.38×) | 531.9 → 448.5M (−15.7%) | 3175.7 → 2712.2M (−14.6%) | 29.65 → 27.21 ms | 119.4 → 118.5 ms |
+  | SCSS | 586,782 B (2.94×) | 1551.9 → 1326.6M (−14.5%) | 11966.3 → 10756.0M (−10.1%) | 79.34 → 66.53 ms | 167.9 → 166.6 ms |
+  | .jess | 573,045 B (2.52×) | 381.1 → 341.5M (−10.4%) | 3393.5 → 2557.4M (−24.6%) | 17.70 → 16.08 ms | 96.0 → 93.5 ms |
+  | CSS | 424,793 B (2.36×, was 11.78×) | 232.5 → 231.5M (−0.4%, spread 2%) | 1595.3 → 1566.8M (−1.8%) | 9.77 → 9.10 ms | 93.6 → 80.7 ms |
 
-  Under `--jitless`, with the Cachegrind-style marginal jess's CI speed gate uses:
-  CSS −1.08%, Less −16.75%, SCSS −11.22%, .jess −26.07%.
 - The `assemblyBudget` curve, measured at the selective-assembly commit on jess
   4dc6890 against 0.55.2 (marginal instructions median of 3, wall median of 6, cold
   median of 10). A budget of 0 is the same artifact as 0.55.2 and gives the noise:
