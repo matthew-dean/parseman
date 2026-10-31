@@ -3,6 +3,32 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.58.0 — unreleased
+
+- **Collapse nodes cost no frame where their value is one child.** A `collapse: true`
+  node whose body is one node now runs as that node in both table engines, with no
+  capture frame of its own. One whose body is `optional(…)` terms and then a node does
+  the same wherever the character it starts at opens none of those terms and no
+  trivia. Trees are unchanged.
+- **A choice whose arms differ in one term is that term's choice.** Arms that are the
+  same leaf and trivia-scope wrappers over one sequence, the same but for one term, are
+  encoded as those wrappers over the sequence with a choice in that place, so the
+  shared terms run once and the choice dispatches on the character after them.
+- `peek()` of a direct literal or regex is one recognizer call, as `not()` of one
+  already was.
+- A selective assembly hands the installed trivia scanner across an engine boundary
+  only where the code on the other side reads it.
+- The static site selection holds still under small edits: weight per byte is
+  compared in quarter-octave steps, ties break by where a site sits in its rule, and
+  the budget buys a prefix of that order.
+- Fixed: a failed choice whose arms share leading terms listed those terms' expected
+  labels once per arm when no arm was entered; it lists them once. The failure's span
+  and position are unchanged.
+- Fixed: `pnpm check:differentials` ran the jess differentials against one machine's
+  jess checkout by default. `JESS_ROOT` now has no default: unset, those differentials
+  are unproven and say why; set to a checkout whose packages were built before their
+  last source commit, the gate exits 2.
+
 ## 0.57.0 — 2026-10-30
 
 - **Breaking: `node.state` and a builder's `state` argument are the active
