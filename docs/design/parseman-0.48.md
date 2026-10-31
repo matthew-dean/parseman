@@ -250,11 +250,18 @@ are not reimplemented.
 
 Existing `OP_CHOICE`, `OP_GREEDY`, `OP_DISPATCH`, `OP_REJECT`, and `OP_ARMGATE`
 rows remain the decision projection; selection does not introduce a parallel token
-decision wire. At the current CSS and Less Jess checkpoints the complete final
-graphs have zero capability, binding, decision-effect, or scan-policy gaps, so the
-whole-program gate is non-vacuously open and emits selected lexical rows with no
-reachable `OP_TOKEN` row. This is a correctness/architecture checkpoint, not a speed
-claim; retention still depends on hardened timing against the CHARACTER table.
+decision wire. At Jess `d2d58ae78` the complete final graphs of all four grammars
+(CSS, Less, SCSS, .jess), in all four variants (AST/CST, with and without line
+tracking), have zero capability, binding, decision-effect, or scan-policy gaps, so
+the whole-program gate is non-vacuously open and emits selected lexical rows with no
+reachable `OP_TOKEN` row. Less closed with the any-arity choice, the separator-less
+repeat, no-trivia scopes at any position of a token body, the `withCtx` named
+binding, and nested `balanced()` skippers. A rule reference that reinstalls its own
+trivia inside a token (`ref.ts`, `scopedRef`) is not lowered; none of the four
+grammars has one. Measured against the CHARACTER table of the same grammars this is
+a small win (Less parse −0.6% instructions JIT, flat jitless; a declaration −5%),
+not the lever: a selected body still calls sticky regex recognizers where the
+emitted CHARACTER rows run straight-line scans.
 
 Capability scope cannot be narrowed to hot sites, supported kernels, current planner
 candidates, or the sites the cost model is expected to choose. It includes every
