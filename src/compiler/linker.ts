@@ -186,7 +186,7 @@ export const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
 /** The carried pieces a build-compiled composed grammar holds, or `undefined`
  * when the value is not one. */
-export function composedPiecesOf(
+function composedPiecesOf(
   grammar: Record<string, unknown>,
 ): ReadonlyArray<LinkableTable | IRPiece> | undefined {
   const pieces = (grammar as unknown as Record<symbol, unknown>)[COMPOSED_PIECES]
