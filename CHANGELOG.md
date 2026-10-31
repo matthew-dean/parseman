@@ -3,8 +3,28 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.58.0 — unreleased
+## 0.58.0 — 2026-10-31
 
+- **Breaking: under rollup, rolldown and Vite, a grammar's carried pieces ship beside
+  the chunk, not in it.** The composable form a downstream `compose()` build reads was
+  inline IR on the exported grammar: 23–31% of each composed jess grammar artifact,
+  and its `...upstream[Symbol.for('parseman.composedPieces')]` spread kept every
+  ancestor's module in the import graph of every parse. Nothing at runtime reads it.
+  The plugin now records each exported grammar's pieces at build time and writes them
+  to `<chunk>.parseman.json` beside the chunk (`lib/index.js` →
+  `lib/index.js.parseman.json`). Ship that file with a package whose grammars other
+  builds compose. An ancestor imported from another package is recorded as a
+  reference to that export and resolved from the artifact's location; one from a
+  relative module, which the bundler folds into the chunk, is written out. A
+  downstream build reads the sidecar first and an inline literal second, so artifacts
+  built by other bundlers, which keep the inline form, still compose. In jess's build
+  the Less, SCSS and .jess grammars no longer load css's compose base at import, and
+  Less's `ast.js` is 675,537 B with this release against 910,838 B with 0.57.0. See
+  `docs/guide/extending.md` and `test/unit/carried-pieces-sidecar.test.ts`.
+- **Breaking: a compiled grammar with neither inline pieces nor a sidecar entry fails
+  the downstream build that composes it,** naming the artifact and the missing
+  `<file>.parseman.json`. It used to warn and fall back to a runtime `compose()` that
+  could not link a compiled grammar and threw at import.
 - **Collapse nodes cost no frame where their value is one child.** A `collapse: true`
   node whose body is one node now runs as that node in both table engines, with no
   capture frame of its own. One whose body is `optional(…)` terms and then a node does
