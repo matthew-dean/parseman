@@ -1,5 +1,8 @@
 # Grammar Semantic Coverage — Design
 
+**Status:** shipped as the `grammarCoverage` option; the user guide is
+[Grammar observability](../guide/grammar-observability.md). Kept as the design record.
+
 ## Decision
 
 Add grammar-semantic coverage as an explicitly enabled test/build feature. It

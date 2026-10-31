@@ -139,7 +139,8 @@ switch (_code) {
 
 You didn't design a lexer or write a dispatch table — you wrote four alternatives. The
 interpreter builds the same thing at runtime as a 128-entry ASCII table
-(`buildAsciiDispatch`); the compiler bakes it into a `switch` or an `if/else` range chain.
+(`buildAsciiDispatch`); the compiler stores the same table in the compiled program, and
+compiled code indexes it by character code and jumps straight to the arm.
 
 **When it kicks in, and where it doesn't:**
 
@@ -149,10 +150,10 @@ interpreter builds the same thing at runtime as a 128-entry ASCII table
   [what ordered actually costs](#what-ordered-actually-costs) below.
 - No arm may match the empty string. A nullable arm matches at *any* position, so
   first-char dispatch can't represent it; that choice stays on `firstMatch` too.
-- The **`switch` jump-table** form only kicks in when the arms key off a handful of
-  discrete code points (roughly 3 to 48 cases — `SWITCH_MIN_CASES`/`SWITCH_MAX_CASES`/
-  `SWITCH_RANGE_LIMIT` in `codegen.ts`). A wide char-class arm like `[a-z]+` would explode
-  into dozens of `case` labels, so those get the `if/else` range-comparison form instead.
+- Inside a lowered `regex()` alternation, the **`switch`** form only kicks in when the
+  alternatives key off a handful of discrete code points (3 to 48 cases, each range at most
+  4 wide: `ALT_SWITCH_*` in `src/table/scan-shapes.ts`). A wide class like `[a-z]+` would
+  explode into dozens of `case` labels, so it gets range comparisons instead.
 
 ## What ordered actually costs
 
@@ -337,8 +338,7 @@ what the un-factored grammar would have produced — in both the interpreter and
 compiled output.
 
 **Where the dedup applies.** It's a **compiled-output** transform (both `compile()` and
-the macro build), and it stays enabled for **linkable/`compose` fusion**
-(`deferFirstSetRefs`) too — the shared prefix is always a concrete literal or regex,
+the macro build), and it stays enabled when a macro build composes grammars, too — the shared prefix is always a concrete literal or regex,
 never a ref, so it's scanned once even in the fused form. The **interpreter runs the
 ordinary `firstMatch` loop** and re-scans the prefix per arm: identical output, natural
 authoring, no dedup. Replaying the prefix at runtime would mean threading a cache

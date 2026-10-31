@@ -93,8 +93,8 @@ export function formatDegradations(list: readonly Degradation[]): string[] {
 //
 // Compilation is single-module and synchronous, so a module-level sink (opened per
 // transform, drained after) records findings without threading a field through every
-// Ctx and every compile*() return — the same shape as the regex-lowering sink in
-// codegen.ts, for the same reason.
+// Ctx and every compile*() return — the same shape as the source lowering's regex-lowering
+// sink, for the same reason.
 // ---------------------------------------------------------------------------
 //
 // A STACK, not a single slot. `transformMacro` re-enters itself when it lowers a private

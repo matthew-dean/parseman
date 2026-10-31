@@ -1,6 +1,6 @@
 # Proposal: Grammar spec generation
 
-**Status:** proposal · **Author:** (drafted for discussion) · **Scope:** new tooling capability, no breaking changes
+**Status:** shipped as `parseman/spec` (`src/spec/`); the user guide is [Grammar spec generation](../guide/spec-generation.md). Kept as the design record. · **Author:** (drafted for discussion) · **Scope:** new tooling capability, no breaking changes
 
 Generate a formal, human-readable **grammar specification** (EBNF + optional railroad
 diagrams + a reference page) directly from a Parséman `rules()` grammar — so a language's

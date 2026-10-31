@@ -1,16 +1,14 @@
 /**
- * Correctness gate: the table lowering must produce the SAME tree as the
- * shipped lowerings for a grammar's whole corpus.
+ * Correctness gate: every table engine must produce the SAME result as the
+ * interpreter for a grammar's whole corpus.
  *
  * Oracle is `parseman/oracle`'s `digestValue` — the repo's byte-identity
- * primitive — applied to the `run()` result of three paths over one input:
+ * primitive — applied to the `run()` result of each path over one input:
  *
- *   interpreted   the combinator graph            (semantic reference)
- *   compiled      compileRuleMap()                (what ships today)
- *   table         encodeTable() + tableRules()  (what this lane builds)
- *
- * `interpreted ≡ compiled` is already gated by `test/parity/*`, so
- * `table ≡ interpreted` and `table ≡ compiled` together pin the new path.
+ *   interpreted   the combinator graph                         (semantic reference)
+ *   compiled      compileRuleMap()'s closure artifact (`a:[]`)  (what a macro build ships)
+ *   table         encodeTable() + tableRules()                 (the shipped engine, emitted where it can)
+ *   reference     encodeTable() + execRules()                  (the reference driver)
  */
 import { digestValue } from '../src/oracle/index.ts'
 import { run } from '../src/functional/run.ts'

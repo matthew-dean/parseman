@@ -1,5 +1,6 @@
 /**
- * Experimental build-time Entry/SCC supercompiler for static table assemblies.
+ * Build-time Entry/SCC supercompiler for the selective assemblies a macro build
+ * emits (it runs on every macro build that selects sites).
  *
  * The table emitter remains the sole semantic backend.  This pass parses that
  * backend's ordinary JavaScript and joins uniquely-owned piece functions with

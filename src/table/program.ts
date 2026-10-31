@@ -28,10 +28,10 @@ export type PrecompiledAssembly = {
 /**
  * The emitted form of a grammar under the table lowering.
  *
- * This object is ALL a grammar contributes to a bundle. Every line of
- * recognition logic lives in `exec.ts`, which ships once in the runtime and is
- * shared by every grammar and every variant. A rule costs its row, not a
- * function.
+ * This object is ALL a grammar contributes to a bundle, apart from any
+ * build-time assemblies in `asm`. The recognition logic is the shared driver
+ * (`tableRules`, `assemble.ts`), which ships once in the runtime for every
+ * grammar and every variant. A rule costs its row, not a function.
  *
  * Serialized shape is deliberately JSON-ish (numbers, strings, and a pool of
  * author callbacks) so the emitter can print it as a literal.

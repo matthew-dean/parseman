@@ -152,7 +152,7 @@ result.rootTrivia!.index.gapsWithKind(['blockComment', 'lineComment'])
 
 Selected capture stores one numeric row per selected marker:
 `[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, selectedKindIndex]`.
-`selectedLabelIndex` indexes the requested `select` list, not a local grammar scope's
+`selectedKindIndex` indexes the requested `select` list, not a local grammar scope's
 label table, so composed grammars and semantic leaves can use their own trivia-label
 order safely. The first pair still lets `gapBefore` / `gapAfter` reproduce the full
 authored range around the marker, while whitespace-only ranges allocate nothing.

@@ -5,8 +5,9 @@
  *
  * For each such import, walks the file's AST, finds variable declarations
  * whose RHS is a pure parseman combinator call, evaluates them at build time,
- * compiles the result to an optimized inline function, and replaces the
- * declaration — removing the import entirely.
+ * compiles the result to a table program (plus generated code for its hottest
+ * sites, within `assemblyBudget`), and replaces the declaration. The macro import
+ * is removed; the module imports the shared driver from `parseman/table` instead.
  *
  * Usage:
  *   // vite.config.ts
@@ -61,7 +62,7 @@ import type {
  * The PUBLIC subpath, not a deep path into `src/`: this string is written into a
  * consumer's build output, so it has to be a specifier their resolver can see.
  * `parseman/table` is declared in package.json `exports` and re-exports
- * `tableRules` as `tableRules` (src/table/index.ts:28).
+ * `tableRules` unrenamed (`src/table/index.ts`).
  */
 const TABLE_RUNTIME_SPECIFIER = 'parseman/table'
 
@@ -113,13 +114,9 @@ export type ParsecraftPluginOptions = {
    */
   warnUnloweredRegex?: boolean
   /**
-   * Bake automatic list recovery into the macro-compiled output. **Default `false`.**
-   * When on, `many`/`oneOrMore`/`sepBy` in every compiled grammar gain a
-   * `_ctx._tolerant`-gated recovery branch (dormant on strict parses — a normal
-   * parse is unaffected and allocates nothing). The output stays macro-inlinable
-   * (sentinels build via `_ctx._rec`, not `_rp`). Turn it on for grammars you drive
-   * from an editor/language service so `run(g, src, { tolerant: true })` recovers on
-   * the fast compiled path; leave it off for build-only grammars.
+   * @deprecated Has no effect: every compiled table carries recovery, and
+   * `run(g, src, { tolerant: true })` recovers on the compiled path whatever this is
+   * set to. Removed in the next minor release.
    */
   recovery?: boolean
   /** Emit grammar-coverage hooks in macro output. Off by default, so ordinary
@@ -1450,9 +1447,8 @@ function transformMacroImpl(
 
   /**
    * Compile a `rules(factory)` call into ONE shared replacement expression
-   * for the whole call — see compileRuleMap() in codegen.ts for why this is
-   * one shared codegen pass instead of one `compile()` per entry (a `rules()`
-   * factory's entries commonly share large reachable sub-rule graphs; a
+   * for the whole call: one shared `compileRuleMap()` pass instead of one
+   * `compile()` per entry (a `rules()` factory's entries commonly share large reachable sub-rule graphs; a
    * shared pass compiles each shared sub-rule once instead of once per entry
    * that reaches it).
    */
@@ -1971,9 +1967,8 @@ function transformMacroImpl(
    * shadows the base piece which actually defines `Pair` — the encoder then finds a
    * hole where the winner should be and refuses the whole grammar with "ref() used
    * before .define()". The same filter guards `compileLinkableTable`'s `isLocal`
-   * (`compile-linkable-table.ts:96`), `itemCarried` (`linker.ts:696`) and
-   * `recoverComposedRules`; this is the fourth site that needs it, for the same
-   * reason, and skipping it is why cross-piece composition looked blocked.
+   * (`compile-linkable-table.ts`) and `recoverComposedRules`; this site needs it
+   * for the same reason, and skipping it is why cross-piece composition looked blocked.
    *
    * The reference itself is not lost: it stays inside the delta's own rule bodies and
    * `enc.winners` binds it BY NAME to whichever piece supplies the definition.

@@ -87,15 +87,14 @@ export type TableSettings = {
    * smaller, so the size argument for making it optional no longer holds.
    *
    * LOWERING RECOVERY IS NOT RUNNING IT. Every recovery path stays gated on
-   * `ctx._tolerant` — the same dormancy the source lowering emits
-   * (`codegen.ts:3153`) and the interpreter tests (`repeat.ts:163`) — so a strict
+   * `ctx._tolerant` — the same dormancy the source lowering (removed in 0.47.0)
+   * had and the interpreter tests (`repeat.ts:163`) — so a strict
    * parse is strict, and `test/parity/table-recovery-always.test.ts` pins that.
    *
-   * The field is kept rather than deleted so `compile` stays signature-
-   * compatible with `compile()`, whose `{ recovery: true }` is real. Passing it
-   * is harmless; passing `false` does NOT switch recovery off, and saying so here
-   * is the point — a setting that silently means nothing is the defect class this
-   * project keeps finding.
+   * @deprecated The field is kept only so existing callers still type-check, and
+   * is removed in the next minor release. Passing `false` does NOT switch recovery
+   * off, and saying so here is the point — a setting that silently means nothing is
+   * the defect class this project keeps finding.
    */
   readonly recovery?: boolean
   /**
@@ -569,8 +568,8 @@ class Encoder {
   /**
    * The class of the follow set of term `i` in a sequence — the sync sentinel a
    * list nested in that term resyncs to, INFERRED from structure exactly as
-   * `sequence()` (combinators/sequence.ts:58) and `emitSeqValues`
-   * (compiler/codegen.ts:1756) infer it: the union of every LATER term's first
+   * `sequence()` (combinators/sequence.ts:58) and the source
+   * lowering's `emitSeqValues` infer it: the union of every LATER term's first
    * set, not merely up to the first non-nullable one, so a mandatory middle term
    * cannot hide a later close. −1 where there is no usable sentinel, which is the
    * same set of cases `firstSetSentinel` answers `null` for.
@@ -1154,7 +1153,7 @@ class Encoder {
     }
     const patches: number[] = []
     this.pending.set(p, patches)
-    // A RULE IS CREDITED ON ENTRY, not on success — `codegen.ts:4529` emits the
+    // A RULE IS CREDITED ON ENTRY, not on success — the source lowering emitted the
     // hook as the first statement of the named function body, so a rule that is
     // reached and then fails still counts as exercised. The counter goes on the
     // MEMOISED offset, which is the one every reference to this combinator lands
@@ -1814,7 +1813,7 @@ class Encoder {
         // A `kinds` LIST IS VALIDATED HERE, at encode time, against the trivia
         // table in scope — the same `resolveAdjacencyKindMask` the interpreter
         // calls on first reach and codegen calls while emitting the `_akN` probe
-        // (`codegen.ts:1034`). Deferring it to the driver's parse-time resolution
+        // (in the source lowering). Deferring it to the driver's parse-time resolution
         // left `compile()` accepting a grammar whose kind name no active table
         // declares: an unlabelled table or a typo'd category compiled clean and
         // threw only when an input happened to reach the assertion.
@@ -1876,7 +1875,7 @@ class Encoder {
       }
       // A LABEL IS A ROW — see `OP_LABEL`. It replaces the child's expected set,
       // which is the entire combinator.
-      // A LABEL IS CREDITED ON SUCCESS, as `codegen.ts:4530` credits it: its hook
+      // A LABEL IS CREDITED ON SUCCESS, as the source lowering credited it: its hook
       // is emitted AFTER the child's statements, where a failed child has already
       // broken out of the labelled block.
       case 'label':
@@ -1934,8 +1933,8 @@ class Encoder {
         // Bit 1 is the STRICT-SCOPE refusal `grammar.ts:98` raises: with selected
         // root trivia active, a local scope whose trivia is not classified and is
         // not declared opaque cannot be reported faithfully, so it throws rather
-        // than silently dropping markers. Codegen emits the same throw
-        // (codegen.ts:4705); the table emitted nothing at all.
+        // than silently dropping markers. The source lowering emitted the
+        // same throw; the table emitted nothing at all.
         const flags = (d.rootCapture === 'opaque' ? 1 : 0)
           | (d.triviaParser !== undefined
             && d.triviaParser._meta.rootTriviaClassified !== true
@@ -2090,7 +2089,7 @@ class Encoder {
  *
  * TRACKING IS A WHOLE-TABLE DECISION, as it is a whole-compile decision for the
  * source lowering: `ctx.lineTracking` is `opts.trackLines || grammarTrackLines ||
- * hasLineTrackingDef(combinator)` (`compiler/codegen.ts`). The table read the
+ * hasLineTrackingDef(combinator)` (the source lowering). The table read the
  * SETTING alone and refused any `parser({ trackLines: true }, …)` scope it found
  * underneath, so a grammar that carries its own tracking compiled through
  * codegen and was rejected by the encoder. Same question, same answer.

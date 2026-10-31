@@ -178,9 +178,15 @@ Registered today:
 | differential | legs | plants |
 |---|---|---|
 | `scan-shape-oracle` | emitted straight-line scan vs sticky `RegExp.exec`, per regex, per position | `scan-class-narrow` |
-| `table-lowering-identity` | interpreted vs `compose()` codegen vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
+| `table-lowering-identity` | interpreted vs the `compileRuleMap()` closure artifact vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
+| `macro-optimize-contract` | the macro timing gate's structured acceptance errors vs the process exit status required CI reads | `macro-timing-exit-off` |
 | `lex-selected-vs-character` | selected lexical bodies vs the CHARACTER lowering of the same grammar, in `execRules`, closure and emitted `tableRules`; whole results and completion probes | `lex-choice-exclusive-off`, `lex-repeat-min-short`, `lex-rule-trivia-glued` |
 | `routed-arm-gate` | routed choice arms behind `OP_RGATE` in `execRules`, closure and emitted `tableRules` vs the interpreted grammar | `rgate-miss-set-short` |
+| `loop-continuation` | generated padded-operator chains and separated lists through `execRules`, closure and emitted `tableRules` vs the interpreted grammar | `loop-sep-gate-before-trivia`, `loop-sep-gate-before-trivia-emitted`, `seq-pad-first-set-drops-rest`, `seplist-first-item-set-dropped`, `repeat-lead-gate-kept` |
+| `dispatch-otherwise-commit` | a statement dispatch with committed and uncommitted `otherwise()` fallbacks, every engine vs the interpreted grammar | `otherwise-commit-bit-dropped`, `otherwise-commit-closure-routed`, `otherwise-commit-emitted` |
+| `prefix-arm` | `choice(sequence(X, a), X)` argument lists, every engine vs the interpreted grammar, plus the shared term's visit count | `prefix-arm-any-prefix`, `prefix-arm-off` |
+| `gap-gate` | generated SCSS-shaped operator chains (AST, CST host, tolerant, line tracking), every engine vs the interpreted grammar, plus operator-node visit counts | `gap-scan-wrong-offset`, `gap-scan-wrong-offset-emitted`, `gap-follow-narrowed`, `gap-slot-any-row`, `gap-slot-any-row-emitted` |
+| `routed-arm-gate2` | a name-once dispatch gated on a colon and the gap after it (`OP_RGATE2`), every engine vs the interpreted grammar, plus arm visit counts | `rgate2-second-at-first`, `rgate2-second-at-first-ascii`, `rgate2-second-at-first-emitted`, `rgate2-second-narrowed` |
 | `jess-oracle` | interpreted fuse vs the `PM_MACRO` artifact (the shipped assembler) vs `execRules` (reference), one process per leg | `exec-node-span` |
 | `emit-identity-one` | `PM_TABLE_EMIT=1` emitted assembly vs `=0` closure walk | `emit-node-span` |
 | `consumed-sweep` | bytes consumed per file, one build, appended as JSONL | `interp-many-cap`; BLIND to `tolerant-rec-off` |
@@ -211,11 +217,11 @@ that is what the sweeps themselves are for. It times nothing.
 
 ### UNPROVEN is not passing
 
-Four of the nine registered differentials drive jess's grammars over jess's
+Four of the fourteen registered differentials drive jess's grammars over jess's
 corpora, which live in an unpinned sibling checkout (`JESS_ROOT`) this repo does
 not vendor. Where that checkout is absent they are reported UNPROVEN on their own
 summary line — never as passing, and never silently omitted. CI runs the plain
-mode and proves the five self-contained ones; `--strict` makes an UNPROVEN entry a
+mode and proves the ten self-contained ones; `--strict` makes an UNPROVEN entry a
 failure and is what a release runs, on a box where the jess checkout exists.
 
 ## Adding a differential

@@ -170,6 +170,30 @@ function and **escaping** it is exempt — `src/combinators/ref.ts:47,49` delete
 from a `meta` built in `ref()` that outlives the call. Catching that needs
 escape analysis. The rule under-reports rather than over-reports, on purpose.
 
+### INV-6 — no assembled piece body reads a per-parse config field
+
+Decides: a read of `ctx.trackLines` or `ctx.build` inside a function that
+`src/table/assemble.ts`'s `lower` returns, that is, inside a piece.
+
+Those fields are fixed by `run()` before the entry is called and stay constant
+for the parse. The table lowering's premise is that option branching runs once,
+at assembly, by *selecting* a piece (a tracking piece or a non-tracking one, a CST
+piece or an AST one), so the piece never tests the option. Capture sinks
+(`_cstBuf`, `_fields`, `_errors`) are deliberately not on the list: they change
+mid-parse, so a piece has to ask.
+
+### INV-7 — no combinator parse path reads a construction-time option
+
+Decides: a member read off `opts` / `options` / `_opts` inside a combinator's
+`parse` body (an object literal's `parse(...)`, or any `(input, pos, ctx)` body),
+when that binding comes from an enclosing scope.
+
+INV-6's rule for the interpreter. `parser(opts, root)` fixes `opts` when the
+grammar is built, so reading it per parse asks a question already answered;
+`combinators/grammar.ts` once read nine of them per entry. An `opts` that is a
+parameter of the parse function arrives per call (the run-start boundary) and is
+not flagged, and neither are `ctx` reads, which are per-scope runtime state.
+
 ### INV-11 — one engine, one public name
 
 Decides two shapes, both read straight off a specifier node:
@@ -457,10 +481,10 @@ ref. Debt that is never restated is debt that is never paid.
 
 There is deliberately no wildcard syntax and no per-rule blanket.
 
-**24 allowlist entries** stand today — 20 `BY-DESIGN`, 1 `RULE-BUG`, and 3
-`DEBT`. The three linker metadata debts left when their `delete` operations were
-replaced with stable `undefined` assignments; the token-streaming groundwork
-remains active, tracked debt until its planned compiler integration lands.
+**23 allowlist entries** stand today — 20 `BY-DESIGN`, 1 `RULE-BUG`, and 2
+`DEBT`. The two `DEBT` entries are the dormant token-cursor groundwork
+(`token-scanner.ts`, `token-dispatch.ts`), kept as the build-out of Jess design
+ledger rows G14 and G19 until a compiler path uses it.
 
 Five are the **frozen ablation controls** — `src/table/exec-baseline.ts` and
 `src/table/encode-baseline.ts`, deliberate frozen copies kept in process so
@@ -494,10 +518,9 @@ in this group. Both were one import each, and both are now gone: the helpers
 live once in `analysis/gating.ts`, the module every analysis pass already
 imports.
 
-The `INV-5` linker metadata debt is now paid. `repointRef()` and `fusePieces()`
-clear `triviaKindLabels`, `disjoint`, and `grammarHostMode` with `= undefined`,
-preserving the stable shape of the long-lived `_meta` objects without changing
-the readers' absent-value semantics.
+The `INV-5` linker metadata debt is paid: `repointRef()` and `fusePieces()`, which
+cleared `triviaKindLabels`, `disjoint` and `grammarHostMode` on long-lived `_meta`
+objects, no longer exist, and INV-5 finds no `delete` on a long-lived object.
 
 ## Candidate checks that were REJECTED
 

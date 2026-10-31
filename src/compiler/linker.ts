@@ -23,7 +23,7 @@ import type { Runnable } from '../functional/run.ts'
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
  * form (RULE_ABI_PLAN §4). A package exports `linkable(rules(g => …))`; consumers
- * import that artifact and `fuse([...])` it — **no source of the base grammar is
+ * import that artifact and `compose([...])` it — **no source of the base grammar is
  * ever read**. Under the macro this is precompiled to static pieces; in the
  * interpreter it compiles here at load (like `compile()`).
  *
