@@ -21,6 +21,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   for it instead of being unrecorded and scanned again.
 - A case-insensitive dispatch on a key with no ASCII capital looks the key up as it
   is, without building its folded copy.
+- The closure engine takes no rollback mark for a child whose failure writes nothing:
+  an `optional()`, a choice and a repeat item whose child is a terminal, a node over
+  one, or a sequence that can only fail in its first term, skip the mark and the
+  restore. The answer is derived from the table once, when the assembly links.
 - A selective assembly hands the installed trivia scanner across an engine boundary
   only where the code on the other side reads it.
 - A printed table's compact char-class pool (`"…".split("|")`) is annotated

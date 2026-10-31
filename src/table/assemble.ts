@@ -108,7 +108,8 @@ import {
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
 import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
-import { holdsGap } from './hold-gap.ts'
+import { holdsGap, rowNullable } from './hold-gap.ts'
+import { failCleanAnalysis } from './fail-clean.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
@@ -534,6 +535,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const reached = new Set<number>()
   /** Row nullability for `holdsGap`, memoised for this assembly. */
   const NULLABLE = new Map<number, boolean>()
+  /** A child whose failure writes nothing needs no rollback mark (`fail-clean.ts`). */
+  const CLEAN = REC ? (): boolean => false : failCleanAnalysis(code)
 
   function pushLeaf(ctx: ParseContext, value: string, s: number, e: number): void {
     const lf: Leaf = { _tag: 'leaf', value, span: { start: s, end: e } }
@@ -2128,9 +2131,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_OPT: {
         const child = link(code[ip + 1]!)
         const gate = lookaheadClass(code[ip + 1]!)
+        const childClean = CLEAN(code[ip + 1]!)
         return (input, pos, ctx) => {
           if (gate !== null && !classHas(gate, lead(input, pos))) { EC.e = pos; return null }
-          const need = markCst(ctx)
+          const need = !childClean && markCst(ctx)
           const mRaw = MRAW
           const mTl = MTL
           const mLv = MLV
@@ -2835,6 +2839,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const n = code[ip + 2]!
         const choiceFx = fx[code[ip + 3]!] as string[]
         const base = ip + 4
+        // The arms first, so the answer reads theirs rather than walking them again.
+        for (let i = 0; i < n; i++) link(code[base + i]!)
+        const armsClean = CLEAN(ip)
 
         // THE TWO CHOICE SHAPES ARE TWO PIECES. `exec.ts` tested `table.exclusive`
         // on every choice execution; it is table data, so it selects here.
@@ -2971,7 +2978,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
           return (input, pos, ctx) => {
             const c = lead(input, pos)
-            const need = markCst(ctx)
+            const need = !armsClean && markCst(ctx)
             const mRaw = MRAW
             const mTl = MTL
             const mLv = MLV
@@ -3136,7 +3143,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (pn !== 0) {
             return (input, pos, ctx) => {
               const c = lead(input, pos)
-              const need = markCst(ctx)
+              const need = !armsClean && markCst(ctx)
               const mRaw = MRAW
               const mTl = MTL
               const mLv = MLV
@@ -3166,7 +3173,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           return (input, pos, ctx) => {
             const c = lead(input, pos)
-            const need = markCst(ctx)
+            const need = !armsClean && markCst(ctx)
             const mRaw = MRAW
             const mTl = MTL
             const mLv = MLV
@@ -3188,7 +3195,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         return (input, pos, ctx) => {
           const c = lead(input, pos)
-          const need = markCst(ctx)
+          const need = !armsClean && markCst(ctx)
           const mRaw = MRAW
           const mTl = MTL
           const mLv = MLV
@@ -3331,6 +3338,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
         const skipBeforeFirst = sepIp < 0 && min === 0
+        const itemClean = sepIp < 0 && CLEAN(code[ip + 1]!) && !rowNullable(code, k, code[ip + 1]!, NULLABLE)
 
         /**
          * TOLERANT RECOVERY — the third implementation of `recoverScan`'s
@@ -3458,6 +3466,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const out: unknown[] | undefined = collect ? [] : undefined
           const hasTrivia = ctx.trivia !== undefined
           const needMark = rollbackNeeded(ctx)
+          // A clean item with no trivia scanned in front of it has nothing to undo.
+          const markLater = needMark && (!itemClean || hasTrivia)
+          const markFirst = needMark && (!itemClean || (hasTrivia && skipBeforeFirst))
           // A completions probe deliberately observes swallowed item failures.
           // Keep the ordinary child path while one is active so this structural
           // fast stop cannot erase an item completion at the cursor.
@@ -3477,14 +3488,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // Per ITERATION, never hoisted: a preceding item's `node()` opened and
             // closed a capture buffer, so `ctx._cstBuf` is not the object it was
             // at the loop head. `needMark` is the pre-existing loop-invariant.
-            if (needMark) markCst(ctx)
-            const mRaw = needMark ? MRAW : 0
-            const mTl = needMark ? MTL : 0
-            const mLv = needMark ? MLV : 0
-            const mFl = needMark ? ctx._fields?.length ?? 0 : 0
-            const mEr = needMark ? ctx._errors?.length ?? 0 : 0
-            const mLog = needMark ? ctx._triviaLog?.length ?? 0 : 0
-            const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
+            const markIt = count > 0 ? markLater : markFirst
+            if (markIt) markCst(ctx)
+            const mRaw = markIt ? MRAW : 0
+            const mTl = markIt ? MTL : 0
+            const mLv = markIt ? MLV : 0
+            const mFl = markIt ? ctx._fields?.length ?? 0 : 0
+            const mEr = markIt ? ctx._errors?.length ?? 0 : 0
+            const mLog = markIt ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = markIt ? ctx._rootTriviaLog?.length ?? 0 : 0
             let itemStart = cur
             let sepEnd = -1
             const viaRepItem = sep === undefined && count >= min && (count > 0 || skipBeforeFirst)
@@ -3496,7 +3508,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (sepLeads) LEAD.at = cur
               const sv = sep(input, sp, ctx)
               if (sv === FAIL) {
-                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
                 if (committed(ctx)) return FAIL
                 break
               }
@@ -3507,19 +3519,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               itemStart = skipTrivia(input, itemStart, ctx)
             }
             if (itemStart >= input.length && viaRepItem) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
             if (count >= min && gateItems && !itemMayStart!(input, itemStart)) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
             ctx._fc = false
             const v = child(input, itemStart, ctx)
             if (v === FAIL) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (committed(ctx)) return FAIL
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
@@ -3527,7 +3539,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (EC.e === itemStart && viaRepItem) {
               // Zero-width item: `repItem`'s TERMINATION device, not a semantic
               // filter — and it applies only where `repItem` runs.
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               break
             }
             if (out !== undefined) out.push(v)
