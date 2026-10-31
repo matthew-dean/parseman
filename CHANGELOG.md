@@ -3,6 +3,28 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.59.0 — unreleased
+
+- **A sequence led by an optional pad has its operator's first set.** A `regex()` that
+  may match empty still reports `any` as its own first set, since it can match empty
+  anywhere, but it now also carries the first characters of its non-empty matches. A
+  sequence, which tracks nullability itself, unions those with the next term's, so
+  `sequence(regex(/[ \t]*/), regex(/[*%]/), regex(/[ \t]*/))` is `{ws, *, %}` instead
+  of `any`. A repeat of such an operator now has an item class and the operator's node
+  a gate: at a value end (`;`, `)`, `,`) an operator chain `A (op A)*` stops on the
+  character instead of opening each level's operator to scan an empty pad and fail.
+  Jess's SCSS grammar writes its math operators this way: its generated workload parses
+  in 10.8% fewer instructions with the JIT and 9.1% fewer without it. Trees are
+  unchanged.
+- **A separated list ends on a character its separator cannot start.** Past its
+  minimum, a `sepBy()` whose separator cannot match empty now tests the character after
+  the gap against the separator's first set (already in the table as the recovery
+  sentinel) in both table engines, and ends the list there without entering the
+  separator. A `field(…, { leadingTrivia: true })` separator, a completions probe and
+  tolerant recovery keep entering it. `test/unit/table-loop-continuation.test.ts`
+  compares every table reader with the interpreter over generated operator chains and
+  lists, and is registered in `check:differentials`.
+
 ## 0.58.0 — 2026-10-31
 
 - **Breaking: under rollup, rolldown and Vite, a grammar's carried pieces ship beside
