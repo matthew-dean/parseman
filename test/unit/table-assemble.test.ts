@@ -587,9 +587,10 @@ describe('table assembler', () => {
     const scoped = token(choice(
       parser({ trivia: null }, regex(/@a/)), regex(/@b/), regex(/@c/), regex(/@d/),
     ))
+    // A no-trivia scope inside a token is its child in the table
+    // (`scopeIsIdentity`), so the selected body takes it in place.
     const scopedProgram = encodeTable({ Root: scoped })
-    expect(scopedProgram.lexPrograms).toBeUndefined()
-    expect(scopedProgram.code[scopedProgram.rules.Root!]).toBe(OP_TOKEN)
+    expect(scopedProgram.code[scopedProgram.rules.Root!]).toBe(OP_LEX_PROGRAM)
     for (const input of ['@a', '@z']) {
       expect(digestValue(run(tableRules(scopedProgram).Root!, input)), input)
         .toBe(digestValue(run(scoped, input)))
@@ -631,6 +632,7 @@ describe('table assembler', () => {
       )),
       S5: token(sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e'))),
       C2: token(choice(literal('a'), literal('b'))),
+      C3: token(choice(literal('a'), literal('b'), literal('c'))),
       C4: token(choice(literal('a'), literal('b'), literal('c'), literal('d'))),
       C8: token(choice(
         literal('a'), literal('b'), literal('c'), literal('d'),
@@ -653,6 +655,7 @@ describe('table assembler', () => {
       S4: ['word!', 'word(!', 'x!', 'word?'],
       S5: ['abcde', 'abcdx'],
       C2: ['a', 'b', 'z'],
+      C3: ['a', 'c', 'z'],
       C4: ['a', 'd', 'z'],
       C8: ['a', 'h', 'z'],
     }
@@ -948,9 +951,11 @@ describe('table assembler', () => {
     const selectedProg = encodeTable({ Root: suffixLine }, { trackLines: true })
     const characterProg = encodeTable({
       Root: suffixLine,
-      // A withCtx edge still lacks a named projection, keeping this comparison
-      // on the CHARACTER lowering without understating scanner completeness.
-      Incomplete: withCtx({ comparison: true }, literal(';')),
+      // A sequence of six terms has no fixed lexical template, keeping this
+      // comparison on the CHARACTER lowering.
+      Incomplete: token(sequence(
+        literal('a'), literal('b'), literal('c'), literal('d'), literal('e'), literal('f'),
+      )),
     }, { trackLines: true })
     expect(selectedProg.code[selectedProg.rules.Root!]).toBe(OP_LEX_BODY)
     expect(characterProg.code[characterProg.rules.Root!]).not.toBe(OP_LEX_BODY)

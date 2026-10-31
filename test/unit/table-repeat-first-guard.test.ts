@@ -180,10 +180,8 @@ describe('table REP optional-item first-set guard', () => {
         ok: boolean; value: unknown; span: { start: number; end: number }
       })('?', 0, ctx)
       expect(result, name).toEqual({ ok: true, value: [], span: { start: 0, end: 0 } })
-      // The shipped engines feed completionsAt; exec.ts remains the recognition
-      // reference and deliberately has no probe recording at its leaf sites.
-      if (name === 'reference') expect(ctx._probe.best).toBeNull()
-      else expect(ctx._probe.best?.expected).toEqual(['"a"'])
+      // All three engines feed completionsAt from the item's leaf.
+      expect(ctx._probe.best?.expected, name).toEqual(['"a"'])
     }
   })
 

@@ -37,6 +37,7 @@ import type { BalancedSpec } from '../combinators/scanTo.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
 import { keywordsRegExp } from '../combinators/keywords.ts'
+import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 
 /** A terminal in the derived alphabet, with its globally assigned id. */
 export type TokenTerminal =
@@ -135,12 +136,17 @@ export type ExecutableLexNode =
   | {
     readonly kind: 'choice'
     readonly arms: readonly ExecutableLexNode[]
-    readonly firstSets: readonly FirstSet[]
+    /** The authored arms: the encoder classifies them as the character choice would. */
+    readonly parsers: readonly Combinator<unknown>[]
+    /** Inside a no-trivia scope of the token, where the encoder's trivia is none. */
+    readonly cleared: boolean
     readonly armExpected: readonly (readonly string[])[]
     readonly expected: readonly string[]
   }
   | { readonly kind: 'not'; readonly body: ExecutableLexNode; readonly expected: readonly string[] }
   | { readonly kind: 'optional'; readonly body: ExecutableLexNode }
+  /** A separator-less `many`/`oneOrMore`; `max` −1 is unbounded. */
+  | { readonly kind: 'repeat'; readonly body: ExecutableLexNode; readonly min: number; readonly max: number }
 
 export type ExecutableFixedLexBody = {
   readonly kind: 'fixed-tree'
@@ -204,9 +210,22 @@ export function selectOptionalSuffixLexBody(ir: LexicalIr): LexBodyCandidate {
 /** Unwrap only scopes that token() has already installed identically. The
  * returned parser is still the authored terminal/sequence; no effectful wrapper
  * or final named winner is guessed from construction metadata. */
+/**
+ * A rule reference made with no trivia in force reinstalls the rule's own
+ * ambient trivia when the rule has a position that reads it (`ref.ts`, the
+ * encoder's `scopedRef`), and inside a token none is in force. Such a rule's
+ * terms are then trivia-separated, which a lexical body does not model, so the
+ * reference is not lowered.
+ */
+function reinstallsRuleTrivia(reference: Combinator<unknown>, target: Combinator<unknown>): boolean {
+  return (reference._meta.grammarTrivia ?? target._meta.grammarTrivia) !== undefined
+    && hasOwnTriviaBoundary(target)
+}
+
 function directTokenBodyParser(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
+  scope?: { cleared: boolean },
 ): Combinator<unknown> | undefined {
   const outer = parser._def
   if (outer.tag !== 'token') return undefined
@@ -220,12 +239,13 @@ function directTokenBodyParser(
         || wrapper.captureTrivia === true || wrapper.rootCapture === 'opaque'
         || wrapper.constructionTrackLines !== 'inherit'
         || wrapper.constructionCaptureTriviaKinds !== undefined) return undefined
+      if (scope !== undefined) scope.cleared = true
       body = wrapper.parser
       continue
     }
     if (wrapper.tag === 'lazy') {
       const target = resolvedLazyTarget(body, resolve)
-      if (target === undefined) return undefined
+      if (target === undefined || reinstallsRuleTrivia(body, target)) return undefined
       body = target
       continue
     }
@@ -436,6 +456,7 @@ function directFixedLexNode(
   resolve: ((name: string) => Combinator<unknown> | undefined) | undefined,
   active: Set<Combinator<unknown>>,
   pureOnly = false,
+  cleared = false,
 ): ExecutableLexNode | undefined {
   let current = parser
   const wrappers = new Set<Combinator<unknown>>()
@@ -444,7 +465,7 @@ function directFixedLexNode(
     const def = current._def
     if (def.tag === 'lazy') {
       const target = resolvedLazyTarget(current, resolve)
-      if (target === undefined) return undefined
+      if (target === undefined || reinstallsRuleTrivia(current, target)) return undefined
       current = target
       continue
     }
@@ -459,42 +480,56 @@ function directFixedLexNode(
     if (terminal !== undefined) return { kind: 'terminal', terminal }
     const def = current._def
     if (def.tag === 'grammar') {
+      // A scope with no trivia of its own writes nothing under a token that is
+      // not already in force: a cleared one runs as its child in the table
+      // (`scopeIsIdentity`) and an inheriting one encodes no row. Its line
+      // policy is the table's own (`hasScopedTrackLines`). So it is its child
+      // at any position.
+      if (def.triviaParser === undefined && def.captureTrivia !== true
+        && def.rootCapture !== 'opaque' && def.constructionCaptureTriviaKinds === undefined) {
+        return directFixedLexNode(def.parser, resolve, active, pureOnly, cleared || def.clearTrivia === true)
+      }
       if (!pureOnly || (def.parser._def.tag !== 'token'
         && (def.clearTrivia !== true || def.triviaParser !== undefined
           || def.captureTrivia === true || def.rootCapture === 'opaque'))) return undefined
-      return directFixedLexNode(def.parser, resolve, active, true)
+      return directFixedLexNode(def.parser, resolve, active, true, cleared)
     }
     if (def.tag === 'sequence') {
       if (def.parsers.length < 2 || def.parsers.length > 5) return undefined
-      const parts = def.parsers.map(part => directFixedLexNode(part, resolve, active, pureOnly))
+      const parts = def.parsers.map(part => directFixedLexNode(part, resolve, active, pureOnly, cleared))
       if (parts.some(part => part === undefined)) return undefined
       return { kind: 'sequence', parts: parts as ExecutableLexNode[] }
     }
     if (def.tag === 'choice') {
-      if ((def.parsers.length !== 2 && def.parsers.length !== 4 && def.parsers.length !== 8)
+      if (def.parsers.length < 2
         || def.strategy.tag !== 'firstMatch'
         || def.gates.some(gate => gate !== null)
         || def.autoNot.some(check => check !== null)) return undefined
-      const arms = def.parsers.map(arm => directFixedLexNode(arm, resolve, active, pureOnly))
+      const arms = def.parsers.map(arm => directFixedLexNode(arm, resolve, active, pureOnly, cleared))
       if (arms.some(arm => arm === undefined)) return undefined
-      const final = classifyFinalChoice(def.parsers, resolve)
       return {
         kind: 'choice', arms: arms as ExecutableLexNode[],
-        firstSets: final.firstSets,
+        parsers: def.parsers, cleared,
         armExpected: def.parsers.map(deriveExpected),
         expected: def.parsers.flatMap(deriveExpected),
       }
     }
     if (def.tag === 'not') {
-      const body = directFixedLexNode(def.parser, resolve, active, true)
+      const body = directFixedLexNode(def.parser, resolve, active, true, cleared)
       return body === undefined ? undefined : {
         kind: 'not', body,
         expected: assertionFailureExpected(false, def.parser._tag),
       }
     }
     if (def.tag === 'optional') {
-      const body = directFixedLexNode(def.parser, resolve, active, pureOnly)
+      const body = directFixedLexNode(def.parser, resolve, active, pureOnly, cleared)
       return body === undefined ? undefined : { kind: 'optional', body }
+    }
+    if (def.tag === 'many' || def.tag === 'oneOrMore') {
+      const body = directFixedLexNode(def.parser, resolve, active, pureOnly, cleared)
+      return body === undefined ? undefined : {
+        kind: 'repeat', body, min: def.tag === 'many' ? 0 : def.min, max: def.max ?? -1,
+      }
     }
     return undefined
   } finally {
@@ -506,9 +541,10 @@ export function directFixedTokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableFixedLexBody | undefined {
-  const body = directTokenBodyParser(parser, resolve)
+  const scope = { cleared: false }
+  const body = directTokenBodyParser(parser, resolve, scope)
   if (body === undefined) return undefined
-  const root = directFixedLexNode(body, resolve, new Set())
+  const root = directFixedLexNode(body, resolve, new Set(), false, scope.cleared)
   return root === undefined ? undefined : { kind: 'fixed-tree', root }
 }
 
@@ -1556,8 +1592,11 @@ function normalizeLexical(
   if (stack.has(parser)) return { refusal: 'recursive token body' }
   stack.add(parser)
   try {
-    return withLexicalControl(session, parser._def.tag, () =>
-      normalizeLexicalBody(parser, resolve, stack, session))
+    // A nested `balanced()` is its scanner machine, not the transform that
+    // builds its value — `sequence('@', balanced('{', '}'))` as a skipper.
+    return normalizeBalancedLexical(parser, resolve, session)
+      ?? withLexicalControl(session, parser._def.tag, () =>
+        normalizeLexicalBody(parser, resolve, stack, session))
   } finally {
     stack.delete(parser)
   }
@@ -1841,8 +1880,9 @@ function fixedBindingProjection(
   // and the emitted adapter captures that site's named body after linking every
   // scan root. Only ambient trivia/scanSkip remain live runtime callbacks; they
   // are scanner POLICY, never binding authority for these authored own children.
-  // Recovery/withCtx still have no equivalent named template.
-  if (edge.parentTag === 'recover' || edge.parentTag === 'withCtx') readerMask = 0b011
+  // Recovery still has no equivalent named template. `withCtx` has one: the
+  // emitter's OP_WITHCTX body calls its child by the name `link()` minted.
+  if (edge.parentTag === 'recover') readerMask = 0b011
   // Sequence strict, adjacency, and recovery bodies now all use scalar block
   // chains, so no supported variant is withheld here.
   const words = [

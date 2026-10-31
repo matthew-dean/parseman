@@ -14,8 +14,10 @@ to childless `OP_LEX_PROGRAM`. These exist to prove winner-only TableProgram
 serialization, direct scalar closure/named bodies, and exact failure/probe effects
 across every reader. They are not a recursive lexical IR interpreter and do not walk
 child arrays at parse time. They also do not claim that CSS or Less has been tokenized.
-Any other reachable capability gap keeps the entire program on the CHARACTER lowering,
-so the shipping Jess graphs still select zero lexical bodies or programs.
+Any other reachable capability gap keeps the entire program on the CHARACTER lowering.
+The fixed tree now covers choices of any arity and separator-less repeats, and the
+four shipping Jess grammars are capability-complete, so they select lexical bodies
+(see `parseman-0.48.md` §3.0).
 Newline-capable regexes use the same selected body; tracked variants publish the
 matched range into the canonical line index before the optional suffix's swallowed
 failure state, matching the CHARACTER transaction without a second recognizer.
