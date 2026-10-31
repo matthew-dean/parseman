@@ -36,23 +36,45 @@
  *   node scripts/check-differentials.mjs --only=id[,id]
  *
  * ENVIRONMENT. Four of the seven registered differentials drive JESS'S grammars
- * over JESS'S corpora, which live in a sibling checkout (`JESS_ROOT`, default
- * /Users/matthew/git/oss/jess) that this repo does not vendor. Where that
- * checkout is absent they are reported UNPROVEN — never as passing. `--strict` is
+ * over JESS'S corpora, which live in a jess worktree (`JESS_ROOT`) that this repo
+ * does not vendor. There is no default: a checkout nobody built (a mirror that
+ * tracks `dev` while its packages' `lib/` stay at an older commit) makes every one
+ * of them red before any plant. Unset, they are reported UNPROVEN — never as
+ * passing. Set to a checkout whose `lib/` is older than its last source commit,
+ * the gate refuses to run them and fails. `--strict` is
  * what a release runs; plain mode is what CI runs, and CI proves the three
  * self-contained ones. An UNPROVEN entry is a differential whose teeth are
  * unknown in this environment, and the summary says so on its own line so it
  * cannot be read as a green.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFECTS } from './differential-defects.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const JESS_ROOT = process.env.JESS_ROOT ?? '/Users/matthew/git/oss/jess'
+const JESS_ROOT = process.env.JESS_ROOT ?? ''
+
+/**
+ * Why `JESS_ROOT` cannot serve the jess differentials, or `undefined` when it can.
+ * The grammars import jess's built packages, so a package whose `lib/` predates
+ * its last source commit is a stale build, not a corpus.
+ */
+function jessRootProblem(root, git = (args) => execFileSync('git', args, { encoding: 'utf8' }).trim()) {
+  if (root === '') return 'JESS_ROOT is not set; point it at a jess worktree built with `pnpm build:release`'
+  if (!existsSync(root)) return `JESS_ROOT ${root} does not exist`
+  for (const pkg of ['packages/core', 'packages/parser-shared']) {
+    const built = join(root, pkg, 'lib')
+    if (!existsSync(built)) return `${pkg} in ${root} is not built (no lib/)`
+    let srcTime
+    try { srcTime = Number(git(['-C', root, 'log', '-1', '--format=%ct', '--', `${pkg}/src`])) } catch { return `${root} is not a git checkout` }
+    const libTime = statSync(built).mtimeMs / 1000
+    if (libTime < srcTime) return `${pkg}/lib in ${root} is older than its last source commit; rebuild it (\`pnpm build:release\`)`
+  }
+  return undefined
+}
 const REGISTER = join(REPO, 'bench/jess/register.mjs')
 const NODE = process.execPath
 /** One dialect, 87 files: enough corpus to drive every plant, fast enough for CI. */
@@ -306,10 +328,17 @@ if (args.includes('--list')) {
   process.exit(0)
 }
 
-const haveJess = existsSync(JESS_ROOT)
+const jessProblem = jessRootProblem(JESS_ROOT)
+const haveJess = jessProblem === undefined
 const entries = REGISTRY.filter(d => ONLY === null || ONLY.has(d.id))
 
-console.log(`differential teeth gate — ${entries.length} registered, jess corpus ${haveJess ? `at ${JESS_ROOT}` : 'ABSENT'}\n`)
+console.log(`differential teeth gate — ${entries.length} registered, jess corpus ${haveJess ? `at ${JESS_ROOT}` : `UNAVAILABLE: ${jessProblem}`}\n`)
+// A root that was SET but is stale is an environment error, not an absence: it is
+// the configuration that made four differentials red before any plant.
+if (JESS_ROOT !== '' && !haveJess && entries.some(d => d.needs === 'jess')) {
+  console.log(`REFUSING the jess differentials: ${jessProblem}`)
+  process.exit(2)
+}
 
 const baselines = new Map()
 const unproven = []
@@ -319,8 +348,8 @@ const failures = []
 // planted run is compared against.
 for (const d of entries) {
   if (d.needs === 'jess' && !haveJess) {
-    unproven.push(`${d.id} — jess corpus absent at ${JESS_ROOT}`)
-    console.log(`  UNPROVEN  ${d.id}  (jess corpus absent)`)
+    unproven.push(`${d.id} — ${jessProblem}`)
+    console.log(`  UNPROVEN  ${d.id}  (no jess corpus)`)
     continue
   }
   assertCleanSrc()
