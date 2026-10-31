@@ -25,7 +25,7 @@ Parseman's Less parse still costs about 2.4× `lessc`'s instructions.)
 
 - **Marginal instructions per parse.** Hardware-counted instructions, taken as a
   difference so JIT warm-up cancels: with the JIT, `(I(N2) − I(N1)) / (N2 − N1)` over two
-  parse counts; with `--jitless`, `I(2) − I(1)` or `I(3) − I(1)` as the PR states. A
+  parse counts; with `--jitless`, `I(2) − I(1)` or `(I(3) − I(1)) / 2` as the PR states. A
   short window from zero counts warm-up, not the parser.
 - **Both modes.** The JIT number is what users see. The `--jitless` number is steadier
   and shows whether a change removed work or only moved it into something V8 inlines.
@@ -36,8 +36,10 @@ Parseman's Less parse still costs about 2.4× `lessc`'s instructions.)
 - **Same tree.** A change is not a win unless the ASTs (and CSTs) are byte-identical on
   the fixtures: `benchmark.css`, `benchmark.less` and a generated SCSS workload.
 - **x64 CI gates.** The `grammar-perf`, `workload-perf` and `macro-perf` jobs run on
-  GitHub's x64 runners, five passes each, and a null control. Apple-silicon results have
-  repeatedly disagreed with x64 ones. See [Perf gates](../design/perf-gates.md).
+  GitHub's x64 runners. The grammar and workload gates take five passes each against a null
+  control. The macro gate times Jess's shipping macro parsers (8 rounds of 2 runs by
+  default) and compares a ratio to a reference build against a ceiling. Apple-silicon
+  results have repeatedly disagreed with x64 ones. See [Perf gates](../design/perf-gates.md).
 
 Two readings that look like regressions and aren't: the grammar gate's `expected/none`
 case leans about +1% on the head side whenever the two trees differ at all
@@ -70,7 +72,8 @@ Against 0.55.2, with the budgets Jess ships, ASTs byte-identical
   ceilings were raised, and each grown example grammar measures no slower. `446d4e4a`,
   0.57.0.
 - **Static `choiceFx`.** A choice that enters no arm reports the pooled expected set the
-  table already holds, instead of rebuilding it arm by arm. `ca653e9e`, 0.57.0.
+  table already holds, instead of rebuilding it arm by arm. No separate measurement was
+  recorded; it is counted in the 0.57.0 table above. `ca653e9e`, 0.57.0.
 - **Merged first sets for node, attempt and repeat-item gates.** A `compose()` body's first
   set resolves through the merged winners, so Jess's `CompoundSelector` is no longer
   entered at `{`. `fcad506f`, 0.57.0.
@@ -232,29 +235,32 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   piece costs only +1.9% JIT (SCSS) and +3.5% `--jitless` (CSS), so fusing every pair would
   win about 0–0.8% JIT and 2–3% `--jitless`. Single-child wrappers are 42–56% of pieces, but
   the cost is the work inside frames, scopes and gates, not the boundary between them.
+  Measured on the `perf/precedence-loop` lane; no code kept.
 - **Full precedence-frame loop.** Detect an operator-precedence chain (value, math sum,
   math unary, …) and run it as one loop: atom once, then a first-character operator switch.
   Ceilings were measured before building: about 4% on an SCSS declaration and about 1% on a
   Less one, once nullable first sets and gap gates exist. The Less cost left is the gap
-  re-scanned by the operator pads. Not built. Comparisons (`A (cmp A)?`) are not chains.
+  re-scanned by the operator pads. Not built. Comparisons (`A (cmp A)?`) are not chains. Measured on `perf/precedence-loop`.
 - **Resumable gap op as a pre-scan variant.** Resume a gap scan inside the guard. The ceiling
   was −11% per Less keyword and 2.7% of pieces, and a guard version is a pre-scan, which
   ruled out. The shipped
-  `OP_GAPGATE` above is the form that reads the gap once and keeps it.
+  `OP_GAPGATE` above is the form that reads the gap once and keeps it. Skipped on
+  `perf/value-chain-fusion` (head `6bc77801` at the time); no code kept.
 - **Lazy raw entries.** Compute a node's raw entries only when asked. Raw entries are 1.4%
-  of a Less `color: red;`'s cost, so the ceiling is about 1.4%. Not worth it.
+  of a Less `color: red;`'s cost, so the ceiling is about 1.4%. Not worth it. From the protocol census on
+  `perf/value-chain-fusion` @ `6bc77801`; no code kept.
 - **Lazy single-child collector slot.** Allocate a collector's slot only when a second child
-  arrives. It lost under `--jitless`.
+  arrives. It lost under `--jitless`. No branch kept.
 - **Lazily computed fail-clean answers.** Compute "does this child's failure write nothing"
   on first use instead of once when the assembly links. CSS +0.45%. The answer is derived
-  once from the table.
+  once from the table. No branch kept.
 - **Frameless general collapse.** Run any `collapse` node as its child with no frame. +3%.
-  The one-child case and the optional-terms case shipped in 0.58.0 (above).
+  The one-child case and the optional-terms case shipped in 0.58.0 (above). No branch kept for the general form.
 - **Whitespace-only minification of artifacts.** Strip whitespace from the printed grammar.
   The minifier (oxc) rewrote string literals as template literals, so `.jess` was +2.4%
-  `--jitless`. Not shipped.
+  `--jitless`. Not shipped; no branch kept.
 - **A `quiet()` lookahead primitive.** A quiet variant of `peek()` for guards. Rejected
-  because it would entrench pre-scans.
+  because it would entrench pre-scans. Never built.
 
 ## Parked
 
