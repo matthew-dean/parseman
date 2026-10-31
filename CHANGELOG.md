@@ -24,6 +24,24 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   tolerant recovery keep entering it. `test/unit/table-loop-continuation.test.ts`
   compares every table reader with the interpreter over generated operator chains and
   lists, and is registered in `check:differentials`.
+- **`otherwise(p, { commit: false })`.** A `dispatch()` commits whenever a selected branch
+  fails. The option keeps that cut on the `when()` cases and lets the fallback fail
+  uncommitted, so a statement read once by its name, which no fallback arm reads, ends
+  the statement list instead of stopping the parse, while a broken call (a `when()`
+  case) still stops it. The interpreter, every table engine, the IR printer and the
+  macro evaluator carry it. Test: `test/unit/dispatch-otherwise-commit.test.ts`.
+- **An arm whose next sibling is its own prefix parses the prefix once.**
+  `choice(sequence(X, a), X)`, with the choice's value unused, is encoded with its first
+  arm as `sequence(X, optional(a))`, so an `X` with no `a` after it is not parsed again
+  by the next arm. Failures are reported as before. Jess's SCSS mixin argument
+  (`$name: v`, `v...`, `v`) is this shape. Test: `test/unit/table-prefix-arm.test.ts`.
+- An optional repeat item no longer tests its lead gate twice: the repeat's own item
+  class covers it. And with no separator or gap in front of the item, the item class is
+  tested once per iteration, not twice.
+- Fixed: a `sepBy` of `min: 1` whose first item fails reports the item's derived set at
+  the list's start in every table reader, as the interpreter does (`repeat.ts`
+  `failAt`). The tables reported what the failed item left, e.g. `")"` inside the group
+  of `x:(1;` where the interpreter said what may start a value.
 
 ## 0.58.0 — 2026-10-31
 
