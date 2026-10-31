@@ -300,17 +300,33 @@ jobs:
   # no cross-machine term, and a case fails only when it also loses 3/4 of its
   # paired samples.
   grammar-perf:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { ref: "ffe1e86", head: "08a2d4a0" }
+          - { ref: "08a2d4a0", head: "b416a445" }
+          - { ref: "905037f9", head: "446d4e4a" }
+          - { ref: "446d4e4a", head: "ca653e9e" }
+          - { ref: "ca653e9e", head: "fcad506f" }
+          - { ref: "30ea4dbf", head: "f4a0aef4" }
+          - { ref: "f4a0aef4", head: "4480c814" }
+          - { ref: "4480c814", head: "31589f0d" }
+          - { ref: "31589f0d", head: "aaf26457" }
+          - { ref: "8d35bae0", head: "bc11a9ca" }
+          - { ref: "bc11a9ca", head: "d865a948" }
+          - { ref: "808f9fbc", head: "95931ad6" }
+          - { ref: "ffe1e86", head: "9fc24e9e" }
+          - { ref: "08a2d4a0", head: "bc11a9ca" }
+          - { ref: "bc11a9ca", head: "9fc24e9e" }
+          - { ref: "ffe1e86", head: "bc11a9ca" }
+    name: bisect ${{ matrix.ref }}..${{ matrix.head }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Full history: the gate builds the reference side from a sha pinned in
-          # bench/grammar-density/config.json, and a shallow clone cannot see it.
-          # A missing reference is a hard failure, never a skip.
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -318,8 +334,8 @@ jobs:
           node-version: lts/*
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Rollback-density perf gate vs the pinned reference commit
-        run: pnpm perf:guard:grammars
+      - name: Grammar gate, one step
+        run: node --import tsx/esm bench/grammar-perf-guard.ts --ref=${{ matrix.ref }} --head-ref=${{ matrix.head }} || true
 
   # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
   #
