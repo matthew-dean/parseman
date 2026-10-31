@@ -31,10 +31,9 @@ export type Dialect = 'css' | 'less' | 'scss' | 'jess'
 /**
  * The `assemblyBudget` each grammar's package passes to the plugin in jess's build.
  * `undefined` is the plugin default. Keep these equal to jess's tsdown configs, or
- * the gate measures artifacts jess does not ship. jess's CSS build also passes an
- * `assemblyProfile` over its own corpus, which is not vendored, so this gate ranks
- * CSS's sites statically: the budget caps the bytes either way, but the selected
- * sites can differ from jess's.
+ * the gate measures artifacts jess does not ship. No jess build passes an
+ * `assemblyProfile`, so every grammar's sites are ranked statically, here as in
+ * jess.
  */
 export const ASSEMBLY_BUDGETS: Readonly<Record<Dialect, number | undefined>> = {
   css: 1, less: undefined, scss: undefined, jess: 0,
