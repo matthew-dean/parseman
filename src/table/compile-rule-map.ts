@@ -355,10 +355,11 @@ export function compileRuleMap(
     const roots = assemblyExtraIps(artifact)
     let siteBytes, fixed
     try {
-      siteBytes = emitAssemblySource(table, artifact, cfg, roots, true).siteBytes
+      // Priced with every gap gate lowered as its item (`gapNeutral`).
+      siteBytes = emitAssemblySource(table, artifact, cfg, roots, true, undefined, true).siteBytes
       // What any selective assembly costs before its first site body: the shared
       // prelude and the factory's tail. A budget that cannot cover it buys nothing.
-      fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set()).source.length
+      fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set(), true).source.length
     } catch (e) {
       if (e instanceof Unemittable) return { ...none, refusal: e.construct }
       throw e
@@ -373,7 +374,7 @@ export function compileRuleMap(
     for (let attempt = 0; attempt < 16; attempt++) {
       const sites = selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, target - fixed, profile)
       if (sites.size === 0) return none
-      const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites).source.length
+      const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites, true).source.length
       if (bytes <= ceiling) return { sites, bytes: Math.ceil(bytes * SUPERCOMPILE_GROWTH) }
       // Scale by the overshoot, and by at least 1%: near the ceiling a site is
       // the unit, and the ratio alone can stall a few bytes over it until the

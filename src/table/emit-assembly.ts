@@ -591,6 +591,12 @@ export function emitAssemblySource(
   extraIps: readonly number[] = [],
   staticBuild = false,
   select?: ReadonlySet<number>,
+  /**
+   * Lower every gap gate (`gap-gate.ts`) as the item it wraps. A selection is
+   * priced and chosen on this lowering, so adding the gates moves no site in or
+   * out of a budget; the artifact is then emitted with them.
+   */
+  gapNeutral = false,
 ): EmitResult {
   const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
@@ -629,7 +635,7 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   const reachable = [...reachableSites(code, roots)]
-  const GAP_ROWS = gapRows(code, roots)
+  const GAP_ROWS = gapNeutral ? new Set<number>() : gapRows(code, roots)
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -2319,7 +2325,7 @@ return [key,v]
         }
         // THE GAP GATE (`gap-gate.ts`, `assemble.ts`): the item's leading gap is
         // read once here and handed to its regex row through the slot.
-        const gapIp = sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1
+        const gapIp = !gapNeutral && sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1
         let gapCode = (_rb: string): string => ''
         if (gapIp >= 0) {
           const row = code[gapIp + 2]!
