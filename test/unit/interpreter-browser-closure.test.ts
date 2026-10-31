@@ -31,7 +31,10 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // document trivia an unlabelled scanner.
 // Bumped +46B to 59,793B: a labelled trivia spec carries the slots the table
 // engines' root-selection fast path primes (`table/trivia-gap.ts`).
-const BASELINE_RAW_BYTES = 59_793
+// Bumped +257B to 60,050B: a nullable `regex()` carries the first chars of its
+// non-empty matches, so a sequence led by an optional pad (`ws* '*' ws*`) has a
+// finite first set instead of `any`.
+const BASELINE_RAW_BYTES = 60_050
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

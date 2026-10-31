@@ -300,6 +300,16 @@ export function regexCanMatchEmpty(source: string): boolean {
   try { return nullable(parseRegex(source)) } catch { return true }
 }
 
+/**
+ * The first chars of a NON-EMPTY match of `source`, nullable or not: the set
+ * `firstSetFromRegex` reports for a pattern that must consume, without its
+ * widening of a nullable one to `any()`. Only a caller that accounts for the
+ * empty match itself may use it (`sequenceSet`). `any()` when unparseable.
+ */
+export function consumingFirstSetFromRegex(source: string): FirstSet {
+  try { return firstSet(parseRegex(source)) } catch { return any() }
+}
+
 export function firstSetFromRegex(source: string): { firstSet: FirstSet; canMatchNewline: boolean } {
   let ast: Node
   try {

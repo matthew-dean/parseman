@@ -4,7 +4,7 @@ import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
 import { shorthandRanges, parseClassRanges } from '../regex/classes.ts'
-import { firstSetFromRegex } from '../regex/first-set.ts'
+import { consumingFirstSetFromRegex, firstSetFromRegex, regexCanMatchEmpty } from '../regex/first-set.ts'
 import { directTerminalFailureExpected } from './expected.ts'
 import type { ScalarParser } from './scalar.ts'
 
@@ -136,13 +136,18 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   //     pairs, so gating on the ASCII set would false-exclude them. Fall back to `any()`
   //     (always-try) — sound, and only forfeits gating for the rare Unicode-mode `/i`
   //     recognizer, never the ASCII-only `/i` at-keywords the fix targets.
-  const firstSet = !resolvedFlags.includes('i')
-    ? raw.firstSet
+  const forFlags = (fs: FirstSet): FirstSet => !resolvedFlags.includes('i')
+    ? fs
     : (resolvedFlags.includes('u') || resolvedFlags.includes('v'))
       ? any()
-      : asciiCaseFold(raw.firstSet)
+      : asciiCaseFold(fs)
+  const firstSet = forFlags(raw.firstSet)
   const canMatchNewline = raw.canMatchNewline
   const meta: ParserMeta = { firstSet, canMatchNewline, isTrivia: false }
+  if (firstSet.kind === 'any' && regexCanMatchEmpty(source)) {
+    const consuming = forFlags(consumingFirstSetFromRegex(source))
+    if (consuming.kind !== 'any') meta.consumingFirstSet = consuming
+  }
   const def = { tag: 'regex', source, flags: resolvedFlags } as const
   const expected = directTerminalFailureExpected(def)
   const parseScalar: ScalarParser = (input, pos, ctx) => {

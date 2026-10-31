@@ -461,6 +461,13 @@ export type ParseError = {
 export type ParserMeta = {
   /** Character codes / ranges that can start this parser (for choice dispatch) */
   firstSet: FirstSet
+  /**
+   * Set only by `regex()` for a pattern that can match empty: the first chars
+   * of its NON-EMPTY matches. `firstSet` stays `any` for such a pattern, because
+   * it may match empty anywhere; a sequence, which tracks nullability itself,
+   * unions this set with the next term's instead (`sequenceSet`).
+   */
+  consumingFirstSet?: FirstSet
   /** Whether this parser can consume a newline character */
   canMatchNewline: boolean
   /** Whether this parser is marked as trivia (auto-skip) */

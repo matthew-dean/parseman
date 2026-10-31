@@ -325,7 +325,10 @@ function sequenceSet(
     }
     const first = fs(p)
     if (!empties(p) || i + 1 === parsers.length) return first
-    return union(first, afterBoundary(i + 1))
+    // A nullable regex reports `any` as its own set (it may match empty
+    // anywhere); here the empty match is the union with the rest, so only its
+    // non-empty matches' first chars are its own contribution.
+    return union(p._meta.consumingFirstSet ?? first, afterBoundary(i + 1))
   }
   return at(0)
 }
