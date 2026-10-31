@@ -75,8 +75,8 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
-  scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
+  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
+  skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
@@ -4178,17 +4178,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (pre !== undefined) {
       const pools = rebuildPools(t.cc, t.fx, t.disp, pre.plan)
       emitted = pre.factory(
-        EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia,
-        trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
+        EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia, triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
-        scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+        advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, GAP,
       )
@@ -4257,13 +4256,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         throw new Unemittable(`the Function constructor (${String(e)})`)
       }
       emitted = factory(
-        EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
-        trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
+        EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia, triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
-        scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+        advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         // THE SENTINEL POOL, dense over char-class indices so the emitted text can
         // index it the way it indexes `SCANS`. Built only for a recovery assembly
@@ -4272,7 +4270,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, GAP,
       )
