@@ -68,6 +68,7 @@ export function createParseContext(): ParseContext {
     _rootTriviaKindIndex: undefined,
     _rootTriviaStrictScopes: undefined,
     _rootTriviaCapture: undefined,
+    _gap: undefined,
     _cstTriviaLog: undefined,
     _fields: undefined,
     _cstBuf: undefined,

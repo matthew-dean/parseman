@@ -17,7 +17,9 @@ import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../s
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
 import type { Combinator } from '../../src/types.ts'
-import { classifiedTrivia, literal, optional, regex, rules, sequence } from '../../src/index.ts'
+import { choice, classifiedTrivia, gate, literal, optional, regex, rules, sequence, withCtx } from '../../src/index.ts'
+import { createParseContext } from '../../src/parse-context.ts'
+import { skipDeferredTrivia } from '../../src/table/trivia-gap.ts'
 
 type RuleMap = Record<string, Combinator<unknown>>
 
@@ -71,4 +73,48 @@ describe('a labelled trivia gap under a root trivia selection', () => {
       }
     })
   }
+})
+
+// A trivia arm that reads state: spaces count only while `on`. Both choice arms
+// scan the gap after `b` from the same position, the first with `on` false
+// (nothing matches, so `c` fails) and the second with `on` true, which must get
+// the spaces rather than the first arm's answer.
+const gated = classifiedTrivia({
+  space: sequence(regex(/[ ]+/), gate(s => (s as { on?: boolean } | undefined)?.on === true)),
+  blockComment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+})
+const gg = rules<RuleMap>({ trivia: gated }, () => ({
+  Doc: choice(
+    withCtx({ on: false }, sequence(literal('b'), literal('c'), literal('!'))),
+    withCtx({ on: true }, sequence(literal('b'), literal('c'))),
+  ),
+}))
+const gprog = encodeTable(gg, { hostMode: 'ast' })
+const gEngines = { closure: tableRules({ ...gprog, asm: [] }).Doc!, fast: tableRules(emitted(gprog)).Doc! }
+
+describe('a remembered trivia gap', () => {
+  for (const engine of ['closure', 'fast'] as const) {
+    it(`is not reused under another state (${engine})`, () => {
+      const r = run(gEngines[engine] as never, 'b  c', opts)
+      expect(r.ok).toBe(true)
+    })
+  }
+
+  it('is held by the parse context, so it is released with the parse', () => {
+    // The context `run()` builds for `rootTrivia: { select: ['blockComment'] }`.
+    const rooted = (): ReturnType<typeof createParseContext> => {
+      const ctx = createParseContext()
+      ctx.trivia = t as Combinator<unknown>
+      ctx._rootTriviaLog = []
+      ctx._rootTriviaKindIndex = { blockComment: 0 }
+      return ctx
+    }
+    const ctx = rooted()
+    expect(skipDeferredTrivia('a   ;', 1, ctx)).toBe(4)
+    expect(ctx._gap).toMatchObject({ at: 1, end: 4, input: 'a   ;' })
+    const other = rooted()
+    expect(other._gap).toBeUndefined()
+    expect(skipDeferredTrivia('a ;', 1, other)).toBe(2)
+    expect(ctx._gap).toMatchObject({ at: 1, end: 4, input: 'a   ;' })
+  })
 })

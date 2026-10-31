@@ -20,9 +20,11 @@ import { commitTriviaScan, fastTriviaScanner, scanTriviaCompact } from '../combi
  * trivia, so the next term asks for the same gap again: on `benchmark.less`,
  * 21,741 of the closure engine's 53,607 trivia scans per parse started where
  * the previous one did. A scan that recorded nothing records nothing again from
- * the same position, in the same parse, under the same trivia and root-capture
- * policy and with no CST capture, and it ends at the same place, so the last
- * such scan answers the repeat (`GAP_*`).
+ * the same position, in the same parse, under the same trivia, root selection,
+ * root-capture policy and state, and with no CST capture, and it ends at the same
+ * place, so the last such scan answers the repeat (`ctx._gap`). The state is part
+ * of the key because a trivia arm can read it (`gate`); the memo lives on the
+ * context so it is released with the parse.
  *
  * Neither applies with `trackLines` (a scan records line ranges) or under CST
  * capture (a scan records into the open buffer).
@@ -30,8 +32,10 @@ import { commitTriviaScan, fastTriviaScanner, scanTriviaCompact } from '../combi
 export function skipDeferredTrivia(input: string, cur: number, ctx: ParseContext): number {
   const triviaP = ctx.trivia
   const plain = ctx.trackLines !== true && ctx.captureTrivia !== true
-  if (plain && cur === GAP_AT && ctx === GAP_CTX && input === GAP_INPUT && triviaP === GAP_OF
-    && ctx._rootTriviaCapture === GAP_ROOT) return GAP_END
+  const gap = ctx._gap
+  if (plain && gap !== undefined && cur === gap.at && input === gap.input && triviaP === gap.of
+    && ctx._rootTriviaCapture === gap.root && ctx.state === gap.state
+    && ctx._rootTriviaKindIndex === gap.rootKinds) return gap.end
   const end = clearRunEnd(input, cur, ctx, triviaP, plain)
   if (end >= 0) {
     remember(cur, end, ctx, input, triviaP)
@@ -55,25 +59,19 @@ function clearRunEnd(input: string, cur: number, ctx: ParseContext, triviaP: Com
   return ctx._rootTriviaCapture === false || clearOf(spec.rootLeaders, input, cur, end) ? end : -1
 }
 
-/**
- * THE LAST SCAN THAT RECORDED NOTHING: in parse `GAP_CTX` over `GAP_INPUT`,
- * trivia `GAP_OF` from `GAP_AT` ends at `GAP_END`, under root-capture policy
- * `GAP_ROOT`.
- */
-let GAP_AT = -1
-let GAP_END = -1
-let GAP_CTX: ParseContext | undefined
-let GAP_INPUT: string | undefined
-let GAP_OF: Combinator<unknown> | undefined
-let GAP_ROOT: boolean | undefined
-
 function remember(cur: number, end: number, ctx: ParseContext, input: string, triviaP: Combinator<unknown> | undefined): void {
-  GAP_AT = cur
-  GAP_END = end
-  GAP_CTX = ctx
-  GAP_INPUT = input
-  GAP_OF = triviaP
-  GAP_ROOT = ctx._rootTriviaCapture
+  const gap = ctx._gap
+  if (gap === undefined) {
+    ctx._gap = { at: cur, end, input, of: triviaP, root: ctx._rootTriviaCapture, rootKinds: ctx._rootTriviaKindIndex, state: ctx.state }
+    return
+  }
+  gap.at = cur
+  gap.end = end
+  gap.input = input
+  gap.of = triviaP
+  gap.root = ctx._rootTriviaCapture
+  gap.rootKinds = ctx._rootTriviaKindIndex
+  gap.state = ctx.state
 }
 
 /**
