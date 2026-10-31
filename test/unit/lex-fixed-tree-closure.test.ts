@@ -134,6 +134,14 @@ describe('fixed lexical choice of any arity', () => {
       '#a;', '!important;', '!', 'ab#'])
   })
 
+  it('selects a disjoint arm whose index is past 127', () => {
+    // One non-ASCII arm, then one arm per ASCII character: the arm for U+007F is
+    // the 129th, so its index does not fit a signed byte.
+    const ascii = Array.from({ length: 128 }, (_, c) => literal(String.fromCharCode(c)))
+    pinSelectedToCharacter(wrap(token(noTrivia(choice(literal('é'), ...ascii)))),
+      ['\x7f', '\x7e', 'a', '\x00', 'é', 'ü', '', 'a;', '\x7f;'])
+  })
+
   it('lowers a 3-arm choice under a negative assertion', () => {
     pinSelectedToCharacter(wrap(queryWord),
       ['not', 'ONLY', 'and', 'or', 'from', 'nothing', 'orange', 'x', '1', '', 'x;', 'and;', 'ab#'])

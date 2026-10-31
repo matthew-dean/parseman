@@ -258,7 +258,7 @@ function exclusiveChoiceNode(
   classes: readonly ResolvedClass[],
   choiceFx: readonly string[],
 ): BuiltLexNode {
-  const ascii = new Int8Array(128).fill(-1)
+  const ascii = new Int32Array(128).fill(-1)
   const hi: number[] = []
   for (let i = 0; i < classes.length; i++) {
     const cls = classes[i]!
