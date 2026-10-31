@@ -300,7 +300,7 @@ export const DEFECTS = {
 
   'rgate2-second-at-first-emitted': {
     why: 'emitted engine: the two-character routed gate reads its second character at the first character\'s position',
-    edits: [{ file: 'src/table/emit-assembly.ts', find: '!classHas(${second},lead(input,e+1))', replace: '!classHas(${second},lead(input,e))' }],
+    edits: [{ file: 'src/table/emit-assembly.ts', find: "${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}", replace: "${has(second, ascii ? 'input.charCodeAt(e)' : 'lead(input,e)')}" }],
   },
 
   'rgate2-second-narrowed': {

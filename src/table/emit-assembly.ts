@@ -1394,19 +1394,22 @@ return ${child}(input,pos,ctx)
         if (cfg.tolerant || cfg.probe) return `${head}
 return ${child}(input,pos,ctx)
 }`
+        // ASCII-only classes (the usual case: `:` then whitespace) are read as
+        // code units against their ASCII tables, with no call.
+        const idxs = [code[ip + 1]!, code[ip + 4]!, code[ip + 5]!]
+        const ascii = idxs.every(i => isAsciiOnlyClass(t.cc[i]!))
         const ref = (idx: number, tag: string): string => {
           const ci = classes.push([t.cc[idx]!]) - 1
           classPlan.push([idx])
           return hoist(tag, `CLS[${ci}][0]`)
         }
-        const cls = ref(code[ip + 1]!, 'cl')
-        const first = ref(code[ip + 4]!, 'c1')
-        const second = ref(code[ip + 5]!, 'c2')
+        const [cls, first, second] = [ref(idxs[0]!, 'cl'), ref(idxs[1]!, 'c1'), ref(idxs[2]!, 'c2')]
+        const has = (c: string, at: string): string => ascii ? `${c}.ascii[${at}]===1` : `classHas(${c},${at})`
         const xf = fxRef(code[ip + 3]!)
         return `${head}
 const it=ctx._routed
-if(it!==undefined&&it.span.start===pos){const e=it.span.end;const c=lead(input,e)
-if(!classHas(${cls},c)||(classHas(${first},c)&&!classHas(${second},lead(input,e+1)))){ctx._fe=e;ctx._fx=${xf};return FAIL}}
+if(it!==undefined&&it.span.start===pos){const e=it.span.end;const c=${ascii ? 'input.charCodeAt(e)' : 'lead(input,e)'}
+if(!${has(cls, 'c')}||(${has(first, 'c')}&&!${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')})){ctx._fe=e;ctx._fx=${xf};return FAIL}}
 return ${child}(input,pos,ctx)
 }`
       }
