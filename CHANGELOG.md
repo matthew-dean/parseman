@@ -46,6 +46,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   completions probe; the reference driver runs the item as written. A gap spelled as
   `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
   and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
+- **A routed arm gate reads two characters where its next term says them.** Where the
+  term after a `routed()` token states its first two characters outright (a literal of
+  two or more characters, or a case-sensitive regex that opens with a character class
+  followed by another or by a positive lookahead over one, such as
+  `regex(/:(?=[ \t\n\r\f])/)`), and no gap before it can start with the first, the
+  encoder emits `OP_RGATE2`: where the character after the token is one of the first,
+  the next one must be one of the second, or the arm fails at the token's end with the
+  term's own set, as entering it would. Two code-unit reads, no scan. Jess's Less
+  name-once statement (jess#515) no longer enters its spaced-declaration arm on a
+  glued head (`div:hover`, `color:red`). Test: `test/unit/table-routed-arm-gate2.test.ts`.
 - An optional repeat item no longer tests its lead gate twice: the repeat's own item
   class covers it. And with no separator or gap in front of the item, the item class is
   tested once per iteration, not twice.
