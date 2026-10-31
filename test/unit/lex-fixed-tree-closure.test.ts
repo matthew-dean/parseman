@@ -122,6 +122,18 @@ describe('fixed lexical choice of any arity', () => {
     regex(/-?[_a-zA-Z][-_a-zA-Z0-9]*/),
   )))
 
+  it('keeps the character choice\'s one-arm dispatch for disjoint arms', () => {
+    // A Less value tail: `!important`, `#id`, `.class` or `@var`, one arm per
+    // lead. The character choice dispatches on the lead and reports the
+    // selected arm's failure alone; ranking every arm would add the others'.
+    const ident = regex(/-?[_a-zA-Z][-_a-zA-Z0-9]*/)
+    pinSelectedToCharacter(wrap(token(noTrivia(choice(
+      word('!important', '-_a-zA-Z0-9', { caseInsensitive: true }),
+      sequence(literal('#'), ident), sequence(literal('.'), ident), sequence(literal('@'), ident),
+    )))), ['!important', '!IMPORTANT', '!x', '!importantx', '#a', '.b', '@c', '#', '.1', '@', 'x', '',
+      '#a;', '!important;', '!', 'ab#'])
+  })
+
   it('lowers a 3-arm choice under a negative assertion', () => {
     pinSelectedToCharacter(wrap(queryWord),
       ['not', 'ONLY', 'and', 'or', 'from', 'nothing', 'orange', 'x', '1', '', 'x;', 'and;', 'ab#'])

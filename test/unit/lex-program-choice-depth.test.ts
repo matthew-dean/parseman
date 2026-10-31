@@ -36,7 +36,7 @@ describe('fixed lexical choice diagnostics', () => {
       LEX_NODE_TERMINAL, 5, 5, 0,
       LEX_NODE_SEQUENCE3,
 
-      LEX_NODE_CHOICE, 4, 6,
+      LEX_NODE_CHOICE, 4, 0, 6,
       -1, 0, -1, 0, -1, 0, -1, 0,
     ]
     expected.push(text.map(value => JSON.stringify(value)))

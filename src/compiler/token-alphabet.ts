@@ -136,7 +136,10 @@ export type ExecutableLexNode =
   | {
     readonly kind: 'choice'
     readonly arms: readonly ExecutableLexNode[]
-    readonly firstSets: readonly FirstSet[]
+    /** The authored arms: the encoder classifies them as the character choice would. */
+    readonly parsers: readonly Combinator<unknown>[]
+    /** Inside a no-trivia scope of the token, where the encoder's trivia is none. */
+    readonly cleared: boolean
     readonly armExpected: readonly (readonly string[])[]
     readonly expected: readonly string[]
   }
@@ -222,6 +225,7 @@ function reinstallsRuleTrivia(reference: Combinator<unknown>, target: Combinator
 function directTokenBodyParser(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
+  scope?: { cleared: boolean },
 ): Combinator<unknown> | undefined {
   const outer = parser._def
   if (outer.tag !== 'token') return undefined
@@ -235,6 +239,7 @@ function directTokenBodyParser(
         || wrapper.captureTrivia === true || wrapper.rootCapture === 'opaque'
         || wrapper.constructionTrackLines !== 'inherit'
         || wrapper.constructionCaptureTriviaKinds !== undefined) return undefined
+      if (scope !== undefined) scope.cleared = true
       body = wrapper.parser
       continue
     }
@@ -451,6 +456,7 @@ function directFixedLexNode(
   resolve: ((name: string) => Combinator<unknown> | undefined) | undefined,
   active: Set<Combinator<unknown>>,
   pureOnly = false,
+  cleared = false,
 ): ExecutableLexNode | undefined {
   let current = parser
   const wrappers = new Set<Combinator<unknown>>()
@@ -481,16 +487,16 @@ function directFixedLexNode(
       // at any position.
       if (def.triviaParser === undefined && def.captureTrivia !== true
         && def.rootCapture !== 'opaque' && def.constructionCaptureTriviaKinds === undefined) {
-        return directFixedLexNode(def.parser, resolve, active, pureOnly)
+        return directFixedLexNode(def.parser, resolve, active, pureOnly, cleared || def.clearTrivia === true)
       }
       if (!pureOnly || (def.parser._def.tag !== 'token'
         && (def.clearTrivia !== true || def.triviaParser !== undefined
           || def.captureTrivia === true || def.rootCapture === 'opaque'))) return undefined
-      return directFixedLexNode(def.parser, resolve, active, true)
+      return directFixedLexNode(def.parser, resolve, active, true, cleared)
     }
     if (def.tag === 'sequence') {
       if (def.parsers.length < 2 || def.parsers.length > 5) return undefined
-      const parts = def.parsers.map(part => directFixedLexNode(part, resolve, active, pureOnly))
+      const parts = def.parsers.map(part => directFixedLexNode(part, resolve, active, pureOnly, cleared))
       if (parts.some(part => part === undefined)) return undefined
       return { kind: 'sequence', parts: parts as ExecutableLexNode[] }
     }
@@ -499,29 +505,28 @@ function directFixedLexNode(
         || def.strategy.tag !== 'firstMatch'
         || def.gates.some(gate => gate !== null)
         || def.autoNot.some(check => check !== null)) return undefined
-      const arms = def.parsers.map(arm => directFixedLexNode(arm, resolve, active, pureOnly))
+      const arms = def.parsers.map(arm => directFixedLexNode(arm, resolve, active, pureOnly, cleared))
       if (arms.some(arm => arm === undefined)) return undefined
-      const final = classifyFinalChoice(def.parsers, resolve)
       return {
         kind: 'choice', arms: arms as ExecutableLexNode[],
-        firstSets: final.firstSets,
+        parsers: def.parsers, cleared,
         armExpected: def.parsers.map(deriveExpected),
         expected: def.parsers.flatMap(deriveExpected),
       }
     }
     if (def.tag === 'not') {
-      const body = directFixedLexNode(def.parser, resolve, active, true)
+      const body = directFixedLexNode(def.parser, resolve, active, true, cleared)
       return body === undefined ? undefined : {
         kind: 'not', body,
         expected: assertionFailureExpected(false, def.parser._tag),
       }
     }
     if (def.tag === 'optional') {
-      const body = directFixedLexNode(def.parser, resolve, active, pureOnly)
+      const body = directFixedLexNode(def.parser, resolve, active, pureOnly, cleared)
       return body === undefined ? undefined : { kind: 'optional', body }
     }
     if (def.tag === 'many' || def.tag === 'oneOrMore') {
-      const body = directFixedLexNode(def.parser, resolve, active, pureOnly)
+      const body = directFixedLexNode(def.parser, resolve, active, pureOnly, cleared)
       return body === undefined ? undefined : {
         kind: 'repeat', body, min: def.tag === 'many' ? 0 : def.min, max: def.max ?? -1,
       }
@@ -536,9 +541,10 @@ export function directFixedTokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableFixedLexBody | undefined {
-  const body = directTokenBodyParser(parser, resolve)
+  const scope = { cleared: false }
+  const body = directTokenBodyParser(parser, resolve, scope)
   if (body === undefined) return undefined
-  const root = directFixedLexNode(body, resolve, new Set())
+  const root = directFixedLexNode(body, resolve, new Set(), false, scope.cleared)
   return root === undefined ? undefined : { kind: 'fixed-tree', root }
 }
 

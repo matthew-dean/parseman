@@ -54,6 +54,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   only where the code on the other side reads it.
 - A printed table's compact char-class pool (`"…".split("|")`) is annotated
   `/* @__PURE__ */`, so a bundler drops the pool of a variant it shook out.
+- Fixed: a lexical body's choice whose arms start with disjoint characters reported
+  every arm's expected label when the selected arm failed at the choice's position;
+  it reports the selected arm's, as the character choice and the interpreter do. Its
+  arm classes are now the character choice's own, taken under the same trivia.
 - Fixed: completions (`completionsAt`) from a table artifact offered tokens raised
   inside a `not()`/`peek()` lookahead, which the enclosing grammar cannot reach; a
   lookahead now hides them in both table engines, as the interpreter does. The

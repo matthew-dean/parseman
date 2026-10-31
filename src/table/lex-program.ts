@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext } from '../types.ts'
 import { failAt } from '../combinators/probe.ts'
+import { lead } from './run-support.ts'
 import type { LexBodyRecognizer } from './lex-body.ts'
 import type { LexProgramSpec, ResolvedClass } from './program.ts'
 
@@ -16,7 +17,10 @@ export const LEX_NODE_SEQUENCE2 = 1
 export const LEX_NODE_SEQUENCE3 = 2
 export const LEX_NODE_SEQUENCE4 = 3
 export const LEX_NODE_SEQUENCE5 = 4
-/** `[op, armCount, choiceFx, (armClass, armFx) × armCount]`: any arity, no padding. */
+/**
+ * `[op, armCount, exclusive, choiceFx, (armClass, armFx) × armCount]`: any arity,
+ * no padding. `exclusive` is the character choice's one-arm dispatch decision.
+ */
 export const LEX_NODE_CHOICE = 5
 export const LEX_NODE_NOT = 8
 export const LEX_NODE_OPTIONAL = 9
@@ -212,6 +216,61 @@ function choiceNode(
   }
 }
 
+/**
+ * A choice whose arms' classes are disjoint, as the character choice's exclusive
+ * dispatch: the arm the lead selects runs alone, its failure is the choice's at
+ * the choice's position, and a lead no arm claims reports the arms' openers. The
+ * selected index reaches its arm through a fixed chain, never an array.
+ */
+function exclusiveChoiceNode(
+  arms: readonly BuiltLexNode[],
+  classes: readonly ResolvedClass[],
+  choiceFx: readonly string[],
+): BuiltLexNode {
+  const ascii = new Int8Array(128).fill(-1)
+  const hi: number[] = []
+  for (let i = 0; i < classes.length; i++) {
+    const cls = classes[i]!
+    for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) ascii[c] = i
+    for (let r = 0; r < cls.hi.length; r += 2) hi.push(cls.hi[r]!, cls.hi[r + 1]!, i)
+  }
+  const select = (code: number): number => {
+    if (code < 0) return -1
+    if (code < 128) return ascii[code]!
+    for (let r = 0; r < hi.length; r += 3) if (code >= hi[r]! && code <= hi[r + 1]!) return hi[r + 2]!
+    return -1
+  }
+  let matchArm: (arm: number, input: string, pos: number) => number = () => -1
+  let runArm: LexProgramRunner = () => -1
+  let selectRun: (arm: number, input: string, pos: number, ctx: ParseContext) => number = () => -1
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const arm = arms[i]!, nextMatch = matchArm, nextRun = selectRun
+    matchArm = (selected, input, pos) => selected === i ? arm.match(input, pos) : nextMatch(selected, input, pos)
+    selectRun = (selected, input, pos, ctx) => selected === i ? arm.run(input, pos, ctx) : nextRun(selected, input, pos, ctx)
+  }
+  runArm = (input, pos, ctx) => {
+    const arm = select(lead(input, pos))
+    if (arm >= 0) {
+      ctx._fc = false
+      const end = selectRun(arm, input, pos, ctx)
+      if (end >= 0) return end
+      if (committed(ctx)) return -1
+      const failed = ctx._fx
+      if (failed !== undefined && failed.length > 0) { ctx._fe = pos; return -1 }
+    }
+    ctx._fe = pos
+    ctx._fx = choiceFx as string[]
+    return -1
+  }
+  return {
+    match: (input, pos) => {
+      const arm = select(lead(input, pos))
+      return arm < 0 ? -1 : matchArm(arm, input, pos)
+    },
+    run: runArm,
+  }
+}
+
 function notNode(body: BuiltLexNode, failure: readonly string[]): BuiltLexNode {
   return {
     match: (input, pos) => body.match(input, pos) < 0 ? pos : -1,
@@ -316,6 +375,8 @@ function fixedTreeRunner(
     }
     if (op === LEX_NODE_CHOICE) {
       const count = words[at++]!
+      const exclusive = words[at++]!
+      if (exclusive !== 0 && exclusive !== 1) throw new TypeError('table lexical tree choice has an invalid dispatch mode')
       const choiceFx = expected[words[at++]!]
       if (!Number.isInteger(count) || count < 2 || count > stack.length) {
         throw new TypeError('table lexical tree choice has an invalid arm count')
@@ -332,7 +393,9 @@ function fixedTreeRunner(
         armFx.push(fx)
       }
       const arms = Array.from({ length: count }, pop).reverse()
-      stack.push(choiceNode(arms, armClasses, armFx, choiceFx))
+      stack.push(exclusive === 1
+        ? exclusiveChoiceNode(arms, armClasses as ResolvedClass[], choiceFx)
+        : choiceNode(arms, armClasses, armFx, choiceFx))
       continue
     }
     if (op === LEX_NODE_NOT) {

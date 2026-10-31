@@ -299,11 +299,18 @@ class Encoder {
           }
           case 'choice': {
             for (const arm of node.arms) if (!emitNode(arm)) return false
-            words.push(LEX_NODE_CHOICE, node.arms.length, this.expected(node.expected))
+            // The arm classes and the exclusive (one-arm) decision are the
+            // character choice's own (`case 'choice'`), under the trivia the
+            // encoder would hold at that row, so both lowerings rank the same
+            // failures.
+            const final = classifyFinalChoice(
+              node.parsers, this.refResolver(), node.cleared ? undefined : this.activeTrivia,
+            )
+            const classes = final.firstSets.map((first, i) => final.nullable[i] ? -1 : this.charClass(first))
+            const exclusive = final.exclusive && classes.every(cls => cls >= 0)
+            words.push(LEX_NODE_CHOICE, node.arms.length, exclusive ? 1 : 0, this.expected(node.expected))
             for (let i = 0; i < node.arms.length; i++) {
-              const first = node.firstSets[i]!
-              words.push(first.kind === 'ranges' ? this.charClass(first) : -1)
-              words.push(this.expected(node.armExpected[i]!))
+              words.push(classes[i]!, this.expected(node.armExpected[i]!))
             }
             return true
           }
