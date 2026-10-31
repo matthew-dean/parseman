@@ -35,7 +35,9 @@ function emitClassPool(classes: readonly string[]): string {
   if (classes.length < 2) return array
   const delimiter = '|/~?^`'.split('').find(ch => classes.every(spec => !spec.includes(ch)))
   if (delimiter === undefined) return array
-  const split = `${jsString(classes.join(delimiter))}.split(${jsString(delimiter)})`
+  // A call a bundler cannot prove pure is kept even when nothing reads its result,
+  // so a sibling variant shaken out of a bundle left its whole pool behind.
+  const split = `/* @__PURE__ */ ${jsString(classes.join(delimiter))}.split(${jsString(delimiter)})`
   return split.length < array.length ? split : array
 }
 

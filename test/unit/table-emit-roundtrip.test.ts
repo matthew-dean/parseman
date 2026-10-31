@@ -172,18 +172,24 @@ describe('table lowering — the EMITTED module round-trips', () => {
     expect(run(emitted.Word as never, 'abc').ok).toBe(true)
   })
 
-  it('emits a multi-class pool as one delimiter-split string and still round-trips', async () => {
+  it('emits a multi-class pool in its shorter form, array or pure delimiter-split string, and still round-trips', async () => {
     const prog = encodeTable(baseNodes)
     const src = emitTableModule(prog, { name: 'g', fnSources: prog.fns.map(f => String(f)) })
     const classLine = src.split('\n').find(line => line.startsWith('x:'))
 
     expect(prog.cc.length).toBeGreaterThan(1)
     expect(classLine).toBeDefined()
-    const match = classLine!.match(/^x:(.*)\.split\((.*)\),$/)
-    expect(match).not.toBeNull()
-    const encoded = JSON.parse(match![1]!) as string
-    const delimiter = JSON.parse(match![2]!) as string
-    expect(encoded.split(delimiter)).toEqual(prog.cc)
+    const array = `x:${JSON.stringify(prog.cc)},`
+    const match = classLine!.match(/^x:\/\* @__PURE__ \*\/ (.*)\.split\((.*)\),$/)
+    if (match === null) {
+      // The pure annotation costs its bytes; for a small pool the array is shorter.
+      expect(classLine).toBe(array)
+    } else {
+      const encoded = JSON.parse(match[1]!) as string
+      const delimiter = JSON.parse(match[2]!) as string
+      expect(encoded.split(delimiter)).toEqual(prog.cc)
+      expect(classLine!.length).toBeLessThan(array.length)
+    }
 
     const emitted = await loadEmitted(prog, 'class-pool-split')
     for (const input of ['abc', '12', '(a,b,12)', '###']) {

@@ -1202,8 +1202,11 @@ A runtime `compose()` result is already the override-winner combinator map, with
 cross-artifact holes bound, so it is walked directly — a choice that is `deferred` when you
 analyze the contributing `rules()` map alone resolves here to a real `yes` /
 `recoverable` / `no`. A COMPILED grammar (`compile()`, or a macro build) holds table rule
-FUNCTIONS, not combinators; its pieces are reported as opaque, because recovering them
-would mean evaluating carried IR. Analyze the interpreter grammar instead.
+FUNCTIONS, not combinators. Its pieces, when it carries them inline, are reported as
+opaque, because recovering them would mean evaluating carried IR; a rollup-family build
+carries none at runtime, and its rule functions are reported unanalysable by the walk, as a
+`compile()` result's are (`test/unit/gating-composed-grammar.test.ts`).
+Analyze the interpreter grammar instead.
 
 Use it when you want the raw `GatingReport` for a composed grammar. `diagnoseGrammar`
 routes here for you and wraps the result in a gateable diagnosis.

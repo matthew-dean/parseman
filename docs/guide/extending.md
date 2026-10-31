@@ -159,15 +159,25 @@ The dialect's build reads the base's **compiled** grammar — never its TypeScri
 and it never recompiles it. There's no "ship your source for speed" tradeoff here; a
 published, compiled-only package composes just fine.
 
+Under rollup, rolldown or Vite, the composable form is build-only data, so it isn't in the
+artifact a parse loads. The plugin writes it beside each output chunk as
+`<chunk>.parseman.json` (`lib/index.js` → `lib/index.js.parseman.json`), and a downstream
+build reads that file. Ship it with the package. An ancestor that comes from another
+package is recorded as a reference to that package's export and resolved from the
+artifact's location, so it isn't copied into every descendant. Nothing at runtime reads
+carried pieces, and a composed artifact no longer imports its ancestors just to forward
+them. Under other bundlers the pieces stay inline on the value
+(`test/unit/carried-pieces-sidecar.test.ts`).
+
 ## How this behaves in each execution mode
 
 `compose()` works whether a grammar [runs interpreted, via `compile()`, or via the
 macro](./modes):
 
 - **Macro (build):** `compose([...])` is fused at **build time** into one static table.
-  It needs no base grammar source (the pieces travel on the imported value as carried
-  IR, which the plugin re-lowers in the bundler and links in one namespace, as the
-  runtime link below does) and constructs no code at runtime, so it ships in strict-CSP
+  It needs no base grammar source (the pieces travel with the imported grammar as
+  carried IR, beside the artifact or on its value, which the plugin re-lowers in the
+  bundler and links in one namespace, as the runtime link below does) and constructs no code at runtime, so it ships in strict-CSP
   contexts like browser extensions or some CDNs with no extra configuration.
   An imported build-compiled grammar has to resolve at build time, including through a
   bundled upstream (esbuild's inlined ancestors, renamed imports and `/* @__PURE__ */`

@@ -75,8 +75,8 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia, rollbackTriviaAt,
-  saveTriviaMark, scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
+  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
+  scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
@@ -90,7 +90,7 @@ import {
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -107,7 +107,9 @@ import {
   EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
-import { lead, rawEntry, spanLines } from './run-support.ts'
+import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
+import { holdsGap, rowNullable } from './hold-gap.ts'
+import { failCleanAnalysis } from './fail-clean.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
@@ -123,18 +125,18 @@ import { lead, rawEntry, spanLines } from './run-support.ts'
  * property read per terminal miss — the same price codegen pays.
  */
 import {
-  classHas, decodeClassSpec, expandCompact, ownTableProgram, resolveTable,
+  classHas, decodeClassSpec, encodeClassSpec, expandCompact, ownTableProgram, resolveClass, resolveTable,
   validateDispatchSpec,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { computeSiteLabels, reachableSites } from './site-labels.ts'
+import { computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
-  scalarTerminalNotChild, type ScalarRecognizer,
+  scalarTerminalNotChild, scalarTerminalPeekChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
 /**
@@ -241,13 +243,14 @@ type GeneralChoiceBlock = (
 type ExclusiveChoiceBlock = (arm: number, input: string, pos: number, ctx: ParseContext) => unknown
 type DispatchMatcher = (key: string) => boolean
 type DispatchMatcherBlock = (key: string) => number | undefined
+/** The selector's rollback mark rides as the eight scalars a choice block takes. */
 type DispatchBranch = (
-  input: string, pos: number, selEnd: number, key: string,
-  selectorMark: ReturnType<typeof saveTriviaMark>, ctx: ParseContext,
+  input: string, pos: number, selEnd: number, key: string, ctx: ParseContext,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mLog: number, mRoot: number,
 ) => unknown
 type DispatchArmBlock = (
-  arm: number, input: string, pos: number, selEnd: number, key: string,
-  selectorMark: ReturnType<typeof saveTriviaMark>, ctx: ParseContext,
+  arm: number, input: string, pos: number, selEnd: number, key: string, ctx: ParseContext,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mLog: number, mRoot: number,
 ) => unknown
 
 /**
@@ -441,6 +444,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * reference.
    */
   const REC = prog.rec === 1 && cfg.tolerant
+  /** A completions-probe assembly: lookaheads restore `_probe.best` around their child. */
+  const PROBE = cfg.probe
   /**
    * The sync sentinel for a char-class index, built ONCE at assembly.
    *
@@ -531,6 +536,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   const memo = new Map<number, Piece>()
   const reached = new Set<number>()
+  /** Row nullability for `holdsGap`, memoised for this assembly. */
+  const NULLABLE = new Map<number, boolean>()
+  /** A child whose failure writes nothing needs no rollback mark (`fail-clean.ts`). */
+  const CLEAN = REC ? (): boolean => false : failCleanAnalysis(code)
 
   function pushLeaf(ctx: ParseContext, value: string, s: number, e: number): void {
     const lf: Leaf = { _tag: 'leaf', value, span: { start: s, end: e } }
@@ -761,6 +770,36 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       EC.e = end
       return node
+    }
+  }
+
+  /**
+   * A collapse over one node is that node — `run-support.ts` `collapseEmpty` has
+   * the contract, and the one case the node's value cannot stand for itself.
+   */
+  function passCollapseNode(child: Piece, build: NodeBuilder, readsRaw: boolean): Piece {
+    return (input, pos, ctx) => {
+      const v = child(input, pos, ctx)
+      if (v !== undefined) return v
+      return collapseEmpty(ctx, build, input, pos, EC.e, readsRaw)
+    }
+  }
+
+  /**
+   * A collapse whose body is `optional`/`not` terms and then one node: where the
+   * character at `pos` opens none of those terms and no trivia, the body is that
+   * node (`site-labels.ts` `gatedPassCollapse`), so it runs as a pass-through
+   * collapse; anywhere else the node keeps its frame.
+   */
+  function gatedPassCollapseNode(
+    blockers: readonly ResolvedClass[], last: Piece, classic: Piece, build: NodeBuilder, readsRaw: boolean,
+  ): Piece {
+    return (input, pos, ctx) => {
+      const c = lead(input, pos)
+      for (let i = 0; i < blockers.length; i++) if (classHas(blockers[i]!, c)) return classic(input, pos, ctx)
+      const v = last(input, pos, ctx)
+      if (v !== undefined) return v
+      return collapseEmpty(ctx, build, input, pos, EC.e, readsRaw)
     }
   }
 
@@ -1291,21 +1330,30 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   function dispatchBranch(child: Piece, usesRouted: boolean): DispatchBranch {
     if (!usesRouted) {
-      return (input, _pos, selEnd, key, _selectorMark, ctx) => {
-        const mark = saveTriviaMark(ctx)
+      // The arm runs after the selector's match, so it marks where it starts.
+      return (input, _pos, selEnd, key, ctx) => {
+        const need = markCst(ctx)
+        const mRaw = MRAW
+        const mTl = MTL
+        const mLv = MLV
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+        const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = child(input, selEnd, ctx)
         if (v === FAIL) {
-          rollbackTrivia(ctx, mark)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           ctx._fc = true
           return FAIL
         }
         return [key, v]
       }
     }
-    return (input, pos, selEnd, key, selectorMark, ctx) => {
+    // A routed arm re-reads the selector's match from `pos`: undo the selector,
+    // which leaves every sink at the selector's mark, so that mark is the arm's too.
+    return (input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot) => {
       const savedRouted = ctx._routed
-      rollbackTrivia(ctx, selectorMark)
-      const mark = saveTriviaMark(ctx)
+      if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
       ctx._routed = { value: key, span: { start: pos, end: selEnd } }
       let v: unknown
       try {
@@ -1314,7 +1362,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._routed = savedRouted
       }
       if (v === FAIL) {
-        rollbackTrivia(ctx, mark)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         ctx._fc = true
         return FAIL
       }
@@ -1327,12 +1375,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     a0: DispatchBranch, a1: DispatchBranch, a2: DispatchBranch, a3: DispatchBranch,
     next: DispatchArmBlock | undefined,
   ): DispatchArmBlock {
-    return (arm, input, pos, selEnd, key, selectorMark, ctx) => {
-      if (arm === start) return a0(input, pos, selEnd, key, selectorMark, ctx)
-      if (arm === start + 1) return a1(input, pos, selEnd, key, selectorMark, ctx)
-      if (arm === start + 2) return a2(input, pos, selEnd, key, selectorMark, ctx)
-      if (arm === start + 3) return a3(input, pos, selEnd, key, selectorMark, ctx)
-      return next === undefined ? FAIL : next(arm, input, pos, selEnd, key, selectorMark, ctx)
+    return (arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot) => {
+      if (arm === start) return a0(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      if (arm === start + 1) return a1(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      if (arm === start + 2) return a2(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      if (arm === start + 3) return a3(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      return next === undefined
+        ? FAIL
+        : next(arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
     }
   }
 
@@ -1368,7 +1418,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (flight !== undefined) return flight.fwd
     const selected = HYBRID?.byIp[ip]
     if (selected !== undefined) {
-      const piece = hybridPiece(selected as Piece)
+      // The scanner handoff only where the emitted body reads the slot
+      // (`scanHandoffNeeded`); elsewhere the body runs on its labels' scanners.
+      const piece = scanHandoffNeeded(code, ip, closureLabels) ? hybridPiece(selected as Piece) : selected as Piece
       memo.set(ip, piece)
       reached.add(ip)
       return piece
@@ -1379,22 +1431,62 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const holder = { fwd, set: (p: Piece) => { target = p } }
     inFlight.set(ip, holder)
 
-    const op = code[ip]
-    // Match the emitted assembly's label-proven scope alias: rule entries in a
-    // single ambient trivia scope otherwise reinstall and restore the exact
-    // same trivia, labels and scanner on every call. Install the forwarding
+    // Match the emitted assembly's label-proven scope alias (`scopeIsIdentity`):
+    // rule entries in a single ambient trivia scope, and no-trivia scopes inside
+    // a token, otherwise reinstall and restore the exact same trivia, labels and
+    // scanner on every call. Install the forwarding
     // holder first so a recursive child can still link back through this site.
-    const piece = (op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[ip + 3]! === 0))
-      && code[ip + 1]! >= 0
-      && closureLabels.at(ip).tri === code[ip + 1]!
+    const piece = scopeIsIdentity(code, ip, closureLabels.at(ip))
       ? link(code[ip + 2]!)
-      : countedPiece(lower(ip), ip)
+      : countedPiece(lookaheadLedNode(ip) ?? lower(ip), ip)
 
     inFlight.delete(ip)
     holder.set(piece)
     memo.set(ip, piece)
     reached.add(ip)
     return piece
+  }
+
+  /**
+   * A NODE WHOSE BODY OPENS WITH A LOOKAHEAD opens its frame after it. The body
+   * is a sequence whose first term is `not`/`peek` of a direct terminal: it is
+   * decided at `pos` without writing anything, and a node that fails there would
+   * only open its frame to drop it. So the recognizer runs first, and the node
+   * runs on success with that term already decided (`FIRST_DECIDED`). The
+   * recognizer runs once on either path; the failure is the term's own.
+   */
+  let FIRST_DECIDED: Piece | undefined
+  let NODE_BODY: Piece | undefined
+  const DECIDED: Piece = (_input, pos) => { EC.e = pos; return null }
+  function lookaheadLedNode(ip: number): Piece | undefined {
+    const op = code[ip]
+    if ((op !== OP_NODE && op !== OP_NODE_TRACK) || hostCst || REC || cfg.probe || cfg.coverage || cfg.trackLines) return undefined
+    if (passCollapse(code, ip, hostCst) || gatedPassCollapse(code, ip, hostCst) !== undefined) return undefined
+    const body = code[ip + 2]!
+    const bop = code[body]
+    if (bop !== OP_SEQ && bop !== OP_SEQV && bop !== OP_SEQX) return undefined
+    const base = bop === OP_SEQX ? body + 3 : body + 2
+    if (code[bop === OP_SEQX ? body + 2 : body + 1]! < 2) return undefined
+    const first = code[base]!
+    const negative = code[first] === OP_NOT
+    const terminal = negative ? scalarTerminalNotChild(code, first)
+      : code[first] === OP_PEEK ? scalarTerminalPeekChild(code, first) : -1
+    if (terminal < 0) return undefined
+    const recognize = scalarFor(terminal)!
+    const xf = fx[code[first + 2]!] as string[]
+    FIRST_DECIDED = DECIDED
+    NODE_BODY = lower(body)
+    const node = lower(ip)
+    NODE_BODY = undefined
+    return negative
+      ? (input, pos, ctx) => {
+          if (recognize(input, pos) >= 0) { ctx._fe = pos; ctx._fx = xf; EC.e = pos; return FAIL }
+          return node(input, pos, ctx)
+        }
+      : (input, pos, ctx) => {
+          if (recognize(input, pos) < 0) { ctx._fe = pos; ctx._fx = xf; return FAIL }
+          return node(input, pos, ctx)
+        }
   }
 
   function lower(ip: number): Piece {
@@ -2041,8 +2133,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+          // A completions probe sees nothing raised inside a lookahead
+          // (`not.ts`, `rollbackLookahead`): those tokens are not reachable here.
+          const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (PROBE && ctx._probe !== undefined) ctx._probe.best = probeBest ?? null
           if (v === FAIL) { EC.e = pos; return null }
           // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
           ctx._fe = pos
@@ -2052,6 +2148,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_PEEK: {
+        // A direct terminal decides the lookahead by its match alone: no mark,
+        // no leaf to capture and roll back (`scalarTerminalPeekChild`).
+        const scalarChild = scalarTerminalPeekChild(code, ip)
+        if (scalarChild >= 0) {
+          const recognize = scalarFor(scalarChild)!
+          const xf = fx[code[ip + 2]!] as string[]
+          return (input, pos, ctx) => {
+            if (recognize(input, pos) < 0) {
+              ctx._fe = pos
+              ctx._fx = xf
+              return FAIL
+            }
+            EC.e = pos
+            return null
+          }
+        }
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
         const gate = lookaheadClass(code[ip + 1]!)
@@ -2065,8 +2177,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+          const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (PROBE && ctx._probe !== undefined) ctx._probe.best = probeBest ?? null
           // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
           if (v === FAIL) { ctx._fe = pos; ctx._fx = xf; return FAIL }
           EC.e = pos
@@ -2077,9 +2191,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_OPT: {
         const child = link(code[ip + 1]!)
         const gate = lookaheadClass(code[ip + 1]!)
+        const childClean = CLEAN(code[ip + 1]!)
         return (input, pos, ctx) => {
           if (gate !== null && !classHas(gate, lead(input, pos))) { EC.e = pos; return null }
-          const need = markCst(ctx)
+          const need = !childClean && markCst(ctx)
           const mRaw = MRAW
           const mTl = MTL
           const mLv = MLV
@@ -2290,6 +2405,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           : undefined
         const step = closureLabels.at(ip).buf ? nextTermBuffered : nextTerm
+        const decided = FIRST_DECIDED
+        FIRST_DECIDED = undefined
+        const linkFirst = (): Piece => decided ?? link(code[base]!)
 
         const runnerBlock = (
           count: number,
@@ -2388,7 +2506,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * sentinel published is the kind of state a later reader will trust.
          */
         if (REC) {
-          const first = link(code[base]!)
+          const first = linkFirst()
           const firstSync = sentinelFor(code[base + n]!)
           const runnerAt = (i: number): TermRunner => {
             const sync = sentinelFor(code[base + n + i]!)
@@ -2470,15 +2588,32 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         // A `field(…, { leadingTrivia: true })` term is a boundary fact too: the
         // runner hands it the cursor from BEFORE the scan (`LEAD`, cell.ts).
+        // So is a lookahead that holds its gap for the next term (`hold-gap.ts`).
         let hasAdj = false
         for (let i = 1; i < n; i++) {
           const kidIp = code[base + i]!
-          if (code[kidIp] === OP_ADJ || leadingTriviaFieldAt(code, k, kidIp)) { hasAdj = true; break }
+          if (code[kidIp] === OP_ADJ || leadingTriviaFieldAt(code, k, kidIp) || holdsGap(code, k, base, n, i, NULLABLE)) { hasAdj = true; break }
         }
         if (hasAdj) {
-          const first = link(code[base]!)
+          const first = linkFirst()
           const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
+            if (holdsGap(code, k, base, n, i, NULLABLE)) {
+              const kid = link(kidIp)
+              return (input, cur, ctx) => {
+                if (ctx.trivia === undefined) {
+                  const v = kid(input, cur, ctx)
+                  if (v === FAIL) return -1
+                  TERMV = v
+                  return EC.e
+                }
+                const scanEnd = skipTrivia(input, cur, ctx)
+                const v = kid(input, scanEnd, ctx)
+                if (v === FAIL) return -1
+                TERMV = v
+                return scanEnd
+              }
+            }
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
               if (leadingTriviaFieldAt(code, k, kidIp)) {
@@ -2564,7 +2699,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * runs, so there is no arity this fails to lower.
          */
         if (n === 1) {
-          const k0 = link(code[base]!)
+          const k0 = linkFirst()
           if (fused) {
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
@@ -2587,7 +2722,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         if (n === 2) {
-          const k0 = link(code[base]!), k1 = link(code[base + 1]!)
+          const k0 = linkFirst(), k1 = link(code[base + 1]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
@@ -2621,7 +2756,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         if (n === 3) {
-          const k0 = link(code[base]!), k1 = link(code[base + 1]!), k2 = link(code[base + 2]!)
+          const k0 = linkFirst(), k1 = link(code[base + 1]!), k2 = link(code[base + 2]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
@@ -2723,7 +2858,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             start + count < n ? bind(start + count) : undefined,
           )
         }
-        const first = link(code[base]!)
+        const first = linkFirst()
         const tail = bind(1)
         const runDirectTerms = (
           input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined,
@@ -2767,6 +2902,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const n = code[ip + 2]!
         const choiceFx = fx[code[ip + 3]!] as string[]
         const base = ip + 4
+        // The arms first, so the answer reads theirs rather than walking them again.
+        for (let i = 0; i < n; i++) link(code[base + i]!)
+        const armsClean = CLEAN(ip)
 
         // THE TWO CHOICE SHAPES ARE TWO PIECES. `exec.ts` tested `table.exclusive`
         // on every choice execution; it is table data, so it selects here.
@@ -2903,7 +3041,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
           return (input, pos, ctx) => {
             const c = lead(input, pos)
-            const need = markCst(ctx)
+            const need = !armsClean && markCst(ctx)
             const mRaw = MRAW
             const mTl = MTL
             const mLv = MLV
@@ -3068,7 +3206,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (pn !== 0) {
             return (input, pos, ctx) => {
               const c = lead(input, pos)
-              const need = markCst(ctx)
+              const need = !armsClean && markCst(ctx)
               const mRaw = MRAW
               const mTl = MTL
               const mLv = MLV
@@ -3098,7 +3236,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           return (input, pos, ctx) => {
             const c = lead(input, pos)
-            const need = markCst(ctx)
+            const need = !armsClean && markCst(ctx)
             const mRaw = MRAW
             const mTl = MTL
             const mLv = MLV
@@ -3120,7 +3258,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         return (input, pos, ctx) => {
           const c = lead(input, pos)
-          const need = markCst(ctx)
+          const need = !armsClean && markCst(ctx)
           const mRaw = MRAW
           const mTl = MTL
           const mLv = MLV
@@ -3163,6 +3301,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // one. Re-running the arm cannot fail: the word IS its literal.
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           return lit(input, pos, ctx)
+        }
+      }
+
+      case OP_RGATE: {
+        const cls = cc[code[ip + 1]!]!
+        const xf = fx[code[ip + 3]!] as string[]
+        const child = link(code[ip + 2]!)
+        // Forwards under a probe or tolerant recovery, as OP_GATE does.
+        if (cfg.tolerant || cfg.probe) return child
+        return (input, pos, ctx) => {
+          const item = ctx._routed
+          if (item !== undefined && item.span.start === pos && !classHas(cls, lead(input, item.span.end))) {
+            ctx._fe = item.span.end; ctx._fx = xf
+            return FAIL
+          }
+          return child(input, pos, ctx)
         }
       }
 
@@ -3263,6 +3417,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
         const skipBeforeFirst = sepIp < 0 && min === 0
+        const itemClean = sepIp < 0 && CLEAN(code[ip + 1]!) && !rowNullable(code, k, code[ip + 1]!, NULLABLE)
 
         /**
          * TOLERANT RECOVERY — the third implementation of `recoverScan`'s
@@ -3390,6 +3545,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const out: unknown[] | undefined = collect ? [] : undefined
           const hasTrivia = ctx.trivia !== undefined
           const needMark = rollbackNeeded(ctx)
+          // A clean item with no trivia scanned in front of it has nothing to undo.
+          const markLater = needMark && (!itemClean || hasTrivia)
+          const markFirst = needMark && (!itemClean || (hasTrivia && skipBeforeFirst))
           // A completions probe deliberately observes swallowed item failures.
           // Keep the ordinary child path while one is active so this structural
           // fast stop cannot erase an item completion at the cursor.
@@ -3409,14 +3567,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // Per ITERATION, never hoisted: a preceding item's `node()` opened and
             // closed a capture buffer, so `ctx._cstBuf` is not the object it was
             // at the loop head. `needMark` is the pre-existing loop-invariant.
-            if (needMark) markCst(ctx)
-            const mRaw = needMark ? MRAW : 0
-            const mTl = needMark ? MTL : 0
-            const mLv = needMark ? MLV : 0
-            const mFl = needMark ? ctx._fields?.length ?? 0 : 0
-            const mEr = needMark ? ctx._errors?.length ?? 0 : 0
-            const mLog = needMark ? ctx._triviaLog?.length ?? 0 : 0
-            const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
+            const markIt = count > 0 ? markLater : markFirst
+            if (markIt) markCst(ctx)
+            const mRaw = markIt ? MRAW : 0
+            const mTl = markIt ? MTL : 0
+            const mLv = markIt ? MLV : 0
+            const mFl = markIt ? ctx._fields?.length ?? 0 : 0
+            const mEr = markIt ? ctx._errors?.length ?? 0 : 0
+            const mLog = markIt ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = markIt ? ctx._rootTriviaLog?.length ?? 0 : 0
             let itemStart = cur
             let sepEnd = -1
             const viaRepItem = sep === undefined && count >= min && (count > 0 || skipBeforeFirst)
@@ -3428,7 +3587,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (sepLeads) LEAD.at = cur
               const sv = sep(input, sp, ctx)
               if (sv === FAIL) {
-                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
                 if (committed(ctx)) return FAIL
                 break
               }
@@ -3439,19 +3598,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               itemStart = skipTrivia(input, itemStart, ctx)
             }
             if (itemStart >= input.length && viaRepItem) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
             if (count >= min && gateItems && !itemMayStart!(input, itemStart)) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
             ctx._fc = false
             const v = child(input, itemStart, ctx)
             if (v === FAIL) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (committed(ctx)) return FAIL
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
@@ -3459,7 +3618,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (EC.e === itemStart && viaRepItem) {
               // Zero-width item: `repItem`'s TERMINATION device, not a semantic
               // filter — and it applies only where `repItem` runs.
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               break
             }
             if (out !== undefined) out.push(v)
@@ -3532,7 +3691,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const runOther = other === undefined ? undefined : dispatchBranch(other, otherRouted)
 
         return (input, pos, ctx) => {
-          const selectorMark = saveTriviaMark(ctx)
+          const need = markCst(ctx)
+          const mRaw = MRAW
+          const mTl = MTL
+          const mLv = MLV
+          const mFl = need ? ctx._fields?.length ?? 0 : 0
+          const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const selVal = selector(input, pos, ctx)
           if (selVal === FAIL) return FAIL
           const selEnd = EC.e
@@ -3545,9 +3711,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               ctx._fx = expected
               return FAIL
             }
-            return runOther(input, pos, selEnd, key, selectorMark, ctx)
+            return runOther(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           }
-          return runArm!(arm, input, pos, selEnd, key, selectorMark, ctx)
+          return runArm!(arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         }
       }
 
@@ -3591,7 +3757,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return nd
           }
         }
-        const child = link(code[ip + 2]!)
+        const child = NODE_BODY ?? link(code[ip + 2]!)
+        NODE_BODY = undefined
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
         const type = k[code[ip + 5]!] as string
@@ -3627,6 +3794,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           if (build !== undefined && proj < 0 && flags === 18) {
             return childrenOnlyFieldsBuildNode(child, build)
+          }
+          if (build !== undefined && passCollapse(code, ip, hostCst)) {
+            return passCollapseNode(child, build, flags === 32)
+          }
+          // Not under recovery or a probe: there a gated-out term still runs.
+          const gated = build !== undefined && !cfg.tolerant && !cfg.probe ? gatedPassCollapse(code, ip, hostCst) : undefined
+          const triviaLead = gated === undefined ? undefined : triviaLeadRanges(closureLabels.at(code[ip + 2]!).tri, trivia)
+          if (build !== undefined && gated !== undefined && triviaLead !== undefined) {
+            const classic = flags === 32 ? collapseBuildNode(child, build) : childrenOnlyCollapseBuildNode(child, build)
+            return gatedPassCollapseNode(
+              [
+                ...gated.leads.map(g => cc[code[g + 1]!]!),
+                resolveClass(encodeClassSpec([
+                  ...triviaLead,
+                  ...gated.lits.map(i => { const c = (k[i] as string).codePointAt(0)!; return { lo: c, hi: c } }),
+                ])),
+              ],
+              link(gated.last), classic, build, flags === 32,
+            )
           }
           if (build !== undefined && proj < 0 && flags === 32) {
             return collapseBuildNode(child, build)
@@ -3853,6 +4039,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       const notChild = scalarTerminalNotChild(code, ip)
       if (notChild >= 0) scalarFor(notChild)
+      const peekChild = scalarTerminalPeekChild(code, ip)
+      if (peekChild >= 0) scalarFor(peekChild)
     }
     /**
      * THE BUILD'S OWN ANSWER, TRIED BEFORE THE CONSTRUCTOR.
@@ -3891,6 +4079,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
+        collapseEmpty,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -3974,6 +4163,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
+        collapseEmpty,
       )
       emitReached = em.reached
     } catch (e) {

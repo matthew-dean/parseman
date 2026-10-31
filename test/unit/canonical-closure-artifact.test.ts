@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { literal } from '../../src/index.ts'
+import { literal, regex, sequence } from '../../src/index.ts'
 import { run as runTabled } from '../../src/functional/run-tabled.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { compile } from '../../src/table/compile.ts'
@@ -163,6 +163,21 @@ ${'// the assembly budget is a share of the module source\n'.repeat(2000)}`, 'ca
     expect(small?.selectAssembly(1e6).sites.size).toBe(1)
     expect(tracked?.selectAssembly(1e6).sites.size).toBe(0)
     expect(cst?.selectAssembly(1e6).sites.size).toBe(0)
+    // Below the prelude a budget buys nothing, by design, and says nothing.
+    expect(small?.selectAssembly(100).refusal).toBeUndefined()
+  })
+
+  it('names the reason when a budget covers the prelude but no site', () => {
+    const compiled = compileRuleMap([['Entry', sequence(literal('a'), regex(/[0-9]+/), literal(';'))]])!
+    const fits = (budget: number): boolean => compiled.selectAssembly(budget).sites.size > 0
+    // The smallest budget that buys the site, then the band just under it: it
+    // covers the prelude, so the build asked for an assembly and got none.
+    let lo = 1, hi = 1e6
+    while (hi - lo > 1) { const mid = Math.floor((lo + hi) / 2); if (fits(mid)) hi = mid; else lo = mid }
+    const refusals = Array.from({ length: 200 }, (_, i) => compiled.selectAssembly(lo - i).refusal)
+    expect(refusals[0]).toMatch(/a site within its \d+ B selection ceiling \(the prelude alone is \d+ B\)/)
+    // Whatever is refused below the site is refused by name until the prelude.
+    for (const r of refusals) if (r !== undefined) expect(r).toMatch(/selection ceiling/)
   })
 
   it('a macro round-trip preserves a descriptor-backed sequence projection', () => {
