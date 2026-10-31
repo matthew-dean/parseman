@@ -55,6 +55,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     reached another piece's rule had an `any` first set and no gate, so jess's
     `CompoundSelector` was entered at `{`; and the repeat-item guard binds the item's
     class whatever its pool index.
+  - the runtime `compile()` emitter tests an ASCII-only gate, dispatch, arm mask or
+    repeat-item class by code unit (`CLS.ascii[input.charCodeAt(pos)]`), as macro
+    artifacts already did, instead of `classHas(cls, lead(input, pos))`. The new gate
+    rows cost more than they saved on x64 through the two calls: against 0.56.0 the
+    grammar-density gate read `rollback/sparse` +0.6% to +3.9% and `expected/none` up
+    to +5.2% on GitHub's runners. Against its own parent the direct test measured
+    `rollback/sparse` −2.0% to +0.6% and `rollback/none` −0.8% to −4.9% there.
 - Trivia:
   - the trivia scanner lowers an alternation whose alternatives share a literal
     prefix, such as jess's one comment arm `\/(?:\*…\*\/|\/[^\n\r]*)`, which had no

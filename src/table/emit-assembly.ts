@@ -928,7 +928,7 @@ return 1
     const ci = classes.push([resolved]) - 1
     classPlan.push([code[gip + 1]!])
     const cls = hoist('cl', `CLS[${ci}][0]`)
-    return staticBuild && isAsciiOnlyClass(resolved)
+    return isAsciiOnlyClass(resolved)
       ? `${cls}.ascii[input.charCodeAt(pos)]!==1`
       : `!classHas(${cls},lead(input,pos))`
   }
@@ -1808,7 +1808,7 @@ return v
           // array index feeding ONE call site, which is the megamorphic site
           // this unit exists to remove.
           const armSwitch = arms.map((a, i) => `case ${i}:v=${a}(input,pos,ctx);break`).join('\n')
-          const directAscii = staticBuild && table.hi.length === 0
+          const directAscii = table.hi.length === 0
           return `${head}
 const c=${directAscii ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
 let arm=-1
@@ -1839,7 +1839,7 @@ return FAIL
           const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
           const maskable = n <= 32
-          const directAsciiMask = staticBuild && maskable && gates.every(isAsciiOnlyClass)
+          const directAsciiMask = maskable && gates.every(isAsciiOnlyClass)
           const gateRefs = directAsciiMask
             ? []
             : Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
@@ -2199,7 +2199,7 @@ return [key,v]
             const ci = classes.push([resolved]) - 1
             classPlan.push([itemClassIndex])
             itemCls = hoist('ri', `CLS[${ci}][0]`)
-            itemAscii = staticBuild && isAsciiOnlyClass(resolved)
+            itemAscii = isAsciiOnlyClass(resolved)
           }
         }
         const itemMiss = (at: string): string => itemAscii
