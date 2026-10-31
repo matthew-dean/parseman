@@ -42,6 +42,7 @@ jobs:
         name: Detect whether anything outside docs changed
         run: |
           set -euo pipefail
+          echo "code=false" >> "$GITHUB_OUTPUT"; echo "scratch bisect branch: only the workload bisect matrix runs"; exit 0
           # Pushes to main always run everything: there is no reliable "base" to
           # diff a merge commit against, and main is the branch that must stay green.
           if [ "${{ github.event_name }}" != "pull_request" ]; then
@@ -341,10 +342,40 @@ jobs:
   # win rate, so neither a busy runner nor a bad draw of the compilation lottery can
   # fail a PR on its own. See docs/design/perf-gates.md for what it can and cannot see.
   workload-perf:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { ref: "2d59ad38", head: "6bc77801", rep: 1 }
+          - { ref: "2d59ad38", head: "b9700870", rep: 1 }
+          - { ref: "b9700870", head: "10aa857f", rep: 1 }
+          - { ref: "10aa857f", head: "b50090e3", rep: 1 }
+          - { ref: "b50090e3", head: "83682f9f", rep: 1 }
+          - { ref: "83682f9f", head: "5600fbe5", rep: 1 }
+          - { ref: "5600fbe5", head: "725ebb02", rep: 1 }
+          - { ref: "725ebb02", head: "0c4b4c1f", rep: 1 }
+          - { ref: "0c4b4c1f", head: "6bc77801", rep: 1 }
+          - { ref: "2d59ad38", head: "6bc77801", rep: 2 }
+          - { ref: "2d59ad38", head: "b9700870", rep: 2 }
+          - { ref: "b9700870", head: "10aa857f", rep: 2 }
+          - { ref: "10aa857f", head: "b50090e3", rep: 2 }
+          - { ref: "b50090e3", head: "83682f9f", rep: 2 }
+          - { ref: "83682f9f", head: "5600fbe5", rep: 2 }
+          - { ref: "5600fbe5", head: "725ebb02", rep: 2 }
+          - { ref: "725ebb02", head: "0c4b4c1f", rep: 2 }
+          - { ref: "0c4b4c1f", head: "6bc77801", rep: 2 }
+          - { ref: "2d59ad38", head: "6bc77801", rep: 3 }
+          - { ref: "2d59ad38", head: "b9700870", rep: 3 }
+          - { ref: "b9700870", head: "10aa857f", rep: 3 }
+          - { ref: "10aa857f", head: "b50090e3", rep: 3 }
+          - { ref: "b50090e3", head: "83682f9f", rep: 3 }
+          - { ref: "83682f9f", head: "5600fbe5", rep: 3 }
+          - { ref: "5600fbe5", head: "725ebb02", rep: 3 }
+          - { ref: "725ebb02", head: "0c4b4c1f", rep: 3 }
+          - { ref: "0c4b4c1f", head: "6bc77801", rep: 3 }
+    name: "bisect ${{ matrix.ref }}..${{ matrix.head }} r${{ matrix.rep }}"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -359,29 +390,8 @@ jobs:
           node-version: lts/*
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Realistic-workload perf gate vs the pinned reference commit
-        run: pnpm perf:workloads
-      # The PEAK clause — the same workloads against the fastest release ON RECORD
-      # rather than the previous one. The step above enforces "faster than the last
-      # release"; this one enforces "not below the best we have ever been", which is
-      # the half a per-step comparison structurally cannot see: five consecutive 1%
-      # losses each sit inside the noise floor, no step is flagged, and the sum is
-      # real. Measured at -5.1% accumulating across 0.28.0 -> 0.34.0 on the
-      # standalone sweep.
-      #
-      # Same job, so it reuses the checkout, the install and the warm .cache
-      # worktrees rather than paying for a second runner.
-      #
-      # `--base` is what makes a PERF-PEAK-WAIVER usable, and it is passed here rather
-      # than baked into the script on purpose. A waiver is PER-PR: the guard honours one
-      # only while the line is ABSENT from the base's CHANGELOG, and without a base it
-      # cannot tell this PR's declaration from the one the previous PR left behind — so
-      # it refuses. On a push (no PR) there is no base, and the clause is unwaivable,
-      # which is the correct default for the branch everything is measured against.
-      - name: Peak clause — no drawdown from the fastest release on record
-        run: pnpm perf:workloads:peak ${BASE_SHA:+--base=$BASE_SHA}
-        env:
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+      - name: Workload gate, one step, json only
+        run: node --import tsx/esm bench/workload-perf-guard.ts --only=json --ref=${{ matrix.ref }} --head-ref=${{ matrix.head }} || true
 
   # Shipping macro-parser gate. The grammar/workload jobs above exercise runtime
   # compile(); they do not instantiate Jess's macro-emitted parser. Pin Jess as
