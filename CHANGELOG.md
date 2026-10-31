@@ -35,6 +35,17 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   arm as `sequence(X, optional(a))`, so an `X` with no `a` after it is not parsed again
   by the next arm. Failures are reported as before. Jess's SCSS mixin argument
   (`$name: v`, `v...`, `v`) is this shape. Test: `test/unit/table-prefix-arm.test.ts`.
+- **An optional repeat reads its item's leading gap once.** An optional repeat item
+  that opens with a gap (a `regex()` that may match empty, or one that starts only with
+  whitespace or a comment's `/`) and then a term with a finite first set gets an
+  `OP_GAPGATE` row. The repeat scans the gap with the item's own regex, ends where the
+  character after it opens no such term (and the item's start opens no arm without
+  the gap), and otherwise enters the item with the gap's end in a slot, from which the
+  regex row takes it instead of scanning again. The slot is a memo of one pure
+  function, keyed by row, position and input. Not under tolerant recovery or a
+  completions probe; the reference driver runs the item as written. A gap spelled as
+  `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
+  and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
 - An optional repeat item no longer tests its lead gate twice: the repeat's own item
   class covers it. And with no separator or gap in front of the item, the item class is
   tested once per iteration, not twice.
