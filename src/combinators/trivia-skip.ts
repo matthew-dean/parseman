@@ -413,7 +413,7 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
   return { end: tr.ok ? tr.span.end : cur, commit: NOOP_COMMIT }
 }
 
-/** Legacy object-shaped contract used by previously emitted assembly factories. */
+/** The object-shaped form of `scanTriviaCompact`. No engine calls it; the trivia-skip tests compare the two. */
 export function scanTrivia(input: string, cur: number, ctx: ParseContext): TriviaScan {
   const scan = scanTriviaCompact(input, cur, ctx)
   return typeof scan === 'number' ? { end: scan, commit: NOOP_COMMIT } : scan
