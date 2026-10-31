@@ -1278,17 +1278,26 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       case OP_RX_TRACK: {
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_RX_TRACK
-        // A gap row takes the end a repeat already scanned (`gap-gate.ts`).
-        const head = GAP_ROWS.has(ip)
-          ? `${outerHead}
-if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input){
-const e=GAP.end
+        // A gap row takes the end a repeat already scanned (`gap-gate.ts`), and
+        // otherwise matches its sticky regex: one compact body, no second copy of
+        // the success path.
+        if (GAP_ROWS.has(ip)) {
+          const re = hoist('gx', `K[${code[ip + 1]!}]`)
+          return `${outerHead}
+let e
+if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end
+else{${re}.lastIndex=pos;e=${re}.test(input)?${re}.lastIndex:-1}
+if(e>=0){
 const v=input.slice(pos,e)
 ${captureLeaf('v')}
 ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
+}
+ctx._fe=pos;ctx._fx=${xf}
+${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
-          : outerHead
+        }
+        const head = outerHead
         if (!track && scalarSpecs.has(code[ip + 1]!)) {
           const recognize = recognizerRef(code[ip + 1]!)
           return `${head}
