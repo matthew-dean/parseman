@@ -41,11 +41,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   supercompiler's joins. The supercompiler and the emitter listed the scan pool's
   sites in different orders, so the supercompiler's splice check failed and it
   discarded its result without a warning. All three assemblers now read one list.
-- Fixed: a literal fragment holding a letter or digit escape other than `\t`, `\n`,
+- Fixed: a literal fragment holding a word-character escape other than `\t`, `\n`,
   `\r`, `\f`, `\v` or `\0` was read as that character, so the trivia scanners and the
   table's scan lowerings treated `\d[a-z]*` as `d` followed by letters. Such a
-  fragment now declines the lowering and runs on the regex; `\uXXXX` reads as its
-  code point.
+  fragment now declines the lowering and runs on the regex.
 - First-character gates:
   - `optional`, `not` and `peek` over a non-nullable child decide on the child's first
     character without taking a rollback mark or entering the child;

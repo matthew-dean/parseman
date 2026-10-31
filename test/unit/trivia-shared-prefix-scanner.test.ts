@@ -57,11 +57,10 @@ describe('a trivia arm whose alternatives share a literal prefix', () => {
 })
 
 describe('literalCodePoints', () => {
-  it('reads identity, fixed and unicode escapes, and declines every other letter or digit escape', () => {
+  it('reads identity and fixed escapes, and declines every other word-character escape', () => {
     expect(literalCodePoints('\\/\\*')).toEqual([47, 42])
     expect(literalCodePoints('a\\tb')).toEqual([97, 9, 98])
-    expect(literalCodePoints('\\u0041')).toEqual([65])
-    for (const frag of ['\\d', 'a\\w', '\\s', '\\b', '\\1', '\\x41', '\\cA', '\\u00']) {
+    for (const frag of ['\\d', 'a\\w', '\\s', '\\b', '\\1', '\\x41', '\\cA', '\\u0041']) {
       expect(literalCodePoints(frag), frag).toBeNull()
     }
   })
