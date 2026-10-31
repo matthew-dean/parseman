@@ -3613,7 +3613,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
-            if (count >= min && gateItems && !itemMayStart!(input, itemStart)) {
+            // Without a separator or trivia in front, the loop head already
+            // tested this same position.
+            if (count >= min && gateItems && (sep !== undefined || hasTrivia) && !itemMayStart!(input, itemStart)) {
               if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break

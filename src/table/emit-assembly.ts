@@ -2411,7 +2411,7 @@ itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(inp
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${itemMiss('itemStart')}){
+${itemCls === undefined || (sep === undefined && hasTrivia === 'false') ? '' : `if(count>=${min}&&${p}gate&&${sep === undefined && hasTrivia === 'hasTrivia' ? 'hasTrivia&&' : ''}${itemMiss('itemStart')}){
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
