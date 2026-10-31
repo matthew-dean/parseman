@@ -102,8 +102,7 @@ configuration that enforces it.
 - Each release is faster than the last.
 - A trade of speed for size needs the owner's sign-off on the specific number.
 - How the two rules above apply to the size work (recorded 2026-10-30, after the owner's
-  *"5x size and 19% slower is a fuckin non-starter"*; the owner has not yet confirmed
-  this wording): no trade of speed for size is proposed without that sign-off, so a
+  *"5x size and 19% slower is a fuckin non-starter"*): no trade of speed for size is proposed without that sign-off, so a
   release keeps every jess grammar within 5× of its source (rule 4) and no slower than
   the previous release in marginal instructions, wall time and cold start. Size comes
   from removing generated code, not from moving hot sites back to the closure engine.
