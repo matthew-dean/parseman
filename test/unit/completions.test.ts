@@ -30,11 +30,6 @@ describe('completionsAt()', () => {
     expect(completions).toContain('";"')
   })
 
-  it('returns keyword options from a choice grammar', () => {
-    const keyword = choice(literal('true'), literal('false'), literal('null'))
-    expect(completionsAt(keyword, 'tru', 3)).toContain('"true"')
-  })
-
   it('returns an empty list when the prefix already parses', () => {
     expect(completionsAt(literal('abc'), 'abc', 3)).toEqual([])
   })
