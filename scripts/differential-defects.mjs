@@ -290,7 +290,7 @@ export const DEFECTS = {
 
   'gap-slot-any-row-emitted': {
     why: 'emitted engine: a gap row takes the slot at its position whatever row the slot was set for',
-    edits: [{ file: 'src/table/emit-assembly.ts', find: 'if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input){', replace: 'if(GAP.at===pos&&GAP.input===input){' }],
+    edits: [{ file: 'src/table/emit-assembly.ts', find: 'if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end', replace: 'if(GAP.at===pos&&GAP.input===input)e=GAP.end' }],
   },
 
   'otherwise-commit-bit-dropped': {
