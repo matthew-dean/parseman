@@ -83,7 +83,7 @@ export type NodeOptions<Tags extends readonly string[] = readonly never[]> = {
    * cannot read.
    *
    * Arity gates five capture tiers (`>= 1` children, `>= 2` fields, `>= 4` rawChildren,
-   * `>= 5` triviaLog, `>= 6` a clone of `_ctx.state`), and parseman normally derives it
+   * `>= 5` triviaLog, `>= 6` `_ctx.state`), and parseman normally derives it
    * from the reducer's declaration — including across module boundaries. A few shapes
    * are genuinely undecidable: a rest parameter (`...args`), a body that reads
    * `arguments`, a reassigned or dynamically constructed reducer. Those fail OPEN, which
@@ -208,7 +208,7 @@ export function node<N>(
     : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
-  // capture for the inner scope; when it never reads state (5th), skip the state clone.
+  // capture for the inner scope; when it never reads state (6th), it is handed none.
   // A STRUCTURAL node (no own build) defers to `ctx.build` / a default CST, which
   // may read either, so capture both.
   // These are the DIRECT builder's own needs, and they are not the whole story. A node
@@ -228,7 +228,7 @@ export function node<N>(
   // or without a node log. Forcing capture for it handed a three-argument reducer
   // a log it never reads, at the price of the full capture frame on every match.
   const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : project === undefined)
-  const clonesState = build ? buildReadsState(def) : project === undefined
+  const readsState = build ? buildReadsState(def) : project === undefined
   const hasOwnFields = parserHasOwnFields(combinator)
   const capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)
   // First-set fail-fast (mirrors emitNode's codegen guard): a node whose body can't
@@ -298,17 +298,10 @@ export function node<N>(
       if (!r.ok) return r
 
       // unwrap/collapse: a single captured child IS the value — skip build.
-      const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
+      const st = readsState ? ctx.state : undefined
       const nodeType = def.type ?? missingInferredType()
       const cstOutput = cstOutputHost(ctx.build)
       const span = ctx.trackLines ? annotateSpanFromLineContext(r.span, ctx) : r.span
-      // A direct builder that never declared `state` still owes the host its snapshot.
-      // The clone happens AFTER the body, so unlike trivia it needs no gate up front —
-      // build it here, on a branch the eval-AST path never takes. Matches what
-      // `hostMode: 'cst'` does in the compiled engine.
-      const hostState = clonesState
-        ? st
-        : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const built: unknown = unwrap && children.length === 1
         ? unwrapChild(children[0])
         : collapse && children.length === 1
@@ -326,14 +319,14 @@ export function node<N>(
           ? children[0]
         : project !== undefined
           ? cstOutput && ctx.build
-            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, hostState, tags)
+            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, ctx.state, tags)
             : projectChild(children, project, nodeType)
         : build
           // A direct builder normally owns its result. The positioned-CST host is
           // the one exception: it must never receive an arbitrary AST object as a
           // child of a CST node, so build this grammar node through that host.
           ? cstOutput && ctx.build
-            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, hostState, tags)
+            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, ctx.state, tags)
             : build(children, fields, span, rawChildren, triviaLog, st)
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build

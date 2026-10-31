@@ -124,17 +124,17 @@ describe('node() — state', () => {
     expect(r.value.state).toEqual({ mode: 'strict' })
   })
 
-  it('state is a shallow clone — original mutations do not propagate', () => {
+  it('state is the active state object itself, not a copy', () => {
+    // Parseman never changes a state object (`withCtx` installs a new one), so
+    // the object is the state the node was parsed under; a caller that mutates
+    // its own object in place sees that in the node.
     const { Number } = makeExprGrammar()
     const userCtx = { count: 0 }
     const p = withCtx(userCtx, Number)
     const r = parse(p, '7')
     expect(r.ok).toBe(true)
     if (!r.ok) return
-    const saved = r.value.state as { count: number }
-    expect(saved.count).toBe(0)
-    userCtx.count = 999
-    expect(saved.count).toBe(0)
+    expect(r.value.state).toBe(userCtx)
   })
 
   it('nested rules each record their own state', () => {

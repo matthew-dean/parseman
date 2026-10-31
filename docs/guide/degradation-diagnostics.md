@@ -121,7 +121,7 @@ works out the build's declared arity and elides every tier above it:
 | `>= 2` | `fields` |
 | `>= 4` | `rawChildren` |
 | `>= 5` | `triviaLog` |
-| `>= 6` | a clone of `_ctx.state` |
+| `>= 6` | `_ctx.state` |
 
 ### What the macro resolves
 

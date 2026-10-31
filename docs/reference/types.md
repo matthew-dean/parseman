@@ -320,7 +320,7 @@ type NodeLike = {
   readonly _tag: 'node'
   readonly type: string        // rule name — the registry key on re-parse
   readonly span: Span
-  readonly state: unknown      // ctx.state snapshot; replayed on edit
+  readonly state: unknown      // ctx.state at parse time; replayed on edit
   readonly children: ReadonlyArray<{ readonly _tag: string }>
 }
 ```

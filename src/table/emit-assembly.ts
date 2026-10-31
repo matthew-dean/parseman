@@ -2570,7 +2570,7 @@ return nd
         const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
         const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         const ty = q(type)
-        const stArg = readsState ? 'st' : '(ctx.state!==undefined?Object.assign({},ctx.state):undefined)'
+        const stArg = 'ctx.state'
         const hostCall = `_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,${stArg},${tags})`
         let value: string
         if (proj >= 0) {
@@ -2645,7 +2645,7 @@ ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
 const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}
-const st=${readsState ? '(ctx.state!==undefined?Object.assign({},ctx.state):undefined)' : 'undefined'}
+const st=${readsState ? 'ctx.state' : 'undefined'}
 let nd
 ${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]
 else ` : ''}{${value}}

@@ -57,7 +57,7 @@ Expr.parse('1 + 2 + 3', 0, { trackLines: false })
   was consumed. Pass the tree to `buildTriviaIndex(tree, input)` for a `before`/`after`
   map — useful for whitespace-sensitive syntax, like telling CSS's `div p` apart from
   `div.p`.
-- **`state`** — a snapshot of `ctx.state` at parse time (see
+- **`state`** — the `ctx.state` active at parse time, the object itself (see
   [Context-sensitive parsing](./context)).
 
 Wrap a rule's inner combinator in `parser({ trivia }, combinator)` so trivia-skipping is
@@ -439,7 +439,7 @@ type NodeLike = {
   readonly _tag: 'node'
   readonly type: string          // the rule name — used as the registry key on re-parse
   readonly span: Span
-  readonly state: unknown        // ctx.state snapshot at parse time; replayed on edit
+  readonly state: unknown        // ctx.state at parse time; replayed on edit
   readonly children: ReadonlyArray<{ readonly _tag: string }>
 }
 ```

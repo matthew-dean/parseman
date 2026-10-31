@@ -1482,9 +1482,7 @@ function makeDriver(
         if (v === FAIL) return FAIL
         const end = EC.e
         const span = code[ip] === OP_NODE_TRACK ? spanLines(ctx, pos, end) : { start: pos, end }
-        const st = (flags & 8) !== 0 && ctx.state !== undefined
-          ? Object.assign({}, ctx.state as Record<string, unknown>)
-          : undefined
+        const st = (flags & 8) !== 0 ? ctx.state : undefined
         const tagIdx = code[ip + 6]!
         const tags = tagIdx < 0 ? undefined : k[tagIdx] as readonly string[]
 
@@ -1521,13 +1519,13 @@ function makeDriver(
           nd = kids[0]
         } else if (proj >= 0) {
           nd = hostCst && host !== undefined
-            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, (flags & 8) !== 0 ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
+            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, ctx.state, tags)
             : projectChild(kids, proj, type)
         } else if (buildIdx >= 0) {
           if (hostCst && host !== undefined) {
             // A direct builder is bypassed under a CST host: the host must never
             // receive an arbitrary AST object as a child of a CST node.
-            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, (flags & 8) !== 0 ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
+            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, ctx.state, tags)
           } else {
             const build = fns[buildIdx] as (
               children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },

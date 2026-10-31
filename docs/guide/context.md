@@ -53,9 +53,12 @@ branch by a cheap predicate, reach for the gated-arm field below; it preserves d
 
 Because incremental re-parsing needs to re-run a single rule in isolation, later, on a
 different document. A mutated module-level variable won't hold the right value by then.
-Instead, each node records the `ctx.state` snapshot that was active when it was parsed (the
+Instead, each node records the `ctx.state` that was active when it was parsed (the
 `state` field on `NodeLike`), and `edit()` replays it — so a context-sensitive rule
-re-parses under exactly the context it originally saw.
+re-parses under exactly the context it originally saw. Parseman never changes a state
+object: `withCtx` installs a new one for its scope and restores the old one after. So the
+node holds that object itself, not a copy; a host that mutates its own state object in
+place sees the mutation in every node that recorded it.
 
 ## Gated choice arms
 

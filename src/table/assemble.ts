@@ -3705,9 +3705,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (v === FAIL) return FAIL
           const end = EC.e
           const span = tracked ? spanLines(ctx, pos, end) : { start: pos, end }
-          const st = readsState && ctx.state !== undefined
-            ? Object.assign({}, ctx.state as Record<string, unknown>)
-            : undefined
+          const st = readsState ? ctx.state : undefined
 
           let nd: unknown
           if (unwrap && kids.length === 1) {
@@ -3727,12 +3725,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             nd = kids[0]
           } else if (proj >= 0) {
             nd = hostCst && host !== undefined
-              ? host(type, kids, fieldMap, span, rawKids, tlog, readsState ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
+              ? host(type, kids, fieldMap, span, rawKids, tlog, ctx.state, tags)
               : projectChild(kids, proj, type)
           } else if (build !== undefined) {
             if (hostCst && host !== undefined) {
               // A direct builder is bypassed under a CST host.
-              nd = host(type, kids, fieldMap, span, rawKids, tlog, readsState ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
+              nd = host(type, kids, fieldMap, span, rawKids, tlog, ctx.state, tags)
             } else {
               nd = build(kids, fieldMap, span, rawKids, captureWide ? tlog : EMPTY_TL, st)
             }
