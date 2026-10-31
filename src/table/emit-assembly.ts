@@ -47,7 +47,7 @@
 import type { ParseContext } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
-  OP_ADJ, OP_ARMGATE, OP_RGATE, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
+  OP_ADJ, OP_ARMGATE, OP_RGATE, OP_RGATE2, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
@@ -1385,6 +1385,28 @@ return ${child}(input,pos,ctx)
         return `${head}
 const it=ctx._routed
 if(it!==undefined&&it.span.start===pos&&!classHas(${cls},lead(input,it.span.end))){ctx._fe=it.span.end;ctx._fx=${xf};return FAIL}
+return ${child}(input,pos,ctx)
+}`
+      }
+
+      case OP_RGATE2: {
+        const child = link(code[ip + 2]!)
+        if (cfg.tolerant || cfg.probe) return `${head}
+return ${child}(input,pos,ctx)
+}`
+        const ref = (idx: number, tag: string): string => {
+          const ci = classes.push([t.cc[idx]!]) - 1
+          classPlan.push([idx])
+          return hoist(tag, `CLS[${ci}][0]`)
+        }
+        const cls = ref(code[ip + 1]!, 'cl')
+        const first = ref(code[ip + 4]!, 'c1')
+        const second = ref(code[ip + 5]!, 'c2')
+        const xf = fxRef(code[ip + 3]!)
+        return `${head}
+const it=ctx._routed
+if(it!==undefined&&it.span.start===pos){const e=it.span.end;const c=lead(input,e)
+if(!classHas(${cls},c)||(classHas(${first},c)&&!classHas(${second},lead(input,e+1)))){ctx._fe=e;ctx._fx=${xf};return FAIL}}
 return ${child}(input,pos,ctx)
 }`
       }

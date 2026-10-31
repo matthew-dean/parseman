@@ -22,7 +22,7 @@ import {
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV, OP_GAPGATE,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -1125,7 +1125,10 @@ function makeDriver(
         return sup
       }
 
-      case OP_RGATE: {
+      // The reference tests the first character only: the second is the shipped
+      // engines' (`OP_RGATE2`), and this driver is the leg they are compared with.
+      case OP_RGATE:
+      case OP_RGATE2: {
         const item = ctx._routed
         if (item !== undefined && item.span.start === pos && ctx._probe === undefined && !ctx._tolerant
           && !classHas(cc[code[ip + 1]!]!, lead(input, item.span.end))) {

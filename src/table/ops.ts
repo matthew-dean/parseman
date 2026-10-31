@@ -495,6 +495,13 @@ export const OP_RGATE = 45
  */
 export const OP_GAPGATE = 46
 /**
+ * `RGATE2 cls child fx first second` — `OP_RGATE` with a SECOND character: where
+ * the character after the routed token is in `first`, the one after it must be
+ * in `second` too (the next term reads both, `regexFirstTwo`), or the arm fails
+ * there with `fx`, as entering it would.
+ */
+export const OP_RGATE2 = 47
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -531,4 +538,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_LEX_BODY]: 'LEX_BODY',
   [OP_LEX_PROGRAM]: 'LEX_PROGRAM',
   [OP_GAPGATE]: 'GAPGATE',
+  [OP_RGATE2]: 'RGATE2',
 }

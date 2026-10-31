@@ -90,7 +90,7 @@ import {
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV, OP_GAPGATE,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -3352,6 +3352,27 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (item !== undefined && item.span.start === pos && !classHas(cls, lead(input, item.span.end))) {
             ctx._fe = item.span.end; ctx._fx = xf
             return FAIL
+          }
+          return child(input, pos, ctx)
+        }
+      }
+
+      case OP_RGATE2: {
+        const cls = cc[code[ip + 1]!]!
+        const xf = fx[code[ip + 3]!] as string[]
+        const first = cc[code[ip + 4]!]!
+        const second = cc[code[ip + 5]!]!
+        const child = link(code[ip + 2]!)
+        if (cfg.tolerant || cfg.probe) return child
+        return (input, pos, ctx) => {
+          const item = ctx._routed
+          if (item !== undefined && item.span.start === pos) {
+            const e = item.span.end
+            const c = lead(input, e)
+            if (!classHas(cls, c) || (classHas(first, c) && !classHas(second, lead(input, e + 1)))) {
+              ctx._fe = e; ctx._fx = xf
+              return FAIL
+            }
           }
           return child(input, pos, ctx)
         }

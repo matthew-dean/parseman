@@ -279,6 +279,19 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'routed-arm-gate2',
+    needs: 'repo',
+    file: 'test/unit/table-routed-arm-gate2.test.ts',
+    legs: 'a name-once statement dispatch whose spaced-declaration arm is gated on a colon and the gap after it (OP_RGATE2), glued and spaced heads, through execRules (one-character gate), closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input, and arm visit counts',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-routed-arm-gate2.test.ts']),
+    plants: [
+      { defect: 'rgate2-second-at-first', expect: 'moves' },
+      { defect: 'rgate2-second-at-first-emitted', expect: 'moves' },
+      { defect: 'rgate2-second-narrowed', expect: 'moves' },
+    ],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',

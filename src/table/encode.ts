@@ -1,4 +1,5 @@
 import { scanRefs } from './program.ts'
+import { regexFirstTwo } from '../regex/first-set.ts'
 import { factorPrefixArms, factorSharedEnds } from './factor-choice.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union, winnerForRef, type RefResolver } from '../combinators/first-set.ts'
@@ -17,7 +18,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV, OP_GAPGATE,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV, OP_GAPGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
@@ -116,6 +117,25 @@ export type TableSettings = {
 
 type Emitted = { readonly ip: number }
 
+
+/**
+ * The first two characters a term reads, where it says them outright: a
+ * literal of two or more characters, or a case-sensitive regex
+ * (`regexFirstTwo`), through a label or a trivia scope. The first must be BMP
+ * and not a surrogate, so the second is the next code unit.
+ */
+function firstTwo(p: Combinator<unknown>): { first: FirstSet; second: FirstSet } | undefined {
+  const d = p._def as ParserDef
+  if (d.tag === 'label' || d.tag === 'grammar') return firstTwo(d.parser)
+  let two: { first: FirstSet; second: FirstSet } | undefined
+  if (d.tag === 'literal' && d.value.length >= 2 && d.caseInsensitive !== true) {
+    two = { first: { kind: 'ranges', ranges: [{ lo: d.value.charCodeAt(0), hi: d.value.charCodeAt(0) }] }, second: { kind: 'ranges', ranges: [{ lo: d.value.charCodeAt(1), hi: d.value.charCodeAt(1) }] } }
+  } else if (d.tag === 'regex' && !d.flags.includes('i')) {
+    two = regexFirstTwo(d.source)
+  }
+  if (two === undefined || two.first.kind !== 'ranges') return undefined
+  return two.first.ranges.every(r => r.hi < 0xd800 || (r.lo > 0xdfff && r.hi <= 0xffff)) ? two : undefined
+}
 
 /** ASCII whitespace and the `/` a comment opens with: what a gap starts with. */
 const GAP_CHARS = new Set([9, 10, 12, 13, 32, 47])
@@ -1083,7 +1103,7 @@ class Encoder {
    * unable to match empty or to commit, so a miss is exactly that term failing
    * at the token's end with its own set.
    */
-  private routedArmGate(arm: Combinator<unknown>): { cls: number; fx: number } | undefined {
+  private routedArmGate(arm: Combinator<unknown>): { cls: number; fx: number; two?: readonly [number, number] } | undefined {
     type Follow = 'end' | { next: Combinator<unknown>; boundary: Combinator<unknown> | undefined } | undefined
     const walk = (p: Combinator<unknown>, trivia: Combinator<unknown> | undefined, depth: number): Follow => {
       if (depth > 16) return undefined
@@ -1112,7 +1132,16 @@ class Encoder {
     const first = firstSetOf(next, new Set(), rr, boundary)
     const cls = this.charClass(boundary === undefined ? first : union(first, firstSetOf(boundary, new Set(), rr)))
     if (cls < 0) return undefined
-    return { cls, fx: this.expected(deriveExpected(next)) }
+    const fx = this.expected(deriveExpected(next))
+    // THE SECOND CHARACTER. Where the next term starts with a character of
+    // `first` — which no gap before it can start with, so the term starts at the
+    // token's end — it also reads the one after: test both, still with no scan.
+    const two = firstTwo(next)
+    if (two === undefined) return { cls, fx }
+    if (boundary !== undefined && intersects(two.first, firstSetOf(boundary, new Set(), rr))) return { cls, fx }
+    const a = this.charClass(two.first)
+    const b = this.charClass(two.second)
+    return a < 0 || b < 0 ? { cls, fx } : { cls, fx, two: [a, b] }
   }
 
   node(p: Combinator<unknown>): Emitted {
@@ -1355,7 +1384,9 @@ class Encoder {
             && (gate === null || gate === undefined)
           const routedGate = plain ? this.routedArmGate(c) : undefined
           const body = this.node(c).ip
-          const inner = routedGate === undefined ? body : this.emit(OP_RGATE, routedGate.cls, body, routedGate.fx)
+          const inner = routedGate === undefined ? body
+            : routedGate.two === undefined ? this.emit(OP_RGATE, routedGate.cls, body, routedGate.fx)
+            : this.emit(OP_RGATE2, routedGate.cls, body, routedGate.fx, routedGate.two[0], routedGate.two[1])
           const ip = checks === null || checks === undefined || checks.length === 0
             ? inner
             : this.reject(inner, checks)
@@ -1984,7 +2015,7 @@ class Encoder {
     }
     const slots = (ip: number): number[] => {
       switch (this.code[ip]) {
-        case OP_GATE: case OP_RGATE: return [ip + 2]
+        case OP_GATE: case OP_RGATE: case OP_RGATE2: return [ip + 2]
         case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: case OP_GAPGATE: return [ip + 1]
         case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_SOURCE_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)

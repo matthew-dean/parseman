@@ -293,6 +293,25 @@ export const DEFECTS = {
     edits: [{ file: 'src/table/emit-assembly.ts', find: 'if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end', replace: 'if(GAP.at===pos&&GAP.input===input)e=GAP.end' }],
   },
 
+  'rgate2-second-at-first': {
+    why: 'closure engine: the two-character routed gate reads its second character at the first character\'s position',
+    edits: [{ file: 'src/table/assemble.ts', find: '(classHas(first, c) && !classHas(second, lead(input, e + 1)))', replace: '(classHas(first, c) && !classHas(second, lead(input, e)))' }],
+  },
+
+  'rgate2-second-at-first-emitted': {
+    why: 'emitted engine: the two-character routed gate reads its second character at the first character\'s position',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: '!classHas(${second},lead(input,e+1))', replace: '!classHas(${second},lead(input,e))' }],
+  },
+
+  'rgate2-second-narrowed': {
+    why: 'encoder: the second-character class of a two-character routed gate loses its lowest character',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    const b = this.charClass(two.second)\n',
+      replace: "    const b = this.charClass(two.second.kind === 'ranges' ? { kind: 'ranges', ranges: two.second.ranges.map((r, i) => i === 0 ? { lo: r.lo + 1, hi: r.hi } : r).filter(r => r.lo <= r.hi) } : two.second)\n",
+    }],
+  },
+
   'otherwise-commit-bit-dropped': {
     why: 'encoder: otherwise(p, { commit: false }) is encoded as a committing fallback',
     edits: [{
