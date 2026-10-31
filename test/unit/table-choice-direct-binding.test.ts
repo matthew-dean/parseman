@@ -38,10 +38,11 @@ function choiceIp(prog: TableProgram): number {
 }
 
 function ordered(n: 2 | 3, nonAscii = false): Combinator<unknown> {
-  const lead = () => nonAscii ? regex(/[a\u0080]/) : literal('a')
+  // Two spellings of one lead: arms that differ in ONE term are factored into a
+  // sequence before they reach a choice row (`src/table/factor-choice.ts`).
   const arms: Combinator<unknown>[] = [
-    sequence(lead(), literal('x')),
-    sequence(lead(), literal('y')),
+    sequence(nonAscii ? regex(/[a\u0080]/) : literal('a'), literal('x')),
+    sequence(nonAscii ? regex(/[\u0080a]/) : regex(/a/), literal('y')),
   ]
   if (n === 3) arms.push(literal('b'))
   return n === 2 ? choice(arms[0]!, arms[1]!) : choice(arms[0]!, arms[1]!, arms[2]!)

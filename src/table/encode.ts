@@ -1,4 +1,5 @@
 import { scanRefs } from './program.ts'
+import { factorSharedEnds } from './factor-choice.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
@@ -1101,6 +1102,12 @@ class Encoder {
         return head
       }
       case 'choice': {
+        // Arms that differ in one term are that term's choice (`factor-choice.ts`).
+        // Not under a coverage plan, which credits the arms as written.
+        if (this.plan === undefined) {
+          const factored = factorSharedEnds(d)
+          if (factored !== undefined) return this.node(factored).ip
+        }
         // `greedyClassify` is NOT a choice at all — one arm runs and another arm
         // is credited — so it gets its own row rather than an arm ordering.
         if (d.strategy.tag === 'greedyClassify') {
