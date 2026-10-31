@@ -83,6 +83,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   every arm's expected label when the selected arm failed at the choice's position;
   it reports the selected arm's, as the character choice and the interpreter do. Its
   arm classes are now the character choice's own, taken under the same trivia.
+- Fixed: a build whose assembly budget covered the prelude could ship no precompiled
+  assembly without saying so, when no site fit under the ceiling or the narrowing ran
+  out of its 16 attempts. Narrowing now runs until the selection fits or empties, and
+  an empty one is a build warning naming the ceiling and the prelude.
 - Fixed: completions (`completionsAt`) from a table artifact offered tokens raised
   inside a `not()`/`peek()` lookahead, which the enclosing grammar cannot reach; a
   lookahead now hides them in both table engines, as the interpreter does. The
