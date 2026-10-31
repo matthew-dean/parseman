@@ -14,6 +14,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   same leaf and trivia-scope wrappers over one sequence, the same but for one term, are
   encoded as those wrappers over the sequence with a choice in that place, so the
   shared terms run once and the choice dispatches on the character after them.
+- An emitted assembly writes a selected lexical body out as straight-line code: each
+  terminal is the same scan the character row would emit, and each node is the
+  lexical runner's own logic, instead of a call into the runner's closures and a
+  sticky regex.
 - A `token()` whose body holds an ordered choice of any number of arms is one
   lexical recognizer; before, only choices of two, four or eight arms were.
 - A `token()` body may hold a no-trivia scope (`noTrivia(…)`, a rule defined as one, or

@@ -209,6 +209,7 @@ const REGISTRY = [
       { defect: 'lex-choice-exclusive-off', expect: 'moves' },
       { defect: 'lex-repeat-min-short', expect: 'moves' },
       { defect: 'lex-rule-trivia-glued', expect: 'moves' },
+      { defect: 'lex-inline-repeat-min-short', expect: 'moves' },
     ],
   },
   {

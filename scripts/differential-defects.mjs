@@ -186,6 +186,16 @@ export const DEFECTS = {
     }],
   },
 
+  /** The emitted, written-out lexical repeat accepts one item fewer than its `min`. */
+  'lex-inline-repeat-min-short': {
+    why: 'emitted lexical body: an inline repeat succeeds one item short of its minimum',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: '${out}=${failed}||${count}<${node.min}?-1:${cur}',
+      replace: '${out}=${failed}||${count}<${node.min - 1}?-1:${cur}',
+    }],
+  },
+
   /** A routed-arm gate miss reports less than the arm's next term would. */
   'rgate-miss-set-short': {
     why: 'closure engine: a routed-arm gate miss drops the first label of the next term',

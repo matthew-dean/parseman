@@ -179,7 +179,7 @@ Registered today:
 |---|---|---|
 | `scan-shape-oracle` | emitted straight-line scan vs sticky `RegExp.exec`, per regex, per position | `scan-class-narrow` |
 | `table-lowering-identity` | interpreted vs `compose()` codegen vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
-| `lex-selected-vs-character` | selected lexical bodies vs the CHARACTER lowering of the same grammar, in `execRules`, closure and emitted `tableRules`; whole results and completion probes | `lex-choice-exclusive-off`, `lex-repeat-min-short`, `lex-rule-trivia-glued` |
+| `lex-selected-vs-character` | selected lexical bodies vs the CHARACTER lowering of the same grammar, in `execRules`, closure and emitted `tableRules`; whole results and completion probes | `lex-choice-exclusive-off`, `lex-repeat-min-short`, `lex-rule-trivia-glued`, `lex-inline-repeat-min-short` |
 | `routed-arm-gate` | routed choice arms behind `OP_RGATE` in `execRules`, closure and emitted `tableRules` vs the interpreted grammar | `rgate-miss-set-short` |
 | `jess-oracle` | interpreted fuse vs the `PM_MACRO` artifact (the shipped assembler) vs `execRules` (reference), one process per leg | `exec-node-span` |
 | `emit-identity-one` | `PM_TABLE_EMIT=1` emitted assembly vs `=0` closure walk | `emit-node-span` |

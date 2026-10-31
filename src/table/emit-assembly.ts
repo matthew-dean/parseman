@@ -59,6 +59,10 @@ import {
 } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
+  LEX_NODE_CHOICE, LEX_NODE_NOT, LEX_NODE_OPTIONAL, LEX_NODE_REPEAT, LEX_NODE_SEQUENCE2, LEX_NODE_SEQUENCE5,
+  LEX_NODE_TERMINAL,
+} from './lex-program.ts'
+import {
   CAP_OFF, CAP_ON, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
   computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scopeIsIdentity, triviaLeadRanges, type SiteLabel,
 } from './site-labels.ts'
@@ -952,6 +956,199 @@ return 1
    * site property — nothing in `src` writes it except a caller-supplied
    * `ParseContext` (`types.ts:524`) — so it stays the one runtime read.
    */
+  /**
+   * A selected fixed lexical body, written out as straight-line code: each
+   * terminal is the scan shape the CHARACTER row would emit (`emitScan`), or its
+   * recognizer where the shape declines, and each node is `lex-program.ts`'s
+   * runner for it, statement for statement — the same failure registers,
+   * commitment clears, probe reports and line publication. Assigns the end (or
+   * −1) to `e`. Only the fixed-tree body (`[2, digest, …words]`) is written out;
+   * the others keep calling their runner.
+   */
+  type LexTree =
+    | { kind: 'terminal'; matcher: number; fx: number; tracks: boolean }
+    | { kind: 'sequence'; parts: LexTree[] }
+    | { kind: 'choice'; arms: LexTree[]; exclusive: boolean; fx: number; armCls: number[]; armFx: number[] }
+    | { kind: 'not'; body: LexTree; fx: number }
+    | { kind: 'optional'; body: LexTree }
+    | { kind: 'repeat'; body: LexTree; min: number; max: number }
+  function decodeLexTree(words: readonly number[]): LexTree | undefined {
+    const stack: LexTree[] = []
+    const pop = (n: number): LexTree[] | undefined => n > stack.length ? undefined : stack.splice(stack.length - n, n)
+    for (let at = 0; at < words.length;) {
+      const op = words[at++]!
+      if (op === LEX_NODE_TERMINAL) {
+        stack.push({ kind: 'terminal', matcher: words[at++]!, fx: words[at++]!, tracks: words[at++] === 1 })
+      } else if (op >= LEX_NODE_SEQUENCE2 && op <= LEX_NODE_SEQUENCE5) {
+        const parts = pop(op - LEX_NODE_SEQUENCE2 + 2)
+        if (parts === undefined) return undefined
+        stack.push({ kind: 'sequence', parts })
+      } else if (op === LEX_NODE_CHOICE) {
+        const n = words[at++]!, exclusive = words[at++] === 1, fxi = words[at++]!
+        const armCls: number[] = [], armFx: number[] = []
+        for (let i = 0; i < n; i++) { armCls.push(words[at++]!); armFx.push(words[at++]!) }
+        const arms = pop(n)
+        if (arms === undefined) return undefined
+        stack.push({ kind: 'choice', arms, exclusive, fx: fxi, armCls, armFx })
+      } else if (op === LEX_NODE_NOT) {
+        const body = pop(1)
+        if (body === undefined) return undefined
+        stack.push({ kind: 'not', body: body[0]!, fx: words[at++]! })
+      } else if (op === LEX_NODE_OPTIONAL) {
+        const body = pop(1)
+        if (body === undefined) return undefined
+        stack.push({ kind: 'optional', body: body[0]! })
+      } else if (op === LEX_NODE_REPEAT) {
+        const body = pop(1)
+        if (body === undefined) return undefined
+        stack.push({ kind: 'repeat', body: body[0]!, min: words[at++]!, max: words[at++]! })
+      } else return undefined
+    }
+    return stack.length === 1 ? stack[0] : undefined
+  }
+  function inlineLexProgram(programId: number): string | undefined {
+    const spec = prog.lexPrograms?.[programId]
+    if (spec === undefined || spec[0] !== 2) return undefined
+    const tree = decodeLexTree(spec.slice(2))
+    if (tree === undefined) return undefined
+    const p = tmp()
+    let n = 0
+    const v = (name: string): string => `${p}${name}${n++}`
+    /** Statements that set `out` to the end at `at`, or −1, as `match` (pure) or `run`. */
+    const scanTerminal = (matcher: number, at: string, out: string): string => {
+      const spec = prog.lex?.[matcher]
+      const re = spec === undefined ? undefined : k[spec[0]]
+      const shape = re instanceof RegExp && spec![1] < 0 ? scanShapeFromRegex(re.source, re.flags) : null
+      if (shape === null) {
+        const r = v('r')
+        return `const ${r}=${hoist('lex', `LEX[${matcher}]`)}(input,${at})\n${out}=${r}<0?-1:${r}/2\n`
+      }
+      const m = emitShapeMatch(shape, at, (prefix = '_v') => v(prefix), '')
+      return `{\n${m.setup.join('\n')}\n${out}=${m.ok}?${m.end}:-1\n}\n`
+    }
+    const inClass = (ci: number, c: string): string => {
+      const resolved = t.cc[ci]!
+      const idx = classes.push([resolved]) - 1
+      classPlan.push([ci])
+      const cls = hoist('cl', `CLS[${idx}][0]`)
+      return isAsciiOnlyClass(resolved) ? `${cls}.ascii[${c}]===1` : `classHas(${cls},${c})`
+    }
+    const lead = (at: string): string => `(${at}<input.length?input.codePointAt(${at}):-1)`
+    const match = (node: LexTree, at: string, out: string): string => {
+      switch (node.kind) {
+        case 'terminal': return scanTerminal(node.matcher, at, out)
+        case 'sequence': {
+          let code = '', cur = at
+          node.parts.forEach((part, i) => {
+            const e = i === node.parts.length - 1 ? out : v('s')
+            if (e !== out) code += `let ${e}\n`
+            code += i === 0 ? match(part, cur, e) : `if(${cur}<0)${e}=-1\nelse{\n${match(part, cur, e)}}\n`
+            cur = e
+          })
+          return code
+        }
+        case 'choice': {
+          if (node.exclusive) {
+            const c = v('c')
+            let code = `const ${c}=${lead(at)}\n`
+            node.arms.forEach((arm, i) => {
+              code += `${i === 0 ? '' : 'else '}if(${inClass(node.armCls[i]!, c)}){\n${match(arm, at, out)}}\n`
+            })
+            return `${code}else ${out}=-1\n`
+          }
+          const l = v('l')
+          let code = `${l}:{\n`
+          for (const arm of node.arms) code += `${match(arm, at, out)}if(${out}>=0)break ${l}\n`
+          return `${code}}\n`
+        }
+        case 'not': {
+          const e = v('n')
+          return `let ${e}\n${match(node.body, at, e)}${out}=${e}<0?${at}:-1\n`
+        }
+        case 'optional': {
+          const e = v('o')
+          return `let ${e}\n${match(node.body, at, e)}${out}=${e}<0?${at}:${e}\n`
+        }
+        case 'repeat': return repeat(node, at, out, false)
+      }
+    }
+    const repeat = (node: Extract<LexTree, { kind: 'repeat' }>, at: string, out: string, running: boolean): string => {
+      const cur = v('cur'), count = v('cnt'), e = v('e'), opt = v('opt'), failed = v('f')
+      const optional = node.min === 0 ? `(${count}>=0)` : `(${count}>=${node.min})`
+      return `let ${cur}=${at},${count}=0,${failed}=false
+for(;;){
+${node.max >= 0 ? `if(${count}>=${node.max})break\n` : ''}const ${opt}=${optional}
+if(${opt}&&${cur}>=input.length)break
+${running ? 'ctx._fc=false\n' : ''}let ${e}
+${running ? run(node.body, cur, e) : match(node.body, cur, e)}if(${e}<0){${running ? `if(ctx._fc===true)${failed}=true\n` : ''}break}
+if(${opt}&&${e}===${cur})break
+${cur}=${e}
+${count}++
+}
+${out}=${failed}||${count}<${node.min}?-1:${cur}
+`
+    }
+    const run = (node: LexTree, at: string, out: string): string => {
+      switch (node.kind) {
+        case 'terminal': {
+          const xf = fxRef(node.fx)
+          return `${scanTerminal(node.matcher, at, out)}if(${out}<0){ctx._fe=${at};ctx._fx=${xf};if(ctx._probe!==undefined)failAt(ctx,${xf},${at})}
+${node.tracks ? `else _trackLines(ctx,input,${out})\n` : ''}`
+        }
+        case 'sequence': {
+          let code = '', cur = at
+          node.parts.forEach((part, i) => {
+            const e = i === node.parts.length - 1 ? out : v('s')
+            if (e !== out) code += `let ${e}\n`
+            code += i === 0 ? run(part, cur, e) : `if(${cur}<0)${e}=-1\nelse{\nctx._fc=false\n${run(part, cur, e)}}\n`
+            cur = e
+          })
+          return code
+        }
+        case 'choice': {
+          const xf = fxRef(node.fx)
+          const c = v('c'), l = v('l')
+          if (node.exclusive) {
+            let code = `const ${c}=${lead(at)}\n${l}:{\n`
+            node.arms.forEach((arm, i) => {
+              code += `${i === 0 ? '' : 'else '}if(${inClass(node.armCls[i]!, c)}){\nctx._fc=false\n${run(arm, at, out)}if(${out}>=0)break ${l}
+if(ctx._fc===true)break ${l}
+if(ctx._fx!==undefined&&ctx._fx.length>0){ctx._fe=${at};break ${l}}
+}\n`
+            })
+            return `${code}ctx._fe=${at};ctx._fx=${xf};${out}=-1\n}\n`
+          }
+          const acc = v('acc'), best = v('best'), atv = v('at')
+          let code = `const ${c}=${lead(at)}\nlet ${acc},${best}=${at}\n${l}:{\n`
+          node.arms.forEach((arm, i) => {
+            const cls = node.armCls[i]!
+            const armFx = fxRef(node.armFx[i]!)
+            const body = `ctx._fc=false
+${run(arm, at, out)}if(${out}>=0)break ${l}
+{const ${atv}=ctx._fe??${at}
+if(${atv}>${best}){${best}=${atv};${acc}=undefined}
+if(${atv}===${best})${acc}=_accSet(ctx._fx,${acc})}
+if(ctx._fc===true){if(${acc}!==undefined)ctx._fx=${acc};break ${l}}
+`
+            code += cls < 0 ? `{\n${body}}\n`
+              : `if(!(${inClass(cls, c)})){if(${best}===${at})${acc}=_accSet(${armFx},${acc})}\nelse{\n${body}}\n`
+          })
+          return `${code}ctx._fe=${at};ctx._fx=${acc}??${xf};${out}=-1\n}\n`
+        }
+        case 'not': {
+          const e = v('n'), xf = fxRef(node.fx)
+          return `let ${e}\n${match(node.body, at, e)}if(${e}<0)${out}=${at}\nelse{ctx._fe=${at};ctx._fx=${xf};${out}=-1}\n`
+        }
+        case 'optional': {
+          const e = v('o')
+          return `ctx._fc=false\nlet ${e}\n${run(node.body, at, e)}${out}=${e}<0&&ctx._fc!==true?${at}:${e}\n`
+        }
+        case 'repeat': return repeat(node, at, out, true)
+      }
+    }
+    return `{\nconst ${p}at=pos\n${run(tree, `${p}at`, 'e')}}`
+  }
+
   /** The test an `OP_GATE` row at `gip` fails on, with its class hoisted. */
   function gateMissTest(gip: number): string {
     const resolved = t.cc[code[gip + 1]!]!
@@ -1621,8 +1818,9 @@ return v
 
       case OP_LEX_PROGRAM: {
         const programId = code[ip + 1]!
-        const run = hoist('lexProgram', `LEXPROG[${programId}]`)
         const scanId = t.lexPrograms[programId]!.scan
+        const inline = scanId === undefined ? inlineLexProgram(programId) : undefined
+        const run = inline === undefined ? hoist('lexProgram', `LEXPROG[${programId}]`) : ''
         if (scanId !== undefined) return `${head}
 const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan
 const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
@@ -1658,7 +1856,7 @@ EC.e=e
 return v
 }`
         return `${head}
-const e=${run}(input,pos,ctx)
+${inline === undefined ? `const e=${run}(input,pos,ctx)` : `let e\n${inline}`}
 if(e<0)return FAIL
 const v=input.slice(pos,e)
 if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})

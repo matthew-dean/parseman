@@ -247,3 +247,17 @@ describe('the remaining capability records of the Jess grammars', () => {
   })
 })
 
+describe('an emitted assembly writes a fixed lexical body out', () => {
+  it('scans inline instead of calling the body\'s runner', () => {
+    const prog = encodeTable({ Root: token(noTrivia(sequence(
+      regex(/-?[_a-zA-Z][-_a-zA-Z0-9]*/), optional(choice(literal('('), oneOrMore(sequence(literal(':'), regex(/[a-z]+/))))),
+    ))) })
+    const resolved = resolveTable(prog)
+    for (const cfg of defaultAssemblyCfgs(prog)) {
+      const source = emitAssemblySource(resolved, prog, cfg, []).source
+      expect(source, String(cfgKey(cfg))).not.toContain('LEXPROG[')
+      expect(source, String(cfgKey(cfg))).not.toContain('LEX[')
+    }
+  })
+})
+
