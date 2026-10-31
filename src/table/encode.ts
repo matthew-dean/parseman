@@ -1,5 +1,5 @@
 import { scanRefs } from './program.ts'
-import { factorSharedEnds } from './factor-choice.ts'
+import { factorPrefixArms, factorSharedEnds } from './factor-choice.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
@@ -1173,7 +1173,7 @@ class Encoder {
         // Arms that differ in one term are that term's choice (`factor-choice.ts`).
         // Not under a coverage plan, which credits the arms as written.
         if (this.plan === undefined) {
-          const factored = factorSharedEnds(d)
+          const factored = factorSharedEnds(d) ?? factorPrefixArms(d)
           if (factored !== undefined) return this.node(factored).ip
         }
         // `greedyClassify` is NOT a choice at all — one arm runs and another arm

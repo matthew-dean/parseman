@@ -241,6 +241,24 @@ export const DEFECTS = {
     }],
   },
 
+  'prefix-arm-any-prefix': {
+    why: 'encoder: an arm is factored over its next sibling even when that sibling is not its prefix',
+    edits: [{
+      file: 'src/table/factor-choice.ts',
+      find: '    if (!prefix.every((t, j) => sameComb(t, terms[j]!, 0))) continue\n',
+      replace: '',
+    }],
+  },
+
+  'prefix-arm-off': {
+    why: 'encoder: an arm whose next sibling is its prefix is left as written (the shared term parses twice)',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const factored = factorSharedEnds(d) ?? factorPrefixArms(d)',
+      replace: 'const factored = factorSharedEnds(d)',
+    }],
+  },
+
   'otherwise-commit-bit-dropped': {
     why: 'encoder: otherwise(p, { commit: false }) is encoded as a committing fallback',
     edits: [{

@@ -249,6 +249,18 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'prefix-arm',
+    needs: 'repo',
+    file: 'test/unit/table-prefix-arm.test.ts',
+    legs: 'generated argument lists over choice(sequence(X, a), X) inside a node, plus a choice whose next arm is not a prefix, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input, and the shared term visit count',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-prefix-arm.test.ts']),
+    plants: [
+      { defect: 'prefix-arm-any-prefix', expect: 'moves' },
+      { defect: 'prefix-arm-off', expect: 'moves' },
+    ],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',
