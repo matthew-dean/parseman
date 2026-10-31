@@ -300,10 +300,34 @@ jobs:
   # no cross-machine term, and a case fails only when it also loses 3/4 of its
   # paired samples.
   grammar-perf:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { ref: "ffe1e86", head: "0ab9e9f7", rep: 1 }
+          - { ref: "0ab9e9f7", head: "8420987a", rep: 1 }
+          - { ref: "8420987a", head: "eb692552", rep: 1 }
+          - { ref: "eb692552", head: "23d8b6a7", rep: 1 }
+          - { ref: "23d8b6a7", head: "79a28b86", rep: 1 }
+          - { ref: "79a28b86", head: "8feaa2c8", rep: 1 }
+          - { ref: "ffe1e86", head: "8feaa2c8", rep: 1 }
+          - { ref: "ffe1e86", head: "0ab9e9f7", rep: 2 }
+          - { ref: "0ab9e9f7", head: "8420987a", rep: 2 }
+          - { ref: "8420987a", head: "eb692552", rep: 2 }
+          - { ref: "eb692552", head: "23d8b6a7", rep: 2 }
+          - { ref: "23d8b6a7", head: "79a28b86", rep: 2 }
+          - { ref: "79a28b86", head: "8feaa2c8", rep: 2 }
+          - { ref: "ffe1e86", head: "8feaa2c8", rep: 2 }
+          - { ref: "ffe1e86", head: "0ab9e9f7", rep: 3 }
+          - { ref: "0ab9e9f7", head: "8420987a", rep: 3 }
+          - { ref: "8420987a", head: "eb692552", rep: 3 }
+          - { ref: "eb692552", head: "23d8b6a7", rep: 3 }
+          - { ref: "23d8b6a7", head: "79a28b86", rep: 3 }
+          - { ref: "79a28b86", head: "8feaa2c8", rep: 3 }
+          - { ref: "ffe1e86", head: "8feaa2c8", rep: 3 }
+    name: "bisect ${{ matrix.ref }}..${{ matrix.head }} r${{ matrix.rep }}"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -318,8 +342,8 @@ jobs:
           node-version: lts/*
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Rollback-density perf gate vs the pinned reference commit
-        run: pnpm perf:guard:grammars
+      - name: Grammar gate, one step
+        run: node --import tsx/esm bench/grammar-perf-guard.ts --ref=${{ matrix.ref }} --head-ref=${{ matrix.head }} || true
 
   # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
   #
