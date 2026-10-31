@@ -801,6 +801,26 @@ class Encoder {
     return ip
   }
 
+  /**
+   * An optional repeat item tests the item's class before it runs it (`OP_REP`
+   * ip+7), wherever the item's own first-set gate would also run. So a sequence
+   * item whose first term is a gate on that same class gets its own copy of the
+   * sequence row with the gate's child as that term: the test runs once. The
+   * shared row is left as it is for its other references.
+   */
+  private withoutLeadGate(seq: number, cls: number): number {
+    const op = this.code[seq]
+    if (op !== OP_SEQ && op !== OP_SEQV) return seq
+    const first = this.code[seq + 2]!
+    if (this.code[first] !== OP_GATE || this.code[first + 1] !== cls) return seq
+    const n = this.code[seq + 1]!
+    const width = 1 + n + (this.rec ? n : 0)
+    const head = this.emitHead(op, width)
+    for (let i = 1; i <= width; i++) this.code[head + i] = this.code[seq + i]!
+    this.code[head + 2] = this.code[first + 2]!
+    return head
+  }
+
   /** Reserve `n` operand slots to patch once children are laid out. */
   private emitHead(op: number, n: number): number {
     const ip = this.code.length
@@ -1352,13 +1372,15 @@ class Encoder {
       }
       case 'many':
       case 'oneOrMore': {
-        const child = this.node(d.parser).ip
         const rr = this.refResolver()
         const itemClass = matchesEmpty(d.parser, new Set(), rr)
           ? -1
           : this.charClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
+        const child = min === 0 && itemClass >= 0
+          ? this.withoutLeadGate(this.node(d.parser).ip, itemClass)
+          : this.node(d.parser).ip
         // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
         // class (−1: there is no separator). Both are only laid down for a
         // recovery table, where the resync error's payload has to be the ITEM's

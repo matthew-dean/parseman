@@ -232,6 +232,7 @@ const REGISTRY = [
       { defect: 'loop-sep-gate-before-trivia-emitted', expect: 'moves' },
       { defect: 'seq-pad-first-set-drops-rest', expect: 'moves' },
       { defect: 'seplist-first-item-set-dropped', expect: 'moves' },
+      { defect: 'repeat-lead-gate-kept', expect: 'moves' },
     ],
   },
   {

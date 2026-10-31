@@ -232,6 +232,15 @@ export const DEFECTS = {
     }],
   },
 
+  'repeat-lead-gate-kept': {
+    why: 'encoder: an optional repeat item keeps the lead gate its repeat already tests',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '          ? this.withoutLeadGate(this.node(d.parser).ip, itemClass)\n',
+      replace: '          ? this.node(d.parser).ip\n',
+    }],
+  },
+
   'otherwise-commit-bit-dropped': {
     why: 'encoder: otherwise(p, { commit: false }) is encoded as a committing fallback',
     edits: [{

@@ -31,7 +31,7 @@ import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembl
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run, type Runnable } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
-import { OP_REP, OP_REPV } from '../../src/table/ops.ts'
+import { OP_GATE, OP_REP, OP_REPV, OP_SEQ, OP_SEQV } from '../../src/table/ops.ts'
 
 type Comb = Combinator<unknown>
 
@@ -127,6 +127,22 @@ describe('a loop decides on the character in front of it', () => {
     const repeats = [...reachableIps(prog)].filter(ip => (prog.code[ip] === OP_REP || prog.code[ip] === OP_REPV) && prog.code[ip + 4] === -1 && prog.code[ip + 2] === 0)
     expect(repeats.length).toBeGreaterThanOrEqual(3)
     for (const ip of repeats) expect(prog.code[ip + 7], `repeat @${ip}`).toBeGreaterThanOrEqual(0)
+  })
+
+  it('tests an operator item\'s class once, at the repeat', () => {
+    // The item `sequence(ProductOp, Unary)` leads with ProductOp's node gate, the
+    // class the repeat already tests: the item's own copy of the sequence row
+    // calls the node directly.
+    const prog = encodeTable(expr)
+    const items = [...reachableIps(prog)]
+      .filter(ip => (prog.code[ip] === OP_REP || prog.code[ip] === OP_REPV) && prog.code[ip + 2] === 0 && prog.code[ip + 7]! >= 0)
+      .map(ip => [prog.code[ip + 1]!, prog.code[ip + 7]!] as const)
+      .filter(([item]) => prog.code[item] === OP_SEQ || prog.code[item] === OP_SEQV)
+    expect(items.length).toBeGreaterThanOrEqual(2)
+    for (const [item, cls] of items) {
+      const first = prog.code[item + 2]!
+      expect(prog.code[first] === OP_GATE && prog.code[first + 1] === cls, `item @${item}`).toBe(false)
+    }
   })
 
   it('stops a separated list at its end without entering the separator', () => {
