@@ -16,6 +16,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   shared terms run once and the choice dispatches on the character after them.
 - A `token()` whose body holds an ordered choice of any number of arms is one
   lexical recognizer; before, only choices of two, four or eight arms were.
+- A `token()` whose body holds a separator-less `many()`/`oneOrMore()` is one lexical
+  recognizer, with the table's own repeat rules: only an optional item stops at the
+  end of input or on an empty match, and a failed item's diagnostics stand.
 - `peek()` of a direct literal or regex is one recognizer call, as `not()` of one
   already was.
 - A `not()`/`peek()` lookahead between two gaps in a sequence no longer makes the

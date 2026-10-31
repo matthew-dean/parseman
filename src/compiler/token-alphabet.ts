@@ -141,6 +141,8 @@ export type ExecutableLexNode =
   }
   | { readonly kind: 'not'; readonly body: ExecutableLexNode; readonly expected: readonly string[] }
   | { readonly kind: 'optional'; readonly body: ExecutableLexNode }
+  /** A separator-less `many`/`oneOrMore`; `max` −1 is unbounded. */
+  | { readonly kind: 'repeat'; readonly body: ExecutableLexNode; readonly min: number; readonly max: number }
 
 export type ExecutableFixedLexBody = {
   readonly kind: 'fixed-tree'
@@ -495,6 +497,12 @@ function directFixedLexNode(
     if (def.tag === 'optional') {
       const body = directFixedLexNode(def.parser, resolve, active, pureOnly)
       return body === undefined ? undefined : { kind: 'optional', body }
+    }
+    if (def.tag === 'many' || def.tag === 'oneOrMore') {
+      const body = directFixedLexNode(def.parser, resolve, active, pureOnly)
+      return body === undefined ? undefined : {
+        kind: 'repeat', body, min: def.tag === 'many' ? 0 : def.min, max: def.max ?? -1,
+      }
     }
     return undefined
   } finally {

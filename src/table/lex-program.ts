@@ -20,6 +20,8 @@ export const LEX_NODE_SEQUENCE5 = 4
 export const LEX_NODE_CHOICE = 5
 export const LEX_NODE_NOT = 8
 export const LEX_NODE_OPTIONAL = 9
+/** `[op, min, max]` after the item: a separator-less repeat, `max` −1 unbounded. */
+export const LEX_NODE_REPEAT = 10
 
 export function lexProgramDigest(words: readonly number[]): number {
   let hash = 0x811C9DC5
@@ -236,6 +238,50 @@ function optionalNode(body: BuiltLexNode): BuiltLexNode {
   }
 }
 
+/**
+ * The table's separator-less `OP_REP` under `token()`: no trivia, no separator,
+ * nothing to roll back. Only an optional item stops at end of input or on a
+ * zero-width match (`repItem`); a failed item ends the loop with its own
+ * failure published, and a committed one fails the repeat.
+ */
+function repeatNode(item: BuiltLexNode, min: number, max: number): BuiltLexNode {
+  return {
+    match: (input, pos) => {
+      let cur = pos
+      let count = 0
+      for (;;) {
+        if (max >= 0 && count >= max) break
+        const optional = count >= min && (count > 0 || min === 0)
+        if (optional && cur >= input.length) break
+        const end = item.match(input, cur)
+        if (end < 0 || (optional && end === cur)) break
+        cur = end
+        count++
+      }
+      return count < min ? -1 : cur
+    },
+    run: (input, pos, ctx) => {
+      let cur = pos
+      let count = 0
+      for (;;) {
+        if (max >= 0 && count >= max) break
+        const optional = count >= min && (count > 0 || min === 0)
+        if (optional && cur >= input.length) break
+        ctx._fc = false
+        const end = item.run(input, cur, ctx)
+        if (end < 0) {
+          if (committed(ctx)) return -1
+          break
+        }
+        if (optional && end === cur) break
+        cur = end
+        count++
+      }
+      return count < min ? -1 : cur
+    },
+  }
+}
+
 function fixedTreeRunner(
   words: readonly number[],
   matchers: readonly LexBodyRecognizer[],
@@ -296,6 +342,14 @@ function fixedTreeRunner(
       continue
     }
     if (op === LEX_NODE_OPTIONAL) { stack.push(optionalNode(pop())); continue }
+    if (op === LEX_NODE_REPEAT) {
+      const min = words[at++]!, max = words[at++]!
+      if (!Number.isInteger(min) || min < 0 || !Number.isInteger(max) || (max >= 0 && max < min)) {
+        throw new TypeError('table lexical tree repeat has invalid bounds')
+      }
+      stack.push(repeatNode(pop(), min, max))
+      continue
+    }
     throw new TypeError('table lexical tree has an unknown fixed body')
   }
   if (stack.length !== 1) throw new TypeError('table lexical tree does not resolve to one root body')

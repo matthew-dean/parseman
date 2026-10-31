@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, keywords, literal, noTrivia, not, regex, sequence, token,
+  choice, keywords, literal, many, noTrivia, not, oneOrMore, regex, rules, sequence, token,
 } from '../../src/index.ts'
 import type { Combinator, ParseContext, ParseFail } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -70,10 +70,12 @@ function pinSelectedToCharacter(
   inputs: readonly string[],
 ): void {
   const selected = encodeTable(grammar)
-  expect(selected.code[selected.rules.Root!], 'Root lowers to one lexical program').toBe(OP_LEX_PROGRAM)
-  expect([...reachableIps(selected)].map(ip => selected.code[ip])).not.toContain(OP_TOKEN)
+  const selectedOps = [...reachableIps(selected)].map(ip => selected.code[ip])
+  expect(selectedOps, 'every token lowers to one lexical program').toContain(OP_LEX_PROGRAM)
+  expect(selectedOps).not.toContain(OP_TOKEN)
   const character = encodeTable({ ...grammar, Gap: GAP })
-  expect(character.code[character.rules.Root!], 'the gap keeps the CHARACTER lowering').toBe(OP_TOKEN)
+  expect([...reachableIps(character)].map(ip => character.code[ip]), 'the gap keeps the CHARACTER lowering')
+    .not.toContain(OP_LEX_PROGRAM)
   const characterReaders = readers(character)
   for (const [readerName, selectedRules] of readers(selected)) {
     const characterRules = characterReaders.find(([name]) => name === readerName)![1]
@@ -124,3 +126,26 @@ describe('fixed lexical choice of any arity', () => {
       ['not', 'ONLY', 'and', 'or', 'from', 'nothing', 'orange', 'x', '1', '', 'x;', 'and;', 'ab#'])
   })
 })
+
+describe('fixed lexical repeat', () => {
+  const ident = regex(/-?[_a-zA-Z][-_a-zA-Z0-9]*/)
+
+  it('lowers token(rule) whose rule is a one-or-more run, under a grammar trivia', () => {
+    // The shared `PagePseudoRun` (`:first:left`), referenced as `token(g.PagePseudoRun)`.
+    const grammar = rules({ trivia: regex(/\s+/) }, (g: Record<string, Comb>) => ({
+      Root: token(g.PagePseudoRun!),
+      PagePseudoRun: noTrivia(oneOrMore(sequence(literal(':'), ident))),
+      Wrapped: choice(sequence(token(g.PagePseudoRun!), literal('{')), literal('!'), regex(/[a-z]+#/)),
+    })) as Record<string, Comb>
+    pinSelectedToCharacter(grammar,
+      [':first', ':first:left', ':a:b:c', ':', ':1', ':a:', ':a:1', 'x', '', ':a {', ':a{', ':a:{', '!'])
+  })
+
+  it('lowers a bounded and an unbounded many', () => {
+    pinSelectedToCharacter(wrap(token(sequence(ident, many(sequence(literal(':'), ident))))),
+      ['a', 'a:b', 'a:b:c', 'a:', 'a:1', '1', '', 'a:b;', '!'])
+    pinSelectedToCharacter(wrap(token(oneOrMore(sequence(literal(':'), ident), { min: 2, max: 3 }))),
+      [':a', ':a:b', ':a:b:c', ':a:b:c:d', ':a:', '', ':a:b;', '!'])
+  })
+})
+

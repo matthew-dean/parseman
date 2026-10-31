@@ -239,7 +239,7 @@ considered both.
 
 **Current implementation boundary.** The executable catalogue covers direct
 terminals, fixed sequences of arity 2–5, fixed ordered lexical choices of any
-arity, negative assertions, optional bodies, the earlier optional-code-unit and
+arity, negative assertions, optional bodies, separator-less repeats, the earlier optional-code-unit and
 four-terminal vertical slices, and balanced tokens through the canonical scan pool.
 Assembly decodes each fixed tuple once into direct scalar closures; emitted and
 precompiled bodies name the same captured runner. There is no parse-time lexical

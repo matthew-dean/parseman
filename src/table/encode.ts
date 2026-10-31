@@ -29,7 +29,7 @@ import type { DispatchSpec, LexBodySpec, LexProgramSpec, ScanSpec, SubtreeRef, T
 import {
   lexProgramDigest,
   LEX_NODE_CHOICE,
-  LEX_NODE_NOT, LEX_NODE_OPTIONAL,
+  LEX_NODE_NOT, LEX_NODE_OPTIONAL, LEX_NODE_REPEAT,
   LEX_NODE_SEQUENCE2, LEX_NODE_SEQUENCE3, LEX_NODE_SEQUENCE4, LEX_NODE_SEQUENCE5,
   LEX_NODE_TERMINAL,
 } from './lex-program.ts'
@@ -314,6 +314,10 @@ class Encoder {
           case 'optional':
             if (!emitNode(node.body)) return false
             words.push(LEX_NODE_OPTIONAL)
+            return true
+          case 'repeat':
+            if (!emitNode(node.body)) return false
+            words.push(LEX_NODE_REPEAT, node.min, node.max)
             return true
         }
       }
