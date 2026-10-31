@@ -35,7 +35,7 @@
  *   node scripts/check-differentials.mjs --list     # print the registry, run nothing
  *   node scripts/check-differentials.mjs --only=id[,id]
  *
- * ENVIRONMENT. Four of the seven registered differentials drive JESS'S grammars
+ * ENVIRONMENT. Four of the eight registered differentials drive JESS'S grammars
  * over JESS'S corpora, which live in a jess worktree (`JESS_ROOT`) that this repo
  * does not vendor. There is no default: a checkout nobody built (a mirror that
  * tracks `dev` while its packages' `lib/` stay at an older commit) makes every one
@@ -197,6 +197,19 @@ const REGISTRY = [
     cleanExit: 0,
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/macro-optimize-contract.test.ts']),
     plants: [{ defect: 'macro-timing-exit-off', expect: 'moves' }],
+  },
+  {
+    id: 'lex-selected-vs-character',
+    needs: 'repo',
+    file: 'test/unit/lex-fixed-tree-closure.test.ts',
+    legs: 'a grammar lowered to selected lexical bodies vs the same grammar plus a capability gap (CHARACTER lowering), each through execRules, closure tableRules and precompiled emitted tableRules: whole RunResult digests and completion-probe results per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/lex-fixed-tree-closure.test.ts']),
+    plants: [
+      { defect: 'lex-choice-exclusive-off', expect: 'moves' },
+      { defect: 'lex-repeat-min-short', expect: 'moves' },
+      { defect: 'lex-rule-trivia-glued', expect: 'moves' },
+    ],
   },
   {
     id: 'jess-oracle',
