@@ -1378,11 +1378,11 @@ class Encoder {
         // under `min` reports what would have let it CONTINUE — the ITEM, which
         // is what `failAt` (repeat.ts) and `deriveExpectedArr([def.parser])`
         // (codegen emitSepBy) both use; the driver otherwise reports whatever
-        // sub-parse failed last, which is the SEPARATOR. Only `min >= 2` can
-        // reach that end under `min` with items already taken — at `min === 1`
-        // it means the FIRST item failed, and that failure already set the
-        // item's own set. So no committed grammar grows by a word.
-        const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 2 ? 4 : 0)
+        // sub-parse failed last. At `min === 1` that end is the FIRST item
+        // failing, and `failAt` reports the item's derived set at the list's
+        // start there too, not whatever the item's own failure left (a deeper
+        // set the interpreter discards, `repeat.ts` `failAt(pos)`).
+        const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 1 ? 4 : 0)
         // A RECOVERY table always carries ip + 6 (the ITEM's expected set, which
         // the resync error reports) and ip + 7 (the SEPARATOR's sentinel class, so
         // a tolerant list resyncs to its own separator OR the enclosing
@@ -1394,7 +1394,7 @@ class Encoder {
             this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia)),
           )
         }
-        return d.min >= 2
+        return d.min >= 1
           ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags, this.expected(deriveExpected(d.parser)))
           : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
       }

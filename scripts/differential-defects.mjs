@@ -223,6 +223,15 @@ export const DEFECTS = {
     }],
   },
 
+  'seplist-first-item-set-dropped': {
+    why: 'encoder: a separated list of min 1 whose first item fails reports that item\'s own failure, not the item set at the list start',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "(d.keepSeparators === true ? 2 : 0) | (d.min >= 1 ? 4 : 0)",
+      replace: "(d.keepSeparators === true ? 2 : 0) | (d.min >= 2 ? 4 : 0)",
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{

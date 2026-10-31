@@ -100,7 +100,7 @@ function inputs(): string[] {
   const or = (d: number): string => (rnd(4) === 0 ? `${sum(d)} and ${sum(d)}` : sum(d))
   const space = (): string => Array.from({ length: 1 + rnd(3) }, () => or(0)).join(' ')
   const list = (): string => Array.from({ length: 1 + rnd(4) }, () => space()).join([',', ', ', ' , ', ' ,'][rnd(4)])
-  const out = ['x:1;', 'x:1 2;', 'x:1,2;', 'x:1 ,2;', 'x:a and b;', 'x:1*;', 'x:1 +;', 'x:1, ;', 'x:;', 'x:1 - -2;', 'x:1 -2;']
+  const out = ['x:1;', 'x:1 2;', 'x:1,2;', 'x:1 ,2;', 'x:a and b;', 'x:1*;', 'x:1 +;', 'x:1, ;', 'x:(1;', 'x:;', 'x:1 - -2;', 'x:1 -2;']
   for (let i = 0; i < 300; i++) {
     const ok = `x:${sp()}${list()}${sp()};`
     out.push(ok)
@@ -136,6 +136,16 @@ describe('a loop decides on the character in front of it', () => {
     const counts = countSiteVisits(prog, rs => { run(rs.Decl!, 'x:1, 2, 3;') })
     // Two separators; the list end at `;` enters none.
     expect(counts[sepIp]).toBe(2)
+  })
+
+  it('a separated list whose first item fails reports the item at the list start', () => {
+    // `failAt(pos)` in repeat.ts: the item's derived set, not the deeper set the
+    // failed item left (`")"` inside the group of `(1;`).
+    for (const [name, entries] of readers(encodeTable(expr))) {
+      const r = run(entries.Decl!, 'x:(1;')
+      expect(r.ok, name).toBe(false)
+      expect(r.ok ? undefined : [r.span.start, r.expected], name).toEqual([2, ['"-"', '/[0-9]+/', '/[a-z]+/', '"("']])
+    }
   })
 
   it('parses and fails as the interpreter does in every reader', () => {
