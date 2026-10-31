@@ -303,7 +303,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Rollback-density perf gate vs the previous release
-        run: pnpm perf:guard:grammars
+        run: pnpm perf:guard:grammars ${BASE_SHA:+--merge-base=$BASE_SHA}
+        env:
+          # A PR's base: the gate also REPORTS HEAD against it (report only — the
+          # verdict stays anchored on the previous release). See
+          # `reportAgainstMergeBase` in bench/ab-harness.ts for when it costs a run.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
   # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
   #
@@ -344,7 +349,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Realistic-workload perf gate vs the previous release
-        run: pnpm perf:workloads
+        run: pnpm perf:workloads ${BASE_SHA:+--merge-base=$BASE_SHA}
+        env:
+          # A PR's base: the gate also REPORTS HEAD against it (report only — the
+          # verdict stays anchored on the previous release). See
+          # `reportAgainstMergeBase` in bench/ab-harness.ts for when it costs a run.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
       # The PEAK clause — the same workloads against the fastest release ON RECORD
       # rather than the previous one. The step above enforces "faster than the last
       # release"; this one enforces "not below the best we have ever been", which is
@@ -413,9 +423,12 @@ jobs:
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
       - name: Macro timing gate vs 0.57.0 with adjacent self-control
-        run: pnpm bench:macro-optimize
+        run: pnpm bench:macro-optimize -- ${BASE_SHA:+--merge-base=$BASE_SHA}
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
+          # Report-only arm against the PR's base. It reuses this step's A/A control,
+          # so when it runs it costs the candidate half of the timing step again.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
   # Code-size gate. On the same footing as the two perf gates, because until it
   # existed size had NO gate at all: `bench:size` lived in package.json and in

@@ -63,7 +63,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD, freshGraph, previousRelease,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
 import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
@@ -106,10 +106,15 @@ if (PEAK && (SELF || argValue('--ref') !== null)) {
   fail(GATE, '--peak names its own reference (the committed peak sha) and cannot be combined with --ref or --self.')
 }
 const REF_ARG = argValue('--ref')
+/** Report-only: measure and print, never fail. How the merge-base arm runs. */
+const REPORT_ONLY = process.argv.includes('--report-only')
+/** A PR's base commit: also report HEAD against it (see `reportAgainstMergeBase`). */
+const MERGE_BASE = argValue('--merge-base')
+if (PEAK && MERGE_BASE !== null) fail(GATE, '--merge-base reports against the previous release run, not the peak clause.')
 // The previous release, resolved from the v* tags (see `previousRelease`); the peak
 // clause names its own committed reference instead.
 const REFERENCE = PEAK
-  ? { tag: CONFIG.peak.sha, sha: CONFIG.peak.sha }
+  ? { tag: `peak ${CONFIG.peak.version}`, sha: CONFIG.peak.sha }
   : REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
 const REF = REFERENCE.sha
 const HEAD_REF = SELF ? REF : argValue('--head-ref')
@@ -271,6 +276,10 @@ for (const v of rows) {
   )
 }
 console.log(`\n  load average ${load0.toFixed(2)} → ${load1.toFixed(2)}`)
+summary(summaryTable(
+  `${GATE}: HEAD vs ${REPORT_ONLY ? `merge base ${REF}` : REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`,
+  rows, calibration, !REPORT_ONLY && !SELF && !QUICK,
+))
 
 if (SELF) {
   // Reported SIGNED, because only the positive direction gates. A −8% self-check
@@ -353,6 +362,10 @@ function peakWaiver(failed: readonly Verdict[]): { applied: boolean, message: st
   })
   return { applied: d.applied, message: d.message === '' ? '' : `\n${GATE}:${d.message}` }
 }
+
+// Report-only runs (the merge-base arm below) never gate; the gate is the release.
+if (REPORT_ONLY) process.exit(0)
+if (MERGE_BASE !== null) reportAgainstMergeBase(GATE, ROOT, MERGE_BASE, REF, [])
 
 const failures = rows.filter(v => v.failed)
 if (PEAK) {

@@ -10,6 +10,7 @@ import {
   interleave,
   measurePasses,
   pairedMedianDelta,
+  mergeBaseNote,
   pairedMedianRatio,
   previousRelease,
   score,
@@ -260,6 +261,38 @@ describe('the previous release is resolved from the v* tags', () => {
       expect(exit).toHaveBeenCalledWith(1)
     } finally {
       rmSync(h.dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('the merge-base arm is measured only when nothing already answers it', () => {
+  it('skips a PR that leaves src/ alone, reuses the release table when the base IS the release, else measures', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-merge-base-'))
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }).trim()
+    const commit = (file: string, body: string): string => {
+      execFileSync('mkdir', ['-p', join(dir, 'src')])
+      writeFileSync(join(dir, file), body)
+      git('add', '-A')
+      git('commit', '-qm', file)
+      return git('rev-parse', 'HEAD')
+    }
+    try {
+      git('init', '-q', '-b', 'main')
+      const release = commit('src/a.ts', '1')
+      // The release commit stamps only src/version.ts, which does not count.
+      const base = commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.1'")
+      commit('docs.md', 'x')
+      expect(mergeBaseNote(dir, base, release)).toMatch(/changes nothing under `src\/`/)
+      commit('src/a.ts', '2')
+      expect(mergeBaseNote(dir, base, release)).toMatch(/table above is also this PR against its base/)
+      expect(mergeBaseNote(dir, base, base)).toMatch(/table above/)
+      const older = git('rev-list', '--max-parents=0', 'HEAD')
+      commit('src/b.ts', 'x')
+      const newBase = git('rev-parse', 'HEAD~1')
+      expect(mergeBaseNote(dir, newBase, older)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

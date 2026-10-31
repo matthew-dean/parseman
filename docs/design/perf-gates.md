@@ -825,6 +825,32 @@ beside `main`, whose first parent is the merged commit; either one names the sou
 it is pinned in `bench/jess/macro-optimize-config.json` together with the Jess commit it
 builds against, and moving it is a deliberate bench change.
 
+### The per-PR report: this change against its own base
+
+The gate answers "is this slower than the previous release?". A PR also wants "what did
+THIS change do?", so on a pull request each of `grammar-perf`, `workload-perf` and
+`macro-perf` prints a markdown table to the log and the job summary (`$GITHUB_STEP_SUMMARY`):
+every case's median and min change, beside the null control measured in the same passes
+(the A/A control for the macro gate). One table is HEAD against the gate's reference. The
+other is HEAD against the PR's base, `--merge-base=<sha>`. The base table is report only and
+never fails a job.
+
+The base arm usually costs nothing:
+
+- if the PR changes nothing under `src/`, the delta is zero by construction and is not
+  measured;
+- if the base's `src/` equals the reference's (ignoring the `src/version.ts` stamp), the gate
+  table already is the answer. This is the common case: every merge that changes `src/`
+  publishes, so the previous release is the base.
+
+Otherwise the gate re-runs itself against the base with `--report-only`: one more run of
+that gate, about 3 minutes for the grammar gate and 3.5 for the workload gate on GitHub's
+runners. The macro gate is pinned to a release older than any base, so a PR that changes
+`src/` always measures its base. That arm reuses the A/A control the gate just measured on
+the same runner (`--self-control`), so it costs the candidate half of the timing step,
+about 2 minutes. The jobs run in parallel, so the longest job sets the wall time. That is
+`workload-perf` at about 8.5 minutes today, or about 12 when its base arm runs.
+
 ### Why the reference is not a pinned sha
 
 It was, until publishing moved to every merge. Each config carried a `referenceSha`
