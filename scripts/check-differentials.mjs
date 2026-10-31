@@ -287,6 +287,7 @@ const REGISTRY = [
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-routed-arm-gate2.test.ts']),
     plants: [
       { defect: 'rgate2-second-at-first', expect: 'moves' },
+      { defect: 'rgate2-second-at-first-ascii', expect: 'moves' },
       { defect: 'rgate2-second-at-first-emitted', expect: 'moves' },
       { defect: 'rgate2-second-narrowed', expect: 'moves' },
     ],

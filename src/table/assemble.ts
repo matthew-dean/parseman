@@ -3364,6 +3364,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const second = cc[code[ip + 5]!]!
         const child = link(code[ip + 2]!)
         if (cfg.tolerant || cfg.probe) return child
+        // ASCII-only classes are read as code units against their tables.
+        if (cls.hi.length === 0 && first.hi.length === 0 && second.hi.length === 0) {
+          const a0 = cls.ascii, a1 = first.ascii, a2 = second.ascii
+          return (input, pos, ctx) => {
+            const item = ctx._routed
+            if (item !== undefined && item.span.start === pos) {
+              const e = item.span.end
+              const c = input.charCodeAt(e)
+              if (a0[c] !== 1 || (a1[c] === 1 && a2[input.charCodeAt(e + 1)] !== 1)) {
+                ctx._fe = e; ctx._fx = xf
+                return FAIL
+              }
+            }
+            return child(input, pos, ctx)
+          }
+        }
         return (input, pos, ctx) => {
           const item = ctx._routed
           if (item !== undefined && item.span.start === pos) {

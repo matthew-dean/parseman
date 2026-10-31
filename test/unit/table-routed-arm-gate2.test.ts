@@ -49,8 +49,11 @@ function readers(prog: TableProgram): ReadonlyArray<readonly [string, Record<str
 
 const value = regex(/[a-z0-9]+/)
 const ws = regex(/[ \t]+/)
-const spacedColon = label('":"', regex(/:(?=[ \t])/))
 // A local const, as Jess's arm is: the gate walk does not follow rule references.
+// Two spellings of the gap after the colon: ASCII only, and one with a non-ASCII
+// space, which takes the engines' class path rather than their ASCII tables.
+const makeSheet = (colon: RegExp): Record<string, Comb> => {
+const spacedColon = label('":"', regex(colon))
 const spaced = node('Spaced', sequence(parser({ trivia: ws }, sequence(routed(), spacedColon)), value, literal(';')), c => ({ spaced: c }))
 const sheet = rules({ trivia: regex(/[ \t\n]+/) }, (g: Record<string, Comb>) => ({
   Sheet: many(g.Statement!),
@@ -62,14 +65,17 @@ const sheet = rules({ trivia: regex(/[ \t\n]+/) }, (g: Record<string, Comb>) => 
       node('Decl', sequence(regex(/[a-z]+/), literal(':'), value, literal(';')), c => ({ decl: c })),
     ), { commit: false })),
 })) as Record<string, Comb>
+return sheet
+}
+const sheets = { ascii: makeSheet(/:(?=[ \t])/), unicode: makeSheet(/:(?=[ \t\u00a0])/) }
 
 function inputs(): string[] {
   let seed = 5
   const rnd = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
   const stmt = (): string => [
     () => 'div:hover{}', () => 'a{}', () => 'color:red;', () => 'color: red;', () => 'color :\tred;',
-    () => 'color:\tred;', () => 'f(x);', () => 'x :y;', () => 'p :hover{}',
-  ][rnd(9)]!()
+    () => 'color:\tred;', () => 'f(x);', () => 'x :y;', () => 'p :hover{}', () => 'a:\u00a0b;',
+  ][rnd(10)]!()
   const out = ['div:hover{}', 'color:red;', 'color: red;', 'a:', 'a: ', 'a:\t1;', 'a :', 'a', '', 'a:b', 'f(', 'a:{}']
   for (let i = 0; i < 200; i++) {
     const ok = Array.from({ length: 1 + rnd(4) }, stmt).join(' ')
@@ -81,7 +87,8 @@ function inputs(): string[] {
 }
 
 describe('a routed arm gate that reads two characters', () => {
-  it('gates the spaced declaration on the colon and the gap after it', () => {
+  for (const [kind, sheet] of Object.entries(sheets)) {
+  it(`(${kind}) gates the spaced declaration on the colon and the gap after it`, () => {
     const prog = encodeTable(sheet)
     expect([...reachableIps(prog)].filter(ip => prog.code[ip] === OP_RGATE2)).toHaveLength(1)
     const gate = [...reachableIps(prog)].find(ip => prog.code[ip] === OP_RGATE2)!
@@ -93,7 +100,7 @@ describe('a routed arm gate that reads two characters', () => {
     expect(spacedHit[arm]).toBe(1)
   })
 
-  it('parses and fails as the interpreter does in every reader', () => {
+  it(`(${kind}) parses and fails as the interpreter does in every reader`, () => {
     const cases = inputs()
     const want = cases.map(input => digestValue(run(sheet.Sheet!, input)))
     for (const [name, entries] of readers(encodeTable(sheet))) {
@@ -102,4 +109,5 @@ describe('a routed arm gate that reads two characters', () => {
       })
     }
   }, 60_000)
+  }
 })

@@ -298,6 +298,11 @@ export const DEFECTS = {
     edits: [{ file: 'src/table/assemble.ts', find: '(classHas(first, c) && !classHas(second, lead(input, e + 1)))', replace: '(classHas(first, c) && !classHas(second, lead(input, e)))' }],
   },
 
+  'rgate2-second-at-first-ascii': {
+    why: 'closure engine: the ASCII two-character routed gate reads its second code unit at the first one\'s position',
+    edits: [{ file: 'src/table/assemble.ts', find: 'a2[input.charCodeAt(e + 1)] !== 1', replace: 'a2[input.charCodeAt(e)] !== 1' }],
+  },
+
   'rgate2-second-at-first-emitted': {
     why: 'emitted engine: the two-character routed gate reads its second character at the first character\'s position',
     edits: [{ file: 'src/table/emit-assembly.ts', find: "${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}", replace: "${has(second, ascii ? 'input.charCodeAt(e)' : 'lead(input,e)')}" }],
