@@ -17,14 +17,14 @@
 import {
   OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_COV, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI,
   OP_NODE, OP_NOT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ,
-  OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM,
+  OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM, OP_GAPGATE,
 } from './ops.ts'
 import { childSlots } from './child-slots.ts'
 import { leadingTriviaFieldAt } from './field-spec.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 
 const WRAPPERS = new Set([OP_NODE, OP_XFORM, OP_LEAF, OP_SOURCE_LEAF, OP_TOKEN, OP_SCOPE, OP_SCOPE_CAP,
-  OP_SCOPE_PLAIN, OP_FIELD, OP_LABEL, OP_EXPECT, OP_WITHCTX, OP_RULE, OP_ATTEMPT, OP_COV])
+  OP_SCOPE_PLAIN, OP_FIELD, OP_LABEL, OP_EXPECT, OP_WITHCTX, OP_RULE, OP_ATTEMPT, OP_COV, OP_GAPGATE])
 
 /**
  * Can the row at `ip` match empty? `true` wherever it cannot tell. A first-set

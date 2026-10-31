@@ -51,7 +51,7 @@ import {
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE,
 } from './ops.ts'
 import {
   choiceCannotCommit, choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
@@ -68,6 +68,7 @@ import {
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
+import { gapRows } from './gap-gate.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
 
@@ -142,6 +143,8 @@ export const EMITTED_PARAMS = [
   // Appended for the pass-through collapse (`run-support.ts`); old factories
   // ignore it.
   'collapseEmpty',
+  // Appended for the gap gate (`gap-gate.ts`); old factories ignore it.
+  'GAP',
 ] as const
 
 /**
@@ -626,6 +629,7 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   const reachable = [...reachableSites(code, roots)]
+  const GAP_ROWS = gapRows(code, roots)
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -1135,7 +1139,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // `OP_GATE` under a probe or a tolerant recovery is a no-op that forwards to
     // its child, exactly as `assemble.ts:952` resolves it.
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
-    if (op === OP_RULE) return code[ip + 1]!
+    if (op === OP_RULE || op === OP_GAPGATE) return code[ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
     // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
@@ -1154,6 +1158,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
   function lower(ip: number, fname: string): string {
     const op = code[ip]
     const head = `function ${fname}(input,pos,ctx){`
+    const outerHead = head
     const L = labels.at(ip)
     const sinks = sinksAt(ip)
     /**
@@ -1273,6 +1278,17 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       case OP_RX_TRACK: {
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_RX_TRACK
+        // A gap row takes the end a repeat already scanned (`gap-gate.ts`).
+        const head = GAP_ROWS.has(ip)
+          ? `${outerHead}
+if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input){
+const e=GAP.end
+const v=input.slice(pos,e)
+${captureLeaf('v')}
+${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
+return v
+}`
+          : outerHead
         if (!track && scalarSpecs.has(code[ip + 1]!)) {
           const recognize = recognizerRef(code[ip + 1]!)
           return `${head}
@@ -2267,6 +2283,37 @@ return [key,v]
           sepCls = hoist('rs', `CLS[${ci}][0]`)
           sepAscii = isAsciiOnlyClass(resolved)
         }
+        // THE GAP GATE (`gap-gate.ts`, `assemble.ts`): the item's leading gap is
+        // read once here and handed to its regex row through the slot.
+        const gapIp = sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1
+        let gapCode = (_rb: string): string => ''
+        if (gapIp >= 0) {
+          const row = code[gapIp + 2]!
+          const re = hoist('gr', `K[${code[row + 1]!}]`)
+          const cls = (idx: number): string => {
+            const resolved = t.cc[idx]!
+            const ci = classes.push([resolved]) - 1
+            classPlan.push([idx])
+            const ref = hoist('gc', `CLS[${ci}][0]`)
+            return isAsciiOnlyClass(resolved) ? `${ref}.ascii[input.charCodeAt(${'@'})]!==1` : `!classHas(${ref},lead(input,${'@'}))`
+          }
+          const follow = cls(code[gapIp + 3]!).replaceAll('@', 'gq')
+          const other = code[gapIp + 4]! >= 0 ? cls(code[gapIp + 4]!).replaceAll('@', 'itemStart') : 'true'
+          gapCode = (rbCode: string): string => `let gapped=false
+if(ctx._probe===undefined){
+${re}.lastIndex=itemStart
+const gq=${re}.test(input)?${re}.lastIndex:-1
+if((gq<0||${follow})&&${other}){
+${rbCode}
+break
+}
+if(gq>=0){
+GAP.row=${row};GAP.at=itemStart;GAP.end=gq;GAP.input=input
+gapped=true
+}
+}
+`
+        }
         const sepMiss = (at: string): string => sepAscii
           ? `${sepCls}.ascii[input.charCodeAt(${at})]!==1`
           : `!classHas(${sepCls},lead(input,${at}))`
@@ -2415,9 +2462,9 @@ ${itemCls === undefined || (sep === undefined && hasTrivia === 'false') ? '' : `
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-`}ctx._fc=false
+`}${gapCode(rb)}ctx._fc=false
 const v=${child}(input,itemStart,ctx)
-if(v===FAIL){
+${gapIp >= 0 ? 'if(gapped)GAP.at=-1\n' : ''}if(v===FAIL){
 ${REC
   // THE ROLLBACK MOVES INSIDE THE ARMS. The strict loop rolls back
   // unconditionally before testing `_fc`, which is sound because every path out

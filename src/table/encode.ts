@@ -1,7 +1,7 @@
 import { scanRefs } from './program.ts'
 import { factorPrefixArms, factorSharedEnds } from './factor-choice.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
+import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union, winnerForRef, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
@@ -17,7 +17,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV, OP_GAPGATE,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
@@ -116,6 +116,24 @@ export type TableSettings = {
 
 type Emitted = { readonly ip: number }
 
+
+/** ASCII whitespace and the `/` a comment opens with: what a gap starts with. */
+const GAP_CHARS = new Set([9, 10, 12, 13, 32, 47])
+
+/**
+ * A regex that reads a GAP: it may match empty, or every non-empty match starts
+ * with whitespace or `/`. Only such a regex leads an item the repeat gap-gates;
+ * a word or a number before the deciding character is the item's own class
+ * test's business, not a gap's.
+ */
+function isGap(p: Combinator<unknown>): boolean {
+  if (matchesEmpty(p)) return true
+  const fs = p._meta.firstSet
+  return fs.kind === 'ranges' && fs.ranges.every(r => {
+    for (let c = r.lo; c <= r.hi; c++) if (!GAP_CHARS.has(c)) return false
+    return true
+  })
+}
 
 class Encoder {
   code: number[] = []
@@ -821,6 +839,94 @@ class Encoder {
     return head
   }
 
+  /**
+   * An optional repeat item that opens with a GAP — a regex that may match
+   * empty, or one that starts only with whitespace or a comment's `/` — and
+   * then a term with a finite first set gets an `OP_GAPGATE` row
+   * (`gap-gate.ts`): the repeat reads the gap once, ends where the character
+   * after it opens neither that term nor an arm without the gap, and hands the
+   * gap's end to the regex row. Anything the walk cannot prove keeps the item as
+   * written.
+   */
+  private gapGated(item: Combinator<unknown>, ip: number): number {
+    const lead = this.gapLead(item, this.activeTrivia, 0)
+    if (lead === undefined) return ip
+    const cls = this.charClass(lead.follow)
+    if (cls < 0) return ip
+    const other = lead.other.kind === 'empty' ? -1 : this.charClass(lead.other)
+    if (lead.other.kind !== 'empty' && other < 0) return ip
+    const p = this.node(lead.p).ip
+    if (this.code[p] !== OP_RX && this.code[p] !== OP_RX_TRACK) return ip
+    return this.emit(OP_GAPGATE, ip, p, cls, other)
+  }
+
+  /**
+   * The gap an item opens with: the regex `p`, the first set `follow` of what
+   * must come straight after it, and the first set `other` of choice arms that
+   * do not open with `p`. Only through wrappers that consume nothing before
+   * their body, a sequence's first term, and a choice's arms; the gap must sit
+   * in a sequence with no trivia between its terms.
+   */
+  private gapLead(
+    c: Combinator<unknown>, trivia: Combinator<unknown> | null | undefined, depth: number,
+  ): { p: Combinator<unknown>; follow: FirstSet; other: FirstSet } | undefined {
+    if (depth > 24) return undefined
+    const rr = this.refResolver()
+    const d = c._def as ParserDef
+    switch (d.tag) {
+      case 'lazy': {
+        let target: Combinator<unknown> | undefined = winnerForRef(c, rr)
+        if (target === undefined) { try { target = d.thunk() } catch { return undefined } }
+        return this.gapLead(target, trivia, depth + 1)
+      }
+      case 'node': case 'leaf': case 'label': case 'attempt':
+        return this.gapLead(d.parser, trivia, depth + 1)
+      case 'field':
+        return d.leadingTrivia === true ? undefined : this.gapLead(d.parser, trivia, depth + 1)
+      case 'grammar':
+        return this.gapLead(d.parser, d.clearTrivia === true ? null : (d.triviaParser ?? trivia), depth + 1)
+      case 'sequence': {
+        const [first, ...rest] = d.parsers
+        if (first === undefined) return undefined
+        if ((first._def as ParserDef).tag !== 'regex' || !isGap(first)) {
+          return this.gapLead(first, trivia, depth + 1)
+        }
+        // No trivia between the gap and the term after it (`undefined`: none).
+        if ((trivia !== undefined && trivia !== null) || rest.length === 0) return undefined
+        let follow: FirstSet = empty()
+        let closed = false
+        for (const t of rest) {
+          const fs = firstSetOf(t, new Set(), rr, null)
+          if (fs.kind === 'any') return undefined
+          follow = union(follow, fs)
+          if (!matchesEmpty(t, new Set(), rr)) { closed = true; break }
+        }
+        return closed ? { p: first, follow, other: empty() } : undefined
+      }
+      case 'choice': {
+        let p: Combinator<unknown> | undefined
+        let follow: FirstSet = empty()
+        let other: FirstSet = empty()
+        for (const arm of d.parsers) {
+          const lead = this.gapLead(arm, trivia, depth + 1)
+          if (lead !== undefined && (p === undefined || lead.p === p)) {
+            p = lead.p
+            follow = union(follow, lead.follow)
+            other = union(other, lead.other)
+            continue
+          }
+          if (matchesEmpty(arm, new Set(), rr)) return undefined
+          const fs = firstSetOf(arm, new Set(), rr, trivia)
+          if (fs.kind === 'any') return undefined
+          other = union(other, fs)
+        }
+        return p === undefined ? undefined : { p, follow, other }
+      }
+      default:
+        return undefined
+    }
+  }
+
   /** Reserve `n` operand slots to patch once children are laid out. */
   private emitHead(op: number, n: number): number {
     const ip = this.code.length
@@ -1378,9 +1484,10 @@ class Encoder {
           : this.charClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
-        const child = min === 0 && itemClass >= 0
+        const item = min === 0 && itemClass >= 0
           ? this.withoutLeadGate(this.node(d.parser).ip, itemClass)
           : this.node(d.parser).ip
+        const child = min === 0 && itemClass >= 0 ? this.gapGated(d.parser, item) : item
         // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
         // class (−1: there is no separator). Both are only laid down for a
         // recovery table, where the resync error's payload has to be the ITEM's
@@ -1878,7 +1985,7 @@ class Encoder {
     const slots = (ip: number): number[] => {
       switch (this.code[ip]) {
         case OP_GATE: case OP_RGATE: return [ip + 2]
-        case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: return [ip + 1]
+        case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: case OP_GAPGATE: return [ip + 1]
         case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_SOURCE_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)

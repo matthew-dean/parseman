@@ -21,7 +21,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
-  OP_COV,
+  OP_COV, OP_GAPGATE,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
@@ -519,7 +519,10 @@ function makeDriver(
        * a second implementation of it here would be a second place for the phase
        * semantics (entry for a rule, success for an arm) to drift.
        */
+      // The reference runs a gap-gated item as written: the gate is the repeat's,
+      // in the shipped engines, and this driver is the leg it is compared with.
       case OP_COV:
+      case OP_GAPGATE:
         return exec(code[ip + 1]!, input, pos, ctx)
 
       case OP_LIVE: {

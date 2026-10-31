@@ -259,6 +259,40 @@ export const DEFECTS = {
     }],
   },
 
+  'gap-scan-wrong-offset': {
+    why: 'closure engine: the gap gate scans the item\'s gap one character late',
+    edits: [{ file: 'src/table/assemble.ts', find: '              gapRe.lastIndex = itemStart\n', replace: '              gapRe.lastIndex = itemStart + 1\n' }],
+  },
+
+  'gap-scan-wrong-offset-emitted': {
+    why: 'emitted engine: the gap gate scans the item\'s gap one character late',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: '${re}.lastIndex=itemStart\n', replace: '${re}.lastIndex=itemStart+1\n' }],
+  },
+
+  'gap-follow-narrowed': {
+    why: 'encoder: the class after an item\'s gap loses its lowest character',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    const cls = this.charClass(lead.follow)\n',
+      replace: "    const cls = this.charClass(lead.follow.kind === 'ranges' ? { kind: 'ranges', ranges: lead.follow.ranges.map((r, i) => i === 0 ? { lo: r.lo + 1, hi: r.hi } : r).filter(r => r.lo <= r.hi) } : lead.follow)\n",
+    }],
+  },
+
+  'gap-slot-uncleared': {
+    why: 'closure engine: the gap slot is left set after the item returns (harmless by construction: the slot is a memo keyed by row, position and input)',
+    edits: [{ file: 'src/table/assemble.ts', find: '            if (gapped) GAP.at = -1\n', replace: '' }],
+  },
+
+  'gap-slot-any-row': {
+    why: 'closure engine: a gap row takes the slot at its position whatever row the slot was set for',
+    edits: [{ file: 'src/table/assemble.ts', find: 'if (GAP.row === row && GAP.at === pos && GAP.input === input) e = GAP.end', replace: 'if (GAP.at === pos && GAP.input === input) e = GAP.end' }],
+  },
+
+  'gap-slot-any-row-emitted': {
+    why: 'emitted engine: a gap row takes the slot at its position whatever row the slot was set for',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: 'if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input){', replace: 'if(GAP.at===pos&&GAP.input===input){' }],
+  },
+
   'otherwise-commit-bit-dropped': {
     why: 'encoder: otherwise(p, { commit: false }) is encoded as a committing fallback',
     edits: [{

@@ -261,6 +261,22 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'gap-gate',
+    needs: 'repo',
+    file: 'test/unit/table-gap-gate.test.ts',
+    legs: 'generated SCSS-shaped operator chains (padded operators, a sum arm led by another level\'s gap, comments and tabs in gaps, one-character defects) through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar (AST, CST host, tolerant) and vs execRules (line tracking): whole RunResult digests per input, and operator-node visit counts',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-gap-gate.test.ts']),
+    plants: [
+      { defect: 'gap-scan-wrong-offset', expect: 'moves' },
+      { defect: 'gap-scan-wrong-offset-emitted', expect: 'moves' },
+      { defect: 'gap-follow-narrowed', expect: 'moves' },
+      { defect: 'gap-slot-any-row', expect: 'moves' },
+      { defect: 'gap-slot-any-row-emitted', expect: 'moves' },
+      { defect: 'gap-slot-uncleared', expect: 'blind' },
+    ],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',

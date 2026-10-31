@@ -72,7 +72,7 @@ export function classifyFinalChoice(
  * does not. `undefined` → no winner; fall back to the thunk. Monolithic: the winner IS
  * the thunk's target, a no-op. A winner that recurses back to `p` (recursive or
  * self-alias rule) is caught by the shared `seen` guard → `any`, a sound over-approx. */
-function winnerForRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
+export function winnerForRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
   if (resolve === undefined) return undefined
   const name = (p as unknown as { _ruleName?: string })._ruleName
   const w = name === undefined ? undefined : resolve(name)
