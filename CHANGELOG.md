@@ -41,10 +41,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   supercompiler's joins. The supercompiler and the emitter listed the scan pool's
   sites in different orders, so the supercompiler's splice check failed and it
   discarded its result without a warning. All three assemblers now read one list.
-- Emitted code is smaller: every rollback mark, scanned-term undo, choice failure
-  merge and field/error sink mark calls a shared helper instead of inlining the
-  capture-sink chain. Whole-grammar emitted code for jess's grammars shrinks 28–30%
-  (Less 3,305,714 → 2,386,168 B), with unchanged instructions.
+- Fixed: a literal fragment holding a letter or digit escape other than `\t`, `\n`,
+  `\r`, `\f`, `\v` or `\0` was read as that character, so the trivia scanners and the
+  table's scan lowerings treated `\d[a-z]*` as `d` followed by letters. Such a
+  fragment now declines the lowering and runs on the regex; `\uXXXX` reads as its
+  code point.
 - First-character gates:
   - `optional`, `not` and `peek` over a non-nullable child decide on the child's first
     character without taking a rollback mark or entering the child;
@@ -63,8 +64,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     `skipDeferredTrivia`: a gap in which no character can start a root-selected arm
     is answered by the unlabelled scanner's end instead of a chunk-by-chunk labelled
     scan, and a gap asked for again from the same position in the same parse (after a
-    zero-width term) is answered from the last scan that recorded nothing. It does not
-    apply with `trackLines`, CST capture or a full trivia log.
+    zero-width term) is answered from the last scan that recorded nothing, under the
+    same state. The memo is held on the parse context. It does not apply with
+    `trackLines`, CST capture or a full trivia log.
 - Size gates:
   - `pnpm size:guard:jess` builds a vendored snapshot of jess's four grammars
     (`fixtures/jess-grammars/`, refreshed by `pnpm vendor:jess-grammars`) the way jess
