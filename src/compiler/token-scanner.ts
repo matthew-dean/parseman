@@ -35,7 +35,7 @@
 import type { Alphabet } from './token-alphabet.ts'
 import { TOK_EOF, TOK_UNKNOWN, TOK_WS } from './token-alphabet.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
-import { packInts, sharedHelperDecl } from './token-dispatch.ts'
+import { packInts, unpackHelperDecl } from './token-dispatch.ts'
 import { foldCode, foldExpr } from './token-dispatch.ts'
 
 /**
@@ -190,7 +190,7 @@ export function emitScanner(alphabet: Alphabet, ns: string): ScannerEmission {
   // two halves of one encoding still lived in two files. They agree today — the
   // point is that widening the encoding (which the `RangeError` tells you to do)
   // must not be able to change one half and miss the other.
-  decls.push(sharedHelperDecl('unpack', () => p('_tkUnpack')))
+  decls.push(unpackHelperDecl(p('_tkUnpack')))
   decls.push(`const ${p('_tkNext_')} = ${p('_tkUnpack')}(${packInts(NEXT)})`)
   decls.push(`const ${p('_tkStart')} = ${p('_tkUnpack')}(${packInts(START)})`)
   decls.push(`const ${p('_tkAccept')} = ${p('_tkUnpack')}(${packInts(ACCEPT)})`)

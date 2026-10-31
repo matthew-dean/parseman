@@ -212,7 +212,7 @@ export function covKindCode(kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'labe
   }
 }
 
-export function covKindName(code: 0 | 1 | 2 | 3): 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' {
+function covKindName(code: 0 | 1 | 2 | 3): 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' {
   switch (code) {
     case 0: return 'rule'
     case 1: return 'choice-arm'

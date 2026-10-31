@@ -5,6 +5,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.59.0 — unreleased
 
+- **`compile()` no longer reads `process` while emitting a scan.** Emitting an
+  open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO` without a
+  guard, so a `compile()` in a browser that reached one threw a `TypeError` or
+  `ReferenceError`. The toggle selected an opt-in `indexOf` variant that was never
+  claimed as a win and that nothing enabled; it is removed, and the char loop it fell
+  back to is unchanged. Test: `test/unit/scan-shape-lowering.test.ts`.
+- **Dead code removed.** The `token-dispatch.ts` id strategies left over from the source
+  lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
+  `export` on internal values that nothing outside their module reads. Tables and
+  artifacts are byte-identical.
 - **A sequence led by an optional pad has its operator's first set.** A `regex()` that
   may match empty still reports `any` as its own first set, since it can match empty
   anywhere, but it now also carries the first characters of its non-empty matches. A

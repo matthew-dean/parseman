@@ -14,7 +14,7 @@
 
 /** The message `parser()` raises for an unclassified local scope. Exported so the
  *  three engines cannot drift a word apart. */
-export const ROOT_TRIVIA_SCOPE_REFUSAL
+const ROOT_TRIVIA_SCOPE_REFUSAL
   = 'parser(): selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: \'opaque\'.'
 
 /**
