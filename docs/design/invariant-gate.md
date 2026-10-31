@@ -481,40 +481,34 @@ ref. Debt that is never restated is debt that is never paid.
 
 There is deliberately no wildcard syntax and no per-rule blanket.
 
-**23 allowlist entries** stand today — 20 `BY-DESIGN`, 1 `RULE-BUG`, and 2
-`DEBT`. The two `DEBT` entries are the dormant token-cursor groundwork
-(`token-scanner.ts`, `token-dispatch.ts`), kept as the build-out of Jess design
-ledger rows G14 and G19 until a compiler path uses it.
-
-Five are the **frozen ablation controls** — `src/table/exec-baseline.ts` and
-`src/table/encode-baseline.ts`, deliberate frozen copies kept in process so
-`bench/table-alloc-ablation.ts` can measure a change against a same-path
-control. Being unimported (INV-3) and byte-identical to the live helpers
-(INV-4) *is* the control. `vitest.config.ts` excludes them from coverage for
-the same reason. They leave when the ablation does.
-
-Four cover the findings the gate was built to catch, left standing so the gate
-could land separately from the fixes:
+**15 allowlist entries** stand today: 12 `BY-DESIGN`, 1 `RULE-BUG` and 2 `DEBT`.
+`node scripts/check-invariants.mjs --list` prints them with their reasons.
 
 - `INV-1 src/functional/run.ts:<module>` — **`RULE-BUG`.** This
   `Object.defineProperty` runs once at module load, on a PROTOTYPE, and that is
   exactly the fix that replaced the per-instance installation the rule was
   written against. INV-1 fires on the correct pattern here; it should exempt
   module-scope prototype installation, and the entry leaves when it does.
-- `INV-1 src/compiler/linker.ts:composeLeaf` — **`BY-DESIGN`.** One accessor per
-  rule, once per `composeLeaf()`, so the grammar you actually use is fused on
-  first access and a second conflicting one fails loudly. Argued at the site,
-  and listed rather than carved out of the rule so that if the site changes the
-  entry goes stale and someone has to look again.
-- `INV-3 src/compiler/token-alphabet.ts`, `INV-3 src/compiler/token-scanner.ts`,
-  and `INV-3 src/compiler/token-dispatch.ts` — **`DEBT`**, ref
-  `docs/design/derived-tokenization.md`. These are active 0.48 token-streaming
-  groundwork, intentionally not wired into the 0.47 product path yet. Their
-  entries leave when that planned integration makes them reachable.
+- `INV-1 src/compiler/linker.ts:linkedMap` — **`BY-DESIGN`.** One lazy accessor per
+  rule on a runtime composition's rule map, argued at the site.
+- `INV-3 src/table/exec.ts` — **`BY-DESIGN`.** The reference driver: the identity
+  sweep gates the shipped engines against it, so nothing published imports it.
+- `INV-3 src/compiler/token-scanner.ts` and `INV-3 src/compiler/token-dispatch.ts` —
+  **`DEBT`**, ref `docs/design/derived-tokenization.md`. The dormant token-cursor
+  groundwork, kept as the build-out of Jess design ledger rows G14 and G19 until a
+  compiler path uses it.
+- `INV-8 run` — **`BY-DESIGN`.** `functional/run.ts` and `functional/run-tabled.ts`
+  each export a `run`, for two entry points.
+- Nine `INV-10` entries — **`BY-DESIGN`.** Comments that name a deleted file because
+  the sentence is about its deletion.
+
+The frozen ablation controls (`exec-baseline.ts`, `encode-baseline.ts` and the
+`table-alloc-ablation` bench, last at `acb421e2`) left with the ablation, taking five
+INV-3/INV-4 entries and the INV-9 `pm.fail` entry with them.
 
 `INV-4 childrenOf` (`analysis/choice-cost.ts` ↔ `analysis/duplication.ts`) and
 `INV-4 intersects` (`analysis/duplication.ts` ↔ `analysis/gating.ts`) were also
-in this group. Both were one import each, and both are now gone: the helpers
+allowlisted once. Both were one import each, and both are now gone: the helpers
 live once in `analysis/gating.ts`, the module every analysis pass already
 imports.
 

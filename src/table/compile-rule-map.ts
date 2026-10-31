@@ -68,7 +68,7 @@ export type TableRuleMapOptions = {
    * `coverage: grammarCoverage` here for every `rules()` grammar — so this is what
    * makes `{ grammarCoverage: true }` a working build under the table lowering.
    *
-   * COUNTERS ONLY, per the owner ruling recorded in `notes/RELEASE-0.48-TARGET.md`
+   * COUNTERS ONLY, per the owner ruling recorded in `notes/history/RELEASE-0.48-TARGET.md`
    * §1; `_grammarTrace` parity is 0.48 work. The plugin's coverage path needs the
    * DEFINITIONS STAMP and the HITS, and both are here.
    */

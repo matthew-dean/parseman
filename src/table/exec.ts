@@ -75,60 +75,6 @@ import { FAIL, newEndCell, type EndCell } from './cell.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA, LEAD, triviaFieldCapture } from '../combinators/field-trivia.ts'
 
-/**
- * DIAGNOSTIC ROW COUNTER — off unless `PM_TABLE_COUNT=1` at process start.
- *
- * Read ONCE, at module load, into a module const, so this is not the per-parse
- * option branch G5 forbids: with the variable false the whole thing folds away
- * after tier-up. It exists because "too many rows" and "each row too slow" are
- * different defects with the same symptom, and only a count separates them.
- * No timing run in this repo may set it — see `bench/jess/table-rows.ts`.
- */
-export const tableCounters: {
-  rows: number
-  byOp: Int32Array
-  /** Distinct reducer/host functions actually reaching each shared call site. */
-  sites: Map<string, Set<unknown>>
-  /**
-   * SPECULATION AT UNGATED CHOICES. `encode.ts:368-376` gives a choice its
-   * first-char dispatch only when NO arm is nullable, ALL arms are pairwise
-   * disjoint and ALL map to a char class; any one failure ungates every arm of
-   * the site, which then runs the linear loop below. Codegen has no such
-   * all-or-nothing rule — `emitFirstMatch` guards each arm on its OWN first set
-   * — so these counts are work the table does and the compiled engine does not.
-   *
-   * `ungatedEntries` is arms entered there; `ungatedFails` is those that then
-   * failed, which is pure waste by construction: a failing arm consumed nothing
-   * the winning arm will not scan again.
-   */
-  ungatedEntries: number
-  ungatedFails: number
-  /** Rows executed INSIDE failed ungated arms — the subtree each wasted entry drags. */
-  ungatedFailRows: number
-  gatedEntries: number
-  /** Arm entries DECLINED by the per-arm class gate — the work this change removes. */
-  armGateSkips: number
-} = { rows: 0, byOp: new Int32Array(64), sites: new Map(), ungatedEntries: 0, ungatedFails: 0, ungatedFailRows: 0, gatedEntries: 0, armGateSkips: 0 }
-
-const COUNT = process.env.PM_TABLE_COUNT === '1'
-
-function siteFn(site: string, fn: unknown): void {
-  let s = tableCounters.sites.get(site)
-  if (s === undefined) { s = new Set(); tableCounters.sites.set(site, s) }
-  s.add(fn)
-}
-
-export function resetTableCounters(): void {
-  tableCounters.rows = 0
-  tableCounters.byOp = new Int32Array(64)
-  tableCounters.sites = new Map()
-  tableCounters.ungatedEntries = 0
-  tableCounters.ungatedFails = 0
-  tableCounters.ungatedFailRows = 0
-  tableCounters.gatedEntries = 0
-  tableCounters.armGateSkips = 0
-}
-
 const EMPTY_TL: readonly number[] = Object.freeze([])
 const EMPTY_FX: string[] = []
 const ROUTED_FX: string[] = ['routed()']
@@ -375,7 +321,6 @@ function makeDriver(
   }
 
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
-    if (COUNT) { tableCounters.rows++; tableCounters.byOp[code[ip]!]!++ }
     switch (code[ip]) {
       case OP_LIT: {
         const s = k[code[ip + 1]!] as string
@@ -883,7 +828,6 @@ function makeDriver(
           // Running it through `exec` at the POST-scan position would find the gap
           // already consumed and answer "adjacent" unconditionally.
           if (code[child] === OP_ADJ) {
-            if (COUNT) { tableCounters.rows++; tableCounters.byOp[OP_ADJ]!++ }
             const ki = code[child + 2]!
             if (!adjacencyHolds(input, cur, ctx, code[child + 1] === 1, ki < 0 ? undefined : k[ki] as readonly string[])) {
               ctx._fe = cur; ctx._fx = fx[code[child + 3]!] as string[]
@@ -919,10 +863,6 @@ function makeDriver(
           // LIT/RX in place removes both. The duplication is in the DRIVER,
           // which ships once for every grammar — the cost this design trades on.
           const cop = code[child]
-          // The two inline terminals below execute a ROW without going through
-          // `exec`, so the counter has to see them or the row count understates
-          // exactly where the driver already won.
-          if (COUNT && (cop === OP_LIT || cop === OP_RX)) { tableCounters.rows++; tableCounters.byOp[cop]!++ }
           if (cop === OP_LIT) {
             const lit = k[code[child + 1]!] as string
             if (!input.startsWith(lit, cur)) {
@@ -963,7 +903,6 @@ function makeDriver(
           const reducer = code[ip + 1]!
           if (reducer < 0) return values![~reducer]
           const fn = fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
-          if (COUNT) siteFn('SEQX fn()', fn)
           return fn(values, { start: pos, end: cur })
         }
         return values
@@ -995,7 +934,6 @@ function makeDriver(
           }
           if (arm >= 0) {
             ctx._fc = false
-            if (COUNT) tableCounters.gatedEntries++
             const v = exec(code[base + arm]!, input, pos, ctx)
             if (v !== FAIL) return v
             // THE CUT. `dispatch()` is the library's one true cut: once its
@@ -1069,7 +1007,6 @@ function makeDriver(
         for (let i = 0; i < n; i++) {
           const cls = armCls[i]
           if (cls !== undefined && cls !== null && !classHas(cls, c)) {
-            if (COUNT) tableCounters.armGateSkips++
             // THE GATED ARM STILL REPORTS. The interpreter has no char gate: it
             // enters the arm, the arm's opener fails, and its static set is what
             // lands in the accumulation. Declining to enter must not also decline
@@ -1078,11 +1015,8 @@ function makeDriver(
             continue
           }
           ctx._fc = false
-          if (COUNT) tableCounters.ungatedEntries++
-          const rows0 = COUNT ? tableCounters.rows : 0
           const v = exec(code[base + i]!, input, pos, ctx)
           if (v !== FAIL) return v
-          if (COUNT) { tableCounters.ungatedFails++; tableCounters.ungatedFailRows += tableCounters.rows - rows0 }
           const at = ctx._fe ?? pos
           if (at > best) { best = at; acc = undefined }
           if (at === best) push(ctx._fx)
@@ -1405,7 +1339,6 @@ function makeDriver(
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if (v === FAIL) return FAIL
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
-        if (COUNT) siteFn('XFORM fn()', fn)
         return fn(v, { start: pos, end: EC.e })
       }
 
@@ -1447,7 +1380,6 @@ function makeDriver(
         if (v === FAIL) return FAIL
         const end = EC.e
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
-        if (COUNT) siteFn('LEAF fn()', fn)
         const out = fn(v, { start: pos, end })
         if (wasCapturing) pushCstLeaf(ctx, {
           _tag: 'leaf',
@@ -1550,7 +1482,6 @@ function makeDriver(
               children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
               rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
             ) => unknown
-            if (COUNT) siteFn('NODE build()', build)
             nd = build(kids, fieldMap, span, cap.rawChildren, (flags & 4) !== 0 || hostCst ? cap.triviaLog : EMPTY_TL, st)
           }
         } else if (host !== undefined) {

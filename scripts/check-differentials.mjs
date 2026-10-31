@@ -182,9 +182,8 @@ const REGISTRY = [
     file: 'test/unit/table-identity.test.ts (bench/table-lowering-identity.ts)',
     legs: 'interpreted combinator graph vs the compileRuleMap() closure artifact vs tableRules (shipped) vs execRules (reference driver), digested per case',
     cleanExit: 0,
-    // The vitest test, not `bench/table-lowering-sweep.ts`: the sweep prints its
-    // mismatches and exits 0 whatever it finds, so it is a report, not a gate.
-    // This is the subset CI actually enforces.
+    // The vitest test, not the hand-run sweep it replaced: that printed its
+    // mismatches and exited 0 whatever it found, so it was a report, not a gate.
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-identity.test.ts']),
     plants: [
       { defect: 'emit-node-span', expect: 'moves' },

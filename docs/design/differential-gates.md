@@ -239,7 +239,7 @@ failure and is what a release runs, on a box where the jess checkout exists.
 
 ## Known gaps, stated rather than fixed
 
-- `bench/jess/divergence.ts` and `bench/table-lowering-sweep.ts` PRINT their
+- `bench/jess/divergence.ts` and `bench/table-lowering-sweep.ts` (last at `acb421e2`) PRINT their
   disagreement counts and exit 0 regardless. They are reports, not gates. The
   teeth gate handles this by requiring their output to MOVE rather than to return
   non-zero, but a lane reading them by hand gets no exit code to trust, and

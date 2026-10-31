@@ -106,41 +106,24 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * long-lived `_meta` objects. Assigning `undefined` preserves their stable shape
  * while retaining the readers' existing absent-value semantics.
  *
+ * 23 -> 15. The frozen ablation controls left with the ablation:
+ * `exec-baseline.ts`, `encode-baseline.ts` and the `table-alloc-ablation` bench
+ * were deleted (last at `acb421e2`), taking their five INV-3/INV-4 entries and the
+ * INV-9 `pm.fail` entry. Two INV-10 entries left with the dead benches that held
+ * their comments.
+ *
  * That is the case the check exists for. A DEBT entry naming the lane that owes
  * it is a promise, and this is what it looks like when the promise is kept: the
  * entry does not get to survive the fix.
  */
-export const ALLOW_COUNT = 23
+export const ALLOW_COUNT = 15
 
 /**
  * finding key -> { category, why, ref? }
  * @type {Map<string, { category: string, why: string, ref?: string }>}
  */
 export const ALLOW = new Map([
-  /* ---- The frozen ablation controls: 5 entries -------------------------
-   * `src/table/exec-baseline.ts` and `src/table/encode-baseline.ts` are
-   * deliberate FROZEN COPIES of the table driver and encoder, kept alive in
-   * process so bench/table-alloc-ablation.ts can measure one change against a
-   * same-path control. Nothing imports them outside bench/ (INV-3) and their
-   * helpers are byte-identical to the live ones by construction (INV-4) —
-   * that IS the control. vitest.config.ts excludes them from coverage for the
-   * same reason. All five entries leave when the ablation does. */
-  ['INV-3:src/table/exec-baseline.ts',
-    { category: 'BY-DESIGN', why: 'frozen ablation control — bench-only by design' }],
-  ['INV-3:src/table/encode-baseline.ts',
-    { category: 'BY-DESIGN', why: 'frozen ablation control — bench-only by design' }],
-  ['INV-4:src/table/exec-baseline.ts:rawEntry|src/table/exec.ts:rawEntry',
-    { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
-  ['INV-4:src/table/exec-baseline.ts:trackLines|src/table/exec.ts:trackLines',
-    { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
-  // The live copy MOVED from `stamp.ts` to `run-support.ts`, where the emitted
-  // engine can call it too. Three copies became two, and the survivor beside the
-  // frozen control is now the only one. Same entry, same reason, new path.
-  ['INV-4:src/table/exec-baseline.ts:lineCol|src/table/run-support.ts:lineCol',
-    { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
-
-  /* `src/table/exec.ts` is the REFERENCE DRIVER, same category as the two frozen
-   * controls above: the bytecode interpreter the closure assembler replaced at
+  /* `src/table/exec.ts` is the REFERENCE DRIVER: the bytecode interpreter the closure assembler replaced at
    * `63666b6`, kept in-process because the identity sweep gates the assembler
    * against it and a divergence gets bisected against it. Bench- and test-only,
    * by design.
@@ -195,7 +178,7 @@ export const ALLOW = new Map([
   ['INV-3:src/compiler/token-dispatch.ts',
     { category: 'DEBT', why: 'derived-tokenization lane — wire into the compiler or delete', ref: 'docs/design/derived-tokenization.md' }],
 
-  /* ---- INV-8 x2: one name, two declarations ----------------------------
+  /* ---- INV-8 x1: one name, two declarations ----------------------------
    * The other two findings this rule produced were COLLAPSED rather than listed
    * (`intersects` to `src/combinators/first-set.ts`, `groupDigits` to
    * `src/analysis/terminal.ts`). These two are not collapsible in this lane. */
@@ -220,18 +203,12 @@ export const ALLOW = new Map([
   // the integration merge — which is the ratchet working exactly as specified:
   // an exemption may not outlive the violation it names.
 
-  /* ---- INV-9 x1 --------------------------------------------------------
-   * The other finding was COLLAPSED: `parseman.composedPieces` is now exported as
-   * `COMPOSED_PIECES` from `src/compiler/linker.ts` and imported by the plugin. */
+  /* ---- INV-9: no entries ------------------------------------------------
+   * `parseman.composedPieces` was COLLAPSED: it is exported as `COMPOSED_PIECES`
+   * from `src/compiler/linker.ts` and imported by the plugin. The second
+   * `Symbol('pm.fail')` left with the frozen `exec-baseline.ts`. */
 
-  // The live reference and assembled engines share `FAIL` from `src/table/cell.ts`.
-  // The only second `Symbol('pm.fail')` belongs to `exec-baseline.ts`, a deliberately
-  // frozen pre-change copy whose independence is the ablation control. It crosses
-  // only the public `TableRule` result boundary, never the live engine's cell ABI.
-  ['INV-9:pm.fail',
-    { category: 'BY-DESIGN', why: 'the live engines share cell.ts; the sole second sentinel is isolated in the frozen ablation control' }],
-
-  /* ---- INV-10 x10: prose that names a deleted file BECAUSE it is deleted ----
+  /* ---- INV-10 x9: prose that names a deleted file BECAUSE it is deleted ----
    * These are the rule's honest limit. INV-10 decides whether a path in a comment
    * resolves; it cannot decide whether the sentence MEANT it to. Every entry below
    * is a historical reference — "`X` is DELETED at HEAD", "salvaged from `X`",
@@ -243,17 +220,9 @@ export const ALLOW = new Map([
    * here, the entry goes stale and the gate fails, forcing a re-read of prose that
    * would otherwise have silently started describing a different thing.
    *
-   * Nine of the ten point at the source lowering deleted in `37c57b5`. That is the
-   * measure of how far one deletion's prose reaches: the twelve references in
-   * `src/` were repaired in this commit, and these ten are the ones where the past
+   * Most point at the source lowering deleted in `37c57b5`. That is the measure of
+   * how far one deletion's prose reaches: these are the references where the past
    * tense is load-bearing. */
-  // Arrived with the 0.47 merge, and it is the GOOD kind of historical reference:
-  // the file exists to CORRECT `fixture.ts`'s mislabelled columns, and saying
-  // "`src/compiler/codegen.ts` was deleted in 37c57b5" is the correction.
-  ['INV-10:bench/jess/capoff-agg.mjs:src/compiler/codegen.ts',
-    { category: 'BY-DESIGN', why: 'historical — the sentence exists to state that this file was deleted' }],
-  ['INV-10:bench/alloc-model.ts:bench/alloc-profile.ts',
-    { category: 'BY-DESIGN', why: 'historical — the sentence says the file existed only for one profiling run' }],
   ['INV-10:bench/jess/ab.ts:src/compiler/codegen.ts',
     { category: 'BY-DESIGN', why: 'historical — the A/B harness explains that HEAD DELETED this and the old side still has it' }],
   ['INV-10:bench/jess/ab.ts:test/parse-bench.mjs',

@@ -48,7 +48,7 @@ The two figures did not come from the same instrument.
 - Lane A ran `bench/jess/fixture.ts` (`pnpm fixture:jess`). Three legs: codegen
   via `pm-macro:`, table, interpreter, plus a table/table control. One parse per
   sample.
-- Lane B ran **`bench/jess/table-less-ms.ts`**, its own harness on branch
+- Lane B ran **`bench/jess/table-less-ms.ts` (last at `acb421e2`)**, its own harness on branch
   `diag/table-penalty-attribution`. **Four** legs: codegen via `compose()`,
   `table-` (`leafSwap: false`), `table`, interpreter, plus a compose/compose
   control. `targetSampleMs: 60`, so ≈3 parses batched per sample.
@@ -155,7 +155,7 @@ That is not style advice. A rival harness measuring something slightly different
 is worse than no number at all, and the measurement above is why: run composition
 alone is worth 18%, so two harnesses with different leg sets report different
 absolute milliseconds *for identical code* — and neither one is wrong, so no
-amount of care in either lane reconciles them. `bench/jess/table-less-ms.ts` is
+amount of care in either lane reconciles them. `bench/jess/table-less-ms.ts` (last at `acb421e2`) is
 the harness that produced the second baseline; whatever a lane needs, add it here
 so every lane's output changes with it.
 
