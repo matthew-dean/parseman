@@ -46,6 +46,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   completions probe; the reference driver runs the item as written. A gap spelled as
   `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
   and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
+- A budgeted assembly selection is priced with every gap gate lowered as its item, so
+  adding the gates moves no site in or out of the selection: in Jess's CSS, SCSS and
+  .jess grammars it is site for site the selection of the same grammars without them.
+  `emitAssemblySource` takes `gapNeutral` for that pricing.
 - **A routed arm gate reads two characters where its next term says them.** Where the
   term after a `routed()` token states its first two characters outright (a literal of
   two or more characters, or a case-sensitive regex that opens with a character class
