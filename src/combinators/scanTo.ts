@@ -90,7 +90,7 @@ export type ScanToOptions = {
  * itself is still checked before any skipper, so a sentinel that also starts a
  * skip region wins (unchanged priority).
  */
-export function resolveScanSkip(
+function resolveScanSkip(
   explicitSkip: Combinator<unknown>[],
   raw: boolean,
   ctx: ParseContext,

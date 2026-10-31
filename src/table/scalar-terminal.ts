@@ -209,7 +209,7 @@ export function leadingScalarSequence(
  * choices, but only when EVERY arm yields literal authority. Longer literals
  * covered by a shorter prefix are removed (`@{-}` is already covered by `@{`).
  */
-export function leadingLiteralFamily(
+function leadingLiteralFamily(
   code: ArrayLike<number>, constants: readonly unknown[], ip: number,
   minDepth = 2, limit = 4,
 ): readonly number[] | undefined {

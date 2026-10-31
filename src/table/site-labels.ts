@@ -80,7 +80,7 @@ export const CAP_OFF = 1
 export const CAP_ON = 2
 
 /** Buffer raw-entry mode is not provable at this site. */
-export const RAW_UNKNOWN = 0
+const RAW_UNKNOWN = 0
 /** Buffer retains raw entry values. */
 export const RAW_CAPTURE = 1
 /** Buffer retains only a raw source-order count. */
