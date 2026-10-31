@@ -76,3 +76,31 @@ describe('a labelled scan with only root-selected kinds to record', () => {
   })
 })
 
+/*
+ * A sequence term that matches nothing hands back the cursor from before its
+ * trivia, so the next term asks for the same gap again. A scan that recorded
+ * nothing is answered from the last one.
+ */
+describe('a repeated labelled scan', () => {
+  it('scans a gap once when the same parse asks for it again', () => {
+    const { triviaP, visits } = counted()
+    const ctx = rootCtx(triviaP, [])
+    expect(skipDeferredTrivia(' // line\nx', 0, ctx)).toBe(9)
+    expect(skipDeferredTrivia(' // line\nx', 0, ctx)).toBe(9)
+    expect(visits()).toBe(1)
+  })
+
+  it('scans again for another parse, another position or a scan that recorded', () => {
+    const { triviaP, visits } = counted()
+    const rootLog: number[] = []
+    const ctx = rootCtx(triviaP, rootLog)
+    skipDeferredTrivia(' // line\nx', 0, ctx)
+    skipDeferredTrivia(' // line\nx', 0, rootCtx(triviaP, []))
+    skipDeferredTrivia(' // line\nx', 1, ctx)
+    expect(visits()).toBe(3)
+    expect(skipDeferredTrivia(' /* c */x', 0, ctx)).toBe(8)
+    expect(skipDeferredTrivia(' /* c */x', 0, ctx)).toBe(8)
+    expect(visits()).toBe(5)
+    expect(rootLog).toEqual([0, 8, 1, 8, 0, 0, 8, 1, 8, 0])
+  })
+})

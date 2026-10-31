@@ -16,23 +16,64 @@ import { commitTriviaScan, fastTriviaScanner, scanTriviaCompact } from '../combi
  * `rootTrivia: { select: [comment labels] }`, which is this case for every run
  * of plain whitespace.
  *
- * It does not apply with `trackLines` (a scan records line ranges) or under CST
+ * A SEQUENCE TERM THAT MATCHES NOTHING hands back the cursor from BEFORE its
+ * trivia, so the next term asks for the same gap again: on `benchmark.less`,
+ * 21,741 of the closure engine's 53,607 trivia scans per parse started where
+ * the previous one did. A scan that recorded nothing records nothing again from
+ * the same position, in the same parse, under the same trivia and root-capture
+ * policy and with no CST capture, and it ends at the same place, so the last
+ * such scan answers the repeat (`GAP_*`).
+ *
+ * Neither applies with `trackLines` (a scan records line ranges) or under CST
  * capture (a scan records into the open buffer).
  */
 export function skipDeferredTrivia(input: string, cur: number, ctx: ParseContext): number {
-  const rootKinds = ctx._rootTriviaKindIndex
   const triviaP = ctx.trivia
-  const spec = triviaP?._meta.labeledTriviaSpec
-  if (triviaP !== undefined && spec != null && rootKinds !== undefined && ctx._triviaLog === undefined
-    && ctx.trackLines !== true && ctx.captureTrivia !== true) {
-    if (spec.rootKinds !== rootKinds) prime(spec, triviaP, rootKinds)
-    const fast = spec.rootScan
-    if (fast !== null) {
-      const end = fast(input, cur)
-      if (ctx._rootTriviaCapture === false || clearOf(spec.rootLeaders, input, cur, end)) return end
-    }
+  const plain = ctx.trackLines !== true && ctx.captureTrivia !== true
+  if (plain && cur === GAP_AT && ctx === GAP_CTX && input === GAP_INPUT && triviaP === GAP_OF
+    && ctx._rootTriviaCapture === GAP_ROOT) return GAP_END
+  const end = clearRunEnd(input, cur, ctx, triviaP, plain)
+  if (end >= 0) {
+    remember(cur, end, ctx, input, triviaP)
+    return end
   }
-  return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
+  const scan = scanTriviaCompact(input, cur, ctx)
+  if (typeof scan !== 'number') return commitTriviaScan(scan)
+  if (plain) remember(cur, scan, ctx, input, triviaP)
+  return scan
+}
+
+/** The end of the run at `cur` when nothing root-selected lies in it, else −1. */
+function clearRunEnd(input: string, cur: number, ctx: ParseContext, triviaP: Combinator<unknown> | undefined, plain: boolean): number {
+  const rootKinds = ctx._rootTriviaKindIndex
+  const spec = triviaP?._meta.labeledTriviaSpec
+  if (!plain || triviaP === undefined || spec == null || rootKinds === undefined || ctx._triviaLog !== undefined) return -1
+  if (spec.rootKinds !== rootKinds) prime(spec, triviaP, rootKinds)
+  const fast = spec.rootScan
+  if (fast === null) return -1
+  const end = fast(input, cur)
+  return ctx._rootTriviaCapture === false || clearOf(spec.rootLeaders, input, cur, end) ? end : -1
+}
+
+/**
+ * THE LAST SCAN THAT RECORDED NOTHING: in parse `GAP_CTX` over `GAP_INPUT`,
+ * trivia `GAP_OF` from `GAP_AT` ends at `GAP_END`, under root-capture policy
+ * `GAP_ROOT`.
+ */
+let GAP_AT = -1
+let GAP_END = -1
+let GAP_CTX: ParseContext | undefined
+let GAP_INPUT: string | undefined
+let GAP_OF: Combinator<unknown> | undefined
+let GAP_ROOT: boolean | undefined
+
+function remember(cur: number, end: number, ctx: ParseContext, input: string, triviaP: Combinator<unknown> | undefined): void {
+  GAP_AT = cur
+  GAP_END = end
+  GAP_CTX = ctx
+  GAP_INPUT = input
+  GAP_OF = triviaP
+  GAP_ROOT = ctx._rootTriviaCapture
 }
 
 /**
