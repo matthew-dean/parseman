@@ -354,6 +354,16 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     expect(r.out).toMatch(/package\.json exports/)
   })
 
+  it('REQUIRES an entry for a package.json field the gate does not name, such as sideEffects', () => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), pkg: { sideEffects: false } },
+      { changelog: released('0.36.0'), pkg: { sideEffects: ['./dist/register.js'] } },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/package\.json sideEffects/)
+  })
+
   it('REQUIRES an entry when a build input changes', () => {
     // `scripts/build.mjs` decides what dist/ CONTAINS and is not itself packed.
     const { dir, baseSha } = repo(

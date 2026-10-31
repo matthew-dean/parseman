@@ -4,11 +4,13 @@
  * parts; `release-gate.test.ts` covers the pull-request gate that feeds it.
  */
 import { afterAll, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   nextVersion, packageDifferences, shippedPaths, stampChangelog, pendingEntries, compareVersions, parseVersion,
+  consumerFieldChanges, supersedingRelease,
 } from '../../scripts/release.mjs'
 
 const dirs: string[] = []
@@ -91,8 +93,12 @@ describe('the skip decision: what a consumer would install', () => {
     expect(packageDifferences(head, unpacked(published))).toEqual([])
   })
 
-  it('counts a dependency, an export or an install-time script', () => {
-    for (const over of [{ dependencies: { x: '1' } }, { exports: './dist/index.js' }, { scripts: { postinstall: 'x' } }]) {
+  it('counts a dependency, an export, sideEffects, os or an install-time script', () => {
+    // Every field but the few that reach nobody: a field the list does not name is assumed to matter.
+    for (const over of [
+      { dependencies: { x: '1' } }, { exports: './dist/index.js' }, { sideEffects: true }, { os: ['linux'] },
+      { peerDependenciesMeta: { x: { optional: true } } }, { scripts: { postinstall: 'x' } },
+    ]) {
       expect(packageDifferences(unpacked({ ...published, 'package.json': pkg(over) }), unpacked(published))).toEqual(['package.json'])
     }
   })
@@ -101,6 +107,35 @@ describe('the skip decision: what a consumer would install', () => {
     const paths = ['src/a.ts', 'src/gone.ts', 'README.md', 'test/a.test.ts', 'docs/x.md', 'bench/b.ts', 'package.json']
     expect(shippedPaths({ name: 'parseman', version: '0.58.0', files: ['dist', 'src', 'README.md'] }, paths))
       .toEqual(['src/a.ts', 'src/gone.ts', 'README.md'])
+  })
+})
+
+describe('a run for a commit a release already contains publishes nothing', () => {
+  it('finds the release that contains HEAD, through a release commit beside main', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-superseded-'))
+    dirs.push(dir)
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }).trim()
+    const commit = (message: string): string => {
+      writeFileSync(join(dir, 'f'), message)
+      git('add', '-A')
+      git('commit', '-qm', message)
+      return git('rev-parse', 'HEAD')
+    }
+    git('init', '-q', '-b', 'main')
+    const a = commit('A')
+    const b = commit('B')
+    // B's release: stamped beside main, as publish.yml does.
+    commit('release: 0.1.1')
+    git('tag', 'v0.1.1')
+    git('checkout', '-q', '--detach', b)
+    expect(supersedingRelease(dir)).toBe('v0.1.1')      // a re-run of B
+    git('checkout', '-q', '--detach', a)
+    expect(supersedingRelease(dir)).toBe('v0.1.1')      // an older commit, re-run after B shipped
+    git('checkout', '-q', 'main')
+    git('reset', '-q', '--soft', b)
+    commit('C')
+    expect(supersedingRelease(dir)).toBeNull()          // new work after the release
   })
 })
 

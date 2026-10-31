@@ -24,9 +24,9 @@ export interface NextVersion {
 
 export declare function nextVersion(input: { declared: string; published: readonly string[] }): NextVersion
 
-export declare const PUBLISHED_PKG_FIELDS: readonly string[]
+export declare const NON_CONSUMER_FIELDS: readonly string[]
 export declare const CONSUMER_LIFECYCLE_SCRIPTS: readonly string[]
-export declare function consumerManifest(pkg: unknown): string
+export declare function consumerFieldChanges(a: unknown, b: unknown): string[]
 export declare function packageDifferences(a: string, b: string): string[]
 export declare function shippedPaths(pkg: Record<string, unknown>, paths: readonly string[]): string[]
 
@@ -39,3 +39,4 @@ export declare function stampChangelog(
   options: { version?: string; date?: string; released?: string },
 ): string
 export declare function applyVersion(root: string, version: string): void
+export declare function supersedingRelease(root?: string): string | null

@@ -14,7 +14,9 @@ Two scripts carry it:
 
 ## How a merge publishes
 
-1. **Plan** (`node scripts/release.mjs plan`). `V` is `package.json`'s version on
+1. **Plan** (`node scripts/release.mjs plan`). A commit some release tag already
+   contains publishes nothing. That is a re-run of a commit `main` has moved past, and
+   publishing it would ship older code under a newer number. Then: `V` is `package.json`'s version on
    `main`. `L` is the highest stable version on npm or among the `v*` tags.
    - If `V > L`, a pull request declared `V`: publish `V`.
    - Otherwise publish `L` with the patch plus one, unless the package is unchanged.
@@ -23,8 +25,8 @@ Two scripts carry it:
    is refused rather than published as `latest`.
 2. **Skip.** The tree is stamped with `L`, built and packed exactly as `npm publish`
    would, and compared file by file with the tarball npm serves for `L`.
-   `package.json` is compared on the fields a consumer receives (listed under § B
-   below), so a devDependency bump or a renamed bench script is not a change. If
+   `package.json` is compared on every field a consumer can see (see § B below), so a
+   devDependency bump or a renamed bench script is not a change. If
    nothing differs, the run logs `Release skipped` and stops. Docs, tests, benches and
    CI changes never ship, so they never publish.
 
@@ -179,16 +181,17 @@ counts too. Added to that:
 - the files that decide what `dist/` contains without being packed:
   `scripts/build.mjs`, `tsconfig.build.json`, and `tsconfig.json` (which reaches the
   emitted declarations through `tsconfig.build.json`'s `extends`);
-- the `package.json` fields a consumer receives: `name`, `type`, `main`, `module`,
-  `types`, `exports`, `files`, `bin`, `dependencies`, `peerDependencies`,
-  `optionalDependencies`, `engines`, `license`;
+- every `package.json` field except the few that reach nobody who installs parseman:
+  `version`, `devDependencies`, `packageManager` and `scripts`. A field that list does
+  not name (`sideEffects`, `os`, `imports`, a new one) counts, so nothing is ignored
+  by omission;
 - the lifecycle scripts a consumer executes: `preinstall`, `install`, `postinstall`,
   and `prepare` (run when installed from a git URL).
 
 `src/version.ts` changing only its version literal does not count; the version is the
 publish's decision. Everything else is exempt: `test/`, `bench/`, `examples/`,
 `fixtures/`, the rest of `scripts/`, `docs/`, `notes/`, `.github/`, the lockfile,
-`devDependencies`, and every other `scripts` entry.
+`devDependencies`, `packageManager`, and every other `scripts` entry.
 
 That exemption is what makes this gate requireable:
 

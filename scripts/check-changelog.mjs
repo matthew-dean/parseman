@@ -82,7 +82,7 @@ import { execFileSync } from 'node:child_process'
 import { parsePeakWaivers, openSection, isBreach, WAIVER_TAG } from './peak-waiver.mjs'
 import {
   parseVersion, compareVersions, headingVersion, pendingEntries, shippedPaths, UNRELEASED,
-  PUBLISHED_PKG_FIELDS, CONSUMER_LIFECYCLE_SCRIPTS,
+  consumerFieldChanges,
 } from './release.mjs'
 
 const argv = process.argv.slice(2)
@@ -107,9 +107,6 @@ const fail = (msg) => {
   console.error(`✗ ${msg}`)
   process.exit(1)
 }
-
-const lifecycleProjection = (pkgJson) =>
-  CONSUMER_LIFECYCLE_SCRIPTS.map((k) => `${k}=${pkgJson?.scripts?.[k] ?? ''}`).join('\n')
 
 /**
  * Files that decide what `dist/` CONTAINS, without being in it. `src/**` is the input
@@ -546,15 +543,7 @@ const stampOnly = (file) => {
 const shipped = shippedPaths(pkg, changed).filter((f) => !(f === 'src/version.ts' && stampOnly(f)))
 const buildTouched = changed.filter((f) => BUILD_INPUTS.includes(f))
 
-let pkgSurfaceChanged = []
-if (changed.includes('package.json')) {
-  pkgSurfaceChanged = PUBLISHED_PKG_FIELDS.filter(
-    (k) => JSON.stringify(basePkg[k]) !== JSON.stringify(pkg[k]),
-  )
-  if (lifecycleProjection(basePkg) !== lifecycleProjection(pkg)) {
-    pkgSurfaceChanged.push('install-time scripts')
-  }
-}
+const pkgSurfaceChanged = changed.includes('package.json') ? consumerFieldChanges(basePkg, pkg) : []
 
 if (shipped.length === 0 && buildTouched.length === 0 && pkgSurfaceChanged.length === 0) {
   console.log(

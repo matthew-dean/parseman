@@ -88,8 +88,8 @@ jobs:
       - name: Nothing to release
         if: steps.plan.outputs.release == 'false'
         env:
-          VERSION: ${{ steps.plan.outputs.version }}
-        run: echo "::notice title=Release skipped::nothing the package ships changed since the latest release, so $VERSION is not published."
+          REASON: ${{ steps.plan.outputs.reason }}
+        run: echo "::notice title=Release skipped::$REASON"
 
       - name: Stamp the release
         id: stamp

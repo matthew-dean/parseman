@@ -95,13 +95,12 @@ export function nextVersion({ declared, published }) {
 // ── What a consumer installs ────────────────────────────────────────────────────
 
 /**
- * Fields a CONSUMER receives. `version` is excluded on purpose: it is the release
+ * The package.json fields that reach nobody who installs parseman. Everything else
+ * counts: a field this list does not name (`sideEffects`, `os`, `imports`, …) is
+ * assumed to matter, so a new one is never silently ignored. `version` is the release
  * itself, not a change to release.
  */
-export const PUBLISHED_PKG_FIELDS = [
-  'name', 'type', 'main', 'module', 'types', 'exports', 'files', 'bin',
-  'dependencies', 'peerDependencies', 'optionalDependencies', 'engines', 'license',
-]
+export const NON_CONSUMER_FIELDS = ['version', 'devDependencies', 'packageManager', 'scripts']
 
 /**
  * The lifecycle hooks npm runs on a CONSUMER's machine: `preinstall`/`install`/
@@ -111,14 +110,16 @@ export const PUBLISHED_PKG_FIELDS = [
 export const CONSUMER_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepare']
 
 /**
- * package.json as a consumer sees it. A devDependency bump or a renamed bench script
- * changes the bytes of the packed package.json and nothing anyone installs or runs.
+ * The consumer-visible package.json fields that differ between `a` and `b`, with
+ * `install-time scripts` for a lifecycle hook. A devDependency bump or a renamed
+ * bench script changes the packed bytes and nothing anyone installs or runs.
  */
-export const consumerManifest = (pkg) =>
-  JSON.stringify([
-    ...PUBLISHED_PKG_FIELDS.map((k) => pkg?.[k] ?? null),
-    ...CONSUMER_LIFECYCLE_SCRIPTS.map((k) => pkg?.scripts?.[k] ?? null),
-  ])
+export function consumerFieldChanges(a, b) {
+  const keys = [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])].sort()
+  const changed = keys.filter((k) => !NON_CONSUMER_FIELDS.includes(k) && JSON.stringify(a?.[k]) !== JSON.stringify(b?.[k]))
+  if (CONSUMER_LIFECYCLE_SCRIPTS.some((k) => a?.scripts?.[k] !== b?.scripts?.[k])) changed.push('install-time scripts')
+  return changed
+}
 
 /** Every file under `dir`, as `/`-separated paths relative to it. */
 const walk = (dir, prefix = '') =>
@@ -128,7 +129,7 @@ const walk = (dir, prefix = '') =>
 
 /**
  * The files that differ between two unpacked npm tarballs: added, removed or changed,
- * with package.json compared through `consumerManifest`. Empty means a consumer would
+ * with package.json compared through `consumerFieldChanges`. Empty means a consumer would
  * install exactly what is already published.
  */
 export function packageDifferences(a, b) {
@@ -139,7 +140,7 @@ export function packageDifferences(a, b) {
     if (!left.has(f) || !right.has(f)) differ.push(f)
     else if (f === 'package.json') {
       const read = (d) => JSON.parse(readFileSync(join(d, f), 'utf8'))
-      if (consumerManifest(read(a)) !== consumerManifest(read(b))) differ.push(f)
+      if (consumerFieldChanges(read(a), read(b)).length > 0) differ.push(f)
     }
     else if (!readFileSync(join(a, f)).equals(readFileSync(join(b, f)))) differ.push(f)
   }
@@ -303,12 +304,31 @@ export function applyVersion(root, version) {
 }
 
 /** The `v*` release tags, newest first. */
-const releaseTags = () =>
-  run('git', ['tag', '--list', 'v*'])
+const releaseTags = (root = ROOT) =>
+  run('git', ['tag', '--list', 'v*'], { cwd: root })
     .split('\n')
     .map((tag) => ({ tag, v: parseVersion(tag) }))
     .filter((t) => t.v !== null && t.v.pre === null && /^v/.test(t.tag))
     .sort((a, b) => compareVersions(b.v, a.v))
+
+/**
+ * The release that already contains HEAD, if any. That is a re-run of a commit `main`
+ * has moved past: publishing it would ship older code under a newer number, and the
+ * version and tag guards cannot see it, because that number is new. A release commit
+ * beside `main` has the merged commit as its parent, so "HEAD is an ancestor of the tag"
+ * covers both kinds of tag.
+ */
+export function supersedingRelease(root = ROOT) {
+  for (const t of releaseTags(root)) {
+    try {
+      run('git', ['merge-base', '--is-ancestor', 'HEAD', t.tag], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] })
+      return t.tag
+    } catch {
+      // Not in this release. Keep looking rather than assume history is linear.
+    }
+  }
+  return null
+}
 
 /** The CHANGELOG at the newest release tag below `version` (any tag without one). */
 const releasedChangelog = (version) => {
@@ -358,6 +378,13 @@ function plan() {
   const log = (msg) => console.error(msg)
   log(`declared (package.json): ${pkg.version}; latest release (npm and v* tags): ${next.latest ?? 'none'}`)
 
+  const superseded = supersedingRelease()
+  if (superseded !== null) {
+    const reason = `this commit is already contained in ${superseded}, so a run for it releases nothing`
+    log(`→ skip: ${reason}.`)
+    return { release: false, version: next.version, reason }
+  }
+
   if (next.declared) {
     log(`→ ${next.version}: package.json declares a version above the latest release.`)
     return { release: true, version: next.version }
@@ -372,8 +399,9 @@ function plan() {
     applyVersion(ROOT, pkg.version)
   }
   if (differ.length === 0) {
-    log(`→ skip: the packed tree is identical to parseman@${next.latest}; ${next.version} is not published.`)
-    return { release: false, version: next.version }
+    const reason = `nothing parseman@${next.latest} ships changed, so ${next.version} is not published`
+    log(`→ skip: ${reason}.`)
+    return { release: false, version: next.version, reason }
   }
   log(`→ ${next.version}: ${differ.length} packed file(s) differ from parseman@${next.latest}:`)
   for (const f of differ.slice(0, 20)) log(`    ${f}`)
@@ -426,7 +454,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
   try {
     if (command === 'plan') {
       const p = plan()
-      console.log(`release=${p.release}\nversion=${p.version}`)
+      console.log(`release=${p.release}\nversion=${p.version}${p.reason === undefined ? '' : `\nreason=${p.reason}`}`)
     }
     else if (command === 'stamp') console.log(stamp(arg, date))
     else if (command === 'sync') console.log(`main now records ${sync()}`)
