@@ -19,6 +19,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - A `not()`/`peek()` lookahead between two gaps in a sequence no longer makes the
   sequence scan the gap twice: when the next term cannot match empty, the gap is kept
   for it instead of being unrecorded and scanned again.
+- A case-insensitive dispatch on a key with no ASCII capital looks the key up as it
+  is, without building its folded copy.
 - A selective assembly hands the installed trivia scanner across an engine boundary
   only where the code on the other side reads it.
 - A printed table's compact char-class pool (`"…".split("|")`) is annotated
