@@ -306,21 +306,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { ref: "87fe986d", head: "2d59ad38", rep: 1 }
-          - { ref: "87fe986d", head: "879d0f38", rep: 1 }
-          - { ref: "879d0f38", head: "0ab9e9f7", rep: 1 }
-          - { ref: "0ab9e9f7", head: "8b011f1f", rep: 1 }
-          - { ref: "87fe986d", head: "8b011f1f", rep: 1 }
-          - { ref: "87fe986d", head: "2d59ad38", rep: 2 }
-          - { ref: "87fe986d", head: "879d0f38", rep: 2 }
-          - { ref: "879d0f38", head: "0ab9e9f7", rep: 2 }
-          - { ref: "0ab9e9f7", head: "8b011f1f", rep: 2 }
-          - { ref: "87fe986d", head: "8b011f1f", rep: 2 }
-          - { ref: "87fe986d", head: "2d59ad38", rep: 3 }
-          - { ref: "87fe986d", head: "879d0f38", rep: 3 }
-          - { ref: "879d0f38", head: "0ab9e9f7", rep: 3 }
-          - { ref: "0ab9e9f7", head: "8b011f1f", rep: 3 }
-          - { ref: "87fe986d", head: "8b011f1f", rep: 3 }
+          - { ref: "87fe986d", head: "b9700870", rep: 1 }
+          - { ref: "b9700870", head: "10aa857f", rep: 1 }
+          - { ref: "10aa857f", head: "b50090e3", rep: 1 }
+          - { ref: "b50090e3", head: "83682f9f", rep: 1 }
+          - { ref: "83682f9f", head: "5600fbe5", rep: 1 }
+          - { ref: "5600fbe5", head: "dc859e68", rep: 1 }
+          - { ref: "dc859e68", head: "cf7d344f", rep: 1 }
+          - { ref: "cf7d344f", head: "0c4b4c1f", rep: 1 }
+          - { ref: "0c4b4c1f", head: "6bc77801", rep: 1 }
+          - { ref: "6bc77801", head: "484a5271", rep: 1 }
+          - { ref: "484a5271", head: "38d264c2", rep: 1 }
+          - { ref: "38d264c2", head: "1aaea74d", rep: 1 }
+          - { ref: "1aaea74d", head: "879d0f38", rep: 1 }
+          - { ref: "87fe986d", head: "b9700870", rep: 2 }
+          - { ref: "b9700870", head: "10aa857f", rep: 2 }
+          - { ref: "10aa857f", head: "b50090e3", rep: 2 }
+          - { ref: "b50090e3", head: "83682f9f", rep: 2 }
+          - { ref: "83682f9f", head: "5600fbe5", rep: 2 }
+          - { ref: "5600fbe5", head: "dc859e68", rep: 2 }
+          - { ref: "dc859e68", head: "cf7d344f", rep: 2 }
+          - { ref: "cf7d344f", head: "0c4b4c1f", rep: 2 }
+          - { ref: "0c4b4c1f", head: "6bc77801", rep: 2 }
+          - { ref: "6bc77801", head: "484a5271", rep: 2 }
+          - { ref: "484a5271", head: "38d264c2", rep: 2 }
+          - { ref: "38d264c2", head: "1aaea74d", rep: 2 }
+          - { ref: "1aaea74d", head: "879d0f38", rep: 2 }
+          - { ref: "87fe986d", head: "b9700870", rep: 3 }
+          - { ref: "b9700870", head: "10aa857f", rep: 3 }
+          - { ref: "10aa857f", head: "b50090e3", rep: 3 }
+          - { ref: "b50090e3", head: "83682f9f", rep: 3 }
+          - { ref: "83682f9f", head: "5600fbe5", rep: 3 }
+          - { ref: "5600fbe5", head: "dc859e68", rep: 3 }
+          - { ref: "dc859e68", head: "cf7d344f", rep: 3 }
+          - { ref: "cf7d344f", head: "0c4b4c1f", rep: 3 }
+          - { ref: "0c4b4c1f", head: "6bc77801", rep: 3 }
+          - { ref: "6bc77801", head: "484a5271", rep: 3 }
+          - { ref: "484a5271", head: "38d264c2", rep: 3 }
+          - { ref: "38d264c2", head: "1aaea74d", rep: 3 }
+          - { ref: "1aaea74d", head: "879d0f38", rep: 3 }
     name: "bisect ${{ matrix.ref }}..${{ matrix.head }} r${{ matrix.rep }}"
     steps:
       - name: Checkout
