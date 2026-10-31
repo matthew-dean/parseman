@@ -1123,7 +1123,10 @@ function makeDriver(
           // choice.ts:150 is a `continue`, not a failure — the arm is treated as
           // never entered, so a cut it might have raised must not cut the choice.
           ctx._fc = false
-          ctx._fe = pos
+          // No failure POSITION: an ordered choice ranks arms by `_fe`, and a skipped
+          // arm must not rank. A dispatched choice reads `_fx` alone, so this arm's
+          // set is still the answer when it is the one selected.
+          ctx._fe = -1
           ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
@@ -1479,9 +1482,7 @@ function makeDriver(
         if (v === FAIL) return FAIL
         const end = EC.e
         const span = code[ip] === OP_NODE_TRACK ? spanLines(ctx, pos, end) : { start: pos, end }
-        const st = (flags & 8) !== 0 && ctx.state !== undefined
-          ? Object.assign({}, ctx.state as Record<string, unknown>)
-          : undefined
+        const st = (flags & 8) !== 0 ? ctx.state : undefined
         const tagIdx = code[ip + 6]!
         const tags = tagIdx < 0 ? undefined : k[tagIdx] as readonly string[]
 
@@ -1518,13 +1519,13 @@ function makeDriver(
           nd = kids[0]
         } else if (proj >= 0) {
           nd = hostCst && host !== undefined
-            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, (flags & 8) !== 0 ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
+            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, ctx.state, tags)
             : projectChild(kids, proj, type)
         } else if (buildIdx >= 0) {
           if (hostCst && host !== undefined) {
             // A direct builder is bypassed under a CST host: the host must never
             // receive an arbitrary AST object as a child of a CST node.
-            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, (flags & 8) !== 0 ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
+            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, ctx.state, tags)
           } else {
             const build = fns[buildIdx] as (
               children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },

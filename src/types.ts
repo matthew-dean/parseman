@@ -399,6 +399,12 @@ export type ParseContext = {
    */
   _rootTriviaCapture?: boolean | undefined
   /**
+   * Framework-internal: the last deferred-commit trivia scan in this parse that
+   * recorded nothing (`table/trivia-gap.ts`). Held on the context so it is freed
+   * with the parse.
+   */
+  _gap?: TriviaGapMemo | undefined
+  /**
    * Framework-internal: flat per-node trivia log for CST capture mode.
    * When set alongside _cstRawChildren, each trivia entry is recorded as three
    * numbers [start, end, insertIdx] appended here (one entry = three numbers) instead of allocating a
@@ -605,4 +611,16 @@ export type CompiledParser<T> = {
   runtimeOnly?: readonly string[]
   /** Present only when compiled with `{ coverage: true }`. */
   coverageDefinitions?: readonly import('./compiler/grammar-coverage-ids.ts').GrammarCoverageDefinition[]
+}
+
+/** A trivia gap scanned from `at` to `end` that recorded nothing, and the key it holds for. */
+export interface TriviaGapMemo {
+  at: number
+  end: number
+  input: string
+  of: Combinator<unknown> | undefined
+  root: boolean | undefined
+  rootKinds: Readonly<Record<string, number>> | undefined
+  log: number[] | undefined
+  state: unknown
 }

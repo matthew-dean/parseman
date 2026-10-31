@@ -63,6 +63,9 @@ export function literalCodePoints(frag: string): number[] | null {
     if (ch === '\\') {
       const e = frag[i + 1]
       if (e === undefined) return null
+      // Any other word-character escape is a class (`\d`), an assertion (`\b`), a
+      // backreference or a hex, unicode or control escape, never the character itself.
+      if (!(e in CLASS_ESCAPES) && /\w/.test(e)) return null
       out.push(e in CLASS_ESCAPES ? CLASS_ESCAPES[e]! : e.codePointAt(0)!)
       i += 2
       continue

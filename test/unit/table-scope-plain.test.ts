@@ -41,18 +41,20 @@ function precompiled(prog: TableProgram): TableProgram {
 
 function legacyPrecompiled(prog: TableProgram): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
-  const compactCall = 'return commitTriviaScan(scanTriviaCompact(input,cur,ctx))'
+  const compactCall = 'return skipDeferredTrivia(input,cur,ctx)'
   const legacySource = emitted.source.replaceAll(
     compactCall,
     'return (()=>{const scan=scanTrivia(input,cur,ctx);scan.commit();return scan.end})()',
   )
   expect(legacySource).not.toContain('scanTriviaCompact')
   expect(legacySource).not.toContain('commitTriviaScan')
+  expect(legacySource).not.toContain('skipDeferredTrivia')
   expect(legacySource).not.toBe(emitted.source)
-  // The old factory predates all three appended helpers: compact trivia commit,
-  // compact trivia scan, and selected lexical bodies. New runtimes may append
-  // positional inputs, but must never insert one into this historical prefix.
-  const legacyParams = EMITTED_PARAMS.slice(0, -3)
+  // The old factory predates the appended helpers: compact trivia commit,
+  // compact trivia scan, selected lexical bodies and the deferred trivia skip.
+  // New runtimes may append positional inputs, but must never insert one into
+  // this historical prefix.
+  const legacyParams = EMITTED_PARAMS.slice(0, -4)
   const factory = new Function(...legacyParams, legacySource) as PrecompiledAssembly['factory']
   return {
     ...prog,

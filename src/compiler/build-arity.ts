@@ -338,7 +338,7 @@ export function confirmedArityForDef(def: NodeDef): number | null {
     where: `node("${def.type ?? '<inferred>'}")`,
     subject,
     fellBackTo: `could not confirm its declared arity — ${unconfirmableReason(def, src)} — `
-      + 'so this node captures children, fields and raw children, logs trivia, and clones `_ctx.state` on every match',
+      + 'so this node captures children, fields and raw children, logs trivia, and hands it `_ctx.state` on every match',
     otherwise: 'only the tiers the reducer actually declares would be captured '
       + '(arity >= 1 children, >= 2 fields, >= 4 raw, >= 5 trivia, >= 6 state). '
       + 'Declare it with `node(..., { buildArity: n })` if it cannot be derived',
@@ -371,9 +371,9 @@ export function buildReadsTrivia(def: NodeDef): boolean {
   return arity >= 5
 }
 
-/** Build reads the 6th (state) arg? Unknown/unparseable → true (keep state clone). */
+/** Build reads the 6th (state) arg? Unknown/unparseable → true (hand it the state). */
 export function buildReadsState(def: NodeDef): boolean {
-  if (!def.build) return true // structural node: host may read state — keep clone
+  if (!def.build) return true // structural node: host may read state
   const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 6

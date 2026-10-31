@@ -82,19 +82,17 @@ function expectBoundWithoutGrowth(prog: TableProgram): void {
 }
 
 describe('table REP optional-item first-set guard', () => {
-  it('binds an already-pooled finite/nonnullable class in ip+7 at zero row/word cost', () => {
+  it('binds a finite/nonnullable item class in ip+7 at zero row/word cost, pooled or not', () => {
+    // The class need not already be pooled: the guard used to bind only an
+    // existing class with an index under 100, so most real repeat items went
+    // unguarded (6 of 9 traced on jess's Less grammar). A new class costs a pool
+    // entry, not a code word.
     const bound = finiteProgram('a')
     const unpooled = finiteProgram('z')
-    const boundIp = repeatIp(bound)
-    const unpooledIp = repeatIp(unpooled)
-
     expectBoundWithoutGrowth(bound)
-    expect(rowWidth(unpooled, unpooledIp)).toBe(8)
-    expect(unpooled.code[unpooledIp + 7]).toBe(-1)
-    // Same grammar topology and row widths; only whether the item's exact class
-    // was already available differs.
+    expectBoundWithoutGrowth(unpooled)
     expect(bound.code.length).toBe(unpooled.code.length)
-    expect(boundIp).toBe(unpooledIp)
+    expect(repeatIp(bound)).toBe(repeatIp(unpooled))
   })
 
   it('has a test-local RED plant for the structural assertion', () => {
@@ -109,7 +107,7 @@ describe('table REP optional-item first-set guard', () => {
     expectBoundWithoutGrowth(prog)
   })
 
-  it('declines nullable, unpooled, three-digit-class and separated items', () => {
+  it('declines nullable and separated items, and binds an unpooled or three-digit class', () => {
     const nullable = encodeTable({
       Prime: choice(literal('a'), literal('b')),
       Entry: many(optional(literal('a'))),
@@ -117,7 +115,7 @@ describe('table REP optional-item first-set guard', () => {
     expect(nullable.code[repeatIp(nullable) + 7]).toBe(-1)
 
     const unpooled = finiteProgram('z')
-    expect(unpooled.code[repeatIp(unpooled) + 7]).toBe(-1)
+    expect(unpooled.code[repeatIp(unpooled) + 7]).toBeGreaterThanOrEqual(0)
 
     const manyClasses: Record<string, Combinator<unknown>> = {}
     for (let block = 0; block < 11; block++) {
@@ -131,7 +129,7 @@ describe('table REP optional-item first-set guard', () => {
     manyClasses.Entry = many(sequence(literal(high), literal('!')))
     const threeDigit = encodeTable(manyClasses)
     expect(threeDigit.cc.length).toBeGreaterThan(100)
-    expect(threeDigit.code[repeatIp(threeDigit) + 7]).toBe(-1)
+    expect(threeDigit.code[repeatIp(threeDigit) + 7]).toBeGreaterThanOrEqual(100)
 
     const separated = encodeTable({
       Prime: choice(literal('a'), literal('b')),

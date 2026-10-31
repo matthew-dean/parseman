@@ -57,8 +57,8 @@ Expr.parse('1 + 2 + 3', 0, { trackLines: false })
   was consumed. Pass the tree to `buildTriviaIndex(tree, input)` for a `before`/`after`
   map — useful for whitespace-sensitive syntax, like telling CSS's `div p` apart from
   `div.p`.
-- **`state`** — a snapshot of `ctx.state` at parse time (see
-  [Context-sensitive parsing](./context)).
+- **`state`** — the `ctx.state` active at parse time, the object itself, not a copy
+  (`test/unit/node-state-reference.test.ts`; see [Context-sensitive parsing](./context)).
 
 Wrap a rule's inner combinator in `parser({ trivia }, combinator)` so trivia-skipping is
 baked in no matter which rule you start from. The compiled table records the scope and
@@ -121,12 +121,13 @@ sibling-gap ownership unchanged and avoids a parser-wide capture tax.
 
 ### Capture follows your `build`'s arity {#capture-follows-arity}
 
-Building `fields`, `triviaLog`, and cloning `state` per node isn't free — on a
-value-dense grammar the per-token trivia-log push alone is a large slice of parse time.
-So Parséman skips the capture your `build` never asks for: a `build` that declares only
-`(children)` gets no fields, trivia log, or state clone; `(children, fields, span)` gets
-named fields and spans but still skips raw children, trivia, and state; declaring
-`triviaLog` keeps the log; declaring `state` keeps the clone. This is inferred from the
+Building `fields` and `triviaLog` per node isn't free — on a value-dense grammar the
+per-token trivia-log push alone is a large slice of parse time. So Parséman skips the
+capture your `build` never asks for: a `build` that declares only `(children)` gets no
+fields, trivia log, or state; `(children, fields, span)` gets named fields and spans but
+still skips raw children, trivia, and state; declaring `triviaLog` keeps the log;
+declaring `state` passes the active `ctx.state` object
+(`test/unit/node-state-reference.test.ts`). This is inferred from the
 function's parameter list at compile time — you don't opt in explicitly.
 
 The same inference runs at **parse time** for a [structural `node(parser)`](#just-want-a-plain-cst)
@@ -439,7 +440,7 @@ type NodeLike = {
   readonly _tag: 'node'
   readonly type: string          // the rule name — used as the registry key on re-parse
   readonly span: Span
-  readonly state: unknown        // ctx.state snapshot at parse time; replayed on edit
+  readonly state: unknown        // ctx.state at parse time; replayed on edit
   readonly children: ReadonlyArray<{ readonly _tag: string }>
 }
 ```

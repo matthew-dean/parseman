@@ -570,11 +570,54 @@ function regexTriviaScanner(parser: Combinator<unknown>): FastTriviaScanner | nu
   // and every trivia gap in every dialect went through the labelled char scanner.
   const d = parser._def.tag === 'label' ? parser._def.parser._def : parser._def
   if (d.tag !== 'regex' || d.flags) return null
-  const source = d.source
+  return sourceScanner(d.source)
+}
+
+function sourceScanner(source: string): FastTriviaScanner | null {
   return classRunSource(source)
     ?? altStarSource(source)
     ?? prefixRunSource(source)
     ?? delimitedSource(source)
+    ?? sharedPrefixAltSource(source)
+}
+
+/**
+ * `<literal>(?:<alt>|<alt>…)`: a literal every alternative shares, as in jess's
+ * one comment arm `\/(?:\*(?:[^*]|\*(?!\/))*\*\/|\/[^\n\r]*)` for both `/*…*\/`
+ * and `//…`. Each `<literal><alt>` is lowered on its own, and the scanner takes
+ * the first that matches, as the regex does. Without it that arm had no
+ * scanner, so neither did the trivia it sits in.
+ */
+function sharedPrefixAltSource(source: string): FastTriviaScanner | null {
+  const m = /^((?:\\.|[^\\[\]()*+?|^$.{}])+)\(\?:(.*)\)$/.exec(source)
+  if (!m) return null
+  const alts: string[] = []
+  const body = m[2]!
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]
+    if (c === '\\') { i++; continue }
+    if (c === '[') { while (i < body.length && body[i] !== ']') i += body[i] === '\\' ? 2 : 1; continue }
+    if (c === '(') depth++
+    else if (c === ')' && --depth < 0) return null
+    else if (c === '|' && depth === 0) { alts.push(body.slice(start, i)); start = i + 1 }
+  }
+  if (depth !== 0 || alts.length === 0) return null
+  alts.push(body.slice(start))
+  const scanners: FastTriviaScanner[] = []
+  for (const alt of alts) {
+    const scanner = sourceScanner(m[1]! + alt)
+    if (scanner === null) return null
+    scanners.push(scanner)
+  }
+  return (input, cur) => {
+    for (const scanner of scanners) {
+      const end = scanner(input, cur)
+      if (end > cur) return end
+    }
+    return cur
+  }
 }
 
 /**

@@ -23,7 +23,7 @@ For example:
 `foldOperation` — could not confirm its formal parameter list (`foldOperation` did not
 resolve to a module-scope function declaration (imported binding, shadowed name, or a
 computed value)), so this node captures children, fields and raw children, logs trivia,
-and clones `_ctx.state` on every match; otherwise only the tiers the reducer actually
+and hands it `_ctx.state` on every match; otherwise only the tiers the reducer actually
 declares would be captured (arity >= 1 children, >= 2 fields, >= 4 raw, >= 5 trivia,
 >= 6 state)
 ```
@@ -121,7 +121,7 @@ works out the build's declared arity and elides every tier above it:
 | `>= 2` | `fields` |
 | `>= 4` | `rawChildren` |
 | `>= 5` | `triviaLog` |
-| `>= 6` | a clone of `_ctx.state` |
+| `>= 6` | `_ctx.state` |
 
 ### What the macro resolves
 

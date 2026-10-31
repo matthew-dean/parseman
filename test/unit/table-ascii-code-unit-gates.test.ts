@@ -30,9 +30,9 @@ function emitted(prog: TableProgram, staticBuild: boolean): ReturnType<typeof em
   return emitAssemblySource(resolveTable(prog), prog, STRICT, [], staticBuild)
 }
 
-function installed(prog: TableProgram): Record<string, TableRule> {
+function installed(prog: TableProgram, staticBuild: boolean): Record<string, TableRule> {
   const owned = ownTableProgram(prog)
-  const out = emitted(owned, true)
+  const out = emitted(owned, staticBuild)
   const factory = new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory']
   return tableRules(ownTableProgram({
     ...owned,
@@ -59,16 +59,15 @@ function assertDirectCodeUnits(source: string): void {
   expect(source).not.toContain('function _asciiGate')
 }
 
-describe('static emitted ASCII code-unit gates', () => {
+describe('emitted ASCII code-unit gates', () => {
   it('replaces lead/classHas at proven ASCII-only sites without adding a helper', () => {
     const prog = encodeTable(grammar())
     const runtime = emitted(prog, false).source
     const staticallyEmitted = emitted(prog, true).source
 
-    // RED control: the runtime emitter remains the surrogate-aware general
-    // shape and proves this grammar really carries gate/choice/repeat checks.
-    expect(runtime).toMatch(/classHas\([^\n]+lead\(input/)
-    expect(runtime).toContain('const c=lead(input,pos)')
+    // The runtime compile() emitter and the macro emitter read an ASCII-only
+    // gate, dispatch, mask and repeat-item class by code unit alike.
+    assertDirectCodeUnits(runtime)
     assertDirectCodeUnits(staticallyEmitted)
 
     // Deliberate structural plant: restoring one lead() call must make the
@@ -80,7 +79,8 @@ describe('static emitted ASCII code-unit gates', () => {
   it('preserves EOF, lone-surrogate and astral failures in all table engines', () => {
     const prog = encodeTable(grammar())
     const engines = {
-      emitted: installed(prog),
+      emitted: installed(prog, true),
+      runtime: installed(prog, false),
       closure: tableRules({ ...prog, asm: [] }),
       reference: execRules(prog),
     }
@@ -94,6 +94,8 @@ describe('static emitted ASCII code-unit gates', () => {
       for (const input of inputs) {
         const expected = outcome(engines.reference[rule]! as Entry, input)
         expect(outcome(engines.emitted[rule]! as Entry, input), `emitted ${rule} ${JSON.stringify(input)}`)
+          .toEqual(expected)
+        expect(outcome(engines.runtime[rule]! as Entry, input), `runtime ${rule} ${JSON.stringify(input)}`)
           .toEqual(expected)
         expect(outcome(engines.closure[rule]! as Entry, input), `closure ${rule} ${JSON.stringify(input)}`)
           .toEqual(expected)
@@ -113,7 +115,8 @@ describe('static emitted ASCII code-unit gates', () => {
     expect(source).toContain('const c=lead(input,pos)')
 
     const engines = {
-      emitted: installed(prog),
+      emitted: installed(prog, true),
+      runtime: installed(prog, false),
       closure: tableRules({ ...prog, asm: [] }),
       reference: execRules(prog),
     }
@@ -121,6 +124,8 @@ describe('static emitted ASCII code-unit gates', () => {
       for (const input of ['', '😀', '\ud800', '\udc00', 'a']) {
         const expected = outcome(engines.reference[rule]! as Entry, input)
         expect(outcome(engines.emitted[rule]! as Entry, input), `emitted ${rule} ${JSON.stringify(input)}`)
+          .toEqual(expected)
+        expect(outcome(engines.runtime[rule]! as Entry, input), `runtime ${rule} ${JSON.stringify(input)}`)
           .toEqual(expected)
         expect(outcome(engines.closure[rule]! as Entry, input), `closure ${rule} ${JSON.stringify(input)}`)
           .toEqual(expected)

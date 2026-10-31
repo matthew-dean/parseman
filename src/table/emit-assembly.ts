@@ -47,10 +47,10 @@
 import type { ParseContext } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
-  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
+  OP_ADJ, OP_ARMGATE, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
-  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import {
@@ -79,6 +79,14 @@ export type EmittedAssembly = {
   readonly end: () => number
   readonly begin: (ctx: ParseContext) => void
   readonly finish: () => void
+  /**
+   * Present only on a SELECTIVE assembly: the unselected sites its bodies call,
+   * the hook that binds them to closure pieces (with a setter for the closure
+   * engine's installed trivia scanner), and that same setter for this scope's.
+   */
+  readonly ext?: readonly number[]
+  readonly bind?: (setClosureScan: (s: unknown) => unknown, pieces: readonly EmittedPiece[]) => void
+  readonly scan?: (s: unknown) => unknown
 }
 /** The `new Function` result. Its parameters are `EMITTED_PARAMS`, in order. */
 export type EmittedFactory = (...args: readonly unknown[]) => EmittedAssembly
@@ -127,6 +135,9 @@ export const EMITTED_PARAMS = [
   // Appended for trivia-attributing fields (`field(…, { leadingTrivia })`);
   // old factories ignore them.
   'LEAD', 'triviaFieldCapture',
+  // Appended for the deferred-commit trivia skip (`trivia-gap.ts`); old
+  // factories ignore it.
+  'skipDeferredTrivia',
 ] as const
 
 /**
@@ -162,7 +173,7 @@ function _skipTrivia(input,cur,ctx){
 const s=_pfScan
 if(s!==null&&ctx._triviaLog===undefined&&!(ctx.captureTrivia===true&&(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)))return s(input,cur)
 if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
-if(needsDeferredTriviaCommit(ctx))return commitTriviaScan(scanTriviaCompact(input,cur,ctx))
+if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
 }
 function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,{_tag:'leaf',value,span:{start:s,end:e}})}
@@ -479,6 +490,8 @@ export type EmitResult = {
   readonly armExpected: readonly (readonly string[])[][]
   /** The same three pools as indices, for a build-time emitter. */
   readonly plan: PoolPlan
+  /** Source length of each emitted site body, by site — what selection prices. */
+  readonly siteBytes: ReadonlyMap<number, number>
 }
 
 /** The candidate mask for one `CLS` row — the ONE definition, shared with the emitter. */
@@ -526,6 +539,11 @@ export function rebuildPools(
  * ordinary factory literal in a macro artifact. It permits macro-only code
  * shaping without perturbing the runtime `compile()` emitter, whose generated
  * parser must remain byte-identical when the optimization cannot affect it.
+ *
+ * `select`, when given, makes this a SELECTIVE (hybrid) assembly: only sites
+ * whose alias-resolved target is in the set get a body. Every other child a
+ * body calls is an EXTERNAL — `_px<ip>`, a wrapper bound after construction to
+ * the closure engine's piece for that site (`assemble.ts`).
  */
 export function emitAssemblySource(
   t: ResolvedTable,
@@ -541,6 +559,7 @@ export function emitAssemblySource(
   },
   extraIps: readonly number[] = [],
   staticBuild = false,
+  select?: ReadonlySet<number>,
 ): EmitResult {
   const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
@@ -716,6 +735,9 @@ export function emitAssemblySource(
 
   const bodies: string[] = []
   const byIp = new Map<number, string>()
+  /** Unselected sites a selective assembly calls into — see `select`. */
+  const externals: number[] = []
+  const siteBytes = new Map<number, number>()
   const reached = new Set<number>()
   const prelude: string[] = []
   const skipDefs: string[] = []
@@ -900,6 +922,28 @@ return 1
    * site property — nothing in `src` writes it except a caller-supplied
    * `ParseContext` (`types.ts:524`) — so it stays the one runtime read.
    */
+  /** The test an `OP_GATE` row at `gip` fails on, with its class hoisted. */
+  function gateMissTest(gip: number): string {
+    const resolved = t.cc[code[gip + 1]!]!
+    const ci = classes.push([resolved]) - 1
+    classPlan.push([code[gip + 1]!])
+    const cls = hoist('cl', `CLS[${ci}][0]`)
+    return isAsciiOnlyClass(resolved)
+      ? `${cls}.ascii[input.charCodeAt(pos)]!==1`
+      : `!classHas(${cls},lead(input,pos))`
+  }
+
+  /**
+   * An `optional`/`not`/`peek` child's first-character gate (`encode.ts`
+   * `lookaheadGate`), tested BEFORE the wrapper's mark: a miss is the wrapper's
+   * decided outcome, `miss`. Nothing where the child has no gate, or where a
+   * probe or tolerant parse forwards through it (`aliasOf`).
+   */
+  function lookaheadMiss(child: number, miss: string): string {
+    if (code[child] !== OP_GATE || cfg.tolerant || cfg.probe) return ''
+    return `if(${gateMissTest(child)}){${miss}}\n`
+  }
+
   function skipFor(l: SiteLabel): string {
     if (l.tri < 0) return '_skipTrivia'
     const ki = l.tri
@@ -919,9 +963,9 @@ return 1
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
       // buffer, so an in-node site skips the call that asks.
       skipDefs.push(l.buf
-        ? `function ${nm}(input,cur,ctx){return commitTriviaScan(scanTriviaCompact(input,cur,ctx))}`
+        ? `function ${nm}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
         : `function ${nm}(input,cur,ctx){
-if(needsDeferredTriviaCommit(ctx))return commitTriviaScan(scanTriviaCompact(input,cur,ctx))
+if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)}`)
       return nm
     }
@@ -1002,12 +1046,20 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     const target = resolveAlias(ip)
     const done = byIp.get(target)
     if (done !== undefined) return done
+    if (select !== undefined && !select.has(target)) {
+      const ext = `_px${target}`
+      byIp.set(target, ext)
+      externals.push(target)
+      return ext
+    }
     const fname = `_pf${target}`
     // Reserved BEFORE lowering, so a back-edge into a site still in flight binds
     // to the hoisted declaration rather than to a forwarding stub. This is the
     // whole of `assemble.ts`'s `inFlight` map and its one shared closure.
     byIp.set(target, fname)
-    bodies.push(lower(target, fname))
+    const body = lower(target, fname)
+    siteBytes.set(target, body.length)
+    bodies.push(body)
     return fname
   }
 
@@ -1266,16 +1318,37 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 
       case OP_GATE: {
         const child = link(code[ip + 2]!)
-        const resolved = t.cc[code[ip + 1]!]!
-        const ci = classes.push([resolved]) - 1
-        classPlan.push([code[ip + 1]!])
-        const cls = hoist('cl', `CLS[${ci}][0]`)
         const xf = fxRef(code[ip + 3]!)
         return `${head}
-if(${staticBuild && isAsciiOnlyClass(resolved)
-    ? `${cls}.ascii[input.charCodeAt(pos)]!==1`
-    : `!classHas(${cls},lead(input,pos))`}){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+if(${gateMissTest(ip)}){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 return ${child}(input,pos,ctx)
+}`
+      }
+
+      case OP_ARMGATE: {
+        // `choice({ gate, combinator })`, as `assemble.ts` lowers it. A blocked
+        // arm is SKIPPED, not failed (choice.ts `continue`): it clears the cut,
+        // sets no failure position for the ordered path to rank, and leaves the
+        // arm's own expected set for the dispatch path.
+        const pred = fnRef(code[ip + 1]!)
+        const child = link(code[ip + 2]!)
+        const xf = fxRef(code[ip + 3]!)
+        return `${head}
+if(!${pred}(ctx.state)){ctx._fc=false;ctx._fe=-1;ctx._fx=${xf};return FAIL}
+return ${child}(input,pos,ctx)
+}`
+      }
+
+      case OP_WITHCTX: {
+        // `withCtx(extra | derive, p)`, as `assemble.ts` lowers it: a negative
+        // operand is a derive callback over the outer state, else a constant.
+        // `finally` restores the outer state on every exit, a throw included.
+        const ki = code[ip + 1]!
+        const child = link(code[ip + 2]!)
+        return `${head}
+const saved=ctx.state
+ctx.state=${ki < 0 ? `${fnRef(~ki)}(saved)` : kRef(ki)}
+try{return ${child}(input,pos,ctx)}finally{ctx.state=saved}
 }`
       }
 
@@ -1589,7 +1662,7 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 ${emitRollback(p, L.buf, L.raw, sinks)}
 if(v===FAIL){EC.e=pos;return null}
@@ -1604,7 +1677,7 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, `ctx._fe=pos;ctx._fx=${xf};return FAIL`)}${emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 ${emitRollback(p, L.buf, L.raw, sinks)}
 if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
@@ -1618,7 +1691,7 @@ return null
         const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
         return `${head}
-${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
@@ -1735,7 +1808,7 @@ return v
           // array index feeding ONE call site, which is the megamorphic site
           // this unit exists to remove.
           const armSwitch = arms.map((a, i) => `case ${i}:v=${a}(input,pos,ctx);break`).join('\n')
-          const directAscii = staticBuild && table.hi.length === 0
+          const directAscii = table.hi.length === 0
           return `${head}
 const c=${directAscii ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
 let arm=-1
@@ -1766,7 +1839,7 @@ return FAIL
           const expected = Array.from({ length: n }, (_, i) => fxRef(code[base + n + i]!))
           const gates = Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)
           const maskable = n <= 32
-          const directAsciiMask = staticBuild && maskable && gates.every(isAsciiOnlyClass)
+          const directAsciiMask = maskable && gates.every(isAsciiOnlyClass)
           const gateRefs = directAsciiMask
             ? []
             : Array.from({ length: n }, (_, i) => hoist('g', `DISP[${di}].armCls[${i}]`))
@@ -2001,6 +2074,9 @@ ${rollbackFor(i)}
           // A zero compatible-arm mask is stronger than a speculative miss: no
           // arm can run, so the choice's encoded flat expected set is already
           // the exact result. Do not walk the arm ladder merely to rebuild it.
+          // The same holds when the mask admitted arms but none was entered
+          // (`prev` still 0, so `acc` is unset): the catch-up would rebuild
+          // `choiceFx`, the arms' flatMap, set by set.
           return `${head}
 const c=${directAsciiMask ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
 ${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
@@ -2011,7 +2087,7 @@ const bits=${maskName}[${directAsciiMask ? 'c' : 'c<0?128:c'}]
 if(bits===0){ctx._fe=pos;ctx._fx=${choiceFx};return FAIL}
 ${startFailureExact ? '' : 'let prev=0'}
 ${maskArms}
-${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${n},prev,acc)`}
+${startFailureExact ? '' : `if(best===pos&&prev!==0)acc=${catchName}(${n},prev,acc)`}
 ctx._fe=pos;ctx._fx=${startFailureExact ? `best===pos?${choiceFx}:acc??${choiceFx}` : `acc??${choiceFx}`}
 return FAIL
 }
@@ -2123,7 +2199,7 @@ return [key,v]
             const ci = classes.push([resolved]) - 1
             classPlan.push([itemClassIndex])
             itemCls = hoist('ri', `CLS[${ci}][0]`)
-            itemAscii = staticBuild && isAsciiOnlyClass(resolved)
+            itemAscii = isAsciiOnlyClass(resolved)
           }
         }
         const itemMiss = (at: string): string => itemAscii
@@ -2437,7 +2513,7 @@ return nd
         const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
         const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         const ty = q(type)
-        const stArg = readsState ? 'st' : '(ctx.state!==undefined?Object.assign({},ctx.state):undefined)'
+        const stArg = 'ctx.state'
         const hostCall = `_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,${stArg},${tags})`
         let value: string
         if (proj >= 0) {
@@ -2512,7 +2588,7 @@ ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
 const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}
-const st=${readsState ? '(ctx.state!==undefined?Object.assign({},ctx.state):undefined)' : 'undefined'}
+const st=${readsState ? 'ctx.state' : 'undefined'}
 let nd
 ${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]
 else ` : ''}{${value}}
@@ -2535,8 +2611,12 @@ return nd
     }
   }
 
+  // A selective assembly serves only its selected sites; the closure engine
+  // serves every other rule entry and scan root (`assemble.ts`).
+  const served = (ip: number): boolean => select === undefined || select.has(resolveAlias(ip))
   const ruleEntries: string[] = []
   for (const [rname, entryIp] of Object.entries(prog.rules)) {
+    if (!served(entryIp)) continue
     // `_r_<Name>` — the composition surface, in `codegen.ts`'s own spelling and
     // deliberately NOT namespaced, so a sibling calls it by name.
     const target = link(entryIp)
@@ -2547,7 +2627,40 @@ return nd
   // Sites the SCAN pool and the scan-skip sets reference. They are linked
   // through `subtreeComb` outside the emitted scope, so they need names.
   const extra: string[] = []
-  for (const ip of extraIps) extra.push(`${ip}:${link(ip)}`)
+  const exported = new Set<number>()
+  for (const ip of extraIps) {
+    if (!served(ip)) continue
+    exported.add(ip)
+    extra.push(`${ip}:${link(ip)}`)
+  }
+  // Selected sites a CLOSURE piece may call: every selected child of an
+  // unselected reachable site. Linking one may lower it for the first time,
+  // when only the closure side reaches it.
+  if (select !== undefined) {
+    const kids: number[] = []
+    for (const ip of reachable) {
+      if (select.has(resolveAlias(ip))) continue
+      kids.length = 0
+      childSlots(code, ip, kids)
+      for (const kid of kids) {
+        const target = resolveAlias(kid)
+        if (!select.has(target) || exported.has(target)) continue
+        exported.add(target)
+        extra.push(`${target}:${link(target)}`)
+      }
+    }
+  }
+  const hybrid = select === undefined ? '' : `,
+ext:[${externals.join(',')}],
+bind:function(xs,ps){_xScan=xs
+${externals.map((ip, i) => `_xp${ip}=ps[${i}]`).join('\n')}},
+scan:function(s){const o=_pfScan;_pfScan=s;return o}`
+  // One wrapper per external: the closure engine reads its OWN installed trivia
+  // scanner, so the emitted one is handed across for the call and restored.
+  const externalDefs = select === undefined ? '' : `let _xScan
+${externals.map(ip => `let _xp${ip}
+function _px${ip}(input,pos,ctx){const o=_xScan(_pfScan);const v=_xp${ip}(input,pos,ctx);_xScan(o);return v}`).join('\n')}
+`
 
   // The per-label trivia scans sit AFTER the hoisted pool they close over: they
   // are `function` declarations, so a body may call one that is textually below
@@ -2558,7 +2671,7 @@ ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${choiceDefs.join('\n')}
 ${bodies.join('\n')}
-function _begin(ctx){
+${externalDefs}function _begin(ctx){
 const host=ctx.build
 if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])
 _pfDepth++
@@ -2585,11 +2698,11 @@ pieces:{${ruleEntries.join(',')}},
 byIp:{${extra.join(',')}},
 end:function(){return EC.e},
 begin:_begin,
-finish:_finish
+finish:_finish${hybrid}
 }`
 
   return {
-    source, reached, masks, classes, armExpected,
+    source, reached, masks, classes, armExpected, siteBytes,
     plan: { classes: classPlan, armExpected: armExpectedPlan, masks: maskPlan },
   }
 }

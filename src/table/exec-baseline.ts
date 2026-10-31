@@ -487,9 +487,7 @@ function makeDriver(
           children: readonly unknown[], fields: undefined, span: { start: number; end: number },
           rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
         ) => unknown
-        const st = (flags & 8) !== 0 && ctx.state !== undefined
-          ? Object.assign({}, ctx.state as Record<string, unknown>)
-          : undefined
+        const st = (flags & 8) !== 0 ? ctx.state : undefined
         const nd = build(
           cap.children, undefined,
           code[ip] === OP_NODE_TRACK ? spanLines(ctx, pos, end) : { start: pos, end },

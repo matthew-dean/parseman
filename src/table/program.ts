@@ -273,6 +273,19 @@ export function scanRefs(s: ScanSpec): SubtreeRef[] {
   return refs
 }
 
+/**
+ * The sites an assembly links from OUTSIDE its rule entries — the scan pool's
+ * subtrees, then the scan-skip sets — in the one order every assembler names
+ * them. The emitted source is keyed by this order, so a second copy of the list
+ * that disagrees prints different source for the same program.
+ */
+export function assemblyExtraIps(prog: TableProgram): number[] {
+  const ips: number[] = []
+  for (const s of prog.scans ?? []) for (const r of scanRefs(s)) ips.push(r[0])
+  for (const set of prog.scanSkip ?? []) for (const r of set) ips.push(r[0])
+  return ips
+}
+
 /** A trivia combinator as data. `arms` empty means a plain `trivia(regex)`. */
 export type TriviaSpec = {
   /** `[label, regexSource, regexFlags]` per classified arm. */
@@ -642,6 +655,17 @@ export function classHas(cls: ResolvedClass, code: number): boolean {
   const hi = cls.hi
   for (let i = 0; i < hi.length; i += 2) if (code >= hi[i]! && code <= hi[i + 1]!) return true
   return false
+}
+
+/**
+ * Whether a choice with these arm classes (indices into the class-spec pool `cc`)
+ * takes the O(1) exclusive dispatch — the same decision `resolveDispatch` makes,
+ * for an encoder that has only the specs.
+ */
+export function dispatchIsExclusive(arms: readonly number[], cc: readonly string[]): boolean {
+  const resolved: ResolvedClass[] = []
+  for (const ci of arms) if (ci >= 0) resolved[ci] = resolveClass(cc[ci]!)
+  return resolveDispatch(arms, resolved).exclusive
 }
 
 function resolveDispatch(arms: readonly number[], cc: readonly ResolvedClass[]): ResolvedDispatch {

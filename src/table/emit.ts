@@ -1,4 +1,4 @@
-import { scanRefs } from './program.ts'
+import { assemblyExtraIps } from './program.ts'
 import type { FoldedProgram, TableProgram } from './program.ts'
 import { resolveTable } from './program.ts'
 import { EMITTED_PARAMS, Unemittable, emitAssemblySource } from './emit-assembly.ts'
@@ -170,7 +170,7 @@ export function defaultAssemblyCfgs(prog: TableProgram): RunCfg[] {
  * not lower; that option set simply gets no entry, and `assemble.ts` runs the
  * closure engine for it and RECORDS why on `Assembly.emitRefusal`.
  */
-function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
+function emitAssemblies(prog: TableProgram, cfgs: readonly AssemblyCfg[]): string[] {
   /**
    * `a:[]` IS NOT `a` ABSENT, and the difference is the whole property.
    *
@@ -201,9 +201,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
   const t = resolveTable(prog)
   // The scan pool and the scan-skip sets are linked from subtrees, so their
   // sites need emitted names too — same list `assemble.ts` builds.
-  const extraIps: number[] = []
-  for (const s of prog.scans ?? []) for (const r of scanRefs(s)) extraIps.push(r[0])
-  for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
+  const extraIps = assemblyExtraIps(prog)
 
   const out: string[] = []
   const seen = new Set<number>()
@@ -213,7 +211,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
     seen.add(key)
     let em
     try {
-      em = emitAssemblySource(t, prog, cfg, extraIps, true)
+      em = emitAssemblySource(t, prog, cfg, extraIps, true, cfg.select)
     } catch (e) {
       if (e instanceof Unemittable) continue
       throw e
@@ -233,6 +231,9 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
   return [`a:[${out.join(',')}],`]
 }
 
+/** One pre-compiled option set; `select` makes it SELECTIVE (see `emitAssemblySource`). */
+export type AssemblyCfg = RunCfg & { readonly select?: ReadonlySet<number> }
+
 export type EmitOptions = {
   /** Name of the exported binding. */
   readonly name?: string
@@ -244,7 +245,7 @@ export type EmitOptions = {
    * Supplying factories here is a low-level serialization experiment, not a
    * second normal compilation path; it is not used by the macro plugin.
    */
-  readonly assemblies?: readonly RunCfg[]
+  readonly assemblies?: readonly AssemblyCfg[]
   /**
    * Sources for the author callbacks, in `prog.fns` order. A build has these
    * from the module it is lowering; pass `undefined` to emit a placeholder and

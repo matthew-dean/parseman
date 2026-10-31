@@ -53,9 +53,13 @@ branch by a cheap predicate, reach for the gated-arm field below; it preserves d
 
 Because incremental re-parsing needs to re-run a single rule in isolation, later, on a
 different document. A mutated module-level variable won't hold the right value by then.
-Instead, each node records the `ctx.state` snapshot that was active when it was parsed (the
+Instead, each node records the `ctx.state` that was active when it was parsed (the
 `state` field on `NodeLike`), and `edit()` replays it — so a context-sensitive rule
-re-parses under exactly the context it originally saw.
+re-parses under exactly the context it originally saw. `withCtx` does not edit the state
+it is given: it installs a new object for its scope and restores the old one after. So the
+node holds the state object active at it, not a copy, in every engine
+(`test/unit/node-state-reference.test.ts`); a host that mutates its own state object in
+place sees the mutation in every node that recorded it.
 
 ## Gated choice arms
 
@@ -123,6 +127,6 @@ Expressing context *in the grammar* is a real dividing line between parsers. Par
 incremental editor parsers — [Lezer](https://lezer.codemirror.net/) and
 [tree-sitter](https://tree-sitter.github.io/tree-sitter/) — are context-free at the grammar
 level: context needs a hand-written external tokenizer (JS) or scanner (C) instead.
-Parséman combines in-grammar context *with* incremental re-parsing: each node snapshots the
-context it parsed under, and [`edit()`](./incremental) replays it. See
+Parséman combines in-grammar context *with* incremental re-parsing: each node records the
+state object it parsed under, and [`edit()`](./incremental) replays it. See
 [How Parséman compares](./comparison#the-context-sensitivity-axis) for the full matrix.

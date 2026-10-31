@@ -19,12 +19,10 @@ import {
  * only against it happening WITHIN that file.
  *
  * The subset was never load-bearing. The five opcodes it omitted — COV, GREEDY,
- * REJECT, ARMGATE, WITHCTX — are exactly the five `emit-assembly.ts` has no case
- * for, so any program containing one throws `Unemittable` from the default arm and
- * the whole assembly falls back to closures. Walking into their subtrees can
- * therefore only affect a result that is about to be discarded. (Verified: none of
- * the five is so much as imported by `emit-assembly.ts`. Its one consumer of these
- * edges, the `fd`/`er` sink census, is computed before the lowering that throws.)
+ * REJECT, ARMGATE, WITHCTX — were exactly the five `emit-assembly.ts` had no case
+ * for. ARMGATE and WITHCTX are lowered there now, so their subtrees are walked like
+ * any other; COV, GREEDY and REJECT still throw `Unemittable` from the default arm,
+ * and the whole assembly falls back to closures.
  *
  * `code` is `ArrayLike<number>` because the two callers hold different
  * representations of the same stream — `TableProgram.code` is a `readonly number[]`,

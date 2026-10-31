@@ -32,7 +32,7 @@ import {
   LEX_NODE_SEQUENCE2, LEX_NODE_SEQUENCE3, LEX_NODE_SEQUENCE4, LEX_NODE_SEQUENCE5,
   LEX_NODE_TERMINAL,
 } from './lex-program.ts'
-import { covKindCode, encodeClassSpec, ownTableProgram } from './program.ts'
+import { covKindCode, dispatchIsExclusive, encodeClassSpec, ownTableProgram } from './program.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
@@ -699,6 +699,38 @@ class Encoder {
     }
   }
 
+  /**
+   * THE FIRST-CHARACTER GATE OF AN `optional`, `not` OR `peek` CHILD.
+   *
+   * A non-nullable child cannot match at a character outside its first set, so
+   * the wrapper's outcome there is already decided: `optional` yields `null`,
+   * `not` succeeds, `peek` fails with its own set. The interpreter's `optional`
+   * makes that test itself (`repeat.ts` `startsFirstSet`); the table entered the
+   * child — a rollback mark, the call, the child's own failure — to learn it.
+   *
+   * The gate is an `OP_GATE` row around the child, so every engine runs it
+   * unchanged, a probe or tolerant parse forwards through it as for a node's
+   * gate, and the wrapper's row keeps its layout. The engines test the class
+   * before taking the wrapper's mark. The first set is resolved through
+   * `winners`, the analysis a choice arm's gate uses, so a composed rule's set
+   * is the merged one. A scalar `not` child stays bare: `scalarTerminalNotChild`
+   * already reduces it to one recognizer call.
+   */
+  private lookaheadGate(p: Combinator<unknown>, child: number): number {
+    // By opcode FAMILY: a line-tracked variant spells the same terminal
+    // `OP_LIT_TRACK`/`OP_RX_TRACK`, and every variant of one grammar must lay
+    // down the same words (`foldPrograms`).
+    const op = this.code[child]
+    if (op === OP_GATE || op === OP_LIT || op === OP_LIT_CI || op === OP_LIT_TRACK || op === OP_LIT_CI_TRACK
+      || op === OP_RX || op === OP_RX_TRACK) return child
+    const rr = this.refResolver()
+    if (matchesEmpty(p, new Set(), rr)) return child
+    const cls = this.charClass(firstSetOf(p, new Set(), rr, this.activeTrivia))
+    if (cls < 0) return child
+    const e = deriveExpected(p)
+    return this.emit(OP_GATE, cls, child, this.expected(e.length > 0 ? e : [p._tag]))
+  }
+
   /** A first set becomes a char class string, or −1 for `any`. */
   private charClass(fs: FirstSet): number {
     if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
@@ -715,14 +747,21 @@ class Encoder {
     return i
   }
 
-  /** Bind a guard only when its class is already part of the program. Repeat
-   * gating must not grow the compact artifact merely to avoid a failed call. */
-  private existingCharClass(fs: FirstSet): number {
-    if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
-    const hit = this.ccIndex.get(encodeClassSpec(fs.ranges))
-    // This reuses the recovery row's existing `-1` slot. Keep its decimal width
-    // at two bytes or less so a speed hint cannot grow a compact artifact.
-    return hit !== undefined && hit < 100 ? hit : -1
+  /**
+   * The first set a node's or an attempt's fail-fast gate tests. A bare
+   * cross-rule ref resolves through `winners` (a compose OVERRIDE may widen
+   * it). Any other body keeps its construction-time `_meta.firstSet`, except
+   * where that is `any`: under `compose()` a body that reaches a rule of
+   * another piece is built before that rule exists, so its cached set is
+   * `any` and the node got NO gate (jess's `CompoundSelector` was entered at
+   * `{`, `Call` at `}`). The resolved set is the one a choice arm's gate uses,
+   * over the final merged map.
+   */
+  private gateFirstSet(p: Combinator<unknown>): FirstSet {
+    const cached = p._meta.firstSet
+    return p._def.tag === 'lazy' || cached.kind === 'any'
+      ? firstSetOf(p, new Set(), this.refResolver(), this.activeTrivia)
+      : cached
   }
 
   /**
@@ -1202,6 +1241,19 @@ class Encoder {
             if (transactionalFirst[i] !== undefined) classes[i] = -1
           }
         }
+        // A STATE-GATED ARM ON THE ORDERED PATH IS ALWAYS ENTERED. The interpreter
+        // skips a gated-off arm and contributes nothing for it (choice.ts
+        // firstMatch), and gates it on only by running it. A char-gated skip would
+        // instead add the arm's static opener set whatever the gate says, so an
+        // ordered site leaves the decision to `OP_ARMGATE`. An exclusive site keeps
+        // its classes: there the dispatched arm's gate failing IS the choice
+        // failing, with that arm's set, as in the interpreter's disjoint path.
+        if (d.gates.some(g => g !== null && g !== undefined) && !dispatchIsExclusive(classes, this.cc)) {
+          for (let k = 0; k < classes.length; k++) {
+            const gate = d.gates[order[k]!]
+            if (gate !== null && gate !== undefined) classes[k] = -1
+          }
+        }
         const dispIdx = this.disp.length
         this.disp.push(classes)
         // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. While the best
@@ -1245,7 +1297,7 @@ class Encoder {
         const rr = this.refResolver()
         const itemClass = matchesEmpty(d.parser, new Set(), rr)
           ? -1
-          : this.existingCharClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
+          : this.charClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
@@ -1288,7 +1340,7 @@ class Encoder {
           : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
       }
       case 'optional': {
-        const head = this.emit(OP_OPT, this.node(d.parser).ip)
+        const head = this.emit(OP_OPT, this.lookaheadGate(d.parser, this.node(d.parser).ip))
         if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(head)
         return head
       }
@@ -1409,16 +1461,14 @@ class Encoder {
         // `deriveExpected(body)`, which for a body with nullable leading terms
         // names tokens the run would have skipped — `['"@"', '"(", '"x"']` where
         // running the body reports `['"x"']` alone.
-        if (matchesEmpty(d.parser)) return body
+        if (matchesEmpty(d.parser, new Set(), this.refResolver())) return body
         // A node whose BODY is a bare cross-rule ref (`node('X', g.Y, …)`) caches its
         // first set from the ref's base binding. Under a compose OVERRIDE the winner
         // for `Y` may be WIDER, so the cached set gates out input the merged rule
         // accepts (the reducer reroutes via `winners`, but this recognizer gate did
         // not). Resolve the ref's gate through `winners`, exactly as the `lazy` case
         // resolves the call. Non-ref bodies keep the cached set (byte-identical).
-        const fs = d.parser._def.tag === 'lazy'
-          ? firstSetOf(d.parser, new Set(), this.refResolver(), this.activeTrivia)
-          : d.parser._meta.firstSet
+        const fs = this.gateFirstSet(d.parser)
         if (fs.kind === 'any') return body
         const cls = this.charClass(fs)
         if (cls < 0) return body
@@ -1558,7 +1608,7 @@ class Encoder {
       // other engine reported `['not(literal)']`. It hid because `expected` is a
       // TOP-LEVEL field on `RunResult` and is NOT part of the identity digest.
       case 'not':
-        return this.emit(OP_NOT, this.node(d.parser).ip, this.expected(assertionFailureExpected(false, d.parser._tag)))
+        return this.emit(OP_NOT, this.lookaheadGate(d.parser, this.node(d.parser).ip), this.expected(assertionFailureExpected(false, d.parser._tag)))
       case 'guard':
         // `'gate'`, the public name — see gate.ts. The def tag stays `'guard'`.
         return this.emit(OP_GUARD, this.fn(d.predicate, d.predSrc ?? null), this.expected(['gate']))
@@ -1603,7 +1653,7 @@ class Encoder {
         // lookahead's failure is "the guard did not hold", and naming the body's
         // internals offers a token the parse never asked the author for. The
         // table propagated the body's set instead.
-        return this.emit(OP_PEEK, this.node(d.parser).ip, this.expected(assertionFailureExpected(true, d.parser._tag)))
+        return this.emit(OP_PEEK, this.lookaheadGate(d.parser, this.node(d.parser).ip), this.expected(assertionFailureExpected(true, d.parser._tag)))
       // A TRANSACTION IS A ROW. See `OP_ATTEMPT` for why the transparent
       // lowering was correct only for a choice arm.
       case 'attempt': {
@@ -1619,10 +1669,8 @@ class Encoder {
         // not a slower equivalent.
         // Same override-aware resolution as the node gate: a bare-ref inner resolves
         // its gate through `winners` so a widened winner is not gated out.
-        const fs = d.parser._def.tag === 'lazy'
-          ? firstSetOf(d.parser, new Set(), this.refResolver(), this.activeTrivia)
-          : d.parser._meta.firstSet
-        if (fs.kind === 'any' || matchesEmpty(d.parser)) return inner
+        const fs = this.gateFirstSet(d.parser)
+        if (fs.kind === 'any' || matchesEmpty(d.parser, new Set(), this.refResolver())) return inner
         const cls = this.charClass(fs)
         if (cls < 0) return inner
         const e = deriveExpected(d.parser)

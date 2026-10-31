@@ -339,13 +339,16 @@ export const OP_REJECT = 35
  * arm INSTEAD of sitting inside it, so the encoder still reads the arm's own
  * first set for `disp` and the site keeps its dispatch slot.
  *
- * A blocked arm is SKIPPED, not failed — `choice.ts:150` is `continue`. The row
- * therefore clears `_fc` on the gate-false path exactly as `OP_REJECT` does:
+ * A blocked arm is SKIPPED, not failed — `choice.ts` firstMatch `continue`s. The
+ * row therefore clears `_fc` on the gate-false path exactly as `OP_REJECT` does:
  * "pretend this arm was never entered", so no cut it might have raised survives
- * to cut the choice. It still reports `e`, because the OTHER path a blocked arm
- * can be reached by is first-char dispatch, where skip-and-retry and
- * fail-the-choice are the same thing (choice.ts:23-34, :100-105) and the
- * interpreter answers with `deriveExpected(arm)` — this set.
+ * to cut the choice. It sets `_fe` to −1, so an ORDERED choice, which ranks arms
+ * by failure position, takes nothing from it, as the interpreter does. It still
+ * leaves `e` in `_fx`, because the other path a blocked arm can be reached by is
+ * exclusive first-char dispatch, where skip-and-retry and fail-the-choice are the
+ * same thing and the interpreter answers with `deriveExpected(arm)` — this set.
+ * On an ordered site the encoder gives a gated arm no char class, so it is always
+ * entered and this row, not a char gate, decides what it contributes.
  *
  * The predicate is a live function, like `OP_GUARD`'s, so a grammar using one is
  * runtime-only for `emitTableModule` unless `fnSources` are supplied.

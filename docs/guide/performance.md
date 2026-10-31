@@ -14,7 +14,7 @@ and how to measure your own grammar.
 ::: info What "the compiler" means on this page
 As of 0.48, "the compiler" means the **`TableProgram` lowering** that both `compile()`
 and the [macro build](./macro-mode) share. The macro build serializes that table, and for
-a large enough terminal (a `composeLeaf`) it may also materialize one strict assembly —
+a module's terminal grammar it also materializes generated code for the hottest sites —
 but it no longer restores the old direct-source parser, which has been removed. So treat
 the historical numbers below as snapshots from the checkpoint they were measured at, not
 as current 0.48 figures.
