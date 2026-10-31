@@ -1,21 +1,21 @@
 /**
  * Opcodes for the TABLE lowering (design ledger row G5).
  *
- * The premise, stated so it can be falsified: today every rule's recognizer is
- * INLINED BESPOKE into its own emitted function, so an artifact pays the full
- * cost of the recognition machinery once PER RULE (measured: ~4.9 kB for a
- * `node()` rule; ~186 B for each additional call site). Emitting a rule as a
- * TABLE ROW interpreted by one shared driver moves that machinery out of the
- * artifact and into the runtime, where it is emitted ONCE for all grammars and
- * all variants.
+ * The source lowering this replaced (removed in 0.47.0) inlined every rule's
+ * recognizer into its own emitted function, so an artifact paid for the
+ * recognition machinery once PER RULE (measured then: ~4.9 kB for a `node()`
+ * rule; ~186 B for each additional call site). As TABLE ROWS run by one shared
+ * driver, that machinery lives in the runtime, once for all grammars and all
+ * variants.
  *
  * The instruction stream is a flat `number[]`: `code[ip]` is the opcode and the
  * operands follow it inline. Child instructions are referenced by ABSOLUTE code
- * offset, never by nesting, so the driver is a plain recursive read — no node
- * objects, no closures, no per-combinator allocation.
+ * offset, never by nesting.
  *
- * Operand layouts are documented per opcode below and are the contract between
- * `encode.ts` and `exec.ts`. Nothing else may read the stream.
+ * Operand layouts are documented per opcode below. `encode.ts` writes them; the
+ * engines (`assemble.ts`, `emit-assembly.ts`, the reference `exec.ts`) and the
+ * table analyses (`child-slots.ts`, `site-labels.ts`, `fail-clean.ts`, …) read
+ * them.
  */
 
 /** `LIT k` — `k` indexes a string in the const pool. */
@@ -257,7 +257,7 @@ export const OP_GUARD = 32
  * would become a no-op and `notAdjacent()` a guaranteed failure. So the SEQ
  * pieces read this row at assembly and run the test themselves, exactly as
  * `sequence()` forks `parseAdjacent` (combinators/sequence.ts:118) and as
- * codegen lowers it at the boundary (codegen.ts:1765).
+ * the source lowering lowered it at the boundary.
  *
  * Reached as a row in its own right only where there IS no boundary — a bare
  * choice arm, a `node()` body, a repeat item. The interpreter throws there
@@ -367,7 +367,7 @@ export const OP_ARMGATE = 36
  * library never sees.
  *
  * It exists because codegen accepts exactly this and delegates at run time
- * (`compiler/codegen.ts`, `emitRuntimeFallback`'s `_rp[i].parse(...)` row). The
+ * (the source lowering's `emitRuntimeFallback`). The
  * encoder used to throw `UnsupportedConstruct`, so the table lowering REJECTED
  * grammars the source lowering compiles, and the two lowerings must accept the
  * same language.
@@ -436,7 +436,7 @@ export const OP_LABEL = 39
  * `on` is 0 for ENTRY and 1 for SUCCESS, and it is read at ASSEMBLY TIME, never
  * per parse: `assemble.ts` picks one of two closures from it, exactly as it picks
  * pieces from `RunCfg`. The two phases are not decoration — the source lowering
- * credits a RULE on entry (`codegen.ts:4529`) and a choice arm, dispatch arm or
+ * credited a RULE on entry and a choice arm, dispatch arm or
  * label only once it has SUCCEEDED, and a table that credited all four alike
  * would report a different denominator's worth of hits than the engine it is a
  * drop-in for.

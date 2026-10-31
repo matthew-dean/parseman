@@ -96,7 +96,7 @@ first-set to `any` — or makes two arms overlap — and breaks that proof:
 | **leading `not(...)`** — `sequence(not(x), y)` as an arm | `not()`'s first-set is `any` | let the arm lead with its consuming terminal; keep `not()` as a TRAILING boundary |
 | **`not(not(...))`** — hand-rolled first-char gating | first-set `any` **and it miscompiles** among shared-first-char siblings | delete it; first-char gating is automatic |
 | **leading `optional`/`many`** | a skippable prefix lets a later, possibly-broad term start the arm | split the empty case into its own arm, or gate on the prefix |
-| **`gate()` / `guard()` as a leading arm term** | a state predicate's first-set is `any` | use the gated-arm **field** to SELECT a branch (it keeps dispatch); put `gate()` after a terminal |
+| **`gate()` as a leading arm term** | a state predicate's first-set is `any` | use the gated-arm **field** to SELECT a branch (it keeps dispatch); put `gate()` after a terminal |
 | **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | the ref is resolved at fuse time; if it is still `any`, the target rule is itself ungated — fix it there. In a [shared shape](#shared-shapes-the-verdict-belongs-to-the-fuse) the ref is a HOLE, and the finding is reported against the artifact that binds it |
 | **shared prefix** — two arms starting with the same terminal | first-sets overlap, so no unique dispatch key | left-factor: parseman auto-detects `sharedPrefix` for bare sequences — make the arms bare sequences with the common leading terminal |
 

@@ -29,9 +29,8 @@ import { PARSEMAN_VERSION } from '../version.ts'
  *                       artifact is a table, not a bag of compiled functions.
  *   `ir`              — the piece's combinator graph, serialized. This is the
  *                       composable half, and it is NOT new machinery: the plugin
- *                       already carries pieces as IR (`plugin/index.ts:1772`) and
- *                       the linker already re-lowers them (`linker.ts:640`,
- *                       `compileLinkable(evalRuleMapIR(p.ir), …)` at build time).
+ *                       already carries pieces as IR (`plugin/index.ts`) and the
+ *                       macro re-lowers them from it at build time.
  *
  * ── WHY THAT MAKES COMPOSITION THE EASY KIND ─────────────────────────────────
  * The open question was whether table-to-table composition has to merge two

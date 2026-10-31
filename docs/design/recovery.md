@@ -16,7 +16,7 @@ when a list element fails, and only when `ctx._tolerant` is set.
     local sequence's own next-term first-set.
 - **B — external override.** Recovery policy never rides on the combinators. There is no
   inline `{ recover }` hint; the grammar is pure structure. Where inference is too coarse
-  or an editor wants richer behaviour, the [`languageService`](./guide/editor-integration)
+  or an editor wants richer behaviour, the [`languageService`](../guide/editor-integration)
   layer wraps the grammar with a config keyed by rule name — outside the grammar entirely.
   Inference (C) covers the list shapes an editor cares about; the service layer is where
   domain policy lives.
@@ -28,7 +28,7 @@ when a list element fails, and only when `ctx._tolerant` is set.
 - No new option on `many`/`oneOrMore`/`sepBy` — their signatures are unchanged. Sync is
   inferred from structure; recovery is engaged only by the run-level `tolerant` flag.
 - `completionsAt(target, input, offset, { tolerant? })` — `target` is an interpreter
-  combinator or a `compile(g, { recovery: true })` grammar; `tolerant: true` engages
+  combinator or a compiled grammar; `tolerant: true` engages
   recovery so a failure at the cursor is recorded even when a permissive top rule would
   otherwise "succeed" with an unconsumed tail.
 - New `ParseContext` fields (framework-internal): `_tolerant?: boolean`,
@@ -77,19 +77,18 @@ when a list element fails, and only when `ctx._tolerant` is set.
 
 List recovery is the `tolerant` run flag plus the **inferred** sync on
 `many`/`oneOrMore`/`sepBy` — no inline hints; external policy lives in
-[`languageService`](./guide/editor-integration). `isParseError` is the
+[`languageService`](../guide/editor-integration). `isParseError` is the
 guard for the emitted error nodes. `expect` (required-token, in-place) and
 `scanTo`/`balanced` remain distinct primitives — they are not list recovery.
 
-Tolerant recovery + the completions probe run on **both of the two lowerings that
-execute grammars today** — the interpreter and codegen. ("Both" enumerates those two;
-it is not a claim that every lowering parseman may grow implements recovery. The
-additive table prototype in `src/table/` implements none of it — no `_tolerant`, no
-`_rec`, no `_probe` — which is a statement of its current scope, not a defect.) The
-interpreter path
-is always available. The compiled (`compile()`) path emits them under an opt-in gate —
-`compile(g, { recovery: true })` (or the `parseman({ recovery: true })` macro option) —
-so the published compiled artifact recovers and answers completions on the fast path,
-while a default compile emits **zero** recovery code (byte-identical, macro-inlinable).
-The compiled path reuses the exact interpreter recovery functions via `ctx._rec`, so
-the two are byte-for-byte at parity. See [Editor / language-server integration](./guide/editor-integration).
+Tolerant recovery and the completions probe run on every engine: the interpreter, the
+closure assembler and emitted assemblies. A compiled table always carries the recovery
+operands (follow-set classes and item expected sets; `rec: 1`), and a parse with
+`tolerant` set selects an assembly that contains the recovery pieces, so a strict parse
+never reaches one. The table engines call the interpreter's own recovery functions
+(`src/recovery/scan.ts`), so recovered spans, expected sets and CST error nodes match.
+`test/parity/table-recovery-always.test.ts` pins this.
+
+The `recovery` option of `compile()`, `compileRuleMap()` and the macro plugin no longer
+does anything, since recovery is always compiled in. It is deprecated and will be removed
+in the next minor release. See [Editor / language-server integration](../guide/editor-integration).

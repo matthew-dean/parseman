@@ -180,9 +180,8 @@ editor-first generators own this by being context-free and emitting a buffer tre
 Parséman gets there differently, with three properties they don't have:
 
 - **Recovery runs on the fast path.** Recovery and the completions probe are compiled into
-  the artifact (`compile(g, { recovery: true })`), not bolted onto the interpreter — so the
-  parser your editor ships is the one that recovers. Strict compiles stay byte-identical;
-  recovery is a dormant branch.
+  every artifact, not bolted onto the interpreter — so the parser your editor ships is the
+  one that recovers. A strict parse never runs a recovery piece.
 - **Recovery and incremental re-parse are one pipeline.** The
   [`languageService`](./editor-integration) opens an incremental document: an edit
   re-parses only the changed span, the tree survives a broken keystroke, and because a

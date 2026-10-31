@@ -31,10 +31,12 @@ code PR:
 pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm check:differentials && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 ```
 
-`check:invariants` decides five source-level rules that no type or test can
-see: no accessor installed onto an already-built object, no field in a public
+`check:invariants` decides twelve source-level rules that no type or test can
+see (INV-1 to INV-12, each described in `docs/design/invariant-gate.md`). Among
+them: no accessor installed onto an already-built object, no field in a public
 `*Options` type that nothing reads, no module unreachable from a published
-entry point, no declaration body duplicated across modules, and no `delete` on
+entry point, no declaration body duplicated across modules, no option read on a
+parse path, no comment naming a path that does not exist, and no `delete` on
 an object the enclosing function did not construct (a `delete` on a long-lived
 object flips `%HasFastProperties` to false permanently — a `delete` on a scratch
 local is fine and deliberately not flagged). It is a required CI
@@ -93,7 +95,8 @@ contract, `--strict` for a release). Adding a differential means adding its
 plant. Full standard, including how to register one and what the gate
 deliberately does not check: `docs/design/differential-gates.md`.
 
-If your change touches `src/codegen.ts`, dispatch, or anything else on the parse
+If your change touches the engines (`src/table/assemble.ts`,
+`src/table/emit-assembly.ts`), dispatch, or anything else on the parse
 hot path, also check it against the comparison-chart bar — **"still the fastest
 compiled JS parser in the SVG tests"** — before claiming a trade-off is
 acceptable:
@@ -225,8 +228,8 @@ meaningless without a separator).
 
 ## Naming
 
-- `gate(predicate)` is the state-assertion combinator (formerly `guard()`, kept as
-  a deprecated alias). Its name matches the `gate:` field on a gated choice arm:
+- `gate(predicate)` is the state-assertion combinator (formerly `guard()`, removed
+  in 0.45.0). Its name matches the `gate:` field on a gated choice arm:
   **arm field = SELECT a branch; `gate()` combinator = ASSERT a predicate.**
 
 ## Where the options object goes

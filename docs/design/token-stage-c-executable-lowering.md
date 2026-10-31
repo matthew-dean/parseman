@@ -1,5 +1,12 @@
 # Token Stage C: executable replacement lowering
 
+> **Current state (0.59 line).** Selected lexical bodies ship as `OP_LEX_BODY` and
+> `OP_LEX_PROGRAM` (`src/table/lex-body.ts`, `src/table/lex-program.ts`), described in
+> `docs/design/internals.md`. `LexBodyProgram`, named below, is not a type
+> in `src/`: the shipped wire specs are `LexBodySpec` and `LexProgramSpec` in
+> `src/table/program.ts`. This page was last revised for 0.48 and is kept as the design
+> record.
+
 Status: normative 0.48 design addendum; implementation is in progress. Primitive
 terminal bodies and all fixed incoming bindings—including scanner sentinel and
 authored own-skip children—now have reference, captured/CSP, and named/emitted

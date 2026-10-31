@@ -798,7 +798,7 @@ export function emitAssemblySource(
   const armExpectedPlan: number[][] = []
   const maskPlan: number[] = []
 
-  /** `codegen.ts`'s hoisted pools, same spelling: `_k<N>` / `_fx<N>` / `_fn<N>`. */
+  /** Hoisted pools, in the source lowering's spelling: `_k<N>` / `_fx<N>` / `_fn<N>`. */
   function hoist(kind: string, expr: string): string {
     const hit = pool.get(expr)
     if (hit !== undefined) return hit
@@ -1508,8 +1508,8 @@ return v
         const xf = fxRef(code[ip + 2]!)
         // TWO ARMS, mirroring `assemble.ts:1050`. A TOLERANT `expect()` EMBEDS
         // ITS ERROR IN THE TREE and not only in the flat `_errors` side-channel
-        // (`combinators/expect.ts:150`, codegen's `_ctx._rec.capture` at
-        // codegen.ts:4470) — so a tree walk finds every diagnostic and the node
+        // (`combinators/expect.ts:150`, the source lowering's
+        // `_ctx._rec.capture`) — so a tree walk finds every diagnostic and the node
         // survives incremental subtree reuse. `captureError` is the shared
         // function, called; the embedding is not restated here.
         //
@@ -2802,7 +2802,7 @@ return nd
   const ruleEntries: string[] = []
   for (const [rname, entryIp] of Object.entries(prog.rules)) {
     if (!served(entryIp)) continue
-    // `_r_<Name>` — the composition surface, in `codegen.ts`'s own spelling and
+    // `_r_<Name>` — the composition surface, in the source lowering's spelling and
     // deliberately NOT namespaced, so a sibling calls it by name.
     const target = link(entryIp)
     const rn = `_r_${rname.replace(/[^A-Za-z0-9_$]/g, '_')}`

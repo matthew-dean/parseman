@@ -35,14 +35,14 @@
  *   node scripts/check-differentials.mjs --list     # print the registry, run nothing
  *   node scripts/check-differentials.mjs --only=id[,id]
  *
- * ENVIRONMENT. Four of the nine registered differentials drive JESS'S grammars
+ * ENVIRONMENT. Four of the fourteen registered differentials drive JESS'S grammars
  * over JESS'S corpora, which live in a jess worktree (`JESS_ROOT`) that this repo
  * does not vendor. There is no default: a checkout nobody built (a mirror that
  * tracks `dev` while its packages' `lib/` stay at an older commit) makes every one
  * of them red before any plant. Unset, they are reported UNPROVEN — never as
  * passing. Set to a checkout whose `lib/` is older than its last source commit,
  * the gate refuses to run them and fails. `--strict` is
- * what a release runs; plain mode is what CI runs, and CI proves the three
+ * what a release runs; plain mode is what CI runs, and CI proves the ten
  * self-contained ones. An UNPROVEN entry is a differential whose teeth are
  * unknown in this environment, and the summary says so on its own line so it
  * cannot be read as a green.
@@ -180,7 +180,7 @@ const REGISTRY = [
     id: 'table-lowering-identity',
     needs: 'repo',
     file: 'test/unit/table-identity.test.ts (bench/table-lowering-identity.ts)',
-    legs: 'interpreted combinator graph vs compose() codegen vs tableRules (shipped) vs execRules (reference driver), digested per case',
+    legs: 'interpreted combinator graph vs the compileRuleMap() closure artifact vs tableRules (shipped) vs execRules (reference driver), digested per case',
     cleanExit: 0,
     // The vitest test, not `bench/table-lowering-sweep.ts`: the sweep prints its
     // mismatches and exits 0 whatever it finds, so it is a report, not a gate.

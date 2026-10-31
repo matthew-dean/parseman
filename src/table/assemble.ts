@@ -4,7 +4,7 @@
  * This is ledger row G5 as stated: *"build the grammar reference at run start,
  * making the swaps on rules / sub-rules (leaves) at that point, then run with NO
  * logic branching for that option input"*. `exec.ts` builds the same table and
- * then interprets it: one `switch (code[ip])` over 29 opcodes, executed ONCE PER
+ * then interprets it: one `switch (code[ip])` over every opcode (29 then), executed ONCE PER
  * ROW — 497,360 rows for `benchmark.less` (`bench/jess/g5-rows.ts`) — each
  * re-reading its opcode and re-decoding its operands from the `Int32Array`, and
  * re-testing the same per-parse options. That is the per-node branching the
@@ -114,9 +114,8 @@ import { failCleanAnalysis } from './fail-clean.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
- * `failAt` (combinators/probe.ts) is called from exactly three places in the
- * interpreter — `literal.ts`, `regex.ts`, `keywords.ts` — and codegen emits its
- * mirror (`probeUpdate`) at the same leaf-fail sites. The table recorded
+ * `failAt` (combinators/probe.ts) is called at the interpreter's terminal fail
+ * sites — `literal.ts`, `regex.ts`, `keywords.ts`, `lines.ts`. The table recorded
  * NOTHING, so `completionsAt` on a table artifact saw only the top-level
  * failure: a swallowed item failure inside a `sepBy` (`'{'` at offset 1 in a
  * `{ decl; }` grammar) never reached the probe and the item's opener vanished
@@ -439,7 +438,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * graph with no recovery in it anywhere.
    *
    * Dormancy is unchanged for the OTHER two engines: the source lowering
-   * (`codegen.ts:3153`) and the interpreter (`repeat.ts:163`) still gate on
+   * (removed in 0.47.0) and the interpreter (`repeat.ts:163`) still gate on
    * `ctx._tolerant` at runtime, and the recovery pieces below keep their own
    * `_tolerant === true` failure-path gates so `exec.ts` stays the identity
    * reference.
@@ -1925,8 +1924,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const expectSpan = (ctx: ParseContext, pos: number) =>
           prog.lines === 1 ? spanLines(ctx, pos, pos) : { start: pos, end: pos }
         // TOLERANT `expect()` EMBEDS ITS ERROR IN THE TREE, not only in the flat
-        // `_errors` side-channel (`combinators/expect.ts:150`, and codegen's
-        // `_ctx._rec.capture` at codegen.ts:4470) — so a tree walk finds every
+        // `_errors` side-channel (`combinators/expect.ts:150`, and the source
+        // lowering's `_ctx._rec.capture`) — so a tree walk finds every
         // diagnostic and the node survives incremental subtree reuse. The table
         // pushed to `_errors` and stopped, so a tolerant CST parse was missing the
         // `parseError` child the other two engines both produce.
@@ -2538,7 +2537,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          *
          * The restore is `sequence()`'s `finally` (combinators/sequence.ts:105).
          * Codegen does not restore and compensates by having every list capture
-         * `_sync` at ENTRY (codegen.ts:3032); the table captures at entry too, so
+         * `_sync` at ENTRY; the table captures at entry too, so
          * this is unobservable either way — it is here because leaving a stale
          * sentinel published is the kind of state a later reader will trust.
          */
@@ -3530,7 +3529,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          *    delimiter (`orSentinel`, repeat.ts:454).
          *  - `mySync` is captured at ENTRY. An element's own sequence publishes
          *    over `_sync` while it runs; the interpreter restores in a `finally`
-         *    and codegen saves at entry (codegen.ts:3032) — same value, both ways.
+         *    and the source lowering saved at entry — same value, both ways.
          *  - the separator-less path rolls the leading trivia back BEFORE
          *    recovering (repeat.ts's `repItem`), and the separated path does NOT:
          *    a consumed separator and the error after it both belong to the list
@@ -3980,7 +3979,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ctx._fields = wantFields ? [] : undefined
           // PER-NODE-TYPE TRIVIA-KIND MASK, scoped to the body and restored —
           // `node.ts:259-273`, and codegen's `_triviaCaptureMask` save/install/
-          // restore around the same scope (`codegen.ts:4130-4136`). The table
+          // restore around the same scope. The table
           // installed nothing, so a host that asked `Outer` for comments only got
           // every kind the scanner saw.
           const savedMask = structural ? ctx._triviaCaptureMask : undefined

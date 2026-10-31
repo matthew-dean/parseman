@@ -141,9 +141,8 @@ A/B against a **pinned reference commit of this repo**, both sides loaded and
 Self-calibrating by construction: nothing machine-specific is stored, so it reads
 the same on a laptop and on a shared CI runner. That matters more than it sounds
 — comparing separate *processes* on this hardware produced 9.4 ms and 26 ms for
-the same case in consecutive launches, and it is the reason the older nightly
-proposal (`docs/design/perf-nightly.workflow.yml`) had to keep its timing
-tolerance at 40%. An interleaved A/B has no cross-machine term at all.
+the same case in consecutive launches, and it is the reason an older nightly-workflow
+proposal (never adopted) had to keep its timing tolerance at 40%. An interleaved A/B has no cross-machine term at all.
 
 The reference side is a `git worktree` at the pinned sha with this repo's
 `node_modules` symlinked in — nothing needs a per-sha dependency tree, because
@@ -430,31 +429,9 @@ exactly the band it exists to watch.**
   regression in trivia scanning, first-set dispatch, node construction or the
   interpreter can move every case in BOTH sweeps together — the gate will report
   that, but neither spread will explain it, because nothing is being held
-  constant against it. `perf:guard`'s deterministic `composeLeaf` dispatch
-  assertion still carries first-set-dispatch coverage.
-
-  **That assertion inspects EMITTED SOURCE, and it fails GREEN if there is none.**
-  `dispatchEmitted` is a regex over the string `fusedBody([...]).body` returns
-  (`bench/composeleaf-firstset.ts`) — it asks whether the fused *text* contains a
-  first-char comparison. That is exactly why it is trustworthy today (no timing
-  noise), and exactly what makes it fragile: it is a property of one lowering's
-  output, not of the parser's behaviour. Against any lowering that does not emit a
-  JavaScript body for the fuse to match — a table read by a shared driver, say —
-  the regex finds nothing. The failure mode is the dangerous direction: a lowering
-  with no emitted source and a lowering that genuinely lost dispatch are
-  **indistinguishable** to this check, and the first one is not a regression. Note
-  which way the current code lands before trusting either verdict.
-
-  `grammar-refactor-gates.md` is the standing rule here — four of that oracle's six
-  paranoid properties fail **green**, and "a gate that fails green is worse than no
-  gate, because it is used as evidence." This assertion is quoted as *the* reliable
-  signal that makes the nightly workflow worth running
-  (`docs/design/perf-nightly.workflow.yml`), which is precisely the status that
-  makes a vacuous green expensive. **Recorded as a hazard, not a fix:** nothing about
-  the assertion's behaviour is changed here, and it is correct as written for the
-  lowering it was built against. If a second lowering ever reaches this path, the
-  check needs a liveness precondition — assert that a body was produced *at all*
-  before asserting what is in it — rather than a widened regex.
+  constant against it. No gate covers first-set dispatch on its own: the
+  `composeLeaf` dispatch assertion `perf:guard` once carried asserted a property of
+  textual fusion and went with the source lowering (`bench/perf-guard.ts`).
 
   The history here is the argument for reading this bullet literally rather than
   as boilerplate: the gate shipped with one axis and a regression rode the other

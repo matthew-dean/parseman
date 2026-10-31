@@ -30,9 +30,8 @@ import { failAt } from '../combinators/probe.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
- * `failAt` (combinators/probe.ts) is called from exactly three places in the
- * interpreter — `literal.ts`, `regex.ts`, `keywords.ts` — and codegen emits its
- * mirror (`probeUpdate`) at the same leaf-fail sites. The table recorded
+ * `failAt` (combinators/probe.ts) is called at the interpreter's terminal fail
+ * sites — `literal.ts`, `regex.ts`, `keywords.ts`, `lines.ts`. The table recorded
  * NOTHING, so `completionsAt` on a table artifact saw only the top-level
  * failure: a swallowed item failure inside a `sepBy` (`'{'` at offset 1 in a
  * `{ decl; }` grammar) never reached the probe and the item's opener vanished
@@ -555,7 +554,7 @@ function makeDriver(
         const err = { _tag: 'parseError' as const, span, expected: fx[code[ip + 2]!] as string[] }
         ctx._errors?.push(err)
         // A TOLERANT `expect()` also embeds the error in the TREE (expect.ts:150,
-        // codegen.ts:4470), so a tree walk finds every diagnostic and it survives
+        // as the source lowering did), so a tree walk finds every diagnostic and it survives
         // incremental subtree reuse — the flat sink alone is not the contract.
         if (REC && ctx._tolerant === true) captureError(ctx, err)
         // See assemble.ts OP_EXPECT: the recovered failure is a SUCCESS, so the
@@ -1230,7 +1229,7 @@ function makeDriver(
         // TOLERANT RECOVERY, dormant unless `ctx._tolerant`. `mySync` is captured
         // at ENTRY because an element's own sequence publishes over `_sync` while
         // it runs — the interpreter restores in a `finally` (sequence.ts:105) and
-        // codegen saves at entry (codegen.ts:3032); either way this is the list's
+        // the source lowering saved at entry; either way this is the list's
         // own sync. The item's expected set is at ip + 6 and the separator's
         // sentinel class at ip + 7, both laid down only for a recovery table.
         const mySync = REC ? ctx._sync : undefined

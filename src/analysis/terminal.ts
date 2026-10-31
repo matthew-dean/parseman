@@ -252,7 +252,7 @@ export function render(lines: readonly Line[], target: RenderTarget = {}): strin
 }
 
 // linecraft's own escapes, for the one component whose plain form is not otherwise
-// reachable. Mirrors `packages/compiler/src/diagnostics.ts:246`. Built from a char code
+// reachable. Built from a char code
 // so the ESC byte cannot be lost in transit the way the old constant table's was.
 const ESC = String.fromCharCode(27)
 const OSC8 = new RegExp(`${ESC}\\]8;;.*?${ESC}\\\\`, 'g')

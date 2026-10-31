@@ -576,7 +576,7 @@ export type GatedArm<T = unknown> = {
  * This lives with the rest of the library's types rather than inside a lowering
  * because it is the shape BOTH lowerings answer to: `table/compile.ts` returns it
  * today and is what `src/index.ts` exports as `compile`. It started in
- * `compiler/codegen.ts`, which made the table import its own public contract from
+ * the source lowering, which made the table import its own public contract from
  * the engine the table replaced — backwards, and a reason the engine could not be
  * deleted.
  */

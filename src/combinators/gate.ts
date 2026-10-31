@@ -15,7 +15,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
  * Naming: this matches the `gate:` field on a gated CHOICE arm
  * (`choice({ gate, combinator }, other)`). Use the arm FIELD to SELECT a branch by
  * a cheap state predicate; use this COMBINATOR to ASSERT a state predicate
- * mid-sequence. Formerly named `guard()` — see the deprecated alias in `guard.ts`.
+ * mid-sequence. Formerly named `guard()`; that alias was removed in 0.45.0.
  *
  * Note: like all state predicates its first-set is `any`, so a `gate(...)` as the
  * LEADING term of a choice arm poisons that choice's first-char dispatch. Keep it

@@ -71,7 +71,7 @@ const r = run(block, '{a:1;$$;b:2}', { tolerant: true })
 With a CST host active — `cstBuildHost`, or the
 [language service](./editor-integration) — the recovered error also gets embedded in the
 tree as a `parseError` child spanning the skipped text, on both the interpreter and the
-compiled (`{ recovery: true }`) path. That's what lets an incremental editor document
+compiled path. That's what lets an incremental editor document
 carry diagnostics right inside the tree.
 
 Recovery's one hard requirement is a sync point — knowing where to resume after a bad
@@ -309,7 +309,7 @@ Recovery is never free, and it's never pretty. Be deliberate about it:
 | --- | --- |
 | Require a `}` / `)` / `;` but keep parsing if it's missing | `expect(literal('}'))` |
 | Parse a list, tolerating bad elements | `run(list, src, { tolerant: true })` |
-| Recover on the compiled fast path | `compile(g, { recovery: true })` |
+| Recover on the compiled fast path | `run(compile(g).Rule, src, { tolerant: true })`, with `g` a `rules()` map (or a macro-built one) |
 | Add editor completions / diagnostics | `languageService(grammar, config)` |
 | Consume everything up to a boundary token | `scanTo(sentinel, { skip: […] })` |
 | Match a whole `(…)` / `[…]` / `{…}` region as text | `balanced('(', ')')` |
