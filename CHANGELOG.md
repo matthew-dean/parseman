@@ -40,6 +40,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   trivia and CSTs are unchanged. Jess's Less build parses `benchmark.less` in 3.9% fewer
   instructions with the JIT and 8.8% fewer with `--jitless`. Test:
   `test/unit/table-trivia-lead-gate.test.ts`, registered in `check:differentials`.
+- **An internals overview, `docs/design/internals.md`.** The README's "Developing"
+  section now points at it: the pipeline, the engines, the table and wire format, macro
+  selection and how performance is measured. Its opcode table is checked against
+  `src/table/ops.ts` by `test/unit/internals-doc.test.ts`.
 - **The perf verdict is a cross-process gate under default V8: `pnpm perf:xproc:gate`,
   configured in `bench/xproc-gate.json`.** Each case is timed in fresh processes,
   one parser per process, from each side's own `dist/` build under plain `node`. A

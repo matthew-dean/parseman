@@ -200,10 +200,11 @@ pnpm docs:dev     # this documentation site, locally
 Benchmark and chart tasks (`pnpm bench`, `bench:svg`, `bench:parseman`, …) are described in
 the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks#reproducing-the-numbers).
 
-The frozen 0.48 runtime architecture and release specification is
-[`docs/design/parseman-0.48.md`](./docs/design/parseman-0.48.md). Detailed measurements
-and rejected experiments remain in the linked evidence registers rather than being
-treated as current design.
+How the code fits together (the pipeline, the engines, the table format, macro builds
+and how performance is measured) is in
+[`docs/design/internals.md`](./docs/design/internals.md). Start there before reading
+`src/`. The token and lexical-body specification is
+[`docs/design/parseman-0.48.md`](./docs/design/parseman-0.48.md).
 
 ## License
 
