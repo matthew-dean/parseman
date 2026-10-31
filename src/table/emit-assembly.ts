@@ -67,7 +67,7 @@ import {
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
-import { holdsGap } from './hold-gap.ts'
+import { holdsGap, rowNullable } from './hold-gap.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
 
@@ -2256,6 +2256,19 @@ return [key,v]
         const itemMiss = (at: string): string => itemAscii
           ? `${itemCls}.ascii[input.charCodeAt(${at})]!==1`
           : `!classHas(${itemCls},lead(input,${at}))`
+        // The separator's own first set (ip+7, `assemble.ts` `sepClass`).
+        let sepCls: string | undefined
+        let sepAscii = false
+        if (!REC && sepIp >= 0 && !leadingTriviaFieldAt(code, k, sepIp) && code[ip + 7]! >= 0 && !rowNullable(code, k, sepIp, nullable)) {
+          const resolved = t.cc[code[ip + 7]!]!
+          const ci = classes.push([resolved]) - 1
+          classPlan.push([code[ip + 7]!])
+          sepCls = hoist('rs', `CLS[${ci}][0]`)
+          sepAscii = isAsciiOnlyClass(resolved)
+        }
+        const sepMiss = (at: string): string => sepAscii
+          ? `${sepCls}.ascii[input.charCodeAt(${at})]!==1`
+          : `!classHas(${sepCls},lead(input,${at}))`
         const skipBeforeFirst = sepIp < 0 && min === 0
         const p = tmp()
         // `viaRepItem` is `sep === undefined && count >= min && (count > 0 ||
@@ -2368,7 +2381,7 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
 ${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
@@ -2378,7 +2391,11 @@ let sepEnd=-1
 ${sep !== undefined ? `if(count>0){
 const lb=cstLeavesLen(ctx)
 let sp=cur
-${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}ctx._fc=false
+${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('sp')}){
+${rb}
+break
+}
+`}ctx._fc=false
 ${sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp) ? 'LEAD.at=cur\n' : ''}const sv=${sep}(input,sp,ctx)
 if(sv===FAIL){
 ${rb}

@@ -3416,6 +3416,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // `many()` — the min-0, separator-less repeat — is the only shape that runs
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
+        // A separated list's ip+7 is its separator's first set (the recovery
+        // sentinel). Where the separator cannot match empty and reads no pre-scan
+        // cursor, a lead outside it stops the list at the separator, exactly as
+        // the strict optional item stops at its own class above.
+        const sepClassIndex = sepIp >= 0 && !sepLeads ? code[ip + 7]! : -1
+        const sepClass = !REC && sepClassIndex >= 0 && !rowNullable(code, k, sepIp, NULLABLE) ? cc[sepClassIndex]! : undefined
         const skipBeforeFirst = sepIp < 0 && min === 0
         const itemClean = sepIp < 0 && CLEAN(code[ip + 1]!) && !rowNullable(code, k, code[ip + 1]!, NULLABLE)
 
@@ -3552,6 +3558,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // Keep the ordinary child path while one is active so this structural
           // fast stop cannot erase an item completion at the cursor.
           const gateItems = itemMayStart !== undefined && ctx._probe === undefined
+          const gateSep = sepClass !== undefined && ctx._probe === undefined
           let cur = pos
           let count = 0
           for (;;) {
@@ -3583,6 +3590,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const leavesBefore = cstLeavesLen(ctx)
               let sp = cur
               if (hasTrivia) sp = skipTrivia(input, sp, ctx)
+              if (count >= min && gateSep && !classHas(sepClass!, lead(input, sp))) {
+                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                break
+              }
               ctx._fc = false
               if (sepLeads) LEAD.at = cur
               const sv = sep(input, sp, ctx)

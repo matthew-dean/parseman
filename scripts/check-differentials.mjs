@@ -221,6 +221,19 @@ const REGISTRY = [
     plants: [{ defect: 'rgate-miss-set-short', expect: 'moves' }],
   },
   {
+    id: 'loop-continuation',
+    needs: 'repo',
+    file: 'test/unit/table-loop-continuation.test.ts',
+    legs: 'generated padded-operator chains and separated lists (operators, prefix minus, groups, spacing, one-character defects) through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-loop-continuation.test.ts']),
+    plants: [
+      { defect: 'loop-sep-gate-before-trivia', expect: 'moves' },
+      { defect: 'loop-sep-gate-before-trivia-emitted', expect: 'moves' },
+      { defect: 'seq-pad-first-set-drops-rest', expect: 'moves' },
+    ],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',

@@ -196,6 +196,33 @@ export const DEFECTS = {
     }],
   },
 
+  'loop-sep-gate-before-trivia': {
+    why: 'closure engine: a separated list tests its separator class before the trivia in front of it',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '              if (count >= min && gateSep && !classHas(sepClass!, lead(input, sp))) {\n',
+      replace: '              if (count >= min && gateSep && !classHas(sepClass!, lead(input, cur))) {\n',
+    }],
+  },
+
+  'loop-sep-gate-before-trivia-emitted': {
+    why: 'emitted engine: a separated list tests its separator class before the trivia in front of it',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "`if(hasTrivia)sp=${skip}(input,sp,ctx)\\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('sp')}){",
+      replace: "`if(hasTrivia)sp=${skip}(input,sp,ctx)\\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('cur')}){",
+    }],
+  },
+
+  'seq-pad-first-set-drops-rest': {
+    why: 'first sets: a sequence led by a nullable regex reports only the regex\'s own first characters',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: '    return union(p._meta.consumingFirstSet ?? first, afterBoundary(i + 1))\n',
+      replace: '    return p._meta.consumingFirstSet ?? union(first, afterBoundary(i + 1))\n',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{
