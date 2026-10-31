@@ -126,6 +126,6 @@ Expressing context *in the grammar* is a real dividing line between parsers. Par
 incremental editor parsers — [Lezer](https://lezer.codemirror.net/) and
 [tree-sitter](https://tree-sitter.github.io/tree-sitter/) — are context-free at the grammar
 level: context needs a hand-written external tokenizer (JS) or scanner (C) instead.
-Parséman combines in-grammar context *with* incremental re-parsing: each node snapshots the
-context it parsed under, and [`edit()`](./incremental) replays it. See
+Parséman combines in-grammar context *with* incremental re-parsing: each node records the
+state object it parsed under, and [`edit()`](./incremental) replays it. See
 [How Parséman compares](./comparison#the-context-sensitivity-axis) for the full matrix.

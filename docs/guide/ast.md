@@ -121,12 +121,12 @@ sibling-gap ownership unchanged and avoids a parser-wide capture tax.
 
 ### Capture follows your `build`'s arity {#capture-follows-arity}
 
-Building `fields`, `triviaLog`, and cloning `state` per node isn't free — on a
-value-dense grammar the per-token trivia-log push alone is a large slice of parse time.
-So Parséman skips the capture your `build` never asks for: a `build` that declares only
-`(children)` gets no fields, trivia log, or state clone; `(children, fields, span)` gets
-named fields and spans but still skips raw children, trivia, and state; declaring
-`triviaLog` keeps the log; declaring `state` keeps the clone. This is inferred from the
+Building `fields` and `triviaLog` per node isn't free — on a value-dense grammar the
+per-token trivia-log push alone is a large slice of parse time. So Parséman skips the
+capture your `build` never asks for: a `build` that declares only `(children)` gets no
+fields, trivia log, or state; `(children, fields, span)` gets named fields and spans but
+still skips raw children, trivia, and state; declaring `triviaLog` keeps the log;
+declaring `state` passes the active `ctx.state` object. This is inferred from the
 function's parameter list at compile time — you don't opt in explicitly.
 
 The same inference runs at **parse time** for a [structural `node(parser)`](#just-want-a-plain-cst)

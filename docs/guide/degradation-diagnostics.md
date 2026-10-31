@@ -23,7 +23,7 @@ For example:
 `foldOperation` — could not confirm its formal parameter list (`foldOperation` did not
 resolve to a module-scope function declaration (imported binding, shadowed name, or a
 computed value)), so this node captures children, fields and raw children, logs trivia,
-and clones `_ctx.state` on every match; otherwise only the tiers the reducer actually
+and hands it `_ctx.state` on every match; otherwise only the tiers the reducer actually
 declares would be captured (arity >= 1 children, >= 2 fields, >= 4 raw, >= 5 trivia,
 >= 6 state)
 ```
