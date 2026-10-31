@@ -31,6 +31,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   of its own that only sets line tracking is its child inside a token. With these,
   the CSS, Less, SCSS and Jess grammars of Jess close lexical capability in every
   variant, so their tokens lower to lexical bodies.
+- A choice arm that opens with the token its `dispatch()` already routed is gated on
+  the character after that token (its next term's first characters, with the
+  sequence's trivia), so a statement name read once can be followed by a
+  first-character decision: `(` a call, `:` a declaration, `{` a ruleset. A miss
+  fails there with the next term's expected set, as entering the arm would.
 - `peek()` of a direct literal or regex is one recognizer call, as `not()` of one
   already was.
 - A `not()`/`peek()` lookahead between two gaps in a sequence no longer makes the

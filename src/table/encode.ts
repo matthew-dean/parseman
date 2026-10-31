@@ -17,7 +17,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_COV,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
@@ -948,6 +948,47 @@ class Encoder {
     return this.emit(OP_SCOPE_PLAIN, this.triviaSlot(amb), ip)
   }
 
+  /**
+   * The `OP_RGATE` operands of a choice arm that opens with `routed()`, or
+   * `undefined`. Through `node()`/scope wrappers and first sequence terms, the
+   * arm's next term after the routed token is found; the gate is that term's
+   * first characters, with the trivia in force at the boundary before it, so
+   * the arm is entered only where it can get past the token. The term must be
+   * unable to match empty or to commit, so a miss is exactly that term failing
+   * at the token's end with its own set.
+   */
+  private routedArmGate(arm: Combinator<unknown>): { cls: number; fx: number } | undefined {
+    type Follow = 'end' | { next: Combinator<unknown>; boundary: Combinator<unknown> | undefined } | undefined
+    const walk = (p: Combinator<unknown>, trivia: Combinator<unknown> | undefined, depth: number): Follow => {
+      if (depth > 16) return undefined
+      const d = p._def as ParserDef
+      switch (d.tag) {
+        case 'routed': return 'end'
+        case 'node': return walk(d.parser, trivia, depth + 1)
+        case 'grammar':
+          return walk(d.parser, d.clearTrivia === true ? undefined : d.triviaParser ?? trivia, depth + 1)
+        case 'sequence': {
+          const head = d.parsers[0]
+          if (head === undefined) return undefined
+          const r = walk(head, trivia, depth + 1)
+          if (r !== 'end') return r
+          const next = d.parsers[1]
+          return next === undefined ? 'end' : { next, boundary: trivia }
+        }
+        default: return undefined
+      }
+    }
+    const follow = walk(arm, this.activeTrivia, 0)
+    if (follow === undefined || follow === 'end') return undefined
+    const rr = this.refResolver()
+    const { next, boundary } = follow
+    if (matchesEmpty(next, new Set(), rr) || mayCommitFailure(next, rr, this.commitFailureMemo)) return undefined
+    const first = firstSetOf(next, new Set(), rr, boundary)
+    const cls = this.charClass(boundary === undefined ? first : union(first, firstSetOf(boundary, new Set(), rr)))
+    if (cls < 0) return undefined
+    return { cls, fx: this.expected(deriveExpected(next)) }
+  }
+
   node(p: Combinator<unknown>): Emitted {
     // See `refMemo`: a reference is memoised per REFERENCING trivia scope, every
     // other construct once for the program.
@@ -1183,11 +1224,15 @@ class Encoder {
         const kids = arms.map((c, k) => {
           const src = order[k]!
           const checks = d.autoNot[src]
-          const inner = this.node(c).ip
+          const gate = d.gates[src]
+          const plain = (checks === null || checks === undefined || checks.length === 0)
+            && (gate === null || gate === undefined)
+          const routedGate = plain ? this.routedArmGate(c) : undefined
+          const body = this.node(c).ip
+          const inner = routedGate === undefined ? body : this.emit(OP_RGATE, routedGate.cls, body, routedGate.fx)
           const ip = checks === null || checks === undefined || checks.length === 0
             ? inner
             : this.reject(inner, checks)
-          const gate = d.gates[src]
           const gated = gate === null || gate === undefined
             ? ip
             : this.emit(OP_ARMGATE, this.fn(gate, d.gateSrcs?.[src] ?? null), ip, this.expected(deriveExpected(c)))
@@ -1808,7 +1853,7 @@ class Encoder {
     }
     const slots = (ip: number): number[] => {
       switch (this.code[ip]) {
-        case OP_GATE: return [ip + 2]
+        case OP_GATE: case OP_RGATE: return [ip + 2]
         case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: return [ip + 1]
         case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_SOURCE_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)

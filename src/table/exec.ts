@@ -22,7 +22,7 @@ import {
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -1118,6 +1118,16 @@ function makeDriver(
         }
         EC.e = end
         return sup
+      }
+
+      case OP_RGATE: {
+        const item = ctx._routed
+        if (item !== undefined && item.span.start === pos && ctx._probe === undefined && !ctx._tolerant
+          && !classHas(cc[code[ip + 1]!]!, lead(input, item.span.end))) {
+          ctx._fe = item.span.end; ctx._fx = fx[code[ip + 3]!] as string[]
+          return FAIL
+        }
+        return exec(code[ip + 2]!, input, pos, ctx)
       }
 
       case OP_ARMGATE: {

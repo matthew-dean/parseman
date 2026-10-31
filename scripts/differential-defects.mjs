@@ -186,6 +186,16 @@ export const DEFECTS = {
     }],
   },
 
+  /** A routed-arm gate miss reports less than the arm's next term would. */
+  'rgate-miss-set-short': {
+    why: 'closure engine: a routed-arm gate miss drops the first label of the next term',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '            ctx._fe = item.span.end; ctx._fx = xf\n',
+      replace: '            ctx._fe = item.span.end; ctx._fx = xf.slice(1)\n',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{

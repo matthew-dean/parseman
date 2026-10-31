@@ -35,7 +35,7 @@
  *   node scripts/check-differentials.mjs --list     # print the registry, run nothing
  *   node scripts/check-differentials.mjs --only=id[,id]
  *
- * ENVIRONMENT. Four of the eight registered differentials drive JESS'S grammars
+ * ENVIRONMENT. Four of the nine registered differentials drive JESS'S grammars
  * over JESS'S corpora, which live in a jess worktree (`JESS_ROOT`) that this repo
  * does not vendor. There is no default: a checkout nobody built (a mirror that
  * tracks `dev` while its packages' `lib/` stay at an older commit) makes every one
@@ -210,6 +210,15 @@ const REGISTRY = [
       { defect: 'lex-repeat-min-short', expect: 'moves' },
       { defect: 'lex-rule-trivia-glued', expect: 'moves' },
     ],
+  },
+  {
+    id: 'routed-arm-gate',
+    needs: 'repo',
+    file: 'test/unit/table-routed-arm-gate.test.ts',
+    legs: 'a dispatch whose routed choice arms carry OP_RGATE, in execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-routed-arm-gate.test.ts']),
+    plants: [{ defect: 'rgate-miss-set-short', expect: 'moves' }],
   },
   {
     id: 'jess-oracle',
