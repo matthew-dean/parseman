@@ -369,18 +369,27 @@ export function compileRuleMap(
     // the selection is judged by the source it actually emits, scaled for that 5%,
     // and narrowed until that fits.
     const ceiling = budget / SUPERCOMPILE_GROWTH
+    // A budget that cannot cover the prelude buys nothing, by design: no refusal.
+    if (ceiling <= fixed) return none
+    // Narrowed until it fits, with no attempt limit: the target shrinks by at
+    // least 1% a round, so the selection either fits or empties. An empty one
+    // says why — a build that asked for an assembly and silently shipped none is
+    // a regression no test sees (the artifact still parses, on the closures).
     let target = ceiling
-    for (let attempt = 0; attempt < 16; attempt++) {
+    for (;;) {
       const sites = selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, target - fixed, profile)
-      if (sites.size === 0) return none
+      if (sites.size === 0) {
+        return {
+          ...none,
+          refusal: `a site within its ${Math.floor(ceiling)} B selection ceiling (the prelude alone is ${fixed} B)`,
+        }
+      }
       const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites).source.length
       if (bytes <= ceiling) return { sites, bytes: Math.ceil(bytes * SUPERCOMPILE_GROWTH) }
       // Scale by the overshoot, and by at least 1%: near the ceiling a site is
-      // the unit, and the ratio alone can stall a few bytes over it until the
-      // attempts run out and nothing ships.
+      // the unit, and the ratio alone can stall a few bytes over it.
       target *= Math.min(ceiling / bytes, 0.99)
     }
-    return none
   }
 
   return {
