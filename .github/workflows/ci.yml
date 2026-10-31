@@ -394,15 +394,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { head: "6bc77801", rep: 1 }
-          - { head: "484a5271", rep: 1 }
+          - { head: "2d59ad38", rep: 1 }
           - { head: "38d264c2", rep: 1 }
-          - { head: "6bc77801", rep: 2 }
-          - { head: "484a5271", rep: 2 }
+          - { head: "2d59ad38", rep: 2 }
           - { head: "38d264c2", rep: 2 }
-          - { head: "6bc77801", rep: 3 }
-          - { head: "484a5271", rep: 3 }
+          - { head: "2d59ad38", rep: 3 }
           - { head: "38d264c2", rep: 3 }
+          - { head: "2d59ad38", rep: 4 }
+          - { head: "38d264c2", rep: 4 }
     name: "bisect macro ${{ matrix.head }} r${{ matrix.rep }}"
     steps:
       - name: Checkout parseman
