@@ -64,7 +64,7 @@ import {
 } from './site-labels.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
-  scalarTerminalNodeChild, scalarTerminalNotChild, type LeadingScalarSequence,
+  scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
@@ -1676,6 +1676,16 @@ return FAIL
       }
 
       case OP_PEEK: {
+        const scalarChild = scalarTerminalPeekChild(code, ip)
+        if (scalarChild >= 0) {
+          const recognize = recognizerRef(code[scalarChild + 1]!)
+          const xf = fxRef(code[ip + 2]!)
+          return `${head}
+if(${recognize}(input,pos)<0){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+EC.e=pos
+return null
+}`
+        }
         const child = link(code[ip + 1]!)
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()

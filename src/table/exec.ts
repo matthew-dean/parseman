@@ -49,7 +49,7 @@ import {
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec, type ResolvedTable,
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
-import { scalarTerminalNotChild } from './scalar-terminal.ts'
+import { scalarTerminalNotChild, scalarTerminalPeekChild } from './scalar-terminal.ts'
 
 /**
  * THE SHARED DRIVER.
@@ -1607,6 +1607,12 @@ function makeDriver(
       }
 
       case OP_PEEK: {
+        // A direct terminal is reduced to its recognizer in both assemblies
+        // (`scalarTerminalPeekChild`), as under `not()`: hide its own diagnostic
+        // writes here too.
+        const scalarChild = scalarTerminalPeekChild(code, ip) >= 0
+        const savedFc = scalarChild ? ctx._fc : false
+        const savedProbe = scalarChild ? ctx._probe?.best : undefined
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -1617,6 +1623,10 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (scalarChild) {
+          ctx._fc = savedFc
+          if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
+        }
         // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
         if (v === FAIL) { ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]; return FAIL }
         EC.e = pos

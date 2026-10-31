@@ -134,7 +134,7 @@ import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
-  scalarTerminalNotChild, type ScalarRecognizer,
+  scalarTerminalNotChild, scalarTerminalPeekChild, type ScalarRecognizer,
 } from './scalar-terminal.ts'
 
 /**
@@ -2064,6 +2064,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_PEEK: {
+        // A direct terminal decides the lookahead by its match alone: no mark,
+        // no leaf to capture and roll back (`scalarTerminalPeekChild`).
+        const scalarChild = scalarTerminalPeekChild(code, ip)
+        if (scalarChild >= 0) {
+          const recognize = scalarFor(scalarChild)!
+          const xf = fx[code[ip + 2]!] as string[]
+          return (input, pos, ctx) => {
+            if (recognize(input, pos) < 0) {
+              ctx._fe = pos
+              ctx._fx = xf
+              return FAIL
+            }
+            EC.e = pos
+            return null
+          }
+        }
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
         const gate = lookaheadClass(code[ip + 1]!)
@@ -3868,6 +3884,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       const notChild = scalarTerminalNotChild(code, ip)
       if (notChild >= 0) scalarFor(notChild)
+      const peekChild = scalarTerminalPeekChild(code, ip)
+      if (peekChild >= 0) scalarFor(peekChild)
     }
     /**
      * THE BUILD'S OWN ANSWER, TRIED BEFORE THE CONSTRUCTOR.
