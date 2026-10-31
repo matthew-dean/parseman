@@ -33,7 +33,7 @@ export const parser = composeLeaf([
   })
 
   // Asserts rule ENTER/SUCCESS trace phases — deferred to 0.48 by owner ruling
-  // (notes/RELEASE-0.48-TARGET.md section 1). Coverage COUNTERS ship in 0.47; the six
+  // (notes/history/RELEASE-0.48-TARGET.md section 1). Coverage COUNTERS ship in 0.47; the six
   // trace phases do not. Kept because the capability is owed.
   it.todo('instruments final composeLeaf winners through imported recognition and a local reduction', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-leaf-coverage-'))

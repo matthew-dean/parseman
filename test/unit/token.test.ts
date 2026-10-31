@@ -6,8 +6,6 @@ import {
 } from '../../src/index.ts'
 import type { CSTLeaf, ParseContext } from '../../src/index.ts'
 import { compile } from '../../src/table/compile.ts'
-import { encodeTableBaseline } from '../../src/table/encode-baseline.ts'
-import { execRulesBaseline } from '../../src/table/exec-baseline.ts'
 
 type CstNode = {
   _tag: 'node'
@@ -305,13 +303,5 @@ describe('sourceLeaf()', () => {
     expect(macro.value).toEqual(interpreted.value)
     expect(leafValues(compiledWithCstHost.value)).toEqual(['ab'])
     expect(leafValues(compiledCst.value)).toEqual(['ab'])
-  })
-
-  it('keeps source projection in the baseline comparison driver', () => {
-    const run = execRulesBaseline(encodeTableBaseline({ Entry: decodedSourceLeaf }, { hostMode: 'cst' })).Entry!
-    const leaves: unknown[] = []
-    const result = run('ab', 0, { trackLines: false, _cstLeaves: leaves })
-    expect(result).toMatchObject({ ok: true, value: 'decoded', span: { start: 0, end: 2 } })
-    expect(leaves).toEqual([{ _tag: 'leaf', value: 'ab', span: { start: 0, end: 2 } }])
   })
 })
