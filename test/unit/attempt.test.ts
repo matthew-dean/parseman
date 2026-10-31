@@ -129,6 +129,7 @@ describe('attempt', () => {
   // deliberately: it was passing against `compiler/codegen.ts`, and restoring it
   // by pointing it back at an engine that is being deleted would park the gap
   // instead of recording it. Do not weaken it to make it pass.
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('the lowered artifact emits the interpreter\'s trace events, phase for phase', () => {
     const parser = rollbackGrammar()
     const interpreterTrace = createGrammarTraceSink({ capacity: 30 })
