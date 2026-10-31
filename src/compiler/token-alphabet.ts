@@ -1870,8 +1870,9 @@ function fixedBindingProjection(
   // and the emitted adapter captures that site's named body after linking every
   // scan root. Only ambient trivia/scanSkip remain live runtime callbacks; they
   // are scanner POLICY, never binding authority for these authored own children.
-  // Recovery/withCtx still have no equivalent named template.
-  if (edge.parentTag === 'recover' || edge.parentTag === 'withCtx') readerMask = 0b011
+  // Recovery still has no equivalent named template. `withCtx` has one: the
+  // emitter's OP_WITHCTX body calls its child by the name `link()` minted.
+  if (edge.parentTag === 'recover') readerMask = 0b011
   // Sequence strict, adjacency, and recovery bodies now all use scalar block
   // chains, so no supported variant is withheld here.
   const words = [

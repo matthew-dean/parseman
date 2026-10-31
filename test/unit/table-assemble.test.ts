@@ -951,9 +951,11 @@ describe('table assembler', () => {
     const selectedProg = encodeTable({ Root: suffixLine }, { trackLines: true })
     const characterProg = encodeTable({
       Root: suffixLine,
-      // A withCtx edge still lacks a named projection, keeping this comparison
-      // on the CHARACTER lowering without understating scanner completeness.
-      Incomplete: withCtx({ comparison: true }, literal(';')),
+      // A sequence of six terms has no fixed lexical template, keeping this
+      // comparison on the CHARACTER lowering.
+      Incomplete: token(sequence(
+        literal('a'), literal('b'), literal('c'), literal('d'), literal('e'), literal('f'),
+      )),
     }, { trackLines: true })
     expect(selectedProg.code[selectedProg.rules.Root!]).toBe(OP_LEX_BODY)
     expect(characterProg.code[characterProg.rules.Root!]).not.toBe(OP_LEX_BODY)

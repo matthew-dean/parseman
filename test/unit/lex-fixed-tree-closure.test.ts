@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, keywords, literal, many, noTrivia, not, oneOrMore, optional, regex, rules, sequence, token, word,
+  choice, keywords, literal, many, noTrivia, not, oneOrMore, optional, regex, rules, sequence, token, withCtx, word,
 } from '../../src/index.ts'
 import type { Combinator, ParseContext, ParseFail } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -23,6 +23,7 @@ import { run, type Runnable } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { OP_LEX_PROGRAM, OP_TOKEN } from '../../src/table/ops.ts'
+import { collectLexicalCapabilities } from '../../src/compiler/token-alphabet.ts'
 
 type Comb = Combinator<unknown>
 
@@ -190,6 +191,20 @@ describe('fixed lexical no-trivia scopes and rule references', () => {
       expect(run(entries.Root!, '<a = b>').ok, name).toBe(true)
       expect(digestValue(run(entries.Root!, '<a = b>')), name).toBe(digestValue(run(g.Root!, '<a = b>')))
     }
+  })
+})
+
+describe('withCtx children are bound by name in every reader', () => {
+  it('closes capability over a withCtx scope and lowers the tokens beside it', () => {
+    // Less and SCSS scope parse state with withCtx; its edges kept the whole
+    // program on the character lowering although the emitter binds its child.
+    const ident = regex(/-?[_a-zA-Z][-_a-zA-Z0-9]*/)
+    const g = rules({ trivia: regex(/ +/) }, (r: Record<string, Comb>) => ({
+      Root: token(noTrivia(choice(literal('$.'), sequence(literal('$^'), ident), sequence(literal('$'), ident)))),
+      Wrapped: withCtx({ inMixin: true }, sequence(r.Root!, literal(';'))),
+    })) as Record<string, Comb>
+    expect(collectLexicalCapabilities(Object.keys(g).sort().map(k => g[k]!), k => g[k]).capabilityComplete).toBe(true)
+    pinSelectedToCharacter(g, ['$a', '$.', '$^b', '$', 'x', '', '$a;', '$a ;', '$.;', '$1;'])
   })
 })
 

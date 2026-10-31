@@ -23,6 +23,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - A `token()` whose body holds a separator-less `many()`/`oneOrMore()` is one lexical
   recognizer, with the table's own repeat rules: only an optional item stops at the
   end of input or on an empty match, and a failed item's diagnostics stand.
+- A `withCtx()` scope no longer keeps a whole program off the lexical lowering: the
+  capability record still listed its child as having no named binding, which the
+  emitter has had since it learned `withCtx()`.
 - `peek()` of a direct literal or regex is one recognizer call, as `not()` of one
   already was.
 - A `not()`/`peek()` lookahead between two gaps in a sequence no longer makes the
