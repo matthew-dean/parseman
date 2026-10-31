@@ -36,7 +36,7 @@ import {
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
 import type { HostMode } from '../cst/host-mode.ts'
-import { COMPOSED_PIECES } from '../compiler/linker.ts'
+import { COMPOSED_PIECES, type IRPiece } from '../compiler/linker.ts'
 import { serializeCombinator, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { evalCombinatorIR, evalRulesIR, INERT_BUILDER } from './ir-eval.ts'
 import { countSiteVisits } from '../table/assemble.ts'
@@ -64,6 +64,42 @@ import type {
  * `tableRules` as `tableRules` (src/table/index.ts:28).
  */
 const TABLE_RUNTIME_SPECIFIER = 'parseman/table'
+
+/**
+ * BUILD-ONLY CARRIED PIECES.
+ *
+ * Nothing at runtime reads a grammar's carried IR: `compose()` links live `rules()`
+ * maps, and every runtime reader treats an IR piece as opaque
+ * (docs/design/runtime-and-size-contract.md, rules 1 and 2). Only a downstream macro
+ * build reads it. Under a rollup-family bundler the macro therefore leaves the IR out
+ * of the artifact and writes each chunk's carried lists beside it, as
+ * `<chunk>.parseman.json`; `resolveModulePieces` reads that file before it looks for
+ * an inline literal. Inline, the IR is about a quarter of a composed grammar's
+ * artifact, and the runtime spread that forwards an ancestor's pieces keeps that
+ * ancestor's module in the import graph of every parse.
+ *
+ * An item is an IR piece, or a reference to an export of a package module, resolved
+ * from the artifact's own location.
+ */
+export type CarriedSidecarItem = IRPiece | { from: string; name: string }
+/** One module's carried lists, by export name. */
+export type CarriedSink = Map<string, CarriedSidecarItem[]>
+export const CARRIED_SIDECAR_SUFFIX = '.parseman.json'
+type CarriedSidecar = { parseman: string; exports: Record<string, CarriedSidecarItem[]> }
+
+const _sidecarCache = new Map<string, { mtimeMs: number; sidecar: CarriedSidecar | null }>()
+/** The carried-pieces sidecar written beside a compiled artifact, or null. */
+function readCarriedSidecar(artifact: string): CarriedSidecar | null {
+  const file = artifact + CARRIED_SIDECAR_SUFFIX
+  let mtimeMs: number
+  try { mtimeMs = fs.statSync(file).mtimeMs } catch { return null }
+  const hit = _sidecarCache.get(file)
+  if (hit && hit.mtimeMs === mtimeMs) return hit.sidecar
+  let sidecar: CarriedSidecar | null = null
+  try { sidecar = JSON.parse(fs.readFileSync(file, 'utf8')) as CarriedSidecar } catch { /* unreadable: no sidecar */ }
+  _sidecarCache.set(file, { mtimeMs, sidecar })
+  return sidecar
+}
 
 export type ParsecraftPluginOptions = {
   /** Extra module specifiers to treat as parseman re-exports */
@@ -320,41 +356,88 @@ function parseModuleCached(filePath: string): ParsedModule | null {
   return parsed
 }
 
-export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
-  name: 'parseman',
-  // Run BEFORE the bundler's TS/JS transform — otherwise esbuild (Vite) strips
-  // the `with { type: 'macro' }` import attribute before we ever see it, and the
-  // macro silently never fires.
-  enforce: 'pre' as const,
+/** The rollup-family hook that writes each chunk's carried pieces beside it. */
+type SidecarBundle = Record<string, { type: string; fileName: string; exports?: string[]; moduleIds?: string[] }>
+type SidecarEmitter = { emitFile: (file: { type: 'asset'; fileName: string; source: string }) => unknown }
 
-  transformInclude(id: string) {
-    return /\.[jt]sx?$/.test(id) && !id.includes('node_modules')
-  },
-
-  transform(this: { warn?: (msg: string) => void; addWatchFile?: (file: string) => void }, code: string, id: string) {
-    if (!code.includes('parseman')) return null
-    if (!code.includes('macro')) return null
-    // A corpus edit changes which sites a profiled build generates, so a watch
-    // build re-lowers when one does.
-    for (const file of opts.assemblyProfile?.files ?? []) this?.addWatchFile?.(file)
-    const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
-    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true, opts.assemblyProfile, opts.assemblyBudget)
-    if (result?.warnings.length) {
-      for (const w of result.warnings) {
-        if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
-        else console.warn(`[parseman] ${w}`)
-      }
+/**
+ * Write `<chunk>.parseman.json` for every chunk that exports a grammar with carried
+ * pieces. An export is matched to the module that recorded it, preferring a module of
+ * the chunk itself; a name two modules of the bundle both record, and neither of them
+ * in the chunk, is ambiguous and is not written — a downstream compose of it then fails
+ * its build naming the artifact.
+ */
+function emitCarriedSidecars(this: SidecarEmitter, sinks: Map<string, CarriedSink>, bundle: SidecarBundle): void {
+  const recorders = new Map<string, string[]>()
+  for (const [moduleId, sink] of sinks) for (const name of sink.keys()) (recorders.get(name) ?? recorders.set(name, []).get(name)!).push(moduleId)
+  for (const chunk of Object.values(bundle)) {
+    if (chunk.type !== 'chunk') continue
+    const exports: Record<string, CarriedSidecarItem[]> = {}
+    for (const name of chunk.exports ?? []) {
+      const ids = recorders.get(name)
+      if (ids === undefined) continue
+      const own = ids.filter(m => chunk.moduleIds?.includes(m))
+      const moduleId = own.length === 1 ? own[0] : own.length === 0 && ids.length === 1 ? ids[0] : undefined
+      if (moduleId !== undefined) exports[name] = sinks.get(moduleId)!.get(name)!
     }
-    if (!result) return null
-    return { code: result.code, map: result.map }
-  },
-}))
+    if (Object.keys(exports).length === 0) continue
+    const sidecar: CarriedSidecar = { parseman: PARSEMAN_VERSION, exports }
+    this.emitFile({ type: 'asset', fileName: chunk.fileName + CARRIED_SIDECAR_SUFFIX, source: JSON.stringify(sidecar) })
+  }
+}
+
+const SIDECAR_FRAMEWORKS = new Set(['rollup', 'rolldown', 'vite'])
+
+export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
+  // Module id → its carried lists, under a bundler that writes them beside the chunk.
+  // Any other bundler gets them inline, as before.
+  const sinks = SIDECAR_FRAMEWORKS.has(meta.framework) ? new Map<string, CarriedSink>() : undefined
+  const generateBundle = sinks === undefined ? undefined : {
+    generateBundle(this: SidecarEmitter, _options: unknown, bundle: SidecarBundle) { emitCarriedSidecars.call(this, sinks, bundle) },
+  }
+  return {
+    name: 'parseman',
+    ...(generateBundle === undefined ? {} : { rollup: generateBundle, rolldown: generateBundle, vite: generateBundle }),
+    // Run BEFORE the bundler's TS/JS transform — otherwise esbuild (Vite) strips
+    // the `with { type: 'macro' }` import attribute before we ever see it, and the
+    // macro silently never fires.
+    enforce: 'pre' as const,
+
+    transformInclude(id: string) {
+      return /\.[jt]sx?$/.test(id) && !id.includes('node_modules')
+    },
+
+    transform(this: { warn?: (msg: string) => void; addWatchFile?: (file: string) => void }, code: string, id: string) {
+      if (!code.includes('parseman')) return null
+      if (!code.includes('macro')) return null
+      // A corpus edit changes which sites a profiled build generates, so a watch
+      // build re-lowers when one does.
+      for (const file of opts.assemblyProfile?.files ?? []) this?.addWatchFile?.(file)
+      const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
+      const sink: CarriedSink | undefined = sinks && new Map()
+      const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true, opts.assemblyProfile, opts.assemblyBudget, sink)
+      if (sinks && sink) {
+        if (sink.size > 0) sinks.set(id, sink)
+        else sinks.delete(id)
+      }
+      if (result?.warnings.length) {
+        for (const w of result.warnings) {
+          if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
+          else console.warn(`[parseman] ${w}`)
+        }
+      }
+      if (!result) return null
+      return { code: result.code, map: result.map }
+    },
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Reading carried pieces back out of a COMPILED grammar module
 // ---------------------------------------------------------------------------
-// The macro embeds a grammar's linkable pieces inside its exported const's
-// initializer (see `withCarriedPieces`). To compose an imported grammar we parse
+// Under a rollup-family bundler the pieces are in the sidecar beside the module
+// (`readCarriedSidecar`). Otherwise the macro embeds them inside its exported const's
+// initializer (see `withCarriedPieces`), and to compose an imported grammar we parse
 // its compiled module, find that const, and pull the pieces literal back out —
 // these three pure helpers do exactly that (no runtime, no source recompile).
 
@@ -600,10 +683,11 @@ export function transformMacro(
   grammarCoverage = false,
   assemblyProfile?: AssemblyProfile,
   assemblyBudget = DEFAULT_ASSEMBLY_BUDGET,
+  carriedSink?: CarriedSink,
 ): TransformMacroResult | null {
   const depth = degradationCaptureDepth()
   try {
-    return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage, assemblyProfile, assemblyBudget)
+    return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage, assemblyProfile, assemblyBudget, carriedSink)
   } finally {
     setReducerResolver(null)
     setBuilderImportResolver(null)
@@ -622,6 +706,7 @@ function transformMacroImpl(
   grammarCoverage: boolean,
   assemblyProfile: AssemblyProfile | undefined,
   assemblyBudgetShare: number,
+  carriedSink: CarriedSink | undefined,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -1653,6 +1738,23 @@ function transformMacroImpl(
     local = false,
   ): RawItem[] | null => {
     const { file } = module
+    const fail = (why: string): null => { unresolved.why ??= `${exportName} in ${file}: ${why}`; return null }
+    // A build-only sidecar wins over an inline literal: an artifact that has one
+    // carries no literal (see `CarriedSidecarItem`).
+    const sidecarItems = module.source || local ? undefined : readCarriedSidecar(file)?.exports[exportName]
+    if (sidecarItems !== undefined) {
+      const list: RawItem[] = []
+      for (const item of sidecarItems) {
+        if ('ir' in item) { list.push(item); continue }
+        const sub = resolveGrammarModule(file, item.from)
+        if (sub === null) return fail(`its carried pieces name \`${item.name}\` from '${item.from}', a module that could not be found`)
+        if (seen.has(sub.file)) continue
+        const pieces = resolveModulePieces(sub, item.name, new Set(seen).add(sub.file), unresolved)
+        if (pieces === null) return fail(`its carried pieces name \`${item.name}\` from '${item.from}', which could not be resolved`)
+        list.push(...pieces)
+      }
+      return list
+    }
     const mod = module.source
       ? lowerPrivateSourceModule(file, moduleAliases, warnUnloweredRegex, recovery)
       : parseModuleCached(file)
@@ -1660,9 +1762,15 @@ function transformMacroImpl(
     const localFor = local ? exportName : exportLocalName(mod.body as AnyNode[], exportName)
     const initNode = localFor ? topLevelInit(mod.body as AnyNode[], localFor) : null
     const literalRange = initNode ? findCarriedPiecesLiteral(initNode) : null
-    if (!literalRange) return null
+    if (!literalRange) {
+      // A compiled grammar with neither a literal nor a sidecar entry was built to be
+      // composed or it was not, and a runtime compose() cannot link it either way.
+      return initNode !== null && !module.source && mod.src.slice(initNode.start, initNode.end).includes('tableRules(')
+        ? fail(`is a compiled grammar with no carried pieces — no inline literal, and no entry in ${path.basename(file)}${CARRIED_SIDECAR_SUFFIX}. `
+          + 'Rebuild it with this parseman, and keep that file beside the artifact')
+        : null
+    }
     const literal = mod.src.slice(literalRange.start, literalRange.end)
-    const fail = (why: string): null => { unresolved.why ??= `${exportName} in ${file}: ${why}`; return null }
 
     const imports = extractImportBindings(mod.body as AnyNode[])
     const stubNames: string[] = []
@@ -1731,6 +1839,32 @@ function transformMacroImpl(
     }
     importedPiecesCache.set(localName, result)
     return result
+  }
+
+  /**
+   * Record an exported grammar's carried list in the build-only sink rather than
+   * emitting it into the runtime artifact. `false` when there is no sink, or when an
+   * entry cannot be written as data; the caller then emits it inline, as before.
+   *
+   * A package import stays a reference, resolved from the artifact's location just as
+   * the import itself is, so a descendant never re-serializes its ancestor. A relative
+   * import names a module the bundler folds into this chunk, which has no artifact of
+   * its own to point at, so its pieces are written out here.
+   */
+  const sinkCarried = (name: string, list: CarriedItem[]): boolean => {
+    if (carriedSink === undefined) return false
+    const out: CarriedSidecarItem[] = []
+    for (const it of list) {
+      if (!isSpread(it)) { out.push(it); continue }
+      const b = importBindings.get(it.__spreadLocal)
+      if (b === undefined) return false
+      if (!b.source.startsWith('.') && !path.isAbsolute(b.source)) { out.push({ from: b.source, name: b.imported }); continue }
+      const pieces = importedPieces(it.__spreadLocal)
+      if (pieces === null) return false
+      out.push(...pieces)
+    }
+    carriedSink.set(name, out)
+    return true
   }
 
   /**
@@ -2493,6 +2627,7 @@ function transformMacroImpl(
             else warn(init.start, `${varName}: exported grammar could not be serialized to IR, so it carries no `
               + 'composable pieces — a downstream compose() of this grammar will fall back to runtime. '
               + 'Re-run with PARSEMAN_IR_DEBUG=1 to print the combinator that blocked serialization.')
+            if (carriedMetadata !== undefined && sinkCarried(varName, carriedMetadata)) carriedMetadata = undefined
           }
           const replacement = compiledRules.replacement !== null
             ? compiledRules.replacementWithMetadata!(staticTableMetadataSource({
@@ -2528,7 +2663,7 @@ function transformMacroImpl(
           // grammar via `import { <name> }` (re-composition, no source) and re-lower it
           // under ITS composing trivia.
           localComposedCarried.set(varName, fused.carried)
-          const replacement = exportPrefix ? fused.exportedReplacement : fused.replacement
+          const replacement = exportPrefix && !sinkCarried(varName, fused.carried) ? fused.exportedReplacement : fused.replacement
           // Coverage definitions already ride in the table program's `cv` pool;
           // `tableRules` exposes that same pool through the metadata prototype.
           replacements.push({ start: init.start, end: init.end, replacement })
