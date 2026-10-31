@@ -474,12 +474,13 @@ function directFixedLexNode(
     if (terminal !== undefined) return { kind: 'terminal', terminal }
     const def = current._def
     if (def.tag === 'grammar') {
-      // A no-trivia scope under a token writes nothing that is not already in
-      // force — the table runs it as its child (`scopeIsIdentity`) — so it is
-      // its child at any position.
-      if (def.clearTrivia === true && def.triviaParser === undefined && def.captureTrivia !== true
-        && def.rootCapture !== 'opaque' && def.constructionTrackLines === 'inherit'
-        && def.constructionCaptureTriviaKinds === undefined) {
+      // A scope with no trivia of its own writes nothing under a token that is
+      // not already in force: a cleared one runs as its child in the table
+      // (`scopeIsIdentity`) and an inheriting one encodes no row. Its line
+      // policy is the table's own (`hasScopedTrackLines`). So it is its child
+      // at any position.
+      if (def.triviaParser === undefined && def.captureTrivia !== true
+        && def.rootCapture !== 'opaque' && def.constructionCaptureTriviaKinds === undefined) {
         return directFixedLexNode(def.parser, resolve, active, pureOnly)
       }
       if (!pureOnly || (def.parser._def.tag !== 'token'
@@ -1585,8 +1586,11 @@ function normalizeLexical(
   if (stack.has(parser)) return { refusal: 'recursive token body' }
   stack.add(parser)
   try {
-    return withLexicalControl(session, parser._def.tag, () =>
-      normalizeLexicalBody(parser, resolve, stack, session))
+    // A nested `balanced()` is its scanner machine, not the transform that
+    // builds its value — `sequence('@', balanced('{', '}'))` as a skipper.
+    return normalizeBalancedLexical(parser, resolve, session)
+      ?? withLexicalControl(session, parser._def.tag, () =>
+        normalizeLexicalBody(parser, resolve, stack, session))
   } finally {
     stack.delete(parser)
   }

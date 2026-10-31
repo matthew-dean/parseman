@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, keywords, literal, many, noTrivia, not, oneOrMore, optional, regex, rules, sequence, token, withCtx, word,
+  balanced, choice, keywords, literal, many, noTrivia, not, oneOrMore, optional, parser, regex, rules, scanTo, sequence, token, withCtx, word,
 } from '../../src/index.ts'
 import type { Combinator, ParseContext, ParseFail } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -205,6 +205,33 @@ describe('withCtx children are bound by name in every reader', () => {
     })) as Record<string, Comb>
     expect(collectLexicalCapabilities(Object.keys(g).sort().map(k => g[k]!), k => g[k]).capabilityComplete).toBe(true)
     pinSelectedToCharacter(g, ['$a', '$.', '$^b', '$', 'x', '', '$a;', '$a ;', '$.;', '$1;'])
+  })
+})
+
+describe('the remaining capability records of the Jess grammars', () => {
+  it('normalizes a skipper that holds a nested balanced()', () => {
+    // Less's inline-JavaScript scan skips `@{...}` interpolations: a sequence
+    // whose second term is a balanced group, not a transform to refuse.
+    const doubleQuoted = noTrivia(sequence(literal('"'), regex(/(?:[^"\\]|\\[\s\S])*/), literal('"')))
+    const interpolation = sequence(literal('@'), balanced('{', '}', { skip: [doubleQuoted], strict: true }))
+    const body = scanTo(literal('`'), { skip: [doubleQuoted, interpolation, balanced('(', ')', { skip: [doubleQuoted] })] })
+    const inventory = collectLexicalCapabilities([choice(sequence(literal('`'), body, literal('`')), literal('~'))])
+    expect(inventory.scanConsumerPolicies.length).toBeGreaterThan(0)
+    expect(inventory.scanConsumerPolicies.every(policy => policy.status.kind === 'complete')).toBe(true)
+    expect(inventory.capabilityComplete).toBe(true)
+  })
+
+  it('lowers a token through a scope that only turns line tracking on', () => {
+    // A positions grammar wraps rules in `parser({ trackLines: true }, ...)`.
+    const g = rules((r: Record<string, Comb>) => ({
+      Name: parser({ trackLines: true }, token(noTrivia(sequence(
+        not(keywords(['@if', '@else'], { caseInsensitive: true, boundary: '-_a-zA-Z0-9' })),
+        regex(/@[-_a-zA-Z][-_a-zA-Z0-9]*/),
+      )))),
+      Root: token(noTrivia(sequence(not(keywords(['@media'], { caseInsensitive: true, boundary: '-_a-zA-Z0-9' })), r.Name!))),
+      Wrapped: choice(sequence(r.Root!, literal(';')), literal('!')),
+    })) as Record<string, Comb>
+    pinSelectedToCharacter(g, ['@foo', '@if', '@IF', '@media', '@mediax', '@', 'x', '', '@foo;', '!'])
   })
 })
 
