@@ -1328,7 +1328,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
   }
 
-  function dispatchBranch(child: Piece, usesRouted: boolean): DispatchBranch {
+  function dispatchBranch(child: Piece, usesRouted: boolean, commits = true): DispatchBranch {
     if (!usesRouted) {
       // The arm runs after the selector's match, so it marks where it starts.
       return (input, _pos, selEnd, key, ctx) => {
@@ -1343,7 +1343,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const v = child(input, selEnd, ctx)
         if (v === FAIL) {
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          ctx._fc = true
+          if (commits) ctx._fc = true
           return FAIL
         }
         return [key, v]
@@ -1363,7 +1363,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       if (v === FAIL) {
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        ctx._fc = true
+        if (commits) ctx._fc = true
         return FAIL
       }
       return [key, v]
@@ -3652,7 +3652,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const selector = link(code[ip + 1]!)
         const otherIp = code[ip + 3]!
         const other = otherIp >= 0 ? link(otherIp) : undefined
-        const otherRouted = code[ip + 4]! === 1
+        const otherRouted = (code[ip + 4]! & 1) === 1
+        const otherCommits = (code[ip + 4]! & 2) === 0
         const n = code[ip + 5]!
         const armBase = ip + 6
         const byKey = spec.byKey
@@ -3699,7 +3700,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           )
         }
         const runArm = n === 0 ? undefined : bindArms(0)
-        const runOther = other === undefined ? undefined : dispatchBranch(other, otherRouted)
+        const runOther = other === undefined ? undefined : dispatchBranch(other, otherRouted, otherCommits)
 
         return (input, pos, ctx) => {
           const need = markCst(ctx)

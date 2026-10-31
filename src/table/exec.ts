@@ -602,6 +602,7 @@ function makeDriver(
 
         let target: number
         let usesRouted: boolean
+        let commits = true
         if (arm === undefined) {
           const other = code[ip + 3]!
           if (other < 0) {
@@ -611,7 +612,8 @@ function makeDriver(
             return FAIL
           }
           target = other
-          usesRouted = code[ip + 4]! === 1
+          usesRouted = (code[ip + 4]! & 1) === 1
+          commits = (code[ip + 4]! & 2) === 0
         } else {
           target = code[armBase + arm]!
           usesRouted = spec.routed[arm] === 1
@@ -638,8 +640,8 @@ function makeDriver(
           rollbackTrivia(ctx, mark)
           // The interpreter marks a failed dispatch branch COMMITTED: the
           // selector already matched, so an enclosing choice must not treat this
-          // as "try the next arm".
-          ctx._fc = true
+          // as "try the next arm". An uncommitted fallback keeps its own flag.
+          if (commits) ctx._fc = true
           return FAIL
         }
         // The end cell already holds the branch's end — dispatch's span runs from `pos`

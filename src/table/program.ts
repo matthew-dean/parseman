@@ -432,7 +432,7 @@ export function validateDispatchSpec(
     return false
   }
   if (spec === undefined || !Number.isInteger(arity) || arity < 0
-    || (fallbackRouted !== 0 && fallbackRouted !== 1)
+    || !Number.isInteger(fallbackRouted) || fallbackRouted < 0 || fallbackRouted > 3
     || spec.routed.length !== arity
     || spec.routed.some(value => value !== 0 && value !== 1)
     || invalid(spec.byKey.values()) || invalid(spec.byFold.values())

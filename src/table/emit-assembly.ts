@@ -2157,7 +2157,8 @@ return FAIL
         const selector = link(code[ip + 1]!)
         const otherIp = code[ip + 3]!
         const other = otherIp >= 0 ? link(otherIp) : undefined
-        const otherRouted = code[ip + 4]! === 1
+        const otherRouted = (code[ip + 4]! & 1) === 1
+        const otherCommits = (code[ip + 4]! & 2) === 0
         const n = code[ip + 5]!
         validateDispatchSpec(spec, n, code[ip + 4]!)
         const armBase = ip + 6
@@ -2221,7 +2222,7 @@ ${fallbackCase}
 }
 if(v===FAIL){
 ${emitRollback(m2, L.buf, L.raw, sinks)}
-ctx._fc=true
+${other !== undefined && !otherCommits ? 'if(arm!==undefined)' : ''}ctx._fc=true
 return FAIL
 }
 return [key,v]

@@ -232,6 +232,33 @@ export const DEFECTS = {
     }],
   },
 
+  'otherwise-commit-bit-dropped': {
+    why: 'encoder: otherwise(p, { commit: false }) is encoded as a committing fallback',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '(d.otherwiseCommit === false ? 2 : 0)',
+      replace: '0',
+    }],
+  },
+
+  'otherwise-commit-closure-routed': {
+    why: 'closure engine: a routed uncommitted fallback still commits its failure',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '\n        if (commits) ctx._fc = true\n',
+      replace: '\n        ctx._fc = true\n',
+    }],
+  },
+
+  'otherwise-commit-emitted': {
+    why: 'emitted engine: an uncommitted fallback still commits its failure',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "${other !== undefined && !otherCommits ? 'if(arm!==undefined)' : ''}ctx._fc=true",
+      replace: 'ctx._fc=true',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{

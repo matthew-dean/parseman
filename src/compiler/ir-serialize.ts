@@ -460,7 +460,7 @@ class Serializer {
             arms.push(`when(${matcherExpr(entry)}, ${kid(entry.parser)}${entry.caseInsensitive ? ', { caseInsensitive: true }' : ''})`)
           }
         }
-        if (def.otherwise) arms.push(`otherwise(${kid(def.otherwise)})`)
+        if (def.otherwise) arms.push(`otherwise(${kid(def.otherwise)}${def.otherwiseCommit === false ? ', { commit: false }' : ''})`)
         return `dispatch(${kid(def.selector)}${arms.length === 0 ? '' : `, ${arms.join(', ')}`})`
       }
       case 'many':      return `many(${kid(def.parser)}${repeatOpts(def.min, def.max)})`

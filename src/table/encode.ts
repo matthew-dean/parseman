@@ -1624,7 +1624,9 @@ class Encoder {
         const otherRouted = d.otherwise === undefined
           ? false
           : branchUsesRouted({ parser: d.otherwise as Combinator<unknown>, usesRouted: d.otherwiseUsesRouted === true })
-        this.code[head + 4] = otherRouted ? 1 : 0
+        // Bit 0: the fallback reads the routed token. Bit 1: its failure is not
+        // committed (`otherwise(p, { commit: false })`).
+        this.code[head + 4] = (otherRouted ? 1 : 0) | (d.otherwiseCommit === false ? 2 : 0)
         this.code[head + 5] = arms.length
         for (let i = 0; i < arms.length; i++) this.code[head + 6 + i] = arms[i]!
         return head

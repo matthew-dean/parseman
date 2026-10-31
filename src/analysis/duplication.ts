@@ -395,7 +395,7 @@ function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
     case 'leaf':      return `leaf\u0000${d.cstValue ?? 'value'}\u0000${fnKey(d.fnSrc, d.fn)}`
     case 'many': case 'oneOrMore': return `${d.tag}\u0000${d.min}\u0000${d.max ?? ''}`
     case 'sepBy':     return `sepBy\u0000${d.min}\u0000${d.max ?? ''}\u0000${d.trailing ?? ''}`
-    case 'dispatch':  return `dispatch\u0000${d.cases.map(c => JSON.stringify(c.keys)).join('\u0002')}\u0000${d.otherwise !== undefined}`
+    case 'dispatch':  return `dispatch\u0000${d.cases.map(c => JSON.stringify(c.keys)).join('\u0002')}\u0000${d.otherwise !== undefined}${d.otherwiseCommit === false ? '\u0000uncommitted' : ''}`
     case 'expect':    return `expect\u0000${d.label ?? ''}\u0000${d.expected.join('\u0001')}`
     case 'scanTo':    return `scanTo\u0000${d.raw}\u0000${d.orEOF}\u0000${d.recoverAt !== undefined}\u0000${d.stopAt !== undefined}`
     case 'lines':     return `lines\u0000${d.first !== undefined}\u0000${d.lazy !== undefined}`

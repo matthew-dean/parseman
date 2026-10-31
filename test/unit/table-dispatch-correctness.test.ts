@@ -183,7 +183,8 @@ describe('table dispatch correctness', () => {
     const fallbackIp = dispatchIp(fallbackBase)
     expect(fallbackBase.code[fallbackIp + 4]).toBe(1)
     const malformedCodeCases: readonly [string, (code: number[]) => void][] = [
-      ['fallback routed flag', code => { code[fallbackIp + 4] = 2 }],
+      // Bits 0 (routed) and 1 (uncommitted) are the whole flag word.
+      ['fallback routed flag', code => { code[fallbackIp + 4] = 4 }],
       ['missing dsp index', code => { code[fallbackIp + 2] = fallbackBase.dsp.length + 7 }],
     ]
     for (const [kind, mutate] of malformedCodeCases) {

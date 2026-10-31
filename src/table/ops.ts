@@ -490,7 +490,9 @@ export const OP_RGATE = 45
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
- * `other` is the `otherwise()` offset (or −1), `otherRouted` is 1 when the
+ * `other` is the `otherwise()` offset (or −1), `otherRouted` bit 1 (`&2`) is set
+ * when the fallback's failure is NOT committed (`otherwise(p, { commit: false })`)
+ * and bit 0 when the
  * fallback consumes the routed token, and `a1…an` are the arm offsets. Arm
  * `usesRouted` bits live in the `dsp` entry beside the key maps.
  *

@@ -235,6 +235,19 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'dispatch-otherwise-commit',
+    needs: 'repo',
+    file: 'test/unit/dispatch-otherwise-commit.test.ts',
+    legs: 'a statement dispatch with a committing call case and an otherwise() fallback, committed and uncommitted, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/dispatch-otherwise-commit.test.ts']),
+    plants: [
+      { defect: 'otherwise-commit-bit-dropped', expect: 'moves' },
+      { defect: 'otherwise-commit-closure-routed', expect: 'moves' },
+      { defect: 'otherwise-commit-emitted', expect: 'moves' },
+    ],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',
