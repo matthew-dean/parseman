@@ -155,6 +155,34 @@ function isGap(p: Combinator<unknown>): boolean {
   })
 }
 
+/**
+ * A COMPOSITE gap: `optional(<trivia of regex arms>)`, the way a grammar names
+ * its own trivia as an operator's padding (`optional(mathTrivia)`), where every
+ * non-empty match starts with a gap character. Only regexes, literals, labels,
+ * choices, repeats and `trivia()` wrappers inside, so its value and end are a
+ * function of the input, position and trivia scope alone.
+ */
+function isCompositeGap(p: Combinator<unknown>): boolean {
+  const d = p._def as ParserDef
+  if (d.tag !== 'optional') return false
+  const pure = (c: Combinator<unknown>, depth: number): boolean => {
+    if (depth > 12) return false
+    const e = c._def as ParserDef
+    switch (e.tag) {
+      case 'regex': case 'literal': return true
+      case 'label': case 'trivia': case 'oneOrMore': case 'many': case 'optional': return pure(e.parser, depth + 1)
+      case 'choice': return e.parsers.every(a => pure(a, depth + 1)) && e.gates.every(g => g === null || g === undefined)
+      default: return false
+    }
+  }
+  if (!pure(d.parser, 0)) return false
+  const fs = firstSetOf(d.parser, new Set(), undefined, null)
+  return fs.kind === 'ranges' && fs.ranges.every(r => {
+    for (let c = r.lo; c <= r.hi; c++) if (!GAP_CHARS.has(c)) return false
+    return true
+  })
+}
+
 class Encoder {
   code: number[] = []
   k: unknown[] = []
@@ -876,7 +904,7 @@ class Encoder {
     const other = lead.other.kind === 'empty' ? -1 : this.charClass(lead.other)
     if (lead.other.kind !== 'empty' && other < 0) return ip
     const p = this.node(lead.p).ip
-    if (this.code[p] !== OP_RX && this.code[p] !== OP_RX_TRACK) return ip
+    if (this.code[p] !== OP_RX && this.code[p] !== OP_RX_TRACK && this.code[p] !== OP_OPT) return ip
     return this.emit(OP_GAPGATE, ip, p, cls, other)
   }
 
@@ -888,7 +916,7 @@ class Encoder {
    * in a sequence with no trivia between its terms.
    */
   private gapLead(
-    c: Combinator<unknown>, trivia: Combinator<unknown> | null | undefined, depth: number,
+    c: Combinator<unknown>, trivia: Combinator<unknown> | null | undefined, depth: number, isolated = false,
   ): { p: Combinator<unknown>; follow: FirstSet; other: FirstSet } | undefined {
     if (depth > 24) return undefined
     const rr = this.refResolver()
@@ -897,19 +925,25 @@ class Encoder {
       case 'lazy': {
         let target: Combinator<unknown> | undefined = winnerForRef(c, rr)
         if (target === undefined) { try { target = d.thunk() } catch { return undefined } }
-        return this.gapLead(target, trivia, depth + 1)
+        return this.gapLead(target, trivia, depth + 1, isolated)
       }
-      case 'node': case 'leaf': case 'label': case 'attempt':
-        return this.gapLead(d.parser, trivia, depth + 1)
+      // A leaf or token clears every capture sink and the trivia log for its body,
+      // so a gap inside one that is a composite of regexes, not one regex, can be
+      // run by the repeat under the same clearing and handed over whole.
+      case 'leaf': case 'token':
+        return this.gapLead(d.parser, trivia, depth + 1, true)
+      case 'node': case 'label': case 'attempt':
+        return this.gapLead(d.parser, trivia, depth + 1, isolated)
       case 'field':
-        return d.leadingTrivia === true ? undefined : this.gapLead(d.parser, trivia, depth + 1)
+        return d.leadingTrivia === true ? undefined : this.gapLead(d.parser, trivia, depth + 1, isolated)
       case 'grammar':
-        return this.gapLead(d.parser, d.clearTrivia === true ? null : (d.triviaParser ?? trivia), depth + 1)
+        return this.gapLead(d.parser, d.clearTrivia === true ? null : (d.triviaParser ?? trivia), depth + 1, isolated)
       case 'sequence': {
         const [first, ...rest] = d.parsers
         if (first === undefined) return undefined
-        if ((first._def as ParserDef).tag !== 'regex' || !isGap(first)) {
-          return this.gapLead(first, trivia, depth + 1)
+        const composite = isolated && isCompositeGap(first)
+        if (!composite && ((first._def as ParserDef).tag !== 'regex' || !isGap(first))) {
+          return this.gapLead(first, trivia, depth + 1, isolated)
         }
         // No trivia between the gap and the term after it (`undefined`: none).
         if ((trivia !== undefined && trivia !== null) || rest.length === 0) return undefined
@@ -928,7 +962,7 @@ class Encoder {
         let follow: FirstSet = empty()
         let other: FirstSet = empty()
         for (const arm of d.parsers) {
-          const lead = this.gapLead(arm, trivia, depth + 1)
+          const lead = this.gapLead(arm, trivia, depth + 1, isolated)
           if (lead !== undefined && (p === undefined || lead.p === p)) {
             p = lead.p
             follow = union(follow, lead.follow)

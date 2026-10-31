@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, cstBuildHost, literal, many, node, noTrivia, optional, regex, rules, sepBy, sequence,
+  choice, classifiedTrivia, cstBuildHost, keywords, leaf, literal, many, node, noTrivia, optional, regex, rules, sepBy, sequence,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -69,6 +69,21 @@ const grammar = (mode: 'ast' | 'cst' | 'lines'): Record<string, Comb> => rules({
   Atom: choice(regex(/[0-9]+/), regex(/[a-z]+/), sequence(literal('('), g.Or!, literal(')'))),
 })) as Record<string, Comb>
 
+// The Less spelling: the operator's padding is the grammar's own trivia,
+// `optional(mathTrivia)`, inside a `leaf` that reads both the padding and the
+// operator, so the gap's value is observable.
+const mathTrivia = classifiedTrivia({ whitespace: regex(/[ \t]+/), blockComment: regex(/\/\*[^*]*\*\//) })
+const lessGrammar = (mode: 'ast' | 'cst' | 'lines'): Record<string, Comb> => rules({ trivia: regex(/[ \t]+/), ...(mode === 'lines' ? { trackLines: true } : mode === 'cst' ? { hostMode: 'cst' } : {}) }, (g: Record<string, Comb>) => ({
+  Decl: sequence(regex(/[a-z]+/), literal(':'), g.List!, literal(';')),
+  List: sepBy(g.Space!, sequence(literal(','), optional(regex(/[ \t]+/))), { min: 1 }),
+  Space: node('Space', many(g.Sum!, { min: 1 }), fold),
+  Sum: node('Sum', noTrivia(sequence(g.Atom!, many(sequence(
+    leaf(noTrivia(sequence(optional(mathTrivia), keywords(['*', '/', '+']), optional(mathTrivia))), v => JSON.stringify(v)),
+    g.Atom!,
+  )))), fold),
+  Atom: choice(regex(/[0-9]+/), regex(/[a-z]+/), sequence(literal('('), g.Sum!, literal(')'))),
+})) as Record<string, Comb>
+
 function inputs(): string[] {
   let seed = 23
   const rnd = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
@@ -116,6 +131,34 @@ describe('an optional repeat item that opens with a gap', () => {
     const withOps = countSiteVisits(prog, rs => { run(rs.Decl!, 'x:1 * 2;') })
     expect(withOps[op]).toBe(1)
   })
+
+  it('gates a repeat whose operator pads with optional(<classified trivia>) inside a leaf', () => {
+    const prog = encodeTable(lessGrammar('ast'))
+    expect([...reachableIps(prog)].filter(ip => prog.code[ip] === OP_GAPGATE)).toHaveLength(1)
+  })
+
+  for (const [label, mode, opts] of [
+    ['ast', 'ast', {}],
+    ['cst host', 'cst', { build: cstBuildHost({ tags: true }) }],
+    ['tolerant', 'ast', { tolerant: true }],
+    ['line tracking', 'lines', {}],
+  ] as const) {
+    it(`a composite gap parses and fails as the ungated leg does in every reader (${label})`, () => {
+      const g = lessGrammar(mode)
+      const cases = inputs().map(input => input.replace(/%/g, '/').replace(/ - /g, ' + ').replace(/ and /g, ' '))
+      const prog = encodeTable(g)
+      // Tolerant recovery is compared with the reference driver too: on this
+      // grammar it already differs from the interpreter on `x:(1;` without
+      // any gap gate (the reference driver runs every item as written).
+      const oracle = mode === 'lines' || label === 'tolerant' ? execRules(prog).Decl! : g.Decl!
+      const want = cases.map(input => digestValue(run(oracle, input, opts)))
+      for (const [name, entries] of readers(prog)) {
+        cases.forEach((input, i) => {
+          expect(digestValue(run(entries.Decl!, input, opts)), `${name} ${JSON.stringify(input)}`).toBe(want[i])
+        })
+      }
+    }, 60_000)
+  }
 
   // Line tracking is compared with the reference driver, which runs a gated
   // item as written: the interpreter and the tables already disagree on this

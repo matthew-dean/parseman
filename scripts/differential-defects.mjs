@@ -278,6 +278,21 @@ export const DEFECTS = {
     }],
   },
 
+  'gap-composite-sinks-kept': {
+    why: 'closure engine: the gate runs a composite gap without clearing the capture sinks its leaf clears',
+    edits: [{ file: 'src/table/assemble.ts', find: '                ctx._cstBuf = undefined; ctx._cstChildren = undefined; ctx._cstLeaves = undefined\n', replace: '' }],
+  },
+
+  'gap-composite-sinks-kept-emitted': {
+    why: 'emitted engine: the gate runs a composite gap without clearing the capture sinks its leaf clears',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: 'ctx._cstBuf=undefined;ctx._cstChildren=undefined;ctx._cstLeaves=undefined;ctx._cstRawChildren=undefined;ctx._cstTriviaLog=undefined;ctx._triviaLog=undefined\n', replace: '' }],
+  },
+
+  'gap-composite-value-dropped': {
+    why: 'closure engine: a composite gap row taken from the slot returns null instead of the gap\'s value',
+    edits: [{ file: 'src/table/assemble.ts', find: '          EC.e = GAP.end\n          return GAP.value\n', replace: '          EC.e = GAP.end\n          return null\n' }],
+  },
+
   'gap-slot-any-row': {
     why: 'closure engine: a gap row takes the slot at its position whatever row the slot was set for',
     edits: [{ file: 'src/table/assemble.ts', find: 'if (GAP.row === row && GAP.at === pos && GAP.input === input) e = GAP.end', replace: 'if (GAP.at === pos && GAP.input === input) e = GAP.end' }],
