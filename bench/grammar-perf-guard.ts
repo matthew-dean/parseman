@@ -104,7 +104,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease,
   type Case, type Thresholds,
 } from './ab-harness.ts'
 
@@ -118,7 +118,6 @@ type GateMeasurement = import('./ab-harness.ts').Measurement & { passes: number 
 
 type Config = {
   scoreMethod: string
-  referenceSha: string
   input: { rules: number }
   measurement: GateMeasurement
   thresholds: Thresholds
@@ -136,7 +135,9 @@ const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
 const REF_ARG = argValue('--ref')
 const HEAD_REF_ARG = argValue('--head-ref')
-const REF = REF_ARG ?? CONFIG.referenceSha
+// The previous release, resolved from the v* tags (see `previousRelease`).
+const REFERENCE = REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
+const REF = REFERENCE.sha
 const HEAD_REF = SELF ? REF : HEAD_REF_ARG
 
 const M: GateMeasurement = QUICK
@@ -203,7 +204,7 @@ const refDir = materialise(GATE, ROOT, REF, COPY)
 const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
 
 console.log(
-  `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REF}`}`,
+  `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,
 )
 
 const ref = await loadSide(refDir)

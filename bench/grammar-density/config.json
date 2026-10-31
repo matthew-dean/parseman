@@ -4,8 +4,7 @@
   "scoreMethod": "paired-ratio-v2",
   "_scoreMethodNote": "A/A --self revalidation on 2026-08-09 produced 0/35 false breaches with a worst single-pass swing of 1.52%, so the existing percentage floors remain unchanged.",
 
-  "referenceSha": "87fe986d",
-  "_referenceNote": "The A/B reference: the exact stable 0.57.0 main base (87fe986d, the merge of the 0.57.0 release PR). Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the exact stable main base at every release, in the release PR, with the numbers read in that PR. Do NOT infer it from the first commit carrying the version string and do NOT bump it to silence a red gate.",
+  "_referenceNote": "The A/B reference is the PREVIOUS RELEASE: the newest v* tag HEAD contains, resolved at run time by `previousRelease` in bench/ab-harness.ts, so it follows every publish with no edit here. Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. `--ref=<sha>` overrides it for a one-off comparison.",
 
   "input": {
     "rules": 200,

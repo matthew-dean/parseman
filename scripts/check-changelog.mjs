@@ -1,103 +1,46 @@
 #!/usr/bin/env node
 /**
- * Release gate — a change lands ALREADY RELEASABLE, or it does not land.
+ * Release gate — every pull request lands with its CHANGELOG entry, and `main` always
+ * records a coherent version. Publishing happens on merge (`.github/workflows/
+ * publish.yml`, `scripts/release.mjs`); this gate keeps what it publishes honest.
  *
  * Design and rationale: `docs/design/release-gates.md`.
  *
- * ── WHY THIS MOVED LEFT ─────────────────────────────────────────────────────────
- * This script used to run only as `prepublishOnly`, and only asked "does CHANGELOG.md
- * mention the version in package.json, anywhere?". Both properties were wrong:
- *
- *   - Running at PUBLISH time is far too late. Every PR was free to leave `main` in a
- *     merged-but-unreleasable state, and the first person to notice was whoever tried
- *     to ship. Three consecutive releases went out that way.
- *   - "anywhere in the file" passes trivially while a `## Unreleased` section sits on
- *     top holding the change that was never versioned. That is exactly how 0.36.0's
- *     content sat on `main` under a heading that names no version.
- *
- * So the check now runs on every PR (see `.github/workflows/ci.yml`, job
- * `release-gate`) and asserts the two things that make `main` shippable at all times.
- *
- * ── MERGING IS NOT PUBLISHING ───────────────────────────────────────────────────
- * The gate used to compare the head version against THE BASE BRANCH's: any PR touching
- * `src/**` had to bump `package.json`. That made a version number the price of MERGING,
- * and it contradicts how this project actually spends numbers.
- *
- * Numbers are spent at PUBLISH. When several PRs merge between two releases, a
- * bump-per-merge burns one number per PR and only the last one ever ships — every
- * earlier number collapses into it. That is not hypothetical: 0.37 through 0.41 were
- * bumped and never published, and all of that work went out as one 0.37.0. The gate was
- * manufacturing exactly the waste it looks like discipline.
- *
- * Worse, the two halves contradicted each other. A had to hold on `main` at all times,
- * so a PR that could not bump was forced to file its entry under a heading naming an
- * ALREADY PUBLISHED version — documenting changes into a release that demonstrably does
- * not contain them. The only way out was the `release-exempt` label, on a PR that is
- * neither a revert nor chained, which is a lie in a place reviewers read.
- *
- * So the invariant is now CHANGELOG-relative rather than branch-relative: `main` always
- * carries an open section naming the NEXT, unpublished version, and every PR files into
- * it. The number is spent once per release cycle, by whoever publishes, no matter how
- * many PRs land into that cycle. `--publish` is where the numbers must all agree, which
- * is the moment they actually have to.
- *
  * ── WHAT IT CHECKS ──────────────────────────────────────────────────────────────
  * A. RELEASE INTEGRITY — always, needs no git history:
- *      1. CHANGELOG.md's FIRST `##` heading names a real version, never `Unreleased`.
- *         The version it names is the RELEASE UNDER CONSTRUCTION.
- *      2. It is >= `package.json`'s version — equal when nothing unreleased is pending,
- *         greater when a section is open. Never lower: that is history being rewritten.
+ *      1. CHANGELOG.md's first `##` heading is `## Unreleased` (where pull requests file
+ *         their entries) or a release heading. The first RELEASE heading — the top one,
+ *         or the one right under Unreleased — names a version.
+ *      2. That version equals `package.json`'s: the newest version `main` records is the
+ *         last one a pull request declared. Auto-patch releases are recorded on their
+ *         `vX.Y.Z` tags, not on `main` (see `scripts/release.mjs`).
  *      3. `src/version.ts`'s `PARSEMAN_VERSION` equals `package.json`'s — the artifact
  *         stamp and the fuse-time version lock read it
- *         (`docs/design/artifact-format.md`). These two move together, at publish.
+ *         (`docs/design/artifact-format.md`).
  *
  * A'. PUBLISH INTEGRITY — with `--publish`, i.e. `prepublishOnly`:
- *      4. The heading, `package.json` and `src/version.ts` must be EQUAL. This is the
- *         moment the number is spent, and the moment they all have to agree.
+ *      4. The top heading names `package.json`'s version: no `## Unreleased` left. The
+ *         publish workflow stamps the release into the tree before `npm publish`.
  *
- * B. BUMP GATE — only with `--base=<ref>`, i.e. in a pull request:
- *      5. If the change touches the PUBLISHED SURFACE (`src/**`, or a package.json
- *         field a consumer receives), the release under construction must be a version
- *         that is NOT yet published — i.e. the top heading is strictly above
- *         `package.json`. Opening that section is a one-time cost per release cycle,
- *         not a per-PR one.
+ * B. ENTRY GATE — only with `--base=<ref>`, i.e. in a pull request:
+ *      5. If the change touches what the package SHIPS, it adds an entry under
+ *         `## Unreleased` (or under the version it declares). "Ships" is decided by npm:
+ *         the changed paths `npm pack` would include under `files`, plus the build
+ *         inputs that decide `dist/`, plus the package.json fields a consumer receives.
+ *         A version-stamp-only change to `src/version.ts` is not a change.
+ *      6. package.json's version never goes DOWN against the base. A pull request may
+ *         raise it to declare a minor or a major; it never has to.
  *
- * C. BENCH ANCHOR GATE — only with `--base=<ref>`, and only on a RELEASE PR:
- *      6. Every perf gate's `referenceSha` must name the EXACT STABLE BASE — the
- *         main commit this release PR proposes to advance. See
- *         `docs/design/perf-gates.md`.
- *
- *    Both config files have said "bump this at every release, in the release PR"
- *    in a JSON comment since they were written, and both were missed for TEN
- *    releases: `bench/grammar-density/config.json` still pointed at v0.33.0 and
- *    `bench/workloads/config.json` at v0.35.0 when 0.45.0 was prepped. A gate
- *    anchored ten releases back still reads `ok` — it just measures against a
- *    baseline that has already absorbed every regression since, so the accumulated
- *    headroom becomes the error bar. `rollback/dense` sat at -62% against v0.33.0:
- *    a fresh change could have made that path 2.6x SLOWER and the gate would have
- *    said `ok`. The absolute-baseline rule was satisfied in letter while its
- *    RESOLUTION was destroyed, silently, and nothing in the repo noticed.
- *
- *    A policy in a comment that depends on a human remembering it is not a policy.
- *    This is that policy, executed. It fires only on a release PR, which is the one
- *    PR where the bump is due, so ordinary PRs never see it.
- *
- *    It has NO hatch, including `--exempt`. The correct response to it going red is
- *    to bump the anchor, and then to report whatever the newly-strict gate surfaces.
- *    Re-anchoring to a newer baseline makes a gate STRICTER and may expose a
- *    regression the stale anchor was hiding — that is the gate working. Both configs
- *    already say it: "Do NOT bump it to silence a red gate."
- *
- *    Everything else — tests, benches, examples, fixtures, scripts, docs, notes,
- *    CI config, lockfile, tsconfig — is exempt, because none of it can change what a
- *    consumer installs. That exemption is the whole reason this gate can be required:
- *    a gate that fires on a typo fix in a comment gets bypassed, and then the gates
- *    that matter get bypassed with it.
+ *    Everything else — tests, benches, examples, fixtures, scripts, docs, notes, CI
+ *    config, lockfile — is exempt, because none of it can change what a consumer
+ *    installs. That exemption is the whole reason this gate can be required: a gate
+ *    that fires on a typo fix in a comment gets bypassed, and then the gates that
+ *    matter get bypassed with it.
  *
  * D. PEAK-RECORD GATE — only with `--base=<ref>`, on EVERY PR:
- *      7. Every `peak` block is structurally valid, and any EDIT to one is named in
- *         the CHANGELOG's open section — backward moves and widened allowances called
- *         out by name. This governs MOVING the bar. See `docs/design/perf-gates.md`.
+ *      7. Every `peak` block is structurally valid, and any EDIT to one is named in an
+ *         entry this PR adds — backward moves and widened allowances called out by
+ *         name. This governs MOVING the bar. See `docs/design/perf-gates.md`.
  *
  * D'. PEAK-CLAUSE WAIVER — only with `--base=<ref>`, on EVERY PR:
  *      8. A `PERF-PEAK-WAIVER` line in the CHANGELOG's open section lets a DELIBERATE,
@@ -107,24 +50,26 @@
  *         reason, be ABSENT from the base's CHANGELOG (per-PR, non-sticky), and not be
  *         combined with an edit to the same config's `peak`.
  *
+ * The perf gates' `referenceSha` used to be checked here too, on release PRs, because a
+ * hand-kept anchor went stale for ten releases. The gates now resolve the previous
+ * release from the `v*` tags at run time (`previousRelease` in `bench/ab-harness.ts`),
+ * so there is nothing left to keep fresh.
+ *
  * ── THE ESCAPE HATCHES ──────────────────────────────────────────────────────────
  * `--exempt` waives B only, and is wired to the `release-exempt` PR label so the
  * waiver is visible on the PR itself rather than buried in a `--no-verify`. It exists
- * for the two cases where "version must go up" is genuinely wrong: a REVERT of a
- * release, and a CHAINED PR whose bump lives in the PR underneath it.
+ * for a REVERT (the version may go down, the entry may be a removal) and for a CHAINED
+ * PR whose entry lives in the PR underneath it.
  *
- * `PERF-PEAK-WAIVER` waives the PEAK CLAUSE's verdict only (D'), never C, never D's
- * requirement to document a peak edit, and never A or B. It is deliberately NOT
- * `release-exempt` and does not extend it: that label's documented scope is B, and
- * widening a hatch is exactly the "bypassed gate" failure `release-gates.md` names.
- * See `scripts/peak-waiver.mjs` for why every property of it is friction on purpose.
+ * `PERF-PEAK-WAIVER` waives the PEAK CLAUSE's verdict only (D'), never D's requirement
+ * to document a peak edit, and never A or B. See `scripts/peak-waiver.mjs`.
  *
- * A never has a hatch. `Unreleased` is not a state this repo ships from.
+ * A never has a hatch.
  *
  * Usage:
  *   node scripts/check-changelog.mjs                  # A only (local preflight)
  *   node scripts/check-changelog.mjs --publish        # A + A' (prepublishOnly)
- *   node scripts/check-changelog.mjs --base=<ref>     # A + B + C (pull request)
+ *   node scripts/check-changelog.mjs --base=<ref>     # A + B + D + D' (pull request)
  *   node scripts/check-changelog.mjs --base=<ref> --exempt
  *   node scripts/check-changelog.mjs --root=<dir>     # point at another checkout
  *
@@ -135,6 +80,10 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { parsePeakWaivers, openSection, isBreach, WAIVER_TAG } from './peak-waiver.mjs'
+import {
+  parseVersion, compareVersions, headingVersion, pendingEntries, shippedPaths, UNRELEASED,
+  PUBLISHED_PKG_FIELDS, CONSUMER_LIFECYCLE_SCRIPTS,
+} from './release.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -159,92 +108,24 @@ const fail = (msg) => {
   process.exit(1)
 }
 
-/**
- * Fields a CONSUMER receives. A diff that touches any of these changes the installed
- * package even when `src/` is untouched — adding an export, dropping a dependency,
- * widening `engines`. `version` is excluded on purpose: it is the bump itself, not a
- * reason to require one.
- */
-const PUBLISHED_PKG_FIELDS = [
-  'name', 'type', 'main', 'module', 'types', 'exports', 'files', 'bin',
-  'dependencies', 'peerDependencies', 'optionalDependencies', 'engines', 'license',
-]
-
-/**
- * The lifecycle hooks npm runs on a CONSUMER's machine — `preinstall`/`install`/
- * `postinstall` when parseman is installed as a dependency, and `prepare` when it is
- * installed from a git URL. Changing one changes what executes on install, which is
- * a consumer-visible change even when nothing in `src/` moved.
- *
- * Only these four, not the whole `scripts` object: `test`, `lint`, `bench:*` and
- * friends churn constantly and reach nobody, and a gate that demanded a release for
- * renaming a bench script is exactly the noise this design refuses to introduce.
- */
-const CONSUMER_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepare']
-
 const lifecycleProjection = (pkgJson) =>
   CONSUMER_LIFECYCLE_SCRIPTS.map((k) => `${k}=${pkgJson?.scripts?.[k] ?? ''}`).join('\n')
 
 /**
  * Files that decide what `dist/` CONTAINS, without being in it. `src/**` is the input
  * to the build; these are the build. A change to the build script — which drives
- * esbuild inline — can change every shipped byte: different externals, a dropped
- * entry point, a changed target, while `src/` and `package.json` sit still, and a
- * rule that only watched `src/` would call that "no published surface changed".
+ * esbuild inline — can change every shipped byte while `src/` and `package.json` sit
+ * still. `npm pack` cannot see them because they are not packed, so they are named.
  *
- * Named individually rather than exempting `scripts/` wholesale: the rest of that
- * directory (this file, the coverage guard, the doc verifier) is CI machinery that
- * reaches no consumer.
+ * `tsconfig.json` is here for an INHERITED reason: the shipped declarations come from
+ * `tsc -p tsconfig.build.json`, which `extends` the root config, so its compiler
+ * options reach `dist/*.d.ts` through the extends chain.
  *
- * `tsconfig.json` is here for an INHERITED reason, not a direct one. The shipped
- * declarations come from `tsc -p tsconfig.build.json` (see `scripts/build.mjs`), and
- * `tsconfig.build.json` is four lines that `extends` the root config — so `target`,
- * `lib`, `strict`, `exactOptionalPropertyTypes` and friends reach `dist/*.d.ts`
- * through the extends chain. Watching only the file that does the extending would
- * let a consumer-visible change to the emitted types merge unbumped.
+ * The publish workflow does not rely on this list: it compares the built tarball with
+ * the published one (`scripts/release.mjs plan`). This is the cheap, install-free
+ * pull-request approximation of that comparison.
  */
 const BUILD_INPUTS = ['scripts/build.mjs', 'tsconfig.build.json', 'tsconfig.json']
-
-/** Parse `1.2.3` / `v1.2.3-rc.1` into comparable parts, or `null` if it isn't one. */
-const parseVersion = (raw) => {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(raw.trim())
-  if (!m) return null
-  return { major: +m[1], minor: +m[2], patch: +m[3], pre: m[4] ?? null, raw: m[0].replace(/^v/, '') }
-}
-
-/**
- * SemVer §11 precedence for the dot-separated identifiers of a prerelease tag.
- * Numeric identifiers compare NUMERICALLY, so `rc.10` is above `rc.2`; a plain string
- * comparison puts it below and would read a legitimate advance as a downgrade.
- * Numeric sorts below alphanumeric, and when one set is a prefix of the other the
- * longer one wins.
- */
-const comparePrerelease = (a, b) => {
-  const x = a.split('.')
-  const y = b.split('.')
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    if (x[i] === undefined) return -1
-    if (y[i] === undefined) return 1
-    if (x[i] === y[i]) continue
-    const xNum = /^\d+$/.test(x[i])
-    const yNum = /^\d+$/.test(y[i])
-    if (xNum && yNum) return +x[i] < +y[i] ? -1 : 1
-    if (xNum !== yNum) return xNum ? -1 : 1
-    return x[i] < y[i] ? -1 : 1
-  }
-  return 0
-}
-
-/** −1 / 0 / 1. A prerelease sorts BELOW its release, per semver. */
-const compareVersions = (a, b) => {
-  for (const k of ['major', 'minor', 'patch']) {
-    if (a[k] !== b[k]) return a[k] < b[k] ? -1 : 1
-  }
-  if (a.pre === b.pre) return 0
-  if (a.pre === null) return 1
-  if (b.pre === null) return -1
-  return comparePrerelease(a.pre, b.pre)
-}
 
 // ── A. Release integrity ────────────────────────────────────────────────────────
 
@@ -264,53 +145,42 @@ if (!existsSync(CHANGELOG_PATH)) fail(`CHANGELOG.md not found — cannot release
 
 const changelog = readFileSync(CHANGELOG_PATH, 'utf8')
 
-// The FIRST level-2 heading is the release under construction. Anything below it is
-// history. Tolerate `## [v0.36.0] - …` as well as `## 0.36.0 — …`.
-const firstHeading = /^##\s+(.+)$/m.exec(changelog)
-if (!firstHeading) fail('CHANGELOG.md has no `##` release heading at all.')
+const headings = [...changelog.matchAll(/^##\s+.+$/gm)].map((m) => m[0])
+if (headings.length === 0) fail('CHANGELOG.md has no `##` release heading at all.')
 
-const headingText = firstHeading[1].trim()
-const headingToken = headingText.replace(/^\[/, '').split(/[\s\]]/)[0]
-const headingVersion = parseVersion(headingToken)
+const unreleased = headings[0].replace(/^##\s+/, '').trim() === UNRELEASED
+const releaseHeading = unreleased ? headings[1] : headings[0]
+const newest = releaseHeading === undefined ? null : headingVersion(releaseHeading)
 
-if (!headingVersion) {
+if (newest === null) {
   fail(
-    `CHANGELOG.md's top section is "## ${headingText}", which names no version.\n` +
-      `  Every change lands released: rename it to "## ${version} — <date>" and bump\n` +
-      `  package.json + src/version.ts to match. "Unreleased" is not a state this repo\n` +
-      `  ships from, and it is not a state main is allowed to sit in.`,
+    `CHANGELOG.md's ${unreleased ? 'heading under `## Unreleased`' : 'top heading'} is ` +
+      `"${releaseHeading ?? '(none)'}", which names no version.\n` +
+      `  Pull requests file their entries under "## ${UNRELEASED}" at the top; the heading below it\n` +
+      `  is the newest release main records, "## ${version} — <date>".`,
   )
 }
 
-const headingVsPkg = compareVersions(headingVersion, parseVersion(version) ?? headingVersion)
-
-if (headingVsPkg < 0) {
+if (newest !== version) {
   fail(
-    `CHANGELOG.md's top section is ${headingVersion.raw} but package.json says ${version}.\n` +
-      `  The top section can be AHEAD of package.json (a release under construction), never\n` +
-      `  behind it — behind means history is being rewritten, or a published version lost\n` +
-      `  its section.`,
+    `CHANGELOG.md's newest release heading is ${newest} but package.json says ${version}.\n` +
+      '  They name the same version: a pull request that declares a new version sets package.json,\n' +
+      '  src/version.ts and the heading together. Pending changes go under "## Unreleased".',
   )
 }
 
-if (PUBLISH && headingVsPkg !== 0) {
+if (PUBLISH && unreleased) {
   fail(
-    `cannot publish: CHANGELOG.md's top section is ${headingVersion.raw} but package.json says ${version}.\n` +
-      `  This is the moment the number is spent, so it is the moment they must agree. Bump\n` +
-      `  package.json AND src/version.ts to ${headingVersion.raw} and date the heading.`,
+    `cannot publish with "## ${UNRELEASED}" on top of CHANGELOG.md.\n` +
+      '  The publish workflow stamps the release first (`node scripts/release.mjs stamp <version>`),\n' +
+      '  which names that section and sets package.json and src/version.ts.',
   )
 }
 
-// A MISSING src/version.ts is a harder failure than a mis-stamped one, and used to be
-// no failure at all: the whole convergence check sat behind `existsSync`, including
-// under `--publish`, where A' says all three sites must be EQUAL. Deleting the file
-// therefore satisfied the rule by removing one of the things it compares. Contrast
-// package.json and CHANGELOG.md above, both of which `fail()` when absent.
-//
-// The one place absence is legitimate is a checkout that has no `src/` at all — the
-// fixture repos in `test/unit/release-gate.test.ts` drive exactly that to cover the
-// stamp rule's edges. So it is required whenever `src/` exists, which is every real
-// checkout of this repo.
+// A MISSING src/version.ts is a harder failure than a mis-stamped one. Deleting the file
+// must not satisfy the rule by removing one of the things it compares. The one place
+// absence is legitimate is a checkout with no `src/` at all — the fixture repos in
+// `test/unit/release-gate.test.ts`.
 if (!existsSync(VERSION_TS_PATH) && existsSync(resolve(ROOT, 'src'))) {
   fail(
     'src/version.ts is missing, but src/ exists. PARSEMAN_VERSION is the ARTIFACT VERSION\n' +
@@ -320,8 +190,10 @@ if (!existsSync(VERSION_TS_PATH) && existsSync(resolve(ROOT, 'src'))) {
   )
 }
 
+const STAMP = /PARSEMAN_VERSION\s*=\s*['"]([^'"]+)['"]/
+
 if (existsSync(VERSION_TS_PATH)) {
-  const stamp = /PARSEMAN_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(readFileSync(VERSION_TS_PATH, 'utf8'))
+  const stamp = STAMP.exec(readFileSync(VERSION_TS_PATH, 'utf8'))
   if (!stamp) fail('src/version.ts does not define PARSEMAN_VERSION.')
   if (stamp[1] !== version) {
     fail(
@@ -334,13 +206,12 @@ if (existsSync(VERSION_TS_PATH)) {
 }
 
 console.log(
-  headingVsPkg === 0
-    ? `✓ CHANGELOG.md's top section is ${version}, matching package.json and src/version.ts.`
-    : `✓ CHANGELOG.md has ${headingVersion.raw} open for construction over published ${version}`
-      + ' (package.json and src/version.ts agree; they move together at publish).',
+  unreleased
+    ? `✓ CHANGELOG.md files pending changes under ${UNRELEASED}, above ${version}; package.json and src/version.ts agree.`
+    : `✓ CHANGELOG.md's top section is ${version}, matching package.json and src/version.ts.`,
 )
 
-// ── B. Bump gate ────────────────────────────────────────────────────────────────
+// ── B. Entry gate (set-up) ──────────────────────────────────────────────────────
 
 if (BASE === undefined) process.exit(0)
 
@@ -365,108 +236,41 @@ try {
 const changed = git('diff', '--name-only', baseSha, 'HEAD').split('\n').filter(Boolean)
 
 if (changed.length === 0) {
-  console.log('✓ nothing changed against the base — no bump required.')
+  console.log('✓ nothing changed against the base — no entry required.')
   process.exit(0)
 }
 
-const srcTouched = changed.filter((f) => f.startsWith('src/'))
-const buildTouched = changed.filter((f) => BUILD_INPUTS.includes(f))
+const showAtBase = (file) => {
+  try {
+    return git('show', `${baseSha}:${file}`)
+  } catch {
+    return null
+  }
+}
 
-// Read unconditionally: the base's `version` is the LAST PUBLISHED marker for check B
-// below, and that is needed whether or not this diff touches package.json at all.
 let basePkg
 try {
-  basePkg = JSON.parse(git('show', `${baseSha}:package.json`))
+  basePkg = JSON.parse(showAtBase('package.json') ?? '{}')
 } catch {
   basePkg = {}
 }
+const baseVersion = typeof basePkg.version === 'string' ? basePkg.version : null
+const baseChangelog = showAtBase('CHANGELOG.md') ?? ''
 
-const basePublished = typeof basePkg.version === 'string' ? parseVersion(basePkg.version) : null
+// The entries this PR ADDS to the section being released. Diffed against the base's
+// pending entries, because `main`'s Unreleased can still hold entries an auto-patch
+// already shipped: "the section is non-empty" would pass a PR that wrote nothing.
+const basePending = new Set(pendingEntries(baseChangelog, baseVersion))
+const added = pendingEntries(changelog, baseVersion).filter((e) => !basePending.has(e))
+const sectionName = unreleased ? UNRELEASED : version
 
-// ── C. Bench anchor gate ────────────────────────────────────────────────────────
-//
-// Runs BEFORE B, and before B's early exits, so it cannot be skipped by a release PR
-// that somehow reads as touching no published surface. It fires on RELEASE PRs only.
-
-/**
- * The perf gates whose `referenceSha` must name the exact stable base. Each entry is
- * a config path relative to the repo root and the `pnpm` script that reads it. A gate
- * whose config is absent is skipped — this list is allowed to lead or trail the repo.
- */
-const ANCHORED_GATES = [
-  { config: 'bench/grammar-density/config.json', script: 'pnpm perf:guard:grammars' },
-  { config: 'bench/workloads/config.json', script: 'pnpm perf:workloads' },
-]
-
-// A RELEASE PR is the shape `--publish` demands: the heading, package.json and
-// src/version.ts all name the same version, and it is above what the base publishes.
-// A mid-cycle PR (heading open ABOVE package.json) is not one, and never sees this.
-const isReleasePr =
-  headingVsPkg === 0 && basePublished !== null && compareVersions(headingVersion, basePublished) > 0
-
-// Only the gates this checkout actually HAS. A checkout carrying none of them — a
-// fixture, a trimmed clone — has nothing to re-anchor and is not asked to.
-const presentGates = ANCHORED_GATES.filter((g) => existsSync(resolve(ROOT, g.config)))
-
-if (isReleasePr && presentGates.length > 0) {
-  // main is mechanically required to be a converged, dated release by
-  // check-main-release-state.mjs. Its exact tip is therefore the authoritative
-  // before-side for a release PR. Do not infer a release from the first commit that
-  // happened to carry a version string: 0.47.0 developed through multiple release
-  // candidates with that number, so that heuristic selected an unpublished tree.
-  const expected = baseSha
-
-  const wrong = []
-  for (const gate of ANCHORED_GATES) {
-    const p = resolve(ROOT, gate.config)
-    if (!existsSync(p)) continue
-    let cfg
-    try {
-      cfg = JSON.parse(readFileSync(p, 'utf8'))
-    } catch {
-      fail(`${gate.config} is not valid JSON — cannot read its perf-gate anchor.`)
-    }
-    const got = cfg.referenceSha
-    if (typeof got !== 'string' || got.length < 7) {
-      wrong.push({ ...gate, got: got === undefined ? '(absent)' : String(got) })
-      continue
-    }
-    if (!expected.startsWith(got)) wrong.push({ ...gate, got })
-  }
-
-  if (wrong.length > 0) {
-    const short = expected.slice(0, 7)
-    fail(
-      `this is the RELEASE PR for ${headingVersion.raw}, so every perf gate must be RE-ANCHORED to the\n` +
-        `  exact stable base — ${basePublished.raw} at ${short} — and ${wrong.length} is/are not:\n` +
-        '\n' +
-        wrong.map((w) => `    ${w.config}\n      referenceSha ${w.got} → should be ${short}`).join('\n') +
-        '\n\n' +
-        '  These gates measure THIS build against the referenced one, in one interleaved process.\n' +
-        '  Against a stale anchor they still read `ok` — they just compare against a baseline that\n' +
-        '  already absorbed every regression since, so the accumulated headroom becomes the error\n' +
-        '  bar and the gate loses its resolution without losing its green. Both config files have\n' +
-        '  carried "bump this at every release, in the release PR" in a comment from the start, and\n' +
-        '  both were missed for ten consecutive releases. That is why this is executed and not\n' +
-        '  written down.\n' +
-        '\n' +
-        `  Fix: set referenceSha to ${short} in each file above, update the _referenceNote to name\n` +
-        `  ${basePublished.raw}, then RUN the gates (${ANCHORED_GATES.map((g) => g.script).join(', ')}) and\n` +
-        '  put the numbers in this PR.\n' +
-        '\n' +
-        '  A newer anchor is a STRICTER gate and may go red on a regression the old one was hiding.\n' +
-        '  That is the gate working. Report the regression; do not move the anchor to silence it.\n' +
-        '\n' +
-        '  This check has no hatch — `release-exempt` does not waive it.',
-    )
-  }
-
-  console.log(`✓ perf-gate anchors name ${expected.slice(0, 7)}, the exact stable ${basePublished.raw} base.`)
-}
+// The heading section only — history must not be able to satisfy a check about a
+// change being made now. Used by the waiver rule (§D').
+const currentSection = openSection(changelog)
 
 // ── D. Peak-record gate ─────────────────────────────────────────────────────────
 //
-// The anchor gate above enforces the PER-STEP half of the release policy: each
+// The perf gates' per-step comparison enforces one half of the release policy: each
 // release is measured against the one before it. This enforces the other half.
 //
 // A per-step gate has a blind spot that matters directly under "each release must be
@@ -477,17 +281,22 @@ if (isReleasePr && presentGates.length > 0) {
 // release on record, and `pnpm perf:workloads --peak` fails on a drawdown beyond its
 // allowance.
 //
-// That record is only worth having if it cannot move quietly. The anchor gate exists
-// because two configs carried "bump this at every release" in a COMMENT and were
-// missed for ten consecutive releases; a comment asking a human to keep the peak
-// honest would go the same way. So: any edit to a `peak` block must be named in the
-// CHANGELOG, and the two edits that launder a regression into the baseline — moving
+// That record is only worth having if it cannot move quietly. Two configs carried
+// "bump this anchor at every release" in a COMMENT and it was missed for ten
+// consecutive releases; a comment asking a human to keep the peak honest would go the
+// same way. So: any edit to a `peak` block must be named in an entry the PR adds, and the two edits that launder a regression into the baseline — moving
 // the peak BACKWARD, or widening its allowance — are called out by name.
 //
-// Unlike C this runs on EVERY PR, not just release PRs: a peak can be moved at any
-// time, and the moment it matters is the moment it moves.
+// It runs on EVERY PR: a peak can be moved at any time, and the moment it matters is
+// the moment it moves.
 
-const peakGateConfigs = ANCHORED_GATES.filter((g) => existsSync(resolve(ROOT, g.config)))
+/** The gate configs that may carry a `peak` block. A config that is absent is skipped. */
+const PEAK_GATES = [
+  { config: 'bench/grammar-density/config.json' },
+  { config: 'bench/workloads/config.json' },
+]
+
+const peakGateConfigs = PEAK_GATES.filter((g) => existsSync(resolve(ROOT, g.config)))
 
 const readPeak = (source, label) => {
   let cfg
@@ -553,17 +362,13 @@ for (const gate of peakGateConfigs) {
   })
 }
 
-// The heading section only — history must not be able to satisfy a check about a
-// change being made now. Shared by the peak-edit rule below and the waiver rule (§D').
-const currentSection = openSection(changelog)
-
 if (peakEdits.length > 0) {
-  const mentionsPeak = /\bpeak\b/i.test(currentSection)
+  // An entry this PR adds: a stale entry still sitting under Unreleased cannot vouch for it.
+  const mentionsPeak = /\bpeak\b/i.test(added.join('\n'))
 
   if (!mentionsPeak) {
     fail(
-      `this PR edits a perf-gate PEAK RECORD and the CHANGELOG's ${headingVersion.raw} section does not\n` +
-        '  mention it:\n' +
+      `this PR edits a perf-gate PEAK RECORD and no entry it adds under ${sectionName} mentions it:\n` +
         '\n' +
         peakEdits.map((e) => `    ${e.config}\n      ${e.kind}: ${e.detail}`).join('\n') +
         '\n\n' +
@@ -579,12 +384,12 @@ if (peakEdits.length > 0) {
         '  it is exactly the edit that launders a regression into the baseline, so it gets written down\n' +
         '  with the numbers that justified it.\n' +
         '\n' +
-        `  Fix: add a line to the ${headingVersion.raw} section naming the peak change and the measurement\n` +
+        `  Fix: add a line to the ${sectionName} section naming the peak change and the measurement\n` +
         '  behind it (run `pnpm perf:workloads --peak` and quote it, load average included).\n' +
         '\n' +
         '  If you are NOT trying to re-baseline — the drawdown is deliberate and bought something,\n' +
         '  and you want the peak to STAY where it is — do not move it at all. Revert the change to\n' +
-        `  the \`peak\` block and declare a per-PR waiver in the ${headingVersion.raw} section instead:\n` +
+        `  the \`peak\` block and declare a per-PR waiver in the ${sectionName} section instead:\n` +
         '\n' +
         `    ${WAIVER_TAG} bench/workloads/config.json median -164.9% min -158.2% — <why this cost buys something>\n` +
         '\n' +
@@ -642,13 +447,6 @@ if (waivers.length > 0) {
   for (const gate of peakGateConfigs) {
     const p = readPeak(readFileSync(resolve(ROOT, gate.config), 'utf8'), gate.config)
     if (p !== null) peakOf.set(gate.config, p)
-  }
-
-  let baseChangelog = ''
-  try {
-    baseChangelog = git('show', `${baseSha}:CHANGELOG.md`)
-  } catch {
-    // No CHANGELOG at the base — every waiver here is new by construction.
   }
 
   for (const w of waivers) {
@@ -720,6 +518,34 @@ if (waivers.length > 0) {
   }
 }
 
+// ── B. Entry gate ───────────────────────────────────────────────────────────────
+
+const headPv = parseVersion(version)
+const basePv = baseVersion === null ? null : parseVersion(baseVersion)
+if (headPv !== null && basePv !== null && compareVersions(headPv, basePv) < 0) {
+  if (!EXEMPT) {
+    fail(
+      `package.json goes DOWN, from ${baseVersion} to ${version}.\n` +
+        '  A pull request may raise the version to declare a minor or a major, never lower it.\n' +
+        '  If this reverts a release, add the `release-exempt` label to the PR.',
+    )
+  }
+  console.log(`⚠ VERSION GOES DOWN (${baseVersion} → ${version}) — waived by \`release-exempt\`.`)
+}
+
+// `src/version.ts` changing only its PARSEMAN_VERSION literal is the version moving,
+// which the publish decides; anything else in it ships like the rest of src/.
+const stampOnly = (file) => {
+  const before = showAtBase(file)
+  if (before === null || !existsSync(resolve(ROOT, file))) return false
+  // `git()` trims its output, so both sides are trimmed.
+  const strip = (text) => text.replace(STAMP, 'PARSEMAN_VERSION = ""').trim()
+  return strip(before) === strip(readFileSync(resolve(ROOT, file), 'utf8'))
+}
+
+const shipped = shippedPaths(pkg, changed).filter((f) => !(f === 'src/version.ts' && stampOnly(f)))
+const buildTouched = changed.filter((f) => BUILD_INPUTS.includes(f))
+
 let pkgSurfaceChanged = []
 if (changed.includes('package.json')) {
   pkgSurfaceChanged = PUBLISHED_PKG_FIELDS.filter(
@@ -730,107 +556,45 @@ if (changed.includes('package.json')) {
   }
 }
 
-const publishedSurfaceChanged =
-  srcTouched.length > 0 || buildTouched.length > 0 || pkgSurfaceChanged.length > 0
-
-if (!publishedSurfaceChanged) {
+if (shipped.length === 0 && buildTouched.length === 0 && pkgSurfaceChanged.length === 0) {
   console.log(
-    `✓ no published surface changed (${changed.length} file(s): nothing under src/, no build\n` +
-      '  input, no consumer-facing package.json field) — no version bump required.',
+    `✓ nothing the package ships changed (${changed.length} file(s): none packed by \`files\`, no build\n` +
+      '  input, no consumer-facing package.json field) — no CHANGELOG entry required.',
   )
   process.exit(0)
 }
 
 const why = [
-  srcTouched.length > 0 ? `${srcTouched.length} file(s) under src/` : null,
+  shipped.length > 0 ? `${shipped.length} packed file(s) (${shipped.slice(0, 3).join(', ')}${shipped.length > 3 ? ', …' : ''})` : null,
   buildTouched.length > 0 ? `build input ${buildTouched.join(', ')}` : null,
   pkgSurfaceChanged.length > 0 ? `package.json ${pkgSurfaceChanged.join(', ')}` : null,
 ].filter(Boolean).join(' and ')
 
-// The release under construction must be a version that has NOT been published yet.
-//
-// This is deliberately CHANGELOG-relative, not branch-relative. A branch-relative rule
-// ("head version > base version") makes the bump the price of MERGING: the second PR to
-// land between two releases has to bump again, and its number collapses into whatever
-// ships. 0.37 through 0.41 all went out as one 0.37.0 that way. Here, the FIRST PR of a
-// cycle opens `## <next> — unreleased` and every later PR files into the same open
-// section for free. One number per release, spent by whoever publishes.
-//
-// The "last published" marker is the BASE's package.json, not HEAD's.
-//
-// It used to be HEAD's, on the reasoning that `--publish` refuses to ship unless
-// package.json equals the heading, so on `main` package.json is exactly the last version
-// that went out. That is true of `main` and false of a RELEASE PR, which is precisely the
-// PR that bumps package.json ahead of npm. Reading HEAD there asks "is the heading above
-// the version this PR is trying to publish?", which is 0 by construction — so a correctly
-// prepped release (heading, package.json and src/version.ts all at the new version, which
-// is exactly what `--publish` demands) failed this check, and failed it with the sentence
-// "0.45.0, which is already published" about a version that was not published at all.
-//
-// Against the BASE, one rule covers both shapes, because both are the same claim — the
-// release under construction is not yet published:
-//
-//   - DEFERRED (a mid-cycle PR): base 0.44.0, heading 0.45.0, package.json still 0.44.0.
-//     The section is open and the number is spent later. No PR is forced to bump, which
-//     is the whole point of the changelog-relative rule — 0.37 through 0.41 collapsed
-//     into one 0.37.0 because a branch-relative rule made a number the price of merging.
-//   - RELEASE PR: base 0.44.0, heading 0.45.0, package.json 0.45.0. The number is spent
-//     HERE, and `--publish` passes on the merge commit, so the release ships on merge.
-//
-// Both are legal. What stays illegal is the thing the gate exists to stop: filing into a
-// heading that names a version already on npm as of the base.
-// If the base's version cannot be read — an unparseable or absent package.json at the
-// base commit — fall back to the HEAD comparison rather than passing. An unreadable base
-// is a reason to judge conservatively, not a reason to wave the change through: the
-// fallback is the stricter of the two rules, so the worst case is a release PR being
-// asked to justify itself, never an already-published heading sliding past.
-const headingVsBase =
-  basePublished === null ? headingVsPkg : compareVersions(headingVersion, basePublished)
-
-if (headingVsBase > 0) {
-  console.log(
-    headingVsPkg > 0
-      ? `✓ published surface changed (${why}) and ${headingVersion.raw} is open for construction\n` +
-        `  over published ${version} — the bump lands at publish, not at merge.`
-      : `✓ published surface changed (${why}) and this is a RELEASE of ${headingVersion.raw}\n` +
-        `  over published ${basePublished?.raw ?? 'unknown'} — heading, package.json and src/version.ts\n` +
-        '  all agree, so `--publish` passes on the merge commit.',
-  )
+if (added.length > 0) {
+  console.log(`✓ the shipped package changed (${why}) and this PR adds ${added.length} entr${added.length === 1 ? 'y' : 'ies'} under ${sectionName}.`)
   process.exit(0)
 }
 
 if (EXEMPT) {
   console.log(
-    `⚠ RELEASE GATE WAIVED — the published surface changed (${why}) and CHANGELOG.md's top\n` +
-      `  section is the already-published ${version}, but the \`release-exempt\` label is set.\n` +
-      '  Valid only for a revert of a release, or a chained PR whose section lives underneath\n' +
-      '  it. Whoever merges this owns the next release carrying the section.',
+    `⚠ ENTRY GATE WAIVED — the shipped package changed (${why}) and this PR adds no CHANGELOG\n` +
+      '  entry, but the `release-exempt` label is set. Valid only for a revert, or a chained PR\n' +
+      '  whose entry lives in the PR underneath it.',
   )
   process.exit(0)
 }
 
-const publishedRaw = basePublished?.raw ?? version
-
 fail(
-  `this PR changes the published surface (${why}) but CHANGELOG.md's top section is\n` +
-    `  ${headingVersion.raw}, which was already published as of the base (${publishedRaw}) — so the\n` +
-    '  change would be documented into a release that does not contain it.\n' +
+  `this PR changes what the package ships (${why}) but adds no CHANGELOG entry.\n` +
     '\n' +
-    '  Either shape fixes it:\n' +
-    '\n' +
-    `    DEFER — add "## <next> — unreleased" above the ${publishedRaw} section and file this\n` +
-    '    change under it, leaving package.json and src/version.ts alone. They move together\n' +
-    '    at PUBLISH, so any number of PRs can land into one cycle without burning a number\n' +
-    '    each.\n' +
-    '\n' +
-    '    RELEASE — if this PR IS the release, name the new version in the heading AND bump\n' +
-    '    package.json and src/version.ts to match it, so `--publish` passes on the merge\n' +
-    '    commit.\n' +
+    `  Add one under "## ${UNRELEASED}" at the top of CHANGELOG.md (create the heading if it is not\n` +
+    `  there). Merging publishes: the next patch by default, named after this section. To ship\n` +
+    '  a minor or a major instead, name that version in the heading and set package.json and\n' +
+    '  src/version.ts to it in this PR.\n' +
     '\n' +
     '  Pre-1.0, a behaviour change goes in the MINOR (this project has said so since 0.1.0;\n' +
     "  see CHANGELOG.md's preamble).\n" +
     '\n' +
-    '  If a section genuinely belongs elsewhere — you are reverting a release, or this PR is\n' +
-    '  chained on one that already opened it — add the `release-exempt` label to the PR. That\n' +
-    '  is the hatch; it is on the PR where a reviewer can see it.',
+    '  If the entry genuinely belongs elsewhere — you are reverting, or this PR is chained on one\n' +
+    '  that carries it — add the `release-exempt` label to the PR.',
 )

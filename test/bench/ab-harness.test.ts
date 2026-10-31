@@ -1,4 +1,7 @@
 import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import v8 from 'node:v8'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +11,7 @@ import {
   measurePasses,
   pairedMedianDelta,
   pairedMedianRatio,
+  previousRelease,
   score,
   type Calibration,
   type Samples,
@@ -186,5 +190,76 @@ describe('every timed instance is its own compile, from its own module graph', (
       'ref', 'ref', 'ref', 'head',
     ])
     expect(calibration.get('x')?.pairs).toBe(2)
+  })
+})
+
+describe('the previous release is resolved from the v* tags', () => {
+  /*
+   * main: A(v0.1.0) ── B ── C
+   *                     └── R(v0.1.1)   a release commit beside main, first parent B
+   *       B ── X(v0.2.0)                a tag on a branch main never merged: not a
+   *                                     release commit, so its parent does not count
+   */
+  function history(): { dir: string; at: (name: string) => string; checkout: (name: string) => void } {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-prev-release-'))
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+        cwd: dir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid',
+          GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid',
+        },
+      }).trim()
+    const commit = (name: string, message = name): string => {
+      writeFileSync(join(dir, 'f'), name)
+      git('add', '-A')
+      git('commit', '-qm', message)
+      return git('rev-parse', 'HEAD')
+    }
+    const shas = new Map<string, string>()
+    git('init', '-q', '-b', 'main')
+    shas.set('A', commit('A'))
+    git('tag', 'v0.1.0')
+    shas.set('B', commit('B'))
+    git('checkout', '-q', '-b', 'side')
+    shas.set('X', commit('X'))
+    git('tag', 'v0.2.0')
+    git('checkout', '-q', '--detach', shas.get('B')!)
+    shas.set('R', commit('R', 'release: 0.1.1'))
+    git('tag', 'v0.1.1')
+    git('checkout', '-q', 'main')
+    shas.set('C', commit('C'))
+    return {
+      dir,
+      at: name => shas.get(name)!.slice(0, 8),
+      checkout: name => { git('checkout', '-q', '--detach', shas.get(name)!) },
+    }
+  }
+
+  it('takes the newest release HEAD contains, including one tagged beside main', () => {
+    const h = history()
+    try {
+      expect(previousRelease(h.dir, 'test')).toEqual({ tag: 'v0.1.1', sha: h.at('R') })
+    } finally {
+      rmSync(h.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("skips HEAD's own release: at B, the release made from B is not the previous one", () => {
+    const h = history()
+    try {
+      h.checkout('B')
+      expect(previousRelease(h.dir, 'test')).toEqual({ tag: 'v0.1.0', sha: h.at('A') })
+      h.checkout('A')
+      // A tag ON HEAD is HEAD's own release too; with nothing older there is no reference.
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit') })
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect(() => previousRelease(h.dir, 'test')).toThrow('exit')
+      expect(exit).toHaveBeenCalledWith(1)
+    } finally {
+      rmSync(h.dir, { recursive: true, force: true })
+    }
   })
 })

@@ -211,6 +211,38 @@ export function git(args: string[], cwd: string, timeout?: number): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(timeout === undefined ? {} : { timeout }) })
 }
 
+/**
+ * The previous release: the newest stable `v*` tag whose source HEAD already contains,
+ * other than HEAD itself. It is the reference the per-release gates measure against.
+ *
+ * Resolved at run time because publishing happens on every merge: a reference pinned
+ * in a config would need a hand edit per release, and the hand-kept pins went stale
+ * for ten releases running. A release tag sits on `main` when the merged commit was
+ * released as it stood, or on a release commit beside `main` whose first parent is
+ * the merged commit (`scripts/release.mjs stamp`), so either the tag or its parent is
+ * the source. A tag whose source is HEAD is this commit's own release, not the
+ * previous one. CI checks out with `fetch-depth: 0`, which brings the tags.
+ */
+export function previousRelease(root: string, gate: string): { tag: string; sha: string } {
+  const head = git(['rev-parse', 'HEAD'], root).trim()
+  const contains = (rev: string): boolean => {
+    try {
+      git(['merge-base', '--is-ancestor', rev, 'HEAD'], root)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const tags = git(['tag', '--list', 'v*', '--sort=-v:refname'], root).split('\n').filter(t => /^v\d+\.\d+\.\d+$/.test(t))
+  for (const tag of tags) {
+    const sha = git(['rev-parse', `${tag}^{commit}`], root).trim()
+    const stamped = git(['log', '-1', '--format=%s', sha], root).trim() === `release: ${tag.slice(1)}`
+    const source = contains(sha) ? sha : stamped && contains(`${sha}^`) ? git(['rev-parse', `${sha}^`], root).trim() : null
+    if (source !== null && source !== head) return { tag, sha: sha.slice(0, 8) }
+  }
+  return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
+}
+
 /** Bound for the cache-verification git calls — they are local metadata reads. */
 const VERIFY_TIMEOUT_MS = 10_000
 

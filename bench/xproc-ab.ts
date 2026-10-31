@@ -39,7 +39,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, mkdirSync, copyFileSync, symlinkSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { pairedMedianRatio } from './ab-harness.ts'
+import { pairedMedianRatio, previousRelease } from './ab-harness.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -105,11 +105,10 @@ if (WORKER_DIR !== null) {
 // ── parent ──────────────────────────────────────────────────────────────────
 
 const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as {
-  referenceSha: string
   input: { rules: number }
 }
 
-const REF = argValue('--ref') ?? CONFIG.referenceSha
+const REF = argValue('--ref') ?? previousRelease(ROOT, 'xproc-ab').sha
 const HEAD_REF = argValue('--head-ref')
 const CASE_FILTER = argValue('--case')
 

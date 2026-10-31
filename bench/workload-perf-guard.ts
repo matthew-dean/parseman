@@ -63,7 +63,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD, freshGraph,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD, freshGraph, previousRelease,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
 import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
@@ -80,7 +80,6 @@ type GateMeasurement = import('./ab-harness.ts').Measurement & { passes: number 
 
 type Config = {
   scoreMethod: string
-  referenceSha: string
   peak: Peak
   measurement: GateMeasurement
   thresholds: Thresholds
@@ -106,7 +105,13 @@ const argValue = (flag: string): string | null =>
 if (PEAK && (SELF || argValue('--ref') !== null)) {
   fail(GATE, '--peak names its own reference (the committed peak sha) and cannot be combined with --ref or --self.')
 }
-const REF = PEAK ? CONFIG.peak.sha : argValue('--ref') ?? CONFIG.referenceSha
+const REF_ARG = argValue('--ref')
+// The previous release, resolved from the v* tags (see `previousRelease`); the peak
+// clause names its own committed reference instead.
+const REFERENCE = PEAK
+  ? { tag: CONFIG.peak.sha, sha: CONFIG.peak.sha }
+  : REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
+const REF = REFERENCE.sha
 const HEAD_REF = SELF ? REF : argValue('--head-ref')
 const ONLY = argValue('--only')
 
@@ -170,7 +175,7 @@ console.log(
     : PEAK
       ? `PEAK CLAUSE — ${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs the committed release baseline,`
         + ` ${CONFIG.peak.version} (${REF}), drawdown allowance ${CONFIG.peak.allowancePct}%`
-      : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REF}`}`,
+      : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,
 )
 
 const refWorkloads = await loadSide(refDir)
