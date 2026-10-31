@@ -20,6 +20,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { DIALECTS, FIXTURE, VARIANTS, withBuiltSnapshot, type Dialect } from './jess/real-grammars.ts'
 
 export const REAL_GRAMMAR_CEILING = 5
@@ -77,7 +78,7 @@ export function realGrammarFailures(sizes: readonly VariantSize[], warnings: rea
   return failures
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const source = JSON.parse(readFileSync(join(FIXTURE, 'SOURCE.json'), 'utf8')) as { commit: string }
   const { sizes, warnings } = await measureJessGrammars()
   console.log(`size-guard:jess  jess ${source.commit.slice(0, 9)}  ceiling ${REAL_GRAMMAR_CEILING}x raw bytes per grammar.ts byte`)
