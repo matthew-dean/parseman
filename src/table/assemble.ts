@@ -1436,13 +1436,55 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // holder first so a recursive child can still link back through this site.
     const piece = scopeIsIdentity(code, ip, closureLabels.at(ip))
       ? link(code[ip + 2]!)
-      : countedPiece(lower(ip), ip)
+      : countedPiece(lookaheadLedNode(ip) ?? lower(ip), ip)
 
     inFlight.delete(ip)
     holder.set(piece)
     memo.set(ip, piece)
     reached.add(ip)
     return piece
+  }
+
+  /**
+   * A NODE WHOSE BODY OPENS WITH A LOOKAHEAD opens its frame after it. The body
+   * is a sequence whose first term is `not`/`peek` of a direct terminal: it is
+   * decided at `pos` without writing anything, and a node that fails there would
+   * only open its frame to drop it. So the recognizer runs first, and the node
+   * runs on success with that term already decided (`FIRST_DECIDED`). The
+   * recognizer runs once on either path; the failure is the term's own.
+   */
+  let FIRST_DECIDED: Piece | undefined
+  let NODE_BODY: Piece | undefined
+  const DECIDED: Piece = (_input, pos) => { EC.e = pos; return null }
+  function lookaheadLedNode(ip: number): Piece | undefined {
+    const op = code[ip]
+    if ((op !== OP_NODE && op !== OP_NODE_TRACK) || hostCst || REC || cfg.probe || cfg.coverage || cfg.trackLines) return undefined
+    if (passCollapse(code, ip, hostCst) || gatedPassCollapse(code, ip, hostCst) !== undefined) return undefined
+    const body = code[ip + 2]!
+    const bop = code[body]
+    if (bop !== OP_SEQ && bop !== OP_SEQV && bop !== OP_SEQX) return undefined
+    const base = bop === OP_SEQX ? body + 3 : body + 2
+    if (code[bop === OP_SEQX ? body + 2 : body + 1]! < 2) return undefined
+    const first = code[base]!
+    const negative = code[first] === OP_NOT
+    const terminal = negative ? scalarTerminalNotChild(code, first)
+      : code[first] === OP_PEEK ? scalarTerminalPeekChild(code, first) : -1
+    if (terminal < 0) return undefined
+    const recognize = scalarFor(terminal)!
+    const xf = fx[code[first + 2]!] as string[]
+    FIRST_DECIDED = DECIDED
+    NODE_BODY = lower(body)
+    const node = lower(ip)
+    NODE_BODY = undefined
+    return negative
+      ? (input, pos, ctx) => {
+          if (recognize(input, pos) >= 0) { ctx._fe = pos; ctx._fx = xf; EC.e = pos; return FAIL }
+          return node(input, pos, ctx)
+        }
+      : (input, pos, ctx) => {
+          if (recognize(input, pos) < 0) { ctx._fe = pos; ctx._fx = xf; return FAIL }
+          return node(input, pos, ctx)
+        }
   }
 
   function lower(ip: number): Piece {
@@ -2355,6 +2397,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ? fns[reducer] as (value: unknown, span: { start: number; end: number }) => unknown
           : undefined
         const step = closureLabels.at(ip).buf ? nextTermBuffered : nextTerm
+        const decided = FIRST_DECIDED
+        FIRST_DECIDED = undefined
+        const linkFirst = (): Piece => decided ?? link(code[base]!)
 
         const runnerBlock = (
           count: number,
@@ -2453,7 +2498,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * sentinel published is the kind of state a later reader will trust.
          */
         if (REC) {
-          const first = link(code[base]!)
+          const first = linkFirst()
           const firstSync = sentinelFor(code[base + n]!)
           const runnerAt = (i: number): TermRunner => {
             const sync = sentinelFor(code[base + n + i]!)
@@ -2542,7 +2587,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (code[kidIp] === OP_ADJ || leadingTriviaFieldAt(code, k, kidIp) || holdsGap(code, k, base, n, i, NULLABLE)) { hasAdj = true; break }
         }
         if (hasAdj) {
-          const first = link(code[base]!)
+          const first = linkFirst()
           const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
             if (holdsGap(code, k, base, n, i, NULLABLE)) {
@@ -2646,7 +2691,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * runs, so there is no arity this fails to lower.
          */
         if (n === 1) {
-          const k0 = link(code[base]!)
+          const k0 = linkFirst()
           if (fused) {
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
@@ -2669,7 +2714,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         if (n === 2) {
-          const k0 = link(code[base]!), k1 = link(code[base + 1]!)
+          const k0 = linkFirst(), k1 = link(code[base + 1]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
@@ -2703,7 +2748,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         if (n === 3) {
-          const k0 = link(code[base]!), k1 = link(code[base + 1]!), k2 = link(code[base + 2]!)
+          const k0 = linkFirst(), k1 = link(code[base + 1]!), k2 = link(code[base + 2]!)
           if (fused) {
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
@@ -2805,7 +2850,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             start + count < n ? bind(start + count) : undefined,
           )
         }
-        const first = link(code[base]!)
+        const first = linkFirst()
         const tail = bind(1)
         const runDirectTerms = (
           input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined,
@@ -3688,7 +3733,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return nd
           }
         }
-        const child = link(code[ip + 2]!)
+        const child = NODE_BODY ?? link(code[ip + 2]!)
+        NODE_BODY = undefined
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
         const type = k[code[ip + 5]!] as string
