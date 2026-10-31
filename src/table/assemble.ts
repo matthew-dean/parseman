@@ -1521,21 +1521,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   function lower(ip: number): Piece {
-    // A composite gap row takes its value and end from the slot (`gap-gate.ts`).
-    if (code[ip] === OP_OPT && GAP_ROWS.has(ip)) {
-      const raw = lowerRow(ip)
-      return (input, pos, ctx) => {
-        if (GAP.row === ip && GAP.at === pos && GAP.input === input && GAP.trivia === ctx.trivia) {
-          EC.e = GAP.end
-          return GAP.value
-        }
-        return raw(input, pos, ctx)
-      }
-    }
-    return lowerRow(ip)
-  }
-
-  function lowerRow(ip: number): Piece {
     const op = code[ip]
     switch (op) {
       /* ── terminals ───────────────────────────────────────────────────────── */
@@ -3514,9 +3499,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // THE GAP GATE (`gap-gate.ts`): read the item's leading gap once, here.
         const gapIp = sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1
         const gapRow = gapIp >= 0 ? code[gapIp + 2]! : -1
-        const gapComposite = gapIp >= 0 && code[gapRow] === OP_OPT
-        const gapRe = gapIp >= 0 && !gapComposite ? k[code[gapRow + 1]!] as RegExp : undefined
-        const gapPiece = gapComposite ? link(gapRow) : undefined
+        const gapRe = gapIp >= 0 ? k[code[gapRow + 1]!] as RegExp : undefined
         const gapFollow = gapIp >= 0 ? cc[code[gapIp + 3]!]! : undefined
         const gapOther = gapIp >= 0 && code[gapIp + 4]! >= 0 ? cc[code[gapIp + 4]!]! : undefined
         const skipBeforeFirst = sepIp < 0 && min === 0
@@ -3718,28 +3701,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               break
             }
             let gapped = false
-            if ((gapRe !== undefined || gapPiece !== undefined) && ctx._probe === undefined) {
-              let q: number
-              let gv: unknown
-              if (gapRe !== undefined) {
-                gapRe.lastIndex = itemStart
-                q = gapRe.test(input) ? gapRe.lastIndex : -1
-              } else {
-                // As the leaf around it runs it: every capture sink and the trivia
-                // log cleared, the slot clear so the row runs for real.
-                GAP.at = -1
-                const s0 = ctx._cstBuf, s1 = ctx._cstChildren, s2 = ctx._cstLeaves
-                const s3 = ctx._cstRawChildren, s4 = ctx._cstTriviaLog, s5 = ctx._triviaLog
-                ctx._cstBuf = undefined; ctx._cstChildren = undefined; ctx._cstLeaves = undefined
-                ctx._cstRawChildren = undefined; ctx._cstTriviaLog = undefined; ctx._triviaLog = undefined
-                try {
-                  gv = gapPiece!(input, itemStart, ctx)
-                } finally {
-                  ctx._cstBuf = s0; ctx._cstChildren = s1; ctx._cstLeaves = s2
-                  ctx._cstRawChildren = s3; ctx._cstTriviaLog = s4; ctx._triviaLog = s5
-                }
-                q = gv === FAIL ? -1 : EC.e
-              }
+            if (gapRe !== undefined && ctx._probe === undefined) {
+              gapRe.lastIndex = itemStart
+              const q = gapRe.test(input) ? gapRe.lastIndex : -1
               // No arm with the gap can match where the gap fails, or where the
               // character after it opens nothing; an arm without it needs its
               // own lead at the item's start.
@@ -3750,7 +3714,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               }
               if (q >= 0) {
                 GAP.row = gapRow; GAP.at = itemStart; GAP.end = q; GAP.input = input
-                GAP.value = gv; GAP.trivia = ctx.trivia
                 gapped = true
               }
             }

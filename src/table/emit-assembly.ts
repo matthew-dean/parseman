@@ -1795,9 +1795,8 @@ return null
         const child = link(code[ip + 1]!)
         const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
-        // A composite gap row takes its value and end from the slot (`gap-gate.ts`).
         return `${head}
-${GAP_ROWS.has(ip) ? `if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input&&GAP.trivia===ctx.trivia){EC.e=GAP.end;return GAP.value}\n` : ''}${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
@@ -2330,19 +2329,7 @@ return [key,v]
         let gapCode = (_rb: string): string => ''
         if (gapIp >= 0) {
           const row = code[gapIp + 2]!
-          const composite = code[row] === OP_OPT
-          const re = composite ? '' : hoist('gr', `K[${code[row + 1]!}]`)
-          const gfn = composite ? link(row) : ''
-          // A composite gap runs as the leaf around it runs it (`assemble.ts`).
-          const scan = composite
-            ? `GAP.at=-1
-const g0=ctx._cstBuf,g1=ctx._cstChildren,g2=ctx._cstLeaves,g3=ctx._cstRawChildren,g4=ctx._cstTriviaLog,g5=ctx._triviaLog
-ctx._cstBuf=undefined;ctx._cstChildren=undefined;ctx._cstLeaves=undefined;ctx._cstRawChildren=undefined;ctx._cstTriviaLog=undefined;ctx._triviaLog=undefined
-let gv
-try{gv=${gfn}(input,itemStart,ctx)}finally{ctx._cstBuf=g0;ctx._cstChildren=g1;ctx._cstLeaves=g2;ctx._cstRawChildren=g3;ctx._cstTriviaLog=g4;ctx._triviaLog=g5}
-const gq=gv===FAIL?-1:EC.e`
-            : `${re}.lastIndex=itemStart
-const gq=${re}.test(input)?${re}.lastIndex:-1`
+          const re = hoist('gr', `K[${code[row + 1]!}]`)
           const cls = (idx: number): string => {
             const resolved = t.cc[idx]!
             const ci = classes.push([resolved]) - 1
@@ -2354,13 +2341,14 @@ const gq=${re}.test(input)?${re}.lastIndex:-1`
           const other = code[gapIp + 4]! >= 0 ? cls(code[gapIp + 4]!).replaceAll('@', 'itemStart') : 'true'
           gapCode = (rbCode: string): string => `let gapped=false
 if(ctx._probe===undefined){
-${scan}
+${re}.lastIndex=itemStart
+const gq=${re}.test(input)?${re}.lastIndex:-1
 if((gq<0||${follow})&&${other}){
 ${rbCode}
 break
 }
 if(gq>=0){
-GAP.row=${row};GAP.at=itemStart;GAP.end=gq;GAP.input=input${composite ? ';GAP.value=gv;GAP.trivia=ctx.trivia' : ''}
+GAP.row=${row};GAP.at=itemStart;GAP.end=gq;GAP.input=input
 gapped=true
 }
 }

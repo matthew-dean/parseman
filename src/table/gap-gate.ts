@@ -22,11 +22,6 @@
  * names as a gap (`gapRows`) test it at all. It is set for the item and cleared
  * when the item returns.
  *
- * A COMPOSITE gap, `optional(<trivia of regex arms>)` inside a leaf or token,
- * is run by the repeat under the same clearing of every capture sink and the
- * trivia log the leaf gives it, and its value is handed over with its end; the
- * slot then also keys on the trivia scope.
- *
  * Not under tolerant recovery or a completions probe, which observe an item's
  * failure: there the repeat enters the item as written. The reference driver
  * (`exec.ts`) always does, which is what makes it the ungated leg.
@@ -35,14 +30,10 @@ import { childSlots } from './child-slots.ts'
 import { OP_GAPGATE } from './ops.ts'
 
 /** The gap slot one assembly shares between its closure and emitted pieces. */
-export type GapSlot = {
-  row: number; at: number; end: number; input: string | undefined
-  /** A composite gap's value and the trivia scope it ran in (`OP_OPT` rows). */
-  value: unknown; trivia: unknown
-}
+export type GapSlot = { row: number; at: number; end: number; input: string | undefined }
 
 export function newGapSlot(): GapSlot {
-  return { row: -1, at: -1, end: -1, input: undefined, value: undefined, trivia: undefined }
+  return { row: -1, at: -1, end: -1, input: undefined }
 }
 
 /** The regex rows some reachable `OP_GAPGATE` names as its gap. */
