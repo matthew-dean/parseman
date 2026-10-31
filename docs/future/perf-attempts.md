@@ -101,7 +101,7 @@ Against 0.55.2, with the budgets Jess ships, ASTs byte-identical
   already did. Against its parent on x64: `rollback/sparse` −3.7% to +0.6%, `rollback/none`
   −0.8% to −4.9%. `2d59ad38`, 0.57.0.
 
-### 0.58.0 (release PR open)
+### 0.58.0 (merged; [#170](https://github.com/matthew-dean/parseman/pull/170))
 
 Against 0.57.0 per [#170](https://github.com/matthew-dean/parseman/pull/170): Less −1.2% JIT
 and −7.5% `--jitless`, SCSS −1.8% and −2.9%, `.jess` +0.4% (inside spread) and −4.6%, CSS
@@ -206,7 +206,14 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   characters, the gate reads both. On the grammar of jess#515, nested `div:hover{}` goes
   from 45.7k to 42.8k JIT instructions (`lessc`: 41.3k) and glued `color:red;` improves 3%.
   No Jess grammar on `dev` has such a site yet. `7462efe8`, with emitter and closure
-  follow-ups `3351fec7`, `867613fe`.
+  follow-ups `3351fec7`, `867613fe`. On jess#515's grammar it is −6% JIT and −5.3%
+  `--jitless` on nested `div:hover{}`; `color: red;` is flat.
+- **Gate-neutral selection pricing.** The emitted-site budget prices every `OP_GAPGATE` as
+  the item it guards, so adding gap gates no longer moves which sites get emitted. CSS, SCSS
+  and `.jess` now emit the same sites as a build without gap gates (76 / 63 / 131, 0
+  differing; each differed by 2 before). CSS `--jitless` 1917.4M without gates → 1916.1M
+  with them, so the earlier CSS lean is gone. SCSS 9115.5M → 8989.4M with gates. `b058918f`,
+  branch `perf/less-gap`.
 - **Jess side: SCSS `MapOrGroup`.** SCSS parsed `(` through a value-atom path that was 14% of
   SCSS pieces and that Parseman cannot factor exactly. The
   grammar now reads the first operand once and branches on `:` or `)`. SCSS −11.7%
@@ -267,7 +274,27 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 - **A `quiet()` lookahead primitive.** A quiet variant of `peek()` for guards. Rejected
   because it would entrench pre-scans. Never built.
 
+- **Subtracting gap-gate bytes from site prices.** Price a site without its gate's own bytes.
+  It still moved one site per grammar, because hoisted constants and the slot-test estimate
+  are not exact. Superseded by gate-neutral selection pricing (above). No code kept.
+- **Gap op for Less's classified-trivia gap.** Inside a `leaf` or `token`, accept
+  `optional(<trivia of regex arms>)` as a gap and hand its value and end through the slot,
+  keyed on the trivia scope. Exact, with three planted defects caught, but it did not pay:
+  Less keyword 19.99k → 19.87k instructions, `width: 1px + 2px * 3` 61.3k → 62.3k (+1.7%),
+  whole file `--jitless` +0.3%. Running the composite gap under the leaf's sink save, clear
+  and restore costs about what the skipped operator attempt cost. SCSS gains because its
+  gap is one regex. `b4f684c5`, reverted by `fdea063f` on `perf/less-gap`.
+
 ## Parked
+
+- **Test the decisive first term before opening frames.** Failed attempts the first term
+  decided (nothing consumed) leave removable pieces of 4.4% (CSS), 6.0% (Less), 10.0% (SCSS)
+  and 9.6% (`.jess`) of all pieces, with 2.5k–31k node frames per fixture. At about 0–20
+  instructions per pass-through boundary and a few hundred per node frame, the JIT ceiling is
+  about 0.2–0.6% per grammar; `--jitless` about 3–5× that. Generalizing `FIRST_DECIDED`
+  through node, scope and sequence in both engines is a large build for that. The largest
+  CSS and `.jess` sites are one-character gates that admit too much, which the two-character
+  gate family addresses more cheaply. Census on `perf/less-gap`; not built.
 
 - **`.jess` `ExpressionLogical` capture replay.** `and`/`or` in `.jess` are choice arms that
   reparse their left operand up to three times. Fixing it in the engine needs capture
@@ -275,23 +302,12 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ## Queued and in progress
 
-- **CSS `--jitless` lean from gap gates.** The gap op leans CSS +0.2–0.4% `--jitless`, from
-  extra gate bytes in the emitted selection. Make the gate bytes budget-neutral, or bring
-  numbers showing it away. Branch `perf/rgate-depth2`.
 - **Comment-sensitive selection
   ([#179](https://github.com/matthew-dean/parseman/issues/179)).** Comment-only edits to
   Jess's SCSS grammar moved the emitted function count from 61 to 55: the build measured
   −13.9% JIT at 61 and −11% at 55. Cause: the budget is a fraction of source length, and the
   static ranker caps recursive-cycle weights, so near the line the choice comes down to
   emitted size. Done when comment edits leave the artifact byte-identical.
-- **Gap op for Less's classified-trivia gap.** Less's math pads spell the gap as
-  `optional(<classified trivia>)`, which is not a regex, so `OP_GAPGATE` leaves it alone.
-  This is where the Less keyword's remaining cost sits.
-- **Test the decisive first term before opening frames.** A failed gated arm costs about
-  22–24k instructions with `--jitless`, and failed attempts are 15–40% of pieces
-  (19.6% of Less pieces, 34% of SCSS pieces in failed choice arms). The biggest single cause
-  is the Less statement choice reading the name twice (6.2% of pieces). A general lowering would test the term that decides the
-  arm first.
 - **Gate head-side bias
   ([#175](https://github.com/matthew-dean/parseman/issues/175)).** `expected/none` reads about
   +1% slower on the head side whenever the compared trees differ, even for plugin-only or
