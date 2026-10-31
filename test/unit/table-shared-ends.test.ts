@@ -124,4 +124,22 @@ describe('a choice whose arms differ in one term', () => {
       }
     })
   }
+
+  it('stays as written when the inner choice would add a lookahead the arms do not have', () => {
+    // As one choice, `'start'` before `'started'` gets an automatic `not('ed')`;
+    // the arms as written do not, so `!started` takes `!start` and leaves `ed`
+    // for the sequence after the choice.
+    const arms = choice(
+      sequence(literal('!'), literal('start')),
+      sequence(literal('!'), literal('started')),
+      sequence(literal('!'), regex(/stop[0-9]+/)),
+    )
+    const g = { Root: sequence(arms, literal('ed')) }
+    for (const input of ['!started', '!startededed', '!stop1ed', '!start', '']) {
+      const want = digestValue(run(g.Root, input))
+      for (const [engine, rule] of Object.entries(engines(encodeTable(g)))) {
+        expect(digestValue(run(rule, input)), `${input} ${engine}`).toBe(want)
+      }
+    }
+  })
 })

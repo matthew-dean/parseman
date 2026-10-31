@@ -152,7 +152,11 @@ export function factorSharedEnds(d: ChoiceDef): Combinator<unknown> | undefined 
   if (arms.some(a => mayCommitFailure(a))) return undefined
   const middle = choice(...(shapes.map(s => s.terms[at]!) as [Combinator<unknown>, ...Combinator<unknown>[]]))
   // The inner choice must keep arm order: a strategy that reorders (longest
-  // literal first) or classifies would pick a different arm.
+  // literal first) or classifies would pick a different arm. Nor may it add an
+  // automatic lookahead the arms as written do not have: `'start'` before
+  // `'started'` gets a `not('ed')` as one choice, which rejects the `!start` the
+  // written arms take on `!started`.
+  if (middle._def.tag === 'choice' && middle._def.autoNot.some(a => a !== null)) return undefined
   const st = middle._def.tag === 'choice' ? middle._def.strategy : undefined
   if (st === undefined || (st.tag !== 'firstMatch' && st.tag !== 'sharedPrefix'
     && !(st.tag === 'literalsLongestFirst' && st.sortedIndices.every((x, i) => x === i)))) return undefined
