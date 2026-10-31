@@ -110,12 +110,12 @@ export class Unemittable extends Error {
  * runs and is wrong, which no type in this file would catch.
  */
 export const EMITTED_PARAMS = [
-  'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
+  'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIASCAN',
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
   'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'rollbackScannedTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
   'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
-  'scanTrivia', 'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
+  'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
   'asciiFoldKey', 'ROUTED_FX',
   // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
   // char-class index — the emitted twin of `assemble.ts`'s `sentinelFor` memo,
@@ -125,26 +125,21 @@ export const EMITTED_PARAMS = [
   // engine and cannot drift.
   'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError',
   // Pure scalar terminal recognizers, indexed by the terminal's existing const
-  // operand. Appended for compatibility with older precompiled factories.
-  'RECOG',
-  // Appended so precompiled factories produced by earlier runtimes keep every
-  // positional helper binding. Older factories ignore this trailing argument.
-  'commitTriviaScan', 'scanTriviaCompact', 'LEX',
-  // Appended for old precompiled-factory ABI: old factories ignore it.
-  'adjacencyHolds',
-  // Appended for selected composite lexical programs; old factories ignore it.
+  // operand; selected lexical bodies; the adjacency test.
+  'RECOG', 'LEX', 'adjacencyHolds',
+  // Selected composite lexical programs.
   'LEXPROG',
-  // Appended for trivia-attributing fields (`field(…, { leadingTrivia })`);
-  // old factories ignore them.
+  // Trivia-attributing fields (`field(…, { leadingTrivia })`).
   'LEAD', 'triviaFieldCapture',
-  // Appended for the deferred-commit trivia skip (`trivia-gap.ts`); old
-  // factories ignore it.
+  // The deferred-commit trivia skip (`trivia-gap.ts`).
   'skipDeferredTrivia',
-  // Appended for the pass-through collapse (`run-support.ts`); old factories
-  // ignore it.
+  // The pass-through collapse (`run-support.ts`).
   'collapseEmpty',
-  // Appended for the gap gate (`gap-gate.ts`); old factories ignore it.
+  // The gap gate (`gap-gate.ts`).
   'GAP',
+  // Artifacts are version-locked (docs/design/artifact-format.md): a factory is
+  // only ever called by the runtime that emitted it, so a name nothing emitted
+  // reads is removed rather than kept for an older factory's positions.
 ] as const
 
 /**
