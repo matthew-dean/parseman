@@ -923,6 +923,7 @@ function makeDriver(
             const lit = k[code[child + 1]!] as string
             if (!input.startsWith(lit, cur)) {
               ctx._fe = cur; ctx._fx = fx[code[child + 2]!] as string[]
+              if (ctx._probe !== undefined) failAt(ctx, ctx._fx, cur)
               { if (REC) ctx._sync = inheritedSync; return FAIL }
             }
             const e = cur + lit.length
@@ -937,6 +938,7 @@ function makeDriver(
             const m = re.exec(input)
             if (m === null) {
               ctx._fe = cur; ctx._fx = fx[code[child + 2]!] as string[]
+              if (ctx._probe !== undefined) failAt(ctx, ctx._fx, cur)
               { if (REC) ctx._sync = inheritedSync; return FAIL }
             }
             const mv = m[0]
@@ -1574,15 +1576,14 @@ function makeDriver(
       }
 
       case OP_NOT: {
-        // The shipping generic closure/emitted NOT bodies predate pure-global
-        // lookahead rollback. Keep the reference driver aligned with them for
-        // every generic child; only the direct-terminal shape this lane replaces
-        // needs the reference oracle to hide the terminal's diagnostic writes.
+        // The generic closure/emitted NOT bodies leave the child's failure
+        // registers; only the direct-terminal shape hides them. Every NOT hides
+        // the child's completions from the probe, as `not.ts` does.
         const scalarChild = scalarTerminalNotChild(code, ip) >= 0
         const savedFc = scalarChild ? ctx._fc : false
         const savedFe = scalarChild ? ctx._fe : -1
         const savedFx = scalarChild ? ctx._fx : undefined
-        const savedProbe = scalarChild ? ctx._probe?.best : undefined
+        const savedProbe = ctx._probe?.best
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -1597,8 +1598,8 @@ function makeDriver(
           ctx._fc = savedFc
           ctx._fe = savedFe
           ctx._fx = savedFx
-          if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
         }
+        if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
         if (v === FAIL) { EC.e = pos; return null }
         // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
         ctx._fe = pos
@@ -1612,7 +1613,7 @@ function makeDriver(
         // writes here too.
         const scalarChild = scalarTerminalPeekChild(code, ip) >= 0
         const savedFc = scalarChild ? ctx._fc : false
-        const savedProbe = scalarChild ? ctx._probe?.best : undefined
+        const savedProbe = ctx._probe?.best
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -1623,10 +1624,8 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        if (scalarChild) {
-          ctx._fc = savedFc
-          if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
-        }
+        if (scalarChild) ctx._fc = savedFc
+        if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
         // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
         if (v === FAIL) { ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]; return FAIL }
         EC.e = pos

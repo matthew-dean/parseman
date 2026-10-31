@@ -444,6 +444,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * reference.
    */
   const REC = prog.rec === 1 && cfg.tolerant
+  /** A completions-probe assembly: lookaheads restore `_probe.best` around their child. */
+  const PROBE = cfg.probe
   /**
    * The sync sentinel for a char-class index, built ONCE at assembly.
    *
@@ -2131,8 +2133,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+          // A completions probe sees nothing raised inside a lookahead
+          // (`not.ts`, `rollbackLookahead`): those tokens are not reachable here.
+          const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (PROBE && ctx._probe !== undefined) ctx._probe.best = probeBest ?? null
           if (v === FAIL) { EC.e = pos; return null }
           // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
           ctx._fe = pos
@@ -2171,8 +2177,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+          const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (PROBE && ctx._probe !== undefined) ctx._probe.best = probeBest ?? null
           // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
           if (v === FAIL) { ctx._fe = pos; ctx._fx = xf; return FAIL }
           EC.e = pos

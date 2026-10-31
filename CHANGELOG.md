@@ -37,6 +37,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   only where the code on the other side reads it.
 - A printed table's compact char-class pool (`"…".split("|")`) is annotated
   `/* @__PURE__ */`, so a bundler drops the pool of a variant it shook out.
+- Fixed: completions (`completionsAt`) from a table artifact offered tokens raised
+  inside a `not()`/`peek()` lookahead, which the enclosing grammar cannot reach; a
+  lookahead now hides them in both table engines, as the interpreter does. The
+  reference driver also reports a sequence term that fails, as the other engines do.
 - Fixed: a failed choice whose arms share leading terms listed those terms' expected
   labels once per arm when no arm was entered; it lists them once. The failure's span
   and position are unchanged.
