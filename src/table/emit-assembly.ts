@@ -1409,7 +1409,7 @@ return ${child}(input,pos,ctx)
         return `${head}
 const it=ctx._routed
 if(it!==undefined&&it.span.start===pos){const e=it.span.end;const c=${ascii ? 'input.charCodeAt(e)' : 'lead(input,e)'}
-if(!${has(cls, 'c')}||(${has(first, 'c')}&&!${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')})){ctx._fe=e;ctx._fx=${xf};return FAIL}}
+if(!(${has(cls, 'c')})||(${has(first, 'c')}&&!(${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}))){ctx._fe=e;ctx._fx=${xf};return FAIL}}
 return ${child}(input,pos,ctx)
 }`
       }
