@@ -130,19 +130,19 @@ These statements are wrong until the fixes land, and they must be corrected in t
 change that fixes the behaviour:
 
 - `docs/guide/modes.md`:
-  - the mode table's "a large terminal `composeLeaf` also embeds one strict assembly" (corrected in 0.58.0);
-  - "A big enough terminal `composeLeaf()` gets one extra thing" (corrected in 0.58.0);
+  - the mode table's "a large terminal `composeLeaf` also embeds one strict assembly" (corrected in 0.57.0);
+  - "A big enough terminal `composeLeaf()` gets one extra thing" (corrected in 0.57.0);
   - the CSP warning's "Runtime `compose()` follows the same rule" (corrected in 0.53.0);
-  - "Terminal large `composeLeaf()` artifacts carry one ordinary function literal" (corrected in 0.58.0).
+  - "Terminal large `composeLeaf()` artifacts carry one ordinary function literal" (corrected in 0.57.0).
 - `docs/guide/macro-mode.md`, "The budget": the 10× ceiling is replaced by rule 4, and
-  "enforced on every PR" is false (row B). Corrected in 0.58.0.
+  "enforced on every PR" is false (row B). Corrected in 0.57.0.
 - `docs/guide/extending.md`, "How this behaves in each execution mode": runtime
   `compose()` "fuses … using the same code generation `compile()` uses" and "falls back to
   the closure assembler". Both break rules 1 and 2, and the fallback claim is false (row D) Corrected in 0.53.0.
 - `docs/guide/performance.md`: "a large enough terminal (a `composeLeaf`) it may also
-  materialize one strict assembly" (row A). Corrected in 0.58.0.
+  materialize one strict assembly" (row A). Corrected in 0.57.0.
 - `docs/reference/api.md`: "Once its canonical table reaches 1,024 instruction words, the
-  default AST/no-lines leaf …" (row A). Corrected in 0.58.0.
+  default AST/no-lines leaf …" (row A). Corrected in 0.57.0.
 - `CHANGELOG.md` 0.48.0: "the deterministic size ceiling stays green" (row A).
 - Commit `cfa50d7`: "Build-time only (perf-free)" (row C).
 

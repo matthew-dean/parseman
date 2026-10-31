@@ -137,7 +137,7 @@ const PARSEMAN_MODULE = 'parseman'
 /**
  * The default `assemblyBudget`: generated assembly bytes a module may spend, as a
  * multiple of its own source length. A quarter of the source keeps every jess
- * grammar far under the 5x ceiling (contract rule 4); the 0.58.0 CHANGELOG has the
+ * grammar far under the 5x ceiling (contract rule 4); the 0.57.0 CHANGELOG has the
  * measured curve.
  */
 const DEFAULT_ASSEMBLY_BUDGET = 0.25

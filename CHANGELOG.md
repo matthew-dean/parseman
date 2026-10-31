@@ -3,32 +3,102 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.58.0 — 2026-10-30
+## 0.57.0 — 2026-10-30
 
+- **Breaking: `node.state` and a builder's `state` argument are the active
+  `ctx.state`, not a copy.** Every engine used to hand a builder that reads state, and
+  every host, a shallow `Object.assign` copy of `ctx.state`: one allocation per such
+  node, 11,285 per parse of jess's `benchmark.less`. The interpreter, the closure and
+  emitted table engines and the reference driver now pass the state object itself.
+  Parseman never changes a state object (`withCtx` installs a new one for its scope
+  and restores the old one after), so the object is the state the node was parsed
+  under. A caller that mutates its own state object in place after the parse now sees
+  the mutation through `node.state`; copy it at the call site to keep a snapshot.
 - **Selective assembly replaces the whole-grammar assembly.** A module's terminal
   grammar — its `composeLeaf()`, or a `compose()` in a module that declares no
-  `composeLeaf()` — gets generated code for its hottest sites only. The plugin's new
-  `assemblyBudget` option sets how much: a multiple of the module's own source length,
-  `0.25` by default, `0` for none, checked against the source the selection actually
-  emits. The closure engine runs every other site, and the two engines hand the
-  installed trivia scanner across each boundary. Before, a large `composeLeaf()`
-  generated every site (jess's CSS grammar: 11.8× its source) and a `compose()`
-  generated none.
-- Sites are ranked by a static estimate of how often they run. The plugin's new optional
-  `assemblyProfile: { entry, files }` ranks them by measured calls instead: the build
-  parses the corpus on the closure engine, nothing is generated to measure, and the
-  corpus files are watched.
-- `pnpm size:guard:jess` builds a vendored snapshot of jess's four grammars
-  (`fixtures/jess-grammars/`, refreshed by `pnpm vendor:jess-grammars`) the way jess
-  ships them, loads each bundle it measures, and fails when any variant exceeds 5× its
-  grammar source. It runs in CI.
-- The macro timing gate (`bench:macro-optimize`) times against this release instead of
-  0.50.2, whose whole-grammar assembly the runtime and size contract removes.
-- Measured per grammar on jess `origin/dev` 4dc6890 against parseman 0.55.2, Node
-  24.11.1, M4 Pro, interleaved. Instructions are marginal per parse; cold is import plus
-  first parse, median of 10. A budget of 0 is the same artifact as 0.55.2 and gives the
-  run-to-run noise: about ±1% instructions on Less, CSS and Jess (more on SCSS's
-  sass-spec corpus), and about ±3% cold.
+  `composeLeaf()` — gets generated code for its hottest sites only. The closure engine
+  runs every other site, and the two engines hand the installed trivia scanner across
+  each boundary. Before, a large `composeLeaf()` generated every site (jess's CSS
+  grammar: 11.78× its source) and a `compose()` generated none.
+  - The plugin's new `assemblyBudget` option sets how much: a multiple of the module's
+    own source length, `0.25` by default, `0` for none, checked against the source the
+    selection actually emits. A selection that lands a few bytes over its budget
+    narrows by at least 1% per attempt instead of stalling and shipping no assembly.
+  - Sites are ranked by a static estimate of how often they run. The new optional
+    `assemblyProfile: { entry, files }` ranks them by measured calls instead: the
+    build parses the corpus on the closure engine, nothing is generated to measure,
+    and the corpus files are watched.
+  - A `compose()` beside a `composeLeaf()` is a composition piece and spends nothing;
+    a coverage build gets no assembly.
+- The table emitter lowers gated choice arms (`choice({ gate, combinator })`) and
+  `withCtx(…)`, site for site with the closure assembler. A precompiled assembly
+  containing either was refused, so a terminal `composeLeaf()` that used them ran on
+  the closure engine. When the emitter refuses an assembly, the macro plugin now warns
+  with the refused construct, e.g. `composeLeaf(): its precompiled assembly cannot
+  emit OP_GREEDY`; the artifact still parses, on the closure engine.
+- Fixed in 0.56.0: a grammar with a scan skip set (`scanTo(…, { skip })`,
+  `balanced(…, { skip })`) shipped its precompiled assembly without the
+  supercompiler's joins. The supercompiler and the emitter listed the scan pool's
+  sites in different orders, so the supercompiler's splice check failed and it
+  discarded its result without a warning. All three assemblers now read one list.
+- Emitted code is smaller: every rollback mark, scanned-term undo, choice failure
+  merge and field/error sink mark calls a shared helper instead of inlining the
+  capture-sink chain. Whole-grammar emitted code for jess's grammars shrinks 28–30%
+  (Less 3,305,714 → 2,386,168 B), with unchanged instructions.
+- First-character gates:
+  - `optional`, `not` and `peek` over a non-nullable child decide on the child's first
+    character without taking a rollback mark or entering the child;
+  - a choice whose first-character mask admits arms that each fail their pretest
+    reports its pooled expected set instead of rebuilding it arm by arm;
+  - node, attempt and repeat-item gates resolve a `compose()` body's first set and
+    nullability through the merged winners, as a choice arm's gate does. A body that
+    reached another piece's rule had an `any` first set and no gate, so jess's
+    `CompoundSelector` was entered at `{`; and the repeat-item guard binds the item's
+    class whatever its pool index.
+- Trivia:
+  - the trivia scanner lowers an alternation whose alternatives share a literal
+    prefix, such as jess's one comment arm `\/(?:\*…\*\/|\/[^\n\r]*)`, which had no
+    unlabelled scanner;
+  - both table engines skip a deferred-commit gap through one helper,
+    `skipDeferredTrivia`: a gap in which no character can start a root-selected arm
+    is answered by the unlabelled scanner's end instead of a chunk-by-chunk labelled
+    scan, and a gap asked for again from the same position in the same parse (after a
+    zero-width term) is answered from the last scan that recorded nothing. It does not
+    apply with `trackLines`, CST capture or a full trivia log.
+- Size gates:
+  - `pnpm size:guard:jess` builds a vendored snapshot of jess's four grammars
+    (`fixtures/jess-grammars/`, refreshed by `pnpm vendor:jess-grammars`) the way jess
+    ships them, loads each bundle it measures, and fails when any variant exceeds 5×
+    its grammar source. It runs in CI.
+  - `size:guard` ceilings rise by the first-character gate rows: example/graphql
+    4,538 → 4,707 B, example/css 9,313 → 9,481 B, example/lang 3,522 → 3,533 B, and
+    10–50 B on twelve probes. Each grown example grammar measures no slower with them.
+  - The interpreter browser bundle ceiling rises 59,184 → 59,793 B for the trivia
+    scanner's shared-prefix lowering and the trivia spec's fast-path slots.
+- The macro timing gate (`bench:macro-optimize`) times against this release's
+  selective-assembly commit `ac33bd8` instead of 0.50.2, whose whole-grammar assembly
+  the runtime and size contract removes. Perf gates `bench/grammar-density/config.json`
+  and `bench/workloads/config.json` anchor on the v0.56.0 main base, ffe1e86.
+- Measured per grammar on jess `dev` against parseman 0.55.2, with the budgets jess
+  ships (CSS `1` with a corpus profile, `.jess` `0`, Less and SCSS the default).
+  Instructions are JIT marginal per parse, `(I(25) − I(5)) / 20`; cold is import plus
+  first parse; each a median of 5. ASTs are byte-identical to 0.55.2's on jess's four
+  benchmark fixtures.
+
+  | grammar | `ast.js` (× source) | instructions | wall | cold |
+  | --- | --- | --- | --- | --- |
+  | Less | 914,206 B (3.39×) | 523.9 → 449.2M (−14.3%) | 26.4 → 22.4 ms | 99.9 → 99.0 ms |
+  | SCSS | 585,107 B (2.94×) | 1553.4 → 1293.1M (−16.8%) | 72.7 → 60.9 ms | 144.3 → 139.6 ms |
+  | .jess | 573,045 B (2.52×) | 317.5 → 294.5M (−7.2%) | 15.3 → 14.2 ms | 74.5 → 75.2 ms |
+  | CSS | 429,630 B (2.39×, was 11.78×) | 212.4 → 212.5M (flat, spread 2%) | 8.85 → 8.65 ms | 76.7 → 64.2 ms |
+
+  Under `--jitless`, with the Cachegrind-style marginal jess's CI speed gate uses:
+  CSS −1.08%, Less −16.75%, SCSS −11.22%, .jess −26.07%.
+- The `assemblyBudget` curve, measured at the selective-assembly commit on jess
+  4dc6890 against 0.55.2 (marginal instructions median of 3, wall median of 6, cold
+  median of 10). A budget of 0 is the same artifact as 0.55.2 and gives the noise:
+  about ±1% instructions on Less, CSS and Jess (more on SCSS's sass-spec corpus), and
+  about ±3% cold.
 
   | grammar | budget | `ast.js` (× source) | instructions | wall | cold |
   | --- | --- | --- | --- | --- | --- |
@@ -46,30 +116,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   | CSS, profile ranking | 1 | 413,418 B (2.30×) | +0.6% | +4.7% | −15.5% |
   | CSS, profile ranking | 2.5 | 759,303 B (4.23×) | +0.6% | +2.9% | −10.0% |
 
-  0.55.2's CSS artifact is the whole-grammar assembly at 2,116,083 B (11.78×); no CSS
-  budget within 5× matches its wall time. Rendered CSS is byte-identical across jess's
-  360 fixtures × 6 output modes.
-
-## 0.57.0 — 2026-10-30
-
-- The table emitter lowers gated choice arms (`choice({ gate, combinator })`) and
-  `withCtx(…)`, site for site with the closure assembler. A precompiled assembly
-  containing either was refused, so a terminal `composeLeaf()` that used them ran on
-  the closure engine. Jess's composed Less, SCSS and Jess grammars use both; these were
-  the only opcodes they reach that the emitter could not lower.
-- When the build asks for a precompiled assembly and the emitter refuses it, the
-  macro plugin warns with the refused construct, e.g. `composeLeaf(): its precompiled
-  assembly cannot emit OP_GREEDY`. The artifact still parses, on the closure engine.
-  Before, that fallback was silent.
-- Fixed in 0.56.0: a grammar with a scan skip set (`scanTo(…, { skip })`,
-  `balanced(…, { skip })`) shipped its precompiled assembly without the
-  supercompiler's joins. The supercompiler and the emitter listed the scan pool's
-  sites in different orders, so the supercompiler's splice check failed and it
-  discarded its result without a warning. All three assemblers now read one list.
-  Jess's CSS grammar goes back from 1,575 unjoined assembly functions to 950.
-- `compose()` artifacts are unchanged: they stay compact closure tables.
-- Perf gates `bench/grammar-density/config.json` and `bench/workloads/config.json`
-  anchor on the v0.56.0 main base, ffe1e86.
+  0.55.2's CSS artifact is the whole-grammar assembly at 2,116,083 B (11.78×).
 
 ## 0.56.0 — 2026-10-28
 

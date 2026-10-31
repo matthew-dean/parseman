@@ -36,9 +36,9 @@ gates.
 
 The macro gate covers a different shipping shape. Jess loads Parseman's macro output,
 not the runtime `compile()` path exercised by the grammar and workload gates. It first
-requires full three-way result identity, then times the candidate against the 0.58.0
+requires full three-way result identity, then times the candidate against the 0.57.0
 selective assembly with a separate matching A/A control. It was anchored on 0.50.2 until
-0.58.0 replaced the whole-grammar assembly 0.50.2 embedded, which the runtime and size
+0.57.0 replaced the whole-grammar assembly 0.50.2 embedded, which the runtime and size
 contract's rule 4 removes; `bench/jess/macro-optimize-config.json` records the reference. A run is invalid if
 any configured fixture is missing, either leg has the wrong engine or source path, the
 A/A control moves more than its measured 20% CI ceiling, or any paired candidate row is
