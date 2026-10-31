@@ -28,7 +28,7 @@ import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, LexBodySpec, LexProgramSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 import {
   lexProgramDigest,
-  LEX_NODE_CHOICE2, LEX_NODE_CHOICE4, LEX_NODE_CHOICE8,
+  LEX_NODE_CHOICE,
   LEX_NODE_NOT, LEX_NODE_OPTIONAL,
   LEX_NODE_SEQUENCE2, LEX_NODE_SEQUENCE3, LEX_NODE_SEQUENCE4, LEX_NODE_SEQUENCE5,
   LEX_NODE_TERMINAL,
@@ -299,11 +299,7 @@ class Encoder {
           }
           case 'choice': {
             for (const arm of node.arms) if (!emitNode(arm)) return false
-            const op = node.arms.length === 2 ? LEX_NODE_CHOICE2
-              : node.arms.length === 4 ? LEX_NODE_CHOICE4
-                : node.arms.length === 8 ? LEX_NODE_CHOICE8 : -1
-            if (op < 0) return false
-            words.push(op, this.expected(node.expected))
+            words.push(LEX_NODE_CHOICE, node.arms.length, this.expected(node.expected))
             for (let i = 0; i < node.arms.length; i++) {
               const first = node.firstSets[i]!
               words.push(first.kind === 'ranges' ? this.charClass(first) : -1)

@@ -14,6 +14,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   same leaf and trivia-scope wrappers over one sequence, the same but for one term, are
   encoded as those wrappers over the sequence with a choice in that place, so the
   shared terms run once and the choice dispatches on the character after them.
+- A `token()` whose body holds an ordered choice of any number of arms is one
+  lexical recognizer; before, only choices of two, four or eight arms were.
 - `peek()` of a direct literal or regex is one recognizer call, as `not()` of one
   already was.
 - A `not()`/`peek()` lookahead between two gaps in a sequence no longer makes the

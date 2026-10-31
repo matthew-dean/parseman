@@ -16,9 +16,8 @@ export const LEX_NODE_SEQUENCE2 = 1
 export const LEX_NODE_SEQUENCE3 = 2
 export const LEX_NODE_SEQUENCE4 = 3
 export const LEX_NODE_SEQUENCE5 = 4
-export const LEX_NODE_CHOICE2 = 5
-export const LEX_NODE_CHOICE4 = 6
-export const LEX_NODE_CHOICE8 = 7
+/** `[op, armCount, choiceFx, (armClass, armFx) × armCount]`: any arity, no padding. */
+export const LEX_NODE_CHOICE = 5
 export const LEX_NODE_NOT = 8
 export const LEX_NODE_OPTIONAL = 9
 
@@ -269,9 +268,12 @@ function fixedTreeRunner(
       else stack.push(sequence5(nodes[0]!, nodes[1]!, nodes[2]!, nodes[3]!, nodes[4]!))
       continue
     }
-    if (op >= LEX_NODE_CHOICE2 && op <= LEX_NODE_CHOICE8) {
-      const count = op === LEX_NODE_CHOICE2 ? 2 : op === LEX_NODE_CHOICE4 ? 4 : 8
+    if (op === LEX_NODE_CHOICE) {
+      const count = words[at++]!
       const choiceFx = expected[words[at++]!]
+      if (!Number.isInteger(count) || count < 2 || count > stack.length) {
+        throw new TypeError('table lexical tree choice has an invalid arm count')
+      }
       if (choiceFx === undefined) throw new TypeError('table lexical tree choice has an invalid expected set')
       const armClasses: Array<ResolvedClass | undefined> = []
       const armFx: Array<readonly string[]> = []

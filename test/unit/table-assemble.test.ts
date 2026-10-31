@@ -631,6 +631,7 @@ describe('table assembler', () => {
       )),
       S5: token(sequence(literal('a'), literal('b'), literal('c'), literal('d'), literal('e'))),
       C2: token(choice(literal('a'), literal('b'))),
+      C3: token(choice(literal('a'), literal('b'), literal('c'))),
       C4: token(choice(literal('a'), literal('b'), literal('c'), literal('d'))),
       C8: token(choice(
         literal('a'), literal('b'), literal('c'), literal('d'),
@@ -653,6 +654,7 @@ describe('table assembler', () => {
       S4: ['word!', 'word(!', 'x!', 'word?'],
       S5: ['abcde', 'abcdx'],
       C2: ['a', 'b', 'z'],
+      C3: ['a', 'c', 'z'],
       C4: ['a', 'd', 'z'],
       C8: ['a', 'h', 'z'],
     }

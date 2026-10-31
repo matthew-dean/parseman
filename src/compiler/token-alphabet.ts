@@ -471,7 +471,7 @@ function directFixedLexNode(
       return { kind: 'sequence', parts: parts as ExecutableLexNode[] }
     }
     if (def.tag === 'choice') {
-      if ((def.parsers.length !== 2 && def.parsers.length !== 4 && def.parsers.length !== 8)
+      if (def.parsers.length < 2
         || def.strategy.tag !== 'firstMatch'
         || def.gates.some(gate => gate !== null)
         || def.autoNot.some(check => check !== null)) return undefined
