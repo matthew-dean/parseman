@@ -82,6 +82,13 @@ beforeAll(async () => {
     'upper.ts': "export { upper } from './grammar.ts'\n",
   }, ['index', 'upper'])
   await buildPackage('over', { 'index.ts': OVER }, ['index'])
+  // An entry that renames the grammar it re-exports, directly and through an
+  // imported binding.
+  await buildPackage('renamed', {
+    'grammar.ts': UPSTREAM,
+    'index.ts': "export { base as grammar } from './grammar.ts'\n",
+    'via.ts': "import { base as local } from './grammar.ts'\nexport { local as viaImport }\n",
+  }, ['index', 'via'])
 })
 afterAll(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }) })
 
@@ -111,6 +118,18 @@ describe('carried pieces under rolldown', () => {
     expect(typeof down.exports.digits[1].ir).toBe('string')
     // Each chunk carries only what it exports.
     expect(Object.keys(JSON.parse(read('down', 'upper.js.parseman.json')).exports)).toEqual(['upper'])
+  })
+
+  it('are written under the name an entry re-exports a grammar as', () => {
+    expect(Object.keys(JSON.parse(read('renamed', 'index.js.parseman.json')).exports)).toEqual(['grammar'])
+    expect(Object.keys(JSON.parse(read('renamed', 'via.js.parseman.json')).exports)).toEqual(['viaImport'])
+    const downstream = `import { compose, rules, regex, trivia } from 'parseman' with { type: 'macro' }
+import { grammar } from 'renamed'
+const ws = trivia(regex(/[ \\t\\n]*/))
+export const more = compose([grammar, rules({ trivia: ws }, g => ({ Word: regex(/[a-z0-9]+/) }))])
+`
+    const out = transformMacro(downstream, path.join(dir, 'pkgs', 'over', 'src', 'renamed.ts'), new Set(['parseman']))
+    expect(out?.code).toMatch(/tableRules\(/)
   })
 
   it('are read back from the sidecar by a downstream build, across two package boundaries', async () => {

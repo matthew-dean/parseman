@@ -357,23 +357,77 @@ function parseModuleCached(filePath: string): ParsedModule | null {
 }
 
 /** The rollup-family hook that writes each chunk's carried pieces beside it. */
-type SidecarBundle = Record<string, { type: string; fileName: string; exports?: string[]; moduleIds?: string[] }>
-type SidecarEmitter = { emitFile: (file: { type: 'asset'; fileName: string; source: string }) => unknown }
+type SidecarBundle = Record<string, { type: string; fileName: string; exports?: string[]; moduleIds?: string[]; facadeModuleId?: string | null }>
+type SidecarEmitter = {
+  emitFile: (file: { type: 'asset'; fileName: string; source: string }) => unknown
+  getModuleInfo: (id: string) => { code: string | null } | null
+  resolve: (source: string, importer?: string) => Promise<{ id: string; external?: boolean | string } | null>
+}
+
+/**
+ * Where a module's export `exported` comes from when the module re-exports it,
+ * possibly renamed: `export { base as renamed } from './grammar'`, or an imported
+ * binding exported under another name. Null when the module declares it itself.
+ */
+function reexportSource(body: AnyNode[], exported: string): { source: string; imported: string } | null {
+  for (const st of body) {
+    if (st.type !== 'ExportNamedDeclaration') continue
+    for (const sp of (st.specifiers as AnyNode[] | undefined) ?? []) {
+      const exp = sp.exported as { name?: string; value?: string } | undefined
+      if ((exp?.name ?? exp?.value) !== exported) continue
+      const local = sp.local as { name?: string; value?: string } | undefined
+      const name = local?.name ?? local?.value
+      if (name === undefined) return null
+      const from = (st.source as { value?: string } | null | undefined)?.value
+      return from !== undefined ? { source: from, imported: name } : extractImportBindings(body).get(name) ?? null
+    }
+  }
+  return null
+}
+
+/**
+ * The carried list behind an entry chunk's export, followed from the entry module
+ * through its re-exports to the module that recorded it, under the name that module
+ * exports it as. A chunk's export names are its entry module's, so an entry that
+ * renames a grammar (`export { base as renamed } from './grammar'`) still finds the
+ * pieces recorded as `base`.
+ */
+async function followCarried(this: SidecarEmitter, sinks: Map<string, CarriedSink>, moduleId: string, name: string): Promise<CarriedSidecarItem[] | undefined> {
+  for (let hop = 0; hop < 64; hop++) {
+    const own = sinks.get(moduleId)?.get(name)
+    if (own !== undefined) return own
+    const code = this.getModuleInfo(moduleId)?.code
+    if (!code) return undefined
+    const parsed = parseSync(moduleId, code)
+    if (parsed.errors.length > 0) return undefined
+    const next = reexportSource(parsed.program.body as unknown as AnyNode[], name)
+    if (next === null) return undefined
+    const resolved = await this.resolve(next.source, moduleId)
+    if (resolved === null || resolved.external) return undefined
+    moduleId = resolved.id
+    name = next.imported
+  }
+  return undefined
+}
 
 /**
  * Write `<chunk>.parseman.json` for every chunk that exports a grammar with carried
- * pieces. An export is matched to the module that recorded it, preferring a module of
- * the chunk itself; a name two modules of the bundle both record, and neither of them
- * in the chunk, is ambiguous and is not written — a downstream compose of it then fails
- * its build naming the artifact.
+ * pieces. An entry chunk's export is followed from its entry module to the module
+ * that recorded it (`followCarried`). Any other export is matched by name to the
+ * module that recorded it, preferring a module of the chunk itself; a name two
+ * modules of the bundle both record, and neither of them in the chunk, is ambiguous
+ * and is not written — a downstream compose of it then fails its build naming the
+ * artifact.
  */
-function emitCarriedSidecars(this: SidecarEmitter, sinks: Map<string, CarriedSink>, bundle: SidecarBundle): void {
+async function emitCarriedSidecars(this: SidecarEmitter, sinks: Map<string, CarriedSink>, bundle: SidecarBundle): Promise<void> {
   const recorders = new Map<string, string[]>()
   for (const [moduleId, sink] of sinks) for (const name of sink.keys()) (recorders.get(name) ?? recorders.set(name, []).get(name)!).push(moduleId)
   for (const chunk of Object.values(bundle)) {
     if (chunk.type !== 'chunk') continue
     const exports: Record<string, CarriedSidecarItem[]> = {}
     for (const name of chunk.exports ?? []) {
+      const followed = chunk.facadeModuleId ? await followCarried.call(this, sinks, chunk.facadeModuleId, name) : undefined
+      if (followed !== undefined) { exports[name] = followed; continue }
       const ids = recorders.get(name)
       if (ids === undefined) continue
       const own = ids.filter(m => chunk.moduleIds?.includes(m))
@@ -393,7 +447,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
   // Any other bundler gets them inline, as before.
   const sinks = SIDECAR_FRAMEWORKS.has(meta.framework) ? new Map<string, CarriedSink>() : undefined
   const generateBundle = sinks === undefined ? undefined : {
-    generateBundle(this: SidecarEmitter, _options: unknown, bundle: SidecarBundle) { emitCarriedSidecars.call(this, sinks, bundle) },
+    generateBundle(this: SidecarEmitter, _options: unknown, bundle: SidecarBundle) { return emitCarriedSidecars.call(this, sinks, bundle) },
   }
   return {
     name: 'parseman',
