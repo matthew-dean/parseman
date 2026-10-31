@@ -51,6 +51,17 @@ fixed, and must name a `ref` that owns the fix) — and a stale entry still fail
 the gate. Outstanding `DEBT` is printed on every run, green ones included. See
 `docs/design/invariant-gate.md`.
 
+## Releases: every merge to `main` publishes
+
+Do not bump the version. Add your CHANGELOG entry under `## Unreleased` at the top
+(create the heading if it is absent); the release gate requires one whenever the PR
+changes a file `npm pack` ships, a build input, or a consumer-facing `package.json`
+field. Merging publishes the next patch. For a minor or a major, set the heading to
+`## X.Y.0 — <date>` and `package.json` and `src/version.ts` to `X.Y.0` in the PR.
+A merge that changes nothing the package ships publishes nothing. The released
+version is recorded on its `vX.Y.Z` tag, not on `main`. Full flow:
+`docs/design/release-gates.md`.
+
 ## A differential that has never been shown to fail is not evidence
 
 Do not report a number from a sweep, oracle, identity check or A/B until you have

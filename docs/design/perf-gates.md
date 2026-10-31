@@ -816,18 +816,21 @@ shape therefore spends its small budget on three independent pairs and reports
 the median delta across those passes first. The full pass range remains visible
 as noise context; do not reject a borderline experiment from one endpoint.
 
-The reference shas live in `bench/grammar-density/config.json` and
-`bench/workloads/config.json`. Bump BOTH to the
-released sha **at every release, in the release PR**, with the numbers read in
-that PR — an unbumped reference slowly turns into an archaeology exercise, and a
-silently bumped one erases whatever it was hiding.
+The reference is the **previous release**, resolved when the gate runs: the newest
+stable `v*` tag whose source HEAD contains, other than HEAD itself (`previousRelease`
+in `bench/ab-harness.ts`). A release tag sits on `main` when the merged commit was
+released as it stood, or on the release commit `scripts/release.mjs stamp` makes
+beside `main`, whose first parent is the merged commit; either one names the source.
+`--ref=<sha>` overrides it for a one-off comparison. The macro gate is the exception:
+it is pinned in `bench/jess/macro-optimize-config.json` together with the Jess commit it
+builds against, and moving it is a deliberate bench change.
 
-### The bump is enforced, because asking was not enough
+### Why the reference is not a pinned sha
 
-That paragraph, and a copy of it in each config's `_referenceNote`, was the whole
-policy until 0.45.0. It was missed **ten releases running**: the density gate was
-still anchored to v0.33.0 and the workload gate to v0.35.0 when 0.45.0 was
-prepped, and `git diff --stat origin/main...release/0.45.0 -- bench/` was empty.
+It was, until publishing moved to every merge. Each config carried a `referenceSha`
+and a note saying "bump this to the released sha at every release, in the release
+PR". It was missed **ten releases running**: the density gate was still anchored to
+v0.33.0 and the workload gate to v0.35.0 when 0.45.0 was prepped.
 
 Nothing went red, which is the point. A stale anchor does not fail — it compares
 against a baseline that has already absorbed every regression since, so the
@@ -836,24 +839,19 @@ against v0.33.0: that path could have got **2.6x slower** in this release and th
 gate would still have printed `ok`. The absolute-baseline rule was satisfied in
 letter while its RESOLUTION was destroyed, silently.
 
-So `scripts/check-changelog.mjs` now checks it (§C, and
-`docs/design/release-gates.md`). On a **release PR** — heading, `package.json` and
-`src/version.ts` all naming the same, not-yet-published version — every anchor
-above must equal the exact stable base commit the release PR proposes to advance.
-`main` is separately required to be a converged, dated release, so its tip is the
-authoritative before-side. Do not infer a release from the first commit that happened
-to carry a version string: 0.47.0 developed through multiple release candidates with
-the same package version, and that heuristic selected an early, unpublished tree.
-Pinning the exact base also makes the comparison match the PR diff mechanically.
+`scripts/check-changelog.mjs` then enforced the bump on release PRs. With a release
+on every merge there is no release PR to enforce it on, and a hand edit per merge
+would be the same chore made more frequent. Resolving the anchor from the tags makes
+staleness impossible instead of detectable: every PR is measured against the release
+immediately before it, which is the gate's question, "is this release faster than the
+last one?"
 
-It fires on release PRs only, so no mid-cycle PR pays for it, and it has **no
-hatch** — `release-exempt` does not waive it. Re-anchoring makes a gate STRICTER
-and may surface a regression the stale anchor was hiding. That is the gate
-working. Land the number visibly; do not move the anchor to silence it.
+A newer anchor is a stricter gate, and the previous release may surface a regression
+an older one was hiding. That is the gate working. Land the number visibly.
 
-A missing reference commit is a **hard failure**, never a skip: CI checks out
-with `fetch-depth: 0` so the pinned sha is present, and if it is not, the gate
-says so and exits non-zero. "The gate did not run" must never render as green —
+A missing reference is a **hard failure**, never a skip: CI checks out with
+`fetch-depth: 0` so the tags and their commits are present, and if no release tag is
+reachable, the gate says so and exits non-zero. "The gate did not run" must never render as green —
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
 
@@ -940,14 +938,16 @@ trade, and is also exactly how a regression gets laundered into a baseline.
 1. validates every `peak` block structurally — sha resolvable as a commit, version
    parseable, allowance a positive number (a malformed record is a gate that
    silently does not gate);
-2. requires **any** edit to one to be named in the CHANGELOG's current section,
-   calling out backward moves and widened allowances **by name**.
+2. requires **any** edit to one to be named in a CHANGELOG entry the PR adds,
+   calling out backward moves and widened allowances **by name**. An entry already
+   on the base does not count: `main`'s Unreleased can hold entries a release has
+   already shipped.
 
-It runs on **every** PR, not release PRs only, because a peak can move at any time
-and the moment it matters is the moment it moves. Like §C it has **no hatch** —
-`release-exempt` does not waive it. This is deliberate repetition of a lesson
-already paid for: both `referenceSha` fields carried "bump this at every release"
-in a *comment* and were missed for ten consecutive releases.
+It runs on **every** PR, because a peak can move at any time and the moment it
+matters is the moment it moves. It has **no hatch** — `release-exempt` does not
+waive it. This is deliberate repetition of a lesson already paid for: both
+`referenceSha` fields carried "bump this at every release" in a *comment* and were
+missed for ten consecutive releases.
 
 ### Landing under the bar without moving it — `PERF-PEAK-WAIVER`
 
@@ -1009,7 +1009,7 @@ bypassed with it."* The inverse holds just as hard, so the waiver:
   documented scope is §B, and widening a hatch is the bypassed-gate failure
   itself.
 
-It waives the peak clause's **verdict** only — never §C, never §D's requirement to
+It waives the peak clause's **verdict** only — never §D's requirement to
 document a peak edit, never §A or §B.
 
 ## When it fires
