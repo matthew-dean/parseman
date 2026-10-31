@@ -18,9 +18,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   already was.
 - A selective assembly hands the installed trivia scanner across an engine boundary
   only where the code on the other side reads it.
-- The static site selection holds still under small edits: weight per byte is
-  compared in quarter-octave steps, ties break by where a site sits in its rule, and
-  the budget buys a prefix of that order.
+- A printed table's compact char-class pool (`"…".split("|")`) is annotated
+  `/* @__PURE__ */`, so a bundler drops the pool of a variant it shook out.
 - Fixed: a failed choice whose arms share leading terms listed those terms' expected
   labels once per arm when no arm was entered; it lists them once. The failure's span
   and position are unchanged.
