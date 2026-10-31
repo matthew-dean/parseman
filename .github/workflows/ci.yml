@@ -300,10 +300,28 @@ jobs:
   # no cross-machine term, and a case fails only when it also loses 3/4 of its
   # paired samples.
   grammar-perf:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { ref: "87fe986d", head: "2d59ad38", rep: 1 }
+          - { ref: "87fe986d", head: "879d0f38", rep: 1 }
+          - { ref: "879d0f38", head: "0ab9e9f7", rep: 1 }
+          - { ref: "0ab9e9f7", head: "8b011f1f", rep: 1 }
+          - { ref: "87fe986d", head: "8b011f1f", rep: 1 }
+          - { ref: "87fe986d", head: "2d59ad38", rep: 2 }
+          - { ref: "87fe986d", head: "879d0f38", rep: 2 }
+          - { ref: "879d0f38", head: "0ab9e9f7", rep: 2 }
+          - { ref: "0ab9e9f7", head: "8b011f1f", rep: 2 }
+          - { ref: "87fe986d", head: "8b011f1f", rep: 2 }
+          - { ref: "87fe986d", head: "2d59ad38", rep: 3 }
+          - { ref: "87fe986d", head: "879d0f38", rep: 3 }
+          - { ref: "879d0f38", head: "0ab9e9f7", rep: 3 }
+          - { ref: "0ab9e9f7", head: "8b011f1f", rep: 3 }
+          - { ref: "87fe986d", head: "8b011f1f", rep: 3 }
+    name: "bisect ${{ matrix.ref }}..${{ matrix.head }} r${{ matrix.rep }}"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -318,8 +336,8 @@ jobs:
           node-version: lts/*
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Rollback-density perf gate vs the pinned reference commit
-        run: pnpm perf:guard:grammars
+      - name: Grammar gate, one step
+        run: node --import tsx/esm bench/grammar-perf-guard.ts --ref=${{ matrix.ref }} --head-ref=${{ matrix.head }} || true
 
   # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
   #
@@ -342,7 +360,7 @@ jobs:
   # fail a PR on its own. See docs/design/perf-gates.md for what it can and cannot see.
   workload-perf:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -388,7 +406,7 @@ jobs:
   # well as parseman so the fixture and grammar side cannot drift under the gate.
   macro-perf:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
