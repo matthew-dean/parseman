@@ -275,7 +275,6 @@ const REGISTRY = [
       { defect: 'gap-follow-narrowed', expect: 'moves' },
       { defect: 'gap-slot-any-row', expect: 'moves' },
       { defect: 'gap-slot-any-row-emitted', expect: 'moves' },
-      { defect: 'gap-slot-uncleared', expect: 'blind' },
     ],
   },
   {
@@ -382,7 +381,7 @@ function plant(id) {
     const before = readFileSync(p, 'utf8')
     const n = before.split(e.find).length - 1
     if (n !== 1) {
-      for (const s of saved) writeFileSync(s.path, s.text)
+      for (const s of [...saved].reverse()) writeFileSync(s.path, s.text)
       throw new Error(
         `plant '${id}': anchor occurs ${n} times in ${e.file}, expected exactly 1.\n`
         + 'The code moved out from under the plant. Re-derive it against the current source —\n'
@@ -397,7 +396,9 @@ function plant(id) {
 
 function unplant() {
   if (planted === null) return
-  for (const s of planted) writeFileSync(s.path, s.text)
+  // NEWEST FIRST: two edits to one file each saved the text before them, so
+  // restoring in order would end on the first edit's result.
+  for (const s of [...planted].reverse()) writeFileSync(s.path, s.text)
   planted = null
 }
 

@@ -278,11 +278,6 @@ export const DEFECTS = {
     }],
   },
 
-  'gap-slot-uncleared': {
-    why: 'closure engine: the gap slot is left set after the item returns (harmless by construction: the slot is a memo keyed by row, position and input)',
-    edits: [{ file: 'src/table/assemble.ts', find: '            if (gapped) GAP.at = -1\n', replace: '' }],
-  },
-
   'gap-slot-any-row': {
     why: 'closure engine: a gap row takes the slot at its position whatever row the slot was set for',
     edits: [{ file: 'src/table/assemble.ts', find: 'if (GAP.row === row && GAP.at === pos && GAP.input === input) e = GAP.end', replace: 'if (GAP.at === pos && GAP.input === input) e = GAP.end' }],

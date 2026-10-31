@@ -89,7 +89,9 @@ function inputs(): string[] {
   }
   const or = (): string => (rnd(4) === 0 ? `${sum(0)} and ${sum(0)}` : sum(0))
   const space = (): string => Array.from({ length: 1 + rnd(3) }, or).join(' ')
-  const out = ['x:1 2;', 'x:1 * 2;', 'x:1 % 2;', 'x:1 \t- 2;', 'x:1 \t+ 2;', 'x:1 - 2;', 'x:1 -2;', 'x:1-2;', 'x:1 /*c*/ * 2;',
+  // The first leaves the `and` gap's slot at offset 3 with end 5; the second
+  // reaches that gap's row at offset 3 through a sum arm, where its end is 4.
+  const out = ['x:a  and b;', 'x:1 \t- 2;', 'x:1 2;', 'x:1 * 2;', 'x:1 % 2;', 'x:1 \t- 2;', 'x:1 \t+ 2;', 'x:1 - 2;', 'x:1 -2;', 'x:1-2;', 'x:1 /*c*/ * 2;',
     'x:a and b;', 'x:a  and b;', 'x:1 *;', 'x:1 +;', 'x:(1;', 'x:1 2, 3;', 'x:1\t\t%\t2;']
   for (let i = 0; i < 220; i++) {
     const ok = `x:${Array.from({ length: 1 + rnd(3) }, space).join(', ')};`
