@@ -67,6 +67,7 @@ import {
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
+import { holdsGap } from './hold-gap.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
 
@@ -440,6 +441,30 @@ ${scanned}
 }
 
 /**
+ * A lookahead term that HOLDS its gap (`hold-gap.ts`): the gap is scanned and
+ * kept, the lookahead runs at its end, and the cursor stays there for the next
+ * term, which cannot match empty.
+ */
+function emitHoldTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+  const fast = `const ${t}v=${callee}(input,cur,ctx)
+if(${t}v===FAIL)return FAIL
+${dst}=${t}v
+cur=EC.e`
+  if (l.tri === TRI_NONE) return fast
+  const held = `const ${t}s=${skip}(input,cur,ctx)
+const ${t}v=${callee}(input,${t}s,ctx)
+if(${t}v===FAIL)return FAIL
+${dst}=${t}v
+cur=${t}s`
+  if (l.tri !== TRI_UNKNOWN) return held
+  return `if(ctx.trivia===undefined){
+${fast}
+}else{
+${held}
+}`
+}
+
+/**
  * The repetition's LEAD-TRIVIA skip, as a BLOCK.
  *
  * A block and not a bare statement because the separator form spells it
@@ -606,6 +631,8 @@ export function emitAssemblySource(
   // the closure recognizer pool: distinct terminal rows sharing one spec share
   // both the recognizer and the ordinary-terminal lowering.
   const scalarSpecs = new Set<number>()
+  // Row nullability for `holdsGap`, memoised for this emit.
+  const nullable = new Map<number, boolean>()
   // Large choices are different: admitting every wrapped scalar would add a
   // recognizer call to many arms whose one-character gate already did all the
   // useful work. A multi-character literal can still refine an overlapping
@@ -1792,7 +1819,9 @@ return v
             // The callee expression hands it over AFTER the scan statement, right
             // before the call, so a field inside the trivia grammar cannot take it.
             const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
-            parts.push(emitTerm(callee, vn, tmp(), L, skipFor(L)))
+            parts.push(holdsGap(code, k, base, n, i, nullable)
+              ? emitHoldTerm(callee, vn, tmp(), L, skipFor(L))
+              : emitTerm(callee, vn, tmp(), L, skipFor(L)))
           }
           names.push(vn)
         }

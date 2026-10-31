@@ -108,6 +108,7 @@ import {
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
 import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
+import { holdsGap } from './hold-gap.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
@@ -531,6 +532,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   const memo = new Map<number, Piece>()
   const reached = new Set<number>()
+  /** Row nullability for `holdsGap`, memoised for this assembly. */
+  const NULLABLE = new Map<number, boolean>()
 
   function pushLeaf(ctx: ParseContext, value: string, s: number, e: number): void {
     const lf: Leaf = { _tag: 'leaf', value, span: { start: s, end: e } }
@@ -2518,15 +2521,32 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         // A `field(…, { leadingTrivia: true })` term is a boundary fact too: the
         // runner hands it the cursor from BEFORE the scan (`LEAD`, cell.ts).
+        // So is a lookahead that holds its gap for the next term (`hold-gap.ts`).
         let hasAdj = false
         for (let i = 1; i < n; i++) {
           const kidIp = code[base + i]!
-          if (code[kidIp] === OP_ADJ || leadingTriviaFieldAt(code, k, kidIp)) { hasAdj = true; break }
+          if (code[kidIp] === OP_ADJ || leadingTriviaFieldAt(code, k, kidIp) || holdsGap(code, k, base, n, i, NULLABLE)) { hasAdj = true; break }
         }
         if (hasAdj) {
           const first = link(code[base]!)
           const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
+            if (holdsGap(code, k, base, n, i, NULLABLE)) {
+              const kid = link(kidIp)
+              return (input, cur, ctx) => {
+                if (ctx.trivia === undefined) {
+                  const v = kid(input, cur, ctx)
+                  if (v === FAIL) return -1
+                  TERMV = v
+                  return EC.e
+                }
+                const scanEnd = skipTrivia(input, cur, ctx)
+                const v = kid(input, scanEnd, ctx)
+                if (v === FAIL) return -1
+                TERMV = v
+                return scanEnd
+              }
+            }
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
               if (leadingTriviaFieldAt(code, k, kidIp)) {

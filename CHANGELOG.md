@@ -16,6 +16,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   shared terms run once and the choice dispatches on the character after them.
 - `peek()` of a direct literal or regex is one recognizer call, as `not()` of one
   already was.
+- A `not()`/`peek()` lookahead between two gaps in a sequence no longer makes the
+  sequence scan the gap twice: when the next term cannot match empty, the gap is kept
+  for it instead of being unrecorded and scanned again.
 - A selective assembly hands the installed trivia scanner across an engine boundary
   only where the code on the other side reads it.
 - A printed table's compact char-class pool (`"…".split("|")`) is annotated
