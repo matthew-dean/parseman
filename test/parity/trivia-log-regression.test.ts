@@ -17,8 +17,11 @@ import {
   expectTriviaLogGolden,
   expectTriviaLogParity,
   runTriviaLogParity,
-  triviaPairs,
+  triviaEntriesFromLog,
 } from './helpers/trivia-log-parity.ts'
+
+const pairsOf = (log: readonly number[]): Array<[number, number]> =>
+  triviaEntriesFromLog(log).map(e => [e.start, e.end])
 
 /** Minimal single-line repro from selector.css — triggered duplicate/missing `{` trivia. */
 const SELECTOR_LINE = 'a/* { } */ b {}'
@@ -49,7 +52,7 @@ describe('regression: interpreted/compiled _triviaLog parity', () => {
     expectTriviaLogParity(iLog, cLog)
 
     // Explicit guard against the original duplicate-pair failure mode.
-    expect(triviaPairs(iLog)).toEqual([
+    expect(pairsOf(iLog)).toEqual([
       [1, 11],
       [12, 13],
     ])
@@ -68,7 +71,7 @@ describe('regression: interpreted/compiled _triviaLog parity', () => {
     const src = readFileSync(resolveCssFixture('selector.css'), 'utf8')
     const { iLog, cLog } = runTriviaLogParity(Stylesheet, compiledCss, src)
 
-    const pairs = triviaPairs(iLog)
+    const pairs = pairsOf(iLog)
     expect(pairs.filter(p => p[0] === 13 && p[1] === 14)).toHaveLength(1)
     expect(pairs.filter(p => p[0] === 30 && p[1] === 31)).toHaveLength(1)
     expect(cLog).toEqual(iLog)

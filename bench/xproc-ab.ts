@@ -36,10 +36,10 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, mkdirSync, copyFileSync, symlinkSync, rmSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { pairedMedianRatio } from './ab-harness.ts'
+import { materialise as materialiseAt, median, pairedMedianRatio, sign } from './ab-harness.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -48,12 +48,6 @@ const CONFIG_PATH = path.join(HERE, 'grammar-density', 'config.json')
 
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
-
-const median = (a: readonly number[]): number => {
-  const s = [...a].sort((x, y) => x - y)
-  const m = s.length >> 1
-  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2
-}
 
 // ── worker: ONE side, ONE process ───────────────────────────────────────────
 //
@@ -150,55 +144,6 @@ function sh(args: string[], cwd = ROOT): string {
   })
 }
 
-/**
- * Same materialisation as `bench/grammar-perf-guard.ts`: a `git worktree` at the
- * pinned sha, this repo's `node_modules` symlinked in, and the WORKING TREE's
- * grammar copied over the top so both sides compile byte-identical grammar
- * input. Deliberately identical so a cross-process reading and a gate reading
- * are comparing the same two things.
- *
- * A cached directory is reused only when it is still AT the requested revision.
- * `src/index.ts` existing proves a worktree was made there once, not that it is
- * the commit being asked for — the ref may have moved since, or the checkout may
- * have been touched. Reusing it unchecked measures some other commit and reports
- * the number under this one's name, which is the exact failure class this tool
- * exists to catch.
- */
-function materialise(sha: string | null): string {
-  if (sha === null) return ROOT
-  const dir = path.join(ROOT, '.cache', `grammar-gate-${sha}`)
-  let want: string
-  try {
-    want = sh(['rev-parse', `${sha}^{commit}`]).trim()
-  } catch (error) {
-    fail(
-      `could not resolve ${sha} to a commit in this repo. This compares against a pinned commit of THIS repo, `
-      + `so the commit must be present — a shallow clone cannot see it.\n${String(error).slice(0, 500)}`,
-    )
-  }
-  let cached: string | null = null
-  if (existsSync(path.join(dir, 'src', 'index.ts'))) {
-    try { cached = sh(['rev-parse', 'HEAD'], dir).trim() } catch { cached = null }
-  }
-  if (cached !== want) {
-    rmSync(dir, { recursive: true, force: true })
-    try { sh(['worktree', 'prune']) } catch { /* nothing to prune */ }
-    try {
-      sh(['worktree', 'add', '--detach', '--force', dir, want])
-    } catch (error) {
-      fail(`could not create a worktree at ${sha} (${want.slice(0, 7)}).\n${String(error).slice(0, 500)}`)
-    }
-  }
-  const nm = path.join(dir, 'node_modules')
-  if (!existsSync(nm)) symlinkSync(path.join(ROOT, 'node_modules'), nm, 'dir')
-  mkdirSync(path.join(dir, 'bench', 'grammar-density'), { recursive: true })
-  copyFileSync(
-    path.join(HERE, 'grammar-density', 'grammar.ts'),
-    path.join(dir, 'bench', 'grammar-density', 'grammar.ts'),
-  )
-  return dir
-}
-
 type Reading = { median: number; min: number; digest: string }
 
 function measure(dir: string, caseId: string): Reading {
@@ -223,6 +168,10 @@ function measure(dir: string, caseId: string): Reading {
   return JSON.parse(line) as Reading
 }
 
+// The same cache directory and checks the grammar gate uses, plus its refusal of a
+// cached reference whose `src/` was edited.
+const materialise = (sha: string | null): string =>
+  materialiseAt('grammar-gate', ROOT, sha, ['bench/grammar-density/grammar.ts'])
 const refDir = materialise(REF)
 const headDir = materialise(HEAD_REF)
 const headSha = sh(['rev-parse', '--short', 'HEAD']).trim()
@@ -239,7 +188,6 @@ console.log(
   + `\n  confirmation tool — it does not gate\n`,
 )
 
-const sign = (n: number): string => `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`
 
 let anyBreach = false
 for (const c of cases) {

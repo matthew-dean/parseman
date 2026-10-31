@@ -88,13 +88,3 @@ export function expectTriviaLogGolden(
   expectUniqueTriviaEntries(log, labels)
   expect([...log], 'golden _triviaLog').toEqual([...expected])
 }
-
-/** @deprecated use triviaEntriesFromLog */
-export function triviaPairs(log: readonly number[]): Array<[number, number]> {
-  return triviaEntriesFromLog(log).map(e => [e.start, e.end])
-}
-
-/** @deprecated use expectUniqueTriviaEntries */
-export function expectUniqueTriviaPairs(log: readonly number[]): void {
-  expectUniqueTriviaEntries(log)
-}

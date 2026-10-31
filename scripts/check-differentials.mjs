@@ -357,13 +357,16 @@ const REGISTRY = [
  * is the operator's own uncommitted work being confused with a plant, so the gate
  * declines rather than take the risk.
  */
+/** Every file a plant edits. Most are under `src/`; `macro-timing-exit-off` edits `bench/`. */
+const PLANTED_FILES = [...new Set(Object.values(DEFECTS).flatMap(d => d.edits.map(e => e.file)))]
+
 function assertCleanSrc() {
   let porcelain = ''
-  try { porcelain = execFileSync('git', ['status', '--porcelain', '--', 'src'], { cwd: REPO, encoding: 'utf8' }) }
+  try { porcelain = execFileSync('git', ['status', '--porcelain', '--', 'src', ...PLANTED_FILES], { cwd: REPO, encoding: 'utf8' }) }
   catch { return } // not a checkout: nothing to protect
   if (porcelain.trim() !== '') {
-    console.error('REFUSING TO RUN: `src/` has uncommitted changes.\n'
-      + 'This gate edits `src/` in place and restores it. It will not do that on top of\n'
+    console.error('REFUSING TO RUN: `src/` or a planted file has uncommitted changes.\n'
+      + 'This gate edits those files in place and restores them. It will not do that on top of\n'
       + 'work it did not write. Commit or set the changes aside, then re-run.\n' + porcelain)
     process.exit(2)
   }
@@ -401,7 +404,9 @@ function unplant() {
   planted = null
 }
 
-process.on('exit', unplant)
+// `--list` and every early exit leave through here too, so the scratch directory
+// goes with them.
+process.on('exit', () => { unplant(); rmSync(TMP, { recursive: true, force: true }) })
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { unplant(); process.exit(130) })
 
 /* ------------------------------------------------------------------ *
