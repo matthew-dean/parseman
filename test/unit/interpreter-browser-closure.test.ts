@@ -29,7 +29,9 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +563B to 59,747B: the trivia scanner lowers a literal shared by every
 // alternative (`\/(?:\*…\*\/|\/…)`, jess's one comment arm), which gave jess's
 // document trivia an unlabelled scanner.
-const BASELINE_RAW_BYTES = 59_747
+// Bumped +46B to 59,793B: a labelled trivia spec carries the slots the table
+// engines' root-selection fast path primes (`table/trivia-gap.ts`).
+const BASELINE_RAW_BYTES = 59_793
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

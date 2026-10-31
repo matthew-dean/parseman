@@ -69,6 +69,7 @@ import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserD
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA, LEAD, triviaFieldCapture } from '../combinators/field-trivia.ts'
+import { skipDeferredTrivia } from './trivia-gap.ts'
 import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
@@ -930,9 +931,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // Appended rather than folded into the test above so the non-capturing path
     // keeps the exact branch it had.
     if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
-    if (needsDeferredTriviaCommit(ctx)) {
-      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
-    }
+    if (needsDeferredTriviaCommit(ctx)) return skipDeferredTrivia(input, cur, ctx)
     return advanceTrivia(input, cur, ctx)
   }
 
@@ -3893,7 +3892,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
-        LEAD, triviaFieldCapture,
+        LEAD, triviaFieldCapture, skipDeferredTrivia,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -3976,7 +3975,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
-        LEAD, triviaFieldCapture,
+        LEAD, triviaFieldCapture, skipDeferredTrivia,
       )
       emitReached = em.reached
     } catch (e) {

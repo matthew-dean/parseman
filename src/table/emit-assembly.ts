@@ -135,6 +135,9 @@ export const EMITTED_PARAMS = [
   // Appended for trivia-attributing fields (`field(…, { leadingTrivia })`);
   // old factories ignore them.
   'LEAD', 'triviaFieldCapture',
+  // Appended for the deferred-commit trivia skip (`trivia-gap.ts`); old
+  // factories ignore it.
+  'skipDeferredTrivia',
 ] as const
 
 /**
@@ -170,7 +173,7 @@ function _skipTrivia(input,cur,ctx){
 const s=_pfScan
 if(s!==null&&ctx._triviaLog===undefined&&!(ctx.captureTrivia===true&&(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)))return s(input,cur)
 if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
-if(needsDeferredTriviaCommit(ctx))return commitTriviaScan(scanTriviaCompact(input,cur,ctx))
+if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
 }
 function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,{_tag:'leaf',value,span:{start:s,end:e}})}
@@ -1008,9 +1011,9 @@ return 1
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
       // buffer, so an in-node site skips the call that asks.
       skipDefs.push(l.buf
-        ? `function ${nm}(input,cur,ctx){return commitTriviaScan(scanTriviaCompact(input,cur,ctx))}`
+        ? `function ${nm}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
         : `function ${nm}(input,cur,ctx){
-if(needsDeferredTriviaCommit(ctx))return commitTriviaScan(scanTriviaCompact(input,cur,ctx))
+if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)}`)
       return nm
     }

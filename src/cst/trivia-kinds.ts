@@ -1,4 +1,4 @@
-import type { Combinator, ParseContext } from '../types.ts'
+import type { CharRange, Combinator, ParseContext } from '../types.ts'
 import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
@@ -20,6 +20,14 @@ export type LabeledTriviaSpec = {
    */
   readonly visitor: CssTriviaVisitor | null
   readonly charArms: readonly TriviaArmMatcher[] | null
+  /**
+   * `table/trivia-gap.ts`'s root-selection fast path, for the selection it was
+   * last primed with: the selected arms' first characters, and the unlabelled
+   * scanner that answers a run free of them (`null`: no fast path).
+   */
+  rootKinds: Readonly<Record<string, number>> | undefined
+  rootLeaders: readonly CharRange[]
+  rootScan: ((input: string, cur: number) => number) | null
 }
 
 /** See `trivia-skip.ts`: bounded scalar memoisation avoids a WeakMap in the
@@ -114,6 +122,9 @@ export function labeledTriviaSpec(arms: LabeledTriviaSpec['arms'], minRepeats: n
     minRepeats,
     visitor: commonLabeledTriviaVisitor({ arms, minRepeats }),
     charArms: charArmsFor({ arms, minRepeats }),
+    rootKinds: undefined,
+    rootLeaders: [],
+    rootScan: null,
   }
 }
 
