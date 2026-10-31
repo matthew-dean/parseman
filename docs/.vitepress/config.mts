@@ -91,6 +91,25 @@ export default defineConfig({
             { text: 'The identity oracle', link: '/guide/identity-oracle' },
           ],
         },
+        {
+          text: 'Internals',
+          collapsed: false,
+          items: [
+            { text: 'How Parséman works inside', link: '/design/internals' },
+            { text: 'Runtime and size contract', link: '/design/runtime-and-size-contract' },
+            { text: 'Performance gates', link: '/design/perf-gates' },
+          ],
+        },
+      ],
+      '/design/': [
+        {
+          text: 'Internals',
+          items: [
+            { text: 'How Parséman works inside', link: '/design/internals' },
+            { text: 'Runtime and size contract', link: '/design/runtime-and-size-contract' },
+            { text: 'Performance gates', link: '/design/perf-gates' },
+          ],
+        },
       ],
       '/reference/': [
         {
