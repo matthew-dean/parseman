@@ -60,7 +60,7 @@ import {
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
-  computeSiteLabels, reachableSites, type SiteLabel,
+  computeSiteLabels, passCollapse, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
@@ -138,6 +138,9 @@ export const EMITTED_PARAMS = [
   // Appended for the deferred-commit trivia skip (`trivia-gap.ts`); old
   // factories ignore it.
   'skipDeferredTrivia',
+  // Appended for the pass-through collapse (`run-support.ts`); old factories
+  // ignore it.
+  'collapseEmpty',
 ] as const
 
 /**
@@ -2433,6 +2436,16 @@ return nd
         // The trailing-trivia bit (128) rides on the children-only shape as it
         // does in the closure assembler: a consume after the body, no capture.
         const leanFlags = flags & ~128
+        // THE PASS-THROUGH COLLAPSE (`run-support.ts` `collapseEmpty`): a
+        // collapse over one node is that node. `passCollapse` is the closure
+        // engine's test too.
+        if (build !== undefined && passCollapse(code, ip, hostCst)) {
+          return `${head}
+const v=${child}(input,pos,ctx)
+if(v!==undefined)return v
+return collapseEmpty(ctx,${build},input,pos,EC.e,${flags === 32})
+}`
+        }
         if (!hostCst && !tracked && build !== undefined && proj < 0
           && (leanFlags === 2 || (flags === 18 || flags === 34))) {
           const fields = flags === 18

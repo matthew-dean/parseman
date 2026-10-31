@@ -111,6 +111,31 @@ export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknow
   if (ctx._cstRawChildren) ctx._cstRawChildren.push(rawEntry)
 }
 
+/**
+ * Undo the LAST `pushCstChild` into the active collector, whichever form it took:
+ * a child the lazy buffer's empty sentinel dropped (`undefined` first) leaves no
+ * semantic entry to remove, only its raw one.
+ */
+export function popCstChild(ctx: ParseContext): void {
+  const b = ctx._cstBuf
+  if (b) {
+    const ch = b.ch
+    if (b.rawOnly !== true && ch) {
+      ch.pop()
+      if (ch.length === 1) { b.single = ch[0]; b.ch = undefined }
+    }
+    if (b.noRaw === true) b.rawLen = (b.rawLen ?? 1) - 1
+    else if (b.raw) {
+      b.raw.pop()
+      if (b.raw.length === 1) { b.rawSingle = b.raw[0]; b.raw = undefined }
+    } else b.rawSingle = undefined
+    return
+  }
+  if (ctx._cstChildren) ctx._cstChildren.pop()
+  else if (ctx._cstLeaves) ctx._cstLeaves.pop()
+  if (ctx._cstRawChildren) ctx._cstRawChildren.pop()
+}
+
 export function cstRawLen(ctx: ParseContext): number {
   const b = ctx._cstBuf
   if (b) {

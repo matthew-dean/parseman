@@ -143,6 +143,27 @@ export function reachableSites(code: Int32Array, roots: Iterable<number>): Set<n
 }
 
 /**
+ * A node both engines lower as a PASS-THROUGH COLLAPSE (`run-support.ts`
+ * `collapseEmpty`): `collapse: true` over a direct reducer, no projection, no CST
+ * host, no line tracking, whose body is one node behind wrappers that consume and
+ * capture nothing (a first-set gate, a trivia scope, a rule reference). One
+ * predicate, so the two engines and the labels cannot disagree on a site.
+ */
+export function passCollapse(code: Int32Array, ip: number, hostCst: boolean): boolean {
+  const flags = code[ip + 3]!
+  if (hostCst || code[ip] !== OP_NODE || code[ip + 1]! < 0 || code[ip + 4]! >= 0) return false
+  if (flags !== 32 && flags !== 34) return false
+  let at = code[ip + 2]!
+  for (let n = 0; n < 8; n++) {
+    const op = code[at]
+    if (op === OP_GATE || op === OP_SCOPE_PLAIN || (op === OP_SCOPE && code[at + 3] === 0)) at = code[at + 2]!
+    else if (op === OP_RULE) at = code[at + 1]!
+    else break
+  }
+  return code[at] === OP_NODE
+}
+
+/**
  * What a site hands DOWN to its children. Every op but the two that write the
  * context passes its own label through unchanged.
  */
@@ -159,6 +180,9 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
   }
   if (op === OP_NODE || op === OP_NODE_TRACK) {
     const flags = code[ip + 3]!
+    // A pass-through collapse opens nothing: its body runs in its parent's
+    // collector and capture setting.
+    if (passCollapse(code, ip, hostCst)) return at
     // The same selection `emit-assembly.ts` makes: the trailing-trivia bit (128)
     // keeps the children-only shape.
     const directChildren = !hostCst && op === OP_NODE && code[ip + 1]! >= 0 && code[ip + 4]! < 0

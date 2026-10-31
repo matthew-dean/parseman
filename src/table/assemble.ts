@@ -107,7 +107,7 @@ import {
   EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
-import { lead, rawEntry, spanLines } from './run-support.ts'
+import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
@@ -129,7 +129,7 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { computeSiteLabels, reachableSites } from './site-labels.ts'
+import { computeSiteLabels, passCollapse, reachableSites } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -761,6 +761,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       EC.e = end
       return node
+    }
+  }
+
+  /**
+   * A collapse over one node is that node — `run-support.ts` `collapseEmpty` has
+   * the contract, and the one case the node's value cannot stand for itself.
+   */
+  function passCollapseNode(child: Piece, build: NodeBuilder, readsRaw: boolean): Piece {
+    return (input, pos, ctx) => {
+      const v = child(input, pos, ctx)
+      if (v !== undefined) return v
+      return collapseEmpty(ctx, build, input, pos, EC.e, readsRaw)
     }
   }
 
@@ -3628,6 +3640,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (build !== undefined && proj < 0 && flags === 18) {
             return childrenOnlyFieldsBuildNode(child, build)
           }
+          if (build !== undefined && passCollapse(code, ip, hostCst)) {
+            return passCollapseNode(child, build, flags === 32)
+          }
           if (build !== undefined && proj < 0 && flags === 32) {
             return collapseBuildNode(child, build)
           }
@@ -3891,6 +3906,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
+        collapseEmpty,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -3974,6 +3990,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
+        collapseEmpty,
       )
       emitReached = em.reached
     } catch (e) {
