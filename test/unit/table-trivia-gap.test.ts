@@ -17,7 +17,7 @@ import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../s
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
 import type { Combinator } from '../../src/types.ts'
-import { choice, classifiedTrivia, gate, literal, optional, regex, rules, sequence, withCtx } from '../../src/index.ts'
+import { choice, classifiedTrivia, gate, leaf, literal, node, optional, regex, rules, sequence, withCtx } from '../../src/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { skipDeferredTrivia } from '../../src/table/trivia-gap.ts'
 
@@ -99,6 +99,27 @@ describe('a remembered trivia gap', () => {
       expect(r.ok).toBe(true)
     })
   }
+
+  // A `leaf` sets the trivia log aside while its child runs, so the zero-width
+  // `optional` inside it scans the gap with no log; the node's next term asks for
+  // the same gap with the log back and must record it.
+  const lg = rules<RuleMap>({ trivia: t }, () => ({
+    Doc: node(
+      sequence(leaf(sequence(literal('a'), optional(literal('x'))), (v: unknown) => v), literal(';')),
+      (_c: unknown, _f: unknown, _s: unknown, _r: unknown, triviaLog: unknown) => ({ triviaLog }),
+    ),
+  }))
+  const lprog = encodeTable(lg, { hostMode: 'ast' })
+  const lEngines = { interpreter: lg.Doc!, closure: tableRules({ ...lprog, asm: [] }).Doc!, fast: tableRules(emitted(lprog)).Doc! }
+  it('is not reused across a trivia log a leaf set aside', () => {
+    const want = run(lEngines.interpreter as never, 'a /* c */ ;', opts)
+    expect(want.ok).toBe(true)
+    for (const engine of ['closure', 'fast'] as const) {
+      const r = run(lEngines[engine] as never, 'a /* c */ ;', opts)
+      expect(r.value, engine).toEqual(want.value)
+      expect(rows(r), engine).toEqual(rows(want))
+    }
+  })
 
   it('is held by the parse context, so it is released with the parse', () => {
     // The context `run()` builds for `rootTrivia: { select: ['blockComment'] }`.

@@ -21,10 +21,11 @@ import { commitTriviaScan, fastTriviaScanner, scanTriviaCompact } from '../combi
  * 21,741 of the closure engine's 53,607 trivia scans per parse started where
  * the previous one did. A scan that recorded nothing records nothing again from
  * the same position, in the same parse, under the same trivia, root selection,
- * root-capture policy and state, and with no CST capture, and it ends at the same
- * place, so the last such scan answers the repeat (`ctx._gap`). The state is part
- * of the key because a trivia arm can read it (`gate`); the memo lives on the
- * context so it is released with the parse.
+ * root-capture policy, trivia log and state, and with no CST capture, and it
+ * ends at the same place, so the last such scan answers the repeat (`ctx._gap`).
+ * The state is part of the key because a trivia arm can read it (`gate`), and
+ * the log because a `leaf` sets it aside while its child runs. The memo lives
+ * on the context so it is released with the parse.
  *
  * Neither applies with `trackLines` (a scan records line ranges) or under CST
  * capture (a scan records into the open buffer).
@@ -35,7 +36,7 @@ export function skipDeferredTrivia(input: string, cur: number, ctx: ParseContext
   const gap = ctx._gap
   if (plain && gap !== undefined && cur === gap.at && input === gap.input && triviaP === gap.of
     && ctx._rootTriviaCapture === gap.root && ctx.state === gap.state
-    && ctx._rootTriviaKindIndex === gap.rootKinds) return gap.end
+    && ctx._rootTriviaKindIndex === gap.rootKinds && ctx._triviaLog === gap.log) return gap.end
   const end = clearRunEnd(input, cur, ctx, triviaP, plain)
   if (end >= 0) {
     remember(cur, end, ctx, input, triviaP)
@@ -62,7 +63,7 @@ function clearRunEnd(input: string, cur: number, ctx: ParseContext, triviaP: Com
 function remember(cur: number, end: number, ctx: ParseContext, input: string, triviaP: Combinator<unknown> | undefined): void {
   const gap = ctx._gap
   if (gap === undefined) {
-    ctx._gap = { at: cur, end, input, of: triviaP, root: ctx._rootTriviaCapture, rootKinds: ctx._rootTriviaKindIndex, state: ctx.state }
+    ctx._gap = { at: cur, end, input, of: triviaP, root: ctx._rootTriviaCapture, rootKinds: ctx._rootTriviaKindIndex, log: ctx._triviaLog, state: ctx.state }
     return
   }
   gap.at = cur
@@ -71,6 +72,7 @@ function remember(cur: number, end: number, ctx: ParseContext, input: string, tr
   gap.of = triviaP
   gap.root = ctx._rootTriviaCapture
   gap.rootKinds = ctx._rootTriviaKindIndex
+  gap.log = ctx._triviaLog
   gap.state = ctx.state
 }
 

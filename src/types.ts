@@ -621,5 +621,6 @@ export interface TriviaGapMemo {
   of: Combinator<unknown> | undefined
   root: boolean | undefined
   rootKinds: Readonly<Record<string, number>> | undefined
+  log: number[] | undefined
   state: unknown
 }
