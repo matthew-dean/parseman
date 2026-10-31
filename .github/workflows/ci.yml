@@ -306,39 +306,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { ref: "ffe1e86", head: "08a2d4a0", rep: 1 }
-          - { ref: "08a2d4a0", head: "762b9136", rep: 1 }
-          - { ref: "762b9136", head: "08a12c1e", rep: 1 }
-          - { ref: "08a12c1e", head: "8e2bfeac", rep: 1 }
-          - { ref: "8e2bfeac", head: "8c6ff806", rep: 1 }
-          - { ref: "8c6ff806", head: "b68bb82d", rep: 1 }
-          - { ref: "b68bb82d", head: "b9ca1539", rep: 1 }
-          - { ref: "b9ca1539", head: "19f8e1a5", rep: 1 }
-          - { ref: "19f8e1a5", head: "83099dca", rep: 1 }
-          - { ref: "bc11a9ca", head: "d865a948", rep: 1 }
-          - { ref: "d865a948", head: "9fc24e9e", rep: 1 }
-          - { ref: "ffe1e86", head: "08a2d4a0", rep: 2 }
-          - { ref: "08a2d4a0", head: "762b9136", rep: 2 }
-          - { ref: "762b9136", head: "08a12c1e", rep: 2 }
-          - { ref: "08a12c1e", head: "8e2bfeac", rep: 2 }
-          - { ref: "8e2bfeac", head: "8c6ff806", rep: 2 }
-          - { ref: "8c6ff806", head: "b68bb82d", rep: 2 }
-          - { ref: "b68bb82d", head: "b9ca1539", rep: 2 }
-          - { ref: "b9ca1539", head: "19f8e1a5", rep: 2 }
-          - { ref: "19f8e1a5", head: "83099dca", rep: 2 }
-          - { ref: "bc11a9ca", head: "d865a948", rep: 2 }
-          - { ref: "d865a948", head: "9fc24e9e", rep: 2 }
-          - { ref: "ffe1e86", head: "08a2d4a0", rep: 3 }
-          - { ref: "08a2d4a0", head: "762b9136", rep: 3 }
-          - { ref: "762b9136", head: "08a12c1e", rep: 3 }
-          - { ref: "08a12c1e", head: "8e2bfeac", rep: 3 }
-          - { ref: "8e2bfeac", head: "8c6ff806", rep: 3 }
-          - { ref: "8c6ff806", head: "b68bb82d", rep: 3 }
-          - { ref: "b68bb82d", head: "b9ca1539", rep: 3 }
-          - { ref: "b9ca1539", head: "19f8e1a5", rep: 3 }
-          - { ref: "19f8e1a5", head: "83099dca", rep: 3 }
-          - { ref: "bc11a9ca", head: "d865a948", rep: 3 }
-          - { ref: "d865a948", head: "9fc24e9e", rep: 3 }
+          - { ref: "ffe1e86", head: "8e90d9f2", rep: 1 }
+          - { ref: "9fc24e9e", head: "8e90d9f2", rep: 1 }
+          - { ref: "ffe1e86", head: "9fc24e9e", rep: 1 }
+          - { ref: "ffe1e86", head: "8e90d9f2", rep: 2 }
+          - { ref: "9fc24e9e", head: "8e90d9f2", rep: 2 }
+          - { ref: "ffe1e86", head: "9fc24e9e", rep: 2 }
+          - { ref: "ffe1e86", head: "8e90d9f2", rep: 3 }
+          - { ref: "9fc24e9e", head: "8e90d9f2", rep: 3 }
+          - { ref: "ffe1e86", head: "9fc24e9e", rep: 3 }
+          - { ref: "ffe1e86", head: "8e90d9f2", rep: 4 }
+          - { ref: "9fc24e9e", head: "8e90d9f2", rep: 4 }
+          - { ref: "ffe1e86", head: "9fc24e9e", rep: 4 }
     name: "bisect ${{ matrix.ref }}..${{ matrix.head }} r${{ matrix.rep }}"
     steps:
       - name: Checkout
