@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { classifiedTrivia, regex } from '../../src/index.ts'
 import { fastTriviaScanner } from '../../src/combinators/trivia-skip.ts'
+import { literalCodePoints } from '../../src/regex/classes.ts'
 
 /*
  * jess writes its document comment arm as ONE regex for both comment forms,
@@ -45,5 +46,23 @@ describe('a trivia arm whose alternatives share a literal prefix', () => {
     expect(fastTriviaScanner(classifiedTrivia({ c: regex(/\/(?:a+|\/[^\n]*)/) }))).toBeNull()
     // Unbalanced or ungrouped bodies are not this shape at all.
     expect(fastTriviaScanner(classifiedTrivia({ c: regex(/\/(?:\*\/)|x/) }))).toBeNull()
+  })
+
+  it('does not read a class escape in the shared literal as its letter', () => {
+    // `\d` is a digit class, not the letter `d`: a scanner that took it as one
+    // skipped `d123` and stopped at `123`, the opposite of the regex.
+    expect(fastTriviaScanner(classifiedTrivia({ c: regex(/\d(?:[a-z]*|[0-9]+)/) }))).toBeNull()
+    expect(fastTriviaScanner(classifiedTrivia({ c: regex(/\w[a-z]*/) }))).toBeNull()
+  })
+})
+
+describe('literalCodePoints', () => {
+  it('reads identity, fixed and unicode escapes, and declines every other letter or digit escape', () => {
+    expect(literalCodePoints('\\/\\*')).toEqual([47, 42])
+    expect(literalCodePoints('a\\tb')).toEqual([97, 9, 98])
+    expect(literalCodePoints('\\u0041')).toEqual([65])
+    for (const frag of ['\\d', 'a\\w', '\\s', '\\b', '\\1', '\\x41', '\\cA', '\\u00']) {
+      expect(literalCodePoints(frag), frag).toBeNull()
+    }
   })
 })
