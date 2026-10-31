@@ -130,7 +130,9 @@ function normalise(out) {
     // sweep "moves" under every plant and the gate reports universal teeth. This
     // was the second self-inflicted false positive found while writing it.
     .replace(/sweep-\d+\.jsonl/g, '<sink>')
-    .replace(/\bat \d{2}:\d{2}:\d{2}\b/g, 'at <time>')
+    // vitest prints `Start at  13:09:10` with TWO spaces: one space here let the
+    // clock leak through, so a blind plant read as caught whenever the second ticked.
+    .replace(/\bat\s+\d{2}:\d{2}:\d{2}\b/g, 'at <time>')
     .trim()
 }
 
