@@ -26,7 +26,10 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +110B to 59,184B: lookahead, a rejected `choice()` arm and `attempt()`
 // restore `columns()`'s tab-split mark, a nullable `lines()` opening widens its
 // first-set, and the context factory initializes `lineView` and `_columnsSplit`.
-const BASELINE_RAW_BYTES = 59_184
+// Bumped +563B to 59,747B: the trivia scanner lowers a literal shared by every
+// alternative (`\/(?:\*…\*\/|\/…)`, jess's one comment arm), which gave jess's
+// document trivia an unlabelled scanner.
+const BASELINE_RAW_BYTES = 59_747
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([
