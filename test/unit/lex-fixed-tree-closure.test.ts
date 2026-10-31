@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, keywords, literal, many, noTrivia, not, oneOrMore, regex, rules, sequence, token,
+  choice, keywords, literal, many, noTrivia, not, oneOrMore, optional, regex, rules, sequence, token, word,
 } from '../../src/index.ts'
 import type { Combinator, ParseContext, ParseFail } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -146,6 +146,50 @@ describe('fixed lexical repeat', () => {
       ['a', 'a:b', 'a:b:c', 'a:', 'a:1', '1', '', 'a:b;', '!'])
     pinSelectedToCharacter(wrap(token(oneOrMore(sequence(literal(':'), ident), { min: 2, max: 3 }))),
       [':a', ':a:b', ':a:b:c', ':a:b:c:d', ':a:', '', ':a:b;', '!'])
+  })
+})
+
+describe('fixed lexical no-trivia scopes and rule references', () => {
+  const IDENT_BOUNDARY = '-_a-zA-Z0-9\\u0080-\\uFFFF\\\\'
+  const ident = regex(/-?(?:[_a-zA-Z\u0080-\uffff]|\\[^\n\r\f])(?:[-_a-zA-Z0-9\u0080-\uffff]|\\[^\n\r\f])*/)
+  const at = rules({ trivia: regex(/\s+/) }, (g: Record<string, Comb>) => ({
+    PagePseudoRun: noTrivia(oneOrMore(sequence(literal(':'), ident))),
+    ImportAtKeyword: word('@import', IDENT_BOUNDARY, { caseInsensitive: true }),
+    ConditionalAtKeyword: keywords(['@media', '@container', '@supports'], { caseInsensitive: true, boundary: IDENT_BOUNDARY }),
+    KeyframesAtKeyword: regex(/@(?:-[a-z]+-)?keyframes(?![-_a-zA-Z0-9\u0080-\uFFFF\\])/i),
+    // Less's at-rule prelude word: an identifier, then `(` or a pseudo-page run.
+    Root: token(noTrivia(sequence(ident, optional(choice(literal('('), g.PagePseudoRun!))))),
+    // Less's at-keyword ladder: a no-trivia token scope as a choice arm.
+    NonStatementAtKeyword: token(noTrivia(choice(
+      keywords(['@-import', '@-compose', '@compose', '@-use', '@use', '@-export'], { caseInsensitive: true, boundary: IDENT_BOUNDARY }),
+      g.ImportAtKeyword!, g.ConditionalAtKeyword!,
+    ))),
+    CustomValueAtKeyword: token(noTrivia(choice(g.NonStatementAtKeyword!, g.KeyframesAtKeyword!))),
+    Wrapped: choice(sequence(g.Root!, literal(';')), sequence(g.CustomValueAtKeyword!, literal('{')), literal('!')),
+  })) as Record<string, Comb>
+
+  it('lowers a token whose rule reference and choice arm are no-trivia scopes', () => {
+    pinSelectedToCharacter(at, [
+      'page', 'page(', 'page:first', 'page:first:left', 'page:', 'page :first', '1',
+      '@media', '@MEDIA', '@import', '@use', '@-use', '@keyframes', '@-webkit-keyframes', '@mediax', '@foo', '@',
+      'page;', 'page:a;', '@media{', '@keyframes{', '!', '',
+    ])
+  })
+
+  it('does not lower a reference that reinstalls its rule\'s trivia', () => {
+    // A rule referenced with no trivia in force runs under its own ambient
+    // trivia when it has a position that reads it (`ref.ts`), so `a = b`
+    // parses inside the token. A lexical body would glue it to `a=b`.
+    const g = rules({ trivia: regex(/ +/) }, (r: Record<string, Comb>) => ({
+      Root: noTrivia(sequence(literal('<'), token(r.Pair!), literal('>'))),
+      Pair: sequence(ident, literal('='), ident),
+    })) as Record<string, Comb>
+    const prog = encodeTable(g)
+    expect([...reachableIps(prog)].map(ip => prog.code[ip])).not.toContain(OP_LEX_PROGRAM)
+    for (const [name, entries] of readers(prog)) {
+      expect(run(entries.Root!, '<a = b>').ok, name).toBe(true)
+      expect(digestValue(run(entries.Root!, '<a = b>')), name).toBe(digestValue(run(g.Root!, '<a = b>')))
+    }
   })
 })
 

@@ -587,9 +587,10 @@ describe('table assembler', () => {
     const scoped = token(choice(
       parser({ trivia: null }, regex(/@a/)), regex(/@b/), regex(/@c/), regex(/@d/),
     ))
+    // A no-trivia scope inside a token is its child in the table
+    // (`scopeIsIdentity`), so the selected body takes it in place.
     const scopedProgram = encodeTable({ Root: scoped })
-    expect(scopedProgram.lexPrograms).toBeUndefined()
-    expect(scopedProgram.code[scopedProgram.rules.Root!]).toBe(OP_TOKEN)
+    expect(scopedProgram.code[scopedProgram.rules.Root!]).toBe(OP_LEX_PROGRAM)
     for (const input of ['@a', '@z']) {
       expect(digestValue(run(tableRules(scopedProgram).Root!, input)), input)
         .toBe(digestValue(run(scoped, input)))

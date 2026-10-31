@@ -16,6 +16,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   shared terms run once and the choice dispatches on the character after them.
 - A `token()` whose body holds an ordered choice of any number of arms is one
   lexical recognizer; before, only choices of two, four or eight arms were.
+- A `token()` body may hold a no-trivia scope (`noTrivia(…)`, a rule defined as one, or
+  a token over one) at any position: inside a token the table already runs such a scope
+  as its child. A rule reference that reinstalls the rule's own trivia stays on the
+  character lowering, since its terms are then trivia-separated.
 - A `token()` whose body holds a separator-less `many()`/`oneOrMore()` is one lexical
   recognizer, with the table's own repeat rules: only an optional item stops at the
   end of input or on an empty match, and a failed item's diagnostics stand.

@@ -37,6 +37,7 @@ import type { BalancedSpec } from '../combinators/scanTo.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
 import { keywordsRegExp } from '../combinators/keywords.ts'
+import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 
 /** A terminal in the derived alphabet, with its globally assigned id. */
 export type TokenTerminal =
@@ -206,6 +207,18 @@ export function selectOptionalSuffixLexBody(ir: LexicalIr): LexBodyCandidate {
 /** Unwrap only scopes that token() has already installed identically. The
  * returned parser is still the authored terminal/sequence; no effectful wrapper
  * or final named winner is guessed from construction metadata. */
+/**
+ * A rule reference made with no trivia in force reinstalls the rule's own
+ * ambient trivia when the rule has a position that reads it (`ref.ts`, the
+ * encoder's `scopedRef`), and inside a token none is in force. Such a rule's
+ * terms are then trivia-separated, which a lexical body does not model, so the
+ * reference is not lowered.
+ */
+function reinstallsRuleTrivia(reference: Combinator<unknown>, target: Combinator<unknown>): boolean {
+  return (reference._meta.grammarTrivia ?? target._meta.grammarTrivia) !== undefined
+    && hasOwnTriviaBoundary(target)
+}
+
 function directTokenBodyParser(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
@@ -227,7 +240,7 @@ function directTokenBodyParser(
     }
     if (wrapper.tag === 'lazy') {
       const target = resolvedLazyTarget(body, resolve)
-      if (target === undefined) return undefined
+      if (target === undefined || reinstallsRuleTrivia(body, target)) return undefined
       body = target
       continue
     }
@@ -446,7 +459,7 @@ function directFixedLexNode(
     const def = current._def
     if (def.tag === 'lazy') {
       const target = resolvedLazyTarget(current, resolve)
-      if (target === undefined) return undefined
+      if (target === undefined || reinstallsRuleTrivia(current, target)) return undefined
       current = target
       continue
     }
@@ -461,6 +474,14 @@ function directFixedLexNode(
     if (terminal !== undefined) return { kind: 'terminal', terminal }
     const def = current._def
     if (def.tag === 'grammar') {
+      // A no-trivia scope under a token writes nothing that is not already in
+      // force — the table runs it as its child (`scopeIsIdentity`) — so it is
+      // its child at any position.
+      if (def.clearTrivia === true && def.triviaParser === undefined && def.captureTrivia !== true
+        && def.rootCapture !== 'opaque' && def.constructionTrackLines === 'inherit'
+        && def.constructionCaptureTriviaKinds === undefined) {
+        return directFixedLexNode(def.parser, resolve, active, pureOnly)
+      }
       if (!pureOnly || (def.parser._def.tag !== 'token'
         && (def.clearTrivia !== true || def.triviaParser !== undefined
           || def.captureTrivia === true || def.rootCapture === 'opaque'))) return undefined
