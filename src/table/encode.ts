@@ -983,6 +983,13 @@ class Encoder {
     const rr = this.refResolver()
     const { next, boundary } = follow
     if (matchesEmpty(next, new Set(), rr) || mayCommitFailure(next, rr, this.commitFailureMemo)) return undefined
+    // A miss reports `deriveExpected(next)`, a static set. Only a terminal or a
+    // label fails with exactly that set: a sequence over an `optional` prefix
+    // reports the prefix's labels statically but not when it runs, and a choice
+    // whose arms share an opener reports that opener once statically, once per
+    // arm when it runs.
+    const nextTag = (next._def as ParserDef).tag
+    if (nextTag !== 'literal' && nextTag !== 'regex' && nextTag !== 'keywords' && nextTag !== 'label') return undefined
     const first = firstSetOf(next, new Set(), rr, boundary)
     const cls = this.charClass(boundary === undefined ? first : union(first, firstSetOf(boundary, new Set(), rr)))
     if (cls < 0) return undefined
