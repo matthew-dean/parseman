@@ -57,8 +57,8 @@ Expr.parse('1 + 2 + 3', 0, { trackLines: false })
   was consumed. Pass the tree to `buildTriviaIndex(tree, input)` for a `before`/`after`
   map — useful for whitespace-sensitive syntax, like telling CSS's `div p` apart from
   `div.p`.
-- **`state`** — the `ctx.state` active at parse time, the object itself (see
-  [Context-sensitive parsing](./context)).
+- **`state`** — the `ctx.state` active at parse time, the object itself, not a copy
+  (`test/unit/node-state-reference.test.ts`; see [Context-sensitive parsing](./context)).
 
 Wrap a rule's inner combinator in `parser({ trivia }, combinator)` so trivia-skipping is
 baked in no matter which rule you start from. The compiled table records the scope and
@@ -126,7 +126,8 @@ per-token trivia-log push alone is a large slice of parse time. So Parséman ski
 capture your `build` never asks for: a `build` that declares only `(children)` gets no
 fields, trivia log, or state; `(children, fields, span)` gets named fields and spans but
 still skips raw children, trivia, and state; declaring `triviaLog` keeps the log;
-declaring `state` passes the active `ctx.state` object. This is inferred from the
+declaring `state` passes the active `ctx.state` object
+(`test/unit/node-state-reference.test.ts`). This is inferred from the
 function's parameter list at compile time — you don't opt in explicitly.
 
 The same inference runs at **parse time** for a [structural `node(parser)`](#just-want-a-plain-cst)

@@ -55,9 +55,10 @@ Because incremental re-parsing needs to re-run a single rule in isolation, later
 different document. A mutated module-level variable won't hold the right value by then.
 Instead, each node records the `ctx.state` that was active when it was parsed (the
 `state` field on `NodeLike`), and `edit()` replays it — so a context-sensitive rule
-re-parses under exactly the context it originally saw. Parseman never changes a state
-object: `withCtx` installs a new one for its scope and restores the old one after. So the
-node holds that object itself, not a copy; a host that mutates its own state object in
+re-parses under exactly the context it originally saw. `withCtx` does not edit the state
+it is given: it installs a new object for its scope and restores the old one after. So the
+node holds the state object active at it, not a copy, in every engine
+(`test/unit/node-state-reference.test.ts`); a host that mutates its own state object in
 place sees the mutation in every node that recorded it.
 
 ## Gated choice arms
