@@ -148,6 +148,18 @@ export const more = compose([grammar, rules({ trivia: ws }, g => ({ Word: regex(
     expect(out.code).toContain('parseman.composedPieces')
   })
 
+  it('treat a sidecar without an exports object as absent, and report the missing pieces', () => {
+    const file = lib('up', 'index.js.parseman.json')
+    const kept = fs.readFileSync(file, 'utf8')
+    try {
+      fs.writeFileSync(file, JSON.stringify({ parseman: 'x' }))
+      expect(() => transformMacro(DOWNSTREAM, path.join(dir, 'pkgs', 'down', 'src', 'shape.ts'), new Set(['parseman'])))
+        .toThrow(/is a compiled grammar with no carried pieces/)
+    } finally {
+      fs.writeFileSync(file, kept)
+    }
+  })
+
   it('fail the downstream build, naming the file, when an artifact has neither form', () => {
     fs.rmSync(lib('up', 'index.js.parseman.json'))
     expect(() => transformMacro(DOWNSTREAM, path.join(dir, 'pkgs', 'down', 'src', 'again.ts'), new Set(['parseman'])))

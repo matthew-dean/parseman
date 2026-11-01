@@ -96,7 +96,13 @@ function readCarriedSidecar(artifact: string): CarriedSidecar | null {
   const hit = _sidecarCache.get(file)
   if (hit && hit.mtimeMs === mtimeMs) return hit.sidecar
   let sidecar: CarriedSidecar | null = null
-  try { sidecar = JSON.parse(fs.readFileSync(file, 'utf8')) as CarriedSidecar } catch { /* unreadable: no sidecar */ }
+  try {
+    // A file without an `exports` object is not a sidecar this plugin wrote: treat
+    // it as absent, so the inline literal is looked for and a missing one reports.
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const exports = typeof parsed === 'object' && parsed !== null ? (parsed as { exports?: unknown }).exports : undefined
+    if (typeof exports === 'object' && exports !== null) sidecar = parsed as CarriedSidecar
+  } catch { /* unreadable: no sidecar */ }
   _sidecarCache.set(file, { mtimeMs, sidecar })
   return sidecar
 }

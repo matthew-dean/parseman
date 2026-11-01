@@ -42,8 +42,8 @@
  *   doing work. Both sides must produce identical results, compared structurally
  *   because they come from two separate module graphs.
  */
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, cpSync, symlinkSync, rmSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, symlinkSync, rmSync } from 'node:fs'
 import { register } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -209,6 +209,38 @@ export const median = (a: readonly number[]): number => {
 
 export function git(args: string[], cwd: string, timeout?: number): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(timeout === undefined ? {} : { timeout }) })
+}
+
+/**
+ * The previous release: the newest stable `v*` tag whose source HEAD already contains,
+ * other than HEAD itself. It is the reference the per-release gates measure against.
+ *
+ * Resolved at run time because publishing happens on every merge: a reference pinned
+ * in a config would need a hand edit per release, and the hand-kept pins went stale
+ * for ten releases running. A release tag sits on `main` when the merged commit was
+ * released as it stood, or on a release commit beside `main` whose first parent is
+ * the merged commit (`scripts/release.mjs stamp`), so either the tag or its parent is
+ * the source. A tag whose source is HEAD is this commit's own release, not the
+ * previous one. CI checks out with `fetch-depth: 0`, which brings the tags.
+ */
+export function previousRelease(root: string, gate: string): { tag: string; sha: string } {
+  const head = git(['rev-parse', 'HEAD'], root).trim()
+  const contains = (rev: string): boolean => {
+    try {
+      git(['merge-base', '--is-ancestor', rev, 'HEAD'], root)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const tags = git(['tag', '--list', 'v*', '--sort=-v:refname'], root).split('\n').filter(t => /^v\d+\.\d+\.\d+$/.test(t))
+  for (const tag of tags) {
+    const sha = git(['rev-parse', `${tag}^{commit}`], root).trim()
+    const stamped = git(['log', '-1', '--format=%s', sha], root).trim() === `release: ${tag.slice(1)}`
+    const source = contains(sha) ? sha : stamped && contains(`${sha}^`) ? git(['rev-parse', `${sha}^`], root).trim() : null
+    if (source !== null && source !== head) return { tag, sha: sha.slice(0, 8) }
+  }
+  return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
 }
 
 /** Bound for the cache-verification git calls — they are local metadata reads. */
@@ -803,3 +835,112 @@ export function verdicts(passes: readonly Row[][]): Verdict[] {
 }
 
 export const sign = (n: number): string => `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`
+
+/** Print markdown, and append it to the job summary when CI provides one. */
+export function summary(markdown: string): void {
+  console.log(`\n${markdown}`)
+  const file = process.env['GITHUB_STEP_SUMMARY']
+  if (file !== undefined && file !== '') appendFileSync(file, `${markdown}\n\n`)
+}
+
+/**
+ * One markdown table: each case's centre delta across passes beside the null control
+ * measured in the same passes, so a reader can tell a change from the instrument.
+ * Negative is faster.
+ */
+export function summaryTable(
+  title: string,
+  rows: readonly Verdict[],
+  calibration: ReadonlyMap<string, Calibration>,
+  gating: boolean,
+): string {
+  const lines = [
+    `#### ${title}`,
+    '',
+    '| case | median Δ | min Δ | faster passes | null worst median | null won | verdict |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | --- |',
+  ]
+  for (const v of rows) {
+    const k = calibration.get(v.id)
+    lines.push(
+      `| ${v.id} | ${sign(median(v.passes.map(r => r.dMedian)))} | ${sign(median(v.passes.map(r => r.dMin)))}`
+      + ` | ${v.passes.filter(r => r.dMedian < 0).length}/${v.passes.length}`
+      + ` | ${k === undefined ? 'n/a' : sign(k.worstNullMedian)}`
+      + ` | ${k === undefined ? 'n/a' : `${(k.nullRate * 100).toFixed(0)}%`}`
+      + ` | ${gating ? (v.failed ? '**FAIL**' : 'ok') : 'report only'} |`,
+    )
+  }
+  return lines.join('\n')
+}
+
+/**
+ * True when `a` and `b` have the same `src/`, `src/version.ts`'s version literal aside (a
+ * release commit stamps it and nothing else). Both sides of a gate are built from `src/`
+ * alone and share one install, so two such trees measure the same code: an A/A run.
+ *
+ * `b === null` is the working tree, which is what a gate run without `--head-ref`
+ * measures: a local run with uncommitted `src/` edits is not A/A because HEAD is.
+ */
+export function sameSource(root: string, a: string, b: string | null): boolean {
+  const stampless = (rev: string | null): string | null => {
+    try {
+      const text = rev === null
+        ? readFileSync(path.join(root, 'src', 'version.ts'), 'utf8')
+        : git(['show', `${rev}:src/version.ts`], root)
+      return text.replace(/PARSEMAN_VERSION\s*=\s*['"][^'"]*['"]/, '')
+    } catch {
+      return null
+    }
+  }
+  try {
+    git(['diff', '--quiet', a, ...(b === null ? [] : [b]), '--', 'src', ':(exclude)src/version.ts'], root)
+    if (b === null && git(['ls-files', '--others', '--exclude-standard', '--', 'src'], root).trim() !== '') return false
+  } catch {
+    return false
+  }
+  return stampless(a) === stampless(b)
+}
+
+/**
+ * What a gate prints instead of a verdict when HEAD's `src/` is the reference's. Every
+ * merge that changes `src/` publishes, so a pull request that leaves `src/` alone is
+ * measured against identical code, and a breach there is the instrument, not a
+ * regression: CI read json/document at +1.9% median, breached 4/5, on a workflow-only
+ * PR against v0.58.0. The run still measures, so a change to the harness is exercised;
+ * it reports and does not fail.
+ */
+export function identicalSourceNote(gate: string, reference: string, failed: readonly string[]): string {
+  return `${gate}: HEAD's src/ is the reference ${reference}'s (src/version.ts aside), so this run is an A/A`
+    + ` control and gates nothing.${failed.length === 0 ? ' No case breached.' : ` It breached on ${failed.join(', ')}:`
+    + ' that is the noise floor on this runner, recorded here, not a regression.'}`
+}
+
+/**
+ * The second question a PR's perf report answers: what did THIS change do, measured
+ * against the commit it merges into rather than against the previous release. It is
+ * report-only; the gate stays anchored on the release.
+ *
+ * Usually it costs nothing. If the PR changes nothing under `src/`, the delta is zero
+ * by construction. If the base's `src/` equals the reference's (the common case: every
+ * merge that changes `src/` publishes, so the previous release IS the base), the gate's
+ * own table already answers it. Only otherwise is the base measured, by re-running this
+ * gate against it with `--report-only`, which costs one more run of the gate.
+ * `src/version.ts` is ignored: a release commit stamps it and nothing else.
+ */
+export function mergeBaseNote(root: string, base: string, reference: string): string | null {
+  const sameSrc = (a: string, b: string): boolean => sameSource(root, a, b)
+  if (sameSrc(base, 'HEAD')) return 'This PR changes nothing under `src/`, so against its base the delta is zero by construction. Not measured.'
+  if (sameSrc(base, reference)) return `The base has the same \`src/\` as the reference ${reference}, so the table above is also this PR against its base.`
+  return null
+}
+
+/** Report HEAD against a PR's base: a note when `mergeBaseNote` answers it, else one more report-only run. */
+export function reportAgainstMergeBase(gate: string, root: string, base: string, reference: string, args: readonly string[]): void {
+  const note = mergeBaseNote(root, base, reference)
+  if (note !== null) {
+    summary(`#### ${gate}: HEAD vs merge base ${base.slice(0, 8)}\n\n${note}`)
+    return
+  }
+  console.log(`\n${gate}: measuring HEAD against merge base ${base.slice(0, 8)} (report only)`)
+  spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, `--ref=${base}`, '--report-only', ...args], { stdio: 'inherit', cwd: root })
+}

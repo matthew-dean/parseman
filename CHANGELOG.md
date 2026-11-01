@@ -3,16 +3,14 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.59.0 — unreleased
+## 0.59.0 — 2026-11-01
 
-- **A routed arm is gated only on a next term whose miss set is known, and a miss
-  reports that term's own set.** `OP_RGATE` reported `deriveExpected` of the next term
-  on a miss. A `sequence(optional(…), …)` next term names its optional prefix there
-  but not when it runs, and a `keywords()` or `word()` term lists each word where the
-  term and the interpreter say `keyword`. The gate now applies only to a literal,
-  regex, `keywords()` or label next term, and a miss reports the terminal's
-  `directTerminalFailureExpected` or the label's name. Both were fixed on `main` for
-  0.58.x (`95bc9040`, and the `keywords()` set in #200).
+- **A routed arm's gate miss reports what its next term fails with.** Where the term
+  after a `routed()` token is `keywords()` or `word()`, an `OP_RGATE` miss listed each
+  word (`deriveExpected`), while the term itself and the interpreter fail with
+  `keyword`. A miss now reports the terminal's own failure set, or a label's name, in
+  every table reader. Which arms are gated, and where a miss fails, are unchanged.
+  Test: `test/unit/table-routed-arm-gate.test.ts`.
 - **A sequence led by an optional pad has its operator's first set.** A `regex()` that
   may match empty still reports `any` as its own first set, since it can match empty
   anywhere, but it now also carries the first characters of its non-empty matches. A
@@ -156,6 +154,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   every arm's expected label when the selected arm failed at the choice's position;
   it reports the selected arm's, as the character choice and the interpreter do. Its
   arm classes are now the character choice's own, taken under the same trivia.
+- Fixed: a build whose assembly budget covered the prelude could ship no precompiled
+  assembly without saying so, when no site fit under the ceiling or the narrowing ran
+  out of its 16 attempts. Narrowing now runs until the selection fits or empties, and
+  an empty one is a build warning naming the ceiling and the prelude.
 - Fixed: completions (`completionsAt`) from a table artifact offered tokens raised
   inside a `not()`/`peek()` lookahead, which the enclosing grammar cannot reach; a
   lookahead now hides them in both table engines, as the interpreter does. The

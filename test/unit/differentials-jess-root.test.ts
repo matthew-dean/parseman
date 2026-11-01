@@ -42,7 +42,7 @@ describe('check:differentials and JESS_ROOT', () => {
       const git = (...a: string[]) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8' })
       git('init', '-q')
       git('add', '.')
-      git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'src')
+      git('-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'src')
       const r = gate({ JESS_ROOT: root })
       expect(r.code).toBe(2)
       expect(r.out).toContain('older than its last source commit')

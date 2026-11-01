@@ -57,11 +57,10 @@ jobs:
           #
           # `.github/` counts as code — a workflow change must run the full suite.
           #
-          # CHANGELOG.md counts as code. The changelog itself is now validated by the
-          # `release-gate` job, which is never skipped, so this no longer protects the
-          # changelog check — it protects the SUITE: a changelog entry is a claim about
-          # behaviour, and the version bump that accompanies it lands in `src/version.ts`,
-          # which the artifact version lock reads. A release commit must be tested.
+          # CHANGELOG.md counts as code. The changelog itself is validated by the
+          # `release-gate` job, which is never skipped, so this protects the SUITE: a
+          # changelog entry is a claim about behaviour, and a declared version lands in
+          # `src/version.ts`, which the artifact version lock reads.
           # `.github/` is tested BEFORE the markdown exemption on purpose: an
           # issue template or workflow README lives under `.github/**` AND ends in
           # `.md`, so a single broad `\.md$` exemption would let it skip the matrix
@@ -95,39 +94,25 @@ jobs:
       - name: Verify documented examples
         run: pnpm docs:verify
 
-  # Release gate — is this change RELEASABLE the moment it merges?
+  # Release gate. Every merge to `main` publishes (publish.yml, scripts/release.mjs),
+  # so a PR must arrive with what that release needs.
   #
-  # `scripts/check-changelog.mjs` used to run only as `prepublishOnly`. It refused a
-  # `## Unreleased` top section at PUBLISH time, which is the last moment it can
-  # matter and long after the PR that caused it has merged. Every PR was free to
-  # leave `main` merged-but-unshippable, and three consecutive releases went out
-  # through that gap — the 0.36.0 content sat on `main` under a heading naming no
-  # version at all. So the check moved LEFT, to here.
+  # It asserts (a) the changelog's newest release heading — the top one, or the one under
+  # `## Unreleased` — names package.json's version, with `src/version.ts`'s stamp equal;
+  # and (b) if the diff changes what the package SHIPS (a path `npm pack` includes under
+  # `files`, a build input, a consumer-facing package.json field) the PR adds an entry
+  # under `## Unreleased` or under the version it declares. Everything that cannot reach a
+  # consumer — tests, benches, scripts, docs, this file, the lockfile — is exempt from (b)
+  # on purpose: a gate that fires on a comment typo gets bypassed, and then the gates that
+  # matter get bypassed with it.
   #
-  # It asserts (a) the changelog's first `##` heading names a version, at or above
-  # package.json's, with `src/version.ts`'s stamp equal to package.json's; and (b) if
-  # the diff touches the PUBLISHED SURFACE (`src/**`, or a consumer-facing package.json
-  # field) that heading names a version which is NOT yet published — an open section.
-  # Everything that cannot reach a consumer — tests, benches, scripts, docs, this file,
-  # the lockfile — is exempt from (b) on purpose: a gate that fires on a comment typo
-  # gets bypassed, and then the gates that matter get bypassed with it.
-  #
-  # (b) is CHANGELOG-relative, not branch-relative. It used to require package.json to
-  # go up against the PR base, which made a version number the price of MERGING while
-  # this project spends numbers at PUBLISH — so between two releases every PR burned a
-  # number and all but the last collapsed (0.37 through 0.41 shipped as one 0.37.0).
-  # Now `main` carries one open section, every PR files into it, and the bump comes due
-  # at `npm publish`, where `prepublishOnly --publish` requires all three to converge.
-  #
-  # Its own job rather than a matrix step, for two reasons. It needs `fetch-depth: 0`
-  # to see the base commit, which the matrix deliberately does not take. And it must
-  # run on EVERY PR including documentation-only ones — (a) has no exemption at any
-  # version, so unlike the matrix it is never skipped. It needs no install: the script
-  # is dependency-free Node.
+  # Its own job rather than a matrix step: it needs `fetch-depth: 0` to see the base
+  # commit, and it must run on EVERY PR including documentation-only ones. It needs no
+  # install: the scripts are dependency-free Node, plus the npm that setup-node brings.
   #
   # The hatch is the `release-exempt` LABEL, passed through below. It waives (b) only,
-  # for a revert of a release or a PR chained on one that already bumped, and it does
-  # so visibly on the PR instead of in someone's `--no-verify`.
+  # for a revert or a PR chained on one that carries the entry, and it does so visibly on
+  # the PR instead of in someone's `--no-verify`.
   release-gate:
     runs-on: ubuntu-latest
     steps:
@@ -144,8 +129,7 @@ jobs:
       - name: Changelog section and version bump
         env:
           # `pull_request` only. On a push to `main` there is no base to diff and no
-          # label to read, so the script runs release-integrity alone — which is the
-          # backstop that catches anything merged around this gate.
+          # label to read, so the script runs release-integrity alone.
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
           EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'release-exempt') }}
           BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
@@ -308,8 +292,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Full history: the gate builds the reference side from a sha pinned in
-          # bench/grammar-density/config.json, and a shallow clone cannot see it.
+          # Full history and tags: the gate builds the reference side from the
+          # previous release's v* tag, and a shallow clone has neither.
           # A missing reference is a hard failure, never a skip.
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
@@ -318,8 +302,13 @@ jobs:
           node-version: lts/*
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Rollback-density perf gate vs the pinned reference commit
-        run: pnpm perf:guard:grammars
+      - name: Rollback-density perf gate vs the previous release
+        run: pnpm perf:guard:grammars ${BASE_SHA:+--merge-base=$BASE_SHA}
+        env:
+          # A PR's base: the gate also REPORTS HEAD against it (report only — the
+          # verdict stays anchored on the previous release). See
+          # `reportAgainstMergeBase` in bench/ab-harness.ts for when it costs a run.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
   # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
   #
@@ -349,8 +338,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Full history: the gate builds the reference side from a sha pinned in
-          # bench/workloads/config.json, and a shallow clone cannot see it.
+          # Full history and tags: the gate builds the reference side from the
+          # previous release's v* tag, and a shallow clone has neither.
           # A missing reference is a hard failure, never a skip.
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
@@ -359,8 +348,13 @@ jobs:
           node-version: lts/*
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Realistic-workload perf gate vs the pinned reference commit
-        run: pnpm perf:workloads
+      - name: Realistic-workload perf gate vs the previous release
+        run: pnpm perf:workloads ${BASE_SHA:+--merge-base=$BASE_SHA}
+        env:
+          # A PR's base: the gate also REPORTS HEAD against it (report only — the
+          # verdict stays anchored on the previous release). See
+          # `reportAgainstMergeBase` in bench/ab-harness.ts for when it costs a run.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
       # The PEAK clause — the same workloads against the fastest release ON RECORD
       # rather than the previous one. The step above enforces "faster than the last
       # release"; this one enforces "not below the best we have ever been", which is
@@ -429,9 +423,12 @@ jobs:
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
       - name: Macro timing gate vs 0.57.0 with adjacent self-control
-        run: pnpm bench:macro-optimize
+        run: pnpm bench:macro-optimize -- ${BASE_SHA:+--merge-base=$BASE_SHA}
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
+          # Report-only arm against the PR's base. It reuses this step's A/A control,
+          # so when it runs it costs the candidate half of the timing step again.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
   # Code-size gate. On the same footing as the two perf gates, because until it
   # existed size had NO gate at all: `bench:size` lived in package.json and in
