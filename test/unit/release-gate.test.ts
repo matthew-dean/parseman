@@ -221,6 +221,28 @@ describe('release integrity', { timeout: SUITE_BUDGET_MS }, () => {
   })
 })
 
+describe('a declared version another merge shipped first', { timeout: SUITE_BUDGET_MS }, () => {
+  // v0.36.4 shipped "- the auto-patch" from another merge. A PR that declared 0.36.4
+  // before that, and whose CI runs again now, carries entries 0.36.4 never contained.
+  function race(head: string): Result {
+    const tagged = '# Changelog\n\n## 0.36.4 — 2026-07-26\n\n- the auto-patch\n\n## 0.36.0 — 2026-07-24\n\n- shipped\n'
+    const { dir } = repo({ version: '0.36.4', changelog: tagged }, { version: '0.36.4', changelog: head, files: { 'docs/x.md': 'x\n' } })
+    git(dir, 'tag', 'v0.36.4', 'HEAD~1')
+    return gate(dir)
+  }
+
+  it('REFUSES entries under the declared heading that the tagged release did not ship', () => {
+    const r = race('# Changelog\n\n## 0.36.4 — 2026-07-25\n\n- the new api\n\n## 0.36.0 — 2026-07-24\n\n- shipped\n')
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/declares 0\.36\.4, which v0\.36\.4 already released[\s\S]*- the new api/)
+  })
+
+  it('ACCEPTS main trailing its tag with what the tag shipped, under a different date', () => {
+    const r = race('# Changelog\n\n## Unreleased\n\n- next\n\n## 0.36.4 — 2026-07-25\n\n- the auto-patch\n\n## 0.36.0 — 2026-07-24\n\n- shipped\n')
+    expect(r.ok, r.out).toBe(true)
+  })
+})
+
 describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
   it('REQUIRES an entry under Unreleased when src/ changes', () => {
     const { dir, baseSha } = repo(
