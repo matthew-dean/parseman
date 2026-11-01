@@ -315,8 +315,15 @@ wrong.
 > it; and the parser's runtime helpers are optimized once per module graph, which
 > passes never rebuilt. The `--self` skew above fits the first cause — one module
 > graph, one source text — though it was not reproduced to confirm. `measurePasses()` now turns the cache off and
-> builds every instance from a fresh module graph. See
-> [Two mechanisms behind it](./perf-harness-interleaving.md#two-mechanisms-behind-it-found-in-the-harness-and-fixed-there).
+> builds every instance from a fresh module graph.
+>
+> **And a third, found after those two were fixed (#175).** V8's allocation-site
+> pretenuring flips a coin per instance: an instance whose allocation sites get
+> pretenured runs 13–25% slower for the rest of the pass. On `expected/none` the
+> coin fell more often on the side built and warmed second, the head side, so
+> identical code read +3.4% and failed 7 runs in 20. `isolateCompilation()` now
+> turns pretenuring off as well. See
+> [Three mechanisms behind it](./perf-harness-interleaving.md#three-mechanisms-behind-it-found-in-the-harness-and-fixed-there).
 
 **The fix is resampling, in `measurePasses()` (`bench/ab-harness.ts`).**
 
@@ -413,7 +420,12 @@ exactly the band it exists to watch.**
 
 - **Below about 3% per case is under the harness's resolution.** More rounds
   would buy resolution at the cost of a slower gate, i.e. a gate that gets
-  skipped. That trade was made deliberately.
+  skipped. That trade was made deliberately. Measured after the #175 fix: a
+  planted per-parse cost that read +1.0% to +2.4% per case failed 10 of 20 CI
+  runs, and identical code failed 1–2 of 20. More rounds do not help, because
+  the 12 pairs of a pass share one pair of instances. More passes do, at a
+  cost. See
+  [the planted-regression table](./perf-harness-interleaving.md#before-and-after-the-pretenuring-fix).
 
 - **It is amplified, not more sensitive in real terms.** The same 0.34.0 change
   that cost the real Less grammar +25.5% costs `rollback/dense` +112.8% —

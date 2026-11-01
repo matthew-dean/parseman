@@ -31,7 +31,9 @@
  *   and optimized code, so "recompiled" instances of byte-identical emitted
  *   source — across passes, across the null pair, and across the two sides
  *   whenever a change does not touch the emitted text — were one JIT profile
- *   driving several module graphs' helpers. See `isolateCompilation`.
+ *   driving several module graphs' helpers. Allocation-site pretenuring is off
+ *   for a similar reason: it is a per-instance coin flip worth 13–25% on a
+ *   density case. See `isolateCompilation`.
  * - **Every instance comes from its own MODULE GRAPH.** The runtime helpers a
  *   parser calls are module-level functions, JIT-compiled once per graph and kept
  *   for the life of the process, so a graph is a lottery draw of its own that a
@@ -592,19 +594,19 @@ const shift = (nullRate: number, configured: number): number =>
  * lookup, so turning it off here takes effect for every compile after this call,
  * however the gate was started. Idempotent; it is never turned back on.
  *
- * ## And allocation-site pretenuring off, for the same reason
+ * ## Allocation-site pretenuring goes off too, for the same reason
  *
- * V8 watches which object literals' allocations survive young-generation GCs
- * and, once a site's survival rate is high, recompiles its function to allocate
- * there directly in OLD space. Whether a given instance's sites cross that line
- * depends on where the scavenges happened to fall while it was warming, so it is
- * a coin flip per instance, and a pretenured instance of a density case runs
- * about 20% slower for the rest of the pass. On `expected/none` the flip landed
- * more often on whichever side was built and warmed second, so the head side
- * read +3.4% on identical code. A gate cannot tell that coin from the compiler,
- * so it is taken out: every instance allocates young, and what is left between
- * two instances is their code. `docs/design/perf-harness-interleaving.md` has
- * the measurements.
+ * V8 watches whether the objects an allocation site creates survive young
+ * GCs. Once enough do, it recompiles the function so that site allocates
+ * straight into OLD space. Whether one instance's sites cross that line depends
+ * on where the scavenges fell while it was warming, so it is a coin flip per
+ * instance. A pretenured instance of a density case runs 13–25% slower for the
+ * rest of the pass. On `expected/none` the coin fell more often on the side
+ * built and warmed second, which is the head side of the gate pair, so the
+ * gate read the head +3.4% slower on identical code and failed 7 runs in 20.
+ * The coin is not the compiler, so the harness takes it out: every instance
+ * allocates young, and what is left between two instances is their code.
+ * `docs/design/perf-harness-interleaving.md` has the measurements.
  */
 export function isolateCompilation(): void {
   v8.setFlagsFromString('--no-compilation-cache')

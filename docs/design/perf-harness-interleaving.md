@@ -125,10 +125,12 @@ neutral   median-of-rounds 0.5439 → 0.5633 ms (+3.6%)   mean 0.5928 → 0.6014
           best min 0.4526 → 0.4628 ms (+2.3%)   head won 5/9 rounds
 ```
 
-## Two mechanisms behind it, found in the harness and fixed there
+## Three mechanisms behind it, found in the harness and fixed there
 
-Both are properties of how `bench/ab-harness.ts` built its instances, not of the
-code under test, and both are removed in `measurePasses`.
+All three are properties of how `bench/ab-harness.ts` built and ran its
+instances, not of the code under test, and all three are removed in
+`measurePasses`. The third is [further down](#3-allocation-site-pretenuring-is-a-coin-flip-per-instance-175),
+after the before-and-after for the first two.
 
 ### 1. V8's compilation cache made "fresh" instances one compiled object
 
@@ -235,8 +237,120 @@ reading did not reproduce with the old harness in three same-sha runs on this
 machine, so this page cannot show it gone directly; the run-fixed draw it needs
 is removed by construction.
 
+### 3. Allocation-site pretenuring is a coin flip per instance (#175)
+
+With both fixes above in place, the density gate still read `expected/none`
+slower on the head side whenever HEAD's `src/` matched the reference's. Run 20
+times on x64 CI against the commit it was built from (`--ref=<main> --report-only`,
+so the two sides differ only in `bench/`), the gate failed 8 of 20 runs. 7 of
+the 8 were `expected/none`, whose center read **+3.4%** on average, 16 of 20 runs
+positive. Every other case averaged within ±0.4%.
+
+V8 tracks whether the objects an allocation site creates survive young GCs.
+When enough of them do, it recompiles the function so the site allocates
+straight into old space. Whether one instance's sites cross that line depends
+on where the scavenges fall while it warms, so each instance flips its own coin,
+and the flip lasts for the process. Twelve fresh instances of identical
+`expected/none` code, built and timed in one process on arm64:
+
+| pretenuring | instances more than 5% off the median instance, per run of 12 |
+| --- | --- |
+| on (V8's default) | 1, 1, 1, 2: +19.2%, +24.8%, +7.2%, +13.5% and +22.3% |
+| off (the flag set at run time, or on the command line) | 0 in 5 runs: all 60 instances within ±3.3% |
+| on, input 4× longer (2.5 ms a parse) | 4, 0, 0: up to +21.9% |
+
+A longer case does not escape it: the coin is per instance, not per sample.
+
+Per pass, a pretenured instance reads as one side losing all 12 pairs by
+13–50%: the `won 12/12 … 0/12` per-pass pattern in the gate's logs. That alone
+is noise. The bias is that the coin fell more often on one ROLE. An experiment
+ran four contests in one interleaved loop, every arm built per case in fresh
+graphs exactly as the gate builds them. Each contest compares an `a` side
+against a `b` side; positive means `b` is slower. x64 CI, 8 jobs × 10 passes per
+contest:
+
+| contest, `a` vs `b` | `expected/none` mean per-pass Δ, pretenuring on | `b` won | pretenuring off | `b` won |
+| --- | --- | --- | --- | --- |
+| null: one worktree vs itself | **+3.36%** | 44% | +0.52% | 43% |
+| path: worktree vs a second worktree of the same commit | **+3.94%** | 33% | +0.77% | 42% |
+| swap: the same two worktrees, roles swapped | **+1.84%** | 43% | +0.01% | 50% |
+| root: worktree vs the working tree (the CI gate's shape) | **+3.35%** | 34% | +0.87% | 41% |
+
+The `b` side reads slower whichever directory it is loaded from, including when
+both sides are loaded from the same one. So it is the role, not the path, the
+module graph or the tree difference. The `b` side is the one built second and
+warmed second. The gate's null pair has the same roles, so its null showed the
+same bias. But the gate only reads the null's WIN RATE, to shift its ceiling.
+It does not read the null's delta. So a +3% role bias fails the percentage
+thresholds even when the null carries it too.
+
+Ruled out on the way:
+
+- **Paths or transpilation.** tsx applies `tsconfig.json` only to files it
+  includes, and `.cache/` is outside it. The transpiled text of all 104 modules
+  the gate loads is byte-identical between the working tree and a `.cache/`
+  worktree.
+- **`node_modules` resolution.** The runtime graph imports nothing outside
+  `node:` builtins.
+- **Arm order.** Alternating which side is built first, which is warmed first,
+  or both, changed nothing measurable once pretenuring was off. The gate read
+  +0.05% to +0.10% mean per pass on `expected/none` with or without the
+  alternation, so it is not shipped.
+- **Concurrent recompilation.** On arm64, `--no-concurrent-recompilation` left
+  the per-instance spread where it was, with pretenuring on and with it off.
+
+**The fix** is one flag. `isolateCompilation()` already turned the compilation
+cache off at run time. It now sets `--no-allocation-site-pretenuring` the same
+way, before `measurePasses` builds anything. `test/bench/ab-harness.test.ts`
+checks that it takes effect: an object literal whose allocations survive two
+scavenges is allocated old after re-optimization with V8's default, and young
+once isolated (`%InYoungGeneration`).
+
+What it costs: the gate no longer measures a change in how often V8 pretenures.
+It never could. A coin that flips once per instance, five instances a run, cannot
+tell a change in its odds from luck.
+
+#### Before and after the pretenuring fix
+
+x64 CI. Each run is `pnpm perf:guard:grammars --ref=<main> --report-only` on a
+branch whose `src/` is `main`'s, 10 jobs × 2 runs per row. "after" was measured
+twice, in separate batches.
+
+| harness | runs with any FAIL | `expected/none` FAIL | `expected/none` mean center | centers above 0 |
+| --- | --- | --- | --- | --- |
+| before | **8 / 20** | **7 / 20** | **+3.38%** | 16 / 20 |
+| after | 1 / 20 | 1 / 20 | −0.03% | 10 / 20 |
+| after | 2 / 20 | 1 / 20 | +0.09% | 8 / 20 |
+
+Every other case averaged within ±0.4% before and within ±0.8% after.
+
+**A real regression still fails it.** A planted cost was added to the head
+side's `src/`: a checksum over a third of the input in `parseWithContext`. The
+gate measured it at +1.0% (`rollback/dense`) to +2.4% (`expected/none`)
+center. Same commands, 20 runs each:
+
+| harness | runs that FAIL with the plant | `expected/none` FAIL | runs that FAIL without it |
+| --- | --- | --- | --- |
+| before | 15 / 20 | 5 / 20 | 8 / 20 |
+| after | 10 / 20 | 5 / 20 | 1–2 / 20 |
+
+Before, a FAIL meant little, because 8 runs in 20 failed with no change at
+all. After, a FAIL is rarely noise. A +2% regression is still under the ~3%
+resolution `perf-gates.md` states, so it fails about half the runs. The
+thresholds are unchanged. The same 20 identical-code runs, re-scored offline,
+show why. Lowering the sign test's floor from 3% to 2.5% or 2% raises the
+false-fail rate from 2 runs in 20 to 5 in 20. More passes would buy resolution.
+Re-scoring each job's two runs as one 9-pass run, a 2% floor caught the plant
+in 10 of 10 and false-failed 1 of 10. That costs 80% more gate time and graph
+memory, so it is left for a decision of its own.
+
+The workload gate shares the harness. Six runs each, same shape: before, 3 of 6
+runs failed, all on `json/document` (mean center +2.1%). After, 2 of 6 failed,
+one on `css/stylesheet` and one on `json/document` (mean center −0.8%). Six runs
+cannot separate those.
+
 The rest of this page records the symptoms as they were found. Re-reading them
-with the two mechanisms above: the identical-code incidents fit mechanism 1,
+with the mechanisms above: the identical-code incidents fit mechanism 1,
 though they were not reproduced here to confirm it. Whether a *differently-sized* code image can still push a case off
 an inlining cliff by its presence alone is not ruled out by this fix, so a red
 that the cross-process check disagrees with is still worth the check below.
