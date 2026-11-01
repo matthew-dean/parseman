@@ -57,8 +57,8 @@ Two scripts carry it:
 Steps 1-5 run in the `prepare` job, which has a read-only token and nothing else. It
 installs every devDependency, runs three packages' install scripts, and runs the whole
 test suite. Only the `publish` job holds the OIDC token (`id-token: write`), the
-`contents: write` token and the deploy key, and it installs nothing: it runs git, npm and
-the dependency-free `scripts/release.mjs`. Any step of a job with `id-token: write` can
+`contents: write` token and the deploy key. It installs nothing but the pinned npm it
+publishes with, and runs git, that npm and the dependency-free `scripts/release.mjs`. Any step of a job with `id-token: write` can
 request an OIDC token, and a job's secrets sit in the runner's memory for the whole job,
 so in a single job any dependency could have minted a publish credential for `parseman`
 or read the deploy key.

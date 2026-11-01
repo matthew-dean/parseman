@@ -365,7 +365,7 @@ describe('publish.yml runs no dependency where a credential is held', () => {
   const jobs = yml.slice(yml.indexOf('\njobs:\n')).split(/\n(?= {2}[\w-]+:\n)/).slice(1)
     .map((text) => ({ name: /^ {2}([\w-]+):/.exec(text)![1]!, text }))
 
-  it('gives the OIDC token, the write token and the deploy key to one job, which installs and runs nothing from npm', () => {
+  it('gives the OIDC token, the write token and the deploy key to one job, which installs nothing but the pinned npm and runs no package code', () => {
     const privileged = jobs.filter((j) => /id-token: write|contents: write|secrets\./.test(j.text))
     expect(privileged.map((j) => j.name)).toEqual(['publish'])
     const body = privileged[0]!.text
