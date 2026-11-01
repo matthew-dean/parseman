@@ -387,6 +387,20 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     expect(r.out).toContain('declares 0.36.3 against the latest release 0.36.3')
   })
 
+  it.each([
+    ['empty', '## 0.36.3 — 2026-07-26\n'],
+    ['missing an entry', '## 0.36.3 — 2026-07-26\n\n- fix three\n'],
+  ])('REJECTS a sync whose section for the latest tag is %s: it would replace that release\'s own', (_kind, mine) => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: src(1) },
+      { version: '0.36.3', changelog: `# Changelog\n\n## Unreleased\n\n- the new api\n\n${mine}\n## 0.36.0 — 2026-07-24\n\n- something\n`, files: src(2) },
+    )
+    tagRelease(dir, baseSha, '## 0.36.3 — 2026-07-26\n\n- fix three\n\n- fix four\n')
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/"## 0\.36\.3" section lacks\s+\d entr(y|ies) v0\.36\.3 shipped/)
+  })
+
   it('REJECTS entries filed under the latest tag\'s version: the publish ships 0.36.4 and they replace 0.36.3\'s section', () => {
     const { dir, baseSha } = repo(
       { changelog: released('0.36.0'), files: src(1) },
