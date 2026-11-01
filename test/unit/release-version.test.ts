@@ -196,6 +196,30 @@ describe('the CHANGELOG a release carries', () => {
     )
   })
 
+  it('takes the released copy of a declared section the stamp moved a shipped entry out of', () => {
+    // 0.58.1 auto-patched A. A PR declared 0.59.0 by renaming an Unreleased that still held
+    // A, and the 0.59.0 stamp left A under 0.58.1. main keeps its own 0.59.0 with A in it;
+    // the next release must not list A under both.
+    const tag0590 = `${PRE}\n## 0.59.0 — 2026-11-02\n\n- the minor\n\n## 0.58.1 — 2026-11-01\n\n- A\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const source = `${PRE}\n## 0.59.0 — 2026-11-02\n\n- A\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const main = `${PRE}\n## Unreleased\n\n- Q\n\n## 0.59.0 — 2026-11-02\n\n- A\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.59.1', date: '2026-11-03', released: tag0590, source })).toBe(
+      `${PRE}\n## 0.59.1 — 2026-11-03\n\n- Q\n\n## 0.59.0 — 2026-11-02\n\n- the minor\n\n## 0.58.1 — 2026-11-01\n\n- A\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
+    )
+  })
+
+  it.each([
+    ['empty', '## 0.36.3 — 2026-07-26\n'],
+    ['missing an entry', '## 0.36.3 — 2026-07-26\n\n- fix three\n'],
+  ])('restores a released section a hand sync left %s', (_kind, mine) => {
+    const tag = `${PRE}\n## 0.36.3 — 2026-07-26\n\n- fix three\n\n- fix four\n\n## 0.36.0 — 2026-07-24\n\n- something\n`
+    const source = `${PRE}\n## Unreleased\n\n- fix three\n\n- fix four\n\n## 0.36.0 — 2026-07-24\n\n- something\n`
+    const main = `${PRE}\n## Unreleased\n\n- the new api\n\n${mine}\n## 0.36.0 — 2026-07-24\n\n- something\n`
+    expect(stampChangelog(main, { version: '0.36.4', date: '2026-07-27', released: tag, source })).toBe(
+      `${PRE}\n## 0.36.4 — 2026-07-27\n\n- the new api\n\n## 0.36.3 — 2026-07-26\n\n- fix three\n\n- fix four\n\n## 0.36.0 — 2026-07-24\n\n- something\n`,
+    )
+  })
+
   it('refuses `released` without `source`', () => {
     expect(() => stampChangelog(`${PRE}\n## 0.58.0 — 2026-10-31\n\n- shipped\n`, { version: '0.58.1', date, released: PRE })).toThrow(/needs `source`/)
   })

@@ -328,14 +328,16 @@ export function stampChangelog(changelog, { version, date, released = '', source
   const shipped = occurrences(withoutEach(taken, entries(mine.get(last)?.lines ?? [])))
   const pending = (lines) => entries(lines).filter((e) => !spend(shipped, e))
 
-  // A section main also has, whose released copy holds everything main's does and more:
-  // the stamp folded Unreleased entries into it. The released copy is what shipped. A
-  // section with an entry the release lacks is left alone (`staleEntries` stops on it).
+  // A section main also has, whose entries the release shipped (under it or an earlier
+  // release) but whose released copy differs: the stamp folded Unreleased entries into it,
+  // or moved out one an earlier auto-patch shipped. The released copy is what shipped. A
+  // section with an entry no release has is left alone (`staleEntries` stops on it).
+  const everShipped = tagged.flatMap((s) => entries(s.lines))
   let replaced = false
   for (const s of tagged) {
     const m = mine.get(headingVersion(s.heading))
-    if (m !== undefined && withoutEach(entries(m.lines), entries(s.lines)).length === 0
-      && withoutEach(entries(s.lines), entries(m.lines)).length > 0) {
+    if (m !== undefined && withoutEach(entries(m.lines), everShipped).length === 0
+      && (withoutEach(entries(s.lines), entries(m.lines)).length > 0 || withoutEach(entries(m.lines), entries(s.lines)).length > 0)) {
       m.heading = s.heading
       m.lines = s.lines
       replaced = true
