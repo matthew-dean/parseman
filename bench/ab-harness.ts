@@ -224,6 +224,12 @@ export function git(args: string[], cwd: string, timeout?: number): string {
  * previous one. CI checks out with `fetch-depth: 0`, which brings the tags.
  */
 export function previousRelease(root: string, gate: string): { tag: string; sha: string } {
+  return findPreviousRelease(root)
+    ?? fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
+}
+
+/** `previousRelease`, or null when no release tag qualifies. */
+export function findPreviousRelease(root: string): { tag: string; sha: string } | null {
   const head = git(['rev-parse', 'HEAD'], root).trim()
   const contains = (rev: string): boolean => {
     try {
@@ -240,7 +246,20 @@ export function previousRelease(root: string, gate: string): { tag: string; sha:
     const source = contains(sha) ? sha : stamped && contains(`${sha}^`) ? git(['rev-parse', `${sha}^`], root).trim() : null
     if (source !== null && source !== head) return { tag, sha: sha.slice(0, 8) }
   }
-  return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
+  return null
+}
+
+/**
+ * For a peak run: the previous release, when it is the peak commit itself. The
+ * per-release run has then just measured this exact pair, and its thresholds are
+ * stricter than the peak's (a peak breach is a per-release breach), so the peak run
+ * would repeat it to no purpose.
+ */
+export function peakIsPreviousRelease(root: string, peakSha: string): { tag: string; sha: string } | null {
+  const previous = findPreviousRelease(root)
+  if (previous === null) return null
+  const commit = (rev: string): string => git(['rev-parse', `${rev}^{commit}`], root).trim()
+  return commit(previous.sha) === commit(peakSha) ? previous : null
 }
 
 /** Bound for the cache-verification git calls — they are local metadata reads. */

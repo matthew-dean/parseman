@@ -10,9 +10,25 @@ difference is the whole point.
 | `pnpm perf:workloads` | did realistic parsing get slower, on any axis at all? | ~2.5-3 min |
 | `pnpm bench:macro-optimize` | did the shipping Jess macro parsers stay correct and within their measured speed band? | several minutes |
 
-All four run on every code PR, and all four are required. The first three are
-self-contained in this repository. The macro gate also uses the pinned Jess commit
-named in `bench/jess/macro-optimize-config.json`; CI checks it out automatically.
+Which ones gate a merge:
+
+| gate | where it runs | required? |
+| --- | --- | --- |
+| `pnpm perf:guard` | the pre-commit hook, on commits that touch the compiler, combinators or CST | no: not in CI |
+| `pnpm perf:guard:grammars` and its peak clause | CI job `grammar-perf`, every code PR | yes, through `test` |
+| `pnpm perf:workloads` and its peak clause | CI job `workload-perf`, every code PR | yes, through `test` |
+| `pnpm bench:macro-optimize` | CI job `macro-perf`, every code PR | no |
+
+`test` is the one required check on `main`. Its `needs` decide what is required, and
+`macro-perf` is not among them. The macro gate's CSS row false-fails: on a PR with no
+`src/` change it read `css/packages/jess/benchmark/benchmark.css` at +3.8% against an
+A/A control of -3.9%. Until that head-side bias is understood
+([#175](https://github.com/matthew-dean/parseman/issues/175)), a required macro gate would
+fail PRs on the instrument. Read its table; do not treat a green `test` as covering it.
+
+The grammar and workload gates are self-contained in this repository. The macro gate
+also uses the pinned Jess commit named in `bench/jess/macro-optimize-config.json`; CI
+checks it out automatically.
 
 The last two are not redundant, and which one you reach for depends on what you
 are doing. `perf:workloads` is the one that FINDS a regression: it parses real
@@ -790,8 +806,8 @@ pnpm perf:workloads --quick                 # 3 passes x 2 rounds x 2 runs — T
 pnpm perf:workloads --only=less             # substring filter on workload id
 pnpm perf:workloads:describe                # what each workload parses, and whether it reaches EOF
 pnpm perf:guard:grammars --quick            # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
-pnpm perf:workloads:peak --base=origin/main # the peak clause, as CI runs it — a
-                                            # PERF-PEAK-WAIVER is honoured only with --base
+pnpm perf:workloads:peak                    # the peak clause, as CI runs it
+pnpm perf:guard:grammars:peak               # the density gate's peak clause, as CI runs it
 
 # Validate the gate itself. A gate nobody has watched fail is not known to work.
 pnpm perf:guard:grammars --ref=7f1ddcd --head-ref=c7780e4   # 0.34.0 without the fix — expect RED
@@ -891,7 +907,7 @@ reachable, the gate says so and exits non-zero. "The gate did not run" must neve
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
 
-## The peak clause — `pnpm perf:workloads:peak`
+## The peak clause — `pnpm perf:workloads:peak` and `pnpm perf:guard:grammars:peak`
 
 ### The blind spot every per-step gate has
 
@@ -934,6 +950,38 @@ its win rate at 5–8 of 12 — verdict correctly `ok`. That is the whole design
 one row: **the median is the statistic a contended runner destroys; min and win
 rate are not.**
 
+### The density gate's peak — `pnpm perf:guard:grammars:peak`
+
+The grammar-density gate has the same clause, for the same reason, made sharper by
+publishing on every merge. Its per-release run compares each PR with the previous
+release, and every merge that changes `src/` publishes one, so the reference moves with
+every such merge. A differential gate against a moving reference compounds drift by
+construction: a PR may cost up to the 6% threshold, and the next is measured from there.
+The standing rule is "you're not slowly degrading performance", so the bar has to be
+absolute. `bench/grammar-density/config.json`:
+
+```json
+"peak": { "sha": "eaa3d1a1", "version": "0.58.0", "allowancePct": 6 }
+```
+
+- **Seeded at 0.58.0** (the `v0.58.0` release commit), the current best released state,
+  when the clause was introduced. Like the workload peak, it was seeded, not swept.
+- **The same semantics as the workload peak.** `allowancePct` is this gate's own
+  per-release threshold, and a pass breaches only when median **and** min both exceed it
+  (`peakThresholds`), with the same win-rate and majority-of-passes rules.
+- **The same record rules.** `scripts/check-changelog.mjs` §D already listed this config
+  among those that may carry a peak, so any edit to it must be named in the CHANGELOG.
+  Like the workload peak, it has no waiver (below).
+- It runs as the second step of the `grammar-perf` job, so `test` requires it. When the
+  previous release **is** the peak commit (`peakIsPreviousRelease`), the first step has
+  just measured that exact pair at stricter thresholds, since a peak breach is always a
+  per-release breach. So the peak step says so and exits instead of spending three
+  runner-minutes repeating it.
+
+`test/bench/ab-harness.test.ts` pins the property: a chain of 2% steps passes every
+per-release comparison against the threshold in each config, and fails against the peak
+once the chain sums past the allowance.
+
 ### The original peak was seeded, not swept — and cannot be imported
 
 **Stated rather than left to be discovered.** 0.45.0 was the **starting record**.
@@ -972,8 +1020,9 @@ trade, and is also exactly how a regression gets laundered into a baseline.
 `scripts/check-changelog.mjs` §D therefore:
 
 1. validates every `peak` block structurally — sha resolvable as a commit, version
-   parseable, allowance a positive number (a malformed record is a gate that
-   silently does not gate);
+   parseable **and equal to `package.json`'s version at that sha**, allowance a positive
+   number (a malformed record is a gate that silently does not gate, and a version that
+   is not the release at the sha reads as a bar it is not);
 2. requires **any** edit to one to be named in a CHANGELOG entry the PR adds,
    calling out backward moves and widened allowances **by name**. An entry already
    on the base does not count: `main`'s Unreleased can hold entries a release has
@@ -985,73 +1034,31 @@ waive it. This is deliberate repetition of a lesson already paid for: both
 `referenceSha` fields carried "bump this at every release" in a *comment* and were
 missed for ten consecutive releases.
 
-### Landing under the bar without moving it — `PERF-PEAK-WAIVER`
+### There is no waiver
 
-Everything above governs **moving** the peak. This governs **landing under it**.
+A peak clause is absolute, and it has no hatch. The per-release run has none either,
+so the only thing a waiver of the peak could ever excuse is the accumulated drift the
+clause exists to stop. The standing rule is "you're not slowly degrading performance".
+A `PERF-PEAK-WAIVER` line used to be honoured. It was also abusable: an overstated
+"999%" passed its understatement check, and a one-character edit beat its freshness
+check. And a waived drawdown still failed `test` on the push to `main`, where there is
+no base to read a waiver from, which would block every publish behind it.
 
-The two options in the section below — fix it, or land it with the number visible
-— were never both executable. A deliberate, *bought* slowdown had exactly one
-route past a red `pnpm perf:workloads:peak`: edit `peak`, or widen
-`allowancePct`. Both make the **slower build the reference**. That is the edit
-§D calls `LAUNDERING RISK` by name, and it destroys the record permanently to get
-one PR through. A change that trades ~2.65x parse time for a ~40x smaller
-artifact is a real trade and should be landable — but not by deleting the bar it
-fails.
+So there are two responses to a red peak, and the gate's failure names both:
 
-So "land it with the number visible" is now a thing you can actually do. A PR
-declares, on one line in the CHANGELOG's **open section**:
+1. find and fix the drawdown;
+2. if the slower build is the new normal, move `peak` in this PR, named in the
+   CHANGELOG with its numbers (§D above). That re-baselines, in a diff a reviewer sees.
 
-```text
-PERF-PEAK-WAIVER bench/workloads/config.json median -164.9% min -158.2% — table lowering: 2.65x parse time buys a 40x smaller artifact
-```
-
-`bench/workload-perf-guard.ts --peak --base=<ref>` then prints its **full drawdown
-report** and exits 0 instead of 1. `scripts/check-changelog.mjs` §D' validates the
-line on every PR.
-
-**When it is legitimate.** When the drawdown is real, understood, measured, and
-bought something nameable — and when the peak should *stay where it is* because
-the slower path is a trade this release makes, not the new normal. If the
-slowdown genuinely is the new normal, **move the peak** (§D above) and say so;
-that is not this.
-
-**It does not move the baseline.** This is the whole point. The committed peak stays
-the bar, and the next PR is measured against the same number, goes red in exactly the
-same way, and must state its own measurement. A waived breach is still a breach on
-the record.
-
-Every property of it is friction on purpose — `docs/design/release-gates.md`: *"A
-gate that fires spuriously gets bypassed, and then the gates that matter get
-bypassed with it."* The inverse holds just as hard, so the waiver:
-
-- **cannot be written without the measurement**, and the numbers must themselves
-  breach `allowancePct`. You cannot waive a gate without saying how badly you
-  failed it. Either spelling of the sign is accepted — the harness prints a
-  slowdown `+164.9%`, prose writes it `-164.9%` — because this is not a gate about
-  punctuation;
-- **cannot understate**. The guard refuses a waiver quoting a figure milder than
-  the mildest breaching pass it just measured;
-- **requires a reason**, not just a number;
-- **is per-PR and non-sticky**: the line must be **absent from the base's
-  CHANGELOG**. The next PR inherits the text, so the identical line waives nothing
-  and that PR must re-measure. Without `--base` the guard cannot check freshness
-  and therefore **refuses the waiver entirely** — which is why CI passes
-  `--base`, and why a push to `main` cannot be waived at all;
-- **cannot be combined with a `peak` edit**. Waiving and re-anchoring are mutually
-  exclusive; a PR doing both is refused;
-- **fails loudly when malformed** rather than being ignored. A waiver that does
-  not parse is a contributor who believes they have waived the gate;
-- **is not `release-exempt`** and deliberately does not extend it. That label's
-  documented scope is §B, and widening a hatch is the bypassed-gate failure
-  itself.
-
-It waives the peak clause's **verdict** only — never §D's requirement to
-document a peak edit, never §A or §B.
+`scripts/check-changelog.mjs` §D' refuses an entry a PR adds that still carries a
+`PERF-PEAK-WAIVER` line, so nobody believes they waived a gate that will fail on `main`.
+Lines already in the CHANGELOG's history are not this PR's and are left alone.
 
 ## When it fires
 
 Do not widen the threshold to make a build pass. Either fix the regression, or
 land it with the number visible and an explanation of why it is the price of
-something — which is what `PERF-PEAK-WAIVER` above is for. An honest "3% is the
+something: in the per-release run that is the PR's own measurement, and against a peak
+it is a reviewed peak move. An honest "3% is the
 cost of correctness, 22% was avoidable" is a result. "Should be faster now" is
 not.

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import v8 from 'node:v8'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  peakIsPreviousRelease,
   copySamples,
   interleave,
   measurePasses,
@@ -15,6 +16,7 @@ import {
   sameSource,
   pairedMedianRatio,
   previousRelease,
+  peakThresholds,
   score,
   type Calibration,
   type Samples,
@@ -347,5 +349,117 @@ describe('a gate whose two sides have the same src/ reports and does not fail', 
     expect(exit).toBeGreaterThan(-1)
     expect(exit).toBeLessThan(src.indexOf('const failures = rows.filter(v => v.failed)'))
     expect(src).toMatch(/!REPORT_ONLY && !SELF && !QUICK && !IDENTICAL/)
+  })
+})
+
+describe('a chain of sub-threshold regressions passes every per-release step and fails the peak', () => {
+  const breaches = (ref: number[], head: number[], t: Thresholds, k: Calibration): boolean =>
+    score(['drift'], samples(ref, head), t, new Map([['drift', k]]))[0]!.breach
+  // The null of an unbiased instrument (50%), shifted onto each threshold's ceiling.
+  const calibrated = (t: Thresholds): Calibration => ({ ...K, ceiling: t.winRateCeiling, signCeiling: t.signTest.winRateCeiling })
+
+  it.each(['grammar-density', 'workloads'])('%s', (gate) => {
+    const config = JSON.parse(readFileSync(fileURLToPath(new URL(`../../bench/${gate}/config.json`, import.meta.url)), 'utf8')) as {
+      thresholds: Thresholds
+      peak: { allowancePct: number }
+    }
+    // Each release is a step slower than the one before it, just under the per-release
+    // run's resolution (its percentage rule and its sign test), and loses every pair. A
+    // gate whose reference is the previous release never fails; the steps compound
+    // until they pass the peak's allowance.
+    const t = config.thresholds
+    const step = 1 + 0.9 * Math.min(t.medianPct, t.minPct, t.signTest.medianPct, t.signTest.minPct) / 100
+    const steps = Math.ceil(Math.log(1 + (config.peak.allowancePct + 1) / 100) / Math.log(step))
+    const chain = Array.from({ length: steps + 1 }, (_, k) => [100, 101, 99, 100.5, 99.5].map(x => x * step ** k))
+
+    const perRelease = calibrated(t)
+    for (let k = 1; k < chain.length; k++) {
+      expect(breaches(chain[k - 1]!, chain[k]!, t, perRelease), `step ${k}`).toBe(false)
+    }
+    const peak = peakThresholds(config.peak.allowancePct)
+    expect(breaches(chain[0]!, chain.at(-1)!, peak, calibrated(peak))).toBe(true)
+    // And the peak is not twitchy: one step from it is inside the allowance.
+    expect(breaches(chain[0]!, chain[1]!, peak, calibrated(peak))).toBe(false)
+  })
+
+  it.each(['grammar-density', 'workloads'])('%s: a peak breach is a per-release breach, so the peak step may skip a pair step one measured', (gate) => {
+    // `peakIsPreviousRelease` skips the peak run when its pair is step one's. That loses
+    // nothing only while the per-release rule is at least as strict as the peak's.
+    const config = JSON.parse(readFileSync(fileURLToPath(new URL(`../../bench/${gate}/config.json`, import.meta.url)), 'utf8')) as {
+      thresholds: Thresholds
+      peak: { allowancePct: number }
+    }
+    const t = config.thresholds
+    const peak = peakThresholds(config.peak.allowancePct)
+    expect(t.signTest.medianPct).toBeLessThanOrEqual(peak.signTest.medianPct)
+    expect(t.signTest.minPct).toBeLessThanOrEqual(peak.signTest.minPct)
+    expect(t.signTest.winRateCeiling).toBeGreaterThanOrEqual(peak.signTest.winRateCeiling)
+    const ref = [100, 101, 99, 100.5, 99.5]
+    const head = ref.map(x => x * (1 + (config.peak.allowancePct + 0.5) / 100))
+    expect(breaches(ref, head, peak, calibrated(peak))).toBe(true)
+    expect(breaches(ref, head, t, calibrated(t))).toBe(true)
+  })
+})
+
+describe('the density peak clause is a required step', () => {
+  it('runs in the grammar-perf job, which `test` needs', () => {
+    const ci = readFileSync(fileURLToPath(new URL('../../.github/workflows/ci.yml', import.meta.url)), 'utf8')
+    const job = ci.slice(ci.indexOf('\n  grammar-perf:\n'), ci.indexOf('\n  workload-perf:\n'))
+    expect(job).toMatch(/run: pnpm perf:guard:grammars:peak\n/)
+    // A failing step must fail the job, or `test` reads it as green.
+    expect(job).not.toMatch(/continue-on-error/)
+    expect(ci).toMatch(/needs: \[[^\]]*\bgrammar-perf\b[^\]]*\]/)
+    const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as { scripts: Record<string, string> }
+    expect(pkg.scripts['perf:guard:grammars:peak']).toBe('node --import tsx/esm bench/grammar-perf-guard.ts --peak')
+  })
+
+  it('measures against the committed peak, at the peak thresholds, and decides with the peak verdict', () => {
+    // Nothing else runs the guard's --peak path short of a full CI measurement, so without
+    // this a --peak that fell back to the previous release (step one again) would stay green.
+    const src = readFileSync(fileURLToPath(new URL('../../bench/grammar-perf-guard.ts', import.meta.url)), 'utf8')
+    expect(src).toMatch(/const REFERENCE = PEAK\s*\? \{ tag: `peak \$\{CONFIG\.peak\.version\}`, sha: CONFIG\.peak\.sha \}/)
+    expect(src).toMatch(/const T = PEAK \? peakThresholds\(CONFIG\.peak\.allowancePct\) : CONFIG\.thresholds/)
+    const verdict = src.indexOf('if (PEAK) peakVerdict(failures)')
+    expect(verdict).toBeGreaterThan(-1)
+    expect(verdict).toBeLessThan(src.indexOf('if (failures.length > 0)'))
+  })
+})
+
+describe('the peak clauses have no waiver, and do not re-measure a pair the per-release run measured', () => {
+  it.each(['grammar-perf-guard.ts', 'workload-perf-guard.ts'])('%s exits 1 on any drawdown and reads no waiver', (file) => {
+    const src = readFileSync(fileURLToPath(new URL(`../../bench/${file}`, import.meta.url)), 'utf8')
+    expect(src).not.toMatch(/peak-waiver|decideWaiver|PERF-PEAK-WAIVER|--base/)
+    expect(src).toMatch(/const peakIsPrevious = PEAK && HEAD_REF === null \? peakIsPreviousRelease\(ROOT, CONFIG\.peak\.sha\) : null/)
+    // The skip comes before either side is materialised.
+    expect(src.indexOf('if (peakIsPrevious !== null)')).toBeLessThan(src.indexOf('materialise(GATE'))
+    // A drawdown fails: the branch that reports one ends in exit 1, with no way to 0.
+    const drawdown = src.slice(src.indexOf('DRAWDOWN —'))
+    const branch = drawdown.slice(0, drawdown.indexOf('\n}\n'))
+    expect(branch).toMatch(/process\.exit\(1\)\s*$/)
+    expect(branch).not.toMatch(/process\.exit\((?!1\))/)
+  })
+
+  it('finds the previous release only when it is the peak commit', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-peak-prev-'))
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }).trim()
+    const commit = (message: string): string => {
+      writeFileSync(join(dir, 'f'), message)
+      git('add', '-A')
+      git('commit', '-qm', message)
+      return git('rev-parse', 'HEAD')
+    }
+    try {
+      git('init', '-q', '-b', 'main')
+      const older = commit('A')
+      git('tag', 'v0.1.0')
+      const peak = commit('B')
+      git('tag', 'v0.2.0')
+      commit('C')
+      expect(peakIsPreviousRelease(dir, peak.slice(0, 8))?.tag).toBe('v0.2.0')
+      expect(peakIsPreviousRelease(dir, older)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

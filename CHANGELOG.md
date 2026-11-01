@@ -10,6 +10,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   main entry, which loads the combinators, the compiler and the analysis with them.
   `src/line-index.ts` was already in the run entry's closure, so the entry's module
   list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+- **The grammar-density perf gate gains a peak clause**, anchored at 0.58.0
+  (`eaa3d1a1`) with a 6% drawdown allowance (`bench/grammar-density/config.json`,
+  `pnpm perf:guard:grammars:peak`, a step of the `grammar-perf` CI job). Its per-release
+  run compares each PR with the previous release, and every merge that changes `src/`
+  publishes one, so drift inside its 6% threshold compounded unchecked. The workload gate
+  already had this clause. The seed is the current best released state, not the winner
+  of a sweep.
+- **The peak clauses have no waiver.** `PERF-PEAK-WAIVER` is no longer honoured by
+  either perf gate, and `scripts/check-changelog.mjs` refuses a pull request whose new
+  entries carry one. The per-release run has no hatch, so a waiver of the peak could only
+  excuse accumulated drift. A deliberate new bar is a reviewed `peak` move, named in the
+  CHANGELOG. `peak.version` must now be `package.json`'s version at `peak.sha`. A peak
+  step whose peak is the previous release says so and doesn't re-measure that pair.
 
 ## 0.58.0 — 2026-10-31
 

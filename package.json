@@ -113,6 +113,7 @@
     "perf:workloads:peak": "node --import tsx/esm bench/workload-perf-guard.ts --peak",
     "perf:workloads:self": "node --import tsx/esm bench/workload-perf-guard.ts --self",
     "perf:guard:grammars:self": "node --import tsx/esm bench/grammar-perf-guard.ts --self",
+    "perf:guard:grammars:peak": "node --import tsx/esm bench/grammar-perf-guard.ts --peak",
     "perf:workloads:describe": "node --import tsx/esm bench/workloads/describe.ts",
     "size:guard": "node --import tsx/esm bench/size-guard.ts",
     "size:baseline": "node --import tsx/esm bench/size-guard.ts --update",
