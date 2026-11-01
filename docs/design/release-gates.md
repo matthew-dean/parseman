@@ -255,8 +255,9 @@ it to be:
 
 - stable, because the publish refuses a prerelease and would stop every release after it;
 - the next patch, minor or major of the latest release, or that release itself (a
-  `sync` PR). The latest release is the newest stable `v*` tag, or the base's version
-  when that is higher.
+  `sync` PR), whose `## X.Y.Z` section must then be the tag's, as `sync` copies it. The
+  latest release is the newest stable `v*` tag, or the base's version when that is
+  higher.
 
 A version between the base and the latest tag is refused because the publish would
 ignore it. It would ship the next patch, and leave the PR's entries under a heading that

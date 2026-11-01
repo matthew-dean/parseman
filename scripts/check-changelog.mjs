@@ -31,7 +31,8 @@
  *      6. package.json's version never goes DOWN against the base. A pull request may
  *         raise it to declare a minor or a major; it never has to. A raised version is
  *         stable and is the next patch, minor or major of the latest release (the newest
- *         stable `v*` tag), or that release itself (a `sync` PR).
+ *         stable `v*` tag), or that release itself (a `sync` PR, whose section is the
+ *         tag's).
  *
  *    Everything else — tests, benches, examples, fixtures, scripts, docs, notes, CI
  *    config, lockfile — is exempt, because none of it can change what a consumer
@@ -564,6 +565,33 @@ if (headPv !== null && basePv !== null && compareVersions(headPv, basePv) > 0) {
           '  heading that names an older release. Declare the next minor or major instead\n' +
           `  (${steps.slice(1).join(' or ')}), or leave the version alone and file under "## ${UNRELEASED}".`,
       )
+    }
+    // The release itself is a `sync` PR only when its section is the tag's, as `sync`
+    // copies it. Entries filed under it instead ship as the next patch, under a heading
+    // that names the release that already shipped, and replace that release's own section.
+    if (compareVersions(headPv, latest) === 0) {
+      const sectionOf = (text) => {
+        const lines = text.split('\n')
+        const at = lines.findIndex((l) => l.startsWith('## ') && headingVersion(l) === latest.raw)
+        if (at === -1) return null
+        const end = lines.findIndex((l, i) => i > at && l.startsWith('## '))
+        return lines.slice(at, end === -1 ? lines.length : end).join('\n').trimEnd()
+      }
+      let tagged = null
+      try {
+        tagged = execFileSync('git', ['show', `v${latest.raw}:CHANGELOG.md`], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      } catch {
+        // No such tag or file: nothing to be a sync of.
+      }
+      const mine = sectionOf(changelog)
+      if (tagged === null || mine === null || mine !== sectionOf(tagged)) {
+        fail(
+          `package.json declares ${version}, the latest release, but CHANGELOG.md's "## ${version}" section\n` +
+            `  is not v${version}'s. Only a sync (node scripts/release.mjs sync) sets the version to the latest\n` +
+            `  release. The publish would ship ${steps[0]}, with this PR's entries under "## ${version}" in place\n` +
+            `  of that release's own. File them under "## ${UNRELEASED}".`,
+        )
+      }
     }
     if (compareVersions(headPv, latest) > 0 && !steps.includes(headPv.raw)) {
       fail(

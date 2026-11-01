@@ -333,7 +333,7 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     expect(r.out).toMatch(/skips past the next release of 0\.36\.3/)
   })
 
-  it.each(['0.36.3', '0.36.4', '0.37.0', '1.0.0'])('ACCEPTS a declared %s against the latest tag 0.36.3 (the tag itself is a sync)', (next) => {
+  it.each(['0.36.4', '0.37.0', '1.0.0'])('ACCEPTS a declared %s against the latest tag 0.36.3', (next) => {
     const { dir, baseSha } = repo(
       { changelog: released('0.36.0'), files: src(1) },
       { version: next, changelog: declared(next), files: src(2) },
@@ -342,6 +342,48 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     const r = gate(dir, `--base=${baseSha}`)
     expect(r.ok, r.out).toBe(true)
     expect(r.out).toContain(`declares ${next} against the latest release 0.36.3`)
+  })
+
+  /** v0.36.3's release commit beside main, as the publish leaves it: its CHANGELOG has the dated section. */
+  const tagRelease = (dir: string, baseSha: string, section: string): void => {
+    git(dir, 'switch', '-q', '-c', 'release', baseSha)
+    writeFileSync(join(dir, 'CHANGELOG.md'), `# Changelog\n\n${section}\n## 0.36.0 — 2026-07-24\n\n- something\n`)
+    git(dir, 'commit', '-qam', 'release: 0.36.3')
+    git(dir, 'tag', 'v0.36.3')
+    git(dir, 'switch', '-q', 'main')
+  }
+  const shipped = '## 0.36.3 — 2026-07-26\n\n- fix three\n'
+
+  it('ACCEPTS a sync: the version set to the latest tag, with that tag\'s section copied in', () => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: src(1) },
+      { version: '0.36.3', changelog: `# Changelog\n\n## Unreleased\n\n- the new api\n\n${shipped}\n## 0.36.0 — 2026-07-24\n\n- something\n`, files: src(2) },
+    )
+    tagRelease(dir, baseSha, shipped)
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok, r.out).toBe(true)
+    expect(r.out).toContain('declares 0.36.3 against the latest release 0.36.3')
+  })
+
+  it('REJECTS entries filed under the latest tag\'s version: the publish ships 0.36.4 and they replace 0.36.3\'s section', () => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: src(1) },
+      { version: '0.36.3', changelog: declared('0.36.3'), files: src(2) },
+    )
+    tagRelease(dir, baseSha, shipped)
+    const r = gate(dir, `--base=${baseSha}`, '--exempt')
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/declares 0\.36\.3, the latest release, but CHANGELOG\.md's "## 0\.36\.3" section\s+is not v0\.36\.3's/)
+  })
+
+  it('REJECTS a skipped version against the base when there are no tags yet', () => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: src(1) },
+      { version: '0.38.0', changelog: declared('0.38.0'), files: src(2) },
+    )
+    const r = gate(dir, `--base=${baseSha}`, '--exempt')
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/skips past the next release of 0\.36\.0/)
   })
 
   it('does NOT require an entry for a change that cannot reach a consumer', () => {
