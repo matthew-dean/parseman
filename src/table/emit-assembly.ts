@@ -51,7 +51,7 @@ import {
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_STRICT,
 } from './ops.ts'
 import {
   choiceCannotCommit, choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
@@ -1146,6 +1146,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // its child, exactly as `assemble.ts:952` resolves it.
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
     if (op === OP_RULE || op === OP_GAPGATE) return code[ip + 1]!
+    if (op === OP_STRICT) return code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
     // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
@@ -2316,10 +2317,10 @@ return [key,v]
         // The separator's own first set (ip+7, `assemble.ts` `sepClass`).
         let sepCls: string | undefined
         let sepAscii = false
-        if (!REC && sepIp >= 0 && !leadingTriviaFieldAt(code, k, sepIp) && code[ip + 7]! >= 0 && !rowNullable(code, k, sepIp, nullable)) {
-          const resolved = t.cc[code[ip + 7]!]!
+        if (!REC && sepIp >= 0 && (code[ip + 5]! & 8) !== 0 && !leadingTriviaFieldAt(code, k, sepIp) && !rowNullable(code, k, sepIp, nullable)) {
+          const resolved = t.cc[code[ip + 8]!]!
           const ci = classes.push([resolved]) - 1
-          classPlan.push([code[ip + 7]!])
+          classPlan.push([code[ip + 8]!])
           sepCls = hoist('rs', `CLS[${ci}][0]`)
           sepAscii = isAsciiOnlyClass(resolved)
         }

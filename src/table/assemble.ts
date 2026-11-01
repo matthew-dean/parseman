@@ -89,7 +89,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
-  OP_COV, OP_GAPGATE,
+  OP_COV, OP_GAPGATE, OP_STRICT,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
@@ -1889,6 +1889,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_GAPGATE:
         return link(code[ip + 1]!)
 
+      // One encoding per assembly: strict, or the construct as written.
+      case OP_STRICT:
+        return link(code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!)
+
       case OP_RULE:
         // Pure indirection in the tape; in the assembled graph the parent simply
         // holds the target's piece. The trampoline row disappears entirely — this
@@ -3490,11 +3494,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // `many()` — the min-0, separator-less repeat — is the only shape that runs
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
-        // A separated list's ip+7 is its separator's first set (the recovery
-        // sentinel). Where the separator cannot match empty and reads no pre-scan
-        // cursor, a lead outside it stops the list at the separator, exactly as
-        // the strict optional item stops at its own class above.
-        const sepClassIndex = sepIp >= 0 && !sepLeads ? code[ip + 7]! : -1
+        // A separated list's ip+8 (flag bit 8) is its separator's first set where the encoder
+        // found the test cheaper than entering it (`Encoder.sepGate`). Where the
+        // separator cannot match empty and reads no pre-scan cursor, a lead
+        // outside it stops the list at the separator, exactly as the strict
+        // optional item stops at its own class above.
+        const sepClassIndex = sepIp >= 0 && !sepLeads && (flags & 8) !== 0 ? code[ip + 8]! : -1
         const sepClass = !REC && sepClassIndex >= 0 && !rowNullable(code, k, sepIp, NULLABLE) ? cc[sepClassIndex]! : undefined
         // THE GAP GATE (`gap-gate.ts`): read the item's leading gap once, here.
         const gapIp = sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1

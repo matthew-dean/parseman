@@ -7,39 +7,25 @@
  * Every reader — reference `execRules`, closure and precompiled emitted
  * `tableRules` — must give the interpreter's whole RunResult over generated
  * argument lists, accepting and failing alike.
+ *
+ * Only a strict parse reads the factored arm (`OP_STRICT`). Tolerant recovery
+ * and a completions probe run the choice as written: inside `sequence(X,
+ * optional(a))`, `X`'s own recovery would take `a`'s first set for all that may
+ * follow it, and `(a )` below recovered past its `)`.
  */
 import { describe, expect, it } from 'vitest'
 import { choice, literal, many, node, regex, rules, sepBy, sequence } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { cfgKey, countSiteVisits, tableRules } from '../../src/table/assemble.ts'
-import { execRules } from '../../src/table/exec.ts'
-import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
-import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
-import { run, type Runnable } from '../../src/functional/run.ts'
+import { countSiteVisits } from '../../src/table/assemble.ts'
+import { run } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
-import { OP_NODE } from '../../src/table/ops.ts'
+import { OP_NODE, OP_STRICT } from '../../src/table/ops.ts'
+import { reachableIps } from '../../src/table/inspect.ts'
+import { readers, seeded } from '../helpers/table-readers.ts'
 
 type Comb = Combinator<unknown>
 
-function readers(prog: TableProgram): ReadonlyArray<readonly [string, Record<string, Runnable>]> {
-  const resolved = resolveTable(prog)
-  const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
-    const out = emitAssemblySource(resolved, prog, cfg, [])
-    return {
-      key: cfgKey(cfg),
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-      factory: new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory'],
-      plan: out.plan, reached: [...out.reached],
-    }
-  })
-  return [
-    ['reference', execRules(prog)],
-    ['closure', tableRules({ ...prog, asm: [] })],
-    ['emitted', tableRules({ ...prog, asm: precompiled })],
-  ]
-}
 
 const call = rules({ trivia: regex(/[ \t]+/) }, (g: Record<string, Comb>) => ({
   Call: sequence(regex(/[a-z]+/), literal('('), sepBy(g.Arg!, literal(',')), literal(')')),
@@ -55,9 +41,10 @@ const call = rules({ trivia: regex(/[ \t]+/) }, (g: Record<string, Comb>) => ({
   Num: regex(/[0-9]+/),
 })) as Record<string, Comb>
 
+/** Distinct generated inputs (468 of 513 with the seeded generator). */
+const DISTINCT = 450
 function inputs(): string[] {
-  let seed = 11
-  const rnd = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  const rnd = seeded(11)
   const atom = (): string => [() => 'a', () => 'bc', () => String(rnd(99)), () => 'x!'][rnd(4)]!()
   const term = (): string => Array.from({ length: 1 + rnd(3) }, atom).join(' ')
   const arg = (): string => [() => term(), () => `${term()}...`, () => `$k: ${term()}`, () => `${term()} ...`][rnd(4)]!()
@@ -83,13 +70,40 @@ describe('an arm whose next sibling is its own prefix', () => {
     expect(counts[ip]).toBe(3)
   })
 
-  it('parses and fails as the interpreter does in every reader', () => {
-    const cases = inputs()
-    const want = cases.map(input => digestValue(run(call.Call!, input)))
-    for (const [name, entries] of readers(encodeTable(call))) {
-      cases.forEach((input, i) => {
-        expect(digestValue(run(entries.Call!, input)), `${name} ${JSON.stringify(input)}`).toBe(want[i])
-      })
+  it('keeps the choice as written for tolerant recovery', () => {
+    const prog = encodeTable(call)
+    expect([...reachableIps(prog)].filter(ip => prog.code[ip] === OP_STRICT).length).toBeGreaterThanOrEqual(1)
+  })
+
+  for (const tolerant of [false, true]) {
+    it(`parses and fails as the interpreter does in every reader${tolerant ? ' (tolerant)' : ''}`, () => {
+      const cases = [...new Set(inputs())]
+      expect(cases.length).toBeGreaterThan(DISTINCT)
+      const opts = tolerant ? { tolerant: true } : {}
+      const want = cases.map(input => digestValue(run(call.Call!, input, opts)))
+      for (const [name, entries] of readers(encodeTable(call))) {
+        cases.forEach((input, i) => {
+          expect(digestValue(run(entries.Call!, input, opts)), `${name} ${JSON.stringify(input)}`).toBe(want[i])
+        })
+      }
+    }, 60_000)
+  }
+
+  it('recovers inside the prefix as the interpreter does', () => {
+    // A repeat as the shared term: in the factored arm its recovery would see
+    // only `...` after it, and swallow the `)` of `(a )`.
+    const g = rules({ trivia: regex(/[ ]+/) }, (g: Record<string, Comb>) => ({
+      Call: sequence(literal('('), sepBy(g.Arg!, literal(',')), literal(')')),
+      Arg: node('Arg', choice(sequence(g.Term!, literal('...')), g.Term!), children => ({ arg: children })),
+      Term: node('Term', many(regex(/[a-z]+/), { min: 1 }), children => ({ term: children })),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['(a )', '(a b )', '(a ...)', '(a, b )', '(a ..)', '(a !)', '(a , )', '( a)']) {
+        for (const opts of [{ tolerant: true }, {}]) {
+          expect(digestValue(run(entries.Call!, input, opts)), `${name} ${JSON.stringify(input)} ${JSON.stringify(opts)}`)
+            .toBe(digestValue(run(g.Call!, input, opts)))
+        }
+      }
     }
-  }, 60_000)
+  })
 })

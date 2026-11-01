@@ -254,8 +254,61 @@ export const DEFECTS = {
     why: 'encoder: an arm whose next sibling is its prefix is left as written (the shared term parses twice)',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'const factored = factorSharedEnds(d) ?? factorPrefixArms(d)',
-      replace: 'const factored = factorSharedEnds(d)',
+      find: '            const prefix = factorPrefixArms(d)\n',
+      replace: '            const prefix = undefined\n',
+    }],
+  },
+
+  'prefix-arm-tolerant-factored': {
+    why: 'closure and emitted engines: tolerant recovery runs the factored prefix arm',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'return link(code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!)',
+      replace: 'return link(code[ip + 1]!)',
+    }, {
+      file: 'src/table/emit-assembly.ts',
+      find: 'if (op === OP_STRICT) return code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!',
+      replace: 'if (op === OP_STRICT) return code[ip + 1]!',
+    }],
+  },
+
+  'scope-memo-one-slot': {
+    why: 'encoder: a rule body is encoded once, under the first trivia scope that reaches it',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "    if (t === undefined || !this.readsScope(p)) return ''\n",
+      replace: "    return ''\n",
+    }],
+  },
+
+  'ref-first-set-caller-trivia': {
+    why: 'first sets: a reference from a cleared region is read under the caller\'s scope, not the trivia it installs',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: 'consuming && activeTrivia === null ? triviaThroughRef(p, target, null) : activeTrivia, consuming)',
+      replace: 'activeTrivia, consuming)',
+    }],
+  },
+
+  'gap-lead-caller-trivia': {
+    why: 'encoder: the gap walk reads a reference under the caller\'s scope, not the trivia it installs',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'return this.gapLead(target, triviaThroughRef(c, target, trivia), depth + 1)',
+      replace: 'return this.gapLead(target, trivia, depth + 1)',
+    }],
+  },
+
+  'rgate2-second-code-units': {
+    why: 'encoder: the two-character routed gate\'s second set stays in code units',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'return astral.length === 0 ? s : union(s, { kind: \'ranges\', ranges: astral })',
+      replace: 'return s',
+    }, {
+      file: 'src/table/encode.ts',
+      find: '    const second = d.value.codePointAt(1)!\n',
+      replace: '    const second = d.value.charCodeAt(1)\n',
     }],
   },
 

@@ -18,40 +18,18 @@
  * failing inputs alike, over a generated set of expressions.
  */
 import { describe, expect, it } from 'vitest'
-import {
-  choice, literal, many, node, noTrivia, optional, regex, rules, sepBy, sequence,
-} from '../../src/index.ts'
+import { choice, literal, many, node, noTrivia, optional, regex, rules, sepBy, sequence } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { cfgKey, countSiteVisits, tableRules } from '../../src/table/assemble.ts'
-import { execRules } from '../../src/table/exec.ts'
-import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
-import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
+import { countSiteVisits } from '../../src/table/assemble.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { run, type Runnable } from '../../src/functional/run.ts'
+import { run } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { OP_GAPGATE, OP_GATE, OP_REP, OP_REPV, OP_SEQ, OP_SEQV } from '../../src/table/ops.ts'
+import { readers, seeded } from '../helpers/table-readers.ts'
 
 type Comb = Combinator<unknown>
 
-function readers(prog: TableProgram): ReadonlyArray<readonly [string, Record<string, Runnable>]> {
-  const resolved = resolveTable(prog)
-  const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
-    const out = emitAssemblySource(resolved, prog, cfg, [])
-    return {
-      key: cfgKey(cfg),
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-      factory: new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory'],
-      plan: out.plan, reached: [...out.reached],
-    }
-  })
-  return [
-    ['reference', execRules(prog)],
-    ['closure', tableRules({ ...prog, asm: [] })],
-    ['emitted', tableRules({ ...prog, asm: precompiled })],
-  ]
-}
 
 // The SCSS value shape: padded operators, three precedence levels, a word
 // operator spelled `ws and ws`, a prefix `-`, a parenthesised group, then a
@@ -76,9 +54,10 @@ const expr = rules({ trivia: regex(/[ \t]+/) }, (g: Record<string, Comb>) => ({
 })) as Record<string, Comb>
 
 /** Seeded generator: well-formed expressions, then each with one defect. */
+/** Distinct generated inputs (612 of 612 with the seeded generator). */
+const DISTINCT = 600
 function inputs(): string[] {
-  let seed = 7
-  const rnd = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  const rnd = seeded(7)
   const sp = (): string => [' ', '', '', '  ', '\t'][rnd(5)]!
   const atom = (d: number): string => {
     const r = rnd(d > 2 ? 3 : 5)
@@ -164,13 +143,17 @@ describe('a loop decides on the character in front of it', () => {
     }
   })
 
-  it('parses and fails as the interpreter does in every reader', () => {
-    const cases = inputs()
-    const want = cases.map(input => digestValue(run(expr.Decl!, input)))
-    for (const [name, entries] of readers(encodeTable(expr))) {
-      cases.forEach((input, i) => {
-        expect(digestValue(run(entries.Decl!, input)), `${name} ${JSON.stringify(input)}`).toBe(want[i])
-      })
-    }
-  }, 60_000)
+  for (const tolerant of [false, true]) {
+    it(`parses and fails as the interpreter does in every reader${tolerant ? ' (tolerant)' : ''}`, () => {
+      const cases = [...new Set(inputs())]
+      expect(cases.length).toBeGreaterThan(DISTINCT)
+      const opts = tolerant ? { tolerant: true } : {}
+      const want = cases.map(input => digestValue(run(expr.Decl!, input, opts)))
+      for (const [name, entries] of readers(encodeTable(expr))) {
+        cases.forEach((input, i) => {
+          expect(digestValue(run(entries.Decl!, input, opts)), `${name} ${JSON.stringify(input)}`).toBe(want[i])
+        })
+      }
+    }, 60_000)
+  }
 })

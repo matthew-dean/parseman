@@ -12,40 +12,18 @@
  * the interpreter's whole RunResult, accepting and failing.
  */
 import { describe, expect, it } from 'vitest'
-import {
-  choice, dispatch, endsWith, label, literal, many, node, otherwise, parser, regex, routed, rules, sequence, when,
-} from '../../src/index.ts'
+import { choice, dispatch, endsWith, label, literal, many, node, otherwise, parser, regex, routed, rules, sequence, when } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { cfgKey, countSiteVisits, tableRules } from '../../src/table/assemble.ts'
-import { execRules } from '../../src/table/exec.ts'
-import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
-import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
+import { countSiteVisits } from '../../src/table/assemble.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { run, type Runnable } from '../../src/functional/run.ts'
+import { run } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { OP_RGATE2 } from '../../src/table/ops.ts'
+import { readers, seeded } from '../helpers/table-readers.ts'
 
 type Comb = Combinator<unknown>
 
-function readers(prog: TableProgram): ReadonlyArray<readonly [string, Record<string, Runnable>]> {
-  const resolved = resolveTable(prog)
-  const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
-    const out = emitAssemblySource(resolved, prog, cfg, [])
-    return {
-      key: cfgKey(cfg),
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-      factory: new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory'],
-      plan: out.plan, reached: [...out.reached],
-    }
-  })
-  return [
-    ['reference', execRules(prog)],
-    ['closure', tableRules({ ...prog, asm: [] })],
-    ['emitted', tableRules({ ...prog, asm: precompiled })],
-  ]
-}
 
 const value = regex(/[a-z0-9]+/)
 const ws = regex(/[ \t]+/)
@@ -70,8 +48,7 @@ return sheet
 const sheets = { ascii: makeSheet(/:(?=[ \t])/), unicode: makeSheet(/:(?=[ \t\u00a0])/) }
 
 function inputs(): string[] {
-  let seed = 5
-  const rnd = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  const rnd = seeded(5)
   const stmt = (): string => [
     () => 'div:hover{}', () => 'a{}', () => 'color:red;', () => 'color: red;', () => 'color :\tred;',
     () => 'color:\tred;', () => 'f(x);', () => 'x :y;', () => 'p :hover{}', () => 'a:\u00a0b;',
@@ -100,14 +77,40 @@ describe('a routed arm gate that reads two characters', () => {
     expect(spacedHit[arm]).toBe(1)
   })
 
-  it(`(${kind}) parses and fails as the interpreter does in every reader`, () => {
-    const cases = inputs()
-    const want = cases.map(input => digestValue(run(sheet.Sheet!, input)))
+  for (const tolerant of [false, true]) {
+  it(`(${kind}) parses and fails as the interpreter does in every reader${tolerant ? ' (tolerant)' : ''}`, () => {
+    // 328 distinct of 412 generated: statements are drawn from ten spellings.
+    const cases = [...new Set(inputs())]
+    expect(cases.length).toBeGreaterThan(300)
+    const opts = tolerant ? { tolerant: true } : {}
+    const want = cases.map(input => digestValue(run(sheet.Sheet!, input, opts)))
     for (const [name, entries] of readers(encodeTable(sheet))) {
       cases.forEach((input, i) => {
-        expect(digestValue(run(entries.Sheet!, input)), `${name} ${JSON.stringify(input)}`).toBe(want[i])
+        expect(digestValue(run(entries.Sheet!, input, opts)), `${name} ${JSON.stringify(input)}`).toBe(want[i])
       })
     }
   }, 60_000)
   }
+  }
+
+  // The second character is read as a code point (`lead`): an astral one is
+  // two code units, so its set is of code points too.
+  it('reads an astral second character as one code point', () => {
+    for (const next of [literal('-😀'), regex(/-😀/), regex(/-😀/u), regex(/-[😀😁]/u)]) {
+      const g = rules({ trivia: regex(/[ ]+/) }, (g: Record<string, Comb>) => ({
+        S: many(g.St!),
+        St: dispatch(regex(/[a-z]+/), otherwise(choice(
+          sequence(routed(), next, literal(';')),
+          sequence(routed(), literal('-'), regex(/[a-z]+/), literal(';')),
+        ))),
+      })) as Record<string, Comb>
+      const prog = encodeTable(g)
+      expect([...reachableIps(prog)].filter(ip => prog.code[ip] === OP_RGATE2), String(next._def.tag)).toHaveLength(1)
+      for (const [name, entries] of readers(prog)) {
+        for (const input of ['a-😀;', 'a-😁;', 'a-b;', 'a-\ud83d;', 'a-😀', 'a -😀;', 'a-😀; b-c;']) {
+          expect(digestValue(run(entries.S!, input)), `${name} ${JSON.stringify(input)}`).toBe(digestValue(run(g.S!, input)))
+        }
+      }
+    }
+  })
 })

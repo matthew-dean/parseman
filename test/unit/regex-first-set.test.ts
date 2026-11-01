@@ -17,6 +17,7 @@
 import { describe, it, expect } from 'vitest'
 import { firstSetFromRegex } from '../../src/regex/first-set.ts'
 import type { FirstSet } from '../../src/types.ts'
+import { seeded } from '../helpers/table-readers.ts'
 
 function covers(fs: FirstSet, code: number): boolean {
   if (fs.kind === 'any') return true
@@ -128,9 +129,9 @@ describe('regex first-set — soundness vs the RegExp engine (fuzz)', () => {
     'a*', 'a*b', '(a|b)?c', '[a-z]*[0-9]', 'x?y?z', '(ab)+', '[^\\n]+',
   ]
 
-  // Deterministic LCG — no Math.random (keeps failures reproducible).
-  let seed = 0x2545f
-  const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff
+  // Seeded — no Math.random (keeps failures reproducible).
+  const rnd = seeded(0x2545f)
+  const rand = (): number => rnd(0x40000000) / 0x40000000
   const pick = <A>(a: A[]): A => a[Math.floor(rand() * a.length)]!
   const atoms = ['a', 'b', 'z', '0', '9', '_', '-', '.', '/', '#', '@', '\\d', '\\w', '\\s', '\\.', '\\/',
     '[a-z]', '[A-Z]', '[0-9]', '[a-z0-9_]', '[^"]', '[^\\n]', '[ \\t]', '.', '\\n', '\\t']

@@ -4,7 +4,7 @@ import {
   OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_LIVE, OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT,
   OP_PEEK, OP_REJECT, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX, OP_RX_TRACK, OP_SCAN,
   OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_RGATE2,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_RGATE2, OP_STRICT,
 } from './ops.ts'
 
 /**
@@ -55,6 +55,11 @@ export function childSlots(code: ArrayLike<number>, ip: number, out: number[]): 
     case OP_GATE: case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM:
     case OP_NODE: case OP_NODE_TRACK: case OP_FIELD: case OP_LEAF: case OP_SOURCE_LEAF: case OP_ARMGATE: case OP_RGATE: case OP_RGATE2:
       out.push(code[ip + 2]!)
+      return true
+
+    // `STRICT strict tolerant` — both encodings are reachable; an assembly keeps one.
+    case OP_STRICT:
+      out.push(code[ip + 1]!, code[ip + 2]!)
       return true
 
     // `ROUTED fallback` — the operand is an offset or −1. The routed token itself is

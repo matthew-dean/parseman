@@ -14,40 +14,19 @@
  * with line tracking.
  */
 import { describe, expect, it } from 'vitest'
-import {
-  choice, cstBuildHost, literal, many, node, noTrivia, optional, regex, rules, sepBy, sequence,
-} from '../../src/index.ts'
+import { choice, cstBuildHost, literal, many, node, noTrivia, optional, regex, rules, sepBy, sequence } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { cfgKey, countSiteVisits, tableRules } from '../../src/table/assemble.ts'
+import { countSiteVisits } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
-import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
-import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
-import { run, type Runnable } from '../../src/functional/run.ts'
+import { run } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { OP_GAPGATE, OP_NODE } from '../../src/table/ops.ts'
+import { readers, seeded } from '../helpers/table-readers.ts'
 
 type Comb = Combinator<unknown>
 
-function readers(prog: TableProgram): ReadonlyArray<readonly [string, Record<string, Runnable>]> {
-  const resolved = resolveTable(prog)
-  const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
-    const out = emitAssemblySource(resolved, prog, cfg, [])
-    return {
-      key: cfgKey(cfg),
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-      factory: new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory'],
-      plan: out.plan, reached: [...out.reached],
-    }
-  })
-  return [
-    ['reference', execRules(prog)],
-    ['closure', tableRules({ ...prog, asm: [] })],
-    ['emitted', tableRules({ ...prog, asm: precompiled })],
-  ]
-}
 
 const pad = regex(/[ \t]*(?:\/\*[^*]*\*\/[ \t]*)*/)
 const sp = regex(/[ ]+/)
@@ -69,9 +48,10 @@ const grammar = (mode: 'ast' | 'cst' | 'lines'): Record<string, Comb> => rules({
   Atom: choice(regex(/[0-9]+/), regex(/[a-z]+/), sequence(literal('('), g.Or!, literal(')'))),
 })) as Record<string, Comb>
 
+/** Distinct generated inputs (454 of 458 with the seeded generator). */
+const DISTINCT = 440
 function inputs(): string[] {
-  let seed = 23
-  const rnd = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  const rnd = seeded(23)
   const gap = (): string => ['', ' ', '  ', '\t', ' \t', '/*c*/', ' /*c*/ '][rnd(7)]!
   const atom = (d: number): string => {
     const r = rnd(d > 2 ? 3 : 4)
@@ -128,7 +108,8 @@ describe('an optional repeat item that opens with a gap', () => {
   ] as const) {
     it(`parses and fails as the ungated leg does in every reader (${label})`, () => {
       const g = grammar(mode)
-      const cases = inputs()
+      const cases = [...new Set(inputs())]
+      expect(cases.length).toBeGreaterThan(DISTINCT)
       const prog = encodeTable(g)
       const oracle = mode === 'lines' ? execRules(prog).Decl! : g.Decl!
       const want = cases.map(input => digestValue(run(oracle, input, opts)))

@@ -21,7 +21,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
-  OP_COV, OP_GAPGATE,
+  OP_COV, OP_GAPGATE, OP_STRICT,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
@@ -524,6 +524,9 @@ function makeDriver(
       case OP_COV:
       case OP_GAPGATE:
         return exec(code[ip + 1]!, input, pos, ctx)
+
+      case OP_STRICT:
+        return exec(code[ctx._tolerant || ctx._probe !== undefined ? ip + 2 : ip + 1]!, input, pos, ctx)
 
       case OP_LIVE: {
         // A HAND-WRITTEN COMBINATOR, run through its own `.parse` — mirrors

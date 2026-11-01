@@ -46,3 +46,21 @@ export function hasOwnTriviaBoundary(p: Combinator<unknown>, depth: number = MAX
     default: return false
   }
 }
+
+/**
+ * The trivia `target` runs under when it is reached through the reference `ref`
+ * from a scope whose live trivia is `trivia` (`null` or `undefined`: none).
+ *
+ * A reference made from a region that cleared trivia re-installs the rule's own
+ * ambient trivia, where the rule has a boundary for it to repair (`ref.ts`,
+ * `Encoder.scopedRef`). Anything derived statically through a reference — a
+ * first set, a gate, a gap — must take the same scope, or it describes the
+ * caller's scope where the body runs under its own.
+ */
+export function triviaThroughRef(
+  ref: Combinator<unknown>, target: Combinator<unknown>, trivia: Combinator<unknown> | null | undefined,
+): Combinator<unknown> | null | undefined {
+  if (trivia !== undefined && trivia !== null) return trivia
+  const amb = ref._meta.grammarTrivia ?? target._meta.grammarTrivia
+  return amb !== undefined && hasOwnTriviaBoundary(target) ? amb : trivia
+}

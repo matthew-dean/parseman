@@ -18,13 +18,13 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV, OP_GAPGATE, OP_RGATE2,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV, OP_GAPGATE, OP_RGATE2, OP_STRICT,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
 import { resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
 import { missingInferredType } from '../combinators/node.ts'
-import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
+import { triviaThroughRef } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, LexBodySpec, LexProgramSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 import {
@@ -122,19 +122,35 @@ type Emitted = { readonly ip: number }
  * The first two characters a term reads, where it says them outright: a
  * literal of two or more characters, or a case-sensitive regex
  * (`regexFirstTwo`), through a label or a trivia scope. The first must be BMP
- * and not a surrogate, so the second is the next code unit.
+ * and not a surrogate, so the second starts at the next code unit. The gate
+ * reads that second character as a code point (`lead`), so the second set is
+ * one of code points.
  */
 function firstTwo(p: Combinator<unknown>): { first: FirstSet; second: FirstSet } | undefined {
   const d = p._def as ParserDef
   if (d.tag === 'label' || d.tag === 'grammar') return firstTwo(d.parser)
   let two: { first: FirstSet; second: FirstSet } | undefined
   if (d.tag === 'literal' && d.value.length >= 2 && d.caseInsensitive !== true) {
-    two = { first: { kind: 'ranges', ranges: [{ lo: d.value.charCodeAt(0), hi: d.value.charCodeAt(0) }] }, second: { kind: 'ranges', ranges: [{ lo: d.value.charCodeAt(1), hi: d.value.charCodeAt(1) }] } }
+    const second = d.value.codePointAt(1)!
+    two = { first: { kind: 'ranges', ranges: [{ lo: d.value.charCodeAt(0), hi: d.value.charCodeAt(0) }] }, second: { kind: 'ranges', ranges: [{ lo: second, hi: second }] } }
   } else if (d.tag === 'regex' && !d.flags.includes('i')) {
-    two = regexFirstTwo(d.source)
+    const units = regexFirstTwo(d.source)
+    if (units !== undefined) two = { first: units.first, second: asCodePoints(units.second) }
   }
   if (two === undefined || two.first.kind !== 'ranges') return undefined
   return two.first.ranges.every(r => r.hi < 0xd800 || (r.lo > 0xdfff && r.hi <= 0xffff)) ? two : undefined
+}
+
+/** A code-unit set as `lead()` reads input: a high surrogate also opens its astral points. */
+function asCodePoints(s: FirstSet): FirstSet {
+  if (s.kind !== 'ranges') return s
+  const astral: { lo: number; hi: number }[] = []
+  for (const r of s.ranges) {
+    const lo = Math.max(r.lo, 0xd800)
+    const hi = Math.min(r.hi, 0xdbff)
+    if (lo <= hi) astral.push({ lo: 0x10000 + (lo - 0xd800) * 0x400, hi: 0x10000 + (hi - 0xd800) * 0x400 + 0x3ff })
+  }
+  return astral.length === 0 ? s : union(s, { kind: 'ranges', ranges: astral })
 }
 
 /** ASCII whitespace and the `/` a comment opens with: what a gap starts with. */
@@ -202,6 +218,8 @@ class Encoder {
    */
   private commitFailureMemo = new Map<Combinator<unknown>, boolean>()
   labels: readonly string[] | undefined = undefined
+  /** The choice being encoded as written, for `OP_STRICT`'s tolerant child. */
+  private unfactoredChoice: Combinator<unknown> | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
   classified = false
@@ -538,16 +556,98 @@ class Encoder {
   private kIndex = new Map<unknown, number>()
   private ccIndex = new Map<string, number>()
   private fxIndex = new Map<string, number>()
-  /** Memoized by combinator identity: a shared sub-combinator is ONE row. */
-  memo = new Map<Combinator<unknown>, number>()
   /**
-   * Memo for `lazy` REFERENCES, keyed by the trivia scope the reference is made
-   * from. A cross-rule reference's row depends on that scope (`scopedRef`), so the
-   * single `memo` slot every other construct uses would freeze the FIRST
-   * reference's scope onto every later one and undo the fix.
+   * Memoized by combinator identity AND the trivia scope it is encoded under
+   * (`scopeKey`): a shared sub-combinator is ONE row per scope it runs in.
+   *
+   * A construct's rows depend on that scope. A first set derived through a
+   * nullable term takes in the trivia that may follow it, a gap gate holds only
+   * where no trivia runs, a routed gate reads what may follow its token, and a
+   * cross-rule reference installs its rule's trivia only from a cleared region
+   * (`scopedRef`). One memo slot per combinator froze the FIRST scope it was
+   * reached under onto every later one: a rule body encoded as an entry with no
+   * trivia, then run under a caller's comment trivia, gated its repeats as if no
+   * comment could come between their terms.
    */
-  refMemo = new Map<Combinator<unknown>, Map<Combinator<unknown> | undefined, number>>()
-  pending = new Map<Combinator<unknown>, number[]>()
+  memo = new Map<Combinator<unknown>, Map<string, number>>()
+  pending = new Map<Combinator<unknown>, Map<string, number[]>>()
+  private triviaSignatures = new Map<Combinator<unknown>, string>()
+  /**
+   * What of the live trivia an encoding can depend on: none, or its first set.
+   * Every derivation reads trivia only through `firstSetOf(trivia)` or whether it
+   * is live, so two scopes whose trivia opens on the same characters encode the
+   * same rows and share them. A construct that reads no scope (`readsScope`)
+   * has one encoding.
+   */
+  private scopeKey(p: Combinator<unknown>): string {
+    const t = this.activeTrivia
+    if (t === undefined || !this.readsScope(p)) return ''
+    let sig = this.triviaSignatures.get(t)
+    if (sig === undefined) {
+      sig = `t${JSON.stringify(firstSetOf(t, new Set(), this.refResolver()))}`
+      this.triviaSignatures.set(t, sig)
+    }
+    return sig
+  }
+
+  private readsScopeMemo = new Map<Combinator<unknown>, boolean>()
+  /**
+   * Can `p`'s rows depend on the trivia scope it is encoded under? No for a
+   * terminal, a scope of its own (`parser({ trivia })`, `noTrivia`), and a
+   * wrapper over a construct that reads none; yes wherever a first set, a gate or
+   * a reference's install is derived with the scope: a sequence with a nullable
+   * term before another (the trivia between them), a routed arm (the trivia after
+   * its token), a reference that installs its rule's trivia from a cleared
+   * region, and anything not modelled here — a cycle included.
+   */
+  private readsScope(p: Combinator<unknown>): boolean {
+    const hit = this.readsScopeMemo.get(p)
+    if (hit !== undefined) return hit
+    this.readsScopeMemo.set(p, true)
+    const d = p._def as ParserDef
+    const rr = this.refResolver()
+    let out: boolean
+    switch (d.tag) {
+      case 'literal': case 'regex': case 'keywords': case 'routed':
+        out = false
+        break
+      case 'grammar':
+        out = d.clearTrivia !== true && d.triviaParser === undefined && this.readsScope(d.parser)
+        break
+      case 'node': case 'label': case 'leaf': case 'transform': case 'attempt': case 'expect':
+      case 'not': case 'peek': case 'optional': case 'many': case 'oneOrMore':
+        out = this.readsScope(d.parser)
+        break
+      case 'sepBy':
+        out = this.readsScope(d.parser) || this.readsScope(d.separator)
+        break
+      case 'choice':
+        out = d.parsers.some(a => this.readsScope(a))
+        break
+      case 'dispatch':
+        out = this.readsScope(d.selector) || d.cases.some(c => this.readsScope(c.parser))
+          || (d.matchers?.some(m => this.readsScope(m.parser)) ?? false)
+          || (d.otherwise !== undefined && this.readsScope(d.otherwise))
+        break
+      case 'sequence': {
+        const ps = d.parsers
+        out = ps.some(t => this.readsScope(t))
+          || (ps[0] !== undefined && (ps[0]._def as ParserDef).tag === 'routed')
+          || ps.some((t, i) => i + 1 < ps.length && matchesEmpty(t, new Set(), rr))
+        break
+      }
+      case 'lazy': {
+        let target: Combinator<unknown> | undefined = winnerForRef(p, rr)
+        if (target === undefined) { try { target = d.thunk() } catch { target = undefined } }
+        out = target === undefined || triviaThroughRef(p, target, null) !== null || this.readsScope(target)
+        break
+      }
+      default:
+        out = true
+    }
+    this.readsScopeMemo.set(p, out)
+    return out
+  }
 
   readonly settings: TableSettings
   /** Resolved once, HERE, at table-build time — never consulted at run time. */
@@ -587,7 +687,7 @@ class Encoder {
     let fs: FirstSet = { kind: 'empty' }
     const rr = this.refResolver()
     for (let j = i + 1; j < parsers.length; j++) {
-      fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia))
+      fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia, false))
     }
     return this.charClass(fs)
   }
@@ -771,7 +871,7 @@ class Encoder {
       || op === OP_RX || op === OP_RX_TRACK) return child
     const rr = this.refResolver()
     if (matchesEmpty(p, new Set(), rr)) return child
-    const cls = this.charClass(firstSetOf(p, new Set(), rr, this.activeTrivia))
+    const cls = this.charClass(firstSetOf(p, new Set(), rr, this.activeTrivia ?? null))
     if (cls < 0) return child
     const e = deriveExpected(p)
     return this.emit(OP_GATE, cls, child, this.expected(e.length > 0 ? e : [p._tag]))
@@ -806,7 +906,7 @@ class Encoder {
   private gateFirstSet(p: Combinator<unknown>): FirstSet {
     const cached = p._meta.firstSet
     return p._def.tag === 'lazy' || cached.kind === 'any'
-      ? firstSetOf(p, new Set(), this.refResolver(), this.activeTrivia)
+      ? firstSetOf(p, new Set(), this.refResolver(), this.activeTrivia ?? null)
       : cached
   }
 
@@ -897,7 +997,7 @@ class Encoder {
       case 'lazy': {
         let target: Combinator<unknown> | undefined = winnerForRef(c, rr)
         if (target === undefined) { try { target = d.thunk() } catch { return undefined } }
-        return this.gapLead(target, trivia, depth + 1)
+        return this.gapLead(target, triviaThroughRef(c, target, trivia), depth + 1)
       }
       case 'node': case 'leaf': case 'label': case 'attempt':
         return this.gapLead(d.parser, trivia, depth + 1)
@@ -945,6 +1045,21 @@ class Encoder {
       default:
         return undefined
     }
+  }
+
+  /**
+   * The class a strict list may end on — a character its separator `p` (row
+   * `ip`) cannot start — without entering the separator, or −1.
+   *
+   * The test runs before every separator, to save the one that fails at the
+   * list's end, so it is laid down only where entering the separator costs more
+   * than the test: not on a terminal row, which is itself one character test.
+   */
+  private sepGate(p: Combinator<unknown>, ip: number): number {
+    const op = this.code[ip]
+    if (op === OP_LIT || op === OP_LIT_CI || op === OP_RX || op === OP_LIT_TRACK || op === OP_RX_TRACK || op === OP_LIT_CI_TRACK) return -1
+    if (matchesEmpty(p, new Set(), this.refResolver())) return -1
+    return this.charClass(firstSetOf(p, new Set(), this.refResolver(), this.activeTrivia ?? null))
   }
 
   /** Reserve `n` operand slots to patch once children are laid out. */
@@ -1085,13 +1200,16 @@ class Encoder {
    * silently produced the ONE keyword `bc`.
    */
   private scopedRef(p: Combinator<unknown>, target: Combinator<unknown>): number {
-    const ip = this.node(target).ip
     // `rules()` stamps `grammarTrivia` on the map entry, which for a proxied rule
     // is the REF itself; a composed `winners` entry carries it on the target.
-    const amb = p._meta.grammarTrivia ?? target._meta.grammarTrivia
-    if (amb === undefined || this.activeTrivia !== undefined) return ip
-    if (!hasOwnTriviaBoundary(target)) return ip
-    return this.emit(OP_SCOPE_PLAIN, this.triviaSlot(amb), ip)
+    const runsUnder = triviaThroughRef(p, target, this.activeTrivia)
+    if (this.activeTrivia !== undefined || runsUnder === undefined || runsUnder === null) return this.node(target).ip
+    // The body is encoded under the trivia this row installs for it, so its own
+    // gates are derived under the scope they run in.
+    this.activeTrivia = runsUnder
+    const ip = this.node(target).ip
+    this.activeTrivia = undefined
+    return this.emit(OP_SCOPE_PLAIN, this.triviaSlot(runsUnder), ip)
   }
 
   /**
@@ -1154,37 +1272,32 @@ class Encoder {
   }
 
   node(p: Combinator<unknown>): Emitted {
-    // See `refMemo`: a reference is memoised per REFERENCING trivia scope, every
-    // other construct once for the program.
-    const lazyRef = (p._def as ParserDef).tag === 'lazy'
-    const scopeKey = lazyRef ? this.activeTrivia : undefined
-    const refMemo = this.refMemo
-    const hit = lazyRef ? refMemo.get(p)?.get(scopeKey) : this.memo.get(p)
+    // See `memo`: one encoding per combinator per trivia scope.
+    const key = this.scopeKey(p)
+    let byScope = this.memo.get(p)
+    const hit = byScope?.get(key)
     if (hit !== undefined) return { ip: hit }
     // Recursion: reserve a trampoline row now, patch its target when the real
     // body lands. One extra indirection per recursive rule, zero per call site.
-    const inFlight = this.pending.get(p)
+    let inFlightByScope = this.pending.get(p)
+    const inFlight = inFlightByScope?.get(key)
     if (inFlight !== undefined) {
       const ip = this.emitHead(OP_RULE, 1)
       inFlight.push(ip + 1)
       return { ip }
     }
     const patches: number[] = []
-    this.pending.set(p, patches)
+    if (inFlightByScope === undefined) { inFlightByScope = new Map(); this.pending.set(p, inFlightByScope) }
+    inFlightByScope.set(key, patches)
     // A RULE IS CREDITED ON ENTRY, not on success — `codegen.ts:4529` emits the
     // hook as the first statement of the named function body, so a rule that is
     // reached and then fails still counts as exercised. The counter goes on the
     // MEMOISED offset, which is the one every reference to this combinator lands
     // on, and the recursion trampolines below are patched with it too.
     const ip = this.covWrap(this.encodeDef(p), this.plan?.rules.get(p), 0)
-    this.pending.delete(p)
-    if (lazyRef) {
-      let byScope = refMemo.get(p)
-      if (byScope === undefined) { byScope = new Map(); refMemo.set(p, byScope) }
-      byScope.set(scopeKey, ip)
-    } else {
-      this.memo.set(p, ip)
-    }
+    inFlightByScope.delete(key)
+    if (byScope === undefined) { byScope = new Map(); this.memo.set(p, byScope) }
+    byScope.set(key, ip)
     for (const slot of patches) {
       // A TRAMPOLINE PATCHED TO ITSELF IS NOT A TABLE. `OP_RULE ip → ip` makes no
       // progress in either driver: `exec.ts`'s `case OP_RULE` recurses on the same
@@ -1317,8 +1430,24 @@ class Encoder {
         // Arms that differ in one term are that term's choice (`factor-choice.ts`).
         // Not under a coverage plan, which credits the arms as written.
         if (this.plan === undefined) {
-          const factored = factorSharedEnds(d) ?? factorPrefixArms(d)
-          if (factored !== undefined) return this.node(factored).ip
+          const shared = factorSharedEnds(d)
+          if (shared !== undefined) return this.node(shared).ip
+          // The prefix arm reads `X` once only in a strict parse. Tolerant
+          // recovery and a completions probe run the choice as written: inside
+          // `sequence(X, optional(a))`, `X`'s own recovery would see `a`'s first
+          // set as all that may follow it, where the next arm's `X` sees the
+          // choice's.
+          if (this.unfactoredChoice !== p) {
+            const prefix = factorPrefixArms(d)
+            if (prefix !== undefined) {
+              const strict = this.node(prefix).ip
+              const saved = this.unfactoredChoice
+              this.unfactoredChoice = p
+              const tolerant = this.encodeDef(p)
+              this.unfactoredChoice = saved
+              return this.emit(OP_STRICT, strict, tolerant)
+            }
+          }
         }
         // `greedyClassify` is NOT a choice at all — one arm runs and another arm
         // is credited — so it gets its own row rather than an arm ordering.
@@ -1450,7 +1579,7 @@ class Encoder {
           if (!finalChoice.nullable[i]) return undefined
           const def = arm._def as ParserDef
           if (def.tag !== 'attempt' || matchesEmpty(def.parser, new Set(), rr)) return undefined
-          return firstSetOf(def.parser, new Set(), rr, this.activeTrivia)
+          return firstSetOf(def.parser, new Set(), rr, this.activeTrivia ?? null)
         })
         const gateFirst = finalChoice.firstSets.map((first, i) => transactionalFirst[i] ?? first)
         const classes = gateFirst.map((first, i) => finalChoice.nullable[i] && transactionalFirst[i] === undefined
@@ -1521,7 +1650,7 @@ class Encoder {
         const rr = this.refResolver()
         const itemClass = matchesEmpty(d.parser, new Set(), rr)
           ? -1
-          : this.charClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
+          : this.charClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia ?? null))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         const item = min === 0 && itemClass >= 0
@@ -1551,17 +1680,23 @@ class Encoder {
         // failing, and `failAt` reports the item's derived set at the list's
         // start there too, not whatever the item's own failure left (a deeper
         // set the interpreter discards, `repeat.ts` `failAt(pos)`).
-        const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 1 ? 4 : 0)
+        const gate = this.sepGate(d.separator, sep)
+        const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 1 ? 4 : 0) | (gate >= 0 ? 8 : 0)
         // A RECOVERY table always carries ip + 6 (the ITEM's expected set, which
         // the resync error reports) and ip + 7 (the SEPARATOR's sentinel class, so
         // a tolerant list resyncs to its own separator OR the enclosing
         // delimiter — `orSentinel(separator, term)` in repeat.ts:454 and
-        // `_rec.or(sepSent, mySync)` in codegen's emitSepBy).
+        // `_rec.or(sepSent, mySync)` in codegen's emitSepBy). With flag bit 8,
+        // ip + 8 is the separator's first set for a strict list to end on
+        // (`sepGate`).
         if (this.rec) {
-          return this.emit(
-            OP_REP, child, d.min, d.max ?? -1, sep, flags,
-            this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia)),
-          )
+          const ops = [
+            child, d.min, d.max ?? -1, sep, flags,
+            this.expected(deriveExpected(d.parser)),
+            this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia, false)),
+          ]
+          if (gate >= 0) ops.push(gate)
+          return this.emit(OP_REP, ...ops)
         }
         return d.min >= 1
           ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags, this.expected(deriveExpected(d.parser)))
@@ -1581,7 +1716,7 @@ class Encoder {
         // rule invocation. The inner sequence must not be shared with anything
         // else, or fusing it here would steal it from the other reference.
         const inner = d.parser._def as ParserDef
-        if (inner.tag === 'sequence' && !this.memo.has(d.parser) && !this.pending.has(d.parser)) {
+        if (inner.tag === 'sequence' && !this.memo.get(d.parser)?.has(this.scopeKey(d.parser)) && !this.pending.get(d.parser)?.has(this.scopeKey(d.parser))) {
           const kids = inner.parsers.map(c => this.node(c).ip)
           const head = this.emitHead(OP_SEQX, 2 + kids.length + (this.rec ? kids.length : 0))
           const projection = directArrayProjection(d.fn, d.fnSrc, kids.length)
@@ -2044,6 +2179,7 @@ class Encoder {
         // REJECT's check operands are const/class indices, never offsets.
         case OP_REJECT: return [ip + 1]
         case OP_REP: case OP_REPV: return this.code[ip + 4]! >= 0 ? [ip + 1, ip + 4] : [ip + 1]
+        case OP_STRICT: return [ip + 1, ip + 2]
         default: return []
       }
     }

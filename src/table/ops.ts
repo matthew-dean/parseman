@@ -502,6 +502,13 @@ export const OP_GAPGATE = 46
  */
 export const OP_RGATE2 = 47
 /**
+ * `STRICT strict tolerant` — one construct encoded two ways: `strict` for a
+ * strict parse, `tolerant` for tolerant recovery and a completions probe, which
+ * must see the construct as written (`factor-choice.ts` `factorPrefixArms`). An
+ * assembly resolves it to one child; it has no body of its own.
+ */
+export const OP_STRICT = 48
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -539,4 +546,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_LEX_PROGRAM]: 'LEX_PROGRAM',
   [OP_GAPGATE]: 'GAPGATE',
   [OP_RGATE2]: 'RGATE2',
+  [OP_STRICT]: 'STRICT',
 }

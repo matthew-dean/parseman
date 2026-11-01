@@ -260,6 +260,7 @@ const REGISTRY = [
     plants: [
       { defect: 'prefix-arm-any-prefix', expect: 'moves' },
       { defect: 'prefix-arm-off', expect: 'moves' },
+      { defect: 'prefix-arm-tolerant-factored', expect: 'moves' },
     ],
   },
   {
@@ -289,6 +290,20 @@ const REGISTRY = [
       { defect: 'rgate2-second-at-first-ascii', expect: 'moves' },
       { defect: 'rgate2-second-at-first-emitted', expect: 'moves' },
       { defect: 'rgate2-second-narrowed', expect: 'moves' },
+      { defect: 'rgate2-second-code-units', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'trivia-scope',
+    needs: 'repo',
+    file: 'test/unit/table-trivia-scope.test.ts',
+    legs: 'rule bodies with a gap gate, an optional-literal lead, a separator and a routed arm, run under a caller\'s comment trivia (encoded first as entries, and first reached from the caller) and as rules of a trivia map referenced from a cleared region, over generated inputs with comments in every gap, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar, strict and tolerant: whole RunResult digests and expected sets per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-trivia-scope.test.ts']),
+    plants: [
+      { defect: 'scope-memo-one-slot', expect: 'moves' },
+      { defect: 'ref-first-set-caller-trivia', expect: 'moves' },
+      { defect: 'gap-lead-caller-trivia', expect: 'moves' },
     ],
   },
   {
