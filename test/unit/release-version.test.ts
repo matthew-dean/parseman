@@ -385,6 +385,8 @@ describe('the plan decides from what it read', () => {
   it('stops when npm\'s newest release has no tag, rather than releasing on top of it', () => {
     // 0.2.1 published, its tag push failed: the next release would read v0.2.0's CHANGELOG.
     expect(() => decide({ ...read, npm: [...read.npm, '0.2.1'], differences: changed })).toThrow(/parseman@0\.2\.1 is on npm but has no v0\.2\.1 tag/)
+    // A declared release on top of it would misfile 0.2.1's entries the same way.
+    expect(() => decide({ ...read, declared: '0.3.0', npm: [...read.npm, '0.2.1'], differences: changed })).toThrow(/parseman@0\.2\.1 is on npm but has no v0\.2\.1 tag/)
     // An older untagged version, or a prerelease published by hand, is not that state.
     expect(decide({ ...read, npm: ['0.0.9', ...read.npm, '0.3.0-rc.1'], differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
   })
