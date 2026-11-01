@@ -39,7 +39,13 @@ export declare function decide(input: {
   own: string | null
   superseded: string | null
   differences: (latest: string) => string[]
+  /** main's CHANGELOG.md. */
+  changelog: string
+  /** CHANGELOG.md at a release tag (`vX.Y.Z`). */
+  released: (tag: string) => string
 }): Decision
+
+export declare function sectionEntries(changelog: string, version: string): string[] | null
 
 export declare const NON_CONSUMER_FIELDS: readonly string[]
 export declare const CONSUMER_LIFECYCLE_SCRIPTS: readonly string[]
