@@ -43,9 +43,17 @@ function emitted(prog: TableProgram): TableProgram {
 const t = classifiedTrivia({ ws: regex(/[ ]+/), comment: regex(/\/\*[^*]*\*\//) })
 // `Pair` reads `x`, then trivia, then fails at `y`: the comment is recorded and the node fails.
 const shapes: Record<string, (g: Record<string, Comb>) => Comb> = {
-  choice: g => sequence(choice(g.Pair!, literal('x')), literal('y')),
-  optional: g => sequence(optional(g.Pair!), literal('x'), literal('y')),
-  attempt: g => sequence(choice(attempt(g.Pair!), literal('x')), literal('y')),
+  'choice()': g => sequence(choice(g.Pair!, literal('x')), literal('y')),
+  'optional()': g => sequence(optional(g.Pair!), literal('x'), literal('y')),
+  'attempt()': g => sequence(choice(attempt(g.Pair!), literal('x')), literal('y')),
+  // The node behind a choice the table lowers as an exclusive dispatch, which runs
+  // its one selected arm with no mark of its own: the site around it restores.
+  'optional(choice())': g => sequence(optional(choice(g.Pair!, literal('q'))), literal('x'), literal('y')),
+  'choice(choice())': g => sequence(choice(choice(g.Pair!, literal('q')), literal('x')), literal('y')),
+  // The same without a node: the arm's own sequence scans the trivia and fails.
+  'optional(choice()) of a sequence': () => sequence(optional(choice(sequence(literal('x'), literal('a')), literal('q'))), literal('x'), literal('y')),
+  // A node arm beside an arm that takes the full mark restores the logs from it.
+  'choice() with a full mark': g => sequence(choice(sequence(literal('x'), literal('q')), g.Pair!, literal('x')), literal('y')),
 }
 const opts = { rootTrivia: { select: ['comment'] } }
 
@@ -60,7 +68,7 @@ describe('a failed node arm leaves no trivia rows behind', () => {
 
   it('restores only the trivia logs for a node arm: its frame drops the rest', () => {
     const g = rules({ trivia: t }, (g: Record<string, Comb>) => ({
-      Doc: shapes.choice!(g),
+      Doc: shapes['choice()']!(g),
       Pair: node('Pair', sequence(literal('x'), literal('a')), children => ({ pair: children })),
     })) as Record<string, Comb>
     const prog = encodeTable(g, { hostMode: 'ast' })
@@ -70,7 +78,7 @@ describe('a failed node arm leaves no trivia rows behind', () => {
   })
 
   for (const [name, shape] of Object.entries(shapes)) {
-    it(`records the comment once through ${name}() on every engine`, () => {
+    it(`records the comment once through ${name} on every engine`, () => {
       const g = rules({ trivia: t }, (g: Record<string, Comb>) => ({
         Doc: shape(g),
         Pair: node('Pair', sequence(literal('x'), literal('a')), children => ({ pair: children })),

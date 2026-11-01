@@ -221,10 +221,14 @@ export function mayLeavePartialCapture(
     // what its body leaves; without, it leaves nothing.
     case 'node':
       return throughNodes && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes)
-    // choice/firstMatch already roll back each failed arm; on overall failure
-    // nothing committed remains.
+    // choice/firstMatch already roll back each failed arm's captures; on overall
+    // failure nothing committed remains. The trivia logs are the exception: a
+    // choice the table lowers as an exclusive dispatch runs its one selected arm
+    // with no mark of its own (`emit-assembly.ts`, `table.exclusive`), so the
+    // rows that arm's trivia scans recorded stay when it fails. With
+    // `throughNodes` a choice leaves what one of its arms leaves.
     case 'choice':
-      return false
+      return throughNodes && d.parsers.some(arm => mayLeavePartialCapture(arm, new Set(seen), triviaActive, true))
     case 'dispatch':
       // These are independent graph predicates. Sharing one mutable `seen` set
       // between them made the first walk hide the arm from the second: an atomic

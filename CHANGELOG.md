@@ -14,7 +14,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   ['comment'] } })` returned the comment twice. The closure engine and the reference
   driver were already right. Such a child now takes a mark of the two trivia logs
   alone (its node frame already restores the rest), and a program with no trivia
-  takes none. See `test/unit/table-node-arm-trivia-rollback.test.ts`.
+  takes none. The same holds one choice further out: a choice the table lowers as an
+  exclusive dispatch runs its selected arm with no mark of its own, so an
+  `optional()` or a choice arm over such a choice, whose arm (a node or not) scans
+  trivia and then fails, restores the two logs too. See `test/unit/table-node-arm-trivia-rollback.test.ts`.
 
 ## 0.58.0 — 2026-10-31
 
