@@ -104,7 +104,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase,
   type Case, type Thresholds,
 } from './ab-harness.ts'
 
@@ -118,7 +118,6 @@ type GateMeasurement = import('./ab-harness.ts').Measurement & { passes: number 
 
 type Config = {
   scoreMethod: string
-  referenceSha: string
   input: { rules: number }
   measurement: GateMeasurement
   thresholds: Thresholds
@@ -135,8 +134,14 @@ const QUICK = process.argv.includes('--quick')
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
 const REF_ARG = argValue('--ref')
+/** Report-only: measure and print, never fail. How the merge-base arm runs. */
+const REPORT_ONLY = process.argv.includes('--report-only')
+/** A PR's base commit: also report HEAD against it (see `reportAgainstMergeBase`). */
+const MERGE_BASE = argValue('--merge-base')
 const HEAD_REF_ARG = argValue('--head-ref')
-const REF = REF_ARG ?? CONFIG.referenceSha
+// The previous release, resolved from the v* tags (see `previousRelease`).
+const REFERENCE = REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
+const REF = REFERENCE.sha
 const HEAD_REF = SELF ? REF : HEAD_REF_ARG
 
 const M: GateMeasurement = QUICK
@@ -203,7 +208,7 @@ const refDir = materialise(GATE, ROOT, REF, COPY)
 const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
 
 console.log(
-  `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REF}`}`,
+  `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,
 )
 
 const ref = await loadSide(refDir)
@@ -286,6 +291,10 @@ for (const v of rows) {
   )
 }
 console.log(`\n  load average ${load0.toFixed(2)} → ${load1.toFixed(2)}`)
+summary(summaryTable(
+  `${GATE}: HEAD vs ${REPORT_ONLY ? `merge base ${REF}` : REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`,
+  rows, calibration, !REPORT_ONLY && !SELF && !QUICK,
+))
 
 if (SELF) {
   // Reported SIGNED, because only the positive direction gates. A −8% self-check
@@ -316,6 +325,10 @@ if (QUICK) {
   console.log('\n--quick is triage only — it does not gate. Run without it before landing.')
   process.exit(0)
 }
+
+// Report-only runs (the merge-base arm below) never gate; the gate is the release.
+if (REPORT_ONLY) process.exit(0)
+if (MERGE_BASE !== null) reportAgainstMergeBase(GATE, ROOT, MERGE_BASE, REF, [])
 
 const failures = rows.filter(v => v.failed)
 if (failures.length > 0) {

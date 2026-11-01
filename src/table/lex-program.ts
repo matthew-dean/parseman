@@ -258,7 +258,9 @@ function exclusiveChoiceNode(
   classes: readonly ResolvedClass[],
   choiceFx: readonly string[],
 ): BuiltLexNode {
-  const ascii = new Int32Array(128).fill(-1)
+  // A signed byte holds every arm index up to 127, which is every real grammar's
+  // choice; a wider choice takes a wider table so its 129th arm is not read as -128.
+  const ascii = (classes.length <= 128 ? new Int8Array(128) : new Int32Array(128)).fill(-1)
   const hi: number[] = []
   for (let i = 0; i < classes.length; i++) {
     const cls = classes[i]!

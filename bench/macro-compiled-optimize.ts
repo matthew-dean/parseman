@@ -5,11 +5,13 @@
  * three-way macro/reference/interpreter identity mode. This wrapper captures the
  * verbose provenance transcript and emits one JSON object for ce-optimize.
  */
-import { execFileSync } from 'node:child_process'
-import { readFileSync, realpathSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { appendFileSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { JESS_ROOT } from './jess/grammars.ts'
+import { mergeBaseNote } from './ab-harness.ts'
 import {
   JESS_AB_RESULT_MARKER as RESULT_MARKER,
   expectedRowKeys,
@@ -142,10 +144,19 @@ if (dialectsRaw.length === 0 || dialectsRaw.some(value => value !== 'less' && va
   throw new Error('--dialects must be a comma-separated subset of less,css')
 }
 const dialects = [...new Set(dialectsRaw)] as Dialect[]
+/**
+ * Report-only: time HEAD against `--ref` (a PR's merge base), print the table, never
+ * fail. With `--self-control=<file>` it reuses the A/A rows the gate run measured on
+ * the same runner moments earlier instead of timing them again, which halves its cost.
+ */
+const REPORT_ONLY = process.argv.includes('--report-only')
+/** A PR's base commit: also report HEAD against it. */
+const MERGE_BASE = arg('merge-base')
+const SELF_CONTROL = arg('self-control')
 const requestedReference = arg('ref') ?? process.env.PM_MACRO_OPT_REF ?? CONFIG.referenceSha
 const reference = gitCommit(ROOT, requestedReference)
 const releaseReference = gitCommit(ROOT, CONFIG.referenceSha)
-if (reference !== releaseReference) {
+if (reference !== releaseReference && !REPORT_ONLY) {
   throw new Error(`--ref must resolve to the pinned ${CONFIG.referenceVersion} release ${releaseReference}; got ${reference}`)
 }
 const headCommit = gitCommit(ROOT, 'HEAD')
@@ -219,7 +230,10 @@ const candidateRuns = dialects.map(dialect => runAb(dialect, [
   '--require-full',
   ...common,
 ]))
-const selfRuns = dialects.map(dialect => runAb(dialect, [
+const reusedSelf = SELF_CONTROL === null
+  ? null
+  : (JSON.parse(readFileSync(SELF_CONTROL, 'utf8')) as { runs: StructuredRun[] }).runs
+const selfRuns = reusedSelf ?? dialects.map(dialect => runAb(dialect, [
   '--self',
   '--two-graph',
   '--require-full',
@@ -229,7 +243,7 @@ const selfRuns = dialects.map(dialect => runAb(dialect, [
 validateRuns(candidateRuns, dialects, 'candidate', reference, headSha, headSource)
 validateRuns(selfRuns, dialects, 'self', reference, headSha, headSource)
 printLegProvenance('candidate', candidateRuns)
-printLegProvenance('self-control', selfRuns)
+printLegProvenance(reusedSelf === null ? 'self-control' : `self-control (reused from ${SELF_CONTROL})`, selfRuns)
 
 const candidateRows = candidateRuns.flatMap(run => run.rows).filter(row => row.bytes >= RANKABLE_BYTES)
 const selfRows = selfRuns.flatMap(run => run.rows).filter(row => row.bytes >= RANKABLE_BYTES)
@@ -303,4 +317,41 @@ process.stdout.write(`${JSON.stringify({
     measurement: { warmup, timed, rounds, runs },
   },
 })}\n`)
+// The job summary. stdout stays the one JSON object above, so the table goes to stderr.
+const pct = (ratio: number): string => `${ratio >= 1 ? '+' : ''}${((ratio - 1) * 100).toFixed(1)}%`
+const table = [
+  `#### macro-perf: HEAD vs ${REPORT_ONLY ? `merge base ${reference.slice(0, 8)}` : `${CONFIG.referenceVersion} (${reference.slice(0, 8)})`}`,
+  '',
+  '| fixture | time Δ (head / reference) | A/A control | verdict |',
+  '| --- | ---: | ---: | --- |',
+  ...scoredRows.map(row => `| ${row.dialect}/${row.fixture} | ${pct(row.ratio)} | ${pct(row.selfRatio)}`
+    + ` | ${REPORT_ONLY ? 'report only' : row.gateRatio > CONFIG.candidateRatioCeiling ? '**FAIL**' : 'ok'} |`),
+  '',
+  `geomean ${pct(geomean(ratios))}; worst A/A swing ${pct(aaWorstSwing)} against a ${pct(CONFIG.aaSwingCeiling)} ceiling`
+    + (timingErrors.length > 0 ? `; rejected: ${timingErrors.join('; ')}` : ''),
+].join('\n')
+process.stderr.write(`\n${table}\n`)
+const summaryFile = process.env['GITHUB_STEP_SUMMARY']
+if (summaryFile !== undefined && summaryFile !== '') appendFileSync(summaryFile, `${table}\n\n`)
+
+if (REPORT_ONLY) process.exit(0)
+if (MERGE_BASE !== null) {
+  const base = gitCommit(ROOT, MERGE_BASE)
+  const note = mergeBaseNote(ROOT, base, reference)
+  if (note !== null) {
+    const text = `#### macro-perf: HEAD vs merge base ${base.slice(0, 8)}\n\n${note}`
+    process.stderr.write(`\n${text}\n`)
+    if (summaryFile !== undefined && summaryFile !== '') appendFileSync(summaryFile, `${text}\n\n`)
+  }
+  else {
+    const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'pm-macro-self-')), 'self.json')
+    writeFileSync(file, JSON.stringify({ runs: selfRuns }))
+    process.stderr.write(`\nmacro-perf: timing HEAD against merge base ${base.slice(0, 8)} (report only)\n`)
+    // Its JSON goes to stderr too: this process's stdout is the gate's one JSON object.
+    // Same measurement shape as this run: forward its flags, minus the ones that pick the arm.
+    const forwarded = process.argv.slice(2).filter(a => a !== '--' && !/^--(merge-base|ref|report-only|self-control)\b/.test(a))
+    spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, ...forwarded, `--ref=${base}`, '--report-only', `--self-control=${file}`],
+      { stdio: ['ignore', 2, 'inherit'], cwd: ROOT })
+  }
+}
 process.exit(macroTimingExitCode(timingErrors))
