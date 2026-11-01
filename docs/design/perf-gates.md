@@ -10,9 +10,25 @@ difference is the whole point.
 | `pnpm perf:workloads` | did realistic parsing get slower, on any axis at all? | ~2.5-3 min |
 | `pnpm bench:macro-optimize` | did the shipping Jess macro parsers stay correct and within their measured speed band? | several minutes |
 
-All four run on every code PR, and all four are required. The first three are
-self-contained in this repository. The macro gate also uses the pinned Jess commit
-named in `bench/jess/macro-optimize-config.json`; CI checks it out automatically.
+Which ones gate a merge:
+
+| gate | where it runs | required? |
+| --- | --- | --- |
+| `pnpm perf:guard` | the pre-commit hook, on commits that touch the compiler, combinators or CST | no: not in CI |
+| `pnpm perf:guard:grammars` and its peak clause | CI job `grammar-perf`, every code PR | yes, through `test` |
+| `pnpm perf:workloads` and its peak clause | CI job `workload-perf`, every code PR | yes, through `test` |
+| `pnpm bench:macro-optimize` | CI job `macro-perf`, every code PR | no |
+
+`test` is the one required check on `main`. Its `needs` decide what is required, and
+`macro-perf` is not among them. The macro gate's CSS row false-fails: on a PR with no
+`src/` change it read `css/packages/jess/benchmark/benchmark.css` at +3.8% against an
+A/A control of -3.9%. Until that head-side bias is understood
+([#175](https://github.com/matthew-dean/parseman/issues/175)), a required macro gate would
+fail PRs on the instrument. Read its table; do not treat a green `test` as covering it.
+
+The grammar and workload gates are self-contained in this repository. The macro gate
+also uses the pinned Jess commit named in `bench/jess/macro-optimize-config.json`; CI
+checks it out automatically.
 
 The last two are not redundant, and which one you reach for depends on what you
 are doing. `perf:workloads` is the one that FINDS a regression: it parses real
@@ -792,6 +808,7 @@ pnpm perf:workloads:describe                # what each workload parses, and whe
 pnpm perf:guard:grammars --quick            # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
 pnpm perf:workloads:peak --base=origin/main # the peak clause, as CI runs it — a
                                             # PERF-PEAK-WAIVER is honoured only with --base
+pnpm perf:guard:grammars:peak --base=origin/main # the density gate's peak clause, as CI runs it
 
 # Validate the gate itself. A gate nobody has watched fail is not known to work.
 pnpm perf:guard:grammars --ref=7f1ddcd --head-ref=c7780e4   # 0.34.0 without the fix — expect RED
@@ -891,7 +908,7 @@ reachable, the gate says so and exits non-zero. "The gate did not run" must neve
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
 
-## The peak clause — `pnpm perf:workloads:peak`
+## The peak clause — `pnpm perf:workloads:peak` and `pnpm perf:guard:grammars:peak`
 
 ### The blind spot every per-step gate has
 
@@ -933,6 +950,35 @@ Demonstrated at load average **98 → 106**, where `json/document` swung from
 its win rate at 5–8 of 12 — verdict correctly `ok`. That is the whole design in
 one row: **the median is the statistic a contended runner destroys; min and win
 rate are not.**
+
+### The density gate's peak — `pnpm perf:guard:grammars:peak`
+
+The grammar-density gate has the same clause, for the same reason, made sharper by
+publishing on every merge. Its per-release run compares each PR with the previous
+release, and every merge that changes `src/` publishes one, so the reference moves with
+every such merge. A differential gate against a moving reference compounds drift by
+construction: a PR may cost up to the 6% threshold, and the next is measured from there.
+The standing rule is "you're not slowly degrading performance", so the bar has to be
+absolute. `bench/grammar-density/config.json`:
+
+```json
+"peak": { "sha": "eaa3d1a1", "version": "0.58.0", "allowancePct": 6 }
+```
+
+- **Seeded at 0.58.0** (the `v0.58.0` release commit), the current best released state,
+  when the clause was introduced. Like the workload peak, it was seeded, not swept.
+- **The same semantics as the workload peak.** `allowancePct` is this gate's own
+  per-release threshold, and a pass breaches only when median **and** min both exceed it
+  (`peakThresholds`), with the same win-rate and majority-of-passes rules.
+- **The same record rules.** `scripts/check-changelog.mjs` §D already listed this config
+  among those that may carry a peak, so any edit to it must be named in the CHANGELOG.
+  A per-PR `PERF-PEAK-WAIVER bench/grammar-density/config.json …` is honoured by
+  `grammar-perf-guard.ts --peak --base=<ref>` exactly as by the workload gate.
+- It runs as the second step of the `grammar-perf` job, so `test` requires it.
+
+`test/bench/ab-harness.test.ts` pins the property: a chain of 2% steps passes every
+per-release comparison against the threshold in each config, and fails against the peak
+once the chain sums past the allowance.
 
 ### The original peak was seeded, not swept — and cannot be imported
 

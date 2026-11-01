@@ -15,6 +15,7 @@ import {
   sameSource,
   pairedMedianRatio,
   previousRelease,
+  peakThresholds,
   score,
   type Calibration,
   type Samples,
@@ -347,5 +348,47 @@ describe('a gate whose two sides have the same src/ reports and does not fail', 
     expect(exit).toBeGreaterThan(-1)
     expect(exit).toBeLessThan(src.indexOf('const failures = rows.filter(v => v.failed)'))
     expect(src).toMatch(/!REPORT_ONLY && !SELF && !QUICK && !IDENTICAL/)
+  })
+})
+
+describe('a chain of sub-threshold regressions passes every per-release step and fails the peak', () => {
+  const breaches = (ref: number[], head: number[], t: Thresholds, k: Calibration): boolean =>
+    score(['drift'], samples(ref, head), t, new Map([['drift', k]]))[0]!.breach
+  // The null of an unbiased instrument (50%), shifted onto each threshold's ceiling.
+  const calibrated = (t: Thresholds): Calibration => ({ ...K, ceiling: t.winRateCeiling, signCeiling: t.signTest.winRateCeiling })
+
+  it.each(['grammar-density', 'workloads'])('%s', (gate) => {
+    const config = JSON.parse(readFileSync(fileURLToPath(new URL(`../../bench/${gate}/config.json`, import.meta.url)), 'utf8')) as {
+      thresholds: Thresholds
+      peak: { allowancePct: number }
+    }
+    // Each release is a step slower than the one before it, just under the per-release
+    // run's resolution (its percentage rule and its sign test), and loses every pair. A
+    // gate whose reference is the previous release never fails; the steps compound
+    // until they pass the peak's allowance.
+    const t = config.thresholds
+    const step = 1 + 0.9 * Math.min(t.medianPct, t.minPct, t.signTest.medianPct, t.signTest.minPct) / 100
+    const steps = Math.ceil(Math.log(1 + (config.peak.allowancePct + 1) / 100) / Math.log(step))
+    const chain = Array.from({ length: steps + 1 }, (_, k) => [100, 101, 99, 100.5, 99.5].map(x => x * step ** k))
+
+    const perRelease = calibrated(t)
+    for (let k = 1; k < chain.length; k++) {
+      expect(breaches(chain[k - 1]!, chain[k]!, t, perRelease), `step ${k}`).toBe(false)
+    }
+    const peak = peakThresholds(config.peak.allowancePct)
+    expect(breaches(chain[0]!, chain.at(-1)!, peak, calibrated(peak))).toBe(true)
+    // And the peak is not twitchy: one step from it is inside the allowance.
+    expect(breaches(chain[0]!, chain[1]!, peak, calibrated(peak))).toBe(false)
+  })
+})
+
+describe('the density peak clause is a required step', () => {
+  it('runs in the grammar-perf job, which `test` needs', () => {
+    const ci = readFileSync(fileURLToPath(new URL('../../.github/workflows/ci.yml', import.meta.url)), 'utf8')
+    const job = ci.slice(ci.indexOf('\n  grammar-perf:\n'), ci.indexOf('\n  workload-perf:\n'))
+    expect(job).toMatch(/run: pnpm perf:guard:grammars:peak \$\{BASE_SHA:\+--base=\$BASE_SHA\}/)
+    expect(ci).toMatch(/needs: \[[^\]]*\bgrammar-perf\b[^\]]*\]/)
+    const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as { scripts: Record<string, string> }
+    expect(pkg.scripts['perf:guard:grammars:peak']).toBe('node --import tsx/esm bench/grammar-perf-guard.ts --peak')
   })
 })

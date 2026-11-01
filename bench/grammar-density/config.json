@@ -6,6 +6,15 @@
 
   "_referenceNote": "The A/B reference is the PREVIOUS RELEASE: the newest v* tag HEAD contains, resolved at run time by `previousRelease` in bench/ab-harness.ts, so it follows every publish with no edit here. Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. `--ref=<sha>` overrides it for a one-off comparison.",
 
+  "peak": {
+    "sha": "eaa3d1a1",
+    "version": "0.58.0",
+    "allowancePct": 6,
+    "_what": "The committed density baseline, and the bar `pnpm perf:guard:grammars:peak` holds every later commit to. The per-release run measures each PR against the release immediately before it, and every merge that changes src/ publishes, so that run is a differential against a moving reference: steps inside the 6% threshold compound without one failing. This clause is absolute.",
+    "_absolute": "`sha` names a COMMIT (the v0.58.0 release commit), never a millisecond count, so the comparison is re-measured on whatever machine runs it. `allowancePct` is the drawdown TOLERATED, not a budget to spend: it is this gate's per-release threshold, the measured noise floor's margin, as the workload gate's allowance is its own.",
+    "_seeded": "Seeded at 0.58.0, the current best released state, when the clause was introduced; not the winner of a sweep across releases. Moving it forward is how an improvement becomes the bar. scripts/check-changelog.mjs section D requires any edit here to be named in the CHANGELOG and calls out a backward move or a widened allowance by name."
+  },
+
   "input": {
     "rules": 200,
     "_note": "~38 KB. Large enough that a single parse of even the cheapest case is not dominated by call overhead, small enough that the whole gate finishes in well under a minute."

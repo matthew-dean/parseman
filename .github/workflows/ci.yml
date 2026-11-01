@@ -309,6 +309,15 @@ jobs:
           # verdict stays anchored on the previous release). See
           # `reportAgainstMergeBase` in bench/ab-harness.ts for when it costs a run.
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+      # The PEAK clause, as for the workload gate below: the same sweep against the
+      # committed density baseline rather than the previous release. The step above is a
+      # differential against a reference that moves with every merge that changes `src/`,
+      # so steps inside its threshold compound; this one is absolute. `--base` makes a
+      # per-PR PERF-PEAK-WAIVER usable; on a push there is none.
+      - name: Peak clause — no drawdown from the committed density baseline
+        run: pnpm perf:guard:grammars:peak ${BASE_SHA:+--base=$BASE_SHA}
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
   # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
   #

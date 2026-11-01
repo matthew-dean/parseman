@@ -107,6 +107,8 @@ import {
   materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
   type Case, type Thresholds,
 } from './ab-harness.ts'
+import { peakThresholds, type Peak, type Verdict } from './ab-harness.ts'
+import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
 
 const GATE = 'grammar-perf-guard'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -121,6 +123,7 @@ type Config = {
   input: { rules: number }
   measurement: GateMeasurement
   thresholds: Thresholds
+  peak: Peak
 }
 
 const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
@@ -133,14 +136,29 @@ if (!SELF && CONFIG.scoreMethod !== SCORE_METHOD) {
 const QUICK = process.argv.includes('--quick')
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
+/**
+ * The PEAK clause: compare against the committed density baseline rather than the
+ * previous release, and fail on a drawdown beyond the measured noise floor. The
+ * per-release run cannot see a slow bleed: every merge that changes `src/` publishes, so
+ * each PR is measured against the one before it, and steps inside the threshold compound
+ * without a single one failing. Same mechanism as `workload-perf-guard.ts --peak`; see
+ * `Peak` in `ab-harness.ts`.
+ */
+const PEAK = process.argv.includes('--peak')
+if (PEAK && (SELF || argValue('--ref') !== null || argValue('--merge-base') !== null)) {
+  fail(GATE, '--peak names its own reference (the committed peak sha) and cannot be combined with --ref, --self or --merge-base.')
+}
 const REF_ARG = argValue('--ref')
 /** Report-only: measure and print, never fail. How the merge-base arm runs. */
 const REPORT_ONLY = process.argv.includes('--report-only')
 /** A PR's base commit: also report HEAD against it (see `reportAgainstMergeBase`). */
 const MERGE_BASE = argValue('--merge-base')
 const HEAD_REF_ARG = argValue('--head-ref')
-// The previous release, resolved from the v* tags (see `previousRelease`).
-const REFERENCE = REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
+// The previous release, resolved from the v* tags (see `previousRelease`); the peak
+// clause names its own committed reference instead.
+const REFERENCE = PEAK
+  ? { tag: `peak ${CONFIG.peak.version}`, sha: CONFIG.peak.sha }
+  : REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
 const REF = REFERENCE.sha
 const HEAD_REF = SELF ? REF : HEAD_REF_ARG
 
@@ -210,7 +228,12 @@ const refDir = materialise(GATE, ROOT, REF, COPY)
 const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
 
 console.log(
-  `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,
+  `${GATE}: ${SELF
+    ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)`
+    : PEAK
+      ? `PEAK CLAUSE — ${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs the committed density baseline,`
+        + ` ${CONFIG.peak.version} (${REF}), drawdown allowance ${CONFIG.peak.allowancePct}%`
+      : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,
 )
 
 const ref = await loadSide(refDir)
@@ -244,7 +267,7 @@ console.log(
 )
 console.log(`  repetitions per sample: ${refCases.map(c => `${c.id.split('/')[1]} ${reps.get(c.id)}`).join(', ')}`)
 
-const T = CONFIG.thresholds
+const T = PEAK ? peakThresholds(CONFIG.peak.allowancePct) : CONFIG.thresholds
 const load0 = os.loadavg()[0] ?? 0
 const { passRows, calibration } = await measurePasses(
   () => isolatedCases(refDir), () => isolatedCases(headDir), reps, M, T,
@@ -252,8 +275,14 @@ const { passRows, calibration } = await measurePasses(
 const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
 
-console.log(
-  `\nper-case result over ${M.passes} independent passes, both sides RECOMPILED each pass`
+console.log(PEAK
+  ? `\nper-case drawdown from ${CONFIG.peak.version} over ${M.passes} independent passes`
+    + `\n  a pass BREACHES on median AND min BOTH > ${CONFIG.peak.allowancePct}% slower than the peak,`
+    + ` AND at most the case's CALIBRATED share of interleaved pairs won`
+    + `\n  (the measured null shifted by ${(0.5 - T.winRateCeiling).toFixed(2)}; a null of 50% is judged at the configured`
+    + ` ${Math.round(T.winRateCeiling * 100)}%)`
+    + `\n  a case FAILS only when a strict majority of passes breach\n`
+  : `\nper-case result over ${M.passes} independent passes, both sides RECOMPILED each pass`
   + `\n  a pass BREACHES on median > ${T.medianPct}% OR min > ${T.minPct}% slower,`
   + ` AND at most the case's CALIBRATED share of interleaved pairs won`
   + `\n  or on the sign test: same win-rate rule AND > ${T.signTest.medianPct}% on BOTH median and min`
@@ -338,6 +367,7 @@ if (IDENTICAL) {
 if (MERGE_BASE !== null) reportAgainstMergeBase(GATE, ROOT, MERGE_BASE, REF, [])
 
 const failures = rows.filter(v => v.failed)
+if (PEAK) peakVerdict(failures)
 if (failures.length > 0) {
   console.error(`\n${GATE}: REGRESSION in ${failures.length} case(s) vs ${REF}:`)
   for (const f of failures) {
@@ -359,3 +389,51 @@ if (failures.length > 0) {
   process.exit(1)
 }
 console.log(`\n${GATE}: ok`)
+
+/**
+ * The peak clause's verdict. A drawdown has the same three honest responses as the
+ * workload gate's, and the same per-PR `PERF-PEAK-WAIVER` (scripts/peak-waiver.mjs,
+ * scripts/check-changelog.mjs §D'), naming this gate's config.
+ */
+function peakVerdict(failed: readonly Verdict[]): never {
+  if (failed.length === 0) {
+    console.log(`\n${GATE}: ok — no case sits more than ${CONFIG.peak.allowancePct}% below ${CONFIG.peak.version}.`)
+    process.exit(0)
+  }
+  const configRel = path.relative(ROOT, CONFIG_PATH).split(path.sep).join('/')
+  console.error(`\n${GATE}: DRAWDOWN — ${failed.length} case(s) sit below the ${CONFIG.peak.version} peak:`)
+  for (const f of failed) {
+    console.error(`  ${f.id}: median ${f.passes.map(r => sign(r.dMedian)).join(' ')}, breached ${f.breachCount}/${M.passes} passes`)
+  }
+  console.error(
+    '\nThis is the SLOW-BLEED clause. Every merge since the peak may have passed its own per-release'
+    + '\nrun and this can still be red: steps inside the threshold compound without one of them failing.'
+    + '\n\nThree honest responses, in order of preference:'
+    + '\n  1. Find and fix the drawdown.'
+    + `\n  2. If the cost bought something and is the NEW NORMAL, move \`peak\` in ${configRel} in this PR,`
+    + '\n     named in the CHANGELOG with these numbers. This RE-BASELINES: the bar moves to the slower build.'
+    + `\n  3. If the cost bought something and the bar should NOT move, declare a per-PR ${WAIVER_TAG}`
+    + '\n     in the CHANGELOG\'s open section, quoting the numbers above:'
+    + `\n\n       ${WAIVER_TAG} ${configRel} median <n>% min <n>% — <why this cost buys something>`
+    + '\n\nWidening `allowancePct` to fit the drawdown is laundering a regression into the baseline.',
+  )
+  const base = argValue('--base')
+  let section = ''
+  let baseChangelog = ''
+  try {
+    section = openSection(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'))
+    if (base !== null) baseChangelog = git(['show', `${base}:CHANGELOG.md`], ROOT)
+  } catch {
+    // No CHANGELOG to read: no waiver to honour.
+  }
+  const d = decideWaiver({
+    section,
+    config: configRel,
+    peak: CONFIG.peak,
+    breaching: failed.flatMap(f => f.passes.filter(r => r.breach)),
+    base,
+    baseChangelog,
+  })
+  if (d.message !== '') console.error(`\n${GATE}:${d.message}`)
+  process.exit(d.applied ? 0 : 1)
+}
