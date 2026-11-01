@@ -3,6 +3,22 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **A choice, `optional()` or `attempt()` over a node that fails after scanning trivia
+  restores the trivia logs in the emitted assembly.** A failed node drops its own
+  capture frame, but the trivia its body recorded into the root trivia log (and the
+  full trivia log) is not part of that frame. The emitted engine skipped the rollback
+  mark for such a child, so the losing arm's comments stayed recorded and the arm that
+  then matched recorded them again: `run(entry, 'x/*c*/y', { rootTrivia: { select:
+  ['comment'] } })` returned the comment twice. The closure engine and the reference
+  driver were already right. Such a child now takes a mark of the two trivia logs
+  alone (its node frame already restores the rest), and a program with no trivia
+  takes none. The same holds one choice further out: a choice the table lowers as an
+  exclusive dispatch runs its selected arm with no mark of its own, so an
+  `optional()` or a choice arm over such a choice, whose arm (a node or not) scans
+  trivia and then fails, restores the two logs too. See `test/unit/table-node-arm-trivia-rollback.test.ts`.
+
 ## 0.58.0 — 2026-10-31
 
 - **Breaking: under rollup, rolldown and Vite, a grammar's carried pieces ship beside

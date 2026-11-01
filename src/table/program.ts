@@ -525,6 +525,8 @@ type RuntimeTableProgram = TableProgram & {
     readonly choiceRollbackMasks?: ReadonlyMap<number, number>
     readonly nonCommittingChoiceSites?: ReadonlySet<number>
     readonly failureRollbackCleanSites?: ReadonlySet<number>
+    readonly choiceLogRollbackMasks?: ReadonlyMap<number, number>
+    readonly failureLogRollbackSites?: ReadonlySet<number>
   }
 }
 
@@ -536,6 +538,8 @@ export function ownTableProgram(
     readonly choiceRollbackMasks?: ReadonlyMap<number, number>
     readonly failureRollbackCleanSites?: ReadonlySet<number>
     readonly nonCommittingChoiceSites?: ReadonlySet<number>
+    readonly choiceLogRollbackMasks?: ReadonlyMap<number, number>
+    readonly failureLogRollbackSites?: ReadonlySet<number>
   } = {},
 ): TableProgram {
   const runtime = (prog as RuntimeTableProgram)[TABLE_RUNTIME]
@@ -546,6 +550,8 @@ export function ownTableProgram(
       choiceRollbackMasks: caches.choiceRollbackMasks ?? runtime?.choiceRollbackMasks,
       nonCommittingChoiceSites: caches.nonCommittingChoiceSites ?? runtime?.nonCommittingChoiceSites,
       failureRollbackCleanSites: caches.failureRollbackCleanSites ?? runtime?.failureRollbackCleanSites,
+      choiceLogRollbackMasks: caches.choiceLogRollbackMasks ?? runtime?.choiceLogRollbackMasks,
+      failureLogRollbackSites: caches.failureLogRollbackSites ?? runtime?.failureLogRollbackSites,
     },
   } as RuntimeTableProgram
 }
@@ -567,6 +573,19 @@ export function choiceCannotCommit(prog: TableProgram, ip: number): boolean {
  * enclosing mark and rollback; it is never serialized into the shipped table. */
 export function failureRollbackClean(prog: TableProgram, ip: number): boolean {
   return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.failureRollbackCleanSites?.has(ip) === true
+}
+
+/** The arms of the choice at `ip` the census counts as clean whose failure can
+ * still leave trivia-log rows: a node they reach fails after recording trivia
+ * (`encode.ts` `choiceLogRollbackMasks`). Zero without that authority. */
+export function choiceLogRollbackMask(prog: TableProgram, ip: number): number {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.choiceLogRollbackMasks?.get(ip) ?? 0
+}
+
+/** An `optional()` or `attempt()` row `failureRollbackClean` admits whose failed
+ * child can still leave trivia-log rows, for the same reason. */
+export function failureLogRollback(prog: TableProgram, ip: number): boolean {
+  return (prog as RuntimeTableProgram)[TABLE_RUNTIME]?.failureLogRollbackSites?.has(ip) === true
 }
 
 /** A compiled entry, shaped exactly like a codegen rule function. */
