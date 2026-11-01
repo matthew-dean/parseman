@@ -3,14 +3,24 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
+  runs a compiled grammar and reports line/column positions imported them from the
+  main entry, which loads the combinators, the compiler and the analysis with them.
+  `src/line-index.ts` was already in the run entry's closure, so the entry's module
+  list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+- **A routed arm's first-character gate reports what its next term fails with.** A
+  choice arm led by `routed()` is gated on its next term's first character
+  (`OP_RGATE`, 0.58.0), and a miss reported `deriveExpected` of that term. For a
+  `keywords()` or `word()` term that lists each word, where the term itself, and the
+  interpreter, report `keyword`: `dispatch(regex(/[a-z]+/), otherwise(choice(
+  sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
+  in every table engine. A miss now reports the terminal's own failure set, and a
+  label's name. Which arms are gated is unchanged.
+
 ## 0.59.0 — 2026-11-01
 
-- **A routed arm's gate miss reports what its next term fails with.** Where the term
-  after a `routed()` token is `keywords()` or `word()`, an `OP_RGATE` miss listed each
-  word (`deriveExpected`), while the term itself and the interpreter fail with
-  `keyword`. A miss now reports the terminal's own failure set, or a label's name, in
-  every table reader. Which arms are gated, and where a miss fails, are unchanged.
-  Test: `test/unit/table-routed-arm-gate.test.ts`.
 - **A sequence led by an optional pad has its operator's first set.** A `regex()` that
   may match empty still reports `any` as its own first set, since it can match empty
   anywhere, but it now also carries the first characters of its non-empty matches. A
