@@ -128,8 +128,10 @@ neutral   median-of-rounds 0.5439 → 0.5633 ms (+3.6%)   mean 0.5928 → 0.6014
 ## Three mechanisms behind it, found in the harness and fixed there
 
 All three are properties of how `bench/ab-harness.ts` built and ran its
-instances, not of the code under test, and all three are removed in
-`measurePasses`. The third is [further down](#3-allocation-site-pretenuring-is-a-coin-flip-per-instance-175),
+instances, not of the code under test. The first two are removed in
+`measurePasses`. The third is V8 behaviour that users get too, so it cannot be
+removed from a measurement, only measured the way users meet it. That is the
+cross-process gate; see [further down](#3-allocation-site-pretenuring-is-a-coin-flip-per-instance-175),
 after the before-and-after for the first two.
 
 ### 1. V8's compilation cache made "fresh" instances one compiled object
@@ -284,70 +286,125 @@ same bias. But the gate only reads the null's WIN RATE, to shift its ceiling.
 It does not read the null's delta. So a +3% role bias fails the percentage
 thresholds even when the null carries it too.
 
+`json/document`, in the workload gate, false-failed for a second reason. On x64,
+the instance built LAST in a pass ran about 8% slower for that pass. In odd
+passes `measurePasses` builds the null pair first and the gate pair last, so the
+head side took it. Swapping the build order in odd passes moved the slowdown to
+the reference: the head then read −5% to −11% in that pass, 10 runs of 10.
+Forcing two full GCs between building and warming, or building a throwaway
+instance last, did not remove it. arm64 did not show it.
+
 Ruled out on the way:
 
 - **Paths or transpilation.** tsx applies `tsconfig.json` only to files it
-  includes, and `.cache/` is outside it. The transpiled text of all 104 modules
-  the gate loads is byte-identical between the working tree and a `.cache/`
-  worktree.
+  includes, and `.cache/` is outside it. The transpiled text of every module
+  the gates load (220 files, `src/`, `bench/` and `examples/`) is byte-identical
+  between the working tree and a `.cache/` worktree.
 - **`node_modules` resolution.** The runtime graph imports nothing outside
   `node:` builtins.
-- **Arm order.** Alternating which side is built first, which is warmed first,
-  or both, changed nothing measurable once pretenuring was off. The gate read
-  +0.05% to +0.10% mean per pass on `expected/none` with or without the
-  alternation, so it is not shipped.
-- **Concurrent recompilation.** On arm64, `--no-concurrent-recompilation` left
-  the per-instance spread where it was, with pretenuring on and with it off.
+- **A longer case.** See the 4× input row above.
+- **Other V8 behaviour.** With pretenuring off, the `json/document` per-instance
+  spread on x64 (sd about 2%, with instances up to +8%) did not change under
+  `--no-regexp-tier-up`, `--no-maglev`, `--no-concurrent-recompilation` or
+  `--no-lazy-feedback-allocation`.
 
-**The fix** is one flag. `isolateCompilation()` already turned the compilation
-cache off at run time. It now sets `--no-allocation-site-pretenuring` the same
-way, before `measurePasses` builds anything. `test/bench/ab-harness.test.ts`
-checks that it takes effect: an object literal whose allocations survive two
-scavenges is allocated old after re-optimization with V8's default, and young
-once isolated (`%InYoungGeneration`).
+### The rule: no V8 configuration change in a measurement
 
-What it costs: the gate no longer measures a change in how often V8 pretenures.
-It never could. A coin that flips once per instance, five instances a run, cannot
-tell a change in its odds from luck.
+The first fix for this set `--no-allocation-site-pretenuring` in the harness. It
+worked: identical code stopped failing. It was also wrong, and it is not in the
+gates. Users run parseman under V8's defaults, and pretenuring is part of how
+their parsers run. A grammar change that makes V8 pretenure a hot site is a real
+regression for every user, and a gate with pretenuring off cannot see it. A gate
+that measures a configuration no user runs answers a question nobody asked.
 
-#### Before and after the pretenuring fix
+So the rule: **a perf gate measures parseman under the V8 and Node defaults a
+user gets.** No `--` flag on the measured process, no `NODE_OPTIONS`, no
+`v8.setFlagsFromString` in a measured process. Where the instrument's own
+structure creates a bias, as several instances in one heap did, the
+measurement design changes, not V8.
 
-x64 CI. Each run is `pnpm perf:guard:grammars --ref=<main> --report-only` on a
-branch whose `src/` is `main`'s, 10 jobs × 2 runs per row. "after" was measured
-twice, in separate batches.
+The in-process gates still set `--no-compilation-cache` (mechanism 1 above),
+so they are advisory, `--report-only`, in CI. The verdict is the cross-process
+gate below, which needs no flag at all.
 
-| harness | runs with any FAIL | `expected/none` FAIL | `expected/none` mean center | centers above 0 |
-| --- | --- | --- | --- | --- |
-| before | **8 / 20** | **7 / 20** | **+3.38%** | 16 / 20 |
-| after | 1 / 20 | 1 / 20 | −0.03% | 10 / 20 |
-| after | 2 / 20 | 1 / 20 | +0.09% | 8 / 20 |
+### The cross-process gate — `pnpm perf:xproc:gate`
 
-Every other case averaged within ±0.4% before and within ±0.8% after.
+`bench/xproc-gate.ts`. Every timed parser is the only parser in its process, as
+it is for a user:
 
-**A real regression still fails it.** A planted cost was added to the head
-side's `src/`: a checksum over a third of the input in `parseWithContext`. The
-gate measured it at +1.0% (`rollback/dense`) to +2.4% (`expected/none`)
-center. Same commands, 20 runs each:
+- **One instance per process.** A worker process loads one side, builds one
+  case, warms it, times it, and prints a median, a min and a digest of its parse
+  result. Nothing else is compiled in that process, so there is no "built last"
+  slot and no other instance to share a heap with.
+- **Rounds.** Each round runs one reference process and one head process per
+  case, back to back. Which side goes first is random each round. Every random
+  choice comes from one seeded generator, and the seed is printed and stored
+  (`--seed=<n>` replays a run).
+- **Statistic.** Per case, each round gives `ln(head / ref)` of the two process
+  medians. A case FAILS when the median of those over all rounds is above
+  `floorPct` (1%) AND an exact one-sided sign test over rounds gives p below
+  `alpha` (0.001). The sign test assumes only that, on identical code, head is as
+  likely to lose a round as win it. The random order makes that true.
+- **Sharded.** CI runs 10 shards of 20 rounds in parallel and a job that takes
+  one verdict over all 200 rounds. It FAILS if any shard is missing.
+- **Same path shape.** The working tree is copied to `.cache/xproc-gate-worktree`,
+  a sibling of the reference's `.cache/xproc-gate-<sha>`, with the same length.
 
-| harness | runs that FAIL with the plant | `expected/none` FAIL | runs that FAIL without it |
-| --- | --- | --- | --- |
-| before | 15 / 20 | 5 / 20 | 8 / 20 |
-| after | 10 / 20 | 5 / 20 | 1–2 / 20 |
+#### Layout randomisation, and why it is not a reconfiguration
 
-Before, a FAIL meant little, because 8 runs in 20 failed with no change at
-all. After, a FAIL is rarely noise. A +2% regression is still under the ~3%
-resolution `perf-gates.md` states, so it fails about half the runs. The
-thresholds are unchanged. The same 20 identical-code runs, re-scored offline,
-show why. Lowering the sign test's floor from 3% to 2.5% or 2% raises the
-false-fail rate from 2 runs in 20 to 5 in 20. More passes would buy resolution.
-Re-scoring each job's two runs as one 9-pass run, a 2% floor caught the plant
-in 10 of 10 and false-failed 1 of 10. That costs 80% more gate time and graph
-memory, so it is left for a decision of its own.
+A process is deterministic. Given the same files, paths and environment, V8
+puts every object and code page at the same offsets each time. So two
+directories holding identical code ran at two fixed speeds. In the first version
+of this gate the head ran from the working tree and the reference from `.cache/`,
+and identical code read `graphql/document` −5.7% and `css/stylesheet` +1.8% in
+10 runs of 10. This is the measurement bias that environment size and link
+order produce in any native benchmark.
 
-The workload gate shares the harness. Six runs each, same shape: before, 3 of 6
-runs failed, all on `json/document` (mean center +2.1%). After, 2 of 6 failed,
-one on `css/stylesheet` and one on `json/document` (mean center −0.8%). Six runs
-cannot separate those.
+A user's process lands at some offset too, but not a fixed one. Each user has
+their own paths, environment and allocation history. The gate samples that
+variety instead of fixing one draw per side. Before loading anything, each
+worker keeps an array of random length alive (0–65,535 elements), which moves
+every later allocation. The parent also passes it an environment variable of
+random length, `PM_XPROC_LAYOUT_PAD` (0–4,095 bytes), which nothing reads. It
+only moves the initial stack. Neither touches V8 or Node configuration:
+same flags, same heap limits, same GC, same tiers. Both padding sizes come from
+the run's seed.
+
+After the change, A/A per-case medians pooled over 240 rounds sat within ±0.9%,
+and head lost 42–53% of rounds on every case.
+
+#### How many rounds
+
+Each process is one draw of V8's layout and pretenuring choices, so the
+per-round spread is wide. The interquartile range of `ln(head / ref)` on
+identical code, x64, 240 rounds:
+
+| case | IQR | case | IQR |
+| --- | ---: | --- | ---: |
+| `rollback/dense` | 2.5% | `rollback/none` | 5.9% |
+| `expected/wide` | 3.3% | `graphql/document` | 5.8% |
+| `less/mixins`, `rollback/medium` | 3.4% | `expected/narrow` | 6.1% |
+| `less/stylesheet` | 3.5% | `expected/none` | 6.5% |
+| `css/stylesheet` | 4.0% | `json/document` | 11.4% |
+| `rollback/sparse` | 5.0% | | |
+
+The round count comes from a bootstrap over those identical-code rounds: draw n
+rounds per case, add a 2% shift for the power estimate, apply the verdict, and
+repeat 300 times.
+
+| test | rounds | identical code fails any case | per-case power at +2%: median / worst |
+| --- | ---: | ---: | --- |
+| sign, α 0.001 | 120 | 2.0% | 0.98 / 0.39 |
+| sign, α 0.001 | 160 | 1.3% | 0.99 / 0.52 |
+| **sign, α 0.001** | **200** | **0.7%** | **1.00 / 0.64** (`expected/narrow`) |
+| Wilcoxon, α 0.001 | 200 | 0.0% | 1.00 / 0.26 (`json/document`) |
+
+The sign test beats Wilcoxon here because the spread has heavy tails: a process
+that pretenures, or lands badly, is far out. At 200 rounds, a 2% cost on every
+case is caught on almost every case. A 2% cost on the noisiest case alone is
+caught about two times in three.
+
+TBD-XPROC-RESULTS
 
 The rest of this page records the symptoms as they were found. Re-reading them
 with the mechanisms above: the identical-code incidents fit mechanism 1,

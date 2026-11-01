@@ -276,8 +276,8 @@ jobs:
   # honesty — 5 passes instead of 3, both sides RECOMPILED per pass so the passes
   # are independent at all, and a control pair measuring the null win rate.
   #
-  # It is a REQUIRED check by way of the `test` aggregate below, not merely a
-  # report. A perf gate nobody has to satisfy is a dashboard.
+  # Since #175 it runs --report-only: an advisory first look. The verdict is
+  # `xproc-perf` below, which measures under default V8, one parser per process.
   #
   # Shared-runner noise is handled by the measurement, not by a loose threshold:
   # both sides are interleaved in ONE process with per-round rotation, so there is

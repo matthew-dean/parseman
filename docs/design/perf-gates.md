@@ -10,7 +10,31 @@ difference is the whole point.
 | `pnpm perf:workloads` | did realistic parsing get slower, on any axis at all? | ~2.5-3 min |
 | `pnpm bench:macro-optimize` | did the shipping Jess macro parsers stay correct and within their measured speed band? | several minutes |
 
-All four run on every code PR, and all four are required. The first three are
+### Which check gives the verdict (#175)
+
+**Rule: a perf gate measures parseman under the V8 and Node defaults a user gets.**
+No V8 flag, no `NODE_OPTIONS`, no `v8.setFlagsFromString` in a measured process.
+Pretenuring, GC timing and code layout are part of how a user's parser runs, so
+their effects are real regressions or real wins, and a gate that switched them off
+would not see them.
+
+| check | measures | role in CI |
+| --- | --- | --- |
+| `pnpm perf:xproc:gate` | every density case and every workload, HEAD vs the previous release, one parser per process, default V8, 200 rounds in 10 shards | **the verdict**, via `xproc-perf` |
+| `pnpm perf:xproc:gate --peak` | the workloads vs the fastest release on record, same design, the committed allowance as the floor | **the verdict** for the peak clause |
+| `pnpm perf:guard:grammars`, `pnpm perf:workloads`, `pnpm perf:workloads:peak` | the same cases, in one process, interleaved | advisory first look, `--report-only` |
+| `pnpm perf:guard`, `pnpm bench:macro-optimize` | as below | as below |
+
+The in-process gates are fast and good at saying WHERE a cost is. They put four
+instances of a case in one heap, though, and V8's per-instance choices land on
+one side of a pair. On identical code that read as a +3.4% head-side bias on
+`expected/none` and an ~8% build-position effect on `json/document`, and it
+failed 8 runs in 20. They also turn V8's compilation cache off, which the rule
+forbids in a verdict. The cross-process gate has none of those problems. Its
+design, its layout randomisation and its round count are in
+[perf-harness-interleaving.md](./perf-harness-interleaving.md#the-cross-process-gate--pnpm-perfxprocgate).
+
+All four of the gates below run on every code PR. The first three are
 self-contained in this repository. The macro gate also uses the pinned Jess commit
 named in `bench/jess/macro-optimize-config.json`; CI checks it out automatically.
 
@@ -320,9 +344,9 @@ wrong.
 > **And a third, found after those two were fixed (#175).** V8's allocation-site
 > pretenuring flips a coin per instance: an instance whose allocation sites get
 > pretenured runs 13–25% slower for the rest of the pass. On `expected/none` the
-> coin fell more often on the side built and warmed second, the head side, so
-> identical code read +3.4% and failed 7 runs in 20. `isolateCompilation()` now
-> turns pretenuring off as well. See
+> coin fell more often on the head side, so identical code read +3.4% and failed 7
+> runs in 20. That is V8 behaviour users get too, so it is not switched off. The
+> verdict moved to the cross-process gate instead. See
 > [Three mechanisms behind it](./perf-harness-interleaving.md#three-mechanisms-behind-it-found-in-the-harness-and-fixed-there).
 
 **The fix is resampling, in `measurePasses()` (`bench/ab-harness.ts`).**
@@ -420,12 +444,9 @@ exactly the band it exists to watch.**
 
 - **Below about 3% per case is under the harness's resolution.** More rounds
   would buy resolution at the cost of a slower gate, i.e. a gate that gets
-  skipped. That trade was made deliberately. Measured after the #175 fix: a
-  planted per-parse cost that read +1.0% to +2.4% per case failed 10 of 20 CI
-  runs, and identical code failed 1–2 of 20. More rounds do not help, because
-  the 12 pairs of a pass share one pair of instances. More passes do, at a
-  cost. See
-  [the planted-regression table](./perf-harness-interleaving.md#before-and-after-the-pretenuring-fix).
+  skipped. That trade was made deliberately. More rounds do not help anyway:
+  the 12 pairs of a pass share one pair of instances. This gate is advisory
+  since #175; the cross-process gate, which resolves a 2% cost, gives the verdict.
 
 - **It is amplified, not more sensitive in real terms.** The same 0.34.0 change
   that cost the real Less grammar +25.5% costs `rollback/dense` +112.8% —
