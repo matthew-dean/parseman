@@ -166,3 +166,78 @@ export const more = compose([grammar, rules({ trivia: ws }, g => ({ Word: regex(
       .toThrow(/is a compiled grammar with no carried pieces — no inline literal, and no entry in index\.js\.parseman\.json/)
   })
 })
+
+/** One rolldown build of several entries of `root/src`, as a package with subpath
+ * entries builds them; `plugin` is reused across builds as a watcher keeps it. */
+async function buildEntries(root: string, entries: Record<string, string>, out: string, plugin = parseman.rolldown({})): Promise<void> {
+  const bundle = await rolldown({
+    input: Object.fromEntries(Object.entries(entries).map(([e, file]) => [e, path.join(root, 'src', file)])),
+    plugins: [plugin],
+    external: id => !id.startsWith('.') && !path.isAbsolute(id),
+    logLevel: 'silent',
+  })
+  await bundle.write({ dir: path.join(root, out), format: 'esm' })
+  await bundle.close()
+}
+
+function sources(name: string, files: Record<string, string>): string {
+  const root = path.join(dir, 'pkgs', name)
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true })
+  for (const [file, text] of Object.entries(files)) fs.writeFileSync(path.join(root, 'src', file), text)
+  return root
+}
+
+// The same grammar shape over digits, already compiled with its pieces inline: a
+// dependency vendored as built JavaScript, which the macro never lowers again.
+const vendored = (): string => transformMacro(UPSTREAM.replace('/[a-z]+/', '/[0-9]+/'), path.join(dir, 'vendor-src.ts'), new Set(['parseman']))!.code
+const exportsOf = (root: string, file: string): Record<string, unknown[]> | null => {
+  const at = path.join(root, file + '.parseman.json')
+  return fs.existsSync(at) ? (JSON.parse(fs.readFileSync(at, 'utf8')) as { exports: Record<string, unknown[]> }).exports : null
+}
+
+describe('carried pieces of a multi-entry build', () => {
+  it('are not borrowed from another module that records the same name', async () => {
+    // `a` re-exports the vendored `base`, which recorded nothing; `b` declares its
+    // own `base`. `a`'s artifact keeps its inline pieces and must get no sidecar:
+    // b's pieces would make a downstream compose of `a` parse letters.
+    const root = sources('mixed', {
+      'vendor.js': vendored(),
+      'a.ts': "export { base } from './vendor.js'\n",
+      'b.ts': UPSTREAM,
+    })
+    await buildEntries(root, { a: 'a.ts', b: 'b.ts' }, 'lib')
+    expect(exportsOf(root, 'lib/a.js')).toBeNull()
+    expect(Object.keys(exportsOf(root, 'lib/b.js') ?? {})).toEqual(['base'])
+  })
+
+  it('are followed through export * to a shared chunk', async () => {
+    // Two modules export a grammar named `base`. `css` and `index` re-export the
+    // first with `export *`, so it lands in a chunk both facades import from; the
+    // second is re-exported the same way by `less`. Each facade's sidecar must
+    // carry its own module's pieces.
+    const root = sources('star', {
+      'css.ts': UPSTREAM,
+      'less.ts': UPSTREAM.replace('/[a-z]+/', '/[0-9]+/'),
+      'index.ts': "export * from './css.ts'\n",
+      'css-entry.ts': "export * from './css.ts'\n",
+      'less-entry.ts': "export * from './less.ts'\n",
+    })
+    await buildEntries(root, { index: 'index.ts', css: 'css-entry.ts', less: 'less-entry.ts' }, 'lib')
+    const word = (file: string): string | undefined =>
+      (exportsOf(root, file)?.base?.[0] as { ir?: string } | undefined)?.ir?.match(/\[(?:a-z|0-9)\]\+/)?.[0]
+    expect(word('lib/css.js')).toBe('[a-z]+')
+    expect(word('lib/index.js')).toBe('[a-z]+')
+    expect(word('lib/less.js')).toBe('[0-9]+')
+  })
+
+  it('drop what a module recorded on an earlier build of the same session', async () => {
+    const root = sources('watch', { 'vendor.js': vendored(), 'old.ts': UPSTREAM, 'index.ts': "export { base } from './old.ts'\n" })
+    const plugin = parseman.rolldown({})
+    await buildEntries(root, { index: 'index.ts' }, 'v1', plugin)
+    expect(exportsOf(root, 'v1/index.js')?.base).toHaveLength(1)
+    // The edit takes `old.ts` out of the graph; its pieces must not follow the name.
+    fs.writeFileSync(path.join(root, 'src', 'index.ts'), "export { base } from './vendor.js'\n")
+    await buildEntries(root, { index: 'index.ts' }, 'v2', plugin)
+    expect(exportsOf(root, 'v2/index.js')).toBeNull()
+  })
+})

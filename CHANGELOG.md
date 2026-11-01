@@ -3,6 +3,22 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **A sidecar carries only the pieces of the grammar its chunk exports.** When the
+  plugin could not trace an entry's export to the module that recorded it, it took
+  any one module of the bundle that recorded the same name, in this chunk or not. An
+  entry re-exporting a precompiled dependency's `grammar` beside another entry
+  declaring its own `grammar` got the other entry's pieces, and a downstream
+  `compose()` of it built the wrong grammar with no warning. A watch rebuild did the
+  same with a module that had left the graph. The trace now follows `export *` too,
+  stops at the declaring module (an export traced to a module that recorded nothing
+  gets no entry and keeps its inline pieces), and the name fallback is limited to
+  this chunk's own modules. A module re-transformed in a watch session drops what it
+  recorded before. Two entries that both `export *` from a module in a shared chunk
+  now each get its pieces, where before neither did. See
+  `test/unit/carried-pieces-sidecar.test.ts`.
+
 ## 0.58.0 — 2026-10-31
 
 - **Breaking: under rollup, rolldown and Vite, a grammar's carried pieces ship beside
