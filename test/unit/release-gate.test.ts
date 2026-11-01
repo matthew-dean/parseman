@@ -473,207 +473,94 @@ describe('a missing input is a harder failure than a wrong one', { timeout: SUIT
 })
 
 /*
- * §D governs MOVING the peak. §D' governs LANDING UNDER IT without moving it — the
- * `PERF-PEAK-WAIVER` line, which is the executable form of the closing rule in
- * docs/design/perf-gates.md: "either fix the regression, or land it with the number
- * visible and an explanation of why it is the price of something".
- *
- * Every test here is about the hatch being HARD, not about it working. A test that only
- * proves the flag lets a build through is half a test: an escape hatch that is easy or
- * quiet destroys the gate it hangs off, and then the gates that matter go with it. So
- * the cases below are, in order — the rule costs nothing to PRs that do not use it; the
- * flag without a number is still red; a number inside the allowance is still red; no
- * reason is still red; a STALE one is still red; one that also moves the bar is still
- * red; and only then the waived run, which must REPORT the breach rather than report
- * green.
+ * §D governs MOVING the peak: any edit is named in an entry the PR adds, and the record is
+ * structurally sound. §D' is that there is no other way past a peak: the clauses are
+ * absolute, so a `PERF-PEAK-WAIVER` entry is refused rather than honoured.
  */
-describe("peak-clause waiver (§D')", { timeout: SUITE_BUDGET_MS }, () => {
+describe("peak record (§D) and no peak waiver (§D')", { timeout: SUITE_BUDGET_MS }, () => {
   const WORKLOADS = 'bench/workloads/config.json'
-  const DENSITY = 'bench/grammar-density/config.json'
 
-  const peakCfg = (sha: string, over: Record<string, unknown> = {}): string =>
-    `${JSON.stringify(
-      { peak: { sha, version: '0.45.0', allowancePct: 5, ...over } },
-      null,
-      2,
-    )}\n`
-
-  /** The declared waiver, in the sanctioned form. */
-  const waiver = (
-    body = 'median -164.9% min -158.2% — table lowering: 2.65x parse time buys a 40x smaller artifact',
-  ): string => `PERF-PEAK-WAIVER ${WORKLOADS} ${body}`
+  const peakCfg = (peak: Record<string, unknown>): string => `${JSON.stringify({ peak: { allowancePct: 5, ...peak } }, null, 2)}\n`
 
   const section = (body: string): string =>
     `# Changelog\n\n## Unreleased\n\n- the change under construction\n${body}\n\n`
     + '## 0.46.0 — 2026-07-24\n\n- shipped\n'
 
   /**
-   * A PR filing into Unreleased. `head` is spliced into that
-   * section on the PR side; `base` on the base side (the staleness case).
-   *
-   * `peak.sha` has to resolve as a real commit or §D's STRUCTURAL check fails first and
-   * these tests would be measuring that instead — so the repo is seeded once, its root
-   * sha read back, and the configs written naming it.
+   * A PR filing into Unreleased. The peak names a seed commit whose package.json says
+   * 0.45.0, so §D's structural check passes. `headPeak` overrides the HEAD side; the
+   * string `BASE` in it names the base commit, which says 0.46.0.
    */
-  function waiverRepo(opts: {
-    head: string
-    base?: string
-    /** Overrides applied to the peak block on the HEAD side only. */
-    headPeak?: Record<string, unknown>
-  }): { dir: string; baseSha: string } {
-    const dir = checkout({ version: '0.46.0', changelog: section('') })
+  function peakRepo(opts: { head: string; base?: string; headPeak?: Record<string, unknown> }): { dir: string; baseSha: string } {
+    const dir = checkout({ version: '0.45.0', changelog: section('') })
     git(dir, 'init', '-q', '-b', 'main')
     git(dir, 'add', '-A')
     git(dir, 'commit', '-qm', 'seed')
-    const sha = git(dir, 'rev-parse', 'HEAD').slice(0, 7)
-
-    write(dir, {
-      version: '0.46.0',
-      changelog: section(opts.base ?? ''),
-      files: { [WORKLOADS]: peakCfg(sha) },
-    })
+    const seed = { sha: git(dir, 'rev-parse', 'HEAD').slice(0, 7), version: '0.45.0' }
+    write(dir, { version: '0.46.0', changelog: section(opts.base ?? ''), files: { [WORKLOADS]: peakCfg(seed) } })
     git(dir, 'add', '-A')
     git(dir, 'commit', '-qm', 'base')
     const baseSha = git(dir, 'rev-parse', 'HEAD')
-
+    const over = Object.fromEntries(Object.entries(opts.headPeak ?? {}).map(([k, v]) => [k, v === 'BASE' ? baseSha.slice(0, 7) : v]))
     write(dir, {
       version: '0.46.0',
       changelog: section(opts.head),
-      files: {
-        'src/a.ts': 'export const a = 1\n',
-        [WORKLOADS]: peakCfg(sha, opts.headPeak ?? {}),
-      },
+      files: { 'src/a.ts': 'export const a = 1\n', [WORKLOADS]: peakCfg({ ...seed, ...over }) },
     })
     git(dir, 'add', '-A')
     git(dir, 'commit', '-qm', 'head')
     return { dir, baseSha }
   }
 
-  const run = (opts: Parameters<typeof waiverRepo>[0], ...args: string[]): Result => {
-    const { dir, baseSha } = waiverRepo(opts)
+  const run = (opts: Parameters<typeof peakRepo>[0], ...args: string[]): Result => {
+    const { dir, baseSha } = peakRepo(opts)
     return gate(dir, `--base=${baseSha}`, ...args)
   }
 
-  it('costs nothing to a PR that declares no waiver', () => {
-    // The hatch must be invisible to everyone not using it. Same reasoning that exempts
-    // docs and tests from the bump gate: a rule that fires on changes it has no business
-    // judging is a rule that gets bypassed, and takes the others with it.
+  const waiver = `PERF-PEAK-WAIVER ${WORKLOADS} median -164.9% min -158.2% — table lowering: 2.65x parse time buys a 40x smaller artifact`
+
+  it('costs nothing to a PR that leaves the peak alone', () => {
     const r = run({ head: '\n- an entry of its own' })
-    expect(r.ok).toBe(true)
-    expect(r.out).not.toMatch(/WAIVED/)
+    expect(r.ok, r.out).toBe(true)
+    expect(r.out).toMatch(/peak records unchanged/)
   })
 
-  it('REFUSES a waiver that states no number', () => {
-    // The whole point: it must be impossible to use the flag without stating the
-    // measurement. "We know it is slower, shipping anyway" is what this must not accept.
-    const r = run({ head: waiver('— the table lowering buys a much smaller artifact') })
+  it.each([
+    ['well-formed', waiver],
+    ['overstated', `PERF-PEAK-WAIVER ${WORKLOADS} median -999% min -999% — anything at all`],
+  ])('REFUSES a %s PERF-PEAK-WAIVER entry: the peak clauses have no waiver', (_kind, line) => {
+    const r = run({ head: `\n- ${line}` })
     expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/states no `median <n>%`/)
-    expect(r.out).toMatch(/states no `min <n>%`/)
+    expect(r.out).toMatch(/carries a PERF-PEAK-WAIVER/)
+    expect(r.out).toMatch(/peak clauses have no waiver/)
   })
 
-  it('REFUSES a waiver quoting median but not min', () => {
-    // The peak clause breaches on median AND min both, so half the verdict is not the
-    // verdict.
-    const r = run({ head: waiver('median -164.9% — the lowering trades time for artifact size') })
+  it('`release-exempt` does not let a waiver through', () => {
+    const r = run({ head: `\n- ${waiver}` }, '--exempt')
     expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/states no `min <n>%`/)
+    expect(r.out).toMatch(/peak clauses have no waiver/)
   })
 
-  it('REFUSES a number that is INSIDE the allowance', () => {
-    // Below the noise floor there is nothing to waive, and a tag that accepts it becomes
-    // a ritual people paste in.
-    const r = run({ head: waiver('median -2.1% min -1.4% — small cost here, large artifact win') })
-    expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/INSIDE/)
-    expect(r.out).toMatch(/waives nothing/)
+  it('an entry that only NAMES the tag in prose is not a waiver', () => {
+    const r = run({ head: '\n- The peak clauses no longer honour `PERF-PEAK-WAIVER`.' })
+    expect(r.ok, r.out).toBe(true)
   })
 
-  it('REFUSES a waiver with no reason', () => {
-    // "land it with the number visible AND an explanation of why it is the price of
-    // something" — the second half is not decoration.
-    const r = run({ head: waiver('median -164.9% min -158.2%') })
-    expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/gives no reason/)
+  it('a waiver line already on the base (history) is not this PR\'s', () => {
+    const r = run({ head: `\n- ${waiver}\n\n- an entry of its own`, base: `\n- ${waiver}` })
+    expect(r.ok, r.out).toBe(true)
   })
 
-  it('REFUSES a reason too short to be one', () => {
-    const r = run({ head: waiver('median -164.9% min -158.2% — faster') })
-    expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/gives no reason/)
-  })
-
-  it('REFUSES a waiver naming a config that carries no peak block', () => {
-    const r = run({
-      head: `PERF-PEAK-WAIVER ${DENSITY} median -164.9% min -158.2% — deliberate cost bought artifact size`,
-    })
-    expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/no `peak` block/)
-  })
-
-  it('REFUSES a STALE waiver — one already on the base', () => {
-    // The non-stickiness rule, and the property that keeps the clause alive for the rest
-    // of a release cycle. Without it the PR after the waiving one inherits the line and
-    // the peak gate is silently off until the section ships.
-    const line = waiver()
-    const r = run({ head: line, base: line })
-    expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/ALREADY PRESENT on the base/)
-    expect(r.out).toMatch(/per-PR and does not carry/)
-  })
-
-  it('REFUSES a waiver that ALSO moves the peak', () => {
-    // Waiving and re-baselining are mutually exclusive by construction: a waiver exists
-    // precisely so the bar does NOT move. Doing both is the laundering edit wearing the
-    // honest one's clothes — and it would leave the record moved AND the breach excused.
-    const r = run({ head: waiver(), headPeak: { allowancePct: 300 } })
-    expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/also EDITS/)
-    expect(r.out).toMatch(/mutually exclusive/)
-  })
-
-  it('ACCEPTS a well-formed, fresh waiver — and REPORTS the breach rather than reporting green', () => {
-    // The only passing case here, and it still has to be loud. A waived run that printed
-    // a bare "ok" would be worse than no hatch: a silent green on a build sitting 33x
-    // outside its allowance.
-    const r = run({ head: waiver() })
-    expect(r.ok).toBe(true)
-    expect(r.out).toMatch(/PEAK CLAUSE WAIVED/)
-    // The declared numbers, and how far outside the allowance they sit.
-    expect(r.out).toContain('-164.9%')
-    expect(r.out).toContain('-158.2%')
-    expect(r.out).toMatch(/33\.0x/)
-    expect(r.out).toMatch(/31\.6x/)
-    // WHY, not just THAT.
-    expect(r.out).toMatch(/40x smaller artifact/)
-    // And the record explicitly did not move.
-    expect(r.out).toMatch(/UNCHANGED/)
-    expect(r.out).toMatch(/NOT raised/)
-    expect(r.out).toMatch(/next PR is measured against it/)
-  })
-
-  it('accepts the harness spelling (+164.9%) as readily as the prose one', () => {
-    // The harness prints a slowdown POSITIVE (head vs reference); prose about a drawdown
-    // writes it negative. Both name the same breach, and rejecting one spelling would
-    // make this a gate about punctuation.
-    const r = run({ head: waiver('median +164.9% min +158.2% — deliberate: table lowering buys artifact size') })
-    expect(r.ok).toBe(true)
-    expect(r.out).toMatch(/PEAK CLAUSE WAIVED/)
-  })
-
-  it("§D's failure NAMES the waiver, so a red gate teaches the sanctioned route", () => {
-    // A contributor who hits §D red and finds no documented way through invents one, and
-    // the one they invent is widening `allowancePct`, because it is right there in the
-    // file. The failure message has to point at the honest route by name.
+  it('REFUSES a widened allowance nobody named, and points at no waiver', () => {
     const r = run({ head: '', headPeak: { allowancePct: 900 } })
     expect(r.ok).toBe(false)
     expect(r.out).toMatch(/allowance WIDENED/)
-    expect(r.out).toMatch(/PERF-PEAK-WAIVER/)
+    expect(r.out).not.toMatch(/PERF-PEAK-WAIVER/)
   })
 
   it('ACCEPTS a peak move named in an entry the PR adds', () => {
-    const r = run({ head: '- moves the workloads peak forward: median -6.1% min -5.8% vs 0.45.0', headPeak: { version: '0.46.0' } })
-    expect(r.ok).toBe(true)
+    const r = run({ head: '- moves the workloads peak forward: median -6.1% min -5.8% vs 0.45.0', headPeak: { sha: 'BASE', version: '0.46.0' } })
+    expect(r.ok, r.out).toBe(true)
     expect(r.out).toMatch(/peak record moved/)
   })
 
@@ -681,17 +568,15 @@ describe("peak-clause waiver (§D')", { timeout: SUITE_BUDGET_MS }, () => {
     // Unreleased keeps entries an auto-patch already shipped, so the section as a whole
     // can mention "peak" without this PR saying anything.
     const line = '- earlier note about the peak'
-    const r = run({ head: line, base: line, headPeak: { version: '0.46.0' } })
+    const r = run({ head: line, base: line, headPeak: { sha: 'BASE', version: '0.46.0' } })
     expect(r.ok).toBe(false)
     expect(r.out).toMatch(/no entry it adds under Unreleased mentions it/)
   })
 
-  it('`release-exempt` does NOT waive the peak clause', () => {
-    // The label's documented scope is §B — a revert, or a chained PR. Widening it to
-    // cover a perf hatch is the "bypassed gate" failure release-gates.md names, so the
-    // two stay disjoint and a malformed waiver stays red under `--exempt`.
-    const r = run({ head: waiver('median -164.9% min -158.2%') }, '--exempt')
+  it('REFUSES a peak whose version is not the release at its sha', () => {
+    // The seed commit says 0.45.0: naming it 0.46.0 reads as a bar it is not.
+    const r = run({ head: '- the peak note', headPeak: { version: '0.46.0' } })
     expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/gives no reason/)
+    expect(r.out).toMatch(/`peak.version` is 0\.46\.0, but package.json at `peak.sha` [0-9a-f]+ says 0\.45\.0/)
   })
 })

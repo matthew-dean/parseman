@@ -107,8 +107,7 @@ import {
   materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
   type Case, type Thresholds,
 } from './ab-harness.ts'
-import { peakThresholds, type Peak, type Verdict } from './ab-harness.ts'
-import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
+import { peakThresholds, peakIsPreviousRelease, type Peak, type Verdict } from './ab-harness.ts'
 
 const GATE = 'grammar-perf-guard'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -219,6 +218,15 @@ async function isolatedCases(dir: string): Promise<Case[]> {
     out.push(...toCases({ ...side, cases: [side.cases[n]!] }))
   }
   return out
+}
+
+// The per-release run in the same CI job has just measured exactly this pair, with
+// stricter thresholds (see `peakIsPreviousRelease`).
+const peakIsPrevious = PEAK && HEAD_REF === null ? peakIsPreviousRelease(ROOT, CONFIG.peak.sha) : null
+if (peakIsPrevious !== null) {
+  summary(`${GATE}: the peak ${CONFIG.peak.version} (${CONFIG.peak.sha}) is the previous release ${peakIsPrevious.tag},`
+    + ' which the per-release run measures HEAD against with stricter thresholds. Not measured twice.')
+  process.exit(0)
 }
 
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
@@ -391,9 +399,9 @@ if (failures.length > 0) {
 console.log(`\n${GATE}: ok`)
 
 /**
- * The peak clause's verdict. A drawdown has the same three honest responses as the
- * workload gate's, and the same per-PR `PERF-PEAK-WAIVER` (scripts/peak-waiver.mjs,
- * scripts/check-changelog.mjs §D'), naming this gate's config.
+ * The peak clause's verdict. It has no waiver: the per-release run has none either, so a
+ * waiver here could only excuse accumulated drift. A deliberate new bar is a reviewed
+ * `peak` move (scripts/check-changelog.mjs §D).
  */
 function peakVerdict(failed: readonly Verdict[]): never {
   if (failed.length === 0) {
@@ -408,32 +416,11 @@ function peakVerdict(failed: readonly Verdict[]): never {
   console.error(
     '\nThis is the SLOW-BLEED clause. Every merge since the peak may have passed its own per-release'
     + '\nrun and this can still be red: steps inside the threshold compound without one of them failing.'
-    + '\n\nThree honest responses, in order of preference:'
+    + '\n\nTwo honest responses, and no waiver:'
     + '\n  1. Find and fix the drawdown.'
     + `\n  2. If the cost bought something and is the NEW NORMAL, move \`peak\` in ${configRel} in this PR,`
     + '\n     named in the CHANGELOG with these numbers. This RE-BASELINES: the bar moves to the slower build.'
-    + `\n  3. If the cost bought something and the bar should NOT move, declare a per-PR ${WAIVER_TAG}`
-    + '\n     in the CHANGELOG\'s open section, quoting the numbers above:'
-    + `\n\n       ${WAIVER_TAG} ${configRel} median <n>% min <n>% — <why this cost buys something>`
     + '\n\nWidening `allowancePct` to fit the drawdown is laundering a regression into the baseline.',
   )
-  const base = argValue('--base')
-  let section = ''
-  let baseChangelog = ''
-  try {
-    section = openSection(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'))
-    if (base !== null) baseChangelog = git(['show', `${base}:CHANGELOG.md`], ROOT)
-  } catch {
-    // No CHANGELOG to read: no waiver to honour.
-  }
-  const d = decideWaiver({
-    section,
-    config: configRel,
-    peak: CONFIG.peak,
-    breaching: failed.flatMap(f => f.passes.filter(r => r.breach)),
-    base,
-    baseChangelog,
-  })
-  if (d.message !== '') console.error(`\n${GATE}:${d.message}`)
-  process.exit(d.applied ? 0 : 1)
+  process.exit(1)
 }

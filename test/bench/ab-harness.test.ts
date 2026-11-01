@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import v8 from 'node:v8'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  peakIsPreviousRelease,
   copySamples,
   interleave,
   measurePasses,
@@ -386,7 +387,7 @@ describe('the density peak clause is a required step', () => {
   it('runs in the grammar-perf job, which `test` needs', () => {
     const ci = readFileSync(fileURLToPath(new URL('../../.github/workflows/ci.yml', import.meta.url)), 'utf8')
     const job = ci.slice(ci.indexOf('\n  grammar-perf:\n'), ci.indexOf('\n  workload-perf:\n'))
-    expect(job).toMatch(/run: pnpm perf:guard:grammars:peak \$\{BASE_SHA:\+--base=\$BASE_SHA\}/)
+    expect(job).toMatch(/run: pnpm perf:guard:grammars:peak\n/)
     // A failing step must fail the job, or `test` reads it as green.
     expect(job).not.toMatch(/continue-on-error/)
     expect(ci).toMatch(/needs: \[[^\]]*\bgrammar-perf\b[^\]]*\]/)
@@ -403,5 +404,39 @@ describe('the density peak clause is a required step', () => {
     const verdict = src.indexOf('if (PEAK) peakVerdict(failures)')
     expect(verdict).toBeGreaterThan(-1)
     expect(verdict).toBeLessThan(src.indexOf('if (failures.length > 0)'))
+  })
+})
+
+describe('the peak clauses have no waiver, and do not re-measure a pair the per-release run measured', () => {
+  it.each(['grammar-perf-guard.ts', 'workload-perf-guard.ts'])('%s exits 1 on any drawdown and reads no waiver', (file) => {
+    const src = readFileSync(fileURLToPath(new URL(`../../bench/${file}`, import.meta.url)), 'utf8')
+    expect(src).not.toMatch(/peak-waiver|decideWaiver|PERF-PEAK-WAIVER|--base/)
+    expect(src).toMatch(/const peakIsPrevious = PEAK && HEAD_REF === null \? peakIsPreviousRelease\(ROOT, CONFIG\.peak\.sha\) : null/)
+    // The skip comes before either side is materialised.
+    expect(src.indexOf('if (peakIsPrevious !== null)')).toBeLessThan(src.indexOf('materialise(GATE'))
+  })
+
+  it('finds the previous release only when it is the peak commit', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-peak-prev-'))
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }).trim()
+    const commit = (message: string): string => {
+      writeFileSync(join(dir, 'f'), message)
+      git('add', '-A')
+      git('commit', '-qm', message)
+      return git('rev-parse', 'HEAD')
+    }
+    try {
+      git('init', '-q', '-b', 'main')
+      const older = commit('A')
+      git('tag', 'v0.1.0')
+      const peak = commit('B')
+      git('tag', 'v0.2.0')
+      commit('C')
+      expect(peakIsPreviousRelease(dir, peak.slice(0, 8))?.tag).toBe('v0.2.0')
+      expect(peakIsPreviousRelease(dir, older)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

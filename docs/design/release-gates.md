@@ -250,11 +250,12 @@ install-free approximation for pull requests.
 
 B also refuses a `package.json` version that goes down against the base.
 
-### D. Peak record and D′. Peak-clause waiver — on every PR
+### D. Peak record and D′. No peak waiver — on every PR
 
 Any edit to a perf gate's `peak` block is named in an entry the PR adds, with backward
-moves and widened allowances called out by name. A `PERF-PEAK-WAIVER` line lands a
-deliberate, measured drawdown without moving the peak. Both are specified in
+moves and widened allowances called out by name, and `peak.version` must be
+`package.json`'s version at `peak.sha`. The peak clauses have no waiver: an entry the PR
+adds that carries a `PERF-PEAK-WAIVER` line is refused. Both are specified in
 [perf-gates.md](./perf-gates.md) § "The peak clause".
 
 ## Which bump
@@ -278,10 +279,8 @@ may be a removal, and for a **chained PR** whose entry lives in the PR underneat
 It is on the PR, visible next to the diff, which is the difference between a waiver
 and a bypass. It never waives A, D or D′.
 
-### `PERF-PEAK-WAIVER` — waives the peak clause's verdict only
-
-See [perf-gates.md](./perf-gates.md) § D. It is deliberately not an extension of
-`release-exempt`.
+There is no hatch for a peak clause. A deliberate new bar is a reviewed `peak` move
+(§D); see [perf-gates.md](./perf-gates.md) § "There is no waiver".
 
 ## History
 
