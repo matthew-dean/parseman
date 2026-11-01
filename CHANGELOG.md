@@ -10,6 +10,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   main entry, which loads the combinators, the compiler and the analysis with them.
   `src/line-index.ts` was already in the run entry's closure, so the entry's module
   list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+- **A routed arm's first-character gate reports what its next term fails with.** A
+  choice arm led by `routed()` is gated on its next term's first character
+  (`OP_RGATE`, 0.58.0), and a miss reported `deriveExpected` of that term. For a
+  `keywords()` or `word()` term that lists each word, where the term itself, and the
+  interpreter, report `keyword`: `dispatch(regex(/[a-z]+/), otherwise(choice(
+  sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
+  in every table engine. A miss now reports the terminal's own failure set, and a
+  label's name. Which arms are gated is unchanged.
 
 ## 0.58.0 — 2026-10-31
 
