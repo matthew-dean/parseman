@@ -825,6 +825,16 @@ beside `main`, whose first parent is the merged commit; either one names the sou
 it is pinned in `bench/jess/macro-optimize-config.json` together with the Jess commit it
 builds against, and moving it is a deliberate bench change.
 
+**When HEAD's `src/` is the reference's, the gate reports and does not fail.** Every
+merge that changes `src/` publishes, so a pull request that leaves `src/` alone is measured
+against identical code (the version literal in `src/version.ts`, which a release commit stamps, aside; a local run without `--head-ref` compares the working tree). Both sides
+are built from `src/` and share one install, so that run is an A/A control. A breach there
+is the instrument, not a regression. CI measured it: a workflow-only PR, against v0.58.0
+with the same `src/`, read `json/document` at +1.9% median, breached 4/5 passes, and failed
+the required check. The run still measures and prints its table, so a change to the
+harness is exercised, and any case that breached is named as the noise floor on that
+runner (`sameSource` and `identicalSourceNote` in `bench/ab-harness.ts`).
+
 ### The per-PR report: this change against its own base
 
 The gate answers "is this slower than the previous release?". A PR also wants "what did
