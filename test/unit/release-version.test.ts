@@ -270,6 +270,34 @@ describe('recording a release on main', () => {
     expect(m).not.toBe(n)
   })
 
+  it('keeps a higher version a later PR declared on the moved tip', () => {
+    const { dir, remote } = runner()
+    const other = mkdtempSync(join(tmpdir(), 'pm-record-declared-'))
+    dirs.push(other)
+    execFileSync('git', ['clone', '-q', remote, other])
+    // That PR renamed Unreleased (still holding the shipped "a fix") to its 0.2.0.
+    writeFileSync(join(other, 'package.json'), `${JSON.stringify({ name: 'parseman', version: '0.2.0' }, null, 2)}\n`)
+    writeFileSync(join(other, 'src/version.ts'), "export const PARSEMAN_VERSION = '0.2.0'\n")
+    writeFileSync(join(other, 'CHANGELOG.md'), CHANGELOG('## 0.2.0 — 2026-11-01\n\n- a fix\n\n- new api\n\n'))
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qam', 'declare 0.2.0'], { cwd: other })
+    execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: other })
+
+    const pushed = record(dir, '0.1.1', remote)
+    expect(JSON.parse(remoteGit(remote, 'show', `${pushed}:package.json`)).version).toBe('0.2.0')
+    expect(remoteGit(remote, 'show', `${pushed}:src/version.ts`)).toBe("export const PARSEMAN_VERSION = '0.2.0'")
+    expect(remoteGit(remote, 'show', `${pushed}:CHANGELOG.md`)).toBe(
+      '# Changelog\n\n## 0.2.0 — 2026-11-01\n\n- new api\n\n## 0.1.1 — 2026-11-01\n\n- a fix\n\n## 0.1.0 — 2026-10-01\n\n- first',
+    )
+    // And main still passes its own release gates at that commit.
+    const after = mkdtempSync(join(tmpdir(), 'pm-record-after-'))
+    dirs.push(after)
+    execFileSync('git', ['clone', '-q', remote, after])
+    for (const gate of ['scripts/check-changelog.mjs', 'scripts/check-main-release-state.mjs']) {
+      const args = gate.includes('main-release') ? [`--root=${after}`, '--base-ref=main', '--head-ref=main'] : [`--root=${after}`]
+      execFileSync(process.execPath, [join(dirname(new URL(import.meta.url).pathname), '../..', gate), ...args], { stdio: 'pipe' })
+    }
+  })
+
   it('records nothing when main already contains the release', () => {
     const { dir, remote, r } = runner()
     record(dir, '0.1.1', remote)

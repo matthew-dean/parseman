@@ -263,6 +263,15 @@ export function stampChangelog(changelog, { version, date, released = '' }) {
 
   if (version === undefined) {
     if (open.length > 0) doc.sections.unshift({ heading: top.heading, lines: body(open) })
+    // A version a later PR declared above every release: its section is still pending,
+    // and may have been renamed from an Unreleased that held shipped entries.
+    const newestReleased = missing.map((m) => parseVersion(headingVersion(m.heading))).reduce((a, b) => (compareVersions(a, b) >= 0 ? a : b))
+    const declared = unreleased ? null : top
+    const dv = declared === null || declared === undefined ? null : headingVersion(declared.heading)
+    if (dv !== null && compareVersions(parseVersion(dv), newestReleased) > 0) {
+      const kept = pending(declared.lines)
+      if (kept.length !== entries(declared.lines).length) declared.lines = body(kept)
+    }
   }
   else {
     const heading = `## ${version} — ${date}`
@@ -372,8 +381,9 @@ export function releaseCommitOf(root = ROOT) {
  *   - HEAD already on `main` (the tip contains it): nothing to record.
  *   - `main` has not moved (the tip is HEAD's parent): HEAD itself, a fast-forward.
  *   - `main` moved: the stamp rebuilt on the tip, as `sync` would. The version files say
- *     `version`, the release's CHANGELOG sections are copied in and their entries leave
- *     Unreleased, and whatever later PRs filed under Unreleased stays there.
+ *     `version`, or the higher version a later PR declared on the tip. The release's
+ *     CHANGELOG sections are copied in and their entries leave Unreleased (or the declared
+ *     section), and whatever later PRs filed there stays.
  *
  * The rebuilt commit is written through a scratch index, so the checkout is untouched.
  */
@@ -395,10 +405,13 @@ export function recordCommit(root, version, tip) {
   try {
     const env = { ...process.env, GIT_INDEX_FILE: join(tmp, 'index'), ...BOT }
     git(['read-tree', tip], { env })
+    // A later PR may have declared a version above this release on the tip: keep it.
+    const tipVersion = parseVersion(JSON.parse(git(['show', `${tip}:package.json`])).version ?? '')
+    const keep = tipVersion !== null && compareVersions(tipVersion, parseVersion(version)) > 0 ? tipVersion.raw : version
     const files = {
       'CHANGELOG.md': stampChangelog(git(['show', `${tip}:CHANGELOG.md`]), { released: git(['show', 'HEAD:CHANGELOG.md']) }),
-      'package.json': withVersion('package.json', git(['show', `${tip}:package.json`]), version),
-      'src/version.ts': withVersion('src/version.ts', git(['show', `${tip}:src/version.ts`]), version),
+      'package.json': withVersion('package.json', git(['show', `${tip}:package.json`]), keep),
+      'src/version.ts': withVersion('src/version.ts', git(['show', `${tip}:src/version.ts`]), keep),
     }
     for (const [file, text] of Object.entries(files)) {
       // `git show` drops the final newline; every one of these files ends with one.
