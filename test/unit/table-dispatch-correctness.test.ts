@@ -93,7 +93,7 @@ describe('table dispatch correctness', () => {
       expect(source.match(/try\{v=/g)?.length ?? 0).toBe(routedCalls)
       const switchBody = /switch\(arm\)\{([\s\S]*?)\n\}\nif\(v===FAIL\)/.exec(source)?.[1]
       expect(switchBody).toBeDefined()
-      expect(switchBody!.match(/v=\w+\(input,(?:pos|selEnd),ctx\)/g)).toHaveLength(2)
+      expect(switchBody!.match(/v=\w+\(input,(?:pos|selEnd),ctx(?:,ks,rs)?\)/g)).toHaveLength(2)
       expect(source).not.toMatch(/DSP\[\d+\]\.routed/)
     }
     assertShape(mixed, 1)
@@ -103,7 +103,7 @@ describe('table dispatch correctness', () => {
     const prog = program(mixed)
     const source = emitAssemblySource(resolveTable(prog), prog, STRICT).source
     expect(source).toMatch(/case 0:\{const savedRouted=[\s\S]*finally\{ctx\._routed=savedRouted\}/)
-    expect(source).toMatch(/default:v=\w+\(input,selEnd,ctx\);break/)
+    expect(source).toMatch(/default:v=\w+\(input,selEnd,ctx(?:,ks,rs)?\);break/)
 
     // A plain branch neither overwrites nor restores a caller-owned routed
     // value, even when its reducer throws.

@@ -339,6 +339,50 @@ export const DEFECTS = {
     }],
   },
 
+  /**
+   * Direct values (`emit-assembly.ts`, `DIRECT_RUNTIME_PRELUDE`): a node's
+   * children travel as `ks`/`rs` locals. The four defects a lowering of that
+   * protocol can ship — a push that lands in one array and not the other, a
+   * rollback that never runs, a truncation to the wrong length, and a failure
+   * reported from the wrong place — each leaves the engine running and moves
+   * only the tree or the diagnostic.
+   */
+  'direct-leaf-push-dropped': {
+    why: 'direct values: a leaf under a raw-reading node reaches the raw entries but not the children',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: '? `{const l=${child};ks.push(l);${tail}}`',
+      replace: '? `{const l=${child};${tail}}`',
+    }],
+  },
+
+  'direct-rollback-skipped': {
+    why: 'direct values: a failed speculative branch keeps what it pushed',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: '`_rbK(ctx,ks,rs,${t}k,${t}r,${t}t,${t}lg,${t}rt)',
+      replace: '`void(ctx,ks,rs,${t}k,${t}r,${t}t,${t}lg,${t}rt)',
+    }],
+  },
+
+  'direct-truncate-wrong': {
+    why: 'direct values: a rollback truncates the children one entry long',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if(ks!==undefined&&ks.length!==k)ks.length=k\n',
+      replace: 'if(ks!==undefined&&ks.length!==k)ks.length=k+1\n',
+    }],
+  },
+
+  'direct-node-fail-position': {
+    why: 'direct values: a node whose body failed reports the failure at its own start',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: '}}\nif(v===FAIL)return FAIL\nconst hostKids=kids',
+      replace: '}}\nif(v===FAIL){ctx._fe=pos;return FAIL}\nconst hostKids=kids',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{

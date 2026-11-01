@@ -140,7 +140,7 @@ describe('direct-bound dispatch topology', () => {
     expect(emitted.source).not.toMatch(/\.routed\b|\brouted\[|\bmatchFn\[|\bmatchArm\[|\barms\[/)
     expect(emitted.source).toMatch(/switch\(arm\)/)
     expect(emitted.source).toMatch(/case 0:\{const savedRouted=ctx\._routed/)
-    expect(emitted.source).toMatch(/case 1:v=\w+\(input,selEnd,ctx\);break/)
+    expect(emitted.source).toMatch(/case 1:v=\w+\(input,selEnd,ctx(?:,ks,rs)?\);break/)
     expect(emitted.source).toMatch(/const _dm\d+=new RegExp\(/)
     expect(emitted.source).toMatch(/_dm\d+\.test\(key\)/)
     expect(emitted.source).not.toMatch(/if\(new RegExp\([^\n]+\.test\(key\)\)arm=/)
@@ -175,7 +175,7 @@ describe('direct-bound dispatch topology', () => {
     const allPlain = dispatch(regex(/[a-z]+/), when('a', literal('!')), otherwise(literal('?')))
     const plainProg = program(allPlain)
     const plainSource = emitAssemblySource(resolveTable(plainProg), plainProg, STRICT).source
-    expect(plainSource).toMatch(/case 0:v=\w+\(input,selEnd,ctx\);break/)
+    expect(plainSource).toMatch(/case 0:v=\w+\(input,selEnd,ctx(?:,ks,rs)?\);break/)
     expect(plainSource).not.toContain('const savedRouted=ctx._routed')
   })
 

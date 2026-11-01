@@ -13,6 +13,7 @@ import { choice, literal, many, node, optional, regex, rules, sequence } from '.
 import type { Combinator, ParseContext } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
+import { emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
@@ -58,7 +59,15 @@ function ladder(parent: Parent, spaced = false): Record<string, Combinator<unkno
   })) as Record<string, Combinator<unknown>>
 }
 
-const CFG = { hostCst: false, hostReadsChildren: true, trackLines: false, tolerant: false, coverage: false, probe: false }
+// The frames are counted on the CONTEXT, so the emitted engine runs the
+// collector protocol here; direct values are counted on the source below.
+const CFG = { hostCst: false, hostReadsChildren: true, trackLines: false, tolerant: false, coverage: false, probe: false, direct: false }
+const DIRECT = { ...CFG, direct: true }
+
+/** Node frames a direct-values assembly binds: one `ks` array per framed node body. */
+function directFrames(prog: TableProgram): number {
+  return emitAssemblySource(resolveTable(prog), prog, DIRECT).source.split('{const ks=[]').length - 1
+}
 
 /** The collectors installed during one parse, and its value. */
 function framesOf(prog: TableProgram, input: string): { frames: number; value: unknown; emitted: boolean } {
@@ -99,6 +108,7 @@ describe('pass-through collapse', () => {
       expect(r.value).toEqual({ value: [{ word: { _tag: 'leaf', value: 'a', span: { start: 0, end: 1 } } }] })
       // `Value`, `Sum`, `Unary` and `Word`: `Top` and `Atom` open none.
       expect(r.frames).toBe(4)
+      if (engine === 'emitted') expect(directFrames(prog)).toBe(4)
     })
 
     it(`${engine}: a chain of collapses over one node each opens only the frames that build`, () => {
@@ -112,6 +122,7 @@ describe('pass-through collapse', () => {
       expect(r.value).toMatchObject({ inner: [{ value: '(' }, { word: { value: 'a' } }, { value: ')' }] })
       // `Inner`'s and `Word`'s.
       expect(r.frames).toBe(2)
+      if (engine === 'emitted') expect(directFrames(encodeTable(g))).toBe(2)
     })
   }
 

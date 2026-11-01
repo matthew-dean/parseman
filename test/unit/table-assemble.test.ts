@@ -118,8 +118,9 @@ describe('table assembler', () => {
       }).pieces.Root)
     expect(childSource).toContain('ctx._cstChildren = kids')
     expect(childSource).not.toContain('const buf')
+    // The collector protocol, which direct values replace where they apply.
     const emittedChildSource = emitAssemblySource(
-      resolveTable(childProgram), childProgram, defaultAssemblyCfgs(childProgram)[0]!, [],
+      resolveTable(childProgram), childProgram, { ...defaultAssemblyCfgs(childProgram)[0]!, direct: false }, [],
     ).source
     expect(emittedChildSource).toContain('const flat=[]')
     expect(emittedChildSource).toContain('const captured=_capturedFlatChildren(flat)')
@@ -131,6 +132,15 @@ describe('table assembler', () => {
     expect(emittedChildSource).toMatch(
       /if\(ctx\._cstBuf!==undefined\|\|ctx\._cstLeaves!==undefined\)_pushLeaf\(ctx,/,
     )
+    // Direct values: the frame binds its own children array and the leaves under
+    // it push into that array, with no collector on the context at all.
+    const directChildSource = emitAssemblySource(
+      resolveTable(childProgram), childProgram, defaultAssemblyCfgs(childProgram)[0]!, [],
+    ).source
+    expect(directChildSource).toContain('{const ks=[],rs=undefined')
+    expect(directChildSource).toContain("ks.push({_tag:'leaf',value:\"a\"")
+    expect(directChildSource).not.toContain('ctx._cstChildren=flat')
+    expect(directChildSource).not.toContain('pushCstChild(ctx,nd,')
 
     for (const input of ['a', 'ab', 'a,', 'a,b']) {
       const reference = run(execRules(childProgram).Root!, input)

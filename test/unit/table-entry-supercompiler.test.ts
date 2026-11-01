@@ -132,7 +132,8 @@ describe('static Entry/SCC supercompiler experiment', () => {
     const candidate = supercompileEntryAssembly(prog, STRICT, [privateIp])
     expect(parseSync('unicode-candidate.js', `function f(){${candidate.source}}`).errors).toEqual([])
     expect(candidate.source).toContain(`function _pf${privateIp}`)
-    expect(candidate.source).toContain(`${privateIp}:_pf${privateIp}`)
+    // Exported through its entry adapter where direct values apply.
+    expect(candidate.source).toMatch(new RegExp(`${privateIp}:_(?:pf|e)${privateIp}\\b`))
     const baseEntry = installed(prog, baseline.source, baseline.plan, 0, [...baseline.reached])
     const candidateEntry = installed(prog, candidate.source, candidate.plan, 0, [...candidate.reached])
     for (const input of ['é', 'éλλ終', 'é終x', 'λ']) {

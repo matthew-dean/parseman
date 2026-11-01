@@ -145,6 +145,9 @@ export const EMITTED_PARAMS = [
   'collapseEmpty',
   // Appended for the gap gate (`gap-gate.ts`); old factories ignore it.
   'GAP',
+  // Appended for direct values (`collapseEmpty` into `ks`/`rs`); old factories
+  // ignore it.
+  'collapseEmptyInto',
 ] as const
 
 /**
@@ -277,6 +280,147 @@ if(ctx._triviaLog!==undefined&&ctx._triviaLog.length!==lg)ctx._triviaLog.length=
 if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTriviaLog.length=rt
 }
 `
+
+/**
+ * DIRECT VALUES: the children a node collects travel as two locals, `ks` (the
+ * children) and `rs` (the raw entries, `undefined` where no reducer reads them),
+ * passed to every piece as its fourth and fifth argument. Inside the emitted
+ * scope `ctx._cstBuf`, `_cstChildren` and `_cstLeaves` are always `undefined`;
+ * a node frame is a block that binds fresh `ks`/`rs`, a leaf is `ks.push(l)`.
+ *
+ * Trivia logs and `_fields` stay on `ctx`. A node that reads its trivia log
+ * installs its own `ctx._cstTriviaLog` and points `ctx._cstRawChildren` at its
+ * `rs`, so the shared trivia scanners record the same insertion index the
+ * buffer's raw count gave them.
+ *
+ * Printed only into a direct-mode assembly. These four functions take no piece.
+ *
+ * `_xOpen`/`_xClose` bracket a call OUT of the scope (a closure piece, an
+ * interpreted scan): the callee sees a capture buffer whose arrays ARE `ks` and
+ * `rs`, and whatever its lazy-buffer bookkeeping did to those arrays is folded
+ * back into them. `_eIn`/`_eOut` bracket a call IN: the caller's collector
+ * becomes `ks`/`rs` for the call, and the caller's buffer is left in the form its
+ * own engine expects.
+ *
+ * A caller may hand in only one of `_cstChildren` (built nodes) and `_cstLeaves`
+ * (leaves): every engine gates the two publications on those two slots
+ * separately. That array is `_eX` for the call, and `_eXm` says which kind it
+ * drops (1: leaves, 2: nodes). Only a site whose label leaves `ks` unknown can
+ * see it, since a node frame binds a fresh array.
+ */
+const DIRECT_RUNTIME_PRELUDE = `
+let _eK,_eR,_eX,_eXm=0
+const _eS=[]
+function _rbK(ctx,ks,rs,k,r,t,lg,rt){
+if(ks!==undefined&&ks.length!==k)ks.length=k
+if(rs!==undefined&&rs.length!==r)rs.length=r
+if(t>=0){const c=ctx._cstTriviaLog;if(c!==undefined&&c.length!==t)c.length=t}
+const a=ctx._triviaLog;if(a!==undefined&&a.length!==lg)a.length=lg
+const o=ctx._rootTriviaLog;if(o!==undefined&&o.length!==rt)o.length=rt
+}
+function _xOpen(ctx,ks,rs){
+if(ks===_eX){ctx._cstChildren=_eXm===2?undefined:ks;ctx._cstLeaves=_eXm===1?undefined:ks;return undefined}
+const b=rs===undefined?{ch:ks,noRaw:true,rawLen:0}:{ch:ks,raw:rs}
+const t=ctx._cstTriviaLog
+if(t!==undefined)b.tl=t
+ctx._cstBuf=b
+return b
+}
+function _xClose(ctx,b,ks,rs){
+if(b===undefined){ctx._cstChildren=undefined;ctx._cstLeaves=undefined;return}
+ctx._cstBuf=undefined
+if(b.ch!==ks){ks.length=0;const c=b.ch;if(c!==undefined){for(let i=0;i<c.length;i++)ks.push(c[i])}else if(b.single!==undefined)ks.push(b.single)}
+if(rs!==undefined&&b.raw!==rs){rs.length=0;const c=b.raw;if(c!==undefined){for(let i=0;i<c.length;i++)rs.push(c[i])}else if(b.rawSingle!==undefined)rs.push(b.rawSingle)}
+const t=ctx._cstTriviaLog
+if(t!==undefined&&b.tl!==t){t.length=0;const c=b.tl;if(c!==undefined)for(let i=0;i<c.length;i++)t.push(c[i])}
+}
+function _eIn(ctx){
+const b=ctx._cstBuf,c=ctx._cstChildren,l=ctx._cstLeaves,r=ctx._cstRawChildren,t=ctx._cstTriviaLog
+let ks,rs,tl=t,f=0,x,xm=0
+if(b!==undefined){
+if(b.rawOnly===true)ks=[]
+else if(b.ch!==undefined)ks=b.ch
+else{ks=b.single!==undefined?[b.single]:[];f=1}
+if(b.noRaw===true)rs=ctx.captureTrivia===true?new Array(b.rawLen??0):undefined
+else if(b.raw!==undefined)rs=b.raw
+else{rs=b.rawSingle!==undefined?[b.rawSingle]:[];f|=2}
+tl=b.tl
+if(tl===undefined&&ctx.captureTrivia===true){tl=[];f|=4}
+}else{
+if(c===undefined&&l===undefined)return 0
+ks=c!==undefined?c:l
+if(c===undefined){x=ks;xm=2}else if(l===undefined){x=ks;xm=1}
+rs=r
+}
+_eS.push(b,c,l,r,t,ks,rs,tl,f,_eX,_eXm)
+ctx._cstBuf=undefined
+ctx._cstChildren=undefined
+ctx._cstLeaves=undefined
+ctx._cstTriviaLog=tl
+ctx._cstRawChildren=rs
+_eX=x;_eXm=xm
+_eK=ks;_eR=rs
+return 1
+}
+function _eOut(ctx){
+const n=_eS.length-11
+const b=_eS[n]
+ctx._cstBuf=b
+ctx._cstChildren=_eS[n+1]
+ctx._cstLeaves=_eS[n+2]
+ctx._cstRawChildren=_eS[n+3]
+ctx._cstTriviaLog=_eS[n+4]
+_eX=_eS[n+9];_eXm=_eS[n+10]
+if(b!==undefined){
+const ks=_eS[n+5],rs=_eS[n+6],tl=_eS[n+7],f=_eS[n+8]
+if((f&1)!==0){
+let z=0
+while(z<ks.length&&ks[z]===undefined)z++
+if(z>0)ks.splice(0,z)
+if(ks.length===1)b.single=ks[0]
+else if(ks.length>1){b.single=undefined;b.ch=ks}
+}
+if(b.noRaw===true){if(rs!==undefined)b.rawLen=rs.length}
+else if((f&2)!==0){
+if(rs.length===1)b.rawSingle=rs[0]
+else if(rs.length>1){b.rawSingle=undefined;b.raw=rs}
+}
+if((f&4)!==0&&tl.length>0)b.tl=tl
+}
+_eS.length=n
+}
+`
+
+/**
+ * A direct-mode assembly prints only the prelude functions something calls. The
+ * collector helpers of the shared prelude have no caller there, and the direct
+ * helpers serve only the edges a given selection has. Variables stay.
+ */
+function shakePrelude(prelude: string, rest: string): string {
+  // Top-level statements, by brace depth: the prelude's braces all balance on
+  // their own lines or across a function body, and none sits in a string.
+  const blocks: string[] = []
+  let depth = 0
+  for (const line of prelude.split('\n')) {
+    if (depth === 0 || blocks.length === 0) blocks.push(line)
+    else blocks[blocks.length - 1] += `\n${line}`
+    for (const c of line) depth += c === '{' ? 1 : c === '}' ? -1 : 0
+  }
+  const nameOf = (b: string): string | undefined => /^function (\w+)\(/.exec(b)?.[1]
+  const used = new Set<string>()
+  let seen = rest
+  for (let changed = true; changed;) {
+    changed = false
+    for (const b of blocks) {
+      const n = nameOf(b)
+      if (n === undefined || used.has(n) || !new RegExp(`\\b${n}\\b`).test(seen)) continue
+      used.add(n)
+      seen += b
+      changed = true
+    }
+  }
+  return blocks.filter(b => { const n = nameOf(b); return n === undefined || used.has(n) }).join('\n')
+}
 
 function q(s: string): string {
   return JSON.stringify(s)
@@ -417,20 +561,23 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
-  const fast = `const ${t}v=${callee}(input,cur,ctx)
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, a = '', tlLen?: string): string {
+  const fast = `const ${t}v=${callee}(input,cur,ctx${a})
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
   if (l.tri === TRI_NONE) return fast
-  const scanned = `const ${t}tl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+  // `tlLen` is the direct-mode read: no capture buffer is ever open there, so the
+  // trivia log is `ctx._cstTriviaLog` or nothing.
+  const tlRead = tlLen ?? 'ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)'
+  const scanned = `const ${t}tl=${tlRead}
 const ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 const ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const ${t}s=${skip}(input,cur,ctx)
-const ${t}stl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+const ${t}stl=${tlRead}
 const ${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 const ${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
-const ${t}v=${callee}(input,${t}s,ctx)
+const ${t}v=${callee}(input,${t}s,ctx${a})
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(EC.e>${t}s)cur=EC.e
@@ -448,14 +595,14 @@ ${scanned}
  * kept, the lookahead runs at its end, and the cursor stays there for the next
  * term, which cannot match empty.
  */
-function emitHoldTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
-  const fast = `const ${t}v=${callee}(input,cur,ctx)
+function emitHoldTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, a = ''): string {
+  const fast = `const ${t}v=${callee}(input,cur,ctx${a})
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
   if (l.tri === TRI_NONE) return fast
   const held = `const ${t}s=${skip}(input,cur,ctx)
-const ${t}v=${callee}(input,${t}s,ctx)
+const ${t}v=${callee}(input,${t}s,ctx${a})
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=${t}s`
@@ -560,6 +707,108 @@ export function rebuildPools(
 }
 
 /**
+ * What an `OP_NODE` frame collects, as table facts. ONE definition: the body the
+ * emitter prints and the direct labels below read the same answers.
+ */
+type NodeShape = {
+  readonly structural: boolean
+  readonly captureWide: boolean
+  readonly keepChildren: boolean
+  readonly omitsRaw: boolean
+}
+function nodeShape(
+  code: ArrayLike<number>, k: readonly unknown[], ip: number,
+  cfg: { hostCst: boolean; hostReadsChildren?: boolean; hostCaptureTrivia?: ((type: string) => boolean) | undefined },
+): NodeShape {
+  const flags = code[ip + 3]!
+  const build = code[ip + 1]!
+  const proj = code[ip + 4]!
+  const structural = build < 0 && proj < 0
+  const grammarCapture = (flags & 1) !== 0 || (flags & 128) !== 0
+  const hostCapturesThisType = structural && cfg.hostCaptureTrivia !== undefined
+    ? cfg.hostCaptureTrivia(k[code[ip + 5]!] as string)
+    : undefined
+  const captureWide = (flags & 4) !== 0 || cfg.hostCst
+    ? !structural || grammarCapture || hostCapturesThisType !== false
+    : hostCapturesThisType === true
+  return {
+    structural,
+    captureWide,
+    keepChildren: !structural || cfg.hostReadsChildren !== false || (flags & 32) !== 0 || (flags & 64) !== 0,
+    omitsRaw: !cfg.hostCst && build >= 0 && proj < 0 && (flags & 2) !== 0,
+  }
+}
+
+/** A direct-mode fact at a site: proven on every path, or not known. */
+const DV_UNKNOWN = 0
+const DV_DEF = 1
+const DV_UNDEF = 2
+type DirectLabel = {
+  /** Is `ks` a defined array here? */
+  readonly k: number
+  /** Is `rs` a defined array here? */
+  readonly r: number
+}
+const DV_TOP: DirectLabel = { k: DV_UNKNOWN, r: DV_UNKNOWN }
+
+/**
+ * The direct-mode twin of `computeSiteLabels`: which of `ks`/`rs` every path to a
+ * site proves defined or `undefined`. A node frame binds both; a `token`/`leaf`
+ * boundary passes neither; everything else hands its own label down. Entry
+ * points start at the top, because the adapter in front of them passes whatever
+ * the caller's collector is.
+ */
+function computeDirectLabels(
+  code: Int32Array, k: readonly unknown[], roots: Iterable<number>, cfg: Parameters<typeof nodeShape>[3],
+): (ip: number) => DirectLabel {
+  const labels = new Map<number, DirectLabel>()
+  const work: number[] = []
+  const meet = (a: DirectLabel, b: DirectLabel): DirectLabel => {
+    const kk = a.k === b.k ? a.k : DV_UNKNOWN
+    const rr = a.r === b.r ? a.r : DV_UNKNOWN
+    return kk === a.k && rr === a.r ? a : { k: kk, r: rr }
+  }
+  const push = (ip: number, l: DirectLabel): void => {
+    const cur = labels.get(ip)
+    const next = cur === undefined ? l : meet(cur, l)
+    if (next === cur) return
+    labels.set(ip, next)
+    work.push(ip)
+  }
+  const NONE: DirectLabel = { k: DV_UNDEF, r: DV_UNDEF }
+  const transfer = (ip: number, at: DirectLabel): DirectLabel => {
+    const op = code[ip]
+    if (op === OP_NODE || op === OP_NODE_TRACK) {
+      if (passCollapse(code, ip, cfg.hostCst)) return at
+      const s = nodeShape(code, k, ip, cfg)
+      const framed: DirectLabel = { k: DV_DEF, r: !s.omitsRaw || s.captureWide ? DV_DEF : DV_UNDEF }
+      return gatedPassCollapse(code, ip, cfg.hostCst) !== undefined ? meet(at, framed) : framed
+    }
+    if (op === OP_TOKEN || op === OP_LEAF || op === OP_SOURCE_LEAF) return NONE
+    return at
+  }
+  for (const r of roots) push(r, DV_TOP)
+  const kids: number[] = []
+  while (work.length > 0) {
+    const ip = work.pop()!
+    const down = transfer(ip, labels.get(ip)!)
+    kids.length = 0
+    childSlots(code, ip, kids)
+    for (const c of kids) push(c, down)
+  }
+  return ip => labels.get(ip) ?? DV_TOP
+}
+
+/**
+ * Direct values are on for the plain AST build: no CST host, no line tracking,
+ * no tolerant recovery, no completions probe, no coverage, no per-type host
+ * trivia predicate. `PM_TABLE_DIRECT=0` turns them off, read once, for A/B
+ * measurement only — the same footing as `assemble.ts`'s `PM_TABLE_EMIT`.
+ */
+const DIRECT_ENABLED = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+  .process?.env?.PM_TABLE_DIRECT !== '0'
+
+/**
  * Emit the whole assembly for one resolved table and one option set.
  *
  * Throws `Unemittable` for any construct not lowered. It does NOT compile the
@@ -587,6 +836,11 @@ export function emitAssemblySource(
     tolerant: boolean
     coverage: boolean
     probe: boolean
+    /**
+     * `false` keeps the collector protocol where direct values (see
+     * `DIRECT_RUNTIME_PRELUDE`) would apply — for a test that observes it.
+     */
+    direct?: boolean
   },
   extraIps: readonly number[] = [],
   staticBuild = false,
@@ -637,6 +891,17 @@ export function emitAssemblySource(
   const reachable = [...reachableSites(code, roots)]
   const GAP_ROWS = gapNeutral ? new Set<number>() : gapRows(code, roots)
   const labels = computeSiteLabels(code, roots, hostCst)
+  // DIRECT VALUES, decided once for the whole assembly at build time. A
+  // construct the mode cannot carry keeps the whole assembly on the collector
+  // protocol: a `captureTrivia` scope (it turns capture on inside a node that
+  // opened no trivia log of its own) and a node that keeps no children.
+  const D = DIRECT_ENABLED && cfg.direct !== false && !hostCst && !cfg.trackLines && !cfg.tolerant && !cfg.coverage && !cfg.probe
+    && cfg.hostCaptureTrivia === undefined
+    && reachable.every(ip => code[ip] !== OP_SCOPE_CAP
+      && ((code[ip] !== OP_NODE && code[ip] !== OP_NODE_TRACK) || nodeShape(code, k, ip, cfg).keepChildren))
+  const dlabelAt = D ? computeDirectLabels(code, k, roots, cfg) : (): DirectLabel => DV_TOP
+  /** The two direct-value arguments every piece call carries in direct mode. */
+  const A = D ? ',ks,rs' : ''
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
   // both the recognizer and the ordinary-terminal lowering.
@@ -993,7 +1258,10 @@ return 1
     // still has to null-test. The presence of a lowering is table data like the
     // label bit beside it, so it belongs in the key rather than in a branch.
     const hasScan = swapLegal && !triviaLabelled[ki]! && t.triviaScan[ki] != null
-    const key = `${ki}|${hasScan ? 1 : 0}|${l.buf ? 1 : 0}|${l.cap}`
+    // Direct mode never opens a capture buffer, so a site inside a node has the
+    // same sinks as one outside it: the trivia log on `ctx`, or none.
+    const buf = l.buf && !D
+    const key = `${ki}|${hasScan ? 1 : 0}|${buf ? 1 : 0}|${l.cap}`
     const hit = skipPool.get(key)
     if (hit !== undefined) return hit
     const nm = `_sk${skipPool.size}`
@@ -1002,7 +1270,7 @@ return 1
       // No installed scanner: the labelled/`trackLines` path, which records
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
       // buffer, so an in-node site skips the call that asks.
-      skipDefs.push(l.buf
+      skipDefs.push(buf
         ? `function ${nm}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
         : `function ${nm}(input,cur,ctx){
 if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
@@ -1012,7 +1280,7 @@ return advanceTrivia(input,cur,ctx)}`)
     const sc = hoist('ts', `TRIVIASCAN[${ki}]`)
     // `ctx.captureTrivia === true && (a sink is open)`, with both conjuncts
     // resolved as far as the label takes them.
-    const sink = l.buf ? 'true' : '(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)'
+    const sink = buf ? 'true' : D ? '(ctx._cstTriviaLog!==undefined)' : '(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)'
     const capturing = l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
     if (capturing === 'true') {
       // Capture is on and a sink is open: the bare-scanner arm is unreachable.
@@ -1163,10 +1431,45 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 
   function lower(ip: number, fname: string): string {
     const op = code[ip]
-    const head = `function ${fname}(input,pos,ctx){`
+    const head = `function ${fname}(input,pos,ctx${A}){`
     const outerHead = head
     const L = labels.at(ip)
     const sinks = sinksAt(ip)
+    const DL = dlabelAt(ip)
+    /**
+     * DIRECT-MODE PUSHES. A leaf or a built node goes to `ks` and, where a reducer
+     * reads raw entries, to `rs`. The label says which tests survive: under a node
+     * `ks` is an array, under a `token`/`leaf` boundary there is nothing to push.
+     */
+    const dAppend = (child: string, raw: string, node = false): string => {
+      if (DL.k === DV_UNDEF) return ''
+      const rawIsChild = raw === child
+      const tail = DL.r === DV_UNDEF ? '' : DL.r === DV_DEF ? `rs.push(${rawIsChild ? 'l' : raw})` : `if(rs!==undefined)rs.push(${rawIsChild ? 'l' : raw})`
+      const body = rawIsChild && tail !== ''
+        ? `{const l=${child};ks.push(l);${tail}}`
+        : tail === '' ? `ks.push(${child})` : `{ks.push(${child});${tail}}`
+      // An unknown `ks` may be a caller's one-kind collector (`_eX`).
+      return DL.k === DV_DEF ? body : `if(ks!==undefined&&(ks!==_eX||_eXm!==${node ? 2 : 1}))${body}`
+    }
+    const dLeaf = (value: string, s: string, e: string): string =>
+      dAppend(`{_tag:'leaf',value:${value},span:{start:${s},end:${e}}}`, `{_tag:'leaf',value:${value},span:{start:${s},end:${e}}}`)
+    const dNode = (nd: string, s: string, e: string): string => dAppend(nd, `rawEntry(${nd},input,${s},${e})`, true)
+    /** The direct mark: the two collector lengths, the trivia log's, the two logs'. */
+    const dMark = (t: string, s: Sinks, decl = true): string => {
+      const kx = DL.k === DV_DEF ? 'ks.length' : DL.k === DV_UNDEF ? '0' : 'ks!==undefined?ks.length:0'
+      const rx = DL.k === DV_UNDEF || DL.r === DV_UNDEF ? '0' : DL.r === DV_DEF ? 'rs.length' : 'rs!==undefined?rs.length:0'
+      // Under `captureTrivia` off nothing in the subtree writes this log (a node
+      // that turns capture on installs a log of its own), so it needs no mark;
+      // `-1` tells `_rbK` to leave it alone.
+      const tx = L.cap === CAP_OFF ? '-1' : 'ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0'
+      return `${decl ? 'let ' : ''}${t}k=${kx},${t}r=${rx},${t}t=${tx},${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0,${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${s.fd ? `,${t}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${s.er ? `,${t}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
+    }
+    const dRollback = (t: string, s: Sinks): string =>
+      `_rbK(ctx,ks,rs,${t}k,${t}r,${t}t,${t}lg,${t}rt)${s.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${t}fd)ctx._fields.length=${t}fd` : ''}${s.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${t}er)ctx._errors.length=${t}er` : ''}`
+    const mark = (t: string, decl = true): string => D ? dMark(t, sinks, decl) : emitMark(t, L.buf, L.raw, sinks, decl)
+    const rollback = (t: string): string => D ? dRollback(t, sinks) : emitRollback(t, L.buf, L.raw, sinks)
+    /** The trivia-log length a sequence term reads around its scan, in direct mode. */
+    const dTl = D ? (L.cap === CAP_OFF ? '0' : 'ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0') : undefined
     /**
      * THE LEAF CAPTURE TEST, and only the test.
      *
@@ -1188,6 +1491,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       ? L.raw === RAW_OMIT ? '_pushLeafNoRawBuf' : L.raw === RAW_CAPTURE ? '_pushLeafBuf' : '_pushLeaf'
       : '_pushLeaf'
     const captureLeaf = (value: string): string => {
+      if (D) return dLeaf(value, 'pos', 'e')
       const call = `${pushLeaf}(ctx,${value},pos,e)`
       return L.buf ? call : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${call}`
     }
@@ -1374,14 +1678,14 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
         const xf = fxRef(code[ip + 3]!)
         return `${head}
 if(${gateMissTest(ip)}){ctx._fe=pos;ctx._fx=${xf};return FAIL}
-return ${child}(input,pos,ctx)
+return ${child}(input,pos,ctx${A})
 }`
       }
 
       case OP_RGATE: {
         const child = link(code[ip + 2]!)
         if (cfg.tolerant || cfg.probe) return `${head}
-return ${child}(input,pos,ctx)
+return ${child}(input,pos,ctx${A})
 }`
         const resolved = t.cc[code[ip + 1]!]!
         const ci = classes.push([resolved]) - 1
@@ -1391,14 +1695,14 @@ return ${child}(input,pos,ctx)
         return `${head}
 const it=ctx._routed
 if(it!==undefined&&it.span.start===pos&&!classHas(${cls},lead(input,it.span.end))){ctx._fe=it.span.end;ctx._fx=${xf};return FAIL}
-return ${child}(input,pos,ctx)
+return ${child}(input,pos,ctx${A})
 }`
       }
 
       case OP_RGATE2: {
         const child = link(code[ip + 2]!)
         if (cfg.tolerant || cfg.probe) return `${head}
-return ${child}(input,pos,ctx)
+return ${child}(input,pos,ctx${A})
 }`
         // ASCII-only classes (the usual case: `:` then whitespace) are read as
         // code units against their ASCII tables, with no call.
@@ -1416,7 +1720,7 @@ return ${child}(input,pos,ctx)
 const it=ctx._routed
 if(it!==undefined&&it.span.start===pos){const e=it.span.end;const c=${ascii ? 'input.charCodeAt(e)' : 'lead(input,e)'}
 if(!(${has(cls, 'c')})||(${has(first, 'c')}&&!(${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}))){ctx._fe=e;ctx._fx=${xf};return FAIL}}
-return ${child}(input,pos,ctx)
+return ${child}(input,pos,ctx${A})
 }`
       }
 
@@ -1430,7 +1734,7 @@ return ${child}(input,pos,ctx)
         const xf = fxRef(code[ip + 3]!)
         return `${head}
 if(!${pred}(ctx.state)){ctx._fc=false;ctx._fe=-1;ctx._fx=${xf};return FAIL}
-return ${child}(input,pos,ctx)
+return ${child}(input,pos,ctx${A})
 }`
       }
 
@@ -1443,7 +1747,7 @@ return ${child}(input,pos,ctx)
         return `${head}
 const saved=ctx.state
 ctx.state=${ki < 0 ? `${fnRef(~ki)}(saved)` : kRef(ki)}
-try{return ${child}(input,pos,ctx)}finally{ctx.state=saved}
+try{return ${child}(input,pos,ctx${A})}finally{ctx.state=saved}
 }`
       }
 
@@ -1451,7 +1755,7 @@ try{return ${child}(input,pos,ctx)}finally{ctx.state=saved}
         const fn = fnRef(code[ip + 1]!)
         const child = link(code[ip + 2]!)
         return `${head}
-const v=${child}(input,pos,ctx)
+const v=${child}(input,pos,ctx${A})
 if(v===FAIL)return FAIL
 return ${fn}(v,{start:pos,end:EC.e})
 }`
@@ -1465,7 +1769,7 @@ return ${fn}(v,{start:pos,end:EC.e})
         // report the diagnostic at the label's start rather than where the input
         // actually stopped.
         return `${head}
-const v=${child}(input,pos,ctx)
+const v=${child}(input,pos,ctx${A})
 if(v===FAIL)ctx._fx=${xf}
 return v
 }`
@@ -1480,7 +1784,7 @@ return v
         // and a branch. The ARRAY is what `OP_NODE` hands to `buildFieldMap`.
         if (spec.bits === 0) {
           return `${head}
-const v=${child}(input,pos,ctx)
+const v=${child}(input,pos,ctx${A})
 if(v===FAIL)return FAIL
 const f=ctx._fields
 if(f!==undefined)f.push({name:${name},value:v,span:{start:pos,end:EC.e}})
@@ -1492,7 +1796,7 @@ return v
         return `${head}
 const lf=${leading ? 'LEAD.at' : '-1'}
 LEAD.at=-1
-const v=${child}(input,pos,ctx)
+const v=${child}(input,pos,ctx${A})
 if(v===FAIL)return FAIL
 const e=EC.e
 const te=${trailing ? 'ctx.trivia!==undefined?consumeTrivia(input,e,ctx):e' : 'e'}
@@ -1517,7 +1821,7 @@ return v
         // and the commit bit the child raised must not survive it and cut an
         // enclosing choice (`assemble.ts:1058-1066`).
         return `${head}
-const v=${child}(input,pos,ctx)
+const v=${child}(input,pos,ctx${A})
 if(v!==FAIL)return v
 const err={_tag:'parseError',span:${prog.lines === 1 ? 'spanLines(ctx,pos,pos)' : '{start:pos,end:pos}'},expected:${xf}}
 const es=ctx._errors
@@ -1538,9 +1842,9 @@ return err
         return `${head}
 const it=ctx._routed
 if(it===undefined||pos!==it.span.start){
-${fallback !== undefined ? `return ${fallback}(input,pos,ctx)` : 'ctx._fe=pos;ctx._fx=ROUTED_FX;return FAIL'}
+${fallback !== undefined ? `return ${fallback}(input,pos,ctx${A})` : 'ctx._fe=pos;ctx._fx=ROUTED_FX;return FAIL'}
 }
-${L.buf ? push : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${push}`}
+${D ? dAppend("{_tag:'leaf',value:it.value,span:it.span}", "{_tag:'leaf',value:it.value,span:it.span}") : L.buf ? push : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${push}`}
 EC.e=it.span.end
 return it.value
 }`
@@ -1551,8 +1855,14 @@ return it.value
         // The scan pool is built FROM subtrees, so it is populated after this
         // text compiles. The array is passed by reference and indexed on
         // execution, which is what the closure engine's lazy bind amounts to.
+        // In direct mode the interpreted scan reaches the collector through a
+        // capture buffer whose arrays are `ks`/`rs` (`_xOpen`/`_xClose`).
+        const scanCall = `SCANS[${si}].parse(input,pos,ctx)`
+        const scanRun = !D || DL.k === DV_UNDEF
+          ? `const r=${scanCall}`
+          : `let r\n${DL.k === DV_DEF ? '' : 'if(ks===undefined)r=' + scanCall + '\nelse'}{const xb=_xOpen(ctx,ks,rs);r=${scanCall};_xClose(ctx,xb,ks,rs)}`
         return `${head}
-const r=SCANS[${si}].parse(input,pos,ctx)
+${scanRun}
 if(!r.ok){ctx._fe=r.span.start;ctx._fx=r.expected??EMPTY_FX;return FAIL}
 EC.e=r.span.end
 return r.value
@@ -1582,7 +1892,7 @@ ${strict}${rootCap ? 'const sR=ctx._rootTriviaCapture\nctx._rootTriviaCapture=fa
 _pfScan=${scanFor}
 ctx.trivia=${tri}
 ctx.triviaKindLabels=${lab}
-${cap ? 'ctx.captureTrivia=true\n' : ''}const v=${child}(input,pos,ctx)
+${cap ? 'ctx.captureTrivia=true\n' : ''}const v=${child}(input,pos,ctx${A})
 ${cap ? 'ctx.captureTrivia=sC\n' : ''}ctx.trivia=sT
 ctx.triviaKindLabels=sL
 _pfScan=sS
@@ -1615,6 +1925,36 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
         // `token()` additionally clears the TRIVIA scope and the root trivia
         // log: its whole point is that the child sees no ambient skipping, so
         // the match is one contiguous run of input (`ops.ts:180-190`).
+        if (D) {
+          // The child runs with no collector: `ks`/`rs` are not passed, and the
+          // trivia log pair a capturing node may have installed is cleared.
+          return `${head}
+const sTl=ctx._cstTriviaLog,sRaw=ctx._cstRawChildren,sOtl=ctx._triviaLog
+${isToken ? 'const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan,sRtl=ctx._rootTriviaLog\n' : ''}${isToken ? `_pfScan=null
+ctx.trivia=undefined
+ctx.triviaKindLabels=undefined
+ctx._rootTriviaLog=undefined
+` : ''}ctx._cstTriviaLog=undefined
+ctx._cstRawChildren=undefined
+ctx._triviaLog=undefined
+let v
+try{v=${child}(input,pos,ctx)}finally{
+${isToken ? `_pfScan=sScan
+ctx.trivia=sTri
+ctx.triviaKindLabels=sKinds
+ctx._rootTriviaLog=sRtl
+` : ''}ctx._cstTriviaLog=sTl
+ctx._cstRawChildren=sRaw
+ctx._triviaLog=sOtl
+}
+if(v===FAIL)return FAIL
+const e=EC.e
+const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
+${dLeaf(capturesSource ? 'input.slice(pos,e)' : 'out', 'pos', 'e')}
+EC.e=e
+return out
+}`
+        }
         return `${head}
 const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
 const sOtl=ctx._triviaLog
@@ -1669,7 +2009,7 @@ ${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
 ${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
 const v=${pending ? 'tp?_pfTokValue:' : ''}input.slice(pos,e)
 ${pending ? 'if(tp){_pfTokBody=-1;_pfTokValue=undefined}' : ''}
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+${D ? dLeaf('v', 'pos', 'e') : "if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})"}
 EC.e=e
 return v
 }`
@@ -1709,7 +2049,7 @@ ctx._rootTriviaLog=sRtl
 }
 if(e<0)return FAIL
 const v=input.slice(pos,e)
-if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+${D ? dLeaf('v', 'pos', 'e') : "if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})"}
 EC.e=e
 return v
 }`
@@ -1717,7 +2057,7 @@ return v
 const e=${run}(input,pos,ctx)
 if(e<0)return FAIL
 const v=input.slice(pos,e)
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+${D ? dLeaf('v', 'pos', 'e') : "if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})"}
 EC.e=e
 return v
 }`
@@ -1730,10 +2070,10 @@ return v
         const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
         return `${head}
-${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
-const v=${child}(input,pos,ctx)
+${clean ? '' : mark(p)}
+const v=${child}(input,pos,ctx${A})
 if(v!==FAIL)return v
-${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
+${clean ? '' : rollback(p)}
 ${code[ip + 2] === 1 ? 'ctx._fc=false' : 'if(ctx._fc===true)return FAIL'}
 ctx._fe=pos
 return FAIL
@@ -1757,9 +2097,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${emitMark(p, L.buf, L.raw, sinks)}
-${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}const v=${child}(input,pos,ctx)
-${emitRollback(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${mark(p)}
+${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}const v=${child}(input,pos,ctx${A})
+${rollback(p)}
 ${cfg.probe ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){EC.e=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
@@ -1782,9 +2122,9 @@ return null
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${lookaheadMiss(code[ip + 1]!, `ctx._fe=pos;ctx._fx=${xf};return FAIL`)}${emitMark(p, L.buf, L.raw, sinks)}
-${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}const v=${child}(input,pos,ctx)
-${emitRollback(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, `ctx._fe=pos;ctx._fx=${xf};return FAIL`)}${mark(p)}
+${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}const v=${child}(input,pos,ctx${A})
+${rollback(p)}
 ${cfg.probe ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 EC.e=pos
 return null
@@ -1796,12 +2136,12 @@ return null
         const clean = !REC && failureRollbackClean(prog, ip)
         const p = tmp()
         return `${head}
-${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? '' : mark(p)}
 ctx._fc=false
-const v=${child}(input,pos,ctx)
+const v=${child}(input,pos,ctx${A})
 if(v===FAIL){
 if(ctx._fc===true)return FAIL
-${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
+${clean ? '' : rollback(p)}
 EC.e=pos
 return null
 }
@@ -1855,7 +2195,7 @@ return v
         }
         const parts: string[] = [head]
         if (REC) parts.push(`const ${sy}=ctx._sync`, 'try{', pub(0))
-        parts.push(`const v0=${kids[0]}(input,pos,ctx)`, 'if(v0===FAIL)return FAIL')
+        parts.push(`const v0=${kids[0]}(input,pos,ctx${A})`, 'if(v0===FAIL)return FAIL')
         const close = (): string => REC ? `${parts.join('\n')}\n}finally{ctx._sync=${sy}}\n}` : `${parts.join('\n')}\n}`
         if (n === 1) {
           parts.push(fused
@@ -1885,8 +2225,8 @@ return v
             // before the call, so a field inside the trivia grammar cannot take it.
             const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
             parts.push(holdsGap(code, k, base, n, i, nullable)
-              ? emitHoldTerm(callee, vn, tmp(), L, skipFor(L))
-              : emitTerm(callee, vn, tmp(), L, skipFor(L)))
+              ? emitHoldTerm(callee, vn, tmp(), L, skipFor(L), A)
+              : emitTerm(callee, vn, tmp(), L, skipFor(L), A, dTl))
           }
           names.push(vn)
         }
@@ -1914,7 +2254,7 @@ return v
           // Arms named, one `case` each: the interpreter's `arms[arm](…)` is an
           // array index feeding ONE call site, which is the megamorphic site
           // this unit exists to remove.
-          const armSwitch = arms.map((a, i) => `case ${i}:v=${a}(input,pos,ctx);break`).join('\n')
+          const armSwitch = arms.map((a, i) => `case ${i}:v=${a}(input,pos,ctx${A});break`).join('\n')
           const directAscii = table.hi.length === 0
           return `${head}
 const c=${directAscii ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
@@ -2017,7 +2357,7 @@ return FAIL
           })
           const rollbackFor = (i: number): string =>
             rollbackMask === -1 || (rollbackMask & (1 << i)) !== 0
-              ? emitRollback(p, L.buf, L.raw, sinks)
+              ? rollback(p)
               : ''
           if (choiceCannotCommit(prog, ip) && !startFailureExact) {
             // A successful ordered choice does not expose any losing arm's
@@ -2058,7 +2398,7 @@ ${remember(i, 'at', pretest.sequence.expected.map((value, at) => `${decision}===
 }`
               return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if(${gate}){
 ctx._fc=false
-{const v=${arm}(input,pos,ctx)
+{const v=${arm}(input,pos,ctx${A})
 if(v!==FAIL)return v}
 {const at=ctx._fe??pos
 ${remember(i, 'at', 'ctx._fx')}}
@@ -2076,7 +2416,7 @@ ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL`
             return `${head}
 const c=${directAsciiMask ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
-${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
+${hasRollback ? mark(p) : ''}
 ${deepAt.map((at, i) => `let ${at},${deepFx[i]}`).join('\n')}
 ${maskable ? `if(c<128){
 const bits=${maskName}[${directAsciiMask ? 'c' : 'c<0?128:c'}]
@@ -2128,7 +2468,7 @@ if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.sequenc
 }`
             return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((bits&${1 << i})!==0${condition}){
 ctx._fc=false
-{const v=${arm}(input,pos,ctx)
+{const v=${arm}(input,pos,ctx${A})
 if(v!==FAIL)return v}
 ${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
 prev=${i + 1}`}
@@ -2168,7 +2508,7 @@ if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.e
 }${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
             return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
 ctx._fc=false
-{const v=${arm}(input,pos,ctx)
+{const v=${arm}(input,pos,ctx${A})
 if(v!==FAIL)return v}
 {const at=ctx._fe??pos
 if(at>best){best=at;acc=undefined}
@@ -2186,7 +2526,7 @@ ${rollbackFor(i)}
           // `choiceFx`, the arms' flatMap, set by set.
           return `${head}
 const c=${directAsciiMask ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
-${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
+${hasRollback ? mark(p) : ''}
 let acc
 let best=pos
 ${maskable ? `if(c<128){
@@ -2231,12 +2571,12 @@ return FAIL
         const m1 = tmp()
         const m2 = tmp()
         const routedCall = (target: string): string => `{const savedRouted=ctx._routed
-${emitRollback(m1, L.buf, L.raw, sinks)}
-${emitMark(m2, L.buf, L.raw, sinks, false)}
+${rollback(m1)}
+${mark(m2, false)}
 ctx._routed={value:key,span:{start:pos,end:selEnd}}
-try{v=${target}(input,pos,ctx)}finally{ctx._routed=savedRouted}
+try{v=${target}(input,pos,ctx${A})}finally{ctx._routed=savedRouted}
 break}`
-        const plainCall = (target: string): string => `v=${target}(input,selEnd,ctx);break`
+        const plainCall = (target: string): string => `v=${target}(input,selEnd,ctx${A});break`
         const armCases = arms.map((target, i) => `case ${i}:${spec.routed[i] === 1
           ? routedCall(target)
           : plainCall(target)}`).join('\n')
@@ -2261,8 +2601,8 @@ ${fold}${chain}`
         // opener. A routed arm rewinds the selector's trivia capture and gets
         // the token handed to it (`OP_ROUTED`) instead of re-matching it.
         return `${head}
-${emitMark(m1, L.buf, L.raw, sinks)}
-const sv=${selector}(input,pos,ctx)
+${mark(m1)}
+const sv=${selector}(input,pos,ctx${A})
 if(sv===FAIL)return FAIL
 const selEnd=EC.e
 const key=sv
@@ -2270,14 +2610,14 @@ ${armSelection}
 if(arm===undefined){
 ${other === undefined ? `ctx._fe=selEnd;ctx._fx=${dx};return FAIL` : ''}
 }
-${emitMark(m2, L.buf, L.raw, sinks)}
+${mark(m2)}
 let v
 switch(arm){
 ${armCases}
 ${fallbackCase}
 }
 if(v===FAIL){
-${emitRollback(m2, L.buf, L.raw, sinks)}
+${rollback(m2)}
 ${other !== undefined && !otherCommits ? 'if(arm!==undefined)' : ''}ctx._fc=true
 return FAIL
 }
@@ -2384,11 +2724,12 @@ gapped=true
         const pfd = sinks.fd ? `${p}fd` : 'undefined'
         const per = sinks.er ? `${p}er` : 'undefined'
         const rbHelper = L.raw === RAW_OMIT ? '_rbNoRawBuf' : '_rbBuf'
-        const rb = L.buf && L.raw !== 0
+        const rbLegacy = L.buf && L.raw !== 0
           ? `${rbHelper}(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
           : L.buf
             ? `rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
           : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
+        const rb = D ? dRollback(p, sinks) : rbLegacy
         const markSinks = `${sinks.fd ? `\n${p}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${sinks.er ? `\n${p}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
         const markRaw = L.raw === RAW_OMIT
           ? `${p}raw=b.rawLen`
@@ -2469,28 +2810,28 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf || D ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
-${markBody}
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}${D ? dMark(p, sinks) : `let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
+${markBody}`}
 let itemStart=cur
 let sepEnd=-1
 ${sep !== undefined ? `if(count>0){
-const lb=cstLeavesLen(ctx)
+const lb=${!D ? 'cstLeavesLen(ctx)' : DL.k === DV_DEF ? 'ks.length' : DL.k === DV_UNDEF ? '0' : 'ks!==undefined?ks.length:0'}
 let sp=cur
 ${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('sp')}){
 ${rb}
 break
 }
 `}ctx._fc=false
-${sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp) ? 'LEAD.at=cur\n' : ''}const sv=${sep}(input,sp,ctx)
+${sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp) ? 'LEAD.at=cur\n' : ''}const sv=${sep}(input,sp,ctx${A})
 if(sv===FAIL){
 ${rb}
 if(ctx._fc===true)return FAIL
 break
 }
-${keepSeparators ? '' : 'demoteCapturedToRaw(ctx,lb)\n'}sepEnd=EC.e
+${keepSeparators ? '' : !D ? 'demoteCapturedToRaw(ctx,lb)\n' : DL.k === DV_DEF ? 'if(ks.length!==lb)ks.length=lb\n' : DL.k === DV_UNDEF ? '' : 'if(ks!==undefined&&ks.length!==lb)ks.length=lb\n'}sepEnd=EC.e
 itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(input,EC.e,ctx)` : `hasTrivia?${skip}(input,EC.e,ctx):EC.e`}
 }else ${leadSkip(hasTrivia, leadTrivia, skip)}
 ` : `${leadSkip(hasTrivia, leadTrivia, skip)}
@@ -2503,7 +2844,7 @@ ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
 `}${gapCode(rb)}ctx._fc=false
-const v=${child}(input,itemStart,ctx)
+const v=${child}(input,itemStart,ctx${A})
 ${gapIp >= 0 ? 'if(gapped)GAP.at=-1\n' : ''}if(v===FAIL){
 ${REC
   // THE ROLLBACK MOVES INSIDE THE ARMS. The strict loop rolls back
@@ -2554,7 +2895,7 @@ const leaf={_tag:'leaf',value,span:{start:pos,end}}
 const kids=[leaf],rawKids=[leaf],span={start:pos,end}
 EC.e=end
 const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
-${L.buf && L.raw === RAW_OMIT
+${D ? dNode('nd', 'pos', 'end') : L.buf && L.raw === RAW_OMIT
   ? '_pushNodeNoRawBuf(ctx,nd)'
   : L.buf && L.raw === RAW_CAPTURE
     ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
@@ -2572,7 +2913,6 @@ return nd
         const tagIdx = code[ip + 6]!
         const tags = tagIdx < 0 ? 'undefined' : kRef(tagIdx)
         const tracked = op === OP_NODE_TRACK
-        const readsTrivia = (flags & 4) !== 0
         const readsState = (flags & 8) !== 0
         const hasFields = (flags & 16) !== 0
         const collapse = (flags & 32) !== 0
@@ -2594,9 +2934,9 @@ return nd
         // engine's test too.
         if (build !== undefined && passCollapse(code, ip, hostCst)) {
           return `${head}
-const v=${child}(input,pos,ctx)
+const v=${child}(input,pos,ctx${A})
 if(v!==undefined)return v
-return collapseEmpty(ctx,${build},input,pos,EC.e,${flags === 32})
+return ${!D ? 'collapseEmpty(ctx,' : DL.k === DV_UNKNOWN ? 'collapseEmptyInto(ks===_eX&&_eXm===2?undefined:ks,rs,' : 'collapseEmptyInto(ks,rs,'}${build},input,pos,EC.e,${flags === 32})
 }`
         }
         // A GATED PASS COLLAPSE (`site-labels.ts` `gatedPassCollapse`): where the
@@ -2612,13 +2952,13 @@ if(!(${[
   ...gated.lits.map(i => `gc===${(k[i] as string).codePointAt(0)!}`),
   ...triviaLead.map(r => r.lo === r.hi ? `gc===${r.lo}` : `(gc>=${r.lo}&&gc<=${r.hi})`),
 ].join('||') || 'false'})){
-const gv=${link(gated.last)}(input,pos,ctx)
+const gv=${link(gated.last)}(input,pos,ctx${A})
 if(gv!==undefined)return gv
-return collapseEmpty(ctx,${build},input,pos,EC.e,${flags === 32})
+return ${!D ? 'collapseEmpty(ctx,' : DL.k === DV_UNKNOWN ? 'collapseEmptyInto(ks===_eX&&_eXm===2?undefined:ks,rs,' : 'collapseEmptyInto(ks,rs,'}${build},input,pos,EC.e,${flags === 32})
 }
 `
           : ''
-        if (!hostCst && !tracked && build !== undefined && proj < 0
+        if (!D && !hostCst && !tracked && build !== undefined && proj < 0
           && (leanFlags === 2 || (flags === 18 || flags === 34))) {
           const fields = flags === 18
           const collapseChildren = flags === 34
@@ -2665,7 +3005,7 @@ ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined
 ctx.captureTrivia=false
 ctx._fields=${fields ? '[]' : 'undefined'}
-const v=${child}(input,pos,ctx)
+const v=${child}(input,pos,ctx${A})
 ${trailingTrivia && L.tri !== TRI_NONE
   ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})EC.e=consumeTrivia(input,EC.e,ctx)\n`
   : ''}const captured=_capturedFlatChildren(flat)
@@ -2686,17 +3026,8 @@ EC.e=end
 return nd
 }`
         }
-        const structural = build === undefined && proj < 0
-        const grammarCapture = (flags & 1) !== 0 || trailingTrivia
-        const hostCapturesThisType = structural && cfg.hostCaptureTrivia !== undefined
-          ? cfg.hostCaptureTrivia(type)
-          : undefined
+        const { structural, captureWide, keepChildren, omitsRaw } = nodeShape(code, k, ip, cfg)
         const wantFields = hasFields || hostCst
-        const captureWide = readsTrivia || hostCst
-          ? !structural || grammarCapture || hostCapturesThisType !== false
-          : hostCapturesThisType === true
-        const keepChildren = !structural || cfg.hostReadsChildren !== false || collapse || unwrap
-        const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         const ty = q(type)
         const stArg = 'ctx.state'
         const hostCall = `_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,${stArg},${tags})`
@@ -2749,6 +3080,46 @@ const tlog=buf.tl??EMPTY_TLOG`
 const hostKids=kids
 const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
 const tlog=buf.tl??EMPTY_TLOG`
+        const tail = `const end=EC.e
+const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}
+const st=${readsState ? 'ctx.state' : 'undefined'}
+let nd
+${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]
+else ` : ''}{${value}}`
+        const maskSave = structural ? `const savedMask=ctx._triviaCaptureMask
+if(_pfHost!==undefined&&_pfHost._parsemanTriviaKinds!==undefined)ctx._triviaCaptureMask=_pfHost._parsemanTriviaKinds(${ty})
+` : ''
+        const trailing = trailingTrivia && L.tri !== TRI_NONE
+          ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})EC.e=consumeTrivia(input,EC.e,ctx)\n`
+          : ''
+        if (D) {
+          // THE DIRECT FRAME. The children are a block's `ks`/`rs`, not five
+          // context slots; a node that reads its trivia log installs that log and
+          // the raw array its insertion indexes count. `captureTrivia` is written
+          // only where the label does not already prove the value this node sets.
+          const rWanted = !omitsRaw || captureWide
+          const capKnown = !structural && L.cap === (captureWide ? CAP_ON : CAP_OFF)
+          return `${head}
+${!tracked ? gp : ''}${capKnown ? '' : 'const sCap=ctx.captureTrivia\n'}const savedFields=ctx._fields
+${captureWide ? 'const sTl=ctx._cstTriviaLog,sRw=ctx._cstRawChildren\n' : ''}let v,kids,rawKids,tlog,fieldMap
+{const ks=[],rs=${rWanted ? '[]' : 'undefined'}${captureWide ? ',tl=[]' : ''}
+${captureWide ? 'ctx._cstTriviaLog=tl\nctx._cstRawChildren=rs\n' : ''}${capKnown ? '' : `ctx.captureTrivia=${captureWide}\n`}ctx._fields=${wantFields ? '[]' : 'undefined'}
+${maskSave}v=${child}(input,pos,ctx,ks,rs)
+${trailing}fieldMap=${wantFields ? 'buildFieldMap(ctx._fields)' : 'undefined'}
+ctx._fields=savedFields
+${structural ? 'ctx._triviaCaptureMask=savedMask\n' : ''}${captureWide ? 'ctx._cstTriviaLog=sTl\nctx._cstRawChildren=sRw\n' : ''}${capKnown ? '' : 'ctx.captureTrivia=sCap\n'}if(v!==FAIL){
+kids=_capturedFlatChildren(ks)
+rawKids=${omitsRaw ? 'EMPTY_CH' : 'rs.length===0?EMPTY_CH:rs'}
+tlog=${captureWide ? 'tl.length===0?EMPTY_TLOG:tl' : 'EMPTY_TLOG'}
+}}
+if(v===FAIL)return FAIL
+const hostKids=kids
+${tail}
+${dNode('nd', 'pos', 'end')}
+EC.e=end
+return nd
+}`
+        }
         return `${head}
 ${!hostCst && !tracked ? gp : ''}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf
@@ -2756,12 +3127,8 @@ ${openCapture}
 ctx.captureTrivia=${captureWide}
 const savedFields=ctx._fields
 ctx._fields=${wantFields ? '[]' : 'undefined'}
-${structural ? `const savedMask=ctx._triviaCaptureMask
-if(_pfHost!==undefined&&_pfHost._parsemanTriviaKinds!==undefined)ctx._triviaCaptureMask=_pfHost._parsemanTriviaKinds(${ty})
-` : ''}const v=${child}(input,pos,ctx)
-${trailingTrivia && L.tri !== TRI_NONE
-  ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})EC.e=consumeTrivia(input,EC.e,ctx)\n`
-  : ''}const fieldMap=${wantFields ? 'buildFieldMap(ctx._fields)' : 'undefined'}
+${maskSave}const v=${child}(input,pos,ctx${A})
+${trailing}const fieldMap=${wantFields ? 'buildFieldMap(ctx._fields)' : 'undefined'}
 ctx._fields=savedFields
 ${structural ? 'ctx._triviaCaptureMask=savedMask\n' : ''}${finishCapture}
 ctx._cstBuf=sBuf
@@ -2771,12 +3138,7 @@ ctx._cstRawChildren=sRaw
 ctx._cstTriviaLog=sTl
 ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
-const end=EC.e
-const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}
-const st=${readsState ? 'ctx.state' : 'undefined'}
-let nd
-${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]
-else ` : ''}{${value}}
+${tail}
 ${L.buf && L.raw === RAW_OMIT
   ? '_pushNodeNoRawBuf(ctx,nd)'
   : L.buf && L.raw === RAW_CAPTURE
@@ -2799,12 +3161,30 @@ return nd
   // A selective assembly serves only its selected sites; the closure engine
   // serves every other rule entry and scan root (`assemble.ts`).
   const served = (ip: number): boolean => select === undefined || select.has(resolveAlias(ip))
+  /**
+   * A body called from OUTSIDE the scope keeps the three-argument signature. In
+   * direct mode it is an adapter: the caller's collector becomes `ks`/`rs` for
+   * the call (`_eIn`), and goes back to its own engine's form after (`_eOut`).
+   */
+  const entryDefs: string[] = []
+  const entryNames = new Map<string, string>()
+  const entryOf = (fname: string): string => {
+    if (!D) return fname
+    const hit = entryNames.get(fname)
+    if (hit !== undefined) return hit
+    const nm = `_e${fname.slice(3)}`
+    entryNames.set(fname, nm)
+    // `finally`: a reducer that throws (jess's dialects reject on purpose) must
+    // not leave the caller's collector detached from its context.
+    entryDefs.push(`function ${nm}(input,pos,ctx){if(_eIn(ctx)===0)return ${fname}(input,pos,ctx);try{return ${fname}(input,pos,ctx,_eK,_eR)}finally{_eOut(ctx)}}`)
+    return nm
+  }
   const ruleEntries: string[] = []
   for (const [rname, entryIp] of Object.entries(prog.rules)) {
     if (!served(entryIp)) continue
     // `_r_<Name>` — the composition surface, in `codegen.ts`'s own spelling and
     // deliberately NOT namespaced, so a sibling calls it by name.
-    const target = link(entryIp)
+    const target = entryOf(link(entryIp))
     const rn = `_r_${rname.replace(/[^A-Za-z0-9_$]/g, '_')}`
     bodies.push(`const ${rn}=${target}`)
     ruleEntries.push(`${q(rname)}:${rn}`)
@@ -2816,7 +3196,7 @@ return nd
   for (const ip of extraIps) {
     if (!served(ip)) continue
     exported.add(ip)
-    extra.push(`${ip}:${link(ip)}`)
+    extra.push(`${ip}:${entryOf(link(ip))}`)
   }
   // Selected sites a CLOSURE piece may call: every selected child of an
   // unselected reachable site. Linking one may lower it for the first time,
@@ -2831,7 +3211,7 @@ return nd
         const target = resolveAlias(kid)
         if (!select.has(target) || exported.has(target)) continue
         exported.add(target)
-        extra.push(`${target}:${link(target)}`)
+        extra.push(`${target}:${entryOf(link(target))}`)
       }
     }
   }
@@ -2851,24 +3231,36 @@ scan:function(s){const o=_pfScan;_pfScan=s;return o}`
     if (ki === TRI_NONE) return 'null'
     return swapLegal && !triviaLabelled[ki]! && t.triviaScan[ki] != null ? hoist('ts', `TRIVIASCAN[${ki}]`) : 'null'
   }
+  // In direct mode the closure piece is handed a capture buffer whose arrays are
+  // the caller's `ks`/`rs` (`_xOpen`), the form its own engine reads.
+  const externalCall = (ip: number): string => {
+    const call = `v=_xp${ip}(input,pos,ctx)`
+    if (!D) return `const ${call}`
+    const k = dlabelAt(ip).k
+    const framed = `{const b=_xOpen(ctx,ks,rs);${call};_xClose(ctx,b,ks,rs)}`
+    return k === DV_UNDEF ? `let ${call}` : k === DV_DEF ? `let v\n${framed}` : `let v\nif(ks===undefined)${call}\nelse${framed}`
+  }
   const externalDefs = select === undefined ? '' : `let _xScan
 ${externals.map(ip => `let _xp${ip}
-function _px${ip}(input,pos,ctx){const o=_xScan(${scannerFor(ip)});const v=_xp${ip}(input,pos,ctx);_xScan(o);return v}`).join('\n')}
+function _px${ip}(input,pos,ctx${A}){const o=_xScan(${scannerFor(ip)})
+${externalCall(ip)}
+_xScan(o);return v}`).join('\n')}
 `
 
   // The per-label trivia scans sit AFTER the hoisted pool they close over: they
   // are `function` declarations, so a body may call one that is textually below
   // it, but the `const _ts<N>` each one reads must be initialised before any
   // parse runs, not merely before the declaration is evaluated.
-  const source = `${RUNTIME_PRELUDE}${needsNoRawPrelude ? NO_RAW_RUNTIME_PRELUDE : ''}
+  const scope = `
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${choiceDefs.join('\n')}
 ${bodies.join('\n')}
+${entryDefs.join('\n')}
 ${externalDefs}function _begin(ctx){
 const host=ctx.build
 if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])
-_pfDepth++
+${D ? 'else _eS.length=0\n' : ''}_pfDepth++
 _pfScan=null
 _pfHost=host
 }
@@ -2894,6 +3286,9 @@ end:function(){return EC.e},
 begin:_begin,
 finish:_finish${hybrid}
 }`
+  const source = D
+    ? `${shakePrelude(RUNTIME_PRELUDE + DIRECT_RUNTIME_PRELUDE, scope)}${scope}`
+    : `${RUNTIME_PRELUDE}${needsNoRawPrelude ? NO_RAW_RUNTIME_PRELUDE : ''}${scope}`
 
   return {
     source, reached, masks, classes, armExpected, siteBytes,

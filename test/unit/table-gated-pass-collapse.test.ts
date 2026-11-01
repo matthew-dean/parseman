@@ -23,21 +23,33 @@ const g = rules({ trivia: regex(/ +/) }, (g: Record<string, Combinator<unknown>>
   Word: node('Word', regex(/[a-z]+/), children => (children[0] as { value: string }).value === 'u' ? undefined : { word: children[0] }),
 })) as Record<string, Combinator<unknown>>
 
-const CFG = { hostCst: false, hostReadsChildren: true, trackLines: false, tolerant: false, coverage: false, probe: false }
+const CFG = { hostCst: false, hostReadsChildren: true, trackLines: false, tolerant: false, coverage: false, probe: false, direct: false }
 
-function frames(prog: TableProgram, input: string): number {
-  const linked = assemble(resolveTable(prog), prog, CFG)
+/**
+ * Node frames one parse opens. Under the collector protocol a frame installs a
+ * collector on the context. Under direct values (`direct`) its children are a
+ * local array, and what it still writes to the context is `_fields`, saved and
+ * restored once per frame.
+ */
+function frames(prog: TableProgram, input: string, direct = false): number {
+  const linked = assemble(resolveTable(prog), prog, { ...CFG, direct })
   const seen = new Set<unknown>()
   let n = 0
+  let fieldWrites = 0
   const ctx = new Proxy(createParseContext(), {
     set(target, key, value) {
       if ((key === '_cstBuf' || key === '_cstChildren') && value !== undefined && !seen.has(value)) { seen.add(value); n++ }
+      if (key === '_fields') fieldWrites++
       return Reflect.set(target, key, value)
     },
   }) as ParseContext
   linked.begin(ctx)
   linked.pieces.Root!(input, 0, ctx)
   linked.finish()
+  if (direct) {
+    expect(n).toBe(0)
+    return fieldWrites / 2
+  }
   return n
 }
 
@@ -57,6 +69,13 @@ describe('gated pass-through collapse', () => {
       expect(frames(prog, '!a b')).toBe(4)
     })
   }
+
+  it('emitted with direct values: the same frames, none of them on the context', () => {
+    const prog = emittedOf(encodeTable(g))
+    expect(frames(prog, 'a b', true)).toBe(3)
+    expect(frames(prog, '-a b', true)).toBe(4)
+    expect(frames(prog, '!a b', true)).toBe(4)
+  })
 
   it('builds the reference tree in both engines', () => {
     const prog = encodeTable(g)

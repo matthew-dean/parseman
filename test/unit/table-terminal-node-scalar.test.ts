@@ -90,12 +90,19 @@ function precompiled(
 function expectSpecial(prog: TableProgram): void {
   const ip = nodeIp(prog)
   expect(scalarTerminalNodeChild(prog.code, ip)).toBe(prog.code[ip + 2])
-  const source = emitAssemblySource(resolveTable(prog), prog, STRICT, [], true).source
+  // The collector protocol: the publication reads the context's collectors.
+  const collectors = { ...STRICT, direct: false }
+  const source = emitAssemblySource(resolveTable(prog), prog, collectors, [], true).source
   expect(source).toContain('const kids=[leaf],rawKids=[leaf],span={start:pos,end}')
   expect(source).toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
-  expect(emitAssemblySource(resolveTable(prog), prog, STRICT).source)
+  expect(emitAssemblySource(resolveTable(prog), prog, collectors).source)
     .not.toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
   expect(source).not.toContain('const sCh=ctx._cstChildren')
+  // Direct values: the same materialization, published into the caller's arrays.
+  const direct = emitAssemblySource(resolveTable(prog), prog, STRICT, [], true).source
+  expect(direct).toContain('const kids=[leaf],rawKids=[leaf],span={start:pos,end}')
+  expect(direct).toContain('rs.push(rawEntry(nd,input,pos,end))')
+  expect(direct).not.toContain('const sCh=ctx._cstChildren')
 }
 
 describe('direct terminal-node scalar materialization', () => {
@@ -238,7 +245,7 @@ describe('direct terminal-node scalar materialization', () => {
       const bad = source.replaceAll(
         'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))',
         'pushCstChild(ctx,nd,undefined)',
-      )
+      ).replaceAll('rs.push(rawEntry(nd,input,pos,end))', 'rs.push(undefined)')
       expect(bad).not.toBe(source)
       return bad
     })

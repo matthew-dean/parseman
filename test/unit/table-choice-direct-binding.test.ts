@@ -386,7 +386,7 @@ describe('direct-bound choice topology', () => {
     }
 
     const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
-    const target = /\{const v=(_pf\d+)\(input,pos,ctx\)\nif\(v!==FAIL\)return v\}/
+    const target = /\{const v=(_pf\d+)\(input,pos,ctx(?:,ks,rs)?\)\nif\(v!==FAIL\)return v\}/
     const calls = [...emitted.source.matchAll(new RegExp(target.source, 'g'))]
     expect(calls.length).toBeGreaterThanOrEqual(2)
     const wrong = emitted.source.replace(calls[1]![0], calls[1]![0].replace(calls[1]![1]!, calls[0]![1]!))

@@ -87,6 +87,28 @@ type CollapseBuild = (
  * child's publication back and publish the build instead, as the frame would
  * have. The caller has already set `EC.e`.
  */
+/**
+ * `collapseEmpty` for a direct-values assembly, where the collector the collapse
+ * publishes into is the caller's `children`/`raw` arrays rather than a buffer on
+ * the context. Same build call, same empty sentinels, same publication.
+ */
+export function collapseEmptyInto(
+  children: unknown[] | undefined, raw: unknown[] | undefined, build: CollapseBuild,
+  input: string, pos: number, end: number, readsRaw: boolean,
+): unknown {
+  if (children !== undefined) {
+    children.pop()
+    if (raw !== undefined) raw.pop()
+  }
+  const rawKids = readsRaw ? [rawEntry(undefined, input, pos, end)] : EMPTY_KIDS
+  const nd = build(EMPTY_KIDS, undefined, { start: pos, end }, rawKids, EMPTY_TRIVIA, undefined)
+  if (children !== undefined) {
+    children.push(nd)
+    if (raw !== undefined) raw.push(rawEntry(nd, input, pos, end))
+  }
+  return nd
+}
+
 export function collapseEmpty(
   ctx: ParseContext, build: CollapseBuild, input: string, pos: number, end: number, readsRaw: boolean,
 ): unknown {

@@ -140,12 +140,21 @@ function hasInlineScopeHazard(fn: Fn): boolean {
   return hazard
 }
 
+/**
+ * `(input,pos,ctx)`, or the direct-values form `(input,pos,ctx,ks,rs)` whose two
+ * trailing parameters are the caller's children and raw arrays.
+ */
 function hasInlineSignature(fn: Fn): boolean {
   const params = nodes(fn.node.params)
-  return params.length === 3
+  return (params.length === 3 || (params.length === 5 && nameOf(params[3]) === 'ks' && nameOf(params[4]) === 'rs'))
     && nameOf(params[0]) === 'input'
     && nameOf(params[1]) === 'pos'
     && nameOf(params[2]) === 'ctx'
+}
+
+/** The direct-values parameters `fn` takes, or none. */
+function directParams(fn: Fn): boolean {
+  return nodes(fn.node.params).length === 5
 }
 
 function render(source: string, start: number, end: number, edits: readonly Edit[]): string {
@@ -348,8 +357,9 @@ export function supercompileEmittedAssembly(
       if (hit !== undefined && hit !== null) {
         const callee = Number(hit[1])
         const args = nodes(node.arguments)
-        const transformable = current !== undefined && owner !== undefined && args.length === 3
+        const transformable = current !== undefined && owner !== undefined && (args.length === 3 || args.length === 5)
           && nameOf(args[0]) === 'input' && nameOf(args[2]) === 'ctx'
+          && args.slice(3).every(arg => nameOf(arg) !== undefined)
           && isDirectCallUse(node, parent, owner) && isListStatement(owner, ownerParent)
         if (current === undefined || owner === undefined) externalRefs.add(callee)
         else {
@@ -440,9 +450,23 @@ export function supercompileEmittedAssembly(
       const label = `_z${id}`
       const at = `_z${id}p`
       const nested = renderBody(call.callee, { result, label })
+      // A direct-values callee reads `ks`/`rs`. Passed straight through they are
+      // already the names in scope; otherwise they are bound through temporaries,
+      // so `ks=ks` never reads the binding it is declaring.
+      let outer = ''
+      let inner = ''
+      if (directParams(fns.get(call.callee)!)) {
+        const kArg = call.args[3] === undefined ? undefined : src(call.args[3])
+        const rArg = call.args[4] === undefined ? undefined : src(call.args[4])
+        if (kArg === undefined && rArg === undefined) inner = ',ks,rs'
+        else if (kArg !== 'ks' || rArg !== 'rs') {
+          outer = `,_z${id}k=${kArg},_z${id}q=${rArg}`
+          inner = `,ks=_z${id}k,rs=_z${id}q`
+        }
+      }
       return {
         value: result,
-        prefix: `let ${result},${at}=${src(call.args[1]!)}\n${label}:{let pos=${at}\n${nested}\n}\n`,
+        prefix: `let ${result},${at}=${src(call.args[1]!)}${outer}\n${label}:{let pos=${at}${inner}\n${nested}\n}\n`,
       }
     }
 

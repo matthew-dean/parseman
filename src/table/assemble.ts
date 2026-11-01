@@ -107,7 +107,7 @@ import {
   EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
-import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
+import { collapseEmpty, collapseEmptyInto, lead, rawEntry, spanLines } from './run-support.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows, newGapSlot } from './gap-gate.ts'
 import { failCleanAnalysis } from './fail-clean.ts'
@@ -294,6 +294,12 @@ export type RunCfg = {
    * node's trivia.
    */
   readonly hostCaptureTrivia?: ((type: string) => boolean) | undefined
+  /**
+   * `false` emits the collector protocol where the emitted assembly would carry
+   * direct values. Never set by a parse; a test that watches the collectors on
+   * the context sets it (`emit-assembly.ts`).
+   */
+  readonly direct?: boolean
   /** `ctx.trackLines` — decides whether the trivia leaf swap is legal at all. */
   readonly trackLines: boolean
   /**
@@ -4191,7 +4197,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
-        collapseEmpty, GAP,
+        collapseEmpty, GAP, collapseEmptyInto,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4275,7 +4281,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
-        collapseEmpty, GAP,
+        collapseEmpty, GAP, collapseEmptyInto,
       )
       emitReached = em.reached
     } catch (e) {

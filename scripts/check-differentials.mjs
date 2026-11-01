@@ -292,6 +292,28 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'direct-values',
+    needs: 'repo',
+    file: 'test/unit/table-direct-values.test.ts',
+    legs: 'the emitted assembly with direct values (whole, and selective beside closure pieces) vs the same assembly on the collector protocol vs the closure engine, one encoded table per grammar: whole RunResult digests per input, and behind five kinds of caller collector, what the caller\'s collector holds afterwards',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-direct-values.test.ts']),
+    plants: [
+      { defect: 'direct-leaf-push-dropped', expect: 'moves' },
+      { defect: 'direct-rollback-skipped', expect: 'moves' },
+      { defect: 'direct-truncate-wrong', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'direct-values-failures',
+    needs: 'repo',
+    file: 'test/unit/table-direct-values-failures.test.ts',
+    legs: 'the same four legs on generated rejected input (prefixes and one-character deletions, from every rule of each grammar): ok, span, expected set in order, and unconsumedFrom per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-direct-values-failures.test.ts']),
+    plants: [{ defect: 'direct-node-fail-position', expect: 'moves' }],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',

@@ -193,7 +193,11 @@ describe('emitted ordered-choice rollback elision', () => {
     const strict = emitAssemblySource(resolveTable(prog), prog, STRICT).source
     const tolerantProg = ownTableProgram({ ...prog, rec: 1 })
     const tolerant = emitAssemblySource(resolveTable(tolerantProg), tolerantProg, TOLERANT).source
-    expect((strict.match(/_rbBuf\(ctx/g) ?? []).length).toBe(1)
+    // No rollback is emitted. Under the collector protocol the one `_rbBuf` is the
+    // shared helper's own declaration; direct values print no helper nobody calls.
+    const collectors = emitAssemblySource(resolveTable(prog), prog, { ...STRICT, direct: false }).source
+    expect((collectors.match(/_rbBuf\(ctx/g) ?? []).length).toBe(1)
+    expect(strict).not.toMatch(/_rbK\(/)
     expect((tolerant.match(/rollbackTriviaAt\(ctx/g) ?? []).length).toBeGreaterThan(0)
 
     const emitted = precompiled(prog)
