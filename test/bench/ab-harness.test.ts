@@ -381,6 +381,24 @@ describe('a chain of sub-threshold regressions passes every per-release step and
     // And the peak is not twitchy: one step from it is inside the allowance.
     expect(breaches(chain[0]!, chain[1]!, peak, calibrated(peak))).toBe(false)
   })
+
+  it.each(['grammar-density', 'workloads'])('%s: a peak breach is a per-release breach, so the peak step may skip a pair step one measured', (gate) => {
+    // `peakIsPreviousRelease` skips the peak run when its pair is step one's. That loses
+    // nothing only while the per-release rule is at least as strict as the peak's.
+    const config = JSON.parse(readFileSync(fileURLToPath(new URL(`../../bench/${gate}/config.json`, import.meta.url)), 'utf8')) as {
+      thresholds: Thresholds
+      peak: { allowancePct: number }
+    }
+    const t = config.thresholds
+    const peak = peakThresholds(config.peak.allowancePct)
+    expect(t.signTest.medianPct).toBeLessThanOrEqual(peak.signTest.medianPct)
+    expect(t.signTest.minPct).toBeLessThanOrEqual(peak.signTest.minPct)
+    expect(t.signTest.winRateCeiling).toBeGreaterThanOrEqual(peak.signTest.winRateCeiling)
+    const ref = [100, 101, 99, 100.5, 99.5]
+    const head = ref.map(x => x * (1 + (config.peak.allowancePct + 0.5) / 100))
+    expect(breaches(ref, head, peak, calibrated(peak))).toBe(true)
+    expect(breaches(ref, head, t, calibrated(t))).toBe(true)
+  })
 })
 
 describe('the density peak clause is a required step', () => {
@@ -414,6 +432,11 @@ describe('the peak clauses have no waiver, and do not re-measure a pair the per-
     expect(src).toMatch(/const peakIsPrevious = PEAK && HEAD_REF === null \? peakIsPreviousRelease\(ROOT, CONFIG\.peak\.sha\) : null/)
     // The skip comes before either side is materialised.
     expect(src.indexOf('if (peakIsPrevious !== null)')).toBeLessThan(src.indexOf('materialise(GATE'))
+    // A drawdown fails: the branch that reports one ends in exit 1, with no way to 0.
+    const drawdown = src.slice(src.indexOf('DRAWDOWN —'))
+    const branch = drawdown.slice(0, drawdown.indexOf('\n}\n'))
+    expect(branch).toMatch(/process\.exit\(1\)\s*$/)
+    expect(branch).not.toMatch(/process\.exit\((?!1\))/)
   })
 
   it('finds the previous release only when it is the peak commit', () => {
