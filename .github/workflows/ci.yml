@@ -303,7 +303,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Rollback-density perf gate vs the previous release
-        run: pnpm perf:guard:grammars ${BASE_SHA:+--merge-base=$BASE_SHA}
+        run: pnpm perf:guard:grammars --report-only ${BASE_SHA:+--merge-base=$BASE_SHA}
         env:
           # A PR's base: the gate also REPORTS HEAD against it (report only — the
           # verdict stays anchored on the previous release). See
@@ -349,7 +349,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Realistic-workload perf gate vs the previous release
-        run: pnpm perf:workloads ${BASE_SHA:+--merge-base=$BASE_SHA}
+        run: pnpm perf:workloads --report-only ${BASE_SHA:+--merge-base=$BASE_SHA}
         env:
           # A PR's base: the gate also REPORTS HEAD against it (report only — the
           # verdict stays anchored on the previous release). See
@@ -373,13 +373,83 @@ jobs:
       # it refuses. On a push (no PR) there is no base, and the clause is unwaivable,
       # which is the correct default for the branch everything is measured against.
       - name: Peak clause — no drawdown from the fastest release on record
-        run: pnpm perf:workloads:peak ${BASE_SHA:+--base=$BASE_SHA}
+        run: pnpm perf:workloads:peak --report-only ${BASE_SHA:+--base=$BASE_SHA}
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
   # Shipping macro-parser gate. The grammar/workload jobs above exercise runtime
   # compile(); they do not instantiate Jess's macro-emitted parser. Pin Jess as
   # well as parseman so the fixture and grammar side cannot drift under the gate.
+  # The perf VERDICT — cross-process, default V8 (see docs/design/perf-gates.md).
+  #
+  # The two in-process jobs above put four instances of every case in one heap, so
+  # V8's per-instance choices (pretenuring, GC timing, build order) land on one side
+  # of a pair and read as ±5–25% per pass on identical code (#175). They stay as a
+  # fast advisory first look, `--report-only`. This gate changes no V8 setting: every
+  # timed parser is the only parser in its process, as it is for a user, and it buys
+  # resolution with processes instead: 200 rounds per case (10 shards x 20), sized by
+  # the power analysis in perf-harness-interleaving.md. Shards run in parallel; `xproc-perf` takes one
+  # verdict over all of them and FAILS if any shard is missing.
+  #
+  # `target`: `release` is HEAD vs the previous release over every case; `peak` is the
+  # workloads vs the fastest release on record, at the committed allowance.
+  xproc-shard:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [release, peak]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Measure one shard
+        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --shard-out=xproc-${{ matrix.target }}-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xproc-${{ matrix.target }}-${{ matrix.shard }}
+          path: xproc-${{ matrix.target }}-${{ matrix.shard }}.json
+          retention-days: 7
+
+  xproc-perf:
+    needs: [changes, xproc-shard]
+    if: always() && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [release, peak]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xproc-${{ matrix.target }}-*
+          path: xproc-shards
+          merge-multiple: true
+      - name: Verdict over every shard
+        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --aggregate=xproc-shards --expect-shards=10
+
   macro-perf:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -521,7 +591,7 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: [changes, test-matrix, docs-verify, grammar-perf, release-gate, workload-perf, size-gate, choice-cost-gate]
+    needs: [changes, test-matrix, docs-verify, grammar-perf, release-gate, workload-perf, xproc-perf, size-gate, choice-cost-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -533,6 +603,7 @@ jobs:
           perf='${{ needs.grammar-perf.result }}'
           release='${{ needs.release-gate.result }}'
           workload='${{ needs.workload-perf.result }}'
+          xproc='${{ needs.xproc-perf.result }}'
           size='${{ needs.size-gate.result }}'
           choicecost='${{ needs.choice-cost-gate.result }}'
           code='${{ needs.changes.outputs.code }}'
@@ -580,6 +651,16 @@ jobs:
               [ "$code" = "false" ] || { echo "::error::workload-perf skipped but code changed"; exit 1; }
               echo "documentation-only change — workload perf gate intentionally skipped" ;;
             *) echo "::error::workload-perf result: $workload"; exit 1 ;;
+          esac
+
+          # The cross-process perf verdict. The two jobs above are advisory now
+          # (report-only), so this is the result that blocks.
+          case "$xproc" in
+            success) ;;
+            skipped)
+              [ "$code" = "false" ] || { echo "::error::xproc-perf skipped but code changed"; exit 1; }
+              echo "documentation-only change — cross-process perf gate intentionally skipped" ;;
+            *) echo "::error::xproc-perf result: $xproc"; exit 1 ;;
           esac
 
           # And the size gate, on the same footing. Speed had two required results

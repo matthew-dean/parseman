@@ -38,10 +38,18 @@
  *   pnpm perf:xproc:gate --case=json          # substring filter on case id
  *   pnpm perf:xproc:gate --rounds=20          # override the configured round count
  *   pnpm perf:xproc:gate --report-only        # measure and print; never fail
+ *   pnpm perf:xproc:gate --shard-out=<file>   # measure, write the rounds to <file>, no verdict
+ *   pnpm perf:xproc:gate --aggregate=<dir> --expect-shards=<n>   # the verdict over all n shards
+ *   pnpm perf:xproc:gate --seed=<n>           # replay a run's order and layout padding
+ *
+ * Sharding is how CI buys rounds: each process is one draw of V8's layout and
+ * pretenuring decisions, as it is for a user, so resolving a ~2% change takes many
+ * processes per case. Shards run on separate runners, in parallel, and the verdict
+ * is taken once over all their rounds.
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { materialise, previousRelease, git, fail, median, sign, sameSource, summary } from './ab-harness.ts'
@@ -130,6 +138,8 @@ const PEAK = process.argv.includes('--peak')
 const PEAK_CONFIG = (JSON.parse(readFileSync(path.join(HERE, 'workloads', 'config.json'), 'utf8')) as {
   peak: { sha: string; version: string; allowancePct: number }
 }).peak
+const SHARD_OUT = argValue('--shard-out')
+const AGGREGATE = argValue('--aggregate')
 const REF_ARG = argValue('--ref')
 if (PEAK && (SELF || REF_ARG !== null)) fail(GATE, '--peak names its own reference and cannot be combined with --ref or --self.')
 const SUITE = PEAK ? 'workloads' : argValue('--suite')
@@ -144,8 +154,8 @@ const ROUNDS = Number(argValue('--rounds') ?? CONFIG.rounds)
 if (!Number.isSafeInteger(ROUNDS) || ROUNDS < 2) fail(GATE, `--rounds must be an integer >= 2`)
 
 const COPY = ['bench/grammar-density', 'bench/workloads', 'examples'] as const
-const refDir = materialise(GATE, ROOT, REF, COPY)
-const headDir = HEAD_REF === null ? workingTreeCopy() : materialise(GATE, ROOT, HEAD_REF, COPY)
+const refDir = AGGREGATE === null ? materialise(GATE, ROOT, REF, COPY) : ''
+const headDir = AGGREGATE !== null ? '' : HEAD_REF === null ? workingTreeCopy() : materialise(GATE, ROOT, HEAD_REF, COPY)
 
 /**
  * The working tree, copied to a sibling of the reference's directory so neither
@@ -164,13 +174,32 @@ function workingTreeCopy(): string {
 }
 const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF)
 
+/**
+ * Every random choice comes from one seeded generator, so a run can be replayed:
+ * `--seed=<n>` reproduces which side went first in every round and every process's
+ * layout padding. The seed is printed and written to the shard file.
+ */
+const SEED = Number(argValue('--seed') ?? Math.floor(Math.random() * 2 ** 31))
+let state = SEED >>> 0
+const random = (): number => {
+  // mulberry32
+  state = (state + 0x6d2b79f5) >>> 0
+  let t = state
+  t = Math.imul(t ^ (t >>> 15), t | 1)
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+  return ((t ^ (t >>> 14)) >>> 0) / 2 ** 32
+}
+
 const WORKER_TIMEOUT_MS = 180_000
 function measure(dir: string, suite: string, id: string): Reading {
+  const heapPad = Math.floor(random() * 65_536)
+  const envPad = Math.floor(random() * 4096)
   const r = spawnSync(
     process.execPath,
-    ['--import', 'tsx/esm', SELF_FILE, `--worker=${JSON.stringify([dir, suite, id, Math.floor(Math.random() * 65_536)])}`],
-    // The environment's size moves the initial stack, so it is randomised too.
-    { cwd: ROOT, encoding: 'utf8', timeout: WORKER_TIMEOUT_MS, env: { ...process.env, PM_LAYOUT_PAD: 'x'.repeat(Math.floor(Math.random() * 4096)) } },
+    ['--import', 'tsx/esm', SELF_FILE, `--worker=${JSON.stringify([dir, suite, id, heapPad])}`],
+    // The environment's size moves the initial stack, so it is randomised too. The
+    // variable's name is read by nothing: it is only bytes in the environment.
+    { cwd: ROOT, encoding: 'utf8', timeout: WORKER_TIMEOUT_MS, env: { ...process.env, PM_XPROC_LAYOUT_PAD: 'x'.repeat(envPad) } },
   )
   if (r.error !== undefined) fail(GATE, `worker for ${id} in ${dir} did not complete: ${String(r.error)}`)
   if (r.status !== 0) fail(GATE, `worker for ${id} in ${dir} exited ${r.status}:\n${r.stderr.slice(-2000)}`)
@@ -203,17 +232,38 @@ function signTestP(k: number, n: number): number {
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
 console.log(
   `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`
-  + `\n  ${ROUNDS} rounds x ${cases.length} cases, ONE PROCESS PER SIDE PER CASE PER ROUND, order alternated, default V8`
+  + `\n  ${ROUNDS} rounds x ${cases.length} cases, ONE PROCESS PER SIDE PER CASE PER ROUND, random order, default V8, seed ${SEED}`
   + `\n  a case FAILS when its median per-round slowdown exceeds ${FLOOR}% AND the sign test over rounds gives p < ${CONFIG.alpha}\n`,
 )
 
+type Shard = { reference: string; seed: number; logs: Record<string, number[]>; minLogs: Record<string, number[]> }
 const logs = new Map(cases.map(c => [c.id, [] as number[]]))
 const minLogs = new Map(cases.map(c => [c.id, [] as number[]]))
+if (AGGREGATE !== null) {
+  const files = readdirSync(AGGREGATE).filter(f => f.endsWith('.json'))
+  // A missing shard is a FAILURE, never a smaller sample: a shard that crashed or
+  // timed out would otherwise pass the gate on the rounds the others happened to finish.
+  const expected = Number(argValue('--expect-shards'))
+  if (!Number.isSafeInteger(expected) || expected < 1) fail(GATE, '--aggregate needs --expect-shards=<n>')
+  if (files.length !== expected) fail(GATE, `expected ${expected} shard files in ${AGGREGATE}, found ${files.length}: ${files.join(', ')}`)
+  for (const f of files) {
+    const shard = JSON.parse(readFileSync(path.join(AGGREGATE, f), 'utf8')) as Shard
+    if (shard.reference !== REF) fail(GATE, `shard ${f} measured against ${shard.reference}, not ${REF}`)
+    console.log(`  shard ${f}: seed ${shard.seed}`)
+    for (const c of cases) {
+      const d = shard.logs[c.id]
+      if (d === undefined) fail(GATE, `shard ${f} has no rounds for ${c.id}`)
+      logs.get(c.id)!.push(...d)
+      minLogs.get(c.id)!.push(...shard.minLogs[c.id]!)
+    }
+  }
+  console.log(`  aggregated ${files.length} shards, ${logs.get(cases[0]!.id)!.length} rounds per case`)
+}
 const t0 = Date.now()
-for (let round = 0; round < ROUNDS; round++) {
+for (let round = 0; AGGREGATE === null && round < ROUNDS; round++) {
   for (let n = 0; n < cases.length; n++) {
     const c = cases[n]!
-    const refFirst = (round + n) % 2 === 0
+    const refFirst = random() < 0.5
     const first = measure(refFirst ? refDir : headDir, c.suite, c.id)
     const second = measure(refFirst ? headDir : refDir, c.suite, c.id)
     const [ref, head] = refFirst ? [first, second] : [second, first]
@@ -242,9 +292,15 @@ for (const r of rows) {
   )
 }
 console.log(`ROWS ${JSON.stringify(Object.fromEntries(cases.map(c => [c.id, logs.get(c.id)!.map(x => +pct(x).toFixed(3))])))}`)
+if (SHARD_OUT !== null) {
+  const shard: Shard = { reference: REF, seed: SEED, logs: Object.fromEntries(logs), minLogs: Object.fromEntries(minLogs) }
+  writeFileSync(SHARD_OUT, JSON.stringify(shard))
+  console.log(`\n${GATE}: wrote ${ROUNDS} rounds to ${SHARD_OUT}; the verdict is taken over all shards.`)
+  process.exit(0)
+}
 const gating = !REPORT_ONLY && !SELF && !IDENTICAL
 summary([
-  `#### ${GATE}: ${SELF ? 'self-check' : `HEAD vs ${REFERENCE.tag}`} — one process per side per case, ${ROUNDS} rounds`,
+  `#### ${GATE}: ${SELF ? 'self-check' : `HEAD vs ${REFERENCE.tag}`} — one process per side per case, ${logs.get(cases[0]!.id)!.length} rounds`,
   '',
   '| case | center Δ | min Δ | head slower | sign-test p | verdict |',
   '| --- | ---: | ---: | ---: | ---: | --- |',
