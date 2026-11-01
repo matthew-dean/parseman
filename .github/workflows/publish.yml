@@ -17,10 +17,11 @@ name: Publish
 #   prepare  installs dependencies, builds, runs the preflight and packs the tarball.
 #            That runs every devDependency, three packages' install scripts and the whole
 #            test suite, so this job holds a read-only token and nothing else.
-#   publish  holds the OIDC token, a `contents: write` token and the deploy key. It
-#            installs nothing and builds nothing: it re-stamps the same commit (the same
-#            sha, checked) with the dependency-free scripts/release.mjs, publishes the
-#            tarball `prepare` packed, and pushes the record and the tag.
+#   publish  holds the OIDC token, a `contents: write` token and the deploy key. Apart
+#            from the pinned npm it publishes with, it installs nothing and builds
+#            nothing: it re-stamps the same commit (the same sha, checked) with the
+#            dependency-free scripts/release.mjs, publishes the tarball `prepare` packed,
+#            and pushes the record and the tag.
 #
 # Any step of a job with `id-token: write` can request an OIDC token, and a job's secrets
 # sit in the runner's memory for the whole job. In one job, a dependency that ran during
@@ -217,8 +218,8 @@ jobs:
       id-token: write
       # Pushing the vX.Y.Z tag after the publish.
       contents: write
-    # Nothing below installs a dependency, builds or runs a test: only git, npm and
-    # scripts/release.mjs, which is dependency-free.
+    # Apart from the pinned npm, nothing below installs a package, builds or runs a test:
+    # only git, that npm and scripts/release.mjs, which is dependency-free.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
