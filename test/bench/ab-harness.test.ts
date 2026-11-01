@@ -157,7 +157,10 @@ describe('every timed instance is its own compile, from its own module graph', (
 
   it('allocates every instance young once isolated, so pretenuring cannot pick a side', () => {
     // A literal whose allocations all survive two scavenges is pretenured: its
-    // re-optimized function allocates straight into old space.
+    // re-optimized function allocates straight into old space. Node 24's V8 does
+    // that to this probe every time; on Node 20 and 22 under vitest it often does
+    // not, so the default half is only asserted where it shows. The isolated half
+    // holds everywhere, and on Node 24 it fails if the flag is removed.
     const youngAfterSurvivingGcs = (isolate: boolean): boolean => nodeModule(`
       import { isolateCompilation } from ${at('../../bench/ab-harness.ts')};
       ${isolate ? 'isolateCompilation();' : ''}
@@ -168,7 +171,7 @@ describe('every timed instance is its own compile, from its own module graph', (
       %OptimizeFunctionOnNextCall(make); make();
       console.log(JSON.stringify(%InYoungGeneration(make())));
     `, ['--allow-natives-syntax', '--expose-gc']) as boolean
-    expect(youngAfterSurvivingGcs(false)).toBe(false)
+    if (Number(process.versions.node.split('.')[0]) >= 24) expect(youngAfterSurvivingGcs(false)).toBe(false)
     expect(youngAfterSurvivingGcs(true)).toBe(true)
   }, 30_000)
 
