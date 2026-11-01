@@ -3,6 +3,14 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
+  runs a compiled grammar and reports line/column positions imported them from the
+  main entry, which loads the combinators, the compiler and the analysis with them.
+  `src/line-index.ts` was already in the run entry's closure, so the entry's module
+  list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+
 ## 0.58.0 — 2026-10-31
 
 - **Breaking: under rollup, rolldown and Vite, a grammar's carried pieces ship beside
