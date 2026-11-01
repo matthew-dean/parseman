@@ -33,13 +33,15 @@
  *   pnpm perf:xproc:gate --ref=<sha>          # another reference
  *   pnpm perf:xproc:gate --head-ref=<sha>     # head from a commit, not the working tree
  *   pnpm perf:xproc:gate --self               # the reference against itself (the A/A null)
+ *   pnpm perf:xproc:gate --suite=density      # only the density cases (or --suite=workloads)
+ *   pnpm perf:xproc:gate --peak               # the workloads against the committed peak release
  *   pnpm perf:xproc:gate --case=json          # substring filter on case id
  *   pnpm perf:xproc:gate --rounds=20          # override the configured round count
  *   pnpm perf:xproc:gate --report-only        # measure and print; never fail
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { materialise, previousRelease, git, fail, median, sign, sameSource, summary } from './ab-harness.ts'
@@ -69,7 +71,16 @@ type Reading = { median: number; min: number; digest: string }
 
 const WORKER = argValue('--worker')
 if (WORKER !== null) {
-  const [dir, suite, id] = JSON.parse(WORKER) as [string, 'density' | 'workloads', string]
+  const [dir, suite, id, pad] = JSON.parse(WORKER) as [string, 'density' | 'workloads', string, number]
+  // Layout randomisation, the only thing a worker does that is not the parse. A
+  // deterministic process puts every object and code page at the same offsets on
+  // every run, so the two sides' different paths alone gave fixed offsets on
+  // identical code: `graphql/document` −5.7% and `css/stylesheet` +1.8% in 10 of
+  // 10 A/A runs. A retained allocation of random size, made before anything is
+  // loaded, moves everything after it. The offset becomes per-process noise, which
+  // the rounds average, instead of a per-side bias, which they cannot.
+  const shift = new Array<number>(pad).fill(0)
+  ;(globalThis as { __pmLayoutShift?: number[] }).__pmLayoutShift = shift
   let parse: () => unknown
   if (suite === 'density') {
     const pm = await import(path.join(dir, 'src', 'index.ts')) as {
@@ -110,8 +121,22 @@ if (WORKER !== null) {
 
 const SELF = process.argv.includes('--self')
 const REPORT_ONLY = process.argv.includes('--report-only')
+/**
+ * The peak clause: the workloads against the fastest release on record, with the
+ * committed drawdown allowance as the floor. The bar lives in
+ * `bench/workloads/config.json` (`peak`), where `scripts/check-changelog.mjs` guards it.
+ */
+const PEAK = process.argv.includes('--peak')
+const PEAK_CONFIG = (JSON.parse(readFileSync(path.join(HERE, 'workloads', 'config.json'), 'utf8')) as {
+  peak: { sha: string; version: string; allowancePct: number }
+}).peak
 const REF_ARG = argValue('--ref')
-const REFERENCE = REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
+if (PEAK && (SELF || REF_ARG !== null)) fail(GATE, '--peak names its own reference and cannot be combined with --ref or --self.')
+const SUITE = PEAK ? 'workloads' : argValue('--suite')
+const FLOOR = PEAK ? PEAK_CONFIG.allowancePct : CONFIG.floorPct
+const REFERENCE = PEAK
+  ? { tag: `peak ${PEAK_CONFIG.version}`, sha: PEAK_CONFIG.sha }
+  : REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
 const REF = REFERENCE.sha
 const HEAD_REF = SELF ? REF : argValue('--head-ref')
 const FILTER = argValue('--case')
@@ -120,15 +145,32 @@ if (!Number.isSafeInteger(ROUNDS) || ROUNDS < 2) fail(GATE, `--rounds must be an
 
 const COPY = ['bench/grammar-density', 'bench/workloads', 'examples'] as const
 const refDir = materialise(GATE, ROOT, REF, COPY)
-const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
+const headDir = HEAD_REF === null ? workingTreeCopy() : materialise(GATE, ROOT, HEAD_REF, COPY)
+
+/**
+ * The working tree, copied to a sibling of the reference's directory so neither
+ * side runs from a different kind of path. `-worktree` is as long as an 8-digit sha.
+ */
+function workingTreeCopy(): string {
+  const dir = path.join(ROOT, '.cache', `${GATE}-worktree`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  for (const rel of ['src', 'package.json', 'tsconfig.json', ...COPY]) {
+    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+    cpSync(path.join(ROOT, rel), path.join(dir, rel), { recursive: true })
+  }
+  symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir')
+  return dir
+}
 const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF)
 
 const WORKER_TIMEOUT_MS = 180_000
 function measure(dir: string, suite: string, id: string): Reading {
   const r = spawnSync(
     process.execPath,
-    ['--import', 'tsx/esm', SELF_FILE, `--worker=${JSON.stringify([dir, suite, id])}`],
-    { cwd: ROOT, encoding: 'utf8', timeout: WORKER_TIMEOUT_MS },
+    ['--import', 'tsx/esm', SELF_FILE, `--worker=${JSON.stringify([dir, suite, id, Math.floor(Math.random() * 65_536)])}`],
+    // The environment's size moves the initial stack, so it is randomised too.
+    { cwd: ROOT, encoding: 'utf8', timeout: WORKER_TIMEOUT_MS, env: { ...process.env, PM_LAYOUT_PAD: 'x'.repeat(Math.floor(Math.random() * 4096)) } },
   )
   if (r.error !== undefined) fail(GATE, `worker for ${id} in ${dir} did not complete: ${String(r.error)}`)
   if (r.status !== 0) fail(GATE, `worker for ${id} in ${dir} exited ${r.status}:\n${r.stderr.slice(-2000)}`)
@@ -143,7 +185,8 @@ const density = (await import(path.join(ROOT, 'bench', 'grammar-density', 'gramm
 const workloads = (await import(path.join(ROOT, 'bench', 'workloads', 'index.ts')) as {
   buildWorkloads: () => Array<{ id: string }>
 }).buildWorkloads().map(w => ({ suite: 'workloads', id: w.id }))
-const cases = [...density, ...workloads].filter(c => FILTER === null || c.id.includes(FILTER))
+const cases = [...density, ...workloads]
+  .filter(c => (SUITE === null || c.suite === SUITE) && (FILTER === null || c.id.includes(FILTER)))
 if (cases.length === 0) fail(GATE, `no case matches --case=${FILTER}`)
 
 /** Exact one-sided binomial tail: P(X >= k) for X ~ Bin(n, 1/2). */
@@ -161,7 +204,7 @@ const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
 console.log(
   `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`
   + `\n  ${ROUNDS} rounds x ${cases.length} cases, ONE PROCESS PER SIDE PER CASE PER ROUND, order alternated, default V8`
-  + `\n  a case FAILS when its median per-round slowdown exceeds ${CONFIG.floorPct}% AND the sign test over rounds gives p < ${CONFIG.alpha}\n`,
+  + `\n  a case FAILS when its median per-round slowdown exceeds ${FLOOR}% AND the sign test over rounds gives p < ${CONFIG.alpha}\n`,
 )
 
 const logs = new Map(cases.map(c => [c.id, [] as number[]]))
@@ -189,7 +232,7 @@ const rows = cases.map(c => {
   const slower = d.filter(x => x > 0).length
   const p = signTestP(slower, d.length)
   const center = pct(median(d))
-  const failed = center > CONFIG.floorPct && p < CONFIG.alpha
+  const failed = center > FLOOR && p < CONFIG.alpha
   return { id: c.id, center, min: pct(median(minLogs.get(c.id)!)), slower, n: d.length, p, failed }
 })
 for (const r of rows) {

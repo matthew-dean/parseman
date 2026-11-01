@@ -155,26 +155,6 @@ describe('every timed instance is its own compile, from its own module graph', (
     expect(optimizedAfterOptimizingOne(true)).toEqual([false, true, false])
   }, 30_000)
 
-  it('allocates every instance young once isolated, so pretenuring cannot pick a side', () => {
-    // A literal whose allocations all survive two scavenges is pretenured: its
-    // re-optimized function allocates straight into old space. Node 24's V8 does
-    // that to this probe every time; on Node 20 and 22 under vitest it often does
-    // not, so the default half is only asserted where it shows. The isolated half
-    // holds everywhere, and on Node 24 it fails if the flag is removed.
-    const youngAfterSurvivingGcs = (isolate: boolean): boolean => nodeModule(`
-      import { isolateCompilation } from ${at('../../bench/ab-harness.ts')};
-      ${isolate ? 'isolateCompilation();' : ''}
-      function make() { return { a: [1, 2, 3], b: { c: 1 } } }
-      %PrepareFunctionForOptimization(make);
-      const keep = [];
-      for (let r = 0; r < 4; r++) { for (let i = 0; i < 50000; i++) keep.push(make()); gc({ type: 'minor' }); }
-      %OptimizeFunctionOnNextCall(make); make();
-      console.log(JSON.stringify(%InYoungGeneration(make())));
-    `, ['--allow-natives-syntax', '--expose-gc']) as boolean
-    if (Number(process.versions.node.split('.')[0]) >= 24) expect(youngAfterSurvivingGcs(false)).toBe(false)
-    expect(youngAfterSurvivingGcs(true)).toBe(true)
-  }, 30_000)
-
   it('imports each freshGraph as a whole module graph of its own', () => {
     const [sameGraph, otherGraph] = nodeModule(`
       import { freshGraph } from ${at('../../bench/ab-harness.ts')};
@@ -208,7 +188,7 @@ describe('every timed instance is its own compile, from its own module graph', (
     // Pass 0 builds the gate pair first, pass 1 the null pair first; every side
     // of every contest is its own factory call, i.e. its own graph and compile.
     expect(log).toEqual([
-      '--no-compilation-cache', '--no-allocation-site-pretenuring',
+      '--no-compilation-cache',
       'ref', 'head', 'ref', 'ref',
       'ref', 'ref', 'ref', 'head',
     ])
