@@ -983,17 +983,20 @@ class Encoder {
     const rr = this.refResolver()
     const { next, boundary } = follow
     if (matchesEmpty(next, new Set(), rr) || mayCommitFailure(next, rr, this.commitFailureMemo)) return undefined
-    // A miss reports `deriveExpected(next)`, a static set. Only a terminal or a
-    // label fails with exactly that set: a sequence over an `optional` prefix
-    // reports the prefix's labels statically but not when it runs, and a choice
-    // whose arms share an opener reports that opener once statically, once per
-    // arm when it runs.
-    const nextTag = (next._def as ParserDef).tag
-    if (nextTag !== 'literal' && nextTag !== 'regex' && nextTag !== 'keywords' && nextTag !== 'label') return undefined
+    // A miss reports the set `next` fails with at its start, so only a row with
+    // one such set is gated: a terminal, which fails with its own spelling
+    // (`directTerminalFailureExpected` — `keywords()` and `word()` say `keyword`,
+    // not each word as `deriveExpected` lists them), or a label, which fails with
+    // its name. A sequence over an `optional` prefix reports the prefix's labels
+    // statically but not when it runs, and a choice whose arms share an opener
+    // reports that opener once statically, once per arm when it runs.
+    const nextDef = next._def as ParserDef
+    if (nextDef.tag !== 'literal' && nextDef.tag !== 'regex' && nextDef.tag !== 'keywords' && nextDef.tag !== 'label') return undefined
     const first = firstSetOf(next, new Set(), rr, boundary)
     const cls = this.charClass(boundary === undefined ? first : union(first, firstSetOf(boundary, new Set(), rr)))
     if (cls < 0) return undefined
-    return { cls, fx: this.expected(deriveExpected(next)) }
+    const miss = nextDef.tag === 'label' ? deriveExpected(next) : directTerminalFailureExpected(nextDef)
+    return { cls, fx: this.expected(miss) }
   }
 
   node(p: Combinator<unknown>): Emitted {

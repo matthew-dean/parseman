@@ -14,7 +14,7 @@ import { describe, it, expect } from 'vitest'
 import { build } from 'esbuild'
 import { resolve, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { run } from '../../src/run/index.ts'
+import { run, buildLineIndex, offsetToLineCol } from '../../src/run/index.ts'
 import { compile, literal, sequence, regex, parser, trivia } from '../../src/index.ts'
 import type { ParseContext } from '../../src/types.ts'
 
@@ -80,6 +80,14 @@ describe('parseman/run — the minimal execution entry', () => {
     // And it must not reach the compiler or the combinators at all.
     expect(driver.some(f => f.startsWith('src/compiler/'))).toBe(false)
     expect(driver.some(f => f.startsWith('src/combinators/'))).toBe(false)
+  })
+
+  it('maps offsets to line/column without the main entry', () => {
+    // Reporting a position from a run() result needs these two helpers; they live in
+    // the closure asserted above, so a caller never has to import the library for them.
+    const index = buildLineIndex('a\nbc\n')
+    expect(offsetToLineCol(index, 0)).toEqual({ line: 1, col: 1 })
+    expect(offsetToLineCol(index, 3)).toEqual({ line: 2, col: 2 })
   })
 
   it('actually runs a compiled grammar', () => {

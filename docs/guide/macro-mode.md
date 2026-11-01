@@ -336,8 +336,12 @@ Two things still keep this in perspective:
   from the dedicated entry:
 
   ```ts
-  import { run } from 'parseman/run'
+  import { run, buildLineIndex, offsetToLineCol } from 'parseman/run'
   ```
+
+  `buildLineIndex` and `offsetToLineCol` turn the offsets in a result's spans and
+  errors into line and column numbers, so reporting a position doesn't need the main
+  entry either.
 
   Its whole module closure is three files — the driver, the recovery helpers it hands to
   tolerant parses, and the capture buffer those use. The main entry pulls in the
