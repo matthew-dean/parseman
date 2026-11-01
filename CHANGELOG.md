@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.59.0 — 2026-11-01
 
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
@@ -18,9 +18,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
   in every table engine. A miss now reports the terminal's own failure set, and a
   label's name. Which arms are gated is unchanged.
-
-## 0.59.0 — 2026-11-01
-
 - **A sequence led by an optional pad has its operator's first set.** A `regex()` that
   may match empty still reports `any` as its own first set, since it can match empty
   anywhere, but it now also carries the first characters of its non-empty matches. A
