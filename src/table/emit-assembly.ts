@@ -54,7 +54,7 @@ import {
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import {
-  choiceCannotCommit, choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
+  choiceCannotCommit, choiceLogRollbackMask, choiceRollbackMask, failureLogRollback, failureRollbackClean, validateDispatchSpec,
   type ResolvedClass, type ResolvedTable, type TableProgram,
 } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
@@ -398,6 +398,19 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
   if (buf) return `rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)`
   if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,undefined,undefined,${t}lg,${t}rt)`
   return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)}`
+}
+
+/**
+ * A mark of the two trivia logs alone, for a child the census counts as clean but
+ * whose failure can leave trivia rows a failed node recorded
+ * (`program.ts` `choiceLogRollbackMask`, `failureLogRollback`).
+ */
+function emitLogMark(t: string): string {
+  return `const ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0,${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0`
+}
+function emitLogRollback(t: string): string {
+  return `if(ctx._triviaLog!==undefined&&ctx._triviaLog.length!==${t}lg)ctx._triviaLog.length=${t}lg
+if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==${t}rt)ctx._rootTriviaLog.length=${t}rt`
 }
 
 /**
@@ -1672,12 +1685,13 @@ return v
       case OP_ATTEMPT: {
         const child = link(code[ip + 1]!)
         const clean = !REC && failureRollbackClean(prog, ip)
+        const logs = clean && failureLogRollback(prog, ip)
         const p = tmp()
         return `${head}
-${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
+${clean ? logs ? emitLogMark(p) : '' : emitMark(p, L.buf, L.raw, sinks)}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
+${clean ? logs ? emitLogRollback(p) : '' : emitRollback(p, L.buf, L.raw, sinks)}
 ${code[ip + 2] === 1 ? 'ctx._fc=false' : 'if(ctx._fc===true)return FAIL'}
 ctx._fe=pos
 return FAIL
@@ -1738,14 +1752,15 @@ return null
       case OP_OPT: {
         const child = link(code[ip + 1]!)
         const clean = !REC && failureRollbackClean(prog, ip)
+        const logs = clean && failureLogRollback(prog, ip)
         const p = tmp()
         return `${head}
-${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? '' : emitMark(p, L.buf, L.raw, sinks)}
+${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? logs ? emitLogMark(p) : '' : emitMark(p, L.buf, L.raw, sinks)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
 if(ctx._fc===true)return FAIL
-${clean ? '' : emitRollback(p, L.buf, L.raw, sinks)}
+${clean ? logs ? emitLogRollback(p) : '' : emitRollback(p, L.buf, L.raw, sinks)}
 EC.e=pos
 return null
 }
@@ -1932,6 +1947,10 @@ return FAIL
           const encodedRollbackMask = choiceRollbackMask(prog, ip) ?? -1
           const rollbackMask = REC ? -1 : encodedRollbackMask
           const hasRollback = rollbackMask !== 0
+          // Arms that leave only trivia-log rows: restored from the full mark when
+          // one is taken, else from a mark of the two logs.
+          const logMask = rollbackMask === -1 ? 0 : choiceLogRollbackMask(prog, ip)
+          const choiceMark = hasRollback ? emitMark(p, L.buf, L.raw, sinks) : logMask !== 0 ? emitLogMark(p) : ''
           // An always-consuming leading scalar makes a failure at `pos`
           // statically exact: it is the arm's derived opener set, and the
           // choice's own `choiceFx` already concatenates every such set in
@@ -1962,7 +1981,8 @@ return FAIL
           const rollbackFor = (i: number): string =>
             rollbackMask === -1 || (rollbackMask & (1 << i)) !== 0
               ? emitRollback(p, L.buf, L.raw, sinks)
-              : ''
+              : (logMask & (1 << i)) === 0 ? ''
+                : hasRollback ? emitRollback(p, L.buf, L.raw, sinks) : emitLogRollback(p)
           if (choiceCannotCommit(prog, ip) && !startFailureExact) {
             // A successful ordered choice does not expose any losing arm's
             // diagnostic. Snapshot each entered arm's failure in scalar locals;
@@ -2020,7 +2040,7 @@ ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL`
             return `${head}
 const c=${directAsciiMask ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
-${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
+${choiceMark}
 ${deepAt.map((at, i) => `let ${at},${deepFx[i]}`).join('\n')}
 ${maskable ? `if(c<128){
 const bits=${maskName}[${directAsciiMask ? 'c' : 'c<0?128:c'}]
@@ -2130,7 +2150,7 @@ ${rollbackFor(i)}
           // `choiceFx`, the arms' flatMap, set by set.
           return `${head}
 const c=${directAsciiMask ? 'input.charCodeAt(pos)' : 'lead(input,pos)'}
-${hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''}
+${choiceMark}
 let acc
 let best=pos
 ${maskable ? `if(c<128){

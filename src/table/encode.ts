@@ -145,17 +145,21 @@ class Encoder {
   private lexIndex = new Map<string, number>()
   lexPrograms: LexProgramSpec[] = []
   private lexProgramIndex = new Map<string, number>()
-  /**
-   * Each rollback census answered twice: for a program with no trivia, and for one
-   * that installs trivia somewhere, where a failed node can leave trivia rows its
-   * body recorded (`mayLeavePartialCapture`'s `throughNodes`). Which program this
-   * is is known only once every rule is encoded, so the program takes one pair.
-   */
   private choiceRollbackMasks = new Map<number, number>()
-  private choiceRollbackMasksTrivia = new Map<number, number>()
   private nonCommittingChoiceSites = new Set<number>()
   private failureRollbackCleanSites = new Set<number>()
-  private failureRollbackCleanSitesTrivia = new Set<number>()
+  /**
+   * THE TRIVIA LOGS A FAILED NODE LEAVES. A node drops its own capture frame when
+   * it fails, but the trivia its body recorded into `_triviaLog`/`_rootTriviaLog`
+   * is not part of that frame. So a child the census above counts as clean can
+   * still leave trivia rows when it reaches a node whose body can fail after a
+   * trivia scan (`mayLeavePartialCapture`'s `throughNodes`). These are the arms
+   * and sites that need only the two logs restored. Whether the program installs
+   * any trivia is known only once every rule is encoded; one that does not takes
+   * none of them.
+   */
+  private choiceLogRollbackMasks = new Map<number, number>()
+  private failureLogRollbackSites = new Set<number>()
   /**
    * `reachesSideWriter`'s answers, shared by every `failureNeedsRollback` call
    * for the lifetime of this `Encoder`. Every entry is exact — it depends only on
@@ -682,6 +686,13 @@ class Encoder {
     return mayLeavePartialCapture(root, new Set(), true, throughNodes)
       || this.reachesSideWriter(root)
       || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
+  }
+
+  /** The rollback census of an `optional()` or `attempt()` row at `ip` over `child`. */
+  private censusTransaction(child: Combinator<unknown>, ip: number): void {
+    if (this.failureNeedsRollback(child, undefined, false)) return
+    this.failureRollbackCleanSites.add(ip)
+    if (this.failureNeedsRollback(child, undefined, true)) this.failureLogRollbackSites.add(ip)
   }
 
   /**
@@ -1341,12 +1352,12 @@ class Encoder {
         // universal rollback because repeat recovery can publish an error from
         // inside any arm. Arity >31 falls back to -1 rather than truncating.
         let rollbackMask = kids.length > 31 ? -1 : 0
-        let rollbackMaskTrivia = rollbackMask
+        let logMask = 0
         if (rollbackMask === 0) {
           for (let i = 0; i < arms.length; i++) {
             const src = order[i]!
             if (this.failureNeedsRollback(arms[i]!, d.autoNot[src], false)) rollbackMask |= 1 << i
-            if (this.failureNeedsRollback(arms[i]!, d.autoNot[src], true)) rollbackMaskTrivia |= 1 << i
+            else if (this.failureNeedsRollback(arms[i]!, d.autoNot[src], true)) logMask |= 1 << i
           }
         }
         const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
@@ -1361,7 +1372,7 @@ class Encoder {
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
-        this.choiceRollbackMasksTrivia.set(head, rollbackMaskTrivia)
+        if (logMask !== 0) this.choiceLogRollbackMasks.set(head, logMask)
         if (arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))) {
           this.nonCommittingChoiceSites.add(head)
         }
@@ -1417,8 +1428,7 @@ class Encoder {
       }
       case 'optional': {
         const head = this.emit(OP_OPT, this.lookaheadGate(d.parser, this.node(d.parser).ip))
-        if (!this.failureNeedsRollback(d.parser, undefined, false)) this.failureRollbackCleanSites.add(head)
-        if (!this.failureNeedsRollback(d.parser, undefined, true)) this.failureRollbackCleanSitesTrivia.add(head)
+        this.censusTransaction(d.parser, head)
         return head
       }
       case 'transform': {
@@ -1735,8 +1745,7 @@ class Encoder {
       // lowering was correct only for a choice arm.
       case 'attempt': {
         const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip, d.contain === true ? 1 : 0)
-        if (!this.failureNeedsRollback(d.parser, undefined, false)) this.failureRollbackCleanSites.add(inner)
-        if (!this.failureNeedsRollback(d.parser, undefined, true)) this.failureRollbackCleanSitesTrivia.add(inner)
+        this.censusTransaction(d.parser, inner)
         // THE FIRST-SET FAIL-FAST GUARD, lowered as the `OP_GATE` row the `node()`
         // case already uses — it is the same guard, written twice in the
         // interpreter (`attempt.ts:22`, `node.ts:239`). It is NOT merely an
@@ -1951,8 +1960,12 @@ class Encoder {
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
     }, undefined, {
-      choiceRollbackMasks: this.triviaIndex.size === 0 ? this.choiceRollbackMasks : this.choiceRollbackMasksTrivia,
-      failureRollbackCleanSites: this.triviaIndex.size === 0 ? this.failureRollbackCleanSites : this.failureRollbackCleanSitesTrivia,
+      choiceRollbackMasks: this.choiceRollbackMasks,
+      failureRollbackCleanSites: this.failureRollbackCleanSites,
+      ...(this.triviaIndex.size === 0 ? {} : {
+        choiceLogRollbackMasks: this.choiceLogRollbackMasks,
+        failureLogRollbackSites: this.failureLogRollbackSites,
+      }),
       nonCommittingChoiceSites: this.nonCommittingChoiceSites,
     })
   }

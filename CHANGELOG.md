@@ -12,8 +12,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   mark for such a child, so the losing arm's comments stayed recorded and the arm that
   then matched recorded them again: `run(entry, 'x/*c*/y', { rootTrivia: { select:
   ['comment'] } })` returned the comment twice. The closure engine and the reference
-  driver were already right. A program with no trivia keeps the old, mark-free
-  census. See `test/unit/table-node-arm-trivia-rollback.test.ts`.
+  driver were already right. Such a child now takes a mark of the two trivia logs
+  alone (its node frame already restores the rest), and a program with no trivia
+  takes none. See `test/unit/table-node-arm-trivia-rollback.test.ts`.
 
 ## 0.58.0 — 2026-10-31
 

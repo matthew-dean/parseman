@@ -9,8 +9,10 @@
  * (`mayLeavePartialCapture`), which counted every node as clean: the losing arm's
  * comment stayed in the root log and the winning arm recorded it again, so the
  * selected comment came back twice. The closure engine and the reference driver
- * kept the mark and were right. A program with no trivia keeps the old census:
- * there a node's frame is all it writes (`table-choice-rollback-elision.test.ts`).
+ * kept the mark and were right. The emitted engine now restores the two trivia
+ * logs alone for such a child (`choiceLogRollbackMask`, `failureLogRollback`):
+ * its node frame already drops everything else. A program with no trivia takes
+ * no such mark (`table-choice-rollback-elision.test.ts`).
  */
 import { describe, expect, it } from 'vitest'
 import { attempt, choice, classifiedTrivia, literal, node, optional, regex, rules, sequence } from '../../src/index.ts'
@@ -22,6 +24,9 @@ import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { mayLeavePartialCapture } from '../../src/analysis/commitment.ts'
+import { reachableIps } from '../../src/table/inspect.ts'
+import { OP_CHOICE } from '../../src/table/ops.ts'
+import { choiceLogRollbackMask, choiceRollbackMask } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
 
 type Comb = Combinator<unknown>
@@ -51,6 +56,17 @@ describe('a failed node arm leaves no trivia rows behind', () => {
     expect(mayLeavePartialCapture(node('Leaf', literal('x')), new Set(), true, true)).toBe(false)
     // A program with no trivia records no rows: the node's own frame is all it writes.
     expect(mayLeavePartialCapture(pair, new Set(), true, false)).toBe(false)
+  })
+
+  it('restores only the trivia logs for a node arm: its frame drops the rest', () => {
+    const g = rules({ trivia: t }, (g: Record<string, Comb>) => ({
+      Doc: shapes.choice!(g),
+      Pair: node('Pair', sequence(literal('x'), literal('a')), children => ({ pair: children })),
+    })) as Record<string, Comb>
+    const prog = encodeTable(g, { hostMode: 'ast' })
+    const at = [...reachableIps(prog)].find(ip => prog.code[ip] === OP_CHOICE)!
+    expect(choiceRollbackMask(prog, at)).toBe(0)
+    expect(choiceLogRollbackMask(prog, at)).toBe(1)
   })
 
   for (const [name, shape] of Object.entries(shapes)) {
