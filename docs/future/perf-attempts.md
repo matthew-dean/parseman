@@ -303,6 +303,13 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   arms, `_routed` objects, capturing frames' arrays); pushes 1.1k, marks 0.7k, frames 0.45k.
   Every-site artifact 4.68 MB (~17×). Rejected: still about 2× the hand-written code with
   frames and pushes gone. Branch `perf/direct-values` @ `d5d98460`, unmerged.
+- **Allocation-free expected-set merges on failed arms.** On Jess's shipped Less build, a
+  declaration makes 3 expected-set merges in the closure engine, 2 of which copy an array
+  (18 strings), plus one routed-token object: about 300 B of the 5.4 KB a declaration
+  allocates (the hand-written recognizer: 2.2 KB). The extra allocation is frames and
+  spans. With merges made free (a probe valid on accepted input only), `color: red;` and
+  the keyword list stayed inside the A/A and the whole file moved −0.8%. Not built; the
+  probe was a dist edit, no branch kept.
 
 ## Parked
 
