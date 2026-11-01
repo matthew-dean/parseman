@@ -244,6 +244,33 @@ export function sectionEntries(changelog, version) {
 }
 
 /**
+ * The entries `changelog` files under `version` that the release tagged `version` did
+ * not ship, given that tag's CHANGELOG. package.json naming a released version is normal
+ * while main trails its tags, but every entry in its section must then be one the tag
+ * records as shipped, under any release section: the stamp may have dated the section,
+ * folded Unreleased entries in, or left an entry an earlier auto-patch shipped under that
+ * earlier release. An entry the tag lacks was filed under a version another merge had
+ * already spent: a pull request that declared X passed its gate before X shipped, and
+ * merged after. Releasing would ship the next patch with an empty section and leave
+ * those entries under X.
+ */
+export function staleEntries(changelog, version, tagged) {
+  const shipped = new Set(parse(tagged).sections.filter((s) => headingVersion(s.heading) !== null).flatMap((s) => entries(s.lines)))
+  return (sectionEntries(changelog, version) ?? []).filter((e) => !shipped.has(e))
+}
+
+/** Why `staleEntries` stops a release or a pull request, and how to clear it. */
+export const staleDeclaration = (version, stale) =>
+  `package.json declares ${version}, which v${version} already released, and CHANGELOG.md's ## ${version}\n`
+    + `  section has ${stale.length} entr${stale.length === 1 ? 'y' : 'ies'} that release did not ship, starting with:\n`
+    + `    ${stale[0].split('\n')[0]}\n`
+    + '  A pull request declared a version another merge shipped first. In a pull request, move those\n'
+    + `  entries under "## Unreleased" and delete the ## ${version} heading, then run \`node scripts/release.mjs sync\`:\n`
+    + `  it files the ${version} that shipped from its tag. Or rename the section to a version above the latest\n`
+    + '  release and set package.json and src/version.ts to it. `sync` alone changes nothing while main\n'
+    + `  has a ## ${version} section. If a shipped entry was only reworded on main, restore its v${version} wording.`
+
+/**
  * Stamp `version` into a CHANGELOG, or with no version only catch it up (`sync`).
  *
  *   - `## Unreleased` becomes `## <version> — <date>`. A section the pull request
@@ -496,32 +523,10 @@ export function decide({ declared, npm, tags, own, superseded, differences, chan
     )
   }
 
-  // package.json still names a release that has shipped. Normal while main trails its
-  // tags, but every entry in its CHANGELOG section must then be one the tag records as
-  // shipped (the stamp may have dated the section, folded Unreleased entries in, or moved
-  // an entry an earlier auto-patch shipped to that release). An entry the tag lacks was
-  // filed under a version another merge had already spent: a pull
-  // request that declared X passed its gate before X shipped, and merged after. Releasing
-  // would ship the next patch with an empty section and leave those entries under X.
   const d = parseVersion(declared)
   if (d !== null && tags.some((t) => parseVersion(t)?.raw === d.raw)) {
-    // Any release section of the tag: the stamp moves an entry an earlier auto-patch
-    // shipped out of the declared section and leaves it under that earlier release.
-    const shipped = new Set(parse(released(`v${d.raw}`)).sections
-      .filter((s) => headingVersion(s.heading) !== null).flatMap((s) => entries(s.lines)))
-    const stale = (sectionEntries(changelog, d.raw) ?? []).filter((e) => !shipped.has(e))
-    if (stale.length > 0) {
-      throw new Error(
-        `package.json declares ${d.raw}, which v${d.raw} already released, and CHANGELOG.md's ## ${d.raw}\n`
-          + `  section has ${stale.length} entr${stale.length === 1 ? 'y' : 'ies'} that release did not ship, starting with:\n`
-          + `    ${stale[0].split('\n')[0]}\n`
-          + '  A pull request declared a version another merge shipped first. In a pull request, move those\n'
-          + `  entries under "## Unreleased" and delete the ## ${d.raw} heading, then run \`node scripts/release.mjs sync\`:\n`
-          + `  it files the ${d.raw} that shipped from its tag. Or rename the section to a version above the latest\n`
-          + '  release and set package.json and src/version.ts to it. `sync` alone changes nothing while main\n'
-          + `  has a ## ${d.raw} section. If a shipped entry was only reworded on main, restore its v${d.raw} wording.`,
-      )
-    }
+    const stale = staleEntries(changelog, d.raw, released(`v${d.raw}`))
+    if (stale.length > 0) throw new Error(staleDeclaration(d.raw, stale))
   }
 
   if (next.declared) return { ...next, release: true }

@@ -82,7 +82,7 @@ import { execFileSync } from 'node:child_process'
 import { parsePeakWaivers, openSection, isBreach, WAIVER_TAG } from './peak-waiver.mjs'
 import {
   parseVersion, compareVersions, headingVersion, pendingEntries, shippedPaths, UNRELEASED,
-  consumerFieldChanges,
+  consumerFieldChanges, staleEntries, staleDeclaration,
 } from './release.mjs'
 
 const argv = process.argv.slice(2)
@@ -200,6 +200,22 @@ if (existsSync(VERSION_TS_PATH)) {
         `  artifacts or rejects valid same-version links.`,
     )
   }
+}
+
+// 4b. A version a release already shipped carries only what that release shipped. The
+// pull-request half of the publish plan's stop (`staleEntries` in release.mjs): a PR that
+// declared X, then saw another merge ship X, fails here when its CI next runs rather than
+// at publish. Needs the `vX.Y.Z` tag, which CI's `fetch-depth: 0` checkout brings; with no
+// tag there is nothing to compare.
+{
+  let tagged = null
+  try {
+    tagged = execFileSync('git', ['show', `v${version}:CHANGELOG.md`], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    tagged = null
+  }
+  const stale = tagged === null ? [] : staleEntries(changelog, version, tagged)
+  if (stale.length > 0) fail(staleDeclaration(version, stale))
 }
 
 console.log(
