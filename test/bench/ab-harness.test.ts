@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,8 @@ import {
   measurePasses,
   pairedMedianDelta,
   mergeBaseNote,
+  identicalSourceNote,
+  sameSource,
   pairedMedianRatio,
   previousRelease,
   score,
@@ -296,6 +298,7 @@ describe('the merge-base arm is measured only when nothing already answers it', 
     }
     try {
       git('init', '-q', '-b', 'main')
+      commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.0'")
       const release = commit('src/a.ts', '1')
       // The release commit stamps only src/version.ts, which does not count.
       const base = commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.1'")
@@ -311,5 +314,55 @@ describe('the merge-base arm is measured only when nothing already answers it', 
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('a gate whose two sides have the same src/ reports and does not fail', () => {
+  it('compares src/ only, with the version stamp aside', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-same-src-'))
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }).trim()
+    const commit = (file: string, body: string): string => {
+      execFileSync('mkdir', ['-p', join(dir, 'src')])
+      writeFileSync(join(dir, file), body)
+      git('add', '-A')
+      git('commit', '-qm', file)
+      return git('rev-parse', 'HEAD')
+    }
+    try {
+      git('init', '-q', '-b', 'main')
+      commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.0'")
+      const release = commit('src/a.ts', '1')
+      commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.1'")
+      const ci = commit('ci.yml', 'x')
+      expect(sameSource(dir, release, ci)).toBe(true)
+      // The working tree, which a run without --head-ref measures, is compared as it stands.
+      expect(sameSource(dir, release, null)).toBe(true)
+      writeFileSync(join(dir, 'src/a.ts'), '2')
+      expect(sameSource(dir, release, null)).toBe(false)
+      writeFileSync(join(dir, 'src/a.ts'), '1')
+      writeFileSync(join(dir, 'src/b.ts'), 'new')
+      expect(sameSource(dir, release, null)).toBe(false)
+      rmSync(join(dir, 'src/b.ts'))
+      // Only the version literal is aside: code added to src/version.ts is a src/ change.
+      expect(sameSource(dir, release, commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.1'\nexport const slow = 1"))).toBe(false)
+      expect(sameSource(dir, release, commit('src/a.ts', '2'))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('says why, and names what breached as the noise floor', () => {
+    expect(identicalSourceNote('g', 'v0.1.0', [])).toMatch(/A\/A control and gates nothing\. No case breached\./)
+    expect(identicalSourceNote('g', 'v0.1.0', ['json/document'])).toMatch(/breached on json\/document: that is the noise floor/)
+  })
+
+  it.each(['grammar-perf-guard.ts', 'workload-perf-guard.ts'])('%s exits before its verdict when the sides are identical', (file) => {
+    const src = readFileSync(fileURLToPath(new URL(`../../bench/${file}`, import.meta.url)), 'utf8')
+    expect(src).toMatch(/const IDENTICAL = !SELF && sameSource\(ROOT, REF, HEAD_REF\)/)
+    const exit = src.indexOf('if (IDENTICAL) {')
+    expect(exit).toBeGreaterThan(-1)
+    expect(exit).toBeLessThan(src.indexOf('const failures = rows.filter(v => v.failed)'))
+    expect(src).toMatch(/!REPORT_ONLY && !SELF && !QUICK && !IDENTICAL/)
   })
 })
