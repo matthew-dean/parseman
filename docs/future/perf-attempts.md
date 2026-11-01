@@ -220,7 +220,37 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   `--jitless`, −13.9% JIT; maps −0.4%. Groups containing `/` and lists keep the old path.
   [jess#523](https://github.com/jesscss/jess/pull/523), merged.
 
+### Unreleased on `main`
+
+- **Trivia lead gate.** A trivia skip at a character no trivia can start returns `cur`
+  without the runtime scan, in both table engines (the closure engine per trivia slot,
+  the emitted assembly in its skips and sequence terms), and the term takes no trivia
+  marks there.
+  - Jess's shipped Less build, against `main`, JIT st (A/A inside 1%):
+    | Input | `main` | Gate | Change | lessc 4.9.1 |
+    | --- | --- | --- | --- | --- |
+    | `color: red;` | 37.9k | 36.1k | −4.5% | 6.8k |
+    | `.r { }` | 33.3k | 29.8k | −10.5% | 26.4k |
+    | `.a .b > .c { }` | 53.5k | 50.8k | −5.0% | 36.7k |
+    | keyword list | 26.3k | 25.7k | inside spread | — |
+    | whole file (`--jitless`) | 357.8M (2295M) | 344.0M (2094M) | −3.9% (−8.8%) | 153.9M (780M) |
+  - Other Jess grammars, whole file, JIT / `--jitless`: CSS −3.7% / −5.7%; SCSS −1.4%
+    (A/A spread 3%) / −6.6%; `.jess` −7.6% (±2.9%) / −11.5%. Cold start is inside the A/A
+    for all four.
+  - Identity: ASTs and CSTs identical on 461 Less files; `compare:less:builds --corpus`
+    byte-identical in all six modes; both checks go red with a narrowed lead table.
+  - The two other trivia parts did not land. Marks are already skipped wherever the gate
+    fires, and taking them only when a log is live changes nothing for Jess, which always
+    parses with a live root trivia log. Dropping the gap memo is rejected (below).
+  - Branch `perf/shipped-alloc-trivia`.
+
 ## Rejected (measured)
+
+- **Dropping the trivia gap memo.** Remove `skipDeferredTrivia`'s repeat-scan memo, on
+  top of the lead gate. Jess's Less build: `color: red;` 36.1k → 37.0k (A/A 36.4k), whole
+  file 348.1M → 343.3M (A/A 347.5M, spread 1.8%). The memo still answers repeats where
+  trivia does start, and no site was found where a label proves it cannot hit. Probe was
+  a dist edit; no branch kept.
 
 - **Shared emitted helpers for marks and undo.** Route every emitted rollback mark and
   scanned-term undo through shared helpers. It shrank whole-grammar emitted code 28–30%

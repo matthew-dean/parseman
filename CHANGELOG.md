@@ -5,6 +5,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A trivia skip at a character no trivia can start returns without scanning.** Both
+  table engines now test the character first. The closure engine reads a per-slot table
+  that its scopes install with their trivia; the emitted assembly prints the slot's first
+  characters into its skips. A sequence term at such a character runs with no trivia
+  marks around it. Such a gap is empty and records nothing in any sink, so trees, root
+  trivia and CSTs are unchanged. Jess's Less build parses `benchmark.less` in 3.9% fewer
+  instructions with the JIT and 8.8% fewer with `--jitless`. Test:
+  `test/unit/table-trivia-lead-gate.test.ts`, registered in `check:differentials`.
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
   main entry, which loads the combinators, the compiler and the analysis with them.
