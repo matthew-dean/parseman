@@ -275,8 +275,11 @@ it to be:
 
 - stable, because the publish refuses a prerelease and would stop every release after it;
 - the next patch, minor or major of the latest release, or that release itself (a
-  `sync` PR), whose `## X.Y.Z` section may then hold only entries that release shipped
-  (release integrity refuses any other, wherever `package.json` names a tagged version). The
+  `sync` PR), whose `## X.Y.Z` section must then hold every entry that release's own
+  section shipped and nothing it did not (release integrity refuses an entry it did not
+  ship, wherever `package.json` names a tagged version). A re-dated heading is fine. A
+  section that lost an entry is not: the next stamp keeps `main`'s section for a version
+  `main` has, so it would replace that release's own. The
   latest release is the newest stable `v*` tag, or the base's version when that is
   higher.
 
