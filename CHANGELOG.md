@@ -3,6 +3,18 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **A whole-token `balanced()` in a failed arm leaves no error in the emitted
+  assembly.** Such a group is lowered as one lexical program over its interpreted
+  scan, and the scan records a `parseError` for an unclosed group. The emitted
+  engine's side-sink census counted only `OP_SCAN` as an `_errors` writer, so a
+  choice arm or `optional()` that failed after an unclosed group restored the arm's
+  captures but not its error: `choice(sequence(balanced('(', ')'), literal('!')),
+  literal('('))` on `(x` succeeded through the second arm and still returned the
+  first arm's `")"` error. The closure engine and the reference driver were right.
+  See `test/unit/table-lex-program-scan-errors.test.ts`.
+
 ## 0.58.0 — 2026-10-31
 
 - **Breaking: under rollup, rolldown and Vite, a grammar's carried pieces ship beside

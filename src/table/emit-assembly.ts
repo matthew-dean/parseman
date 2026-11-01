@@ -733,13 +733,15 @@ export function emitAssemblySource(
   // that otherwise matched byte for byte.
   //
   // Any future row whose child is not an offset in `code` belongs here for the
-  // same reason. `OP_LIVE` is the other such row, and it is unemittable.
+  // same reason. `OP_LIVE` is the other such row, and it is unemittable. An
+  // `OP_LEX_PROGRAM` over a scan (`t.lexPrograms[id].scan`, a whole `balanced()`
+  // lowered as one recognizer) runs that same interpreted scan, so it is one too.
   const sinkSites = reachable
   const sinkBits = new Map<number, number>()
   for (const ip of sinkSites) {
     const op = code[ip]
     sinkBits.set(ip,
-      op === OP_SCAN ? 3
+      op === OP_SCAN || (op === OP_LEX_PROGRAM && t.lexPrograms[code[ip + 1]!]!.scan !== undefined) ? 3
         : (op === OP_FIELD ? 1 : 0)
           | (op === OP_EXPECT || (REC && (op === OP_REP || op === OP_REPV)) ? 2 : 0))
   }
