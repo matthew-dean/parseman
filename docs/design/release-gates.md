@@ -270,7 +270,8 @@ it to be:
 
 - stable, because the publish refuses a prerelease and would stop every release after it;
 - the next patch, minor or major of the latest release, or that release itself (a
-  `sync` PR), whose `## X.Y.Z` section must then be the tag's, as `sync` copies it. The
+  `sync` PR), whose `## X.Y.Z` section may then hold only entries that release shipped
+  (release integrity refuses any other, wherever `package.json` names a tagged version). The
   latest release is the newest stable `v*` tag, or the base's version when that is
   higher.
 

@@ -395,7 +395,7 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     tagRelease(dir, baseSha, shipped)
     const r = gate(dir, `--base=${baseSha}`, '--exempt')
     expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/declares 0\.36\.3, the latest release, but CHANGELOG\.md's "## 0\.36\.3" section\s+is not v0\.36\.3's/)
+    expect(r.out).toMatch(/declares 0\.36\.3, which v0\.36\.3 already released[\s\S]*that release did not ship/)
   })
 
   it('REJECTS a skipped version against the base when there are no tags yet', () => {
