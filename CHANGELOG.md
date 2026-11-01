@@ -16,7 +16,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   SHA-256 digest of the chunk (less a trailing `sourceMappingURL` comment), and a
   downstream build that finds a different artifact beside it fails instead of
   composing the pieces of another build. A sidecar written by 0.58.0 has no digest
-  and is read as before.
+  and is read as before. The digest is taken in a `generateBundle` hook of order
+  `post`, after Vite's own hook rewrites a chunk's dynamic `import()` through its
+  preload helper; taken earlier, every such Vite artifact read as stale.
 - **A bundled ancestor is written out, not as a package reference.** An ancestor
   imported from another package was always recorded as `{ from, name }`, resolved
   from the artifact's location. That holds only where the build keeps the package
@@ -34,7 +36,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   gets no entry and keeps its inline pieces), and the name fallback is limited to
   this chunk's own modules. A module re-transformed in a watch session drops what it
   recorded before. Two entries that both `export *` from a module in a shared chunk
-  now each get its pieces, where before neither did. See
+  now each get its pieces, where before neither did, and an export reached through
+  two `export *` paths to the same declaration is one binding, not an ambiguity. See
   `test/unit/carried-pieces-sidecar.test.ts`.
 
 ## 0.58.0 — 2026-10-31

@@ -474,14 +474,15 @@ async function followCarried(
   }
   if ('from' in origin) return follow(origin.from, origin.imported)
   // `export *` re-exports a name only from the one star source that has it; two
-  // that both do make it ambiguous, and ESM exports neither.
+  // that reach different declarations make it ambiguous, and ESM exports neither.
+  // Two paths to the same declaration are one binding.
   let found: Recorded | undefined
   let unknown = false
   for (const source of origin.stars) {
     const got = await follow(source, name)
     if (got === undefined) unknown = true
     else if (got !== null) {
-      if (found !== undefined) return null
+      if (found !== undefined && found.items !== got.items) return null
       found = got
     }
   }
@@ -538,8 +539,14 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
   // Module id → its carried lists, under a bundler that writes them beside the chunk.
   // Any other bundler gets them inline, as before.
   const sinks = SIDECAR_FRAMEWORKS.has(meta.framework) ? new Map<string, CarriedSink>() : undefined
+  // `order: 'post'`: the sidecar records a digest of each chunk's code, so it is
+  // taken after every other plugin's `generateBundle` has rewritten that code (Vite
+  // rewrites a dynamic `import()` through its preload helper there).
   const generateBundle = sinks === undefined ? undefined : {
-    generateBundle(this: SidecarEmitter, _options: unknown, bundle: SidecarBundle) { return emitCarriedSidecars.call(this, sinks, bundle) },
+    generateBundle: {
+      order: 'post' as const,
+      handler(this: SidecarEmitter, _options: unknown, bundle: SidecarBundle) { return emitCarriedSidecars.call(this, sinks, bundle) },
+    },
   }
   return {
     name: 'parseman',

@@ -15,7 +15,7 @@ import * as path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { rolldown } from 'rolldown'
-import parseman, { transformMacro } from '../../src/plugin/index.ts'
+import parseman, { artifactDigest, transformMacro } from '../../src/plugin/index.ts'
 import { run } from '../../src/index.ts'
 
 const UPSTREAM = `import { rules, regex, literal, sequence, choice, many, trivia } from 'parseman' with { type: 'macro' }
@@ -233,6 +233,19 @@ describe('carried pieces of a multi-entry build', () => {
     expect(word('lib/less.js')).toBe('[0-9]+')
   })
 
+  it('are followed through two export * paths to the same declaration', async () => {
+    // `index` reaches `core`'s `base` through both `a` and `b`. ESM exports it: the
+    // two paths name one binding, so it is not ambiguous.
+    const root = sources('diamond', {
+      'core.ts': UPSTREAM,
+      'a.ts': "export * from './core.ts'\n",
+      'b.ts': "export * from './core.ts'\n",
+      'index.ts': "export * from './a.ts'\nexport * from './b.ts'\n",
+    })
+    await buildEntries(root, { index: 'index.ts' }, 'lib')
+    expect(exportsOf(root, 'lib/index.js')?.base).toHaveLength(1)
+  })
+
   it('drop what a module recorded on an earlier build of the same session', async () => {
     const root = sources('watch', { 'vendor.js': vendored(), 'old.ts': UPSTREAM, 'index.ts': "export { base } from './old.ts'\n" })
     const plugin = parseman.rolldown({})
@@ -242,6 +255,13 @@ describe('carried pieces of a multi-entry build', () => {
     fs.writeFileSync(path.join(root, 'src', 'index.ts'), "export { base } from './vendor.js'\n")
     await buildEntries(root, { index: 'index.ts' }, 'v2', plugin)
     expect(exportsOf(root, 'v2/index.js')).toBeNull()
+    // A module that stays in the graph but no longer declares a grammar loses its record too.
+    fs.writeFileSync(path.join(root, 'src', 'index.ts'), "export { base } from './old.ts'\n")
+    await buildEntries(root, { index: 'index.ts' }, 'v3', plugin)
+    expect(exportsOf(root, 'v3/index.js')?.base).toHaveLength(1)
+    fs.writeFileSync(path.join(root, 'src', 'old.ts'), 'export const base = 1\n')
+    await buildEntries(root, { index: 'index.ts' }, 'v4', plugin)
+    expect(exportsOf(root, 'v4/index.js')).toBeNull()
   })
 
   it('fail the downstream build, not fall back to runtime, for a facade whose pieces cannot be found', async () => {
@@ -304,5 +324,25 @@ export const more = compose([base, rules({ trivia: ws }, g => ({ Word: regex(/[a
     expect(inlined).toHaveLength(2)
     expect(inlined.every(item => typeof item.ir === 'string' && item.from === undefined)).toBe(true)
   })
-})
 
+  it('record the digest of the code Vite writes, after its own generateBundle rewrites', async () => {
+    // Vite rewrites a dynamic import() through its preload helper in generateBundle.
+    // The digest must be taken after that, or every such artifact reads as stale.
+    const root = sources('vite', { 'index.ts': UPSTREAM + "export const later = () => import('./other.ts')\n", 'other.ts': 'export const x = 1\n' })
+    const { build } = await import('vite')
+    await build({
+      root, configFile: false, logLevel: 'silent', plugins: [parseman.vite({})],
+      build: {
+        outDir: path.join(root, 'lib'), emptyOutDir: true, minify: false,
+        rollupOptions: {
+          input: path.join(root, 'src', 'index.ts'), preserveEntrySignatures: 'strict',
+          output: { entryFileNames: 'index.js' }, external: id => id.startsWith('parseman'),
+        },
+      },
+    })
+    const artifact = path.join(root, 'lib', 'index.js')
+    expect(fs.readFileSync(artifact, 'utf8')).toMatch(/__vitePreload/)
+    const recorded = (JSON.parse(fs.readFileSync(artifact + '.parseman.json', 'utf8')) as { artifact?: string }).artifact
+    expect(recorded).toBe(artifactDigest(fs.readFileSync(artifact, 'utf8')))
+  })
+})
