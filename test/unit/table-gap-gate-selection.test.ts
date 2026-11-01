@@ -1,7 +1,8 @@
 /**
- * A gap gate (`gap-gate.ts`) is budget-neutral: a budgeted assembly selection is
- * priced on the lowering with every gate lowered as its item, so adding the
- * gates moves no site in or out of the selection.
+ * A gap gate (`gap-gate.ts`) moves no site in the ranking: a budgeted assembly
+ * selection ranks sites on the lowering with every gate lowered as its item.
+ * What the selection debits is the source that ships, gates included, so the
+ * budget still bounds the artifact.
  */
 import { describe, expect, it } from 'vitest'
 import { literal, many, noTrivia, regex, sequence } from '../../src/index.ts'
@@ -48,5 +49,24 @@ describe('a gap gate moves no site in or out of a budgeted selection', () => {
     const compiled = compileRuleMap(entries, { refusals })
     expect(refusals).toEqual([])
     expect(compiled!.selectAssembly(gated.source.length * 2).sites.size).toBeGreaterThan(0)
+  })
+
+  it('debits the budget with the source it ships, gates included', () => {
+    const compiled = compileRuleMap(entries, { refusals: [] })!
+    const artifact = compiled.prog
+    const table = resolveTable(artifact)
+    const cfg = defaultAssemblyCfgs(artifact)[0]!
+    const roots = assemblyExtraIps(artifact)
+    const whole = emitAssemblySource(table, artifact, cfg, roots, true).source.length
+    let checked = 0
+    for (let budget = 500; budget < whole * 1.3; budget += 211) {
+      const { sites, bytes } = compiled.selectAssembly(budget)
+      if (sites.size === 0) continue
+      const shipped = emitAssemblySource(table, artifact, cfg, roots, true, sites).source.length
+      expect(bytes, `budget ${budget}`).toBe(Math.ceil(shipped * 1.05))
+      expect(bytes, `budget ${budget}`).toBeLessThanOrEqual(budget)
+      checked++
+    }
+    expect(checked).toBeGreaterThan(3)
   })
 })
