@@ -41,6 +41,11 @@ Parseman's Less parse still costs about 2.4× `lessc`'s instructions.)
   default) and compares a ratio to a reference build against a ceiling. Apple-silicon
   results have repeatedly disagreed with x64 ones. See [Perf gates](../design/perf-gates.md).
 
+- **Previous release = the newest `v*` tag.** The grammar and workload gates resolve their
+  reference to the newest release tag HEAD contains, at run time, since every merge to
+  `main` publishes. "Against the previous release" in an entry here means that tag. The
+  macro gate stays pinned in `bench/jess/macro-optimize-config.json`.
+
 Two readings that look like regressions and aren't: the grammar gate's `expected/none`
 case leans about +1% on the head side whenever the two trees differ at all
 ([#175](https://github.com/matthew-dean/parseman/issues/175), queued below), and the macro

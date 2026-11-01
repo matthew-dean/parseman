@@ -34,7 +34,9 @@ const stamp = versionSource.match(/PARSEMAN_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1
 if (stamp === undefined) fail('src/version.ts has no PARSEMAN_VERSION stamp.')
 
 const changelog = readFileSync(resolve(root, 'CHANGELOG.md'), 'utf8')
-const heading = changelog.match(/^##\s+(.+)$/m)?.[1]?.trim()
+// Pull requests file pending entries under `## Unreleased` on top; the heading below it
+// is the newest release main records. Auto-patch releases are recorded on their tags.
+const heading = [...changelog.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1].trim()).find((h) => h !== 'Unreleased')
 if (heading === undefined) fail('CHANGELOG.md has no release heading.')
 const headingVersion = heading.replace(/^\[/, '').split(/[\s\]]/)[0]?.replace(/^v/, '')
 const headingDate = heading.match(/(?:\s+—\s+|\s+-\s+)(\d{4}-\d{2}-\d{2})$/)?.[1]
@@ -49,11 +51,12 @@ if (releaseBranch !== undefined && releaseBranch !== version) {
 
 if (headingVersion !== version || stamp !== version) {
   fail(
-    `main must remain the latest publishable release. Found:\n` +
+    `main must record one version in three places. Found:\n` +
       `  CHANGELOG.md: ${headingVersion ?? '<missing>'}\n` +
       `  package.json: ${version}\n` +
       `  src/version.ts: ${stamp}\n` +
-      'Develop the next release on release/X.Y.Z; converge all three only in its release PR.',
+      'A pull request that declares a version sets all three together; pending entries go under\n' +
+      '"## Unreleased" and leave the version alone.',
   )
 }
 
@@ -67,7 +70,7 @@ const validHeadingDate = (() => {
 if (!validHeadingDate) {
   fail(
     `CHANGELOG.md release heading is not dated: "${heading}".\n` +
-      'A main release heading must end with a real YYYY-MM-DD calendar date.',
+      'The newest release heading on main must end with a real YYYY-MM-DD calendar date.',
   )
 }
 

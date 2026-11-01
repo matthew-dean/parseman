@@ -65,6 +65,15 @@ describe('main release-state gate', () => {
     expect(result.out).toMatch(/0\.47\.1 is converged and dated/)
   })
 
+  it('reads the newest release under `## Unreleased`, where pull requests file entries', () => {
+    const dated = fixture('0.47.1', 'Unreleased\n\n- pending\n\n## 0.47.1 — 2026-08-12')
+    expect(gate(dated, 'main', 'fix/x').ok).toBe(true)
+    const undated = fixture('0.47.1', 'Unreleased\n\n- pending\n\n## 0.47.1')
+    expect(gate(undated, 'main', 'fix/x').out).toMatch(/real YYYY-MM-DD calendar date/)
+    const behind = fixture('0.47.1', 'Unreleased\n\n- pending\n\n## 0.47.0 — 2026-08-12')
+    expect(gate(behind, 'main', 'fix/x').ok).toBe(false)
+  })
+
   it('rejects stamp drift even when the branch and package agree', () => {
     const result = gate(fixture('0.47.1', '0.47.1 — 2026-08-12', '0.47.0'), 'main', 'release/0.47.1')
     expect(result.ok).toBe(false)

@@ -154,8 +154,8 @@ change that fixes the behaviour:
 | 1, 2 | Runtime `compose()` links live pieces. Remove IR eval and the `buildSrc` eval from the runtime path. Bind composing trivia without mutating shared rules. Remove `railroad.ts`'s `new Function`. Add a test that runs `compose()` under `--disallow-code-generation-from-strings`. | jess#325 | fixed for 0.53.0 in [#149](https://github.com/matthew-dean/parseman/pull/149): `test/unit/csp-runtime-paths.test.ts` |
 | 4 | Remove the whole-grammar assembly. Add selective inline regions within 5× that keep most of the css win. Vendor the real grammars into a size gate that fails. | jess#322 | partly done in [#163](https://github.com/matthew-dean/parseman/pull/163): the whole-grammar assembly is removed, a selective assembly ships at a quarter of each module's source, and `pnpm size:guard:jess` fails any jess grammar over 5×. At that budget it does not keep most of the css win; #163 has the numbers |
 | 5 | Real-scale load benchmark with absolute budgets, run in CI | jess#322 / jess#325 | in progress |
-| 6 | Before/after steady-state, cold-start and browser-load tables for each grammar and mode in the release PR | release PR | in progress |
-| 7 | Every `modes.md` / `macro-mode.md` claim names its test, or is removed | release PR | in progress |
+| 6 | Before/after steady-state, cold-start and browser-load tables for each grammar and mode, from the per-PR CI summary, on any PR that changes the shipped package | the PR that changes it | in progress |
+| 7 | Every `modes.md` / `macro-mode.md` claim names its test, or is removed; required of any PR that edits `modes.md` or `macro-mode.md` | the PR that edits it | in progress |
 
 When a row lands, update its status here with the PR link. Don't delete the "What went
 wrong" table; it is the record.
