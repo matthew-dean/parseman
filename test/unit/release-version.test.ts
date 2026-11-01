@@ -360,8 +360,11 @@ describe('publish.yml records on main only with the deploy key', () => {
 })
 
 describe('the plan decides from what it read', () => {
+  // main as v0.2.0 left it: the section that release shipped.
+  const shipped020 = '# Changelog\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
   const read = {
     declared: '0.2.0', npm: ['0.1.0', '0.2.0'], tags: ['v0.1.0', 'v0.2.0'], own: null, superseded: null,
+    changelog: shipped020, released: (tag: string): string => (tag === 'v0.2.0' ? shipped020 : ''),
   }
   const unchanged = (): string[] => []
   const changed = (): string[] => ['dist/index.js']
@@ -389,5 +392,22 @@ describe('the plan decides from what it read', () => {
     expect(() => decide({ ...read, declared: '0.3.0', npm: [...read.npm, '0.2.1'], differences: changed })).toThrow(/parseman@0\.2\.1 is on npm but has no v0\.2\.1 tag/)
     // An older untagged version, or a prerelease published by hand, is not that state.
     expect(decide({ ...read, npm: ['0.0.9', ...read.npm, '0.3.0-rc.1'], differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
+  })
+
+  it('stops when package.json declares a version another merge already shipped, with entries it did not ship', () => {
+    // A PR declared 0.2.0 and passed its gate; another merge shipped 0.2.0 first; then
+    // this PR merged. Its entries sit under ## 0.2.0, which v0.2.0 never contained.
+    const stale = '# Changelog\n\n## 0.2.0 — 2026-11-02\n\n- the new api\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    expect(() => decide({ ...read, changelog: stale, differences: changed }))
+      .toThrow(/declares 0\.2\.0, which v0\.2\.0 already released[\s\S]*1 entry that release did not ship[\s\S]*- the new api/)
+  })
+
+  it('accepts main trailing its tags with the section the release shipped, re-dated or folded into', () => {
+    // The tag's stamp dated the heading and folded an Unreleased entry in: main's
+    // section is a subset of what shipped, which is the normal state without the deploy key.
+    const tagged = '# Changelog\n\n## 0.2.0 — 2026-11-03\n\n- a late fix\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    expect(decide({ ...read, released: () => tagged, differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
+    // No section for the version on main (a sync that only moved package.json): nothing to compare.
+    expect(decide({ ...read, changelog: '# Changelog\n\n## Unreleased\n\n- x\n', differences: changed })).toMatchObject({ release: true })
   })
 })
