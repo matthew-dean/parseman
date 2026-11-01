@@ -355,8 +355,10 @@ export function compileRuleMap(
     const roots = assemblyExtraIps(artifact)
     let siteBytes, fixed
     try {
-      // Priced with every gap gate lowered as its item (`gapNeutral`).
-      siteBytes = emitAssemblySource(table, artifact, cfg, roots, true, undefined, true).siteBytes
+      // Priced with every gap gate lowered as its item (`gapNeutral`), and on the
+      // collector protocol a selective assembly emits (direct values need the
+      // whole assembly), so the price is the body that ships.
+      siteBytes = emitAssemblySource(table, artifact, { ...cfg, direct: false }, roots, true, undefined, true).siteBytes
       // What any selective assembly costs before its first site body: the shared
       // prelude and the factory's tail. A budget that cannot cover it buys nothing.
       fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set(), true).source.length
