@@ -3,7 +3,7 @@
  * as which version, and writes the CHANGELOG the release carries. These are its pure
  * parts; `release-gate.test.ts` covers the pull-request gate that feeds it.
  */
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -296,6 +296,23 @@ describe('recording a release on main', () => {
       const args = gate.includes('main-release') ? [`--root=${after}`, '--base-ref=main', '--head-ref=main'] : [`--root=${after}`]
       execFileSync(process.execPath, [join(dirname(new URL(import.meta.url).pathname), '../..', gate), ...args], { stdio: 'pipe' })
     }
+  })
+
+  it('never forces past a rejection: it logs why, retries, then fails with the recovery step', () => {
+    const { dir, remote } = runner()
+    // A remote that refuses every push, e.g. a ruleset without the deploy-key bypass.
+    writeFileSync(join(remote, 'hooks/pre-receive'), '#!/bin/sh\necho "protected branch: deploy key not allowed" >&2\nexit 1\n', { mode: 0o755 })
+    const before = remoteGit(remote, 'rev-parse', 'main')
+    const errors: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { errors.push(String(m)) })
+    try {
+      expect(() => record(dir, '0.1.1', remote)).toThrow(/after 3 attempts[\s\S]*node scripts\/release\.mjs sync/)
+    } finally {
+      spy.mockRestore()
+    }
+    expect(errors.filter(e => e.includes('push rejected'))).toHaveLength(3)
+    expect(errors.join('\n')).toMatch(/deploy key not allowed/)
+    expect(remoteGit(remote, 'rev-parse', 'main')).toBe(before)
   })
 
   it('records nothing when main already contains the release', () => {

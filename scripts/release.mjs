@@ -546,8 +546,9 @@ export function record(root, version, remote) {
     try {
       run('git', ['push', '--quiet', remote, `${r.commit}:refs/heads/main`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] })
       return r.commit
-    } catch {
-      console.error(`push rejected (attempt ${attempt}); main moved, rebuilding on its new tip.`)
+    } catch (e) {
+      const why = String((e && typeof e === 'object' && 'stderr' in e && e.stderr) || (e instanceof Error ? e.message : e)).trim()
+      console.error(`push rejected (attempt ${attempt}): ${why}\n  Rebuilding on the latest tip of main.`)
     }
   }
   throw new Error(
