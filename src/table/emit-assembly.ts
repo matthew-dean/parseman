@@ -293,46 +293,35 @@ if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTrivi
  * `rs`, so the shared trivia scanners record the same insertion index the
  * buffer's raw count gave them.
  *
- * Printed only into a direct-mode assembly. These four functions take no piece.
+ * Printed only into a direct-mode assembly, which is always a WHOLE assembly
+ * (no closure pieces beside it). These functions take no piece.
  *
- * `_xOpen`/`_xClose` bracket a call OUT of the scope (a closure piece, an
- * interpreted scan): the callee sees a capture buffer whose arrays ARE `ks` and
- * `rs`, and whatever its lazy-buffer bookkeeping did to those arrays is folded
- * back into them. `_eIn`/`_eOut` bracket a call IN: the caller's collector
- * becomes `ks`/`rs` for the call, and the caller's buffer is left in the form its
- * own engine expects.
+ * `_eIn`/`_eOut` bracket a call IN (a rule entry, a site an interpreted scan
+ * reaches): the caller's collector becomes `ks`/`rs` for the call, and the
+ * caller's buffer is left in the form its own engine expects. A call OUT, to an
+ * interpreted scan, installs `ks`/`rs` as the flat collectors (`flatCall`).
  *
  * A caller may hand in only one of `_cstChildren` (built nodes) and `_cstLeaves`
  * (leaves): every engine gates the two publications on those two slots
  * separately. That array is `_eX` for the call, and `_eXm` says which kind it
  * drops (1: leaves, 2: nodes). Only a site whose label leaves `ks` unknown can
  * see it, since a node frame binds a fresh array.
+ *
+ * A count-only caller buffer under capture needs its raw COUNT for the trivia
+ * insertion index, so the call gets an array of that length: one per buffer
+ * (`_eRw`), grown by what each call adds and never rebuilt from the count, which
+ * would make a long list quadratic.
  */
 const DIRECT_RUNTIME_PRELUDE = `
 let _eK,_eR,_eX,_eXm=0
 const _eS=[]
+const _eRw=new WeakMap()
 function _rbK(ctx,ks,rs,k,r,t,lg,rt){
 if(ks!==undefined&&ks.length!==k)ks.length=k
 if(rs!==undefined&&rs.length!==r)rs.length=r
 if(t>=0){const c=ctx._cstTriviaLog;if(c!==undefined&&c.length!==t)c.length=t}
 const a=ctx._triviaLog;if(a!==undefined&&a.length!==lg)a.length=lg
 const o=ctx._rootTriviaLog;if(o!==undefined&&o.length!==rt)o.length=rt
-}
-function _xOpen(ctx,ks,rs){
-if(ks===_eX){ctx._cstChildren=_eXm===2?undefined:ks;ctx._cstLeaves=_eXm===1?undefined:ks;return undefined}
-const b=rs===undefined?{ch:ks,noRaw:true,rawLen:0}:{ch:ks,raw:rs}
-const t=ctx._cstTriviaLog
-if(t!==undefined)b.tl=t
-ctx._cstBuf=b
-return b
-}
-function _xClose(ctx,b,ks,rs){
-if(b===undefined){ctx._cstChildren=undefined;ctx._cstLeaves=undefined;return}
-ctx._cstBuf=undefined
-if(b.ch!==ks){ks.length=0;const c=b.ch;if(c!==undefined){for(let i=0;i<c.length;i++)ks.push(c[i])}else if(b.single!==undefined)ks.push(b.single)}
-if(rs!==undefined&&b.raw!==rs){rs.length=0;const c=b.raw;if(c!==undefined){for(let i=0;i<c.length;i++)rs.push(c[i])}else if(b.rawSingle!==undefined)rs.push(b.rawSingle)}
-const t=ctx._cstTriviaLog
-if(t!==undefined&&b.tl!==t){t.length=0;const c=b.tl;if(c!==undefined)for(let i=0;i<c.length;i++)t.push(c[i])}
 }
 function _eIn(ctx){
 const b=ctx._cstBuf,c=ctx._cstChildren,l=ctx._cstLeaves,r=ctx._cstRawChildren,t=ctx._cstTriviaLog
@@ -341,7 +330,9 @@ if(b!==undefined){
 if(b.rawOnly===true)ks=[]
 else if(b.ch!==undefined)ks=b.ch
 else{ks=b.single!==undefined?[b.single]:[];f=1}
-if(b.noRaw===true)rs=ctx.captureTrivia===true?new Array(b.rawLen??0):undefined
+if(b.noRaw===true){
+if(ctx.captureTrivia===true){rs=_eRw.get(b);if(rs===undefined){rs=[];_eRw.set(b,rs)}if(rs.length!==(b.rawLen??0))rs.length=b.rawLen??0}
+}
 else if(b.raw!==undefined)rs=b.raw
 else{rs=b.rawSingle!==undefined?[b.rawSingle]:[];f|=2}
 tl=b.tl
@@ -899,6 +890,11 @@ export function emitAssemblySource(
     && cfg.hostCaptureTrivia === undefined
     && reachable.every(ip => code[ip] !== OP_SCOPE_CAP
       && ((code[ip] !== OP_NODE && code[ip] !== OP_NODE_TRACK) || nodeShape(code, k, ip, cfg).keepChildren))
+    // A selective assembly runs beside closure pieces, and every crossing between
+    // the two would pay an adapter: measured on Jess's Less build (55 emitted
+    // sites, 50 of them entered from closures), +9.4% JIT instructions per parse.
+    // Direct values only where the whole assembly is emitted.
+    && (select === undefined || reachable.every(ip => aliasOf(ip) !== undefined || select.has(ip)))
   const dlabelAt = D ? computeDirectLabels(code, k, roots, cfg) : (): DirectLabel => DV_TOP
   /** The two direct-value arguments every piece call carries in direct mode. */
   const A = D ? ',ks,rs' : ''
@@ -1873,8 +1869,8 @@ return it.value
         // The scan pool is built FROM subtrees, so it is populated after this
         // text compiles. The array is passed by reference and indexed on
         // execution, which is what the closure engine's lazy bind amounts to.
-        // In direct mode the interpreted scan reaches the collector through a
-        // capture buffer whose arrays are `ks`/`rs` (`_xOpen`/`_xClose`).
+        // In direct mode the interpreted scan reaches the collector as the flat
+        // collectors `ks`/`rs` (`flatCall`).
         const scanCall = `SCANS[${si}].parse(input,pos,ctx)`
         const scanRun = !D ? `const r=${scanCall}` : `let r\n${flatCall(DL.k, `r=${scanCall}`)}`
         return `${head}
@@ -3194,7 +3190,7 @@ return nd
     // not leave the caller's collector detached from its context.
     // A caller holding the flat collectors (one array as both, no buffer) hands
     // them over as they are: the scope never reads them, and every call out of
-    // it installs its own (`flatCall`, `_xOpen`).
+    // it installs its own (`flatCall`).
     entryDefs.push(`function ${nm}(input,pos,ctx){const c=ctx._cstChildren
 if(c!==undefined&&c===ctx._cstLeaves&&ctx._cstBuf===undefined)return ${fname}(input,pos,ctx,c,ctx._cstRawChildren)
 if(_eIn(ctx)===0)return ${fname}(input,pos,ctx)
@@ -3253,22 +3249,11 @@ scan:function(s){const o=_pfScan;_pfScan=s;return o}`
     if (ki === TRI_NONE) return 'null'
     return swapLegal && !triviaLabelled[ki]! && t.triviaScan[ki] != null ? hoist('ts', `TRIVIASCAN[${ki}]`) : 'null'
   }
-  // In direct mode the closure piece is handed a capture buffer whose arrays are
-  // the caller's `ks`/`rs` (`_xOpen`), the form its own engine reads.
-  // A closure piece whose label proves a capture buffer open dereferences one
-  // (`assemble.ts` `nextTermBuffered`), and that label only holds under a node,
-  // where `ks` is always an array. Every other one takes the flat collectors.
-  const externalCall = (ip: number): string => {
-    const call = `v=_xp${ip}(input,pos,ctx)`
-    if (!D) return `const ${call}`
-    if (labels.at(ip).buf) return `let v\n{const b=_xOpen(ctx,ks,rs);${call};_xClose(ctx,b,ks,rs)}`
-    return `let v\n${flatCall(dlabelAt(ip).k, call)}`
-  }
+  // No assembly with an external carries direct values, so an external is always
+  // on the collector protocol.
   const externalDefs = select === undefined ? '' : `let _xScan
 ${externals.map(ip => `let _xp${ip}
-function _px${ip}(input,pos,ctx${A}){const o=_xScan(${scannerFor(ip)})
-${externalCall(ip)}
-_xScan(o);return v}`).join('\n')}
+function _px${ip}(input,pos,ctx){const o=_xScan(${scannerFor(ip)});const v=_xp${ip}(input,pos,ctx);_xScan(o);return v}`).join('\n')}
 `
 
   // The per-label trivia scans sit AFTER the hoisted pool they close over: they

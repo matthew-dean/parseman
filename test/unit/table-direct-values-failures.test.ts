@@ -6,8 +6,7 @@
  * the check that it stays so. Every accepted input of every suite in
  * `table-direct-values-cases.ts` is cut at prefix lengths and has characters
  * deleted, and every variant is parsed from every rule of the grammar through
- * every leg (direct, direct beside closures, the collector protocol, the closure
- * engine). The four must report the identical outcome: `ok`, the span, the
+ * every leg (direct, selective, the collector protocol, the closure engine). The four must report the identical outcome: `ok`, the span, the
  * expected set in order, and where unconsumed input begins.
  *
  * `pnpm check:differentials` plants a moved failure position in the direct

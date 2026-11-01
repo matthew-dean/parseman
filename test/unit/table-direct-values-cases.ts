@@ -27,8 +27,9 @@ export type Case = { readonly name: string; readonly input: string }
 function emitted(prog: TableProgram, direct: boolean, select?: ReadonlySet<number>): TableProgram {
   const cfg = defaultAssemblyCfgs(prog)[0]!
   const em = emitAssemblySource(resolveTable(prog), prog, { ...cfg, direct }, assemblyExtraIps(prog), true, select)
-  // The leg is what it says it is: direct values print the entry adapter.
-  expect(em.source.includes('function _eIn('), direct ? 'direct leg' : 'collector leg').toBe(direct)
+  // The leg is what it says it is: direct values print the entry adapter, and
+  // only a whole assembly carries them.
+  expect(em.source.includes('function _eIn('), direct ? 'direct leg' : 'collector leg').toBe(direct && select === undefined)
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
   const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
   return { ...prog, asm: [{ key: cfgKey(cfg), factory, plan: em.plan, reached: [...em.reached] }] }
@@ -45,7 +46,8 @@ export function legs(prog: TableProgram, entry: string): Record<string, TableRul
     closure: tableRules({ ...prog, asm: [] })[entry]!,
     collectors: tableRules(emitted(prog, false))[entry]!,
     direct: tableRules(emitted(prog, true))[entry]!,
-    'direct+closure': tableRules(emitted(prog, true, stripe(prog)))[entry]!,
+    // A selective assembly beside closure pieces stays on the collector protocol.
+    selective: tableRules(emitted(prog, true, stripe(prog)))[entry]!,
   }
 }
 

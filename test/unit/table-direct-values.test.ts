@@ -7,8 +7,9 @@
  * table and must agree on the whole `RunResult` — value, span, `ok`, expected
  * set — for every input, accepted and rejected:
  *
- *   - `direct`: the emitted assembly with direct values, whole and selective (a
- *     hybrid with closure pieces, so both adapters run);
+ *   - `direct`: the emitted assembly with direct values;
+ *   - `selective`: a selective assembly beside closure pieces, which keeps the
+ *     collector protocol (asserted);
  *   - `collectors`: the same emitted assembly on the collector protocol;
  *   - `closure`: the closure engine (`asm: []`).
  *
@@ -79,7 +80,7 @@ function agree({ grammar, entry, cases, opts = {} }: Suite): void {
       expect(outcome(es.direct), `${entry} ${name}: direct behind a ${caller} caller`).toBe(base)
       const result = (rule: TableRule | undefined): string =>
         digestValue(rule!(input, 0, { ...createParseContext(), trivia: opts.trivia as never, ...make() } as unknown as ParseContext))
-      expect(result(es['direct+closure']), `${entry} ${name}: direct+closure behind a ${caller} caller`).toBe(result(es.closure))
+      expect(result(es.selective), `${entry} ${name}: selective behind a ${caller} caller`).toBe(result(es.closure))
     }
   }
 }
