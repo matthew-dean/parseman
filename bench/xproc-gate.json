@@ -1,0 +1,8 @@
+{
+  "_comment": "Configuration for `pnpm perf:xproc:gate` — see bench/xproc-gate.ts and docs/design/perf-gates.md.",
+  "rounds": 20,
+  "floorPct": 1.5,
+  "alpha": 0.01,
+  "density": { "rules": 200, "warmup": 200, "samples": 30, "parsesPerSample": 5 },
+  "workloads": { "warmup": 40, "samples": 15, "parsesPerSample": 2 }
+}
