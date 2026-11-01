@@ -5,12 +5,12 @@
  */
 import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   nextVersion, packageDifferences, shippedPaths, stampChangelog, pendingEntries, compareVersions, parseVersion,
-  consumerFieldChanges, supersedingRelease,
+  consumerFieldChanges, supersedingRelease, recordCommit, record, releaseCommitOf,
 } from '../../scripts/release.mjs'
 
 const dirs: string[] = []
@@ -194,5 +194,122 @@ describe('the CHANGELOG a release carries', () => {
     const declared = `${PRE}\n## 0.59.0 — 2026-11-01\n\n- x\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
     expect(pendingEntries(declared, '0.58.0')).toEqual(['- x'])
     expect(pendingEntries(declared, '0.59.0')).toEqual([])
+  })
+})
+
+/*
+ * Recording a release on main (the RELEASE_DEPLOY_KEY path). A fixture repo stands in
+ * for the runner: `main` at M, the stamped release commit R on top of it, and a bare
+ * repo as the remote.
+ */
+describe('recording a release on main', () => {
+  const CHANGELOG = (top: string) => `# Changelog\n\n${top}## 0.1.0 — 2026-10-01\n\n- first\n`
+  function runner(): { dir: string; remote: string; git: (...a: string[]) => string; m: string; r: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-record-'))
+    const remote = mkdtempSync(join(tmpdir(), 'pm-record-remote-'))
+    dirs.push(dir, remote)
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }).trim()
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote])
+    git('init', '-q', '-b', 'main')
+    mkdirSync(join(dir, 'src'))
+    const write = (version: string, top: string): void => {
+      writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name: 'parseman', version }, null, 2)}\n`)
+      writeFileSync(join(dir, 'src/version.ts'), `export const PARSEMAN_VERSION = '${version}'\n`)
+      writeFileSync(join(dir, 'CHANGELOG.md'), CHANGELOG(top))
+    }
+    write('0.1.0', '## Unreleased\n\n- a fix\n\n')
+    git('add', '-A')
+    git('commit', '-qm', 'M')
+    const m = git('rev-parse', 'HEAD')
+    git('push', '-q', remote, 'main')
+    // What `stamp 0.1.1` commits in the runner.
+    write('0.1.1', '## 0.1.1 — 2026-11-01\n\n- a fix\n\n')
+    git('add', '-A')
+    git('commit', '-qm', 'release: 0.1.1')
+    return { dir, remote, git, m, r: git('rev-parse', 'HEAD') }
+  }
+  const remoteGit = (remote: string, ...args: string[]): string => execFileSync('git', args, { cwd: remote, encoding: 'utf8' }).trim()
+
+  it('fast-forwards main to the release commit when main has not moved', () => {
+    const { dir, remote, m, r } = runner()
+    expect(recordCommit(dir, '0.1.1', m)).toEqual({ action: 'fast-forward', commit: r })
+    expect(record(dir, '0.1.1', remote)).toBe(r)
+    expect(remoteGit(remote, 'rev-parse', 'main')).toBe(r)
+  })
+
+  it('rebuilds the stamp on a tip that moved, keeping the later PR\'s entry under Unreleased', () => {
+    const { dir, remote, git, m, r } = runner()
+    // Another PR merged while the release was being published.
+    const other = mkdtempSync(join(tmpdir(), 'pm-record-other-'))
+    dirs.push(other)
+    execFileSync('git', ['clone', '-q', remote, other])
+    writeFileSync(join(other, 'CHANGELOG.md'), CHANGELOG('## Unreleased\n\n- a fix\n\n- a later change\n\n'))
+    writeFileSync(join(other, 'later.txt'), 'x\n')
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qam', 'N'], { cwd: other })
+    execFileSync('git', ['add', '-A'], { cwd: other })
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'N2'], { cwd: other })
+    execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: other })
+    const n = remoteGit(remote, 'rev-parse', 'main')
+
+    const pushed = record(dir, '0.1.1', remote)
+    expect(pushed).not.toBe(r)
+    // Never forced: the new main sits on top of the tip that moved.
+    expect(remoteGit(remote, 'rev-parse', 'main')).toBe(pushed)
+    expect(remoteGit(remote, 'rev-parse', `${pushed}^`)).toBe(n)
+    expect(remoteGit(remote, 'log', '-1', '--format=%s', pushed)).toBe('release: 0.1.1')
+    expect(remoteGit(remote, 'show', `${pushed}:CHANGELOG.md`)).toBe(
+      '# Changelog\n\n## Unreleased\n\n- a later change\n\n## 0.1.1 — 2026-11-01\n\n- a fix\n\n## 0.1.0 — 2026-10-01\n\n- first',
+    )
+    expect(JSON.parse(remoteGit(remote, 'show', `${pushed}:package.json`)).version).toBe('0.1.1')
+    expect(remoteGit(remote, 'show', `${pushed}:src/version.ts`)).toBe("export const PARSEMAN_VERSION = '0.1.1'")
+    expect(remoteGit(remote, 'show', `${pushed}:later.txt`)).toBe('x')
+    // The runner's checkout is untouched.
+    expect(git('rev-parse', 'HEAD')).toBe(r)
+    expect(git('status', '--porcelain')).toBe('')
+    expect(m).not.toBe(n)
+  })
+
+  it('records nothing when main already contains the release', () => {
+    const { dir, remote, r } = runner()
+    record(dir, '0.1.1', remote)
+    expect(recordCommit(dir, '0.1.1', r)).toEqual({ action: 'none', commit: r })
+    expect(record(dir, '0.1.1', remote)).toBe(r)
+  })
+
+  it("the recorded commit's own push publishes nothing", () => {
+    const { dir, git, m } = runner()
+    git('tag', 'v0.1.1')
+    expect(releaseCommitOf(dir)).toBe('v0.1.1')
+    // Same subject, different tree: a rebuilt record on a moved tip, judged by the tarball instead.
+    git('checkout', '-q', '--detach', m)
+    writeFileSync(join(dir, 'later.txt'), 'x\n')
+    git('add', '-A')
+    git('commit', '-qm', 'release: 0.1.1')
+    expect(releaseCommitOf(dir)).toBeNull()
+    git('commit', '-q', '--allow-empty', '-m', 'an ordinary merge')
+    expect(releaseCommitOf(dir)).toBeNull()
+  })
+})
+
+describe('publish.yml records on main only with the deploy key', () => {
+  const yml = readFileSync(join(dirname(new URL(import.meta.url).pathname), '../../.github/workflows/publish.yml'), 'utf8')
+  const step = (name: string): string => {
+    const at = yml.indexOf(`- name: ${name}`)
+    expect(at).toBeGreaterThan(-1)
+    const next = yml.indexOf('\n      - name:', at + 1)
+    return yml.slice(at, next === -1 ? undefined : next)
+  }
+
+  it('gates the record step on the secret and still tags without it', () => {
+    expect(yml).toMatch(/HAS_DEPLOY_KEY: \$\{\{ secrets\.RELEASE_DEPLOY_KEY != '' \}\}/)
+    const rec = step('Record the release on main')
+    expect(rec).toMatch(/env\.HAS_DEPLOY_KEY == 'true'/)
+    expect(rec).toMatch(/continue-on-error: true/)
+    expect(rec).not.toMatch(/--force|\+refs|push -f/)
+    const tag = step('Tag the published commit')
+    expect(tag).not.toMatch(/HAS_DEPLOY_KEY|steps\.record/)
+    expect(yml.indexOf('- name: Record the release on main')).toBeLessThan(yml.indexOf('- name: Tag the published commit'))
+    expect(step('Fail if main does not record the release')).toMatch(/steps\.record\.outcome == 'failure'/)
   })
 })

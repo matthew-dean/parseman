@@ -37,6 +37,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      # Optional. With it, the release is also pushed onto main (see the record step).
+      HAS_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
     permissions:
       # The OIDC token npm exchanges for a short-lived publish credential, and signs
       # the provenance attestation with.
@@ -144,6 +147,32 @@ jobs:
         # prepublishOnly re-runs check-changelog --publish.
         run: npm publish --provenance
 
+      - name: Record the release on main
+        id: record
+        if: steps.plan.outputs.release == 'true' && inputs.dry_run != true && env.HAS_DEPLOY_KEY == 'true'
+        # Pushed with the release deploy key, which main's rules let through; GITHUB_TOKEN
+        # cannot be given that bypass on this repository. A fast-forward when main has not
+        # moved, otherwise the stamp rebuilt on the new tip; never forced. That push runs
+        # this workflow again, and the plan skips its own release commit.
+        # continue-on-error so a failure here still tags the published release; the last
+        # step fails the job afterwards.
+        continue-on-error: true
+        env:
+          DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          key="$RUNNER_TEMP/release_deploy_key"
+          hosts="$RUNNER_TEMP/known_hosts"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          # GitHub's published ed25519 host key, pinned rather than trusted on first use.
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$hosts -o StrictHostKeyChecking=yes"
+          status=0
+          node scripts/release.mjs record "$VERSION" "git@github.com:$GITHUB_REPOSITORY.git" || status=$?
+          rm -f "$key"
+          exit $status
+
       - name: Tag the published commit
         if: steps.plan.outputs.release == 'true' && inputs.dry_run != true
         env:
@@ -165,3 +194,11 @@ jobs:
         env:
           VERSION: ${{ steps.plan.outputs.version }}
         run: until npm view "parseman@$VERSION" version >/dev/null 2>&1; do sleep 10; done
+
+      - name: Fail if main does not record the release
+        if: steps.record.outcome == 'failure'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          echo "::error::$VERSION is published and tagged, but recording it on main failed. Catch main up in a PR: node scripts/release.mjs sync"
+          exit 1

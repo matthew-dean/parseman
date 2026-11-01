@@ -6,15 +6,18 @@
  *   node scripts/release.mjs plan              # prints release=true|false and version=X.Y.Z
  *                                              # (reads npm; builds dist/; touches nothing tracked)
  *   node scripts/release.mjs stamp <version>   # stamps the release into the tree and commits it
+ *   node scripts/release.mjs record <v> <remote> # pushes the release onto main (needs the deploy key)
  *   node scripts/release.mjs sync              # files released CHANGELOG sections onto main (a PR)
  *
- * `main` only takes pull requests and the workflow has no bypass, so the publish never
- * writes to it. `stamp` commits the version and the dated CHANGELOG heading inside the
- * runner, the workflow publishes that tree and tags that commit `vX.Y.Z`, and the tag is
- * the repository's record of the release. `main` keeps the last version a pull request
- * declared, and its `## Unreleased` section keeps entries an auto-patch already shipped
- * until someone runs `sync` in a PR. Each stamp files those entries under the release
- * that shipped them, read from the previous tag, so every tag's CHANGELOG is exact.
+ * `stamp` commits the version and the dated CHANGELOG heading inside the runner, the
+ * workflow publishes that tree and tags that commit `vX.Y.Z`. With the
+ * `RELEASE_DEPLOY_KEY` secret, `record` also puts the release on `main` (a fast-forward,
+ * or the stamp rebuilt on a tip that moved), and the push it makes publishes nothing
+ * (`releaseCommitOf`). Without it the tag is the only record: `main` keeps the last
+ * version a pull request declared and its `## Unreleased` keeps entries an auto-patch
+ * already shipped, until someone runs `sync` in a PR. Either way each stamp files those
+ * entries under the release that shipped them, read from the previous tag, so every
+ * tag's CHANGELOG is exact.
  *
  * Dependency-free on purpose, like `check-changelog.mjs`: a release gate that needs the
  * build to run cannot run when the build is broken.
@@ -287,19 +290,34 @@ export function stampChangelog(changelog, { version, date, released = '' }) {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
+/** The identity release commits are made with. */
+const BOT = {
+  GIT_AUTHOR_NAME: 'github-actions[bot]',
+  GIT_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com',
+  GIT_COMMITTER_NAME: 'github-actions[bot]',
+  GIT_COMMITTER_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com',
+}
+
 const run = (cmd, args, opts = {}) =>
   (execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...opts }) ?? '').trim()
 
+/** The files that carry the version, and how each spells it. */
+const VERSION_SITES = [
+  ['package.json', /("version"\s*:\s*)"[^"]+"/, (v) => `"${v}"`],
+  ['src/version.ts', /(PARSEMAN_VERSION\s*=\s*)'[^']+'/, (v) => `'${v}'`],
+]
+
+const withVersion = (file, source, version) => {
+  const site = VERSION_SITES.find(([f]) => f === file)
+  if (!site[1].test(source)) throw new Error(`${file} names no version to stamp.`)
+  return source.replace(site[1], (_, lead) => `${lead}${site[2](version)}`)
+}
+
 /** package.json's `version` and `src/version.ts`'s `PARSEMAN_VERSION`, set to `version`. */
 export function applyVersion(root, version) {
-  for (const [file, pattern] of [
-    ['package.json', /("version"\s*:\s*)"[^"]+"/],
-    ['src/version.ts', /(PARSEMAN_VERSION\s*=\s*)'[^']+'/],
-  ]) {
+  for (const [file] of VERSION_SITES) {
     const path = join(root, file)
-    const source = readFileSync(path, 'utf8')
-    if (!pattern.test(source)) throw new Error(`${file} names no version to stamp.`)
-    writeFileSync(path, source.replace(pattern, (_, lead) => `${lead}${file === 'package.json' ? `"${version}"` : `'${version}'`}`))
+    writeFileSync(path, withVersion(file, readFileSync(path, 'utf8'), version))
   }
 }
 
@@ -328,6 +346,70 @@ export function supersedingRelease(root = ROOT) {
     }
   }
   return null
+}
+
+/**
+ * The tag HEAD is the release commit of, if any: its subject is `release: X.Y.Z` and its
+ * tree is `vX.Y.Z`'s. That is the commit `record` pushed to `main`, and its push must
+ * not publish again.
+ */
+export function releaseCommitOf(root = ROOT) {
+  const git = (...args) => run('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] })
+  const v = /^release: (\d+\.\d+\.\d+)$/.exec(git('log', '-1', '--format=%s'))?.[1]
+  if (v === undefined) return null
+  try {
+    return git('rev-parse', `v${v}^{tree}`) === git('rev-parse', 'HEAD^{tree}') ? `v${v}` : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The commit that records release `version` on `main`, given `main`'s current tip.
+ * HEAD is the release: the stamped commit, or the merged commit itself when there was
+ * nothing to stamp.
+ *
+ *   - HEAD already on `main` (the tip contains it): nothing to record.
+ *   - `main` has not moved (the tip is HEAD's parent): HEAD itself, a fast-forward.
+ *   - `main` moved: the stamp rebuilt on the tip, as `sync` would. The version files say
+ *     `version`, the release's CHANGELOG sections are copied in and their entries leave
+ *     Unreleased, and whatever later PRs filed under Unreleased stays there.
+ *
+ * The rebuilt commit is written through a scratch index, so the checkout is untouched.
+ */
+export function recordCommit(root, version, tip) {
+  const git = (args, opts = {}) => run('git', args, { cwd: root, stdio: ['pipe', 'pipe', 'pipe'], ...opts })
+  const contains = (a, b) => {
+    try {
+      git(['merge-base', '--is-ancestor', a, b])
+      return true
+    } catch {
+      return false
+    }
+  }
+  const head = git(['rev-parse', 'HEAD'])
+  if (contains(head, tip)) return { action: 'none', commit: tip }
+  if (git(['rev-parse', 'HEAD^']) === git(['rev-parse', tip])) return { action: 'fast-forward', commit: head }
+
+  const tmp = mkdtempSync(join(tmpdir(), 'pm-record-'))
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: join(tmp, 'index'), ...BOT }
+    git(['read-tree', tip], { env })
+    const files = {
+      'CHANGELOG.md': stampChangelog(git(['show', `${tip}:CHANGELOG.md`]), { released: git(['show', 'HEAD:CHANGELOG.md']) }),
+      'package.json': withVersion('package.json', git(['show', `${tip}:package.json`]), version),
+      'src/version.ts': withVersion('src/version.ts', git(['show', `${tip}:src/version.ts`]), version),
+    }
+    for (const [file, text] of Object.entries(files)) {
+      // `git show` drops the final newline; every one of these files ends with one.
+      const blob = git(['hash-object', '-w', '--stdin'], { input: text.endsWith('\n') ? text : `${text}\n` })
+      git(['update-index', '--cacheinfo', `100644,${blob},${file}`], { env })
+    }
+    const tree = git(['write-tree'], { env })
+    return { action: 'rebuilt', commit: git(['commit-tree', tree, '-p', tip, '-m', `release: ${version}`], { env }) }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 }
 
 /** The CHANGELOG at the newest release tag below `version` (any tag without one). */
@@ -378,6 +460,12 @@ function plan() {
   const log = (msg) => console.error(msg)
   log(`declared (package.json): ${pkg.version}; latest release (npm and v* tags): ${next.latest ?? 'none'}`)
 
+  const own = releaseCommitOf()
+  if (own !== null) {
+    const reason = `this is ${own}'s release commit, recorded on main by the run that published it`
+    log(`→ skip: ${reason}.`)
+    return { release: false, version: next.version, reason }
+  }
   const superseded = supersedingRelease()
   if (superseded !== null) {
     const reason = `this commit is already contained in ${superseded}, so a run for it releases nothing`
@@ -423,19 +511,37 @@ function stamp(version, date) {
   writeFileSync(path, stampChangelog(readFileSync(path, 'utf8'), { version, date, released: releasedChangelog(version) }))
   const stamped = ['package.json', 'src/version.ts', 'CHANGELOG.md']
   if (run('git', ['status', '--porcelain', '--', ...stamped]) !== '') {
-    const env = {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'github-actions[bot]',
-      GIT_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com',
-      GIT_COMMITTER_NAME: 'github-actions[bot]',
-      GIT_COMMITTER_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com',
-    }
+    const env = { ...process.env, ...BOT }
     run('git', ['add', '--', ...stamped])
     const tree = run('git', ['write-tree'])
     const commit = run('git', ['commit-tree', tree, '-p', 'HEAD', '-m', `release: ${version}`], { env })
     run('git', ['update-ref', 'HEAD', commit])
   }
   return run('git', ['rev-parse', 'HEAD'])
+}
+
+/**
+ * Push the commit that records `version` onto `main` at `remote`. Never forced: a push
+ * rejected because `main` moved in the meantime is rebuilt on the new tip and retried.
+ */
+export function record(root, version, remote) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    run('git', ['fetch', '--quiet', remote, 'main'], { cwd: root })
+    const r = recordCommit(root, version, run('git', ['rev-parse', 'FETCH_HEAD'], { cwd: root }))
+    console.error(`record ${version} on main: ${r.action} (${r.commit.slice(0, 8)})`)
+    if (r.action === 'none') return r.commit
+    try {
+      run('git', ['push', '--quiet', remote, `${r.commit}:refs/heads/main`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] })
+      return r.commit
+    } catch {
+      console.error(`push rejected (attempt ${attempt}); main moved, rebuilding on its new tip.`)
+    }
+  }
+  throw new Error(
+    `could not record ${version} on main after 3 attempts. The release is published and tagged;\n`
+      + '  main only lacks the version. Catch it up in a pull request:\n'
+      + '    node scripts/release.mjs sync',
+  )
 }
 
 /** File every release `main` has not recorded yet, from the newest tag. For a PR. */
@@ -458,7 +564,8 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     }
     else if (command === 'stamp') console.log(stamp(arg, date))
     else if (command === 'sync') console.log(`main now records ${sync()}`)
-    else throw new Error('usage: release.mjs plan | stamp <version> | sync')
+    else if (command === 'record') console.log(record(ROOT, arg, process.argv[4]))
+    else throw new Error('usage: release.mjs plan | stamp <version> | record <version> <remote> | sync')
   } catch (e) {
     console.error(`release: ${e instanceof Error ? e.message : String(e)}`)
     process.exit(1)

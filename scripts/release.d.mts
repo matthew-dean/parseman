@@ -40,3 +40,10 @@ export declare function stampChangelog(
 ): string
 export declare function applyVersion(root: string, version: string): void
 export declare function supersedingRelease(root?: string): string | null
+export declare function releaseCommitOf(root?: string): string | null
+export declare function recordCommit(
+  root: string,
+  version: string,
+  tip: string,
+): { action: 'none' | 'fast-forward' | 'rebuilt'; commit: string }
+export declare function record(root: string, version: string, remote: string): string

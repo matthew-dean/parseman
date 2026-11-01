@@ -59,7 +59,8 @@ changes a file `npm pack` ships, a build input, or a consumer-facing `package.js
 field. Merging publishes the next patch. For a minor or a major, set the heading to
 `## X.Y.0 — <date>` and `package.json` and `src/version.ts` to `X.Y.0` in the PR.
 A merge that changes nothing the package ships publishes nothing. The released
-version is recorded on its `vX.Y.Z` tag, not on `main`. Full flow:
+version is recorded on its `vX.Y.Z` tag, and on `main` too once the release deploy key
+is configured. Full flow:
 `docs/design/release-gates.md`.
 
 ## A differential that has never been shown to fail is not evidence

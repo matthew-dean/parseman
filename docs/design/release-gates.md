@@ -14,10 +14,12 @@ Two scripts carry it:
 
 ## How a merge publishes
 
-1. **Plan** (`node scripts/release.mjs plan`). A commit some release tag already
-   contains publishes nothing. That is a re-run of a commit `main` has moved past, and
-   publishing it would ship older code under a newer number. Then: `V` is `package.json`'s version on
-   `main`. `L` is the highest stable version on npm or among the `v*` tags.
+1. **Plan** (`node scripts/release.mjs plan`). Two kinds of commit publish nothing:
+   the release commit the record step pushed to `main`, and a commit that some release
+   tag already contains. The second is a re-run of a commit `main` has moved past;
+   publishing it would ship older code under a newer number. Otherwise `V` is
+   `package.json`'s version on `main` and `L` is the highest stable version on npm or
+   among the `v*` tags.
    - If `V > L`, a pull request declared `V`: publish `V`.
    - Otherwise publish `L` with the patch plus one, unless the package is unchanged.
 
@@ -41,19 +43,42 @@ Two scripts carry it:
 4. **Guard and preflight.** `check-changelog.mjs --publish` and
    `check-main-release-state.mjs` pass on the stamped tree, `X.Y.Z` is not on npm,
    the tag `vX.Y.Z` does not exist, and the full preflight from `AGENTS.md` passes.
-5. **Publish** with `npm publish --provenance`, **tag** the stamped commit `vX.Y.Z` with
-   a git push, and wait until npm serves the new version.
+5. **Publish** with `npm publish --provenance`. With the `RELEASE_DEPLOY_KEY` secret,
+   **record** the release on `main` (below). Then **tag** the stamped commit `vX.Y.Z`
+   with a git push, and wait until npm serves the new version.
 
 ### Where the released version is recorded
 
-On its tag. `main` only takes pull requests and the workflow has no bypass of that
-rule, so the publish never writes to `main`. The release commit exists beside `main`,
-its first parent is the merged commit, and the `vX.Y.Z` tag points at it. The tag's
-tree is exactly what was published, `CHANGELOG.md` included. Tags are outside `main`'s
-branch rules, and `contents: write` covers the push.
+Always on its tag. The `vX.Y.Z` tag points at the stamped release commit, whose first
+parent is the merged commit. The tag's tree is exactly what was published,
+`CHANGELOG.md` included. Tags are outside `main`'s branch rules, and `contents: write`
+covers the push.
 
-So `main`'s `package.json` keeps the last version a pull request declared, and its
-`## Unreleased` keeps entries an auto-patch already shipped. Neither causes harm:
+**On `main` too, when the `RELEASE_DEPLOY_KEY` secret is set.** `main` only takes pull
+requests, and on a personal-account repository GitHub will not accept the Actions app as
+a ruleset bypass actor, so `GITHUB_TOKEN` cannot write to it. A deploy key can be a
+bypass actor. With the secret present, the job's record step
+(`node scripts/release.mjs record`) pushes the release onto `main` over SSH before
+tagging:
+
+- if `main` has not moved since the run started, it fast-forwards `main` to the release
+  commit;
+- if another PR merged meanwhile, it rebuilds the stamp on the new tip, as `sync` would.
+  The version files name the release, the release's CHANGELOG sections are copied in and
+  their entries leave Unreleased, and whatever the later PR filed under Unreleased stays
+  there;
+- a push rejected because `main` moved again is rebuilt and retried, up to three times.
+  It is never forced. If all three fail, the release is still published and tagged and
+  the job fails with the recovery step: run `sync` in a PR.
+
+That push runs the publish workflow again. The plan skips it when HEAD's subject is
+`release: X.Y.Z` and its tree is `vX.Y.Z`'s, which is the fast-forward case. A record
+rebuilt on a moved tip has a different tree; the next run publishes the later PR's change
+from it, or finds nothing new against the tarball and skips.
+
+**Without the secret, the tag is the only record.** `main`'s `package.json` keeps the
+last version a pull request declared, and its `## Unreleased` keeps entries an auto-patch
+already shipped. Neither causes harm:
 
 - the version rule reads npm and the tags, so a trailing `package.json` still yields
   the next patch;
@@ -62,14 +87,35 @@ So `main`'s `package.json` keeps the last version a pull request declared, and i
   CHANGELOG lists each change once, under the release that shipped it. An entry
   reworded on `main` after it shipped no longer matches and is listed again.
 
-To catch `main` up, run `node scripts/release.mjs sync` in a pull request: it copies
-the released sections from the newest tag, drops their entries from Unreleased, and
-sets `package.json` and `src/version.ts` to that release. Changing only the version
+To catch `main` up by hand, run `node scripts/release.mjs sync` in a pull request: it
+copies the released sections from the newest tag, drops their entries from Unreleased,
+and sets `package.json` and `src/version.ts` to that release. Changing only the version
 stamp needs no CHANGELOG entry.
 
-The other designs need a repository settings change. Committing the bump to `main`
-needs a bypass actor for the workflow. A bot follow-up PR needs Actions to be allowed
-to open pull requests, and a `GITHUB_TOKEN` PR does not trigger the required checks.
+#### One-time setup for recording on `main`
+
+Run these as the repository owner, from any directory:
+
+```sh
+ssh-keygen -t ed25519 -N '' -C 'parseman publish.yml release recorder' -f parseman-release-key
+gh repo deploy-key add parseman-release-key.pub -R matthew-dean/parseman --allow-write --title 'publish.yml release recorder'
+gh secret set RELEASE_DEPLOY_KEY -R matthew-dean/parseman < parseman-release-key
+rm parseman-release-key parseman-release-key.pub
+```
+
+Then let deploy keys through the rules on `main`. Under **Settings → Rules → Rulesets**,
+add **Deploy keys** to the bypass list with "Always allow". Do this for both rulesets
+that target `main`: `default` (which requires pull requests and the `test` and Greptile
+checks) and `Human attribution` (which requires its own status check). Either one alone
+still rejects a direct push. Through the API:
+
+```sh
+gh api repos/matthew-dean/parseman/rulesets/<id> --jq '{bypass_actors}'   # read first
+# then PUT the ruleset with {"actor_type": "DeployKey", "bypass_mode": "always"} added
+```
+
+The record step pins GitHub's published ed25519 host key rather than trusting the first
+key it sees. Until the secret exists, the step is skipped and nothing else changes.
 
 ### Two merges in a row
 
