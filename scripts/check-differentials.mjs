@@ -221,6 +221,18 @@ const REGISTRY = [
     plants: [{ defect: 'rgate-miss-set-short', expect: 'moves' }],
   },
   {
+    id: 'trivia-lead-gate',
+    needs: 'repo',
+    file: 'test/unit/table-trivia-lead-gate.test.ts',
+    legs: 'generated inputs with spaces, comments and a lone slash before and inside every construct, labelled and unlabelled trivia, plain, root-trivia, line-tracking and CST-host runs, through closure and emitted tableRules vs execRules (which has no lead gate): whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-trivia-lead-gate.test.ts']),
+    plants: [
+      { defect: 'trivia-lead-closure-narrow', expect: 'moves' },
+      { defect: 'trivia-lead-emitted-narrow', expect: 'moves' },
+    ],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',

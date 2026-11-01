@@ -196,6 +196,30 @@ export const DEFECTS = {
     }],
   },
 
+  /**
+   * The trivia lead gate (`trivia-gap.ts` `triviaLeadTable`, `emit-assembly.ts`
+   * `triviaMiss`) answers a skip at a character no trivia can start without
+   * scanning. Narrowing its lead set lets it refuse a gap that is there: the
+   * trivia stays in the input and the parse, its recorded trivia or both move.
+   */
+  'trivia-lead-closure-narrow': {
+    why: 'closure engine: the trivia lead table loses the trivia\'s last first-character range',
+    edits: [{
+      file: 'src/table/trivia-gap.ts',
+      find: 'for (const r of fs.ranges) for',
+      replace: 'for (const r of fs.ranges.slice(0, -1)) for',
+    }],
+  },
+
+  'trivia-lead-emitted-narrow': {
+    why: 'emitted engine: the printed trivia lead test loses the trivia\'s last first-character range',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'return c => `${c}<55296&&!(${leads.map(',
+      replace: 'return c => `${c}<55296&&!(${leads.slice(0, -1).map(',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{
