@@ -43,7 +43,7 @@
  *   because they come from two separate module graphs.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, cpSync, symlinkSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, symlinkSync, rmSync } from 'node:fs'
 import { register } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -874,17 +874,31 @@ export function summaryTable(
 }
 
 /**
- * True when `a` and `b` have the same `src/`, `src/version.ts` aside (a release commit
- * stamps it and nothing else). Both sides of a gate are built from `src/` alone and share
- * one install, so two such commits measure the same code: an A/A run.
+ * True when `a` and `b` have the same `src/`, `src/version.ts`'s version literal aside (a
+ * release commit stamps it and nothing else). Both sides of a gate are built from `src/`
+ * alone and share one install, so two such trees measure the same code: an A/A run.
+ *
+ * `b === null` is the working tree, which is what a gate run without `--head-ref`
+ * measures: a local run with uncommitted `src/` edits is not A/A because HEAD is.
  */
-export function sameSource(root: string, a: string, b: string): boolean {
+export function sameSource(root: string, a: string, b: string | null): boolean {
+  const stampless = (rev: string | null): string | null => {
+    try {
+      const text = rev === null
+        ? readFileSync(path.join(root, 'src', 'version.ts'), 'utf8')
+        : git(['show', `${rev}:src/version.ts`], root)
+      return text.replace(/PARSEMAN_VERSION\s*=\s*['"][^'"]*['"]/, '')
+    } catch {
+      return null
+    }
+  }
   try {
-    git(['diff', '--quiet', a, b, '--', 'src', ':(exclude)src/version.ts'], root)
-    return true
+    git(['diff', '--quiet', a, ...(b === null ? [] : [b]), '--', 'src', ':(exclude)src/version.ts'], root)
+    if (b === null && git(['ls-files', '--others', '--exclude-standard', '--', 'src'], root).trim() !== '') return false
   } catch {
     return false
   }
+  return stampless(a) === stampless(b)
 }
 
 /**

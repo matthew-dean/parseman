@@ -205,7 +205,7 @@ async function isolatedCases(dir: string): Promise<Case[]> {
 
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
 // Identical code on both sides: measured and reported, never a verdict (see `identicalSourceNote`).
-const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF ?? 'HEAD')
+const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF)
 const refDir = materialise(GATE, ROOT, REF, COPY)
 const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
 
