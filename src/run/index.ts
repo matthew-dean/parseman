@@ -25,6 +25,11 @@
  *   const result = run(myGrammar, source, { trivia })
  */
 export { buildRootTriviaIndex } from '../cst/trivia-entries.ts'
+// Line/column lookup for the spans and errors `run()` returns. `line-index.ts` is
+// already in the driver's closure (recovery annotates errors with it), so exposing
+// it here costs no module — a caller reporting positions need not import the main entry.
+export { buildLineIndex, offsetToLineCol } from '../line-index.ts'
+export type { LineIndex } from '../line-index.ts'
 export { run } from '../functional/run.ts'
 export type { RootTriviaCapture, Runnable, RunOptions, RunResult } from '../functional/run.ts'
 export type { RootTriviaGap, RootTriviaIndex, TriviaEntriesView } from '../cst/trivia-entries.ts'
