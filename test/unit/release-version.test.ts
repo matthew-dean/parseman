@@ -491,6 +491,34 @@ describe('publish.yml runs no dependency where a credential is held', () => {
   })
 })
 
+describe('publish.yml ships a tarball no test-time dependency touched', () => {
+  const yml = readFileSync(join(dirname(new URL(import.meta.url).pathname), '../../.github/workflows/publish.yml'), 'utf8')
+  const jobs = Object.fromEntries(yml.slice(yml.indexOf('\njobs:\n')).split(/\n(?= {2}[\w-]+:\n)/).slice(1)
+    .map((text) => [/^ {2}([\w-]+):/.exec(text)![1]!, text]))
+
+  it('packs what ships in a job that runs the build alone, and only the build job hands a tarball over', () => {
+    const build = jobs.build!
+    expect(build).toMatch(/pnpm install --frozen-lockfile --ignore-scripts/)
+    expect(build).toMatch(/npm pack --ignore-scripts/)
+    expect(build).not.toMatch(/cache:|pnpm (test|run|exec|build)\b|vitest/)
+    expect(build).toMatch(/if \[ "\$sha" != "\$PREPARED" \]; then/)
+    expect(jobs.prepare).not.toMatch(/upload-artifact/)
+    expect(build).toMatch(/upload-artifact/)
+  })
+
+  it('publishes that tarball by the sha the build job output, and decides the version itself', () => {
+    const publish = jobs.publish!
+    expect(publish).toMatch(/needs: \[prepare, build\]/)
+    expect(publish).toMatch(/SHA256: \$\{\{ needs\.build\.outputs\.sha256 \}\}/)
+    const check = publish.indexOf('sha256sum -c --strict')
+    expect(check).toBeGreaterThan(-1)
+    expect(check).toBeLessThan(publish.indexOf('npm publish "$tgz"'))
+    expect(publish).toMatch(/nextVersion\(\{ declared, published: \[\.\.\.npm, \.\.\.tags\] \}\)/)
+    expect(publish.indexOf('The version is the one main asks for')).toBeLessThan(publish.indexOf('npm publish "$tgz"'))
+    expect(publish).toMatch(/if \[ "\$stamped" != "\$COMMIT" \]; then/)
+  })
+})
+
 describe('publish.yml releases only a commit CI passed', () => {
   const yml = readFileSync(join(dirname(new URL(import.meta.url).pathname), '../../.github/workflows/publish.yml'), 'utf8')
 

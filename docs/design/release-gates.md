@@ -47,16 +47,22 @@ Two scripts carry it:
    require a pull request to be up to date with it before merging: two pull requests
    that each passed CI can merge into a commit nothing has tested, and the preflight
    runs none of the perf, size or wasted-work gates that `test` requires.
-5. **Pack** the stamped tree with `npm pack`.
-6. **Publish**, in a second job: re-stamp the same commit (same date and commit time, so
-   the same sha, which the job checks) and `npm publish` the packed tarball with
-   `--provenance --ignore-scripts`. With the `RELEASE_DEPLOY_KEY` secret, **record** the
-   release on `main` (below). Then **tag** the stamped commit `vX.Y.Z` with a git push,
-   and wait until npm serves the new version.
+5. **Pack** the stamped tree with `npm pack`, and keep its sha256.
+6. **Build what ships**, in a second job: re-stamp the same commit (same date and commit
+   time, so the same sha, which the job checks), install with `--ignore-scripts`, run
+   `scripts/build.mjs` and `npm pack --ignore-scripts`. Its tarball must be step 5's,
+   byte for byte (the build is reproducible: the 0.58.0 tarball rebuilds to npm's sha).
+7. **Publish**, in a third job: decide the version again from `package.json`, npm and the
+   tags, re-stamp the same commit, check the tarball step 6 packed against the sha that
+   job output, and `npm publish` it with `--provenance --ignore-scripts`. With the
+   `RELEASE_DEPLOY_KEY` secret, **record** the release on `main` (below). Then **tag** the
+   stamped commit `vX.Y.Z` with a git push, and wait until npm serves the new version.
 
 Steps 1-5 run in the `prepare` job, which has a read-only token and nothing else. It
 installs every devDependency, runs three packages' install scripts, and runs the whole
-test suite. Only the `publish` job holds the OIDC token (`id-token: write`), the
+test suite, so its tarball is not the one that ships: any of that code could rewrite
+`dist/` before the pack, and provenance would attest the result. The `build` job's
+tarball ships; only the build toolchain runs there, and it must agree with `prepare`'s. Only the `publish` job holds the OIDC token (`id-token: write`), the
 `contents: write` token and the deploy key. It installs nothing but the pinned npm it
 publishes with, and runs git, that npm and the dependency-free `scripts/release.mjs`. Any step of a job with `id-token: write` can
 request an OIDC token, and a job's secrets sit in the runner's memory for the whole job,
