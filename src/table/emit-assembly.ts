@@ -1344,6 +1344,24 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 `
   }
 
+  /**
+   * A call OUT of the scope whose callee reads collectors on the context and does
+   * not need a capture buffer: `ks`/`rs` are installed as the flat collectors for
+   * the call (none, where there is no `ks`), with nothing to fold back. An array
+   * a caller handed in as one-kind (`_eX`) keeps its kind. Restored on a throw,
+   * since the context outlives the call.
+   */
+  const flatCall = (k: number, call: string): string => {
+    const install = k === DV_UNDEF
+      ? 'ctx._cstChildren=undefined;ctx._cstLeaves=undefined;ctx._cstRawChildren=undefined'
+      : k === DV_DEF
+        ? 'ctx._cstChildren=ks;ctx._cstLeaves=ks;ctx._cstRawChildren=rs'
+        : 'const fp=ks===_eX?_eXm:0;ctx._cstChildren=fp===2?undefined:ks;ctx._cstLeaves=fp===1?undefined:ks;ctx._cstRawChildren=rs'
+    return `{const fc=ctx._cstChildren,fl=ctx._cstLeaves,fr=ctx._cstRawChildren
+${install}
+try{${call}}finally{ctx._cstChildren=fc;ctx._cstLeaves=fl;ctx._cstRawChildren=fr}}`
+  }
+
   function link(ip: number): string {
     const hit = byIp.get(ip)
     if (hit !== undefined) return hit
@@ -1858,9 +1876,7 @@ return it.value
         // In direct mode the interpreted scan reaches the collector through a
         // capture buffer whose arrays are `ks`/`rs` (`_xOpen`/`_xClose`).
         const scanCall = `SCANS[${si}].parse(input,pos,ctx)`
-        const scanRun = !D || DL.k === DV_UNDEF
-          ? `const r=${scanCall}`
-          : `let r\n${DL.k === DV_DEF ? '' : 'if(ks===undefined)r=' + scanCall + '\nelse'}{const xb=_xOpen(ctx,ks,rs);r=${scanCall};_xClose(ctx,xb,ks,rs)}`
+        const scanRun = !D ? `const r=${scanCall}` : `let r\n${flatCall(DL.k, `r=${scanCall}`)}`
         return `${head}
 ${scanRun}
 if(!r.ok){ctx._fe=r.span.start;ctx._fx=r.expected??EMPTY_FX;return FAIL}
@@ -3176,7 +3192,13 @@ return nd
     entryNames.set(fname, nm)
     // `finally`: a reducer that throws (jess's dialects reject on purpose) must
     // not leave the caller's collector detached from its context.
-    entryDefs.push(`function ${nm}(input,pos,ctx){if(_eIn(ctx)===0)return ${fname}(input,pos,ctx);try{return ${fname}(input,pos,ctx,_eK,_eR)}finally{_eOut(ctx)}}`)
+    // A caller holding the flat collectors (one array as both, no buffer) hands
+    // them over as they are: the scope never reads them, and every call out of
+    // it installs its own (`flatCall`, `_xOpen`).
+    entryDefs.push(`function ${nm}(input,pos,ctx){const c=ctx._cstChildren
+if(c!==undefined&&c===ctx._cstLeaves&&ctx._cstBuf===undefined)return ${fname}(input,pos,ctx,c,ctx._cstRawChildren)
+if(_eIn(ctx)===0)return ${fname}(input,pos,ctx)
+try{return ${fname}(input,pos,ctx,_eK,_eR)}finally{_eOut(ctx)}}`)
     return nm
   }
   const ruleEntries: string[] = []
@@ -3233,12 +3255,14 @@ scan:function(s){const o=_pfScan;_pfScan=s;return o}`
   }
   // In direct mode the closure piece is handed a capture buffer whose arrays are
   // the caller's `ks`/`rs` (`_xOpen`), the form its own engine reads.
+  // A closure piece whose label proves a capture buffer open dereferences one
+  // (`assemble.ts` `nextTermBuffered`), and that label only holds under a node,
+  // where `ks` is always an array. Every other one takes the flat collectors.
   const externalCall = (ip: number): string => {
     const call = `v=_xp${ip}(input,pos,ctx)`
     if (!D) return `const ${call}`
-    const k = dlabelAt(ip).k
-    const framed = `{const b=_xOpen(ctx,ks,rs);${call};_xClose(ctx,b,ks,rs)}`
-    return k === DV_UNDEF ? `let ${call}` : k === DV_DEF ? `let v\n${framed}` : `let v\nif(ks===undefined)${call}\nelse${framed}`
+    if (labels.at(ip).buf) return `let v\n{const b=_xOpen(ctx,ks,rs);${call};_xClose(ctx,b,ks,rs)}`
+    return `let v\n${flatCall(dlabelAt(ip).k, call)}`
   }
   const externalDefs = select === undefined ? '' : `let _xScan
 ${externals.map(ip => `let _xp${ip}
