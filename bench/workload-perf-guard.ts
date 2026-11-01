@@ -63,7 +63,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
 import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
@@ -171,6 +171,8 @@ async function isolatedCases(dir: string, side: string): Promise<Case[]> {
 }
 
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
+// Identical code on both sides: measured and reported, never a verdict (see `identicalSourceNote`).
+const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF)
 const refDir = materialise(GATE, ROOT, REF, COPY)
 const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
 
@@ -278,7 +280,7 @@ for (const v of rows) {
 console.log(`\n  load average ${load0.toFixed(2)} → ${load1.toFixed(2)}`)
 summary(summaryTable(
   `${GATE}: HEAD vs ${REPORT_ONLY ? `merge base ${REF}` : REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`,
-  rows, calibration, !REPORT_ONLY && !SELF && !QUICK,
+  rows, calibration, !REPORT_ONLY && !SELF && !QUICK && !IDENTICAL,
 ))
 
 if (SELF) {
@@ -365,6 +367,11 @@ function peakWaiver(failed: readonly Verdict[]): { applied: boolean, message: st
 
 // Report-only runs (the merge-base arm below) never gate; the gate is the release.
 if (REPORT_ONLY) process.exit(0)
+if (IDENTICAL) {
+  const note = identicalSourceNote(GATE, REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`, rows.filter(v => v.failed).map(v => v.id))
+  summary(note)
+  process.exit(0)
+}
 if (MERGE_BASE !== null) reportAgainstMergeBase(GATE, ROOT, MERGE_BASE, REF, [])
 
 const failures = rows.filter(v => v.failed)

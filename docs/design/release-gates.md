@@ -140,8 +140,11 @@ decision. It builds `dist/` and leaves tracked files as it found them.
 - **Before publish.** Nothing is out. Fix the cause; the next merge, or a re-run, plans
   again.
 - **Publish succeeded, tag failed.** Do not re-run: the next plan would skip, because
-  npm now has the version. Recreate the stamped commit from the run's commit and push
-  the tag by hand:
+  npm now has the version. Until the tag exists, every run stops in the plan with
+  "parseman@X.Y.Z is on npm but has no vX.Y.Z tag". Releasing on top of it would read
+  the CHANGELOG of the tag before it and file X.Y.Z's entries under the next version, and
+  a re-run of a commit X.Y.Z contains would not be recognised as one. Recreate the
+  stamped commit from the run's commit and push the tag by hand:
 
   ```sh
   sha=$(gh run view <run-id> --json headSha --jq .headSha)
@@ -149,6 +152,18 @@ decision. It builds `dist/` and leaves tracked files as it found them.
   git push origin HEAD:refs/tags/vX.Y.Z
   ```
 
+- **A declared version shipped first by another merge.** The release gate checks a
+  declared version against the tags when the pull request runs, not when it merges. If
+  another merge ships that version in between, `main` ends up with the PR's entries
+  under a heading for a release that never contained them. The plan stops when
+  `package.json` names a tagged version and `CHANGELOG.md`'s section for it has an entry
+  that none of the tag's release sections has. A re-dated heading, Unreleased entries the
+  stamp folded in, or an entry it left under an earlier auto-patch don't count. Fix it in
+  a pull request: move the entries under `## Unreleased`, delete the stale heading, and
+  run `sync`, which files the release that shipped under that version from its tag. Or
+  rename the section to a version above the latest release and declare it. `sync` on its
+  own changes nothing here: `main` already has a section for that version, so it copies
+  nothing in.
 - **npm slow to serve the version.** The wait step times out after 10 minutes. The tag
   already exists, so the next run reads `L` from it. That run's skip comparison fails
   loudly until npm serves the tarball; re-run it then.

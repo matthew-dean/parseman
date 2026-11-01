@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   nextVersion, packageDifferences, shippedPaths, stampChangelog, pendingEntries, compareVersions, parseVersion,
-  consumerFieldChanges, supersedingRelease, recordCommit, record, releaseCommitOf,
+  consumerFieldChanges, supersedingRelease, recordCommit, record, releaseCommitOf, decide,
 } from '../../scripts/release.mjs'
 
 const dirs: string[] = []
@@ -356,5 +356,71 @@ describe('publish.yml records on main only with the deploy key', () => {
     expect(tag).not.toMatch(/HAS_DEPLOY_KEY|steps\.record/)
     expect(yml.indexOf('- name: Record the release on main')).toBeLessThan(yml.indexOf('- name: Tag the published commit'))
     expect(step('Fail if main does not record the release')).toMatch(/steps\.record\.outcome == 'failure'/)
+  })
+})
+
+describe('the plan decides from what it read', () => {
+  // main as v0.2.0 left it: the section that release shipped.
+  const shipped020 = '# Changelog\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+  const read = {
+    declared: '0.2.0', npm: ['0.1.0', '0.2.0'], tags: ['v0.1.0', 'v0.2.0'], own: null, superseded: null,
+    changelog: shipped020, released: (tag: string): string => (tag === 'v0.2.0' ? shipped020 : ''),
+  }
+  const unchanged = (): string[] => []
+  const changed = (): string[] => ['dist/index.js']
+
+  it('skips the record commit and a commit a release already contains, before comparing anything', () => {
+    const differences = vi.fn(changed)
+    expect(decide({ ...read, own: 'v0.2.0', differences })).toMatchObject({ release: false, reason: expect.stringMatching(/v0\.2\.0's release commit/) })
+    expect(decide({ ...read, superseded: 'v0.2.0', differences })).toMatchObject({ release: false, reason: expect.stringMatching(/already contained in v0\.2\.0/) })
+    expect(differences).not.toHaveBeenCalled()
+  })
+
+  it('publishes a declared version without comparing, and the next patch only when the package changed', () => {
+    const differences = vi.fn(unchanged)
+    expect(decide({ ...read, declared: '0.3.0', differences })).toMatchObject({ release: true, version: '0.3.0', declared: true })
+    expect(differences).not.toHaveBeenCalled()
+    expect(decide({ ...read, differences })).toMatchObject({ release: false, version: '0.2.1', reason: expect.stringMatching(/nothing parseman@0\.2\.0 ships changed/) })
+    expect(differences).toHaveBeenCalledWith('0.2.0')
+    expect(decide({ ...read, differences: changed })).toMatchObject({ release: true, version: '0.2.1', differ: ['dist/index.js'] })
+  })
+
+  it('stops when npm\'s newest release has no tag, rather than releasing on top of it', () => {
+    // 0.2.1 published, its tag push failed: the next release would read v0.2.0's CHANGELOG.
+    expect(() => decide({ ...read, npm: [...read.npm, '0.2.1'], differences: changed })).toThrow(/parseman@0\.2\.1 is on npm but has no v0\.2\.1 tag/)
+    // A declared release on top of it would misfile 0.2.1's entries the same way.
+    expect(() => decide({ ...read, declared: '0.3.0', npm: [...read.npm, '0.2.1'], differences: changed })).toThrow(/parseman@0\.2\.1 is on npm but has no v0\.2\.1 tag/)
+    // An older untagged version, or a prerelease published by hand, is not that state.
+    expect(decide({ ...read, npm: ['0.0.9', ...read.npm, '0.3.0-rc.1'], differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
+  })
+
+  it('stops when package.json declares a version another merge already shipped, with entries it did not ship', () => {
+    // A PR declared 0.2.0 and passed its gate; another merge shipped 0.2.0 first; then
+    // this PR merged. Its entries sit under ## 0.2.0, which v0.2.0 never contained.
+    const stale = '# Changelog\n\n## 0.2.0 — 2026-11-02\n\n- the new api\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    expect(() => decide({ ...read, changelog: stale, differences: changed }))
+      .toThrow(/declares 0\.2\.0, which v0\.2\.0 already released[\s\S]*1 entry that release did not ship[\s\S]*- the new api[\s\S]*delete the ## 0\.2\.0 heading, then run `node scripts\/release\.mjs sync`/)
+    // `sync` alone leaves the stale section where it is, so the stop stands.
+    expect(stampChangelog(stale, { released: shipped020 })).toBe(stale)
+    // The fix the message names: the entries move under Unreleased, the heading goes, and
+    // `sync` files the 0.2.0 that shipped from its tag. The plan then releases the entry.
+    const moved = '# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    const fixed = stampChangelog(moved, { released: shipped020 })
+    expect(fixed).toBe('# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n')
+    expect(decide({ ...read, changelog: fixed, differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
+  })
+
+  it('accepts main trailing its tags with the section the release shipped, re-dated or folded into', () => {
+    // The tag's stamp dated the heading and folded an Unreleased entry in: main's
+    // section is a subset of what shipped, which is the normal state without the deploy key.
+    const tagged = '# Changelog\n\n## 0.2.0 — 2026-11-03\n\n- a late fix\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    expect(decide({ ...read, released: () => tagged, differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
+    // The declaring PR renamed an Unreleased that still held 0.1.1's entry; the 0.2.0 stamp
+    // left that entry under 0.1.1. It is shipped, so it does not count as stale.
+    const renamed = '# Changelog\n\n## 0.2.0 — 2026-11-01\n\n- from 0.1.1\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    const taggedWith011 = '# Changelog\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.1 — 2026-10-15\n\n- from 0.1.1\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    expect(decide({ ...read, changelog: renamed, released: () => taggedWith011, differences: changed })).toMatchObject({ release: true })
+    // No section for the version on main (a sync that only moved package.json): nothing to compare.
+    expect(decide({ ...read, changelog: '# Changelog\n\n## Unreleased\n\n- x\n', differences: changed })).toMatchObject({ release: true })
   })
 })

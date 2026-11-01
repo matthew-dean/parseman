@@ -43,7 +43,7 @@
  *   because they come from two separate module graphs.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, cpSync, symlinkSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, symlinkSync, rmSync } from 'node:fs'
 import { register } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -874,6 +874,48 @@ export function summaryTable(
 }
 
 /**
+ * True when `a` and `b` have the same `src/`, `src/version.ts`'s version literal aside (a
+ * release commit stamps it and nothing else). Both sides of a gate are built from `src/`
+ * alone and share one install, so two such trees measure the same code: an A/A run.
+ *
+ * `b === null` is the working tree, which is what a gate run without `--head-ref`
+ * measures: a local run with uncommitted `src/` edits is not A/A because HEAD is.
+ */
+export function sameSource(root: string, a: string, b: string | null): boolean {
+  const stampless = (rev: string | null): string | null => {
+    try {
+      const text = rev === null
+        ? readFileSync(path.join(root, 'src', 'version.ts'), 'utf8')
+        : git(['show', `${rev}:src/version.ts`], root)
+      return text.replace(/PARSEMAN_VERSION\s*=\s*['"][^'"]*['"]/, '')
+    } catch {
+      return null
+    }
+  }
+  try {
+    git(['diff', '--quiet', a, ...(b === null ? [] : [b]), '--', 'src', ':(exclude)src/version.ts'], root)
+    if (b === null && git(['ls-files', '--others', '--exclude-standard', '--', 'src'], root).trim() !== '') return false
+  } catch {
+    return false
+  }
+  return stampless(a) === stampless(b)
+}
+
+/**
+ * What a gate prints instead of a verdict when HEAD's `src/` is the reference's. Every
+ * merge that changes `src/` publishes, so a pull request that leaves `src/` alone is
+ * measured against identical code, and a breach there is the instrument, not a
+ * regression: CI read json/document at +1.9% median, breached 4/5, on a workflow-only
+ * PR against v0.58.0. The run still measures, so a change to the harness is exercised;
+ * it reports and does not fail.
+ */
+export function identicalSourceNote(gate: string, reference: string, failed: readonly string[]): string {
+  return `${gate}: HEAD's src/ is the reference ${reference}'s (src/version.ts aside), so this run is an A/A`
+    + ` control and gates nothing.${failed.length === 0 ? ' No case breached.' : ` It breached on ${failed.join(', ')}:`
+    + ' that is the noise floor on this runner, recorded here, not a regression.'}`
+}
+
+/**
  * The second question a PR's perf report answers: what did THIS change do, measured
  * against the commit it merges into rather than against the previous release. It is
  * report-only; the gate stays anchored on the release.
@@ -886,14 +928,7 @@ export function summaryTable(
  * `src/version.ts` is ignored: a release commit stamps it and nothing else.
  */
 export function mergeBaseNote(root: string, base: string, reference: string): string | null {
-  const sameSrc = (a: string, b: string): boolean => {
-    try {
-      git(['diff', '--quiet', a, b, '--', 'src', ':(exclude)src/version.ts'], root)
-      return true
-    } catch {
-      return false
-    }
-  }
+  const sameSrc = (a: string, b: string): boolean => sameSource(root, a, b)
   if (sameSrc(base, 'HEAD')) return 'This PR changes nothing under `src/`, so against its base the delta is zero by construction. Not measured.'
   if (sameSrc(base, reference)) return `The base has the same \`src/\` as the reference ${reference}, so the table above is also this PR against its base.`
   return null
