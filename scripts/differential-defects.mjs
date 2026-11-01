@@ -218,8 +218,8 @@ export const DEFECTS = {
     why: 'first sets: a sequence led by a nullable regex reports only the regex\'s own first characters',
     edits: [{
       file: 'src/combinators/first-set.ts',
-      find: '    return union(p._meta.consumingFirstSet ?? first, afterBoundary(i + 1))\n',
-      replace: '    return p._meta.consumingFirstSet ?? union(first, afterBoundary(i + 1))\n',
+      find: '    return union((consuming ? p._meta.consumingFirstSet : undefined) ?? first, afterBoundary(i + 1))\n',
+      replace: '    return (consuming ? p._meta.consumingFirstSet : undefined) ?? union(first, afterBoundary(i + 1))\n',
     }],
   },
 
