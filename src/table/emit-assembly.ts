@@ -588,6 +588,13 @@ export function emitAssemblySource(
   extraIps: readonly number[] = [],
   staticBuild = false,
   select?: ReadonlySet<number>,
+  /**
+   * Leave the `_errors` bit of a lexical program over a scan out of the side-sink
+   * census below. A budgeted selection is priced and chosen on this lowering, so
+   * the marks that bit adds move no site in or out of a budget; the artifact is
+   * then emitted with them.
+   */
+  scanSinkNeutral = false,
 ): EmitResult {
   const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
@@ -741,7 +748,7 @@ export function emitAssemblySource(
   for (const ip of sinkSites) {
     const op = code[ip]
     sinkBits.set(ip,
-      op === OP_SCAN || (op === OP_LEX_PROGRAM && t.lexPrograms[code[ip + 1]!]!.scan !== undefined) ? 3
+      op === OP_SCAN || (!scanSinkNeutral && op === OP_LEX_PROGRAM && t.lexPrograms[code[ip + 1]!]!.scan !== undefined) ? 3
         : (op === OP_FIELD ? 1 : 0)
           | (op === OP_EXPECT || (REC && (op === OP_REP || op === OP_REPV)) ? 2 : 0))
   }

@@ -13,7 +13,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   captures but not its error: `choice(sequence(balanced('(', ')'), literal('!')),
   literal('('))` on `(x` succeeded through the second arm and still returned the
   first arm's `")"` error. The closure engine and the reference driver were right.
-  See `test/unit/table-lex-program-scan-errors.test.ts`.
+  A budgeted selection is priced without these marks, so they move no site in or
+  out of it. See `test/unit/table-lex-program-scan-errors.test.ts` and
+  `test/unit/table-scan-sink-selection.test.ts`.
 
 ## 0.58.0 — 2026-10-31
 
