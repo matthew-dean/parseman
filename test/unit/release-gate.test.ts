@@ -287,6 +287,16 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     expect(r.out).toMatch(/adds no CHANGELOG entry/)
   })
 
+  it('ACCEPTS a new entry worded like one already pending: entries count by occurrence', () => {
+    const { dir, baseSha } = repo(
+      { changelog: pending('0.36.0', '- Faster parsing.'), files: src(1) },
+      { changelog: pending('0.36.0', '- Faster parsing.', '- Faster parsing.'), files: src(2) },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok, r.out).toBe(true)
+    expect(r.out).toMatch(/adds 1 entry under Unreleased/)
+  })
+
   it('ACCEPTS a declared minor: heading, package.json and src/version.ts set together', () => {
     const { dir, baseSha } = repo(
       { changelog: released('0.36.0'), files: src(1) },

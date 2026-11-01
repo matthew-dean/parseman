@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
-  nextVersion, packageDifferences, shippedPaths, stampChangelog, pendingEntries, compareVersions, parseVersion,
+  withoutEach, nextVersion, packageDifferences, shippedPaths, stampChangelog, pendingEntries, compareVersions, parseVersion,
   consumerFieldChanges, supersedingRelease, recordCommit, record, releaseCommitOf, decide,
 } from '../../scripts/release.mjs'
 
@@ -157,6 +157,17 @@ describe('the CHANGELOG a release carries', () => {
     expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581 })).toBe(
       `${PRE}\n## 0.58.2 — 2026-11-02\n\n- second fix\n\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
     )
+  })
+
+  it('removes a shipped entry once, so a later entry with the same words is still released', () => {
+    // 0.58.1 shipped "- Faster `compile()`." and main still lists it; a later PR filed an
+    // entry worded the same way. Only the shipped one leaves.
+    const tag0581 = `${PRE}\n## 0.58.1 — 2026-11-01\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const main = `${PRE}\n## Unreleased\n\n- Faster \`compile()\`.\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581 })).toBe(
+      `${PRE}\n## 0.58.2 — 2026-11-02\n\n- Faster \`compile()\`.\n\n## 0.58.1 — 2026-11-01\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
+    )
+    expect(withoutEach(['a', 'b', 'a', 'c'], ['a', 'c', 'x'])).toEqual(['b', 'a'])
   })
 
   it('dates a section the pull request declared, and folds Unreleased into it', () => {

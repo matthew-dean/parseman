@@ -85,7 +85,10 @@ already shipped. Neither causes harm:
 - each stamp reads the previous tag's CHANGELOG, copies in the release sections `main`
   lacks, and removes their entries from the section being released. Every tag's
   CHANGELOG lists each change once, under the release that shipped it. An entry
-  reworded on `main` after it shipped no longer matches and is listed again.
+  reworded on `main` after it shipped no longer matches and is listed again. Entries
+  match by occurrence, not by text alone: each shipped entry removes one, so a later
+  pull request's entry worded like an earlier one is still released. The PR gate counts
+  an added entry the same way.
 
 To catch `main` up by hand, run `node scripts/release.mjs sync` in a pull request: it
 copies the released sections from the newest tag, drops their entries from Unreleased,

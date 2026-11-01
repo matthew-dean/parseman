@@ -224,6 +224,26 @@ export function entries(lines) {
 
 const body = (list) => ['', ...list.flatMap((e) => [...e.split('\n'), ''])]
 
+/** How many times each string occurs in `list`. */
+const occurrences = (list) => {
+  const counts = new Map()
+  for (const e of list) counts.set(e, (counts.get(e) ?? 0) + 1)
+  return counts
+}
+
+/** Take one `e` from `counts`, if any is left. */
+const spend = (counts, e) => {
+  const n = counts.get(e) ?? 0
+  if (n > 0) counts.set(e, n - 1)
+  return n > 0
+}
+
+/** `list` without one element per element of `remove`: a multiset difference, in order. */
+export function withoutEach(list, remove) {
+  const counts = occurrences(remove)
+  return list.filter((e) => !spend(counts, e))
+}
+
 /**
  * The entries waiting to be released: those under `## Unreleased`, or, when a pull
  * request declares a version above `published`, those under that version's heading.
@@ -292,8 +312,11 @@ export function stampChangelog(changelog, { version, date, released = '' }) {
     return v !== null && v !== version && !has.has(v)
   })
   if (version === undefined && missing.length === 0) return changelog
-  const shipped = new Set(missing.flatMap((s) => entries(s.lines)))
-  const pending = (lines) => entries(lines).filter((e) => !shipped.has(e))
+  // By occurrence, not by text: each shipped entry removes one matching entry, so a later
+  // pull request's entry worded like an earlier one is kept. One budget for the whole
+  // stamp, spent on Unreleased first.
+  const shipped = occurrences(missing.flatMap((s) => entries(s.lines)))
+  const pending = (lines) => entries(lines).filter((e) => !spend(shipped, e))
 
   const top = doc.sections[0]
   const unreleased = top !== undefined && isUnreleased(top.heading)

@@ -58,6 +58,7 @@ export declare function shippedPaths(pkg: Record<string, unknown>, paths: readon
 export declare const UNRELEASED: 'Unreleased'
 export declare function headingVersion(heading: string): string | null
 export declare function entries(lines: readonly string[]): string[]
+export declare function withoutEach<T>(list: readonly T[], remove: readonly T[]): T[]
 export declare function pendingEntries(changelog: string, published: string | null): string[]
 export declare function stampChangelog(
   changelog: string,
