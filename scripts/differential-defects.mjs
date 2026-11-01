@@ -336,6 +336,10 @@ export const DEFECTS = {
     edits: [{ file: 'src/table/assemble.ts', find: 'if (GAP.row === row && GAP.at === pos && GAP.input === input) e = GAP.end', replace: 'if (GAP.at === pos && GAP.input === input) e = GAP.end' }],
   },
 
+  'gap-inline-scan-wrong-offset-emitted': {
+    why: 'emitted engine: a gap gate whose regex lowers to an inline scan scans the item\'s gap one character late',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: "const m = emitShapeMatch(shape, 'itemStart',", replace: "const m = emitShapeMatch(shape, 'itemStart+1'," }],
+  },
   'gap-slot-any-row-emitted': {
     why: 'emitted engine: a gap row takes the slot at its position whatever row the slot was set for',
     edits: [{ file: 'src/table/emit-assembly.ts', find: 'if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end', replace: 'if(GAP.at===pos&&GAP.input===input)e=GAP.end' }],

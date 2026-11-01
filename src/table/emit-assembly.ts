@@ -72,6 +72,11 @@ import { gapRows } from './gap-gate.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
 
+/** Does a gap's regex lower to an inline scan (`scanShapeFromRegex`)? */
+function gapRegexLowers(re: unknown): boolean {
+  return re instanceof RegExp && scanShapeFromRegex(re.source, re.flags) !== null
+}
+
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
 export type EmittedAssembly = {
@@ -635,7 +640,10 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   const reachable = [...reachableSites(code, roots)]
-  const GAP_ROWS = gapNeutral ? new Set<number>() : gapRows(code, roots)
+  // A gap whose regex lowers to an inline scan is scanned again by its row, for
+  // less than reading the slot costs; only a gap matched by its RegExp takes the
+  // slot (`gapRegexLowers`).
+  const GAP_ROWS = gapNeutral ? new Set<number>() : new Set([...gapRows(code, roots)].filter(row => !gapRegexLowers(k[code[row + 1]!])))
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -2330,7 +2338,8 @@ return [key,v]
         let gapCode = (_rb: string): string => ''
         if (gapIp >= 0) {
           const row = code[gapIp + 2]!
-          const re = hoist('gr', `K[${code[row + 1]!}]`)
+          const rx = k[code[row + 1]!]
+          const shape = gapRegexLowers(rx) ? scanShapeFromRegex((rx as RegExp).source, (rx as RegExp).flags) : null
           const cls = (idx: number): string => {
             const resolved = t.cc[idx]!
             const ci = classes.push([resolved]) - 1
@@ -2340,7 +2349,24 @@ return [key,v]
           }
           const follow = cls(code[gapIp + 3]!).replaceAll('@', 'gq')
           const other = code[gapIp + 4]! >= 0 ? cls(code[gapIp + 4]!).replaceAll('@', 'itemStart') : 'true'
-          gapCode = (rbCode: string): string => `let gapped=false
+          if (shape !== null) {
+            // Scanned inline, as the row scans it: no slot to fill or read.
+            let n = 0
+            const q = tmp()
+            const m = emitShapeMatch(shape, 'itemStart', (prefix = '_v') => `${q}${prefix}${n++}`, '')
+            gapCode = (rbCode: string): string => `let gapped=false
+if(ctx._probe===undefined){
+${m.setup.join('\n')}
+const gq=${m.ok}?${m.end}:-1
+if((gq<0||${follow})&&${other}){
+${rbCode}
+break
+}
+}
+`
+          } else {
+            const re = hoist('gr', `K[${code[row + 1]!}]`)
+            gapCode = (rbCode: string): string => `let gapped=false
 if(ctx._probe===undefined){
 ${re}.lastIndex=itemStart
 const gq=${re}.test(input)?${re}.lastIndex:-1
@@ -2354,6 +2380,7 @@ gapped=true
 }
 }
 `
+          }
         }
         const sepMiss = (at: string): string => sepAscii
           ? `${sepCls}.ascii[input.charCodeAt(${at})]!==1`

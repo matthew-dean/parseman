@@ -273,6 +273,7 @@ const REGISTRY = [
     plants: [
       { defect: 'gap-scan-wrong-offset', expect: 'moves' },
       { defect: 'gap-scan-wrong-offset-emitted', expect: 'moves' },
+      { defect: 'gap-inline-scan-wrong-offset-emitted', expect: 'moves' },
       { defect: 'gap-follow-narrowed', expect: 'moves' },
       { defect: 'gap-slot-any-row', expect: 'moves' },
       { defect: 'gap-slot-any-row-emitted', expect: 'moves' },
