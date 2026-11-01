@@ -407,6 +407,11 @@ describe('the plan decides from what it read', () => {
     // section is a subset of what shipped, which is the normal state without the deploy key.
     const tagged = '# Changelog\n\n## 0.2.0 — 2026-11-03\n\n- a late fix\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
     expect(decide({ ...read, released: () => tagged, differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
+    // The declaring PR renamed an Unreleased that still held 0.1.1's entry; the 0.2.0 stamp
+    // left that entry under 0.1.1. It is shipped, so it does not count as stale.
+    const renamed = '# Changelog\n\n## 0.2.0 — 2026-11-01\n\n- from 0.1.1\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    const taggedWith011 = '# Changelog\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.1 — 2026-10-15\n\n- from 0.1.1\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    expect(decide({ ...read, changelog: renamed, released: () => taggedWith011, differences: changed })).toMatchObject({ release: true })
     // No section for the version on main (a sync that only moved package.json): nothing to compare.
     expect(decide({ ...read, changelog: '# Changelog\n\n## Unreleased\n\n- x\n', differences: changed })).toMatchObject({ release: true })
   })

@@ -497,14 +497,18 @@ export function decide({ declared, npm, tags, own, superseded, differences, chan
   }
 
   // package.json still names a release that has shipped. Normal while main trails its
-  // tags, but its CHANGELOG section must then be the one that release shipped (a later
-  // stamp may have dated it and folded Unreleased entries in). An entry in it the tag's
-  // section lacks was filed under a version another merge had already spent: a pull
+  // tags, but every entry in its CHANGELOG section must then be one the tag records as
+  // shipped (the stamp may have dated the section, folded Unreleased entries in, or moved
+  // an entry an earlier auto-patch shipped to that release). An entry the tag lacks was
+  // filed under a version another merge had already spent: a pull
   // request that declared X passed its gate before X shipped, and merged after. Releasing
   // would ship the next patch with an empty section and leave those entries under X.
   const d = parseVersion(declared)
   if (d !== null && tags.some((t) => parseVersion(t)?.raw === d.raw)) {
-    const shipped = new Set(sectionEntries(released(`v${d.raw}`), d.raw) ?? [])
+    // Any release section of the tag: the stamp moves an entry an earlier auto-patch
+    // shipped out of the declared section and leaves it under that earlier release.
+    const shipped = new Set(parse(released(`v${d.raw}`)).sections
+      .filter((s) => headingVersion(s.heading) !== null).flatMap((s) => entries(s.lines)))
     const stale = (sectionEntries(changelog, d.raw) ?? []).filter((e) => !shipped.has(e))
     if (stale.length > 0) {
       throw new Error(
