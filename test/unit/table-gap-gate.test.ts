@@ -29,9 +29,14 @@ type Comb = Combinator<unknown>
 
 
 const pad = regex(/[ \t]*(?:\/\*[^*]*\*\/[ \t]*)*/)
-const sp = regex(/[ ]+/)
+/**
+ * `sp` two ways: one the emitted engine scans inline, which reads no gap slot,
+ * and one only a RegExp matches (the flag), which reads the slot. A slot
+ * read by the wrong row at the same position shows only where both rows read it.
+ */
+const spellings = { inline: regex(/[ ]+/), slot: regex(/[ ]+/i) }
 const fold = (children: readonly unknown[]): unknown => children.length === 1 ? children[0] : { op: children }
-const grammar = (mode: 'ast' | 'cst' | 'lines'): Record<string, Comb> => rules({ trivia: regex(/[ \t]+/), ...(mode === 'lines' ? { trackLines: true } : mode === 'cst' ? { hostMode: 'cst' } : {}) }, (g: Record<string, Comb>) => ({
+const grammar = (mode: 'ast' | 'cst' | 'lines', sp: Comb = spellings.inline): Record<string, Comb> => rules({ trivia: regex(/[ \t]+/), ...(mode === 'lines' ? { trackLines: true } : mode === 'cst' ? { hostMode: 'cst' } : {}) }, (g: Record<string, Comb>) => ({
   Decl: sequence(regex(/[a-z]+/), literal(':'), g.List!, literal(';')),
   List: sepBy(g.Space!, sequence(literal(','), optional(regex(/[ \t]+/))), { min: 1 }),
   Space: node('Space', many(g.Or!, { min: 1 }), fold),
@@ -105,9 +110,9 @@ describe('an optional repeat item that opens with a gap', () => {
     ['cst host', 'cst', { build: cstBuildHost({ tags: true }) }],
     ['tolerant', 'ast', { tolerant: true }],
     ['line tracking', 'lines', {}],
-  ] as const) {
-    it(`parses and fails as the ungated leg does in every reader (${label})`, () => {
-      const g = grammar(mode)
+  ] as const) for (const [spelling, sp] of Object.entries(spellings)) {
+    it(`parses and fails as the ungated leg does in every reader (${label}, ${spelling} sp)`, () => {
+      const g = grammar(mode, sp)
       const cases = [...new Set(inputs())]
       expect(cases.length).toBeGreaterThan(DISTINCT)
       const prog = encodeTable(g)

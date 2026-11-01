@@ -14,7 +14,8 @@ import { emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { selectHotSites } from '../../src/table/select-hot.ts'
 import type { Combinator } from '../../src/types.ts'
 
-const pad = regex(/[ \t]*/)
+// Only a RegExp matches this gap (the flag), so its gates fill the gap slot.
+const pad = regex(/[ \t]*/i)
 const op = (c: string): Combinator<unknown> => noTrivia(sequence(pad, literal(c), pad))
 const atom = regex(/[0-9]+/)
 const level = (_name: string, inner: Combinator<unknown>, c: string): Combinator<unknown> =>
