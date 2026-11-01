@@ -40,12 +40,34 @@ Two scripts carry it:
    `src/version.ts`, renames `## Unreleased` to `## X.Y.Z — <date>`, and commits that
    in the runner as `release: X.Y.Z`. A section the pull request already named for
    `X.Y.Z` takes the date and any Unreleased entries.
-4. **Guard and preflight.** `check-changelog.mjs --publish` and
-   `check-main-release-state.mjs` pass on the stamped tree, `X.Y.Z` is not on npm,
-   the tag `vX.Y.Z` does not exist, and the full preflight from `AGENTS.md` passes.
-5. **Publish** with `npm publish --provenance`. With the `RELEASE_DEPLOY_KEY` secret,
-   **record** the release on `main` (below). Then **tag** the stamped commit `vX.Y.Z`
-   with a git push, and wait until npm serves the new version.
+4. **Guard and preflight.** CI's `test` check has passed on this exact commit (the run
+   waits for it), `check-changelog.mjs --publish` and `check-main-release-state.mjs` pass
+   on the stamped tree, `X.Y.Z` is not on npm, the tag `vX.Y.Z` does not exist, and the
+   full preflight from `AGENTS.md` passes. The wait is there because `main` does not
+   require a pull request to be up to date with it before merging: two pull requests
+   that each passed CI can merge into a commit nothing has tested, and the preflight
+   runs none of the perf, size or wasted-work gates that `test` requires.
+5. **Pack** the stamped tree with `npm pack`, and keep its sha256.
+6. **Build what ships**, in a second job: re-stamp the same commit (same date and commit
+   time, so the same sha, which the job checks), install with `--ignore-scripts`, run
+   `scripts/build.mjs` and `npm pack --ignore-scripts`. Its tarball must be step 5's,
+   byte for byte (the build is reproducible: the 0.58.0 tarball rebuilds to npm's sha).
+7. **Publish**, in a third job: decide the version again from `package.json`, npm and the
+   tags, re-stamp the same commit, check the tarball step 6 packed against the sha that
+   job output, and `npm publish` it with `--provenance --ignore-scripts`. With the
+   `RELEASE_DEPLOY_KEY` secret, **record** the release on `main` (below). Then **tag** the
+   stamped commit `vX.Y.Z` with a git push, and wait until npm serves the new version.
+
+Steps 1-5 run in the `prepare` job, which has a read-only token and nothing else. It
+installs every devDependency, runs three packages' install scripts, and runs the whole
+test suite, so its tarball is not the one that ships: any of that code could rewrite
+`dist/` before the pack, and provenance would attest the result. The `build` job's
+tarball ships; only the build toolchain runs there, and it must agree with `prepare`'s. Only the `publish` job holds the OIDC token (`id-token: write`), the
+`contents: write` token and the deploy key. It installs nothing but the pinned npm it
+publishes with, and runs git, that npm and the dependency-free `scripts/release.mjs`. Any step of a job with `id-token: write` can
+request an OIDC token, and a job's secrets sit in the runner's memory for the whole job,
+so in a single job any dependency could have minted a publish credential for `parseman`
+or read the deploy key.
 
 ### Where the released version is recorded
 
@@ -148,9 +170,13 @@ decision. It builds `dist/` and leaves tracked files as it found them.
 
   ```sh
   sha=$(gh run view <run-id> --json headSha --jq .headSha)
-  git checkout --detach "$sha" && RELEASE_DATE=<date the run used> node scripts/release.mjs stamp X.Y.Z
+  # <date> and <time>: the line the `prepare` job's stamp step printed
+  git checkout --detach "$sha" && RELEASE_DATE=<date> GIT_AUTHOR_DATE="@<time> +0000" \
+    GIT_COMMITTER_DATE="@<time> +0000" node scripts/release.mjs stamp X.Y.Z
   git push origin HEAD:refs/tags/vX.Y.Z
   ```
+
+  With the run's date and time the stamp is the published commit, sha for sha.
 
 - **A declared version shipped first by another merge.** The release gate checks a
   declared version against the tags when the pull request runs, not when it merges. If
