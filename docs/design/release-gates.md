@@ -140,8 +140,11 @@ decision. It builds `dist/` and leaves tracked files as it found them.
 - **Before publish.** Nothing is out. Fix the cause; the next merge, or a re-run, plans
   again.
 - **Publish succeeded, tag failed.** Do not re-run: the next plan would skip, because
-  npm now has the version. Recreate the stamped commit from the run's commit and push
-  the tag by hand:
+  npm now has the version. Until the tag exists, every run stops in the plan with
+  "parseman@X.Y.Z is on npm but has no vX.Y.Z tag". Releasing on top of it would read
+  the CHANGELOG of the tag before it and file X.Y.Z's entries under the next version, and
+  a re-run of a commit X.Y.Z contains would not be recognised as one. Recreate the
+  stamped commit from the run's commit and push the tag by hand:
 
   ```sh
   sha=$(gh run view <run-id> --json headSha --jq .headSha)

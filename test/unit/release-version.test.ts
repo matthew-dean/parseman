@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   nextVersion, packageDifferences, shippedPaths, stampChangelog, pendingEntries, compareVersions, parseVersion,
-  consumerFieldChanges, supersedingRelease, recordCommit, record, releaseCommitOf,
+  consumerFieldChanges, supersedingRelease, recordCommit, record, releaseCommitOf, decide,
 } from '../../scripts/release.mjs'
 
 const dirs: string[] = []
@@ -356,5 +356,36 @@ describe('publish.yml records on main only with the deploy key', () => {
     expect(tag).not.toMatch(/HAS_DEPLOY_KEY|steps\.record/)
     expect(yml.indexOf('- name: Record the release on main')).toBeLessThan(yml.indexOf('- name: Tag the published commit'))
     expect(step('Fail if main does not record the release')).toMatch(/steps\.record\.outcome == 'failure'/)
+  })
+})
+
+describe('the plan decides from what it read', () => {
+  const read = {
+    declared: '0.2.0', npm: ['0.1.0', '0.2.0'], tags: ['v0.1.0', 'v0.2.0'], own: null, superseded: null,
+  }
+  const unchanged = (): string[] => []
+  const changed = (): string[] => ['dist/index.js']
+
+  it('skips the record commit and a commit a release already contains, before comparing anything', () => {
+    const differences = vi.fn(changed)
+    expect(decide({ ...read, own: 'v0.2.0', differences })).toMatchObject({ release: false, reason: expect.stringMatching(/v0\.2\.0's release commit/) })
+    expect(decide({ ...read, superseded: 'v0.2.0', differences })).toMatchObject({ release: false, reason: expect.stringMatching(/already contained in v0\.2\.0/) })
+    expect(differences).not.toHaveBeenCalled()
+  })
+
+  it('publishes a declared version without comparing, and the next patch only when the package changed', () => {
+    const differences = vi.fn(unchanged)
+    expect(decide({ ...read, declared: '0.3.0', differences })).toMatchObject({ release: true, version: '0.3.0', declared: true })
+    expect(differences).not.toHaveBeenCalled()
+    expect(decide({ ...read, differences })).toMatchObject({ release: false, version: '0.2.1', reason: expect.stringMatching(/nothing parseman@0\.2\.0 ships changed/) })
+    expect(differences).toHaveBeenCalledWith('0.2.0')
+    expect(decide({ ...read, differences: changed })).toMatchObject({ release: true, version: '0.2.1', differ: ['dist/index.js'] })
+  })
+
+  it('stops when npm\'s newest release has no tag, rather than releasing on top of it', () => {
+    // 0.2.1 published, its tag push failed: the next release would read v0.2.0's CHANGELOG.
+    expect(() => decide({ ...read, npm: [...read.npm, '0.2.1'], differences: changed })).toThrow(/parseman@0\.2\.1 is on npm but has no v0\.2\.1 tag/)
+    // An older untagged version, or a prerelease published by hand, is not that state.
+    expect(decide({ ...read, npm: ['0.0.9', ...read.npm, '0.3.0-rc.1'], differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
   })
 })
