@@ -82,29 +82,60 @@ const TABLE_RUNTIME_SPECIFIER = 'parseman/table'
  * from the artifact's own location.
  */
 export type CarriedSidecarItem = IRPiece | { from: string; name: string }
+/**
+ * A recorded item: a reference also carries the pieces it stands for, expanded, so a
+ * build that BUNDLES the referenced package rather than keeping it external writes
+ * those pieces instead of a reference to a package its artifact no longer imports
+ * (`emitCarriedSidecars`).
+ */
+export type CarriedSinkItem = IRPiece | { from: string; name: string; expanded?: readonly CarriedSidecarItem[] }
 /** One module's carried lists, by export name. */
-export type CarriedSink = Map<string, CarriedSidecarItem[]>
+export type CarriedSink = Map<string, CarriedSinkItem[]>
 export const CARRIED_SIDECAR_SUFFIX = '.parseman.json'
-type CarriedSidecar = { parseman: string; exports: Record<string, CarriedSidecarItem[]> }
+/**
+ * `artifact` is `artifactDigest` of the chunk the sidecar was written beside. A
+ * reader that finds a different artifact there is reading a sidecar some other
+ * build left behind, and fails. A sidecar without one predates the check.
+ */
+type CarriedSidecar = { parseman: string; artifact?: string; exports: Record<string, CarriedSidecarItem[]> }
 
-const _sidecarCache = new Map<string, { mtimeMs: number; sidecar: CarriedSidecar | null }>()
-/** The carried-pieces sidecar written beside a compiled artifact, or null. */
-function readCarriedSidecar(artifact: string): CarriedSidecar | null {
+/**
+ * The digest a sidecar records of its artifact: SHA-256 of the chunk's code, less a
+ * trailing `sourceMappingURL` comment, which a bundler appends after the hook that
+ * writes the sidecar has seen the code.
+ */
+export function artifactDigest(code: string): string {
+  const body = code.replace(/\n?\/\/# sourceMappingURL=[^\n]*\n?$/, '')
+  return createHash('sha256').update(body).digest('hex').slice(0, 32)
+}
+
+type SidecarRead = { sidecar: CarriedSidecar; stale: boolean } | null
+const _sidecarCache = new Map<string, { mtimeMs: number; artifactMtimeMs: number; read: SidecarRead }>()
+/**
+ * The carried-pieces sidecar written beside a compiled artifact, or null; `stale`
+ * when it records a digest the artifact beside it does not have.
+ */
+function readCarriedSidecar(artifact: string): SidecarRead {
   const file = artifact + CARRIED_SIDECAR_SUFFIX
   let mtimeMs: number
-  try { mtimeMs = fs.statSync(file).mtimeMs } catch { return null }
+  let artifactMtimeMs: number
+  try { mtimeMs = fs.statSync(file).mtimeMs; artifactMtimeMs = fs.statSync(artifact).mtimeMs } catch { return null }
   const hit = _sidecarCache.get(file)
-  if (hit && hit.mtimeMs === mtimeMs) return hit.sidecar
-  let sidecar: CarriedSidecar | null = null
+  if (hit && hit.mtimeMs === mtimeMs && hit.artifactMtimeMs === artifactMtimeMs) return hit.read
+  let read: SidecarRead = null
   try {
     // A file without an `exports` object is not a sidecar this plugin wrote: treat
     // it as absent, so the inline literal is looked for and a missing one reports.
     const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
     const exports = typeof parsed === 'object' && parsed !== null ? (parsed as { exports?: unknown }).exports : undefined
-    if (typeof exports === 'object' && exports !== null) sidecar = parsed as CarriedSidecar
+    if (typeof exports === 'object' && exports !== null) {
+      const sidecar = parsed as CarriedSidecar
+      const stale = typeof sidecar.artifact === 'string' && sidecar.artifact !== artifactDigest(fs.readFileSync(artifact, 'utf8'))
+      read = { sidecar, stale }
+    }
   } catch { /* unreadable: no sidecar */ }
-  _sidecarCache.set(file, { mtimeMs, sidecar })
-  return sidecar
+  _sidecarCache.set(file, { mtimeMs, artifactMtimeMs, read })
+  return read
 }
 
 export type ParsecraftPluginOptions = {
@@ -363,7 +394,9 @@ function parseModuleCached(filePath: string): ParsedModule | null {
 }
 
 /** The rollup-family hook that writes each chunk's carried pieces beside it. */
-type SidecarBundle = Record<string, { type: string; fileName: string; exports?: string[]; moduleIds?: string[]; facadeModuleId?: string | null }>
+type SidecarBundle = Record<string, { type: string; fileName: string; code?: string; exports?: string[]; moduleIds?: string[]; facadeModuleId?: string | null }>
+/** A module's recorded list for one export, and the module that recorded it. */
+type Recorded = { readonly items: readonly CarriedSinkItem[]; readonly recorder: string }
 type SidecarEmitter = {
   emitFile: (file: { type: 'asset'; fileName: string; source: string }) => unknown
   getModuleInfo: (id: string) => { code: string | null } | null
@@ -371,77 +404,131 @@ type SidecarEmitter = {
 }
 
 /**
- * Where a module's export `exported` comes from when the module re-exports it,
- * possibly renamed: `export { base as renamed } from './grammar'`, or an imported
- * binding exported under another name. Null when the module declares it itself.
+ * Where a module's export `exported` comes from: a re-export, possibly renamed
+ * (`export { base as renamed } from './grammar'`, or an imported binding exported
+ * under another name); the module's own declaration (`'local'`); or, when the
+ * module neither declares nor names it, its `export * from` sources, in source
+ * order (none: a form this does not read, such as `export default`).
  */
-function reexportSource(body: AnyNode[], exported: string): { source: string; imported: string } | null {
+type ExportOrigin = { readonly from: string; readonly imported: string } | { readonly stars: readonly string[] } | 'local'
+
+function exportOrigin(body: AnyNode[], exported: string): ExportOrigin {
+  const stars: string[] = []
   for (const st of body) {
+    if (st.type === 'ExportAllDeclaration') {
+      const from = (st.source as { value?: string } | null | undefined)?.value
+      if (st.exported == null && from !== undefined) stars.push(from)
+      continue
+    }
     if (st.type !== 'ExportNamedDeclaration') continue
+    const decl = st.declaration as AnyNode | null | undefined
+    if (decl != null) {
+      const ids = decl.type === 'VariableDeclaration'
+        ? ((decl.declarations as AnyNode[] | undefined) ?? []).map(d => (d.id as { name?: string } | undefined)?.name)
+        : [(decl.id as { name?: string } | null | undefined)?.name]
+      if (ids.includes(exported)) return 'local'
+    }
     for (const sp of (st.specifiers as AnyNode[] | undefined) ?? []) {
       const exp = sp.exported as { name?: string; value?: string } | undefined
       if ((exp?.name ?? exp?.value) !== exported) continue
       const local = sp.local as { name?: string; value?: string } | undefined
       const name = local?.name ?? local?.value
-      if (name === undefined) return null
+      if (name === undefined) return 'local'
       const from = (st.source as { value?: string } | null | undefined)?.value
-      return from !== undefined ? { source: from, imported: name } : extractImportBindings(body).get(name) ?? null
+      if (from !== undefined) return { from, imported: name }
+      const imported = extractImportBindings(body).get(name)
+      return imported === undefined ? 'local' : { from: imported.source, imported: imported.imported }
     }
   }
-  return null
+  return { stars }
 }
 
 /**
  * The carried list behind an entry chunk's export, followed from the entry module
- * through its re-exports to the module that recorded it, under the name that module
- * exports it as. A chunk's export names are its entry module's, so an entry that
- * renames a grammar (`export { base as renamed } from './grammar'`) still finds the
- * pieces recorded as `base`.
+ * through its re-exports (named or `export *`) to the module that declares it,
+ * under the name that module exports it as. A chunk's export names are its entry
+ * module's, so an entry that renames a grammar (`export { base as renamed } from
+ * './grammar'`) still finds the pieces recorded as `base`.
+ *
+ * `null` when the export is traced to a module that recorded nothing under that
+ * name — a precompiled dependency, or a value that is not a grammar: it has no
+ * carried pieces, and no other module's may stand in for them. `undefined` when
+ * the trace cannot be completed (no module code, an external, a parse error).
  */
-async function followCarried(this: SidecarEmitter, sinks: Map<string, CarriedSink>, moduleId: string, name: string): Promise<CarriedSidecarItem[] | undefined> {
-  for (let hop = 0; hop < 64; hop++) {
-    const own = sinks.get(moduleId)?.get(name)
-    if (own !== undefined) return own
-    const code = this.getModuleInfo(moduleId)?.code
-    if (!code) return undefined
-    const parsed = parseSync(moduleId, code)
-    if (parsed.errors.length > 0) return undefined
-    const next = reexportSource(parsed.program.body as unknown as AnyNode[], name)
-    if (next === null) return undefined
-    const resolved = await this.resolve(next.source, moduleId)
+async function followCarried(
+  this: SidecarEmitter, sinks: Map<string, CarriedSink>, moduleId: string, name: string, depth = 0,
+): Promise<Recorded | null | undefined> {
+  if (depth > 64) return undefined
+  const own = sinks.get(moduleId)?.get(name)
+  if (own !== undefined) return { items: own, recorder: moduleId }
+  const code = this.getModuleInfo(moduleId)?.code
+  if (!code) return undefined
+  const parsed = parseSync(moduleId, code)
+  if (parsed.errors.length > 0) return undefined
+  const origin = exportOrigin(parsed.program.body as unknown as AnyNode[], name)
+  if (origin === 'local') return null
+  const follow = async (source: string, imported: string): Promise<Recorded | null | undefined> => {
+    const resolved = await this.resolve(source, moduleId)
     if (resolved === null || resolved.external) return undefined
-    moduleId = resolved.id
-    name = next.imported
+    return followCarried.call(this, sinks, resolved.id, imported, depth + 1)
   }
-  return undefined
+  if ('from' in origin) return follow(origin.from, origin.imported)
+  // `export *` re-exports a name only from the one star source that has it; two
+  // that reach different declarations make it ambiguous, and ESM exports neither.
+  // Two paths to the same declaration are one binding.
+  let found: Recorded | undefined
+  let unknown = false
+  for (const source of origin.stars) {
+    const got = await follow(source, name)
+    if (got === undefined) unknown = true
+    else if (got !== null) {
+      if (found !== undefined && found.items !== got.items) return null
+      found = got
+    }
+  }
+  return found ?? (unknown || origin.stars.length === 0 ? undefined : null)
 }
 
 /**
  * Write `<chunk>.parseman.json` for every chunk that exports a grammar with carried
  * pieces. An entry chunk's export is followed from its entry module to the module
- * that recorded it (`followCarried`). Any other export is matched by name to the
- * module that recorded it, preferring a module of the chunk itself; a name two
- * modules of the bundle both record, and neither of them in the chunk, is ambiguous
- * and is not written — a downstream compose of it then fails its build naming the
- * artifact.
+ * that declares it (`followCarried`). An export that cannot be followed is matched
+ * by name to the one module of the chunk itself that recorded it. Nothing else is
+ * written: a module outside the chunk recording the same name is not the export's
+ * source, and a downstream compose of an export with no pieces fails its build
+ * naming the artifact.
  */
 async function emitCarriedSidecars(this: SidecarEmitter, sinks: Map<string, CarriedSink>, bundle: SidecarBundle): Promise<void> {
-  const recorders = new Map<string, string[]>()
-  for (const [moduleId, sink] of sinks) for (const name of sink.keys()) (recorders.get(name) ?? recorders.set(name, []).get(name)!).push(moduleId)
+  // A reference names an export of another package, resolved from the artifact's
+  // location. That holds only where this build keeps the package EXTERNAL; a
+  // bundled one is in the chunk and may be missing, or a different version,
+  // wherever the artifact is composed. So a bundled reference is written expanded.
+  const write = async (rec: Recorded): Promise<CarriedSidecarItem[]> => {
+    const out: CarriedSidecarItem[] = []
+    for (const item of rec.items) {
+      if ('ir' in item) { out.push(item); continue }
+      const resolved = item.expanded === undefined ? null : await this.resolve(item.from, rec.recorder)
+      if (resolved !== null && !resolved.external) out.push(...item.expanded!)
+      else out.push({ from: item.from, name: item.name })
+    }
+    return out
+  }
   for (const chunk of Object.values(bundle)) {
     if (chunk.type !== 'chunk') continue
     const exports: Record<string, CarriedSidecarItem[]> = {}
     for (const name of chunk.exports ?? []) {
       const followed = chunk.facadeModuleId ? await followCarried.call(this, sinks, chunk.facadeModuleId, name) : undefined
-      if (followed !== undefined) { exports[name] = followed; continue }
-      const ids = recorders.get(name)
-      if (ids === undefined) continue
-      const own = ids.filter(m => chunk.moduleIds?.includes(m))
-      const moduleId = own.length === 1 ? own[0] : own.length === 0 && ids.length === 1 ? ids[0] : undefined
-      if (moduleId !== undefined) exports[name] = sinks.get(moduleId)!.get(name)!
+      if (followed === null) continue
+      if (followed !== undefined) { exports[name] = await write(followed); continue }
+      const own = (chunk.moduleIds ?? []).filter(m => sinks.get(m)?.has(name) === true)
+      if (own.length === 1) exports[name] = await write({ items: sinks.get(own[0]!)!.get(name)!, recorder: own[0]! })
     }
     if (Object.keys(exports).length === 0) continue
-    const sidecar: CarriedSidecar = { parseman: PARSEMAN_VERSION, exports }
+    const sidecar: CarriedSidecar = {
+      parseman: PARSEMAN_VERSION,
+      ...(chunk.code === undefined ? {} : { artifact: artifactDigest(chunk.code) }),
+      exports,
+    }
     this.emitFile({ type: 'asset', fileName: chunk.fileName + CARRIED_SIDECAR_SUFFIX, source: JSON.stringify(sidecar) })
   }
 }
@@ -452,8 +539,14 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
   // Module id → its carried lists, under a bundler that writes them beside the chunk.
   // Any other bundler gets them inline, as before.
   const sinks = SIDECAR_FRAMEWORKS.has(meta.framework) ? new Map<string, CarriedSink>() : undefined
+  // `order: 'post'`: the sidecar records a digest of each chunk's code, so it is
+  // taken after every other plugin's `generateBundle` has rewritten that code (Vite
+  // rewrites a dynamic `import()` through its preload helper there).
   const generateBundle = sinks === undefined ? undefined : {
-    generateBundle(this: SidecarEmitter, _options: unknown, bundle: SidecarBundle) { return emitCarriedSidecars.call(this, sinks, bundle) },
+    generateBundle: {
+      order: 'post' as const,
+      handler(this: SidecarEmitter, _options: unknown, bundle: SidecarBundle) { return emitCarriedSidecars.call(this, sinks, bundle) },
+    },
   }
   return {
     name: 'parseman',
@@ -468,6 +561,9 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
     },
 
     transform(this: { warn?: (msg: string) => void; addWatchFile?: (file: string) => void }, code: string, id: string) {
+      // What this module recorded on an earlier build of a watch session is stale
+      // from here: it records again below, or it no longer lowers anything.
+      sinks?.delete(id)
       if (!code.includes('parseman')) return null
       if (!code.includes('macro')) return null
       // A corpus edit changes which sites a profiled build generates, so a watch
@@ -476,10 +572,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
       const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
       const sink: CarriedSink | undefined = sinks && new Map()
       const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true, opts.assemblyProfile, opts.assemblyBudget, sink)
-      if (sinks && sink) {
-        if (sink.size > 0) sinks.set(id, sink)
-        else sinks.delete(id)
-      }
+      if (sinks && sink && sink.size > 0) sinks.set(id, sink)
       if (result?.warnings.length) {
         for (const w of result.warnings) {
           if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -1801,7 +1894,13 @@ function transformMacroImpl(
     const fail = (why: string): null => { unresolved.why ??= `${exportName} in ${file}: ${why}`; return null }
     // A build-only sidecar wins over an inline literal: an artifact that has one
     // carries no literal (see `CarriedSidecarItem`).
-    const sidecarItems = module.source || local ? undefined : readCarriedSidecar(file)?.exports[exportName]
+    const sidecarRead = module.source || local ? null : readCarriedSidecar(file)
+    if (sidecarRead?.stale === true) {
+      return fail(`${path.basename(file)}${CARRIED_SIDECAR_SUFFIX} was written for a different build of ${path.basename(file)} `
+        + '(the artifact digest it records does not match). Rebuild the package so the two are written together')
+    }
+    const sidecarExports = sidecarRead?.sidecar.exports
+    const sidecarItems = sidecarExports !== undefined && Object.hasOwn(sidecarExports, exportName) ? sidecarExports[exportName] : undefined
     if (sidecarItems !== undefined) {
       const list: RawItem[] = []
       for (const item of sidecarItems) {
@@ -1825,10 +1924,32 @@ function transformMacroImpl(
     if (!literalRange) {
       // A compiled grammar with neither a literal nor a sidecar entry was built to be
       // composed or it was not, and a runtime compose() cannot link it either way.
-      return initNode !== null && !module.source && mod.src.slice(initNode.start, initNode.end).includes('tableRules(')
-        ? fail(`is a compiled grammar with no carried pieces — no inline literal, and no entry in ${path.basename(file)}${CARRIED_SIDECAR_SUFFIX}. `
+      if (initNode !== null && !module.source && mod.src.slice(initNode.start, initNode.end).includes('tableRules(')) {
+        return fail(`is a compiled grammar with no carried pieces — no inline literal, and no entry in ${path.basename(file)}${CARRIED_SIDECAR_SUFFIX}. `
           + 'Rebuild it with this parseman, and keep that file beside the artifact')
-        : null
+      }
+      // A COMPILED ARTIFACT RE-EXPORTING ITS GRAMMAR — a bundler's facade chunk,
+      // `import { t as grammar } from './shared-HASH.js'; export { grammar }`, or an
+      // `export *` entry. Follow the export to the module that declares it. A
+      // compiled artifact whose export cannot be followed to carried pieces fails
+      // the build: falling back to a runtime compose() of it would throw at import.
+      if (module.source || local) return null
+      const origin = exportOrigin(mod.body as AnyNode[], exportName)
+      const targets = origin === 'local' ? [] : 'from' in origin
+        ? [{ source: origin.from, imported: origin.imported }]
+        : origin.stars.map(source => ({ source, imported: exportName }))
+      for (const target of targets) {
+        const sub = resolveGrammarModule(file, target.source)
+        if (sub === null || seen.has(sub.file)) continue
+        const pieces = resolveModulePieces(sub, target.imported, new Set(seen).add(sub.file), unresolved)
+        if (pieces !== null) return pieces
+      }
+      // Neither this module nor anything it re-exports from is a compiled grammar:
+      // not a build-compiled argument, so the caller decides.
+      if (unresolved.why === undefined && !mod.src.includes(TABLE_RUNTIME_SPECIFIER)) return null
+      return fail(`is exported by a compiled grammar artifact, but no carried pieces could be found for it — no inline literal, `
+        + `no entry in ${path.basename(file)}${CARRIED_SIDECAR_SUFFIX}, and no re-export of it that has either. `
+        + 'Rebuild it with this parseman, and keep each chunk\'s .parseman.json beside it')
     }
     const literal = mod.src.slice(literalRange.start, literalRange.end)
 
@@ -1913,12 +2034,17 @@ function transformMacroImpl(
    */
   const sinkCarried = (name: string, list: CarriedItem[]): boolean => {
     if (carriedSink === undefined) return false
-    const out: CarriedSidecarItem[] = []
+    const out: CarriedSinkItem[] = []
     for (const it of list) {
       if (!isSpread(it)) { out.push(it); continue }
       const b = importBindings.get(it.__spreadLocal)
       if (b === undefined) return false
-      if (!b.source.startsWith('.') && !path.isAbsolute(b.source)) { out.push({ from: b.source, name: b.imported }); continue }
+      if (!b.source.startsWith('.') && !path.isAbsolute(b.source)) {
+        // Expanded too, for a build that bundles the package (`emitCarriedSidecars`).
+        const expanded = importedPieces(it.__spreadLocal)
+        out.push({ from: b.source, name: b.imported, ...(expanded === null ? {} : { expanded: expanded as CarriedSidecarItem[] }) })
+        continue
+      }
       const pieces = importedPieces(it.__spreadLocal)
       if (pieces === null) return false
       out.push(...pieces)
