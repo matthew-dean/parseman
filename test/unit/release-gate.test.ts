@@ -221,6 +221,28 @@ describe('release integrity', { timeout: SUITE_BUDGET_MS }, () => {
   })
 })
 
+describe('a declared version another merge shipped first', { timeout: SUITE_BUDGET_MS }, () => {
+  // v0.36.4 shipped "- the auto-patch" from another merge. A PR that declared 0.36.4
+  // before that, and whose CI runs again now, carries entries 0.36.4 never contained.
+  function race(head: string): Result {
+    const tagged = '# Changelog\n\n## 0.36.4 — 2026-07-26\n\n- the auto-patch\n\n## 0.36.0 — 2026-07-24\n\n- shipped\n'
+    const { dir } = repo({ version: '0.36.4', changelog: tagged }, { version: '0.36.4', changelog: head, files: { 'docs/x.md': 'x\n' } })
+    git(dir, 'tag', 'v0.36.4', 'HEAD~1')
+    return gate(dir)
+  }
+
+  it('REFUSES entries under the declared heading that the tagged release did not ship', () => {
+    const r = race('# Changelog\n\n## 0.36.4 — 2026-07-25\n\n- the new api\n\n## 0.36.0 — 2026-07-24\n\n- shipped\n')
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/declares 0\.36\.4, which v0\.36\.4 already released[\s\S]*- the new api/)
+  })
+
+  it('ACCEPTS main trailing its tag with what the tag shipped, under a different date', () => {
+    const r = race('# Changelog\n\n## Unreleased\n\n- next\n\n## 0.36.4 — 2026-07-25\n\n- the auto-patch\n\n## 0.36.0 — 2026-07-24\n\n- shipped\n')
+    expect(r.ok, r.out).toBe(true)
+  })
+})
+
 describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
   it('REQUIRES an entry under Unreleased when src/ changes', () => {
     const { dir, baseSha } = repo(
@@ -263,6 +285,16 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     const r = gate(dir, `--base=${baseSha}`)
     expect(r.ok).toBe(false)
     expect(r.out).toMatch(/adds no CHANGELOG entry/)
+  })
+
+  it('ACCEPTS a new entry worded like one already pending: entries count by occurrence', () => {
+    const { dir, baseSha } = repo(
+      { changelog: pending('0.36.0', '- Faster parsing.'), files: src(1) },
+      { changelog: pending('0.36.0', '- Faster parsing.', '- Faster parsing.'), files: src(2) },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok, r.out).toBe(true)
+    expect(r.out).toMatch(/adds 1 entry under Unreleased/)
   })
 
   it('ACCEPTS a declared minor: heading, package.json and src/version.ts set together', () => {
@@ -365,6 +397,20 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     expect(r.out).toContain('declares 0.36.3 against the latest release 0.36.3')
   })
 
+  it.each([
+    ['empty', '## 0.36.3 — 2026-07-26\n'],
+    ['missing an entry', '## 0.36.3 — 2026-07-26\n\n- fix three\n'],
+  ])('REJECTS a sync whose section for the latest tag is %s: it would replace that release\'s own', (_kind, mine) => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: src(1) },
+      { version: '0.36.3', changelog: `# Changelog\n\n## Unreleased\n\n- the new api\n\n${mine}\n## 0.36.0 — 2026-07-24\n\n- something\n`, files: src(2) },
+    )
+    tagRelease(dir, baseSha, '## 0.36.3 — 2026-07-26\n\n- fix three\n\n- fix four\n')
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/"## 0\.36\.3" section lacks\s+\d entr(y|ies) v0\.36\.3 shipped/)
+  })
+
   it('REJECTS entries filed under the latest tag\'s version: the publish ships 0.36.4 and they replace 0.36.3\'s section', () => {
     const { dir, baseSha } = repo(
       { changelog: released('0.36.0'), files: src(1) },
@@ -373,7 +419,7 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     tagRelease(dir, baseSha, shipped)
     const r = gate(dir, `--base=${baseSha}`, '--exempt')
     expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/declares 0\.36\.3, the latest release, but CHANGELOG\.md's "## 0\.36\.3" section\s+is not v0\.36\.3's/)
+    expect(r.out).toMatch(/declares 0\.36\.3, which v0\.36\.3 already released[\s\S]*that release did not ship/)
   })
 
   it('REJECTS a skipped version against the base when there are no tags yet', () => {

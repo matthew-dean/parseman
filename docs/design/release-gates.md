@@ -105,9 +105,15 @@ already shipped. Neither causes harm:
 - the version rule reads npm and the tags, so a trailing `package.json` still yields
   the next patch;
 - each stamp reads the previous tag's CHANGELOG, copies in the release sections `main`
-  lacks, and removes their entries from the section being released. Every tag's
-  CHANGELOG lists each change once, under the release that shipped it. An entry
-  reworded on `main` after it shipped no longer matches and is listed again.
+  lacks, and takes a released section's copy where it differs from `main`'s and every
+  entry in `main`'s shipped under some release (the stamp folded Unreleased entries in,
+  or left one an earlier auto-patch shipped under that release). It removes from the section being
+  released what the previous release took off `main`: the entries pending at the commit
+  that release was stamped from, by occurrence, less any `main` already files under that
+  release. Every tag's CHANGELOG lists each change once, under the release that shipped
+  it. An entry worded like an earlier one, including one a later PR re-lands word for
+  word, is still released. An entry reworded on `main` after it shipped is listed again.
+  The PR gate counts an added entry by occurrence too.
 
 To catch `main` up by hand, run `node scripts/release.mjs sync` in a pull request: it
 copies the released sections from the newest tag, drops their entries from Unreleased,
@@ -296,7 +302,11 @@ it to be:
 
 - stable, because the publish refuses a prerelease and would stop every release after it;
 - the next patch, minor or major of the latest release, or that release itself (a
-  `sync` PR), whose `## X.Y.Z` section must then be the tag's, as `sync` copies it. The
+  `sync` PR), whose `## X.Y.Z` section must then hold every entry that release's own
+  section shipped and nothing it did not (release integrity refuses an entry it did not
+  ship, wherever `package.json` names a tagged version). A re-dated heading is fine. A
+  section that lost an entry is not: the next stamp keeps `main`'s section for a version
+  `main` has, so it would replace that release's own. The
   latest release is the newest stable `v*` tag, or the base's version when that is
   higher.
 
