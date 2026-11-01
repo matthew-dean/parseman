@@ -387,8 +387,21 @@ describe('the density peak clause is a required step', () => {
     const ci = readFileSync(fileURLToPath(new URL('../../.github/workflows/ci.yml', import.meta.url)), 'utf8')
     const job = ci.slice(ci.indexOf('\n  grammar-perf:\n'), ci.indexOf('\n  workload-perf:\n'))
     expect(job).toMatch(/run: pnpm perf:guard:grammars:peak \$\{BASE_SHA:\+--base=\$BASE_SHA\}/)
+    // A failing step must fail the job, or `test` reads it as green.
+    expect(job).not.toMatch(/continue-on-error/)
     expect(ci).toMatch(/needs: \[[^\]]*\bgrammar-perf\b[^\]]*\]/)
     const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as { scripts: Record<string, string> }
     expect(pkg.scripts['perf:guard:grammars:peak']).toBe('node --import tsx/esm bench/grammar-perf-guard.ts --peak')
+  })
+
+  it('measures against the committed peak, at the peak thresholds, and decides with the peak verdict', () => {
+    // Nothing else runs the guard's --peak path short of a full CI measurement, so without
+    // this a --peak that fell back to the previous release (step one again) would stay green.
+    const src = readFileSync(fileURLToPath(new URL('../../bench/grammar-perf-guard.ts', import.meta.url)), 'utf8')
+    expect(src).toMatch(/const REFERENCE = PEAK\s*\? \{ tag: `peak \$\{CONFIG\.peak\.version\}`, sha: CONFIG\.peak\.sha \}/)
+    expect(src).toMatch(/const T = PEAK \? peakThresholds\(CONFIG\.peak\.allowancePct\) : CONFIG\.thresholds/)
+    const verdict = src.indexOf('if (PEAK) peakVerdict(failures)')
+    expect(verdict).toBeGreaterThan(-1)
+    expect(verdict).toBeLessThan(src.indexOf('if (failures.length > 0)'))
   })
 })
