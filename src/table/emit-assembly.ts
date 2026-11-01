@@ -890,11 +890,17 @@ export function emitAssemblySource(
     && cfg.hostCaptureTrivia === undefined
     && reachable.every(ip => code[ip] !== OP_SCOPE_CAP
       && ((code[ip] !== OP_NODE && code[ip] !== OP_NODE_TRACK) || nodeShape(code, k, ip, cfg).keepChildren))
-    // A selective assembly runs beside closure pieces, and every crossing between
-    // the two would pay an adapter: measured on Jess's Less build (55 emitted
-    // sites, 50 of them entered from closures), +9.4% JIT instructions per parse.
-    // Direct values only where the whole assembly is emitted.
-    && (select === undefined || reachable.every(ip => aliasOf(ip) !== undefined || select.has(ip)))
+
+  // A selective assembly runs beside closure pieces, and every crossing between
+  // the two would pay an adapter: measured on Jess's Less build (55 emitted
+  // sites, 50 of them entered from closures), +9.4% JIT instructions per parse.
+  // So direct values only where no emitted body calls a closure piece: the
+  // selection is lowered on the collector protocol first, and keeps it if that
+  // lowering has an external.
+  if (D && select !== undefined) {
+    const collectors = emitAssemblySource(t, prog, { ...cfg, direct: false }, extraIps, staticBuild, select, gapNeutral)
+    if (/\bfunction _px\d+\(/.test(collectors.source)) return collectors
+  }
   const dlabelAt = D ? computeDirectLabels(code, k, roots, cfg) : (): DirectLabel => DV_TOP
   /** The two direct-value arguments every piece call carries in direct mode. */
   const A = D ? ',ks,rs' : ''
@@ -1266,10 +1272,17 @@ return 1
       // No installed scanner: the labelled/`trackLines` path, which records
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
       // buffer, so an in-node site skips the call that asks.
+      // Direct values: a gap that cannot start here is the empty gap, which
+      // records nothing in any sink, so the character answers without the call.
+      const leads = D && !cfg.trackLines ? triviaLeadRanges(ki, t.trivia) : undefined
+      const pre = leads === undefined || leads.length > 16 || leads.length === 0 ? ''
+        : `const c=input.charCodeAt(cur)
+if(c<55296&&!(${leads.map(r => r.lo === r.hi ? `c===${r.lo}` : `(c>=${r.lo}&&c<=${r.hi})`).join('||')}))return cur
+`
       skipDefs.push(buf
         ? `function ${nm}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
         : `function ${nm}(input,cur,ctx){
-if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
+${pre}if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)}`)
       return nm
     }
