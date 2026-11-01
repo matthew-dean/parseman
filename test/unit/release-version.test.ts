@@ -154,7 +154,8 @@ describe('the CHANGELOG a release carries', () => {
     // that release's entry. The 0.58.2 release must not claim it.
     const tag0581 = `${PRE}\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
     const main = `${PRE}\n## Unreleased\n\n- first fix\n\n- second fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581 })).toBe(
+    const source = `${PRE}\n## Unreleased\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581, source })).toBe(
       `${PRE}\n## 0.58.2 — 2026-11-02\n\n- second fix\n\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
     )
   })
@@ -164,10 +165,39 @@ describe('the CHANGELOG a release carries', () => {
     // entry worded the same way. Only the shipped one leaves.
     const tag0581 = `${PRE}\n## 0.58.1 — 2026-11-01\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
     const main = `${PRE}\n## Unreleased\n\n- Faster \`compile()\`.\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581 })).toBe(
+    const source = `${PRE}\n## Unreleased\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581, source })).toBe(
       `${PRE}\n## 0.58.2 — 2026-11-02\n\n- Faster \`compile()\`.\n\n## 0.58.1 — 2026-11-01\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
     )
     expect(withoutEach(['a', 'b', 'a', 'c'], ['a', 'c', 'x'])).toEqual(['b', 'a'])
+  })
+
+  it('releases an entry a later PR re-lands with the same words', () => {
+    // 0.58.1 shipped "- Add foo."; PR B removed it and 0.58.2 shipped "- Revert foo.";
+    // PR C re-lands foo, and its entry comes back word for word. Only what 0.58.2 took off
+    // main (its source's Unreleased) is shipped: the re-landed line is new.
+    const tag0582 = `${PRE}\n## 0.58.2 — 2026-11-02\n\n- Revert foo.\n\n## 0.58.1 — 2026-11-01\n\n- Add foo.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const source = `${PRE}\n## Unreleased\n\n- Revert foo.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const main = `${PRE}\n## Unreleased\n\n- Add foo.\n\n- Revert foo.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.58.3', date: '2026-11-03', released: tag0582, source })).toBe(
+      `${PRE}\n## 0.58.3 — 2026-11-03\n\n- Add foo.\n\n## 0.58.2 — 2026-11-02\n\n- Revert foo.\n\n## 0.58.1 — 2026-11-01\n\n- Add foo.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
+    )
+  })
+
+  it('lists an entry folded into a declared release once, under that release', () => {
+    // A docs-only merge filed U under Unreleased; a PR then declared 0.59.0 below it. The
+    // 0.59.0 stamp folded U in. main still has its own 0.59.0 section without U, and U
+    // still under Unreleased; a later PR adds Q.
+    const source = `${PRE}\n## Unreleased\n\n- U\n\n## 0.59.0 — 2026-11-02\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const tag0590 = `${PRE}\n## 0.59.0 — 2026-11-02\n\n- U\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const main = `${PRE}\n## Unreleased\n\n- U\n\n- Q\n\n## 0.59.0 — 2026-11-02\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.59.1', date: '2026-11-03', released: tag0590, source })).toBe(
+      `${PRE}\n## 0.59.1 — 2026-11-03\n\n- Q\n\n## 0.59.0 — 2026-11-02\n\n- U\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
+    )
+  })
+
+  it('refuses `released` without `source`', () => {
+    expect(() => stampChangelog(`${PRE}\n## 0.58.0 — 2026-10-31\n\n- shipped\n`, { version: '0.58.1', date, released: PRE })).toThrow(/needs `source`/)
   })
 
   it('dates a section the pull request declared, and folds Unreleased into it', () => {
@@ -179,7 +209,8 @@ describe('the CHANGELOG a release carries', () => {
   it('removes shipped entries from a declared section too', () => {
     const tag = `${PRE}\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
     const main = `${PRE}\n## 0.59.0 — 2026-11-01\n\n- first fix\n\n- new api\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(main, { version: '0.59.0', date, released: tag })).toBe(
+    const source = `${PRE}\n## Unreleased\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.59.0', date, released: tag, source })).toBe(
       `${PRE}\n## 0.59.0 — 2026-11-02\n\n- new api\n\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
     )
   })
@@ -192,9 +223,11 @@ describe('the CHANGELOG a release carries', () => {
   it('sync catches main up and drops an emptied Unreleased', () => {
     const tag = `${PRE}\n## 0.58.2 — 2026-11-02\n\n- b\n\n## 0.58.1 — 2026-11-01\n\n- a\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
     const main = `${PRE}\n## Unreleased\n\n- a\n\n- b\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(main, { released: tag })).toBe(tag)
+    // 0.58.2 was stamped from a main that still held 0.58.1's "a" beside its own "b".
+    const source = `${PRE}\n## Unreleased\n\n- a\n\n- b\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { released: tag, source })).toBe(tag)
     const pending = `${PRE}\n## Unreleased\n\n- a\n\n- c\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(pending, { released: tag }))
+    expect(stampChangelog(pending, { released: tag, source }))
       .toBe(`${PRE}\n## Unreleased\n\n- c\n\n## 0.58.2 — 2026-11-02\n\n- b\n\n## 0.58.1 — 2026-11-01\n\n- a\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`)
     expect(stampChangelog(main, { released: '' })).toBe(main)
   })
@@ -412,11 +445,11 @@ describe('the plan decides from what it read', () => {
     expect(() => decide({ ...read, changelog: stale, differences: changed }))
       .toThrow(/declares 0\.2\.0, which v0\.2\.0 already released[\s\S]*1 entry that release did not ship[\s\S]*- the new api[\s\S]*delete the ## 0\.2\.0 heading, then run `node scripts\/release\.mjs sync`/)
     // `sync` alone leaves the stale section where it is, so the stop stands.
-    expect(stampChangelog(stale, { released: shipped020 })).toBe(stale)
+    expect(stampChangelog(stale, { released: shipped020, source: shipped020 })).toBe(stale)
     // The fix the message names: the entries move under Unreleased, the heading goes, and
     // `sync` files the 0.2.0 that shipped from its tag. The plan then releases the entry.
     const moved = '# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
-    const fixed = stampChangelog(moved, { released: shipped020 })
+    const fixed = stampChangelog(moved, { released: shipped020, source: shipped020 })
     expect(fixed).toBe('# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n')
     expect(decide({ ...read, changelog: fixed, differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
   })

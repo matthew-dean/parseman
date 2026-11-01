@@ -83,12 +83,14 @@ already shipped. Neither causes harm:
 - the version rule reads npm and the tags, so a trailing `package.json` still yields
   the next patch;
 - each stamp reads the previous tag's CHANGELOG, copies in the release sections `main`
-  lacks, and removes their entries from the section being released. Every tag's
-  CHANGELOG lists each change once, under the release that shipped it. An entry
-  reworded on `main` after it shipped no longer matches and is listed again. Entries
-  match by occurrence, not by text alone: each shipped entry removes one, so a later
-  pull request's entry worded like an earlier one is still released. The PR gate counts
-  an added entry the same way.
+  lacks, and takes a released section's copy where it holds everything `main`'s does and
+  more (the stamp folded Unreleased entries into it). It removes from the section being
+  released what the previous release took off `main`: the entries pending at the commit
+  that release was stamped from, by occurrence, less any `main` already files under that
+  release. Every tag's CHANGELOG lists each change once, under the release that shipped
+  it. An entry worded like an earlier one, including one a later PR re-lands word for
+  word, is still released. An entry reworded on `main` after it shipped is listed again.
+  The PR gate counts an added entry by occurrence too.
 
 To catch `main` up by hand, run `node scripts/release.mjs sync` in a pull request: it
 copies the released sections from the newest tag, drops their entries from Unreleased,
