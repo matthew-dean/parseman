@@ -5,6 +5,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.59.0 — unreleased
 
+- **A routed arm is gated only on a next term whose miss set is known, and a miss
+  reports that term's own set.** `OP_RGATE` reported `deriveExpected` of the next term
+  on a miss. A `sequence(optional(…), …)` next term names its optional prefix there
+  but not when it runs, and a `keywords()` or `word()` term lists each word where the
+  term and the interpreter say `keyword`. The gate now applies only to a literal,
+  regex, `keywords()` or label next term, and a miss reports the terminal's
+  `directTerminalFailureExpected` or the label's name. Both were fixed on `main` for
+  0.58.x (`95bc9040`, and the `keywords()` set in #200).
 - **A sequence led by an optional pad has its operator's first set.** A `regex()` that
   may match empty still reports `any` as its own first set, since it can match empty
   anywhere, but it now also carries the first characters of its non-empty matches. A

@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, dispatch, literal, node, otherwise, regex, routed, rules, sepBy, sequence,
+  choice, dispatch, keywords, label, literal, node, optional, otherwise, regex, routed, rules, sepBy, sequence, word,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -71,6 +71,58 @@ describe('a choice of routed arms gates on the character after the token', () =>
       for (const input of inputs) {
         expect(digestValue(run(entries.Sheet!, input)), `${name} ${JSON.stringify(input)}`)
           .toBe(digestValue(run(statements.Sheet!, input)))
+      }
+    }
+  })
+
+  it('gates only an arm whose next term fails with its static expected set', () => {
+    // A miss reports the next term's static expected set. A sequence over an
+    // `optional` prefix names the prefix statically but not when it runs, and a
+    // choice whose arms share an opener is not a terminal either: neither is gated.
+    const shapes = rules({ trivia: regex(/\s+/) }, (g: Record<string, Comb>) => ({
+      Sheet: sepBy(g.Statement!, literal(';')),
+      Statement: dispatch(regex(/[a-z]+/), otherwise(choice(
+        node('Prefixed', sequence(routed(), sequence(optional(literal('a')), literal('b'))), children => ({ prefixed: children[0] })),
+        node('Shared', sequence(routed(), choice(sequence(literal('('), literal('x')), sequence(literal('('), literal('y')))), children => ({ shared: children[0] })),
+        node('Plain', sequence(routed(), literal(':')), children => ({ plain: children[0] })),
+      ))),
+    })) as Record<string, Comb>
+    const prog = encodeTable(shapes)
+    expect([...reachableIps(prog)].filter(ip => prog.code[ip] === OP_RGATE)).toHaveLength(1)
+    const prefixed = rules({ trivia: regex(/\s+/) }, (g: Record<string, Comb>) => ({
+      Sheet: sepBy(g.Statement!, literal(';')),
+      Statement: dispatch(regex(/[a-z]+/), otherwise(choice(
+        node('Prefixed', sequence(routed(), sequence(optional(literal('a')), literal('b'))), children => ({ prefixed: children[0] })),
+        node('Plain', sequence(routed(), literal(':')), children => ({ plain: children[0] })),
+      ))),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(prefixed))) {
+      for (const input of ['k?', 'kab', 'kb', 'ka?', 'k:', 'k', 'k a', 'k ?', 'k:;kb']) {
+        expect(digestValue(run(entries.Sheet!, input)), `${name} ${JSON.stringify(input)}`)
+          .toBe(digestValue(run(prefixed.Sheet!, input)))
+      }
+    }
+  })
+  it('reports the set the next term fails with on a miss, not its derived set', () => {
+    // `keywords()` and `word()` fail with `keyword`; `deriveExpected` lists each
+    // word. A gate miss is that term failing at the token's end, so it reports what
+    // the term reports there.
+    const terms = rules({ trivia: regex(/\s+/) }, (g: Record<string, Comb>) => ({
+      Sheet: sepBy(g.Statement!, literal(';')),
+      Statement: dispatch(regex(/[a-z]+/), otherwise(choice(
+        node('Word', sequence(routed(), word('is', 'a-z')), children => ({ word: children[0] })),
+        node('Keywords', sequence(routed(), keywords(['as', 'of'])), children => ({ keywords: children[0] })),
+        node('Label', sequence(routed(), label('number', regex(/[0-9]+/))), children => ({ label: children[0] })),
+        node('Literal', sequence(routed(), literal('X', { caseInsensitive: true })), children => ({ literal: children[0] })),
+      ))),
+    })) as Record<string, Comb>
+    const prog = encodeTable(terms)
+    expect([...reachableIps(prog)].filter(ip => prog.code[ip] === OP_RGATE)).toHaveLength(4)
+    expect(run(terms.Sheet!, 'k').expected).toEqual(['keyword', 'keyword', 'number', '"X"'])
+    for (const [name, entries] of readers(prog)) {
+      for (const input of ['k', 'k?', 'k ?', 'k is', 'k of', 'k 9', 'k x', 'k;k', 'k is;k?']) {
+        expect(digestValue(run(entries.Sheet!, input)), `${name} ${JSON.stringify(input)}`)
+          .toBe(digestValue(run(terms.Sheet!, input)))
       }
     }
   })
