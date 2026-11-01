@@ -169,14 +169,17 @@ export const more = compose([grammar, rules({ trivia: ws }, g => ({ Word: regex(
 
 /** One rolldown build of several entries of `root/src`, as a package with subpath
  * entries builds them; `plugin` is reused across builds as a watcher keeps it. */
-async function buildEntries(root: string, entries: Record<string, string>, out: string, plugin = parseman.rolldown({})): Promise<void> {
+async function buildEntries(
+  root: string, entries: Record<string, string>, out: string, plugin = parseman.rolldown({}),
+  opts: { external?: (id: string) => boolean; sourcemap?: boolean } = {},
+): Promise<void> {
   const bundle = await rolldown({
     input: Object.fromEntries(Object.entries(entries).map(([e, file]) => [e, path.join(root, 'src', file)])),
     plugins: [plugin],
-    external: id => !id.startsWith('.') && !path.isAbsolute(id),
+    external: opts.external ?? (id => !id.startsWith('.') && !path.isAbsolute(id)),
     logLevel: 'silent',
   })
-  await bundle.write({ dir: path.join(root, out), format: 'esm' })
+  await bundle.write({ dir: path.join(root, out), format: 'esm', ...(opts.sourcemap === true ? { sourcemap: true } : {}) })
   await bundle.close()
 }
 
@@ -240,4 +243,66 @@ describe('carried pieces of a multi-entry build', () => {
     await buildEntries(root, { index: 'index.ts' }, 'v2', plugin)
     expect(exportsOf(root, 'v2/index.js')).toBeNull()
   })
+
+  it('fail the downstream build, not fall back to runtime, for a facade whose pieces cannot be found', async () => {
+    // `css.js` is a facade over the shared chunk `css.ts` landed in. Without its
+    // sidecar, the shared chunk has none either: a runtime compose() of a compiled
+    // grammar would throw at import, so the build must fail instead.
+    const root = path.join(dir, 'pkgs', 'star')
+    const consumer = path.join(root, 'src', 'consumer.ts')
+    const downstream = `import { compose, rules, regex, trivia } from 'parseman' with { type: 'macro' }
+import { base } from '../lib/css.js'
+const ws = trivia(regex(/[ \\t\\n]*/))
+export const more = compose([base, rules({ trivia: ws }, g => ({ Word: regex(/[a-z0-9]+/) }))])
+`
+    expect(transformMacro(downstream, consumer, new Set(['parseman']))?.code).toMatch(/tableRules\(/)
+    const sidecar = path.join(root, 'lib', 'css.js.parseman.json')
+    const kept = fs.readFileSync(sidecar, 'utf8')
+    try {
+      fs.rmSync(sidecar)
+      expect(() => transformMacro(downstream, consumer.replace('consumer', 'consumer2'), new Set(['parseman'])))
+        .toThrow(/is a build-compiled grammar whose carried pieces could not be resolved/)
+    } finally {
+      fs.writeFileSync(sidecar, kept)
+    }
+  })
+
+  it('record the artifact they were written for, and a downstream build refuses a stale one', async () => {
+    const root = sources('stale', { 'index.ts': UPSTREAM })
+    await buildEntries(root, { index: 'index.ts' }, 'lib', undefined, { sourcemap: true })
+    const artifact = path.join(root, 'lib', 'index.js')
+    expect(fs.readFileSync(artifact, 'utf8')).toMatch(/sourceMappingURL=/)
+    const recorded = (JSON.parse(fs.readFileSync(artifact + '.parseman.json', 'utf8')) as { artifact?: string }).artifact
+    expect(recorded).toMatch(/^[0-9a-f]{32}$/)
+    const consumer = path.join(root, 'src', 'consumer.ts')
+    const downstream = `import { compose, rules, regex, trivia } from 'parseman' with { type: 'macro' }
+import { base } from '../lib/index.js'
+const ws = trivia(regex(/[ \\t\\n]*/))
+export const more = compose([base, rules({ trivia: ws }, g => ({ Word: regex(/[a-z0-9]+/) }))])
+`
+    // The sidecar matches its artifact, sourcemap comment and all.
+    expect(transformMacro(downstream, consumer, new Set(['parseman']))?.code).toMatch(/tableRules\(/)
+    // Another build's artifact beside this sidecar: the build fails rather than
+    // composing pieces the artifact was not built from.
+    fs.appendFileSync(artifact, '\nexport const rebuilt = 1\n')
+    expect(() => transformMacro(downstream, consumer.replace('consumer', 'consumer2'), new Set(['parseman'])))
+      .toThrow(/was written for a different build of index\.js/)
+  })
+
+  it('write a bundled ancestor out, and keep an external one a reference', async () => {
+    // Its own upstream package: an earlier test removes `up`'s sidecar.
+    const upstream = sources('up3', { 'index.ts': UPSTREAM })
+    fs.writeFileSync(path.join(upstream, 'package.json'), JSON.stringify({ name: 'up3', type: 'module', exports: { '.': './lib/index.js' } }))
+    fs.symlinkSync(upstream, path.join(dir, 'node_modules', 'up3'), 'dir')
+    await buildEntries(upstream, { index: 'index.ts' }, 'lib')
+    const root = sources('bundled', { 'grammar.ts': DOWNSTREAM.replace("from 'up'", "from 'up3'"), 'index.ts': "export { digits } from './grammar.ts'\n" })
+    await buildEntries(root, { index: 'index.ts' }, 'external')
+    await buildEntries(root, { index: 'index.ts' }, 'inlined', undefined, { external: id => id.startsWith('parseman') })
+    expect(exportsOf(root, 'external/index.js')?.digits?.[0]).toEqual({ from: 'up3', name: 'base' })
+    expect(fs.readFileSync(path.join(root, 'inlined', 'index.js'), 'utf8')).not.toMatch(/from\s*["']up3["']/)
+    const inlined = exportsOf(root, 'inlined/index.js')?.digits as Array<{ ir?: string; from?: string }>
+    expect(inlined).toHaveLength(2)
+    expect(inlined.every(item => typeof item.ir === 'string' && item.from === undefined)).toBe(true)
+  })
 })
+

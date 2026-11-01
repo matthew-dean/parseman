@@ -5,6 +5,24 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A downstream build that cannot find a compiled grammar's carried pieces fails;
+  it no longer falls back to a runtime `compose()`.** A facade chunk
+  (`export { t as grammar } from './shared-HASH.js'`) or an `export *` entry with no
+  sidecar entry of its own used to warn "isn't a build-resolvable grammar; falling
+  back to runtime" and emit a runtime `compose()` of a compiled grammar, which throws
+  at import. The reader now follows the re-export to the module that declares the
+  grammar, and fails the build, naming the artifact, when no pieces are found there.
+- **A sidecar names the artifact it was written for.** It records `artifact`, a
+  SHA-256 digest of the chunk (less a trailing `sourceMappingURL` comment), and a
+  downstream build that finds a different artifact beside it fails instead of
+  composing the pieces of another build. A sidecar written by 0.58.0 has no digest
+  and is read as before.
+- **A bundled ancestor is written out, not as a package reference.** An ancestor
+  imported from another package was always recorded as `{ from, name }`, resolved
+  from the artifact's location. That holds only where the build keeps the package
+  external; one the build bundled is not imported by the artifact, and is missing or
+  a different version wherever it is composed. The sidecar now writes such an
+  ancestor's pieces in full, as it already did for a relative import.
 - **A sidecar carries only the pieces of the grammar its chunk exports.** When the
   plugin could not trace an entry's export to the module that recorded it, it took
   any one module of the bundle that recorded the same name, in this chunk or not. An
