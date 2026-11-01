@@ -5,6 +5,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **Regex first sets read escapes that are not their letter.** The first-set analyzer read
+  several escapes as the escaped letter: `\p{…}`/`\P{…}`, `\u{…}` under `u`, `\cJ`, the legacy
+  octal `\012`, and `\k<name>`. The class and literal readers read `\012` as NUL followed by
+  digits. Under `/i` without `u`, a non-ASCII letter's case twin (`é`/`É`, `σ`/`Σ`/`ς`) was
+  left out.
+  - Because a first set gates choice dispatch, optional terms and trivia skips, the table
+    engines could refuse input the regex matches. For example, `choice(regex(/\cJa/), …)`
+    failed on a newline.
+  - Each escape now maps to its character or widens to any character, and a case-folded set
+    that reaches 128 widens. The emitted scan lowering declines digit escapes.
+  - Test: `test/unit/regex-escape-first-set-engines.test.ts`, registered in
+    `check:differentials`.
 - **A trivia skip at a character no trivia can start returns without scanning.** Both
   table engines now test the character first. The closure engine reads a per-slot table
   that its scopes install with their trivia; the emitted assembly prints the slot's first

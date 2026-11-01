@@ -220,6 +220,20 @@ export const DEFECTS = {
     }],
   },
 
+  /**
+   * The regex first-set analyzer reads an escape as its letter. Every first set
+   * built on it then refuses input the regex matches: a trivia gap, a choice arm
+   * or an optional term is skipped where it should run.
+   */
+  'first-set-property-escape-as-letter': {
+    why: 'regex first sets: `\\p{…}` is read as the letter p',
+    edits: [{
+      file: 'src/regex/first-set.ts',
+      find: "case 'p': case 'P': return charNode(any(), true)",
+      replace: "case 'p': case 'P': return charNode(fromRange(e.codePointAt(0)!, e.codePointAt(0)!), false)",
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{

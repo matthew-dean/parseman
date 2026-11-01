@@ -66,6 +66,8 @@ export function literalCodePoints(frag: string): number[] | null {
       // Any other word-character escape is a class (`\d`), an assertion (`\b`), a
       // backreference or a hex, unicode or control escape, never the character itself.
       if (!(e in CLASS_ESCAPES) && /\w/.test(e)) return null
+      // `\0` then a digit is a legacy octal escape, not NUL followed by a digit.
+      if (e === '0' && frag[i + 2] !== undefined && frag[i + 2]! >= '0' && frag[i + 2]! <= '9') return null
       out.push(e in CLASS_ESCAPES ? CLASS_ESCAPES[e]! : e.codePointAt(0)!)
       i += 2
       continue
@@ -157,6 +159,9 @@ export function parseClassRanges(body: string): Array<[number, number]> | null {
       const e = body[i + 1]
       if (e === undefined) return null
       i += 2
+      // A digit after `\0`, or any other digit escape, is a legacy octal escape
+      // (`[\012]` holds a newline), which this does not decode.
+      if ((e === '0' && body[i] !== undefined && body[i]! >= '0' && body[i]! <= '9') || (e >= '1' && e <= '9')) return null
       if (e in CLASS_ESCAPES) return { cp: CLASS_ESCAPES[e]! }
       if (e === 'd' || e === 'w' || e === 's') return { set: shorthandRanges(e) }
       // Any other letter escape is a class we can't safely lower (\D, \W, \S, …).

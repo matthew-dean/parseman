@@ -72,7 +72,7 @@ const BAIL = Symbol('regex-bail')
  * Closure over a single cursor `i` — recursive-descent: alt → seq → quantified
  * → atom.
  */
-function parseRegex(src: string): Node {
+function parseRegex(src: string, unicode = false): Node {
   let i = 0
 
   const parseAlt = (): Node => {
@@ -189,11 +189,32 @@ function parseRegex(src: string): Node {
       i += 6
       return charNode(fromRange(cp, cp), cp === 0x0a)
     }
+    // \u{X…}: a code point in Unicode mode. Without `u` it is a literal `u` under
+    // a `{…}` quantifier, which may repeat it zero times, so it widens.
+    if (e === 'u' && src[i + 2] === '{') {
+      const close = src.indexOf('}', i + 3)
+      const hex = close < 0 ? '' : src.slice(i + 3, close)
+      if (!unicode || !/^[0-9a-fA-F]{1,6}$/.test(hex)) { i += 2; return ANY }
+      const cp = Number.parseInt(hex, 16)
+      i = close + 1
+      return charNode(fromRange(cp, cp), cp === 0x0a)
+    }
     // \xHH
     if (e === 'x' && /^[0-9a-fA-F]{2}$/.test(src.slice(i + 2, i + 4))) {
       const cp = Number.parseInt(src.slice(i + 2, i + 4), 16)
       i += 4
       return charNode(fromRange(cp, cp), cp === 0x0a)
+    }
+    // \cX: the control character X names. Anything else after `\c` is not one.
+    if (e === 'c') {
+      const x = src[i + 2]
+      if (x !== undefined && /^[A-Za-z]$/.test(x)) {
+        const cp = x.charCodeAt(0) % 32
+        i += 3
+        return charNode(fromRange(cp, cp), cp === 0x0a)
+      }
+      i += 2
+      return ANY
     }
     i += 2
     switch (e) {
@@ -207,7 +228,12 @@ function parseRegex(src: string): Node {
       case 't': return charNode(fromRange(0x09, 0x09), false)
       case 'f': return charNode(fromRange(0x0c, 0x0c), false)
       case 'v': return charNode(fromRange(0x0b, 0x0b), false)
-      case '0': return charNode(fromRange(0, 0), false)
+      // `\0` then a digit is a legacy octal escape (`\012` is a newline), not NUL.
+      case '0': return src[i] !== undefined && src[i]! >= '0' && src[i]! <= '9' ? ANY : charNode(fromRange(0, 0), false)
+      // A property escape (`\p{…}`/`\P{…}`) matches one character of a class this
+      // analyzer does not enumerate; `\k<name>` is a backreference, which may match empty.
+      case 'p': case 'P': return charNode(any(), true)
+      case 'k': return ANY
       default:
         // A digit escape is a backreference we don't resolve → widen.
         if (e >= '1' && e <= '9') return ANY
@@ -300,10 +326,14 @@ export function regexCanMatchEmpty(source: string): boolean {
   try { return nullable(parseRegex(source)) } catch { return true }
 }
 
-export function firstSetFromRegex(source: string): { firstSet: FirstSet; canMatchNewline: boolean } {
+/**
+ * `flags` decides only how `\u{…}` reads (a code point under `u`/`v`); case
+ * folding under `i` is the caller's, since only it knows what it gates.
+ */
+export function firstSetFromRegex(source: string, flags = ''): { firstSet: FirstSet; canMatchNewline: boolean } {
   let ast: Node
   try {
-    ast = parseRegex(source)
+    ast = parseRegex(source, flags.includes('u') || flags.includes('v'))
   } catch {
     return { firstSet: any(), canMatchNewline: true }
   }

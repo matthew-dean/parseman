@@ -233,6 +233,15 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'regex-escape-first-sets',
+    needs: 'repo',
+    file: 'test/unit/regex-escape-first-set-engines.test.ts',
+    legs: 'trivia, choice arms and optional terms over regexes with octal, control, property and code-point escapes and non-ASCII /i letters, through the interpreter, execRules, closure and emitted tableRules: whole RunResult digests across the table engines, value/span/unconsumed against the interpreter',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/regex-escape-first-set-engines.test.ts']),
+    plants: [{ defect: 'first-set-property-escape-as-letter', expect: 'moves' }],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',

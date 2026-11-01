@@ -10,7 +10,7 @@
  * Generated inputs put trivia (spaces, comments, a lone `/` that starts no
  * comment, non-ASCII) before and inside every construct, and every leg runs in
  * every way a gap is recorded: nothing, a root trivia log, a CST host capturing
- * trivia, line tracking. The whole `RunResult` must agree, root trivia included.
+ * trivia, and a grammar that tracks lines. The whole `RunResult` must agree, root trivia included.
  *
  * `pnpm check:differentials` narrows each engine's lead set by its last range and
  * requires this file to go red.
@@ -20,7 +20,7 @@ import { commentTrivia } from '../../bench/table-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
-import { run } from '../../src/functional/run.ts'
+import { run, type RunOptions } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { choice, classifiedTrivia, literal, many, node, noTrivia, optional, parser, regex, rules, sepBy, sequence, trivia as triviaOf } from '../../src/index.ts'
@@ -33,7 +33,7 @@ const plainTrivia = triviaOf(regex(/(?:[ \t\n\r]|\/\*(?:[^*]|\*(?!\/))*\*\/)+/))
 /** A second slot, for a scope that changes the installed trivia. */
 const underscores = classifiedTrivia({ space: regex(/[ _]+/) })
 
-const grammar = (trivia: Combinator<unknown>): Grammar => rules<Grammar>({ trivia: trivia as never }, g => ({
+const grammar = (trivia: Combinator<unknown>, trackLines = false): Grammar => rules<Grammar>({ trivia, trackLines }, g => ({
   Doc: node('Doc', many(g.Item!), (c, _f, _s, raw, tl) => ({ doc: c, raw: raw.length, tl: [...tl] })),
   Item: choice(g.Call!, g.Pair!, g.Tight!, g.Word!),
   Call: node('Call', sequence(g.Name!, noTrivia(literal('(')), optional(sepBy(g.Word!, literal(','))), literal(')')),
@@ -42,7 +42,7 @@ const grammar = (trivia: Combinator<unknown>): Grammar => rules<Grammar>({ trivi
   Name: regex(/[A-Z][a-z]*/),
   Word: node('Word', regex(/[a-zé]+/), c => ({ word: c })),
   // A scope with another trivia, so the gate follows a slot change.
-  Tight: node('Tight', parser({ trivia: underscores as never }, sequence(literal('{'), many(g.Word!), literal('}'))), c => ({ tight: c })),
+  Tight: node('Tight', parser({ trivia: underscores }, sequence(literal('{'), many(g.Word!), literal('}'))), c => ({ tight: c })),
 }))
 
 const PIECES = ['Foo(a,b)', '[a=b]', 'word', 'é', 'Bar()', '{a_b}', '{ a _ b }']
@@ -60,29 +60,31 @@ function inputs(): string[] {
   return out
 }
 
-const MODES: Record<string, Parameters<typeof run>[2]> = {
-  plain: {},
-  'root trivia': { rootTrivia: { select: ['comment'] } } as never,
-  'trace lines': { trackLines: true } as never,
+// Line tracking is a property of the grammar (`rules({ trackLines })`), which
+// `run()` reads from the table it is given; it takes no such option.
+const MODES: Record<string, { readonly opts: RunOptions; readonly trackLines: boolean }> = {
+  plain: { opts: {}, trackLines: false },
+  'root trivia': { opts: { rootTrivia: { select: ['comment'] } }, trackLines: false },
+  'track lines': { opts: {}, trackLines: true },
 }
 
 describe('the trivia lead gate', () => {
   for (const [name, trivia] of [['labelled', commentTrivia], ['unlabelled', plainTrivia]] as const) {
     it(`${name} trivia: closure and emitted agree with the reference driver`, () => {
-      const g = grammar(trivia)
-      const prog = encodeTable(g)
-      const reference = execRules(prog).Doc!
-      const closure = tableRules({ ...prog, asm: [] }).Doc!
-      const { asm: _none, ...noAsm } = prog
-      const emitted = tableRules(noAsm).Doc!
       let parsed = 0
-      for (const [mode, opts] of Object.entries(MODES)) {
+      for (const [mode, { opts, trackLines }] of Object.entries(MODES)) {
         if (name === 'unlabelled' && mode === 'root trivia') continue
+        const prog = encodeTable(grammar(trivia, trackLines))
+        expect(prog.lines, `${mode}: the table tracks lines`).toBe(trackLines ? 1 : 0)
+        const reference = execRules(prog).Doc!
+        const closure = tableRules({ ...prog, asm: [] }).Doc!
+        const { asm: _none, ...noAsm } = prog
+        const emitted = tableRules(noAsm).Doc!
         for (const input of inputs()) {
-          const want = run(reference as never, input, opts)
+          const want = run(reference, input, opts)
           if (want.ok && want.unconsumedFrom === null) parsed++
-          expect(digestValue(run(closure as never, input, opts)), `${mode} ${JSON.stringify(input)}: closure`).toBe(digestValue(want))
-          expect(digestValue(run(emitted as never, input, opts)), `${mode} ${JSON.stringify(input)}: emitted`).toBe(digestValue(want))
+          expect(digestValue(run(closure, input, opts)), `${mode} ${JSON.stringify(input)}: closure`).toBe(digestValue(want))
+          expect(digestValue(run(emitted, input, opts)), `${mode} ${JSON.stringify(input)}: emitted`).toBe(digestValue(want))
         }
       }
       expect(parsed, 'inputs parsed whole').toBeGreaterThan(20)
@@ -99,10 +101,10 @@ describe('the trivia lead gate', () => {
     const { asm: _none, ...noAsm } = prog
     const emitted = tableRules(noAsm).Doc!
     for (const input of inputs()) {
-      const opts = { build: cstBuildHost() as never }
-      const want = run(reference as never, input, opts)
-      expect(digestValue(run(closure as never, input, opts)), `${JSON.stringify(input)}: closure`).toBe(digestValue(want))
-      expect(digestValue(run(emitted as never, input, opts)), `${JSON.stringify(input)}: emitted`).toBe(digestValue(want))
+      const opts: RunOptions = { build: cstBuildHost() }
+      const want = run(reference, input, opts)
+      expect(digestValue(run(closure, input, opts)), `${JSON.stringify(input)}: closure`).toBe(digestValue(want))
+      expect(digestValue(run(emitted, input, opts)), `${JSON.stringify(input)}: emitted`).toBe(digestValue(want))
     }
   })
 })

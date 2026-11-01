@@ -235,6 +235,9 @@ function parseSeqParts(source: string): SeqPart[] | null {
       let cp: number
       if (uni) { cp = uni.cp; i = uni.next }
       else if (e === undefined) return null
+      // A digit escape is a backreference or a legacy octal escape (`\012`); only a
+      // lone `\0` is NUL.
+      else if (e >= '0' && e <= '9' && (e !== '0' || (source[i + 2] !== undefined && source[i + 2]! >= '0' && source[i + 2]! <= '9'))) return null
       else if (e in CLASS_ESCAPES) { cp = CLASS_ESCAPES[e]!; i += 2 }
       else if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) return null
       else { cp = e.codePointAt(0)!; i += 2 }
