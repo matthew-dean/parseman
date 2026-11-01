@@ -145,9 +145,17 @@ class Encoder {
   private lexIndex = new Map<string, number>()
   lexPrograms: LexProgramSpec[] = []
   private lexProgramIndex = new Map<string, number>()
+  /**
+   * Each rollback census answered twice: for a program with no trivia, and for one
+   * that installs trivia somewhere, where a failed node can leave trivia rows its
+   * body recorded (`mayLeavePartialCapture`'s `throughNodes`). Which program this
+   * is is known only once every rule is encoded, so the program takes one pair.
+   */
   private choiceRollbackMasks = new Map<number, number>()
+  private choiceRollbackMasksTrivia = new Map<number, number>()
   private nonCommittingChoiceSites = new Set<number>()
   private failureRollbackCleanSites = new Set<number>()
+  private failureRollbackCleanSitesTrivia = new Set<number>()
   /**
    * `reachesSideWriter`'s answers, shared by every `failureNeedsRollback` call
    * for the lifetime of this `Encoder`. Every entry is exact — it depends only on
@@ -666,11 +674,12 @@ class Encoder {
   private failureNeedsRollback(
     p: Combinator<unknown>,
     autoNot: readonly AutoNotCheck[] | null | undefined,
+    throughNodes: boolean,
   ): boolean {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     const winner = refName === undefined ? undefined : this.winners?.[refName]
     const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
-    return mayLeavePartialCapture(root, new Set(), true)
+    return mayLeavePartialCapture(root, new Set(), true, throughNodes)
       || this.reachesSideWriter(root)
       || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
   }
@@ -1332,12 +1341,12 @@ class Encoder {
         // universal rollback because repeat recovery can publish an error from
         // inside any arm. Arity >31 falls back to -1 rather than truncating.
         let rollbackMask = kids.length > 31 ? -1 : 0
+        let rollbackMaskTrivia = rollbackMask
         if (rollbackMask === 0) {
           for (let i = 0; i < arms.length; i++) {
             const src = order[i]!
-            if (this.failureNeedsRollback(arms[i]!, d.autoNot[src])) {
-              rollbackMask |= 1 << i
-            }
+            if (this.failureNeedsRollback(arms[i]!, d.autoNot[src], false)) rollbackMask |= 1 << i
+            if (this.failureNeedsRollback(arms[i]!, d.autoNot[src], true)) rollbackMaskTrivia |= 1 << i
           }
         }
         const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
@@ -1352,6 +1361,7 @@ class Encoder {
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
+        this.choiceRollbackMasksTrivia.set(head, rollbackMaskTrivia)
         if (arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))) {
           this.nonCommittingChoiceSites.add(head)
         }
@@ -1407,7 +1417,8 @@ class Encoder {
       }
       case 'optional': {
         const head = this.emit(OP_OPT, this.lookaheadGate(d.parser, this.node(d.parser).ip))
-        if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(head)
+        if (!this.failureNeedsRollback(d.parser, undefined, false)) this.failureRollbackCleanSites.add(head)
+        if (!this.failureNeedsRollback(d.parser, undefined, true)) this.failureRollbackCleanSitesTrivia.add(head)
         return head
       }
       case 'transform': {
@@ -1724,7 +1735,8 @@ class Encoder {
       // lowering was correct only for a choice arm.
       case 'attempt': {
         const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip, d.contain === true ? 1 : 0)
-        if (!this.failureNeedsRollback(d.parser, undefined)) this.failureRollbackCleanSites.add(inner)
+        if (!this.failureNeedsRollback(d.parser, undefined, false)) this.failureRollbackCleanSites.add(inner)
+        if (!this.failureNeedsRollback(d.parser, undefined, true)) this.failureRollbackCleanSitesTrivia.add(inner)
         // THE FIRST-SET FAIL-FAST GUARD, lowered as the `OP_GATE` row the `node()`
         // case already uses — it is the same guard, written twice in the
         // interpreter (`attempt.ts:22`, `node.ts:239`). It is NOT merely an
@@ -1939,8 +1951,8 @@ class Encoder {
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
     }, undefined, {
-      choiceRollbackMasks: this.choiceRollbackMasks,
-      failureRollbackCleanSites: this.failureRollbackCleanSites,
+      choiceRollbackMasks: this.triviaIndex.size === 0 ? this.choiceRollbackMasks : this.choiceRollbackMasksTrivia,
+      failureRollbackCleanSites: this.triviaIndex.size === 0 ? this.failureRollbackCleanSites : this.failureRollbackCleanSitesTrivia,
       nonCommittingChoiceSites: this.nonCommittingChoiceSites,
     })
   }

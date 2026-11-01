@@ -186,7 +186,9 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  * internally. optional/many never "fail" with partial output. Delegating
  * wrappers (transform/label/grammar/withCtx/expect) pass through to inner.
  */
-export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true): boolean {
+export function mayLeavePartialCapture(
+  p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true, throughNodes = false,
+): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
@@ -211,11 +213,14 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
       return false
     // A run's prefixes are probed detached; only its body can capture.
     case 'lines':
-      return mayLeavePartialCapture(d.body, seen, triviaActive)
-    // node() captures into its own private buffers and rolls them back on
-    // failure (emitNode restores _ctx.* and never pushes on the !ok path).
+      return mayLeavePartialCapture(d.body, seen, triviaActive, throughNodes)
+    // node() captures its children into a frame of its own and drops it on
+    // failure. The trivia logs (`_triviaLog`, `_rootTriviaLog`) are not part of
+    // that frame: trivia its body scanned before failing stays recorded. With
+    // `throughNodes` (a program that installs trivia somewhere) a node leaves
+    // what its body leaves; without, it leaves nothing.
     case 'node':
-      return false
+      return throughNodes && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes)
     // choice/firstMatch already roll back each failed arm; on overall failure
     // nothing committed remains.
     case 'choice':
@@ -228,9 +233,9 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
       // Fork the ancestor set for each proof so cycle protection remains, while
       // one proof cannot erase evidence needed by another.
       return capturesLeaf(d.selector, new Set(seen)) ||
-        d.cases.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive) || capturesLeaf(x.parser, new Set(seen))) ||
-        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive) || capturesLeaf(x.parser, new Set(seen))) : false) ||
-        (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive) || capturesLeaf(d.otherwise, new Set(seen)) : false)
+        d.cases.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes) || capturesLeaf(x.parser, new Set(seen))) ||
+        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes) || capturesLeaf(x.parser, new Set(seen))) : false) ||
+        (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive, throughNodes) || capturesLeaf(d.otherwise, new Set(seen)) : false)
     case 'attempt':
       return false
     // optional never fails; many/oneOrMore only "fail" with zero captured items.
@@ -272,7 +277,7 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
         const part = parts[i]!
         if (i > 0 && triviaActive) captured = true
         if (captured && mayFail(part)) return true
-        if (mayLeavePartialCapture(part, seen, triviaActive)) return true
+        if (mayLeavePartialCapture(part, seen, triviaActive, throughNodes)) return true
         if (capturesLeaf(part) || hasNodeDef(part)) captured = true
       }
       return false
@@ -284,11 +289,11 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
     case 'expect':
     case 'withCtx':
     case 'grammar':
-      return mayLeavePartialCapture(d.parser, seen, triviaActive)
+      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes)
     case 'recover':
-      return mayLeavePartialCapture(d.parser, seen, triviaActive)
+      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes)
     case 'lazy': {
-      try { return mayLeavePartialCapture(d.thunk(), seen, triviaActive) } catch { return true }
+      try { return mayLeavePartialCapture(d.thunk(), seen, triviaActive, throughNodes) } catch { return true }
     }
     // Unknown shapes: be safe and keep the rollback.
     default:
