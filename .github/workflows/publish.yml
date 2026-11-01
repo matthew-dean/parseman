@@ -12,6 +12,21 @@ name: Publish
 # into the runner's tree (version, dated CHANGELOG heading) and committed there; that
 # tree is published and its commit is tagged `vX.Y.Z`. The tag is the record.
 #
+# Two jobs, split by what each may hold:
+#
+#   prepare  installs dependencies, builds, runs the preflight and packs the tarball.
+#            That runs every devDependency, three packages' install scripts and the whole
+#            test suite, so this job holds a read-only token and nothing else.
+#   publish  holds the OIDC token, a `contents: write` token and the deploy key. It
+#            installs nothing and builds nothing: it re-stamps the same commit (the same
+#            sha, checked) with the dependency-free scripts/release.mjs, publishes the
+#            tarball `prepare` packed, and pushes the record and the tag.
+#
+# Any step of a job with `id-token: write` can request an OIDC token, and a job's secrets
+# sit in the runner's memory for the whole job. In one job, a dependency that ran during
+# the install or the tests could mint an npm publish credential for this package, or read
+# the deploy key that main's rules let through.
+#
 # Dispatch with `dry_run` to see the decision without publishing or tagging:
 #
 #   gh workflow run publish.yml --ref main -f dry_run=true
@@ -35,17 +50,18 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  prepare:
     runs-on: ubuntu-latest
-    env:
-      # Optional. With it, the release is also pushed onto main (see the record step).
-      HAS_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
     permissions:
-      # The OIDC token npm exchanges for a short-lived publish credential, and signs
-      # the provenance attestation with.
-      id-token: write
-      # Pushing the vX.Y.Z tag after the publish.
-      contents: write
+      contents: read
+      # Reading CI's verdict on this commit.
+      checks: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      commit: ${{ steps.stamp.outputs.commit }}
+      date: ${{ steps.stamp.outputs.date }}
+      time: ${{ steps.stamp.outputs.time }}
     steps:
       - name: Refuse any ref but main
         run: |
@@ -54,15 +70,12 @@ jobs:
             exit 1
           fi
 
-      # Actions are pinned to commit SHAs: this job can obtain an npm publish
-      # credential and write to the repository.
+      # Actions are pinned to commit SHAs: what this job packs is what gets published.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history and tags: the plan reads the latest release from them, the
-          # stamp reads the previous release's CHANGELOG, and the clobber guard below.
+          # stamp reads the previous release's CHANGELOG.
           fetch-depth: 0
-          # The token has no reason to sit in .git/config while dependency install
-          # scripts run; the tag step passes it to its one push.
           persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
@@ -71,11 +84,11 @@ jobs:
         with:
           node-version: lts/*
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
-      - name: Use an npm with trusted publishing
-        # Trusted publishing needs npm >= 11.5.1. npm, not pnpm, does the publish.
-        run: npm install -g 'npm@^11.5.1'
+      - name: Use the npm that publishes
+        # The same npm packs here and publishes in the next job. Trusted publishing needs
+        # npm >= 11.5.1. Pinned, because this npm builds the tarball that ships.
+        run: npm install -g npm@11.21.1
 
       - run: pnpm install --frozen-lockfile
 
@@ -94,13 +107,42 @@ jobs:
           REASON: ${{ steps.plan.outputs.reason }}
         run: echo "::notice title=Release skipped::$REASON"
 
+      - name: Wait for CI to pass on this commit
+        # ci.yml's `test` job is the one required check: it needs the Node matrix and
+        # every perf, size and wasted-work gate. The pull request passed it, but against
+        # the base it was last tested on, and main does not require a branch to be up to
+        # date before it merges. Two pull requests that each passed can merge into a
+        # commit nothing has tested, and the preflight below runs the tests but none of
+        # those gates. So the release waits for CI's verdict on this exact commit.
+        if: steps.plan.outputs.release == 'true' && inputs.dry_run != true
+        timeout-minutes: 60
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while :; do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=test&filter=latest" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | "\(.status // "missing") \(.conclusion // "")"') || state="unreadable (the checks API failed)"
+            case "$state" in
+              "completed success") echo "CI passed on $GITHUB_SHA."; break ;;
+              completed*) echo "::error::CI's \`test\` check concluded '${state#completed }' on $GITHUB_SHA; nothing is released. Fix main, or re-run CI and then this run."; exit 1 ;;
+              *) echo "CI's \`test\` check on $GITHUB_SHA: $state; waiting."; sleep 30 ;;
+            esac
+          done
+
       - name: Stamp the release
         id: stamp
         if: steps.plan.outputs.release == 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
         run: |
-          echo "commit=$(node scripts/release.mjs stamp "$VERSION")" >> "$GITHUB_OUTPUT"
+          # One date and one commit time for both jobs, so the publish job's stamp is
+          # this commit, sha for sha.
+          time=$(date -u +%s)
+          date=$(date -u -d "@$time" +%Y-%m-%d)
+          commit=$(RELEASE_DATE="$date" GIT_AUTHOR_DATE="@$time +0000" GIT_COMMITTER_DATE="@$time +0000" \
+            node scripts/release.mjs stamp "$VERSION")
+          { echo "commit=$commit"; echo "date=$date"; echo "time=$time"; } >> "$GITHUB_OUTPUT"
+          echo "stamped $commit with RELEASE_DATE=$date and commit time @$time +0000"
           git log -1 --stat --format='%H %s'
           # The plan built dist/ stamped with the LATEST release's version, and tests
           # that import the built package run before the preflight's own build. Rebuild
@@ -113,7 +155,8 @@ jobs:
         env:
           VERSION: ${{ steps.plan.outputs.version }}
         run: |
-          # CHANGELOG top heading == package.json == src/version.ts, heading dated.
+          # CHANGELOG top heading == package.json == src/version.ts, heading dated. This
+          # is also `prepublishOnly`, which publishing the tarball does not run.
           node scripts/check-changelog.mjs --publish
           node scripts/check-main-release-state.mjs --base-ref=main --head-ref=main
           # Assigned first so a registry failure fails the step instead of reading
@@ -142,14 +185,86 @@ jobs:
           npm pack --dry-run
           pnpm docs:verify
 
-      - name: Publish to npm
+      - name: Pack the release
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          npm pack --pack-destination "$RUNNER_TEMP/release"
+          test -f "$RUNNER_TEMP/release/parseman-$VERSION.tgz"
+
+      - name: Hand the tarball to the publish job
         if: steps.plan.outputs.release == 'true' && inputs.dry_run != true
-        # prepublishOnly re-runs check-changelog --publish.
-        run: npm publish --provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-tarball
+          path: ${{ runner.temp }}/release/parseman-${{ steps.plan.outputs.version }}.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    env:
+      # Optional. With it, the release is also pushed onto main (see the record step).
+      HAS_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    permissions:
+      # The OIDC token npm exchanges for a short-lived publish credential, and signs
+      # the provenance attestation with.
+      id-token: write
+      # Pushing the vX.Y.Z tag after the publish.
+      contents: write
+    # Nothing below installs a dependency, builds or runs a test: only git, npm and
+    # scripts/release.mjs, which is dependency-free.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          # The tag step passes the token to its one push.
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: lts/*
+          registry-url: https://registry.npmjs.org
+
+      - name: Use the npm that publishes
+        run: npm install -g npm@11.21.1
+
+      - name: Stamp the same release commit
+        env:
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_DATE: ${{ needs.prepare.outputs.date }}
+          STAMP_TIME: ${{ needs.prepare.outputs.time }}
+        run: |
+          stamped=$(GIT_AUTHOR_DATE="@$STAMP_TIME +0000" GIT_COMMITTER_DATE="@$STAMP_TIME +0000" \
+            node scripts/release.mjs stamp "$VERSION")
+          if [ "$stamped" != "$COMMIT" ]; then
+            echo "::error::this job stamps $stamped, but prepare packed $COMMIT. Something moved between the jobs (a new tag?); nothing was published."
+            exit 1
+          fi
+          git log -1 --format='%H %s'
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-tarball
+          path: ${{ runner.temp }}/release
+
+      - name: Publish to npm
+        # The tarball `prepare` packed and preflighted. `--ignore-scripts`: its lifecycle
+        # scripts ran there, and no code from the package runs in this job.
+        run: |
+          tgz="$RUNNER_TEMP/release/parseman-$VERSION.tgz"
+          tar -xzOf "$tgz" package/package.json | grep -qF "\"version\": \"$VERSION\"" \
+            || { echo "::error::$tgz is not parseman@$VERSION"; exit 1; }
+          npm publish "$tgz" --provenance --ignore-scripts
 
       - name: Record the release on main
         id: record
-        if: steps.plan.outputs.release == 'true' && inputs.dry_run != true && env.HAS_DEPLOY_KEY == 'true'
+        if: env.HAS_DEPLOY_KEY == 'true'
         # Pushed with the release deploy key, which main's rules let through; GITHUB_TOKEN
         # cannot be given that bypass on this repository. A fast-forward when main has not
         # moved, otherwise the stamp rebuilt on the new tip; never forced. That push runs
@@ -159,7 +274,6 @@ jobs:
         continue-on-error: true
         env:
           DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
-          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           key="$RUNNER_TEMP/release_deploy_key"
           hosts="$RUNNER_TEMP/known_hosts"
@@ -174,10 +288,8 @@ jobs:
           exit $status
 
       - name: Tag the published commit
-        if: steps.plan.outputs.release == 'true' && inputs.dry_run != true
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.plan.outputs.version }}
         # A git push, not the refs API: the release commit exists only in this runner,
         # and the push carries it. Tags are outside main's branch rules. The token is
         # passed to this one command and never written to .git/config.
@@ -187,18 +299,13 @@ jobs:
             push "https://github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/tags/v$VERSION"
 
       - name: Wait for npm to serve the release
-        if: steps.plan.outputs.release == 'true' && inputs.dry_run != true
         # Holds the concurrency group until the registry answers, so the next run reads
         # this release as the latest and compares against its tarball.
         timeout-minutes: 10
-        env:
-          VERSION: ${{ steps.plan.outputs.version }}
         run: until npm view "parseman@$VERSION" version >/dev/null 2>&1; do sleep 10; done
 
       - name: Fail if main does not record the release
         if: steps.record.outcome == 'failure'
-        env:
-          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           echo "::error::$VERSION is published and tagged, but recording it on main failed. Catch main up in a PR: node scripts/release.mjs sync"
           exit 1
