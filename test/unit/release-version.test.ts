@@ -399,7 +399,15 @@ describe('the plan decides from what it read', () => {
     // this PR merged. Its entries sit under ## 0.2.0, which v0.2.0 never contained.
     const stale = '# Changelog\n\n## 0.2.0 — 2026-11-02\n\n- the new api\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
     expect(() => decide({ ...read, changelog: stale, differences: changed }))
-      .toThrow(/declares 0\.2\.0, which v0\.2\.0 already released[\s\S]*1 entry that release did not ship[\s\S]*- the new api/)
+      .toThrow(/declares 0\.2\.0, which v0\.2\.0 already released[\s\S]*1 entry that release did not ship[\s\S]*- the new api[\s\S]*delete the ## 0\.2\.0 heading, then run `node scripts\/release\.mjs sync`/)
+    // `sync` alone leaves the stale section where it is, so the stop stands.
+    expect(stampChangelog(stale, { released: shipped020 })).toBe(stale)
+    // The fix the message names: the entries move under Unreleased, the heading goes, and
+    // `sync` files the 0.2.0 that shipped from its tag. The plan then releases the entry.
+    const moved = '# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
+    const fixed = stampChangelog(moved, { released: shipped020 })
+    expect(fixed).toBe('# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n')
+    expect(decide({ ...read, changelog: fixed, differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
   })
 
   it('accepts main trailing its tags with the section the release shipped, re-dated or folded into', () => {

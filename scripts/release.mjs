@@ -516,9 +516,10 @@ export function decide({ declared, npm, tags, own, superseded, differences, chan
           + `  section has ${stale.length} entr${stale.length === 1 ? 'y' : 'ies'} that release did not ship, starting with:\n`
           + `    ${stale[0].split('\n')[0]}\n`
           + '  A pull request declared a version another merge shipped first. In a pull request, move those\n'
-          + '  entries under "## Unreleased" (or a version above the latest release) and set package.json and\n'
-          + `  src/version.ts to match, or run \`node scripts/release.mjs sync\` first. If a shipped entry was\n`
-          + `  only reworded on main, restore its v${d.raw} wording.`,
+          + `  entries under "## Unreleased" and delete the ## ${d.raw} heading, then run \`node scripts/release.mjs sync\`:\n`
+          + `  it files the ${d.raw} that shipped from its tag. Or rename the section to a version above the latest\n`
+          + '  release and set package.json and src/version.ts to it. `sync` alone changes nothing while main\n'
+          + `  has a ## ${d.raw} section. If a shipped entry was only reworded on main, restore its v${d.raw} wording.`,
       )
     }
   }
