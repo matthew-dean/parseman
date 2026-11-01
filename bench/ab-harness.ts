@@ -591,9 +591,24 @@ const shift = (nullRate: number, configured: number): number =>
  * would silently measure with the cache on. V8 reads the flag on every cache
  * lookup, so turning it off here takes effect for every compile after this call,
  * however the gate was started. Idempotent; it is never turned back on.
+ *
+ * ## And allocation-site pretenuring off, for the same reason
+ *
+ * V8 watches which object literals' allocations survive young-generation GCs
+ * and, once a site's survival rate is high, recompiles its function to allocate
+ * there directly in OLD space. Whether a given instance's sites cross that line
+ * depends on where the scavenges happened to fall while it was warming, so it is
+ * a coin flip per instance, and a pretenured instance of a density case runs
+ * about 20% slower for the rest of the pass. On `expected/none` the flip landed
+ * more often on whichever side was built and warmed second, so the head side
+ * read +3.4% on identical code. A gate cannot tell that coin from the compiler,
+ * so it is taken out: every instance allocates young, and what is left between
+ * two instances is their code. `docs/design/perf-harness-interleaving.md` has
+ * the measurements.
  */
 export function isolateCompilation(): void {
   v8.setFlagsFromString('--no-compilation-cache')
+  v8.setFlagsFromString('--no-allocation-site-pretenuring')
 }
 
 /**
