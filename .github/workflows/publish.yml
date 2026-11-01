@@ -12,16 +12,20 @@ name: Publish
 # into the runner's tree (version, dated CHANGELOG heading) and committed there; that
 # tree is published and its commit is tagged `vX.Y.Z`. The tag is the record.
 #
-# Two jobs, split by what each may hold:
+# Three jobs, split by what each may hold and what each may touch:
 #
 #   prepare  installs dependencies, builds, runs the preflight and packs the tarball.
 #            That runs every devDependency, three packages' install scripts and the whole
-#            test suite, so this job holds a read-only token and nothing else.
+#            test suite, so this job holds a read-only token and nothing else, and what
+#            it packs does not ship: any of that code could have changed it.
+#   build    re-stamps the same commit and packs the tarball that ships, running the
+#            build and nothing else (no install scripts, no tests, no cache). Its pack
+#            must be `prepare`'s byte for byte, so the tree the preflight passed ships.
 #   publish  holds the OIDC token, a `contents: write` token and the deploy key. Apart
 #            from the pinned npm it publishes with, it installs nothing and builds
-#            nothing: it re-stamps the same commit (the same sha, checked) with the
-#            dependency-free scripts/release.mjs, publishes the tarball `prepare` packed,
-#            and pushes the record and the tag.
+#            nothing: it decides the version again, re-stamps the same commit (the same
+#            sha, checked) with the dependency-free scripts/release.mjs, publishes the
+#            tarball `build` packed (its sha, checked), and pushes the record and the tag.
 #
 # Any step of a job with `id-token: write` can request an OIDC token, and a job's secrets
 # sit in the runner's memory for the whole job. In one job, a dependency that ran during
@@ -63,6 +67,7 @@ jobs:
       commit: ${{ steps.stamp.outputs.commit }}
       date: ${{ steps.stamp.outputs.date }}
       time: ${{ steps.stamp.outputs.time }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
       - name: Refuse any ref but main
         run: |
@@ -187,25 +192,90 @@ jobs:
           pnpm docs:verify
 
       - name: Pack the release
+        id: pack
         if: steps.plan.outputs.release == 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
+        # Not what ships: every dependency ran in this job and could have changed it. The
+        # `build` job packs what ships; this sha must agree with it, so the tree the
+        # preflight passed is the tree that ships.
         run: |
           mkdir -p "$RUNNER_TEMP/release"
           npm pack --pack-destination "$RUNNER_TEMP/release"
-          test -f "$RUNNER_TEMP/release/parseman-$VERSION.tgz"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/release/parseman-$VERSION.tgz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+  build:
+    # Packs the tarball that ships. `prepare` runs every devDependency, their install
+    # scripts and the whole test suite, and any of them could rewrite dist/ or the tarball
+    # it packs; provenance would still attest it. This job runs only the build: no install
+    # scripts, no tests, no cache another run wrote. The build is reproducible (the
+    # 0.58.0 tarball rebuilds byte for byte), so the two packs must agree.
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: lts/*
+
+      - name: Use the npm that publishes
+        run: npm install -g npm@11.21.1
+
+      - name: Install the build's dependencies, running none of their scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Stamp the same release commit
+        env:
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_DATE: ${{ needs.prepare.outputs.date }}
+          STAMP_TIME: ${{ needs.prepare.outputs.time }}
+        run: |
+          stamped=$(GIT_AUTHOR_DATE="@$STAMP_TIME +0000" GIT_COMMITTER_DATE="@$STAMP_TIME +0000" \
+            node scripts/release.mjs stamp "$VERSION")
+          if [ "$stamped" != "$COMMIT" ]; then
+            echo "::error::this job stamps $stamped, but prepare tested $COMMIT; nothing was published."
+            exit 1
+          fi
+
+      - name: Build and pack what ships
+        id: pack
+        env:
+          PREPARED: ${{ needs.prepare.outputs.sha256 }}
+        run: |
+          node scripts/build.mjs
+          mkdir -p "$RUNNER_TEMP/release"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/release"
+          sha=$(sha256sum "$RUNNER_TEMP/release/parseman-$VERSION.tgz" | cut -d' ' -f1)
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          if [ "$sha" != "$PREPARED" ]; then
+            echo "::error::this build packs $sha, but the tested tree packed $PREPARED; nothing was published."
+            exit 1
+          fi
 
       - name: Hand the tarball to the publish job
-        if: steps.plan.outputs.release == 'true' && inputs.dry_run != true
+        if: inputs.dry_run != true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-tarball
-          path: ${{ runner.temp }}/release/parseman-${{ steps.plan.outputs.version }}.tgz
+          path: ${{ runner.temp }}/release/parseman-${{ env.VERSION }}.tgz
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    needs: prepare
+    needs: [prepare, build]
     if: needs.prepare.outputs.release == 'true' && inputs.dry_run != true
     runs-on: ubuntu-latest
     env:
@@ -235,6 +305,26 @@ jobs:
       - name: Use the npm that publishes
         run: npm install -g npm@11.21.1
 
+      - name: The version is the one main asks for
+        # `prepare`'s outputs are only as trustworthy as the dependencies that ran there.
+        # The version is decided without them (package.json, npm and the tags), so it is
+        # decided again here rather than taken from `prepare`.
+        run: |
+          want=$(node --input-type=module -e '
+            import { nextVersion } from "./scripts/release.mjs"
+            import { execFileSync } from "node:child_process"
+            import { readFileSync } from "node:fs"
+            const sh = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" }).trim()
+            const npm = [JSON.parse(sh("npm", ["view", "parseman", "versions", "--json"]))].flat()
+            const tags = sh("git", ["tag", "--list", "v*"]).split("\n").filter(Boolean)
+            const declared = JSON.parse(readFileSync("package.json", "utf8")).version
+            console.log(nextVersion({ declared, published: [...npm, ...tags] }).version)
+          ')
+          if [ "$want" != "$VERSION" ]; then
+            echo "::error::main asks for $want, but prepare stamped $VERSION; nothing was published."
+            exit 1
+          fi
+
       - name: Stamp the same release commit
         env:
           COMMIT: ${{ needs.prepare.outputs.commit }}
@@ -255,12 +345,15 @@ jobs:
           path: ${{ runner.temp }}/release
 
       - name: Publish to npm
-        # The tarball `prepare` packed and preflighted. `--ignore-scripts`: its lifecycle
-        # scripts ran there, and no code from the package runs in this job.
+        # The tarball `build` packed, by its sha (an artifact can be replaced by any job
+        # in the run; a job output cannot), which `prepare`'s preflighted pack matched.
+        # `--ignore-scripts`: no code from the package runs in this job.
+        env:
+          SHA256: ${{ needs.build.outputs.sha256 }}
         run: |
           tgz="$RUNNER_TEMP/release/parseman-$VERSION.tgz"
-          tar -xzOf "$tgz" package/package.json | grep -qF "\"version\": \"$VERSION\"" \
-            || { echo "::error::$tgz is not parseman@$VERSION"; exit 1; }
+          echo "$SHA256  $tgz" | sha256sum -c --strict - \
+            || { echo "::error::$tgz is not the tarball the build job packed"; exit 1; }
           npm publish "$tgz" --provenance --ignore-scripts
 
       - name: Record the release on main
