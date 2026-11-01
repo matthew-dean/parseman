@@ -5,6 +5,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
+  runs a compiled grammar and reports line/column positions imported them from the
+  main entry, which loads the combinators, the compiler and the analysis with them.
+  `src/line-index.ts` was already in the run entry's closure, so the entry's module
+  list is unchanged. See `test/unit/run-entry-closure.test.ts`.
 - **The grammar-density perf gate gains a peak clause**, anchored at 0.58.0
   (`eaa3d1a1`) with a 6% drawdown allowance (`bench/grammar-density/config.json`,
   `pnpm perf:guard:grammars:peak`, a step of the `grammar-perf` CI job). Its per-release

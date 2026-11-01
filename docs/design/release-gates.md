@@ -40,12 +40,34 @@ Two scripts carry it:
    `src/version.ts`, renames `## Unreleased` to `## X.Y.Z — <date>`, and commits that
    in the runner as `release: X.Y.Z`. A section the pull request already named for
    `X.Y.Z` takes the date and any Unreleased entries.
-4. **Guard and preflight.** `check-changelog.mjs --publish` and
-   `check-main-release-state.mjs` pass on the stamped tree, `X.Y.Z` is not on npm,
-   the tag `vX.Y.Z` does not exist, and the full preflight from `AGENTS.md` passes.
-5. **Publish** with `npm publish --provenance`. With the `RELEASE_DEPLOY_KEY` secret,
-   **record** the release on `main` (below). Then **tag** the stamped commit `vX.Y.Z`
-   with a git push, and wait until npm serves the new version.
+4. **Guard and preflight.** CI's `test` check has passed on this exact commit (the run
+   waits for it), `check-changelog.mjs --publish` and `check-main-release-state.mjs` pass
+   on the stamped tree, `X.Y.Z` is not on npm, the tag `vX.Y.Z` does not exist, and the
+   full preflight from `AGENTS.md` passes. The wait is there because `main` does not
+   require a pull request to be up to date with it before merging: two pull requests
+   that each passed CI can merge into a commit nothing has tested, and the preflight
+   runs none of the perf, size or wasted-work gates that `test` requires.
+5. **Pack** the stamped tree with `npm pack`, and keep its sha256.
+6. **Build what ships**, in a second job: re-stamp the same commit (same date and commit
+   time, so the same sha, which the job checks), install with `--ignore-scripts`, run
+   `scripts/build.mjs` and `npm pack --ignore-scripts`. Its tarball must be step 5's,
+   byte for byte (the build is reproducible: the 0.58.0 tarball rebuilds to npm's sha).
+7. **Publish**, in a third job: decide the version again from `package.json`, npm and the
+   tags, re-stamp the same commit, check the tarball step 6 packed against the sha that
+   job output, and `npm publish` it with `--provenance --ignore-scripts`. With the
+   `RELEASE_DEPLOY_KEY` secret, **record** the release on `main` (below). Then **tag** the
+   stamped commit `vX.Y.Z` with a git push, and wait until npm serves the new version.
+
+Steps 1-5 run in the `prepare` job, which has a read-only token and nothing else. It
+installs every devDependency, runs three packages' install scripts, and runs the whole
+test suite, so its tarball is not the one that ships: any of that code could rewrite
+`dist/` before the pack, and provenance would attest the result. The `build` job's
+tarball ships; only the build toolchain runs there, and it must agree with `prepare`'s. Only the `publish` job holds the OIDC token (`id-token: write`), the
+`contents: write` token and the deploy key. It installs nothing but the pinned npm it
+publishes with, and runs git, that npm and the dependency-free `scripts/release.mjs`. Any step of a job with `id-token: write` can
+request an OIDC token, and a job's secrets sit in the runner's memory for the whole job,
+so in a single job any dependency could have minted a publish credential for `parseman`
+or read the deploy key.
 
 ### Where the released version is recorded
 
@@ -140,15 +162,34 @@ decision. It builds `dist/` and leaves tracked files as it found them.
 - **Before publish.** Nothing is out. Fix the cause; the next merge, or a re-run, plans
   again.
 - **Publish succeeded, tag failed.** Do not re-run: the next plan would skip, because
-  npm now has the version. Recreate the stamped commit from the run's commit and push
-  the tag by hand:
+  npm now has the version. Until the tag exists, every run stops in the plan with
+  "parseman@X.Y.Z is on npm but has no vX.Y.Z tag". Releasing on top of it would read
+  the CHANGELOG of the tag before it and file X.Y.Z's entries under the next version, and
+  a re-run of a commit X.Y.Z contains would not be recognised as one. Recreate the
+  stamped commit from the run's commit and push the tag by hand:
 
   ```sh
   sha=$(gh run view <run-id> --json headSha --jq .headSha)
-  git checkout --detach "$sha" && RELEASE_DATE=<date the run used> node scripts/release.mjs stamp X.Y.Z
+  # <date> and <time>: the line the `prepare` job's stamp step printed
+  git checkout --detach "$sha" && RELEASE_DATE=<date> GIT_AUTHOR_DATE="@<time> +0000" \
+    GIT_COMMITTER_DATE="@<time> +0000" node scripts/release.mjs stamp X.Y.Z
   git push origin HEAD:refs/tags/vX.Y.Z
   ```
 
+  With the run's date and time the stamp is the published commit, sha for sha.
+
+- **A declared version shipped first by another merge.** The release gate checks a
+  declared version against the tags when the pull request runs, not when it merges. If
+  another merge ships that version in between, `main` ends up with the PR's entries
+  under a heading for a release that never contained them. The plan stops when
+  `package.json` names a tagged version and `CHANGELOG.md`'s section for it has an entry
+  that none of the tag's release sections has. A re-dated heading, Unreleased entries the
+  stamp folded in, or an entry it left under an earlier auto-patch don't count. Fix it in
+  a pull request: move the entries under `## Unreleased`, delete the stale heading, and
+  run `sync`, which files the release that shipped under that version from its tag. Or
+  rename the section to a version above the latest release and declare it. `sync` on its
+  own changes nothing here: `main` already has a section for that version, so it copies
+  nothing in.
 - **npm slow to serve the version.** The wait step times out after 10 minutes. The tag
   already exists, so the next run reads `L` from it. That run's skip comparison fails
   loudly until npm serves the tarball; re-run it then.
@@ -248,7 +289,20 @@ The publish does not rely on this list. Its skip decision compares the built tar
 so a lockfile bump that changes `dist/` still publishes. This is the cheap,
 install-free approximation for pull requests.
 
-B also refuses a `package.json` version that goes down against the base.
+B also refuses a `package.json` version that goes down against the base (the
+`release-exempt` label waives this, for a revert). A version the PR raises is published
+the moment it merges, as `latest`, and npm never takes a number back, so B also requires
+it to be:
+
+- stable, because the publish refuses a prerelease and would stop every release after it;
+- the next patch, minor or major of the latest release, or that release itself (a
+  `sync` PR), whose `## X.Y.Z` section must then be the tag's, as `sync` copies it. The
+  latest release is the newest stable `v*` tag, or the base's version when that is
+  higher.
+
+A version between the base and the latest tag is refused because the publish would
+ignore it. It would ship the next patch, and leave the PR's entries under a heading that
+names an older release. No label waives these checks.
 
 ### D. Peak record and D′. No peak waiver — on every PR
 
