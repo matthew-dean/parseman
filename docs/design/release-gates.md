@@ -152,6 +152,18 @@ decision. It builds `dist/` and leaves tracked files as it found them.
   git push origin HEAD:refs/tags/vX.Y.Z
   ```
 
+- **A declared version shipped first by another merge.** The release gate checks a
+  declared version against the tags when the pull request runs, not when it merges. If
+  another merge ships that version in between, `main` ends up with the PR's entries
+  under a heading for a release that never contained them. The plan stops when
+  `package.json` names a tagged version and `CHANGELOG.md`'s section for it has an entry
+  that none of the tag's release sections has. A re-dated heading, Unreleased entries the
+  stamp folded in, or an entry it left under an earlier auto-patch don't count. Fix it in
+  a pull request: move the entries under `## Unreleased`, delete the stale heading, and
+  run `sync`, which files the release that shipped under that version from its tag. Or
+  rename the section to a version above the latest release and declare it. `sync` on its
+  own changes nothing here: `main` already has a section for that version, so it copies
+  nothing in.
 - **npm slow to serve the version.** The wait step times out after 10 minutes. The tag
   already exists, so the next run reads `L` from it. That run's skip comparison fails
   loudly until npm serves the tarball; re-run it then.
