@@ -314,6 +314,32 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   whole file `--jitless` +0.3%. Running the composite gap under the leaf's sink save, clear
   and restore costs about what the skipped operator attempt cost. SCSS gains because its
   gap is one regex. `b4f684c5`, reverted by `fdea063f` on `perf/less-gap`.
+- **Direct values: node children as locals, not context collectors.** The emitted assembly
+  passes a node's children and raw entries to each piece as two arguments; a frame binds
+  fresh arrays and a leaf is a push. Trees identical on 461 Less files; the failing-input
+  differential (span, expected set, unconsumed offset) caught four planted defects. In a
+  selective assembly every crossing pays an adapter (Jess's shipped Less build: +9.4% JIT),
+  so it was limited to assemblies with no closure pieces, which leaves the shipped build
+  unchanged (`color: red;` 37.7k → 37.3k, A/A 37.3k). With every site emitted, `color: red;`
+  is 24.1k (base 24.5k) against 11.2k for the hand-written recognizer the plan was priced
+  on. Removing every remaining frame item (`_fields`, `captureTrivia`, trivia-log stores)
+  reached 22.1–22.6k, inlining small shared regions changed nothing, and a first-character
+  gate before the labelled trivia skip saved 0.6k. The earlier frame and push costs were
+  priced as additions to the hand-written code, not as shares of the generated code. A
+  profile of the generated code puts it, per declaration, at: calls between pieces ~5.8k
+  (53 functions, 13 inlined regions, against ~12); reducers ~4.7k (hand-written 3.7k);
+  labelled-trivia scanning ~3.4k (`skipDeferredTrivia`, its gap memo, `scanWithLabels`, six
+  log reads per sequence term); GC ~3.0k (hand-written 1.0k: expected-set arrays of failed
+  arms, `_routed` objects, capturing frames' arrays); pushes 1.1k, marks 0.7k, frames 0.45k.
+  Every-site artifact 4.68 MB (~17×). Rejected: still about 2× the hand-written code with
+  frames and pushes gone. Branch `perf/direct-values` @ `d5d98460`, unmerged.
+- **Allocation-free expected-set merges on failed arms.** On Jess's shipped Less build, a
+  declaration makes 3 expected-set merges in the closure engine, 2 of which copy an array
+  (18 strings), plus one routed-token object: about 300 B of the 5.4 KB a declaration
+  allocates (the hand-written recognizer: 2.2 KB). The extra allocation is frames and
+  spans. With merges made free (a probe valid on accepted input only), `color: red;` and
+  the keyword list stayed inside the A/A and the whole file moved −0.8%. Not built; the
+  probe was a dist edit, no branch kept.
 
 ## Parked
 
