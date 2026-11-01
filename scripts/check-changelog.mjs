@@ -29,7 +29,9 @@
  *         inputs that decide `dist/`, plus the package.json fields a consumer receives.
  *         A version-stamp-only change to `src/version.ts` is not a change.
  *      6. package.json's version never goes DOWN against the base. A pull request may
- *         raise it to declare a minor or a major; it never has to.
+ *         raise it to declare a minor or a major; it never has to. A raised version is
+ *         stable and is the next patch, minor or major of the latest release (the newest
+ *         stable `v*` tag), or that release itself (a `sync` PR).
  *
  *    Everything else — tests, benches, examples, fixtures, scripts, docs, notes, CI
  *    config, lockfile — is exempt, because none of it can change what a consumer
@@ -528,6 +530,50 @@ if (headPv !== null && basePv !== null && compareVersions(headPv, basePv) < 0) {
     )
   }
   console.log(`⚠ VERSION GOES DOWN (${baseVersion} → ${version}) — waived by \`release-exempt\`.`)
+}
+
+// A version this PR raises is published the moment it merges, as `latest`, and npm never
+// takes a number back. So it must be one the publish will actually use: stable, and the
+// next patch, minor or major of the latest release, or that release itself (`sync`
+// catching main up). The latest release is the newest stable `v*` tag (CI checks out
+// with `fetch-depth: 0`), or the base's version when it is higher. A version between the
+// base and the latest release would be ignored by the publish, which ships the next patch
+// and leaves this PR's entries under a heading that names an older, different release.
+// No hatch: `release-exempt` covers a version going DOWN, not this.
+if (headPv !== null && basePv !== null && compareVersions(headPv, basePv) > 0) {
+  if (headPv.pre !== null) {
+    fail(
+      `package.json declares the prerelease ${version}.\n` +
+        '  Merging publishes, and publish-on-merge releases stable versions only: the publish would\n' +
+        '  refuse it and stop every release after it. Publish a prerelease by hand instead.',
+    )
+  }
+  const stable = git('tag', '--list', 'v*').split('\n').map((t) => parseVersion(t)).filter((v) => v !== null && v.pre === null)
+  if (basePv.pre === null) stable.push(basePv)
+  const latest = stable.sort((a, b) => compareVersions(b, a))[0]
+  if (latest !== undefined) {
+    const steps = [
+      `${latest.major}.${latest.minor}.${latest.patch + 1}`,
+      `${latest.major}.${latest.minor + 1}.0`,
+      `${latest.major + 1}.0.0`,
+    ]
+    if (compareVersions(headPv, latest) < 0) {
+      fail(
+        `package.json declares ${version}, but ${latest.raw} is already released.\n` +
+          `  The publish would ignore it and ship ${steps[0]}, with this PR's entries under a "## ${version}"\n` +
+          '  heading that names an older release. Declare the next minor or major instead\n' +
+          `  (${steps.slice(1).join(' or ')}), or leave the version alone and file under "## ${UNRELEASED}".`,
+      )
+    }
+    if (compareVersions(headPv, latest) > 0 && !steps.includes(headPv.raw)) {
+      fail(
+        `package.json declares ${version}, which skips past the next release of ${latest.raw}.\n` +
+          `  Merging publishes it as \`latest\` at once, and npm never takes a version back. Declare\n` +
+          `  ${steps.join(', ')}, or leave the version alone and file under "## ${UNRELEASED}".`,
+      )
+    }
+    console.log(`✓ declares ${version} against the latest release ${latest.raw}.`)
+  }
 }
 
 // `src/version.ts` changing only its PARSEMAN_VERSION literal is the version moving,
