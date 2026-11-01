@@ -31,10 +31,11 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // document trivia an unlabelled scanner.
 // Bumped +46B to 59,793B: a labelled trivia spec carries the slots the table
 // engines' root-selection fast path primes (`table/trivia-gap.ts`).
-// Bumped +645B to 60,438B: the regex first-set analyzer and the class and literal
+// Bumped +796B to 60,589B: the regex first-set analyzer and the class and literal
 // readers decode `\u{…}`, `\cX`, `\p{…}`, `\k<…>` and legacy octal escapes instead
-// of reading them as letters, and `/i` widens a set that reaches 128.
-const BASELINE_RAW_BYTES = 60_438
+// of reading them as letters, and `/i` widens a set that reaches 128 unless it
+// already holds every code unit from 128 up.
+const BASELINE_RAW_BYTES = 60_589
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([
