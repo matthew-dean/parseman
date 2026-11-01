@@ -83,8 +83,9 @@ already shipped. Neither causes harm:
 - the version rule reads npm and the tags, so a trailing `package.json` still yields
   the next patch;
 - each stamp reads the previous tag's CHANGELOG, copies in the release sections `main`
-  lacks, and takes a released section's copy where it holds everything `main`'s does and
-  more (the stamp folded Unreleased entries into it). It removes from the section being
+  lacks, and takes a released section's copy where it differs from `main`'s and every
+  entry in `main`'s shipped under some release (the stamp folded Unreleased entries in,
+  or left one an earlier auto-patch shipped under that release). It removes from the section being
   released what the previous release took off `main`: the entries pending at the commit
   that release was stamped from, by occurrence, less any `main` already files under that
   release. Every tag's CHANGELOG lists each change once, under the release that shipped
