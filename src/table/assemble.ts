@@ -1937,6 +1937,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const cls = table.armCls[i] ?? null
             if (cls === null || cls.ascii[c] === 1) { count++; arm = i }
           }
+          if (LC_DEBUG !== undefined && n >= 10 && c >= 32 && c < 127) {
+            const arms: number[] = []
+            for (let i = 0; i < n; i++) { const cls = table.armCls[i] ?? null; if (cls === null || cls.ascii[c] === 1) arms.push(i) }
+            console.error(`lc-choice ${ip} n=${n} '${String.fromCharCode(c)}' arms=${arms.join(',')}`)
+          }
           if (count !== 1) break
           const armIp = code[ip + 4 + arm]!
           if (n === 2 || n === 3) {
