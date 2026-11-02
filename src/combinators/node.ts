@@ -7,6 +7,8 @@ import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { annotateSpanFromLineContext } from '../line-index.ts'
 import { NODE_TAG, NODE_TYPE } from '../cst/reflection-symbols.ts'
+import { PlainNode, PlainSpan } from '../cst/plain.js'
+import { copySpan } from '../line-index.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
@@ -331,7 +333,7 @@ export function node<N>(
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build
               ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, st, tags)
-              : { _tag: 'node', type: nodeType, span: ctx.trackLines ? { ...span } : { start: r.span.start, end: r.span.end }, state: st ?? null, children }
+              : new PlainNode(nodeType, ctx.trackLines ? copySpan(span) : new PlainSpan(r.span.start, r.span.end), st ?? null, [...children])
       const rawEntry = isCstChild(built)
         ? built
         // A direct semantic object is opaque to the raw CST, but its source is

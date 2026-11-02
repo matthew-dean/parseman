@@ -1,6 +1,6 @@
 import type { ParseContext, Span } from '../types.ts'
-import { annotateSpanFromLineContext } from '../line-index.ts'
-import { PlainBuf } from './plain.js'
+import { annotateSpanFromLineContext, lineSpanFromContext } from '../line-index.ts'
+import { PlainBuf, PlainLeaf } from './plain.js'
 
 /** Lazy per-node capture state — arrays materialized on first push. */
 export type CstCaptureBuf = {
@@ -80,14 +80,21 @@ export function endCstNodeCapture(
   return materialized
 }
 
+/** Every caller passes a leaf `{ _tag, value, span }` (parseman's own terminals; this is not public API). */
+function isLeaf(v: unknown): v is { _tag: 'leaf'; value: unknown; span: Span } {
+  return typeof v === 'object' && v !== null && (v as { _tag?: unknown })._tag === 'leaf'
+}
+
 export function pushCstLeaf(ctx: ParseContext, leaf: unknown): void {
   if (!ctx.trackLines) {
     pushCstChild(ctx, leaf, leaf)
     return
   }
-  const annotated = leaf && typeof leaf === 'object' && (leaf as { span?: unknown }).span
-    ? { ...(leaf as Record<string, unknown>), span: annotateSpanFromLineContext((leaf as { span: Span }).span, ctx) }
-    : leaf
+  const annotated = isLeaf(leaf)
+    ? new PlainLeaf(leaf.value, lineSpanFromContext(leaf.span, ctx))
+    : leaf && typeof leaf === 'object' && (leaf as { span?: unknown }).span
+      ? { ...(leaf as Record<string, unknown>), span: annotateSpanFromLineContext((leaf as { span: Span }).span, ctx) }
+      : leaf
   pushCstChild(ctx, annotated, annotated)
 }
 

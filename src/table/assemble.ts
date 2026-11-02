@@ -3958,7 +3958,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           } else if (host !== undefined) {
             nd = host(type, hostKids, fieldMap, span, rawKids, tlog, st, tags)
           } else {
-            nd = new PlainNode(type, span, st ?? null, kids)
+            nd = new PlainNode(type, span, st ?? null, kids === EMPTY_CH ? kids : [...kids])
           }
           // A ROOT NODE IS NOT A CHILD. `node()` pushes only when it was entered
           // from an enclosing collector — `saved.buf !== undefined || saved.ch !==

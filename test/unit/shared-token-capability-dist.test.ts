@@ -11,7 +11,7 @@ const esmLeaf = resolve(ROOT, 'dist/compiler/token-capability.js')
 const plainLeaf = resolve(ROOT, 'dist/cst/plain.js')
 const treeEntries = new Set([
   'dist/index', 'dist/plugin/index', 'dist/table/index', 'dist/analysis/diagnostics', 'dist/cli/index',
-  'dist/run/index', 'dist/language-service/index',
+  'dist/run/index', 'dist/spec/index', 'dist/language-service/index',
 ])
 const withPlain = (entry: string, ...paths: string[]): Set<string> =>
   new Set(treeEntries.has(entry) ? [...paths, plainLeaf] : paths)

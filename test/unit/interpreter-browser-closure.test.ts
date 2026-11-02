@@ -41,7 +41,10 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // tests and in intersections (`rangesHaveLead`, `leadRanges`, `implicitLeadsDropped`).
 // Bumped +367B to 62,290B: the interpreter's terminals build their CST leaves and spans
 // with the shared tree-object constructors (`src/cst/plain.js`), which V8 cannot pretenure.
-const BASELINE_RAW_BYTES = 62_290
+// Bumped +726B to 63,016B: the interpreter's default CST nodes, routed leaves, trivia field
+// captures and line-tracked spans are constructor-built too, and a default node keeps a
+// spread copy of its children.
+const BASELINE_RAW_BYTES = 63_016
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

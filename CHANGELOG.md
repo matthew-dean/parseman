@@ -3,25 +3,28 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.59.0 — 2026-11-02
 
 - **Tree objects are built by constructors, so V8 cannot pretenure them.** V8 decides per
   object-literal allocation site whether to allocate straight into old space, from where
   scavenges happen to fall during warm-up. Identical processes split into a fast and a slow
   mode (on Node 26, 1 against up to 61 mark-compacts per run), and any change in bundle
   layout re-rolls it.
-  - Leaves, spans, default nodes, field captures and CST capture buffers are now built by
-    `new` calls (`src/cst/plain.js`), which have no allocation site. Their prototype is
+  - Leaves, spans (line-tracked spans too), default nodes, CST-host nodes, field captures and
+    CST capture buffers are now built by `new` calls (`src/cst/plain.js`), which have no
+    allocation site. A default node keeps a spread copy of its children rather than the
+    capture buffer's array literal. Their prototype is
     `Object.prototype`: each is still a plain object with the same keys in the same order,
     and every tree is byte-identical.
   - The constructors exist once per process. The build emits `dist/cst/plain.js` and every
     entry that builds trees imports it: a copy per bundle would give one shape two hidden
     classes, and a process that loads `parseman` and `parseman/table` would read both.
-  - **Artifacts.** The emitted engine receives the constructors as five new trailing factory
-    parameters. An artifact printed by an earlier version runs on this runtime (it ignores
-    them). An artifact printed by this version needs this runtime or later: on an older one
-    its first parse throws `_SP is not a constructor`. A consumer that rebuilds its
-    macro-compiled parsers on this version must require this version or later.
+  - **Artifacts built by 0.59.0 need runtime ≥0.59.0.** The emitted engine receives the
+    constructors as five new trailing factory parameters. An artifact printed by an earlier
+    version runs on this runtime (it ignores them). An artifact printed by 0.59.0 refuses an
+    older runtime when its assembly is built, with "this parser was printed by parseman
+    0.59.0; upgrade the parseman runtime". A consumer that rebuilds its macro-compiled
+    parsers on 0.59.0 must depend on `parseman@^0.59.0`.
   - **For grammar authors.** A reducer that builds the nodes a parse keeps with an object
     literal is pretenured or not per process in the same way. Build them with a constructor
     whose `prototype` is `Object.prototype` (see `examples/css/css-node.js`), and copy the

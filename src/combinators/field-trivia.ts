@@ -1,4 +1,5 @@
 import type { Combinator } from '../types.ts'
+import { PlainSpan, PlainTriviaField } from '../cst/plain.js'
 
 /**
  * Where the trivia before a `field(…, { leadingTrivia: true })` began.
@@ -29,13 +30,13 @@ export const FIELD_TRAILING_TRIVIA = 2
 export function triviaFieldCapture(
   name: string, value: unknown, input: string, start: number, end: number, leadFrom: number, trailEnd: number,
 ): { name: string; value: unknown; span: { start: number; end: number }; leading: string; trailing: string } {
-  return {
+  return new PlainTriviaField(
     name,
     value,
-    span: { start, end },
-    leading: leadFrom >= 0 && leadFrom < start ? input.slice(leadFrom, start) : '',
-    trailing: trailEnd > end ? input.slice(end, trailEnd) : '',
-  }
+    new PlainSpan(start, end),
+    leadFrom >= 0 && leadFrom < start ? input.slice(leadFrom, start) : '',
+    trailEnd > end ? input.slice(end, trailEnd) : '',
+  )
 }
 
 /** Is `p` a `field(…, { leadingTrivia: true })` — the term itself, not wrapped? */

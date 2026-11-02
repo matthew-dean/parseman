@@ -1,4 +1,5 @@
 import type { Span } from './types.ts'
+import { PlainLineSpan, PlainSpan } from './cst/plain.js'
 
 /**
  * Precomputed index of newline positions for O(log n) offset->line/col lookup.
@@ -96,6 +97,27 @@ export function annotateSpan(span: Span, index: LineIndex): Span {
     endLine: e.line,
     endColumn: e.col,
   }
+}
+
+/** A copy of a span, line fields included when it has them, built by its constructor. */
+export function copySpan(span: Span): Span {
+  return span.startLine === undefined || span.startColumn === undefined || span.endLine === undefined || span.endColumn === undefined
+    ? new PlainSpan(span.start, span.end)
+    : new PlainLineSpan(span.start, span.end, span.startLine, span.startColumn, span.endLine, span.endColumn)
+}
+
+/**
+ * `annotateSpanFromLineContext` for a span parseman built itself (`{ start, end }` only),
+ * returning a constructor-built line span (`src/cst/plain.d.ts`). The public form keeps
+ * any extra keys a caller's span carries, so it spreads.
+ */
+export function lineSpanFromContext(span: Span, ctx: LineTrackingContext): Span {
+  if (!ctx.trackLines) return span
+  const index = ctx._lineIndex ?? (ctx._lineStarts ? { lineStarts: ctx._lineStarts } : undefined)
+  if (!index) return span
+  const s = offsetToLineCol(index, span.start)
+  const e = offsetToLineCol(index, span.end)
+  return new PlainLineSpan(span.start, span.end, s.line, s.col, e.line, e.col)
 }
 
 export function annotateSpanFromLineContext(
