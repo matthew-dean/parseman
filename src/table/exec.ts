@@ -1072,7 +1072,9 @@ function makeDriver(
         const armFx = base + n
         for (let i = 0; i < n; i++) {
           const cls = armCls[i]
-          if (cls !== undefined && cls !== null && !classHas(cls, c)) {
+          // Under a completion probe every arm is entered, as the interpreter's
+          // `firstMatch` enters it: its opener then reaches the probe (`failAt`).
+          if (ctx._probe === undefined && cls !== undefined && cls !== null && !classHas(cls, c)) {
             if (COUNT) tableCounters.armGateSkips++
             // THE GATED ARM STILL REPORTS. The interpreter has no char gate: it
             // enters the arm, the arm's opener fails, and its static set is what

@@ -315,6 +315,13 @@ const REGISTRY = [
       { defect: 'routed-gate-unknown-trivia', expect: 'moves' },
       { defect: 'routed-fallback-one-scope', expect: 'moves' },
       { defect: 'regex-letter-escape-literal', expect: 'moves' },
+      { defect: 'choice-widened-exclusive', expect: 'moves' },
+      { defect: 'sep-sentinel-no-trivia', expect: 'moves' },
+      { defect: 'probe-gated-arm-exec', expect: 'moves' },
+      { defect: 'probe-gated-arm-closure', expect: 'moves' },
+      { defect: 'probe-gated-arm-emitted', expect: 'moves' },
+      { defect: 'lex-choice-probe-miss', expect: 'moves' },
+      { defect: 'lex-fixed-probe-miss', expect: 'moves' },
     ],
   },
   {

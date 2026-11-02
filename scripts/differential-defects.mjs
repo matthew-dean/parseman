@@ -330,8 +330,71 @@ export const DEFECTS = {
     why: 'encoder: a choice the interpreter dispatches on construction-time sets is classed by its derived sets',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'd.disjoint && !factoredChoices.has(p))',
-      replace: 'false)',
+      find: 'const constructionSets = d.disjoint && !factoredChoices.has(p)\n',
+      replace: 'const constructionSets = false\n',
+    }],
+  },
+
+  'choice-widened-exclusive': {
+    why: 'encoder: a reference arm\'s class widened by its installed trivia can make an ordered choice dispatch exclusively',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '        if (wideArms.length > 0 && dispatchIsExclusive(classes, this.cc)) {\n          for (const i of wideArms) classes[i] = -1\n        }\n',
+      replace: '',
+    }],
+  },
+
+  'sep-sentinel-no-trivia': {
+    why: 'encoder: a tolerant list\'s separator sentinel is derived with no trivia, though the interpreter parses the separator under the live trivia',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia, false)),',
+      replace: 'this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), undefined, false)),',
+    }],
+  },
+
+  'probe-gated-arm-exec': {
+    why: 'reference driver: under a completion probe an ordered choice skips an arm its class excludes, so the arm\'s opener never reaches the probe',
+    edits: [{
+      file: 'src/table/exec.ts',
+      find: 'if (ctx._probe === undefined && cls !== undefined && cls !== null && !classHas(cls, c)) {',
+      replace: 'if (cls !== undefined && cls !== null && !classHas(cls, c)) {',
+    }],
+  },
+
+  'probe-gated-arm-closure': {
+    why: 'closure engine: a probe assembly gates an ordered choice\'s arms on their classes',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'const armCls = cfg.probe ? table.armCls.map(() => null) : table.armCls',
+      replace: 'const armCls = table.armCls',
+    }],
+  },
+
+  'probe-gated-arm-emitted': {
+    why: 'emitted engine: a probe assembly gates an ordered choice\'s arms on their classes',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: '        if (cfg.probe) {\n          // A probe assembly enters every arm in source order',
+      replace: '        if (cfg.probe && n < 0) {\n          // A probe assembly enters every arm in source order',
+    }],
+  },
+
+  'lex-choice-probe-miss': {
+    why: 'lexical program: an ordered lexical choice no arm\'s class admits leaves nothing for a completion probe',
+    edits: [{
+      file: 'src/table/lex-program.ts',
+      find: '    if (!entered && ctx._probe !== undefined) for (const arm of arms) arm.run(input, pos, ctx)\n',
+      replace: '',
+    }],
+  },
+
+  'lex-fixed-probe-miss': {
+    why: 'lexical program: a fixed four-arm lexical choice whose lead class misses leaves nothing for a completion probe',
+    edits: [{
+      file: 'src/table/lex-program.ts',
+      find: '      if (ctx._probe !== undefined) failAt(ctx, [...x0, ...x1, ...x2, ...x3], pos)\n',
+      replace: '',
     }],
   },
 

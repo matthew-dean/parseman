@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, compile, dispatch, label, literal, many, node, noTrivia, oneOrMore, oneOrMoreSep, optional, otherwise, parser, regex, routed, rules, sepBy, sequence, token,
+  attempt, choice, compile, completionsAt, dispatch, keywords, label, literal, many, node, not, noTrivia, oneOrMore, oneOrMoreSep, optional, otherwise, parser, regex, routed, rules, sepBy, sequence, token,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -394,3 +394,56 @@ describe('tolerant recovery resyncs where the interpreter does', () => {
   })
 })
 
+
+/** Every offset's completions through `entry` (a table reader's entry for `rule`), sorted and deduplicated. */
+function completions(rule: Comb, entry: unknown, input: string): string[] {
+  const target = typeof entry === 'function' ? { ...rule, parse: entry as Comb['parse'] } : entry as Comb
+  return Array.from({ length: input.length + 1 }, (_, off) => JSON.stringify([...new Set(completionsAt(target, input, off))].sort()))
+}
+
+describe('a choice the interpreter tries arm by arm keeps every arm\'s failure', () => {
+  it('a reference arm whose class its installed trivia widens does not make the dispatch exclusive', () => {
+    const g = rules({ trivia: comment }, (g: Record<string, Comb>) => ({
+      S: noTrivia(sequence(literal('>'), choice(literal('a'), g.R!, literal('b')), literal(';'))),
+      R: sequence(not(literal('y')), literal('+'), num),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['>/', '>/x;', '>/*c*/+1;', '>+1;', '>a;', '>b;', '>?;', '>/*c*/?;']) {
+        for (const tolerant of [false, true]) {
+          expect(result(entries.S!, input, tolerant), `${name} ${tolerant} ${JSON.stringify(input)}`).toBe(result(g.S!, input, tolerant))
+        }
+        expect(completions(g.S!, entries.S, input), `${name} completions ${JSON.stringify(input)}`).toEqual(completions(g.S!, g.S, input))
+      }
+    }
+  })
+
+  it('under a completion probe, an ordered choice enters an arm its class excludes', () => {
+    const g = rules(() => ({
+      S: sequence(literal('>'), choice(literal('ab'), literal('ac'), literal('b')), literal(';')),
+      T: sequence(literal('>'), token(choice(literal('$.'), sequence(literal('$^'), word), sequence(literal('$'), word))), literal(';')),
+      U: sequence(literal('>'), token(choice(
+        keywords(['@media']), keywords(['@supports']), keywords(['@layer']), regex(/@(?:-[a-z]+-)?keyframes/),
+      )), literal(';')),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const rule of ['S', 'T', 'U'] as const) {
+        for (const input of ['>ax', '>a', '>b;', '>x', '>$', '>$1', '>', '>!', '>@foo']) {
+          expect(completions(g[rule]!, entries[rule], input), `${name} ${rule} ${JSON.stringify(input)}`).toEqual(completions(g[rule]!, g[rule], input))
+        }
+      }
+    }
+  })
+})
+
+describe('a tolerant list resyncs on its separator under the trivia live there', () => {
+  it('a separator with an optional lead, in a comment map', () => {
+    const g = rules({ trivia: comment }, () => ({
+      S: sequence(literal('['), sepBy(regex(/[a-z0-9]+/), sequence(optional(literal(' ')), literal(','))), literal(']')),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['[/*c*//*c*/,,?and', '[/*c*/,,?', '[,,?', '[/*c*/,?', '[a/*c*/,,!;>/*c*/,,]', '[a,,]', '[a/*c*/,,]', '[a,/*c*/,]']) {
+        expect(result(entries.S!, input, true), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, true))
+      }
+    }
+  })
+})

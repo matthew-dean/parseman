@@ -386,7 +386,8 @@ class Encoder {
               node.parsers, this.refResolver(), node.cleared ? null : this.gateTrivia(), false, node.disjoint,
             )
             const classes = final.firstSets.map((first, i) => final.nullable[i] ? -1 : this.charClass(first))
-            const exclusive = final.exclusive && classes.every(cls => cls >= 0)
+            const exclusive = final.exclusive && classes.every(cls => cls >= 0) &&
+              this.wideArms(node.parsers, final.firstSets, node.disjoint, node.cleared ? null : this.gateTrivia(), node.cleared ? undefined : this.activeTrivia).length === 0
             words.push(LEX_NODE_CHOICE, node.arms.length, exclusive ? 1 : 0, this.expected(node.expected))
             for (let i = 0; i < node.arms.length; i++) {
               words.push(classes[i]!, this.expected(node.armExpected[i]!))
@@ -934,6 +935,26 @@ class Encoder {
    * `{`, `Call` at `}`). The resolved set is the one a choice arm's gate uses,
    * over the final merged map.
    */
+  /**
+   * The arms whose first set under `gateTrivia()` is wider than under the
+   * active trivia alone — a reference's installed trivia read through from a
+   * region with none. Empty for construction-set (disjoint) choices, whose
+   * sets do not depend on trivia.
+   */
+  private wideArms(
+    arms: readonly Combinator<unknown>[], wide: readonly FirstSet[], constructionSets: boolean,
+    wideTrivia: Combinator<unknown> | null | undefined = this.gateTrivia(),
+    base: Combinator<unknown> | undefined = this.activeTrivia,
+  ): number[] {
+    if (constructionSets || wideTrivia === base) return []
+    const narrow = classifyFinalChoice(arms, this.refResolver(), base, false, false).firstSets
+    const out: number[] = []
+    for (let i = 0; i < arms.length; i++) {
+      if (this.charClass(wide[i]!) !== this.charClass(narrow[i]!)) out.push(i)
+    }
+    return out
+  }
+
   private gateFirstSet(p: Combinator<unknown>, guarded: boolean, narrowed: boolean): FirstSet {
     const cached = p._meta.firstSet
     if (p._def.tag !== 'lazy' && cached.kind !== 'any') return cached
@@ -1620,10 +1641,11 @@ class Encoder {
         // change rather than a reordering.
         // The arms' classes let in what the interpreter's `choice()` lets in. A
         // disjoint one dispatches on its arms' construction-time sets (no trivia,
-        // a nullable pad as `any`), and the table reads those same sets; any
-        // other tries each arm, and the table's classes are the arms' derived
-        // sets under the trivia that runs there, a nullable pad as `any`.
-        const finalChoice = classifyFinalChoice(arms, rr, this.gateTrivia(), false, d.disjoint && !factoredChoices.has(p))
+        // a nullable pad as `any`), and the table reads those same sets. Any other
+        // tries each arm under the trivia that runs there; see `wideArms` below.
+        const constructionSets = d.disjoint && !factoredChoices.has(p)
+        const finalChoice = classifyFinalChoice(arms, rr, this.gateTrivia(), false, constructionSets)
+        const wideArms = this.wideArms(arms, finalChoice.firstSets, constructionSets)
         // attempt() preserves its child's success language, but the broad
         // classifier deliberately treats the transaction as nullable/unknown so
         // it can never by itself authorize exclusive one-arm selection. Recover
@@ -1658,6 +1680,13 @@ class Encoder {
         // ordered site leaves the decision to `OP_ARMGATE`. An exclusive site keeps
         // its classes: there the dispatched arm's gate failing IS the choice
         // failing, with that arm's set, as in the interpreter's disjoint path.
+        // A class widened by a reference's installed trivia can make arms look
+        // disjoint where the interpreter still tries each one and merges their
+        // failures at the choice position. Such a site stays ordered: the widened
+        // arm is always entered, so the arms beside it keep their opener sets.
+        if (wideArms.length > 0 && dispatchIsExclusive(classes, this.cc)) {
+          for (const i of wideArms) classes[i] = -1
+        }
         if (d.gates.some(g => g !== null && g !== undefined) && !dispatchIsExclusive(classes, this.cc)) {
           for (let k = 0; k < classes.length; k++) {
             const gate = d.gates[order[k]!]
@@ -1751,7 +1780,9 @@ class Encoder {
           const ops = [
             child, d.min, d.max ?? -1, sep, flags,
             this.expected(deriveExpected(d.parser)),
-            this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), undefined, false)),
+            // As 0.58.0: the interpreter resyncs on the separator itself
+            // (`orSentinel`), which runs under the live trivia.
+            this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia, false)),
           ]
           if (gate >= 0) ops.push(gate)
           return this.emit(OP_REP, ...ops)

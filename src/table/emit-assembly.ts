@@ -1947,6 +1947,28 @@ return FAIL
 }`
         }
 
+        if (cfg.probe) {
+          // A probe assembly enters every arm in source order, as the
+          // interpreter's `firstMatch` does, so each opener reaches `failAt`.
+          const p = tmp()
+          return `${head}
+${emitMark(p, L.buf, L.raw, sinks)}
+let acc
+let best=pos
+${arms.map(arm => `{ctx._fc=false
+const v=${arm}(input,pos,ctx)
+if(v!==FAIL)return v
+const at=ctx._fe??pos
+if(at>best){best=at;acc=undefined}
+if(at===best)acc=_accSet(ctx._fx,acc)
+if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
+${emitRollback(p, L.buf, L.raw, sinks)}
+}`).join('\n')}
+ctx._fe=pos;ctx._fx=acc??${choiceFx}
+return FAIL
+}`
+        }
+
         {
           // Direct topology for every fixed arity. The emitted body names every
           // child, gate and expected set; no AFX/CLS row survives merely to feed

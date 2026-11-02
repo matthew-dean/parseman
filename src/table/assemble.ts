@@ -3052,8 +3052,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         // THE PER-ARM GATE. Arms in source order, each skipped when its own class
         // excludes the char at `pos`. `null` means nullable or unmappable, and
-        // those arms are always entered.
-        const armCls = table.armCls
+        // those arms are always entered. A probe assembly enters every arm, as
+        // the interpreter's `firstMatch` does, so each opener reaches `failAt`.
+        const armCls = cfg.probe ? table.armCls.map(() => null) : table.armCls
         if (n === 2 || n === 3) {
           const a0 = link(code[base]!), a1 = link(code[base + 1]!)
           const a2 = n === 3 ? link(code[base + 2]!) : undefined

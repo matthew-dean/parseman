@@ -187,7 +187,7 @@ function sequence5(
 
 type ChoiceTail = (
   input: string, pos: number, ctx: ParseContext, lead: number,
-  acc: string[] | undefined, best: number,
+  acc: string[] | undefined, best: number, entered: boolean,
 ) => number
 
 function appendExpected(acc: string[] | undefined, values: readonly string[] | undefined): string[] | undefined {
@@ -211,19 +211,22 @@ function choiceNode(
       return end < 0 ? next(input, pos) : end
     }
   }
-  let tail: ChoiceTail = (_input, pos, ctx, _lead, acc) => {
+  let tail: ChoiceTail = (input, pos, ctx, _lead, acc, _best, entered) => {
+    // No arm was entered. A completion probe still sees each one fail on its
+    // opener, as the interpreter's entered arms leave it.
+    if (!entered && ctx._probe !== undefined) for (const arm of arms) arm.run(input, pos, ctx)
     ctx._fe = pos
     ctx._fx = acc ?? choiceExpected as string[]
     return -1
   }
   for (let i = arms.length - 1; i >= 0; i--) {
     const armRun = arms[i]!.run, cls = classes[i], staticExpected = armExpected[i]!, next = tail
-    tail = (input, pos, ctx, lead, acc, best) => {
+    tail = (input, pos, ctx, lead, acc, best, entered) => {
       if (cls !== undefined && !classHas(cls, lead)) {
         return next(
           input, pos, ctx, lead,
           best === pos ? appendExpected(acc, staticExpected) : acc,
-          best,
+          best, entered,
         )
       }
       ctx._fc = false
@@ -236,13 +239,13 @@ function choiceNode(
         if (nextAcc !== undefined) ctx._fx = nextAcc
         return -1
       }
-      return next(input, pos, ctx, lead, nextAcc, best)
+      return next(input, pos, ctx, lead, nextAcc, best, true)
     }
   }
   return {
     match: matchTail,
     run: (input, pos, ctx) => tail(
-      input, pos, ctx, pos < input.length ? input.codePointAt(pos)! : -1, undefined, pos,
+      input, pos, ctx, pos < input.length ? input.codePointAt(pos)! : -1, undefined, pos, false,
     ),
   }
 }
@@ -547,6 +550,9 @@ export function buildLexProgramRunner(
     if (!classHas(cls, lead)) {
       ctx._fe = pos
       ctx._fx = choiceFx.slice()
+      // Each arm fails here; under a probe their openers are recorded as the
+      // interpreter's entered arms record them.
+      if (ctx._probe !== undefined) failAt(ctx, [...x0, ...x1, ...x2, ...x3], pos)
       return -1
     }
     let acc: string[] | undefined
