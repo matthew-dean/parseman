@@ -59,7 +59,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { materialise, previousRelease, git, fail, sign, sameSource, summary } from './ab-harness.ts'
-import { aggregateSeed, caseVerdict, mergeShards, nodeMajor, verdictModeArgErrors, type Shard, type VerdictSettings } from './xproc-stats.ts'
+import { aggregateSeed, caseVerdict, mergeShards, missingOperandFlags, nodeMajor, verdictModeArgErrors, type Shard, type VerdictSettings } from './xproc-stats.ts'
 
 const GATE = 'xproc-gate'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -102,11 +102,7 @@ const PEAK_CONFIG = (JSON.parse(readFileSync(path.join(HERE, 'workloads', 'confi
 }).peak
 const SHARD_OUT = argValue('--shard-out')
 const AGGREGATE = argValue('--aggregate')
-// A mode flag without its operand must not fall back to a plain local run that writes
-// no shard or gives no verdict.
-for (const flag of ['--shard-out', '--aggregate', '--expect-shards']) {
-  if (process.argv.includes(flag) || argValue(flag) === '') fail(GATE, `${flag} needs a value: ${flag}=<...>`)
-}
+for (const flag of missingOperandFlags(process.argv.slice(2))) fail(GATE, `${flag} needs a value: ${flag}=<...>`)
 if (SHARD_OUT !== null || AGGREGATE !== null) {
   const forbidden = verdictModeArgErrors(process.argv.slice(2))
   if (forbidden.length > 0) {

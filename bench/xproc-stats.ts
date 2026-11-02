@@ -194,3 +194,13 @@ export const VERDICT_MODE_FORBIDDEN = ['--rounds', '--case', '--suite', '--repor
 export function verdictModeArgErrors(argv: readonly string[]): string[] {
   return VERDICT_MODE_FORBIDDEN.filter(flag => argv.some(a => a === flag || a.startsWith(`${flag}=`)))
 }
+
+/**
+ * Mode flags given without their operand. A bare `--shard-out` or `--aggregate` must
+ * fail, not fall back to a plain local run that writes no shard or gives no verdict.
+ */
+export const OPERAND_FLAGS = ['--shard-out', '--aggregate', '--expect-shards'] as const
+
+export function missingOperandFlags(argv: readonly string[]): string[] {
+  return OPERAND_FLAGS.filter(flag => argv.some(a => a === flag || a === `${flag}=`))
+}

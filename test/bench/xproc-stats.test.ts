@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, signTestP, verdictModeArgErrors, type VerdictSettings } from '../../bench/xproc-stats.ts'
+import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, missingOperandFlags, signTestP, verdictModeArgErrors, type VerdictSettings } from '../../bench/xproc-stats.ts'
 
 /** Deterministic generator for the tests (mulberry32, as the gate uses). */
 function seeded(seed: number): () => number {
@@ -234,4 +234,23 @@ describe('the committed node major is the one CI pins', () => {
     const pins = [...jobs.matchAll(/node-version: (\S+)/g)].map(m => m[1])
     expect(pins).toEqual([String(config.node), String(config.node)])
   })
+})
+
+describe('mode flags need their operand', () => {
+  it('names a bare or empty --shard-out, --aggregate or --expect-shards', () => {
+    expect(missingOperandFlags(['--shard-out=x.json', '--aggregate=d', '--expect-shards=20', '--peak'])).toEqual([])
+    expect(missingOperandFlags(['--shard-out'])).toEqual(['--shard-out'])
+    expect(missingOperandFlags(['--aggregate=', '--expect-shards'])).toEqual(['--aggregate', '--expect-shards'])
+  })
+
+  it('makes the gate exit before measuring', async () => {
+    const { spawnSync } = await import('node:child_process')
+    const { fileURLToPath } = await import('node:url')
+    const gate = fileURLToPath(new URL('../../bench/xproc-gate.ts', import.meta.url))
+    for (const flag of ['--shard-out', '--aggregate']) {
+      const r = spawnSync(process.execPath, ['--import', 'tsx/esm', gate, flag], { encoding: 'utf8', timeout: 60_000 })
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain(`${flag} needs a value`)
+    }
+  }, 120_000)
 })
