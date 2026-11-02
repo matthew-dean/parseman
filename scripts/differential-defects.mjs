@@ -50,8 +50,8 @@ export const DEFECTS = {
     why: 'emitted table engine: every node span starts one byte late',
     edits: [{
       file: 'src/table/emit-assembly.ts',
-      find: "const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}",
-      replace: "const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos+1,end}'}",
+      find: "const span=${tracked ? 'spanLines(ctx,pos,end)' : 'new _SP(pos,end)'}",
+      replace: "const span=${tracked ? 'spanLines(ctx,pos,end)' : 'new _SP(pos+1,end)'}",
     }],
   },
 

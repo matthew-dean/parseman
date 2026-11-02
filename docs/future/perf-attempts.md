@@ -172,6 +172,35 @@ and −7.5% `--jitless`, SCSS −1.8% and −2.9%, `.jess` +0.4% (inside spread)
 Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 `perf/loop-followups` and `perf/gap-handoff`. The CHANGELOG's 0.59.0 section is open.
 
+- **Constructor-built tree objects (Node 26 pretenuring flip).** V8 pretenures object
+  literals per allocation site, decided during warm-up from where scavenges fall, so
+  identical processes split into a fast and a slow mode and any bundle-layout change
+  re-rolls it. Leaves, spans, default nodes, field captures and capture buffers are now
+  built by `new` calls (`src/cst/plain.js`), which have no allocation site, and the bench
+  fixtures' node builders do the same. With dead code of 0–15,000 bytes appended to
+  `dist/index.js`, every process of the gate cases and of four runtime-kept trees (a CST
+  host, builder-less default nodes with and without line tracking, a builder that keeps
+  its span) ran in the fast mode on Node 24 and 26 (1–2 mark-compacts, against up to 61).
+  JIT marginal instructions against a slow-mode main: `css/stylesheet` −31% (Node 24) and
+  −34% (Node 26), `expected/narrow` −14% / −37%, `rollback/medium` −11% / −32%. Against
+  main's fast mode, `rollback/medium` on Node 26 reads about +4% (12.36M → 12.84M): a tree
+  that is never pretenured is copied by the scavenger. `--jitless` reads +1% to +5%: an
+  interpreter cannot see the mechanism.
+  The constructors must exist ONCE per process. A first build bundled a copy into each
+  entry, so a process that loads `parseman` and `parseman/table` (Jess) built every shape
+  under two maps; Jess's SCSS parse ran +3.1% (Node 24) and +6.7% (Node 26) from the
+  polymorphic reads. The build now emits `dist/cst/plain.js` once and every entry
+  imports it; that SCSS row reads −0.3% on both. Investigation in
+  [#224](https://github.com/matthew-dean/parseman/pull/224).
+- **Watched literal sites (not converted).** These are still object literals, and none splits
+  a process today. A tree does not keep them, or they are rare:
+  - field-map entries (`src/compiler/fields.ts` `buildFieldMap`);
+  - the interpreter's `annotateSpanFromLineContext`;
+  - parse-error objects;
+  - the public `annotateTreeSpans`.
+
+  `pnpm perf:pretenure` would show it if one began to.
+
 - **Nullable-regex first sets.** A `regex()` that may match empty still reports `any`, but
   also carries the first characters of its non-empty matches. A sequence led by an optional
   pad such as `ws* '*' ws*` gets a finite first set, so operator repeats get item classes
@@ -388,21 +417,6 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   through node, scope and sequence in both engines is a large build for that. The largest
   CSS and `.jess` sites are one-character gates that admit too much, which the two-character
   gate family addresses more cheaply. Census on `perf/less-gap`; not built.
-
-- **Constructor-built tree objects, against the Node 26 pretenuring flip.** On Node 26.13
-  the cross-process gate's `css/stylesheet`, `expected/narrow` and `rollback/medium` are
-  bimodal because V8 pretenures the sites that build a parse's tree (the reducer's node
-  literal and Parseman's leaf and span literals) in some processes and not in others. A
-  pretenured process runs 34–61 mark-compacts where the others run 0–2, and is 7–8% slower
-  (`css/stylesheet` 2.33 ms against 2.15 ms, with 108G instructions per process against 96G).
-  JIT tiers and deopts are the same in both modes. Building leaves, spans and the fixture
-  reducers' nodes with constructors put every process in the fast mode: 12 of 12, 8 of 8 and
-  8 of 8. The density cases read the same on Node 24, which rarely pretenures them. Leaves
-  alone, the part Parseman owns, did not: 11 of 12 `css/stylesheet` processes were still
-  pretenured, at 127G instructions against 108G. Reducers alone did not either. Jess's Less
-  parser does not flip on Node 26 (`benchmark.less` and bootstrap, 24 processes each, IQR
-  ≤2.1%). Parked because Parseman cannot fix this alone.
-  [#224](https://github.com/matthew-dean/parseman/pull/224).
 
 - **`.jess` `ExpressionLogical` capture replay.** `and`/`or` in `.jess` are choice arms that
   reparse their left operand up to three times. Fixing it in the engine needs capture
