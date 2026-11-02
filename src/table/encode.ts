@@ -6,7 +6,7 @@ import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union
 import { childrenOf } from '../analysis/gating.ts'
 import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
-import { deriveExpected, gateMissExpected } from '../combinators/expect.ts'
+import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
 import { buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
@@ -1921,14 +1921,15 @@ class Encoder {
         // accepts (the reducer reroutes via `winners`, but this recognizer gate did
         // not). Resolve the ref's gate through `winners`, exactly as the `lazy` case
         // resolves the call. Non-ref bodies keep the cached set (byte-identical).
-        const fs = this.gateFirstSet(d.parser, d.guarded === true, true)
+        // Not narrowed through a nullable pad: a node's gate miss reports a static
+        // set, and only where the body's first set is finite without the pad does
+        // that set match what entering the body reports (a `keywords()` term, a
+        // list's item set, an optional lead are only known by running it).
+        const fs = this.gateFirstSet(d.parser, d.guarded === true, false)
         if (fs.kind === 'any') return body
         const cls = this.charClass(fs)
         if (cls < 0) return body
-        // A guarded node fails as the interpreter's guard does (`node.ts`); an
-        // unguarded one as entering it would, where a pad the gate read through
-        // matches empty and never fails.
-        const e = d.guarded === true ? deriveExpected(d.parser) : gateMissExpected(d.parser)
+        const e = deriveExpected(d.parser)
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
       case 'token': {

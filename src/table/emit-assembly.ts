@@ -1942,7 +1942,8 @@ if(ctx._fc===true)return FAIL
 const af=ctx._fx
 if(af!==undefined&&af.length>0){ctx._fe=pos;return FAIL}
 }
-ctx._fe=pos;ctx._fx=${choiceFx}
+${cfg.probe ? `if(arm<0){${arms.map(a => `${a}(input,pos,ctx)`).join(';')}}
+` : ''}ctx._fe=pos;ctx._fx=${choiceFx}
 return FAIL
 }`
         }

@@ -423,8 +423,12 @@ function firstSetBody(
       }
       // Under a scope KNOWN to have no trivia (`null`), the target runs under the
       // trivia the reference installs for it (`triviaThroughRef`). `undefined`
-      // says nothing about the scope, and the target is read as it stands.
-      return firstSetOf(target, seen, resolve, activeTrivia === null ? triviaThroughRef(p, target, null) : activeTrivia, consuming)
+      // says nothing about the scope, and the target is read as it stands. Only
+      // the table encoder (which always passes `resolve`) reads through the
+      // install; the interpreter's own callers (`sequence.ts` follow sentinels)
+      // read a reference as 0.58.0 did (#223).
+      const through = activeTrivia === null && resolve !== undefined
+      return firstSetOf(target, seen, resolve, through ? triviaThroughRef(p, target, null) : activeTrivia, consuming)
     }
     case 'choice': {
       let out: FirstSet = empty()

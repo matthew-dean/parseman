@@ -290,15 +290,6 @@ export const DEFECTS = {
     }],
   },
 
-  'node-miss-names-pad': {
-    why: 'encoder: a node gate that rejects on its narrowed first set reports the nullable pad, which entering the node never reports',
-    edits: [{
-      file: 'src/table/encode.ts',
-      find: 'const e = d.guarded === true ? deriveExpected(d.parser) : gateMissExpected(d.parser)',
-      replace: 'const e = deriveExpected(d.parser)',
-    }],
-  },
-
   'gate-narrows-unknown-trivia': {
     why: 'encoder: a gate reads a nullable pad through its non-empty matches where the live trivia is not known',
     edits: [{
@@ -398,6 +389,51 @@ export const DEFECTS = {
     }],
   },
 
+  'node-gate-narrowed': {
+    why: 'encoder: a node gate reads its body through a nullable pad, so a miss reports a static set where entering the body reports its own',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, false)\n        if (fs.kind === \'any\') return body',
+      replace: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, true)\n        if (fs.kind === \'any\') return body',
+    }],
+  },
+
+  'follow-sentinel-through-ref': {
+    why: 'first sets: the interpreter\'s follow sentinels read a reference under noTrivia through the trivia it installs',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: 'const through = activeTrivia === null && resolve !== undefined',
+      replace: 'const through = activeTrivia === null',
+    }],
+  },
+
+  'probe-exclusive-miss-exec': {
+    why: 'reference driver: an exclusive dispatch miss under a completions probe runs no arm, so their openers never reach the probe',
+    edits: [{
+      file: 'src/table/exec.ts',
+      find: 'if (arm < 0 && ctx._probe !== undefined) {',
+      replace: 'if (arm < 0 && ctx._probe !== undefined && arm > 0) {',
+    }],
+  },
+
+  'probe-exclusive-miss-closure': {
+    why: 'closure engine: an exclusive dispatch miss under a completions probe runs no arm',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (arm < 0 && probeArms !== undefined) for (const a of probeArms) a(input, pos, ctx)',
+      replace: '',
+    }],
+  },
+
+  'probe-exclusive-miss-emitted': {
+    why: 'emitted engine: an exclusive dispatch miss under a completions probe runs no arm',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: '${cfg.probe ? `if(arm<0){${arms.map(a => `${a}(input,pos,ctx)`).join(\';\')}}',
+      replace: '',
+    }],
+  },
+
   'follow-class-live-trivia': {
     why: 'encoder: a recovery follow class takes the live trivia, which the interpreter\'s follow sentinels do not',
     edits: [{
@@ -438,7 +474,7 @@ export const DEFECTS = {
     why: 'first sets: a reference from a cleared region is read under the caller\'s scope, not the trivia it installs',
     edits: [{
       file: 'src/combinators/first-set.ts',
-      find: 'activeTrivia === null ? triviaThroughRef(p, target, null) : activeTrivia, consuming)',
+      find: 'through ? triviaThroughRef(p, target, null) : activeTrivia, consuming)',
       replace: 'activeTrivia, consuming)',
     }],
   },

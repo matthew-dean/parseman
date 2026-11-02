@@ -2956,7 +2956,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // `arms[]` merely to rediscover the same two or three children at
           // every dispatch. The classifier remains table data; only its result
           // is turned into a direct captured call.
-          if (n === 2) {
+          if (n === 2 && !cfg.probe) {
             const a0 = link(code[base]!), a1 = link(code[base + 1]!)
             return (input, pos, ctx) => {
               const c = lead(input, pos)
@@ -2981,7 +2981,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
           }
-          if (n === 3) {
+          if (n === 3 && !cfg.probe) {
             const a0 = link(code[base]!), a1 = link(code[base + 1]!), a2 = link(code[base + 2]!)
             return (input, pos, ctx) => {
               const c = lead(input, pos)
@@ -3014,6 +3014,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             )
           }
           const selected = bindExclusive(0)
+          // Under a completions probe the interpreter runs every arm on a miss
+          // (`choice.ts`), so each opener reaches the probe.
+          const probeArms = cfg.probe ? Array.from({ length: n }, (_, i) => link(code[base + i]!)) : undefined
           // THERE ARE NO OPEN ARMS HERE, and the piece is written to say so. An
           // ungated arm is one whose class is −1, and `resolveDispatch` clears
           // `exclusive` for exactly those arms (program.ts) — so `table.open` is
@@ -3045,6 +3048,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // THE UNION IS REPORTED ONLY ON A DISPATCH MISS, where the interpreter's
             // `parsers.flatMap` over non-nullable, char-excluded arms yields exactly
             // each arm's own opener — this set, without running the arms.
+            if (arm < 0 && probeArms !== undefined) for (const a of probeArms) a(input, pos, ctx)
             ctx._fe = pos; ctx._fx = choiceFx
             return FAIL
           }

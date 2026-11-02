@@ -443,11 +443,15 @@ describe('a choice the interpreter tries arm by arm keeps every arm\'s failure',
       U: sequence(literal('>'), token(choice(
         keywords(['@media']), keywords(['@supports']), keywords(['@layer']), regex(/@(?:-[a-z]+-)?keyframes/),
       )), literal(';')),
+      // A dispatch miss beside an arm the probe enters: the interpreter runs
+      // every arm on a miss, so each opener is a completion.
+      V: sequence(literal('>'), choice(choice(literal('b'), literal('a')), oneOrMore(literal('a'))), literal('<')),
+      W: sequence(literal('>'), choice(choice(literal('b'), literal('a')), word, literal('c')), literal('<')),
     })) as Record<string, Comb>
     const prog = encodeTable(g)
     for (const [name, entries] of [...readers(prog), ['emitted probe', probeEmitted(prog)] as const]) {
-      for (const rule of ['S', 'T', 'U'] as const) {
-        for (const input of ['>ax', '>a', '>b;', '>x', '>$', '>$1', '>', '>!', '>@foo']) {
+      for (const rule of ['S', 'T', 'U', 'V', 'W'] as const) {
+        for (const input of ['>ax', '>a', '>b;', '>x', '>$', '>$1', '>', '>!', '>@foo', '><', '>c<', '>q<']) {
           expect(completions(g[rule]!, entries[rule], input), `${name} ${rule} ${JSON.stringify(input)}`).toEqual(completions(g[rule]!, g[rule], input))
         }
       }
@@ -465,5 +469,49 @@ describe('a tolerant list resyncs on its separator under the trivia live there',
         expect(result(entries.S!, input, true), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, true))
       }
     }
+  })
+})
+
+describe('a node gate reports what entering the node reports', () => {
+  // A pad-led body: its first set read through the pad is finite, but a miss is
+  // only known by running the body (`keyword`, a list's item set, an optional
+  // lead the pad leaves unread). The gate keeps 0.58.0's derivation, so it is
+  // laid down only where the body's own first set is finite.
+  it('keywords, lists and an optional lead behind a pad, in strict mode', () => {
+    const ws = regex(/[ \t]+/)
+    const bodies: Record<string, () => Comb> = {
+      keywords: () => sequence(regex(/[ \t]*/), keywords(['ab', 'cd'])),
+      list: () => sepBy(sequence(regex(/[ \t]*/), literal(';')), literal(','), { min: 2 }),
+      padList: () => sequence(regex(/[ \t]*/), sepBy(literal(';'), literal(','), { min: 2 })),
+      optionalLead: () => sequence(regex(/[ \t]*/), optional(literal('x')), literal(';')),
+    }
+    for (const [shape, body] of Object.entries(bodies)) {
+      for (const trivia of [ws, comment]) {
+        const g = rules({ trivia }, () => ({ S: sequence(literal('>'), node('N', body()), literal('<')) })) as Record<string, Comb>
+        for (const [name, entries] of readers(encodeTable(g))) {
+          for (const input of ['>;<', '><', '>x;<', '>ab<', '> ab<', '>;,;<', '>?<']) {
+            expect(result(entries.S!, input, false), `${shape} ${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+          }
+        }
+      }
+    }
+  })
+})
+
+describe('the interpreter reads a reference under noTrivia as 0.58.0 did', () => {
+  // `followSentinels` (sequence.ts) derive a resync class through `noTrivia(ref)`;
+  // the install-through widening belongs to the table encoder only.
+  it('a follow sentinel through noTrivia(<a rule of a comment map>)', () => {
+    const lib = rules({ trivia: comment }, (g: Record<string, Comb>) => ({
+      R0: many(sequence(literal(':'), literal(':'))),
+      R1: label('L', sequence(g.R0!, optional(literal('x')))),
+      A: g.R1!,
+    })) as Record<string, Comb>
+    const S = rules(() => ({
+      S: sequence(literal('>'), oneOrMore(sequence(sepBy(literal('a'), literal(',')), noTrivia(lib.A!), literal(';'))), literal('<')),
+    })).S as Comb
+    const spans = (input: string) => (run(S, input, { tolerant: true }).errors ?? []).map(e => [e.span.start, e.span.end])
+    expect(spans('>#/*c*/;<')).toEqual([[1, 7], [7, 9]])
+    expect(spans('>q /*c*/;<')).toEqual([[1, 8], [8, 10]])
   })
 })

@@ -293,6 +293,9 @@ function exclusiveChoiceNode(
       const failed = ctx._fx
       if (failed !== undefined && failed.length > 0) { ctx._fe = pos; return -1 }
     }
+    // A miss under a completions probe: each arm fails on its opener, as the
+    // interpreter's arms do when it runs them all (`choice.ts`).
+    if (arm < 0 && ctx._probe !== undefined) for (const a of arms) a.run(input, pos, ctx)
     ctx._fe = pos
     ctx._fx = choiceFx as string[]
     return -1

@@ -1043,6 +1043,12 @@ function makeDriver(
           // its `g.X` arms were unresolved refs (choice.ts:35 — the same staleness
           // `encode.ts` recomputes around), so they firstMatch all seven arms where
           // this driver dispatches to one. The arm sets differ, not the rule.
+          //
+          // Under a completions probe the interpreter runs every arm on a miss
+          // (`choice.ts`), so each opener reaches the probe; so does this.
+          if (arm < 0 && ctx._probe !== undefined) {
+            for (let i = 0; i < code[ip + 2]!; i++) exec(code[base + i]!, input, pos, ctx)
+          }
           return failChoice()
         }
         // THE PER-ARM GATE. Arms in source order, each skipped when its own
