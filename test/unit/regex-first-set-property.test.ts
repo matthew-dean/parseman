@@ -213,10 +213,16 @@ describe('regex first sets: no character outside the set starts a match (seed ' 
     expect(checked, 'patterns compiled under some flag set').toBeGreaterThan(PATTERNS)
     // A run in which every set widened to `any`, or no probe could match, would prove nothing.
     expect(bounded, 'pattern/flag pairs with a bounded first set').toBeGreaterThan(checked / 4)
-    expect(blind, 'bounded pairs no probe matched').toBeLessThan(bounded / 8)
+    // Over 20 seeds 5–13% of bounded pairs are blind (12.5% at seed 65537); the
+    // ceiling, one in five, leaves a 1.6× margin over the worst seen. A run probing
+    // without the witness was 45–50% blind.
+    expect(blind, 'bounded pairs no probe matched').toBeLessThan(bounded / 5)
     expect(matched, 'probes inside a bounded set that matched').toBeGreaterThan(bounded * 2)
   }, 300_000)
 })
+
+/** `text` as a regex matching itself. */
+const escaped = (text: string): string => text.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&')
 
 type Tree = { readonly p: Combinator<unknown>; readonly source: string; readonly witness: (flags: string) => string; readonly kids: readonly Tree[] }
 
@@ -248,8 +254,8 @@ function tree(rand: () => number, flags: string, depth: number): Tree {
     // as a literal (a code point) or as a regex (code units without `u`).
     const next = sub(), lead = next.witness(flags).codePointAt(0), q = rand()
     const k: Tree = q < 0.25 || lead === undefined ? next
-      : q < 0.5 ? { p: literal(String.fromCodePoint(lead)), source: String.fromCodePoint(lead), witness: () => String.fromCodePoint(lead), kids: [] }
-      : q < 0.75 ? { p: regex(String.fromCodePoint(lead).replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&'), flags), source: `(?:${String.fromCodePoint(lead).replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&')})`, witness: () => String.fromCodePoint(lead), kids: [] }
+      : q < 0.5 ? { p: literal(String.fromCodePoint(lead)), source: escaped(String.fromCodePoint(lead)), witness: () => String.fromCodePoint(lead), kids: [] }
+      : q < 0.75 ? { p: regex(escaped(String.fromCodePoint(lead)), flags), source: `(?:${escaped(String.fromCodePoint(lead))})`, witness: () => String.fromCodePoint(lead), kids: [] }
       : sub()
     return { p: sequence(peek(k.p), next.p), source: `(?=${k.source})${next.source}`, witness: next.witness, kids: [k, next] }
   }
@@ -259,7 +265,7 @@ function tree(rand: () => number, flags: string, depth: number): Tree {
   }
   if (r < 0.75) {
     const lit = pick(LITERALS)
-    return { p: literal(lit), source: lit, witness: () => lit, kids: [] }
+    return { p: literal(lit), source: escaped(lit), witness: () => lit, kids: [] }
   }
   // Group names and backreferences cannot be repeated inside one `RegExp`.
   const usable = (source: string): boolean => {
@@ -323,6 +329,8 @@ describe('composed first sets: no character outside the first set of a node star
     if (report) writeFileSync(`${report}.trees`, `seed ${SEED}: ${nodes} nodes, ${bounded} bounded, ${blind} blind (${(100 * blind / bounded).toFixed(1)}%), ${matched} matching probes\n${blindCases.join('\n')}\n`)
     expect(failures).toEqual([])
     expect(bounded, 'tree nodes with a bounded first set').toBeGreaterThan(nodes / 4)
+    // Over the same 20 seeds 5–8% of bounded nodes are blind; one in eight leaves a
+    // 1.6× margin over the worst seen.
     expect(blind, 'bounded nodes no probe matched').toBeLessThan(bounded / 8)
     expect(matched, 'probes inside a bounded set that matched').toBeGreaterThan(bounded * 2)
   }, 300_000)
