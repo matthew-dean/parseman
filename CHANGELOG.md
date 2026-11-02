@@ -10,6 +10,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   plugin accept it and ignore it. It is removed at the next minor release. Source
   comments that cited the deleted `codegen.ts`, line numbers that no longer exist, or
   said `exec.ts` ships, now name what they mean.
+- **The frozen ablation copies `src/table/exec-baseline.ts` and `encode-baseline.ts` are
+  removed**, with the `PM_TABLE_COUNT` row counters in the reference driver `exec.ts`,
+  which only the deleted experiment benches set. None of them is reachable from a
+  published entry point, so nothing a consumer imports changes. The experiment scripts
+  nothing ran go with them, and their write-ups move to `notes/history/`.
 
 ## 0.59.0 — 2026-11-02
 
@@ -97,11 +102,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   warning on stderr ahead of the command's own output. The hook now goes through
   `module.registerHooks()` where Node has it (22.15+, 23.5+) and keeps `register()`
   on 20.x and earlier 22.x, which have nothing else.
-- **The frozen ablation copies `src/table/exec-baseline.ts` and `encode-baseline.ts` are
-  removed**, with the `PM_TABLE_COUNT` row counters in the reference driver `exec.ts`,
-  which only the deleted experiment benches set. None of them is reachable from a
-  published entry point, so nothing a consumer imports changes. The experiment scripts
-  nothing ran go with them, and their write-ups move to `notes/history/`.
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
   main entry, which loads the combinators, the compiler and the analysis with them.
