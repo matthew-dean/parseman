@@ -2355,7 +2355,7 @@ return [key,v]
             const q = tmp()
             const m = emitShapeMatch(shape, 'itemStart', (prefix = '_v') => `${q}${prefix}${n++}`, '')
             gapCode = (rbCode: string): string => `let gapped=false
-if(ctx._probe===undefined){
+if(ctx._probe===undefined&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}){
 ${m.setup.join('\n')}
 const gq=${m.ok}?${m.end}:-1
 if((gq<0||${follow})&&${other}){
@@ -2367,7 +2367,7 @@ break
           } else {
             const re = hoist('gr', `K[${code[row + 1]!}]`)
             gapCode = (rbCode: string): string => `let gapped=false
-if(ctx._probe===undefined){
+if(ctx._probe===undefined&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}){
 ${re}.lastIndex=itemStart
 const gq=${re}.test(input)?${re}.lastIndex:-1
 if((gq<0||${follow})&&${other}){

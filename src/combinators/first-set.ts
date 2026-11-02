@@ -335,8 +335,15 @@ function sequenceSet(
   return at(0)
 }
 
+/**
+ * A sequence's construction-time first set, which the interpreter's `choice()`
+ * dispatches on. Trivia is unknown here, and a choice may run where leading
+ * trivia has not been skipped, so a nullable regex stands as `any` (`consuming`
+ * false): read through its non-empty matches, `choice(sequence(pad, '*'), 'x')`
+ * would not enter the pad arm at a comment before `*`.
+ */
 export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
-  return sequenceSet(parsers, p => p._meta.firstSet, matchesEmpty)
+  return sequenceSet(parsers, p => p._meta.firstSet, matchesEmpty, undefined, false)
 }
 
 /**

@@ -33,11 +33,22 @@ export { assertionFailureExpected, directTerminalFailureExpected } from './expec
  * derivation — a SET is what the derivation always meant.
  */
 export function deriveExpected(c: Combinator<unknown>): string[] {
-  return [...new Set(derive(c, new Set()))]
+  return [...new Set(derive(c, new Set(), false))]
 }
 
-function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[] {
-  const deriveExpected = (p: Combinator<unknown>): string[] => derive(p, seen)
+/**
+ * What `c` fails with where its first character opens none of its terms: as
+ * `deriveExpected`, but a nullable regex in a sequence's prefix names nothing,
+ * since it matches empty there and cannot fail. A table gate that rejects a
+ * position on a first set taken through such a regex (`firstSetOf`, 0.59.0)
+ * reports this, which is what entering the arm reports.
+ */
+export function gateMissExpected(c: Combinator<unknown>): string[] {
+  return [...new Set(derive(c, new Set(), true))]
+}
+
+function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>, skipPads: boolean): string[] {
+  const deriveExpected = (p: Combinator<unknown>): string[] => derive(p, seen, skipPads)
   const def = c._def
   switch (def.tag) {
     case 'literal':   return [JSON.stringify(def.value)]
@@ -55,7 +66,7 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     case 'sequence': {
       const out: string[] = []
       for (const term of def.parsers) {
-        if (!isZeroWidthAssertion(term)) out.push(...deriveExpected(term))
+        if (!isZeroWidthAssertion(term) && !(skipPads && term._def.tag === 'regex' && matchesEmpty(term))) out.push(...deriveExpected(term))
         if (!matchesEmpty(term)) break
       }
       return out

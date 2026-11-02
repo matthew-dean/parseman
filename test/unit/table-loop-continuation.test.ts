@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest'
 import { choice, literal, many, node, noTrivia, optional, regex, rules, sepBy, sequence } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
+import { firstSetOf } from '../../src/combinators/first-set.ts'
 import { countSiteVisits } from '../../src/table/assemble.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
@@ -92,8 +93,13 @@ function inputs(): string[] {
 describe('a loop decides on the character in front of it', () => {
   it('an operator led by an optional pad has a finite first set', () => {
     const op = sequence(pad, regex(/[*%]/), pad)
-    expect(op._meta.firstSet.kind).toBe('ranges')
-    const codes = op._meta.firstSet.kind === 'ranges' ? op._meta.firstSet.ranges : []
+    // As the table derives it. The construction-time set the interpreter's
+    // choice dispatches on keeps the pad as `any`: a choice may run where
+    // leading trivia has not been skipped.
+    expect(op._meta.firstSet.kind).toBe('any')
+    const fs = firstSetOf(op, new Set(), undefined, null)
+    expect(fs.kind).toBe('ranges')
+    const codes = fs.kind === 'ranges' ? fs.ranges : []
     const has = (c: string): boolean => codes.some(r => r.lo <= c.charCodeAt(0) && c.charCodeAt(0) <= r.hi)
     expect(['*', '%', ' ', '\t'].every(has)).toBe(true)
     expect(has(';')).toBe(false)

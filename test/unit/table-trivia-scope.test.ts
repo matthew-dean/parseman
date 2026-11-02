@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, dispatch, literal, many, noTrivia, optional, otherwise, parser, regex, routed, rules, sepBy, sequence,
+  choice, compile, dispatch, literal, many, noTrivia, optional, otherwise, parser, regex, routed, rules, sepBy, sequence,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -38,6 +38,8 @@ const word = regex(/[a-z]+/)
 /** Rule bodies with no trivia of their own: the scope comes from whoever runs them. */
 const bare = (): Record<string, Comb> => rules((g: Record<string, Comb>) => ({
   Gap: sequence(num, many(sequence(pad, literal('+'), num))),
+  // A gap that cannot match empty: the item's first set is the gap's own.
+  Spaced: sequence(num, many(sequence(regex(/[ \t]+/), literal('-'), num))),
   Opt: sequence(num, many(sequence(optional(literal(' ')), literal('*'), num))),
   List: sepBy(num, sequence(pad, literal(','), pad)),
   Routed: dispatch(word, otherwise(choice(
@@ -45,7 +47,7 @@ const bare = (): Record<string, Comb> => rules((g: Record<string, Comb>) => ({
     sequence(routed(), literal('::'), num),
     sequence(routed(), literal('!')),
   ))),
-  All: sequence(g.Gap!, literal('|'), g.Opt!, literal('|'), g.List!, literal('|'), g.Routed!),
+  All: sequence(g.Gap!, literal('|'), g.Spaced!, literal('|'), g.Opt!, literal('|'), g.List!, literal('|'), g.Routed!),
 })) as Record<string, Comb>
 
 /** A routed arm in a rule with no trivia, run under a caller's comment trivia. */
@@ -112,7 +114,7 @@ const chain = (op: string, gap: () => string, rnd: (n: number) => number): strin
 const callerInput = (gap: () => string, rnd: (n: number) => number): string => {
   const list = Array.from({ length: 1 + rnd(3) }, () => String(rnd(10))).join(`${gap()},${gap()}`)
   const tail = [':1', '::2', '!', ':', ':: 3'][rnd(5)]!
-  return `>${gap()}${chain('+', gap, rnd)}${gap()}|${gap()}${chain('*', gap, rnd)}${gap()}|${gap()}${list}${gap()}|${gap()}ab${gap()}${tail}${gap()};`
+  return `>${gap()}${chain('+', gap, rnd)}${gap()}|${gap()}${chain('-', gap, rnd)}${gap()}|${gap()}${chain('*', gap, rnd)}${gap()}|${gap()}${list}${gap()}|${gap()}ab${gap()}${tail}${gap()};`
 }
 
 const clearedInput = (gap: () => string, rnd: (n: number) => number): string => {
@@ -153,4 +155,43 @@ describe('gates and first sets see the trivia live where they run', () => {
       }, 60_000)
     }
   }
+})
+
+describe('a gap gate holds only where no trivia runs', () => {
+  it('one repeat reached inside noTrivia and outside it, in one rule map', () => {
+    const ops = many(sequence(regex(/ +/), literal('+'), num))
+    const g = rules({ trivia: comment }, () => ({
+      S: sequence(noTrivia(sequence(literal('['), ops, literal(']'))), num, ops, literal(';')),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['[ +1]2 /*c*/+3;', '[ +1 +2]2 +3 /*c*/ +4;', '[]2;', '[ +1]2/*c*/ +3;']) {
+        expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+      }
+    }
+  })
+
+  it('a compiled rule run under a caller\'s trivia', () => {
+    const E = rules(() => ({ E: sequence(num, many(sequence(regex(/[ ]*/), literal('+'), num))) })).E as Comb
+    const compiled = compile(E) as unknown as { parse: Comb['parse'] }
+    const viaInterpreter = parser({ trivia: comment }, sequence(literal('a'), E, literal(';')))
+    const viaCompiled = parser({ trivia: comment }, sequence(literal('a'), { ...E, parse: compiled.parse }, literal(';')))
+    for (const input of ['a1 /*c*/+2;', 'a1/*c*/ +2;', 'a1 +2;', 'a1;']) {
+      expect(result(viaCompiled, input, false), JSON.stringify(input)).toBe(result(viaInterpreter, input, false))
+    }
+  })
+})
+
+describe('a choice at a position where trivia has not been skipped', () => {
+  it('enters an arm led by a nullable pad, in every engine', () => {
+    // The interpreter's choice dispatches on the construction-time first set,
+    // which cannot know the trivia; a table gate that rejects the arm reports
+    // what entering it reports.
+    const g = rules({ trivia: comment }, () => ({ S: choice(sequence(pad, literal('*')), literal('x')) })) as Record<string, Comb>
+    expect(run(g.S!, '/*c*/*').ok).toBe(true)
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['/*c*/*', '*', ' *', 'x', '', '?', '/*c*/x']) {
+        expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+      }
+    }
+  })
 })

@@ -281,6 +281,33 @@ export const DEFECTS = {
     }],
   },
 
+  'gap-gate-under-trivia': {
+    why: 'closure engine: a gap gate runs where trivia is live',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (gapRe !== undefined && !hasTrivia && ctx._probe === undefined) {',
+      replace: 'if (gapRe !== undefined && ctx._probe === undefined) {',
+    }],
+  },
+
+  'gap-gate-under-trivia-emitted': {
+    why: 'emitted engine: a gap gate runs where trivia is live',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "if(ctx._probe===undefined&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}){\n${m.setup",
+      replace: "if(ctx._probe===undefined){\n${m.setup",
+    }],
+  },
+
+  'choice-miss-names-pad': {
+    why: 'encoder: a choice that rejects an arm on its first set reports the arm\'s nullable pad, which entering it never reports',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'this.code[head + 3] = this.expected(arms.flatMap(a => gateMissExpected(a)))',
+      replace: 'this.code[head + 3] = this.expected(arms.flatMap(a => deriveExpected(a)))',
+    }],
+  },
+
   'ref-first-set-caller-trivia': {
     why: 'first sets: a reference from a cleared region is read under the caller\'s scope, not the trivia it installs',
     edits: [{

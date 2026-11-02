@@ -6,7 +6,7 @@ import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union
 import { childrenOf } from '../analysis/gating.ts'
 import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
-import { deriveExpected } from '../combinators/expect.ts'
+import { deriveExpected, gateMissExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
 import { buildReadsRaw, buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
@@ -631,8 +631,9 @@ class Encoder {
         break
       case 'sequence': {
         const ps = d.parsers
+        // A gap-led sequence: the gap walk holds only where no trivia runs.
         out = ps.some(t => this.readsScope(t))
-          || (ps[0] !== undefined && (ps[0]._def as ParserDef).tag === 'routed')
+          || (ps[0] !== undefined && ((ps[0]._def as ParserDef).tag === 'routed' || ((ps[0]._def as ParserDef).tag === 'regex' && isGap(ps[0]))))
           || ps.some((t, i) => i + 1 < ps.length && matchesEmpty(t, new Set(), rr))
         break
       }
@@ -873,7 +874,7 @@ class Encoder {
     if (matchesEmpty(p, new Set(), rr)) return child
     const cls = this.charClass(firstSetOf(p, new Set(), rr, this.activeTrivia ?? null))
     if (cls < 0) return child
-    const e = deriveExpected(p)
+    const e = gateMissExpected(p)
     return this.emit(OP_GATE, cls, child, this.expected(e.length > 0 ? e : [p._tag]))
   }
 
@@ -1634,10 +1635,10 @@ class Encoder {
         // THE CHOICE'S OWN SET IS THE ARMS' FLATMAP, NOT `deriveExpected(p)`.
         // It is the pure-dispatch-miss and empty-dynamic fallback, where source
         // order and duplicates remain observable. `deriveExpected` would dedupe.
-        this.code[head + 3] = this.expected(arms.flatMap(a => deriveExpected(a)))
+        this.code[head + 3] = this.expected(arms.flatMap(a => gateMissExpected(a)))
         for (let i = 0; i < kids.length; i++) {
           this.code[head + 4 + i] = kids[i]!
-          this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
+          this.code[head + 4 + kids.length + i] = this.expected(gateMissExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
         if (arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))) {

@@ -37,7 +37,9 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +236B to 60,286B: `firstSetOf` reads a reference from a cleared region
 // under the trivia it installs (`triviaThroughRef`), and recovery reads first
 // sets without the nullable-pad refinement (`consuming: false`).
-const BASELINE_RAW_BYTES = 60_286
+// Bumped +86B to 60,372B: `gateMissExpected` (a table gate's miss set without
+// the nullable pads that cannot fail) shares `deriveExpected`'s walk.
+const BASELINE_RAW_BYTES = 60_372
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

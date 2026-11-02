@@ -305,6 +305,9 @@ const REGISTRY = [
       { defect: 'scope-memo-one-slot', expect: 'moves' },
       { defect: 'ref-first-set-caller-trivia', expect: 'moves' },
       { defect: 'gap-lead-caller-trivia', expect: 'moves' },
+      { defect: 'gap-gate-under-trivia', expect: 'moves' },
+      { defect: 'gap-gate-under-trivia-emitted', expect: 'moves' },
+      { defect: 'choice-miss-names-pad', expect: 'moves' },
     ],
   },
   {
