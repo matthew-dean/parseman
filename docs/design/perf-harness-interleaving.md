@@ -340,8 +340,12 @@ the process is what a user runs:
   measuring if `process.execArgv` is non-empty, `NODE_OPTIONS` is set, or source
   maps are enabled. (Workers once ran under `--import tsx/esm`. That turns source
   maps on and runs esbuild's per-module output rather than the bundle users get.)
-- **One instance per process.** A worker builds one case, warms it, times it,
-  and prints a median, a min and a digest of its parse result. Nothing else is
+- **One instance per process, at steady state.** A worker builds one case, warms
+  it for a parse count AND a time (1 s for density cases, 1.5 s for workloads),
+  times it, and prints a median, a min and a digest of its parse result. A count
+  alone stopped some processes before V8 finished tiering: `css/stylesheet` ran
+  14% faster after 1.5 s than after 40 parses, and how far each process had got
+  varied. Nothing else is
   compiled in that process, so there is no "built last" slot and no other
   instance to share a heap with.
 - **One path for both sides.** Before each worker, its side's `dist/` is copied
@@ -398,24 +402,30 @@ and head lost 42–53% of rounds on every case.
 
 #### How many rounds
 
-Each process is one draw of V8's layout and pretenuring choices, so the
-per-round spread is wide. Interquartile range of `ln(head / ref)` on identical
-code, x64, the first 240 rounds:
+Each process is one draw of V8's layout, tiering and pretenuring choices, so the
+per-round spread is wide, and wider in some cases than others. Per-round
+`ln(head / ref)` on identical code, the final configuration, x64, 40 shards:
 
-| case | IQR | case | IQR |
-| --- | ---: | --- | ---: |
-| `rollback/dense` | 2.5% | `rollback/none` | 5.9% |
-| `expected/wide` | 3.3% | `graphql/document` | 5.8% |
-| `less/mixins`, `rollback/medium` | 3.4% | `expected/narrow` | 6.1% |
-| `less/stylesheet` | 3.5% | `expected/none` | 6.5% |
-| `css/stylesheet` | 4.0% | `json/document` | 11.4% |
-| `rollback/sparse` | 5.0% | | |
+| case | p5 … p95 | case | p5 … p95 |
+| --- | --- | --- | --- |
+| `rollback/dense` | −4.4% … +5.3% | `css/stylesheet` | −21.2% … +26.7% |
+| `rollback/sparse` | −5.0% … +5.0% | `expected/narrow` | −16.1% … +30.2% |
+| `less/mixins` | −5.9% … +5.0% | `rollback/medium` | −18.4% … +10.8% |
+| `less/stylesheet` | −5.7% … +7.1% | `json/document` | −6.5% … +6.5% |
+| `expected/wide` | −4.8% … +4.7% | `graphql/document` | −4.4% … +3.7% |
+| `expected/none` | −8.1% … +7.5% | `rollback/none` | −6.1% … +7.9% |
 
-The round counts come from a bootstrap over 1,440–1,840 identical-code rounds
-per case. Those rounds came from 90 CI jobs on seven CPU models (AMD EPYC 7763,
-9V45 and 9V74; Intel Xeon 8370C, 8573C, 6973P-C and 6975P-C), so the spread
-between runners is in the estimate. The bootstrap draws n rounds per case, adds a
-shift, applies the verdict, and repeats 300 times. Two shifts are tested:
+The round counts come from a bootstrap over those rounds, 400–1,200 per case, from
+40 CI jobs on six CPU models (AMD EPYC 7763, 9V45, 9V74; Intel Xeon 8370C, 8573C,
+6973P-C). The spread between runners is therefore in the estimate.
+
+The pool is symmetrised first: each round is drawn with a random sign. That is
+exactly the null the tests assume, because the order is random. A raw pool carries
+a sample mean of its own (`expected/narrow`'s 600 rounds averaged +1.3% from a few
+far-out processes), and resampling it would put that offset into every draw.
+
+The bootstrap draws n rounds per case, adds a shift, applies the verdict, and
+repeats 300 times (1,000 for identical code). It tests two shifts:
 
 - **uniform +2%:** every head process is 2% slower;
 - **mixture:** one head process in five is 20% slower. That is about +4% on the
@@ -423,61 +433,68 @@ shift, applies the verdict, and repeats 300 times. Two shifts are tested:
   in some processes.
 
 A review of the first version found that the median sign test alone caught the
-mixture in only 4–33% of runs. Hence the second test. The sign test is the median's test, rather than Wilcoxon, because the tails
-are heavy: a process that pretenures, or lands badly, sits far out. On the first
-240 rounds at 200 rounds per case, Wilcoxon's worst-case power was 0.26 against the
-sign test's 0.64.
+mixture in only 4–33% of runs. Hence the second test. The median's test is the
+sign test rather than Wilcoxon because the tails are heavy. On an earlier pool at
+200 rounds per case, Wilcoxon's worst-case power was 0.26 against the sign test's
+0.64.
 
-Power with both tests (α 0.0005 each, 1% floor). "u" is the uniform shift and "m"
+Power with both tests, α 0.0005 each, 1% floor. "u" is the uniform shift and "m"
 the mixture:
 
-| case | 100 rounds | 150 | 200 | 300 | in the gate |
-| --- | --- | --- | --- | --- | ---: |
-| `less/mixins` | u 1.00, m 0.95 | | | | 100 |
-| `rollback/dense` | u 1.00, m 0.89 | | | | 100 |
-| `rollback/medium` | u 1.00, m 0.92 | | | | 100 |
-| `css/stylesheet` | u 1.00, m 0.70 | u 1.00, m 0.92 | | | 150 |
-| `expected/wide` | u 1.00, m 0.80 | u 1.00, m 0.98 | | | 150 |
-| `less/stylesheet` | u 0.98, m 0.83 | u 1.00, m 0.99 | | | 150 |
-| `rollback/sparse` | u 0.98, m 0.80 | u 1.00, m 0.98 | | | 150 |
-| `expected/narrow` | u 0.85, m 0.75 | u 0.98, m 0.97 | | | 150 |
-| `expected/none` | u 0.75, m 0.75 | u 0.96, m 0.96 | | | 150 |
-| `rollback/none` | u 0.75, m 0.66 | u 0.94, m 0.95 | | | 150 |
-| `graphql/document` | u 0.87, m 0.46 | u 0.98, m 0.83 | u 1.00, m 0.96 | | 200 |
-| `json/document` | u 0.54, m 0.17 | u 0.81, m 0.35 | u 0.94, m 0.60 | u 1.00, m 0.84 | 300 |
+| case | 100 rounds | 150 | 200 | 300 | in the gate | identical code fails |
+| --- | --- | --- | --- | --- | ---: | ---: |
+| `expected/none` | u 0.92, m 0.85 | | | | 100 | 0.2% |
+| `expected/wide` | u 1.00, m 0.89 | | | | 100 | 0.0% |
+| `less/mixins` | u 1.00, m 0.90 | | | | 100 | 0.2% |
+| `less/stylesheet` | u 0.99, m 0.87 | | | | 100 | 0.0% |
+| `rollback/dense` | u 1.00, m 0.94 | | | | 100 | 0.0% |
+| `rollback/sparse` | u 1.00, m 0.93 | | | | 100 | 0.3% |
+| `graphql/document` | u 1.00, m 0.73 | u 1.00, m 0.90 | | | 150 | 0.0% |
+| `json/document` | u 0.93, m 0.72 | u 1.00, m 0.91 | | | 150 | 0.0% |
+| `rollback/none` | u 0.95, m 0.84 | u 1.00, m 0.97 | | | 150 | 0.0% |
+| `css/stylesheet` | u 0.92, m 0.21 | u 1.00, m 0.50 | u 1.00, m 0.66 | u 1.00, m 0.90 | 300 | 0.3% |
+| `expected/narrow` | u 0.68, m 0.22 | u 0.84, m 0.43 | u 0.95, m 0.59 | u 0.99, m 0.86 | 300 | 0.1% |
+| `rollback/medium` | u 0.75, m 0.29 | u 0.95, m 0.52 | u 0.99, m 0.81 | u 1.00, m 0.95 | 300 | 0.0% |
 
-Every case is at 0.84 or above against both shapes. Identical code failed no case
-in any bootstrap at these counts. In `bench/xproc-gate.json` that is 15 rounds per
-shard, 10 for the three quietest cases, 20 for `graphql/document` and 30 for
-`json/document`.
+Every case is at 0.84 or above against both shapes. Summed over the twelve cases,
+identical code fails a case about 1% of the time. In `bench/xproc-gate.json` that
+is 10 rounds per shard, 15 for `graphql/document`, `json/document` and
+`rollback/none`, and 30 for `css/stylesheet`, `expected/narrow` and
+`rollback/medium`.
+
+The profile moved twice while the gate was built: once when the workers moved
+from `tsx` to the `dist/` bundle, and once when warm-up moved to a clock. The
+counts above are the third derivation, made on the configuration that ships.
+Re-derive them from a fresh A/A after any change to how a worker runs.
 
 #### Validation on x64 CI
 
-The final configuration, run as 40 identical-code shards and 40 shards with a
-planted cost, on six CPU models. The planted cost is a checksum over two thirds
-of the input, added to `parseWithContext` in the head side's `src/`. Measured
-across processes it costs +2.0% to +4.2% on nine cases. It costs +0.2% to +0.6%
-on the three slow CSS and Less workloads, where the same fixed cost is a smaller
-share of a longer parse.
+Shards of identical code (A/A), and shards with three planted costs in the head
+side's `src/`, on six CPU models. A real run is 10 shards and one aggregate verdict.
+The "bootstrap" column is 200 runs drawn from the pooled rounds at the gate's round
+counts; for identical code the pool is symmetrised as above.
 
-| | identical code | planted cost |
-| --- | --- | --- |
-| real full runs (10 shards each) that FAIL | **0 / 4** | **4 / 4** |
-| bootstrap runs at the final round counts that FAIL | **0 / 200** | **200 / 200** |
-| per-case pooled center | −0.2% … +0.4% | as above |
-| cases caught, per bootstrap run of 200 | n/a | 176–200 / 200 on each case at +2.0% or more; at most 7 / 200 on the three cases under the 1% floor |
+| measured | shards | per-case size, median / mean | real runs that FAIL | bootstrap runs that FAIL |
+| --- | ---: | --- | ---: | ---: |
+| identical code, previous round counts | 40 | −0.2% … +0.2% / −0.8% … +1.3% | **0 / 4** | 3 / 200 (raw pool) |
+| identical code, final round counts | 20 | −0.3% … +0.4% / −1.0% … +0.5% | **0 / 2** | 1 / 200 |
+| uniform: a checksum over ⅔ of the input per parse | 10 | +0.7% (`less/*`) … +6.1% (`json`) | **1 / 1**, 10 cases | 200 / 200 |
+| mixture: in one process in five, a checksum over 6× the input | 10 | means +1.1% … +12.5%, medians ≈ 0–2% | **1 / 1**, 8 cases, 6 of them by the mean test alone | 200 / 200 |
+| per token: 8 iterations in `lead()` | 10 | `css` +4.9%, `less/mixins` +4.7%, `less/stylesheet` +5.2% | **1 / 1**, all three slow workloads | 200 / 200 |
+| per token: 4 iterations in `lead()` | 10 | `less/mixins` +1.9%, `less/stylesheet` +2.5%, `css` +0.5% | **1 / 1**, both Less workloads | 200 / 200 |
 
-Before, in process, on identical code: 8 runs in 20 failed (`expected/none` 7,
-center +3.4%), and `json/document` failed 3 to 5 runs in 20 in the workload gate.
+The per-token plant is the one that reaches the slow CSS and Less workloads. A
+fixed cost per parse, like the uniform checksum, is a small share of their long
+parses. At 4 iterations the plant's cost did not land on `css/stylesheet` at
+all. At 8 it landed at +4.9% and was caught. A uniform +2% on `css/stylesheet` is
+caught by the bootstrap in every draw at its 300 rounds.
 
-A shard took 457 s on average and 594 s at most, setup included.
+Before, in process, on identical code, 8 runs in 20 failed (`expected/none` 7,
+center +3.4%), and `json/document` failed 3–5 runs in 20 in the workload gate.
 
-
-The rest of this page records the symptoms as they were found. Re-reading them
-with the mechanisms above: the identical-code incidents fit mechanism 1,
-though they were not reproduced here to confirm it. Whether a *differently-sized* code image can still push a case off
-an inlining cliff by its presence alone is not ruled out by this fix, so a red
-that the cross-process check disagrees with is still worth the check below.
+A `release` shard takes about 11 minutes (round q: mean 640 s, max 680 s), and a
+`peak` shard about 6½. Each PR spends about 175 runner-minutes, and the gate's
+wall time is about 13 minutes when runners are free.
 
 ## How to tell
 
