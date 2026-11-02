@@ -28,12 +28,17 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   character instead of opening each level's operator to scan an empty pad and fail.
   Jess's SCSS grammar writes its math operators this way: its generated workload parses
   in 10.8% fewer instructions with the JIT and 9.1% fewer without it. Trees are
-  unchanged.
+  unchanged. Tolerant recovery's resync sentinels read first sets as before
+  (`firstSetOf` with `consuming` false): a pad's own characters are not a point
+  where its sequence starts.
 - **A separated list ends on a character its separator cannot start.** Past its
-  minimum, a `sepBy()` whose separator cannot match empty now tests the character after
-  the gap against the separator's first set (already in the table as the recovery
-  sentinel) in both table engines, and ends the list there without entering the
-  separator. A `field(…, { leadingTrivia: true })` separator, a completions probe and
+  minimum, a `sepBy()` whose separator cannot match empty and is not itself one
+  terminal now tests the character after the gap against the separator's first set in
+  both table engines, and ends the list there without entering the separator. The
+  class is the list row's own (flag 8, `ip + 8`), not the recovery sentinel, and is
+  laid down only where entering the separator costs more than the test: a literal or
+  regex separator is one character test already, so its list is not tested at every
+  item. A `field(…, { leadingTrivia: true })` separator, a completions probe and
   tolerant recovery keep entering it. `test/unit/table-loop-continuation.test.ts`
   compares every table reader with the interpreter over generated operator chains and
   lists, and is registered in `check:differentials`.
@@ -46,23 +51,30 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **An arm whose next sibling is its own prefix parses the prefix once.**
   `choice(sequence(X, a), X)`, with the choice's value unused, is encoded with its first
   arm as `sequence(X, optional(a))`, so an `X` with no `a` after it is not parsed again
-  by the next arm. Failures are reported as before. Jess's SCSS mixin argument
-  (`$name: v`, `v...`, `v`) is this shape. Test: `test/unit/table-prefix-arm.test.ts`.
+  by the next arm. A strict parse reports failures as before. Tolerant recovery and a
+  completions probe run the choice as written: inside the factored arm, `X`'s own
+  recovery would take `a`'s first set for all that may follow it. The table holds both
+  encodings under a new `OP_STRICT` row, which an assembly resolves to one of them.
+  Jess's SCSS mixin argument (`$name: v`, `v...`, `v`) is this shape. Test:
+  `test/unit/table-prefix-arm.test.ts`.
 - **An optional repeat reads its item's leading gap once.** An optional repeat item
   that opens with a gap (a `regex()` that may match empty, or one that starts only with
   whitespace or a comment's `/`) and then a term with a finite first set gets an
   `OP_GAPGATE` row. The repeat scans the gap with the item's own regex, ends where the
   character after it opens no such term (and the item's start opens no arm without
-  the gap), and otherwise enters the item with the gap's end in a slot, from which the
-  regex row takes it instead of scanning again. The slot is a memo of one pure
-  function, keyed by row, position and input. Not under tolerant recovery or a
-  completions probe; the reference driver runs the item as written. A gap spelled as
+  the gap), and otherwise enters the item. Where the emitted engine lowers the gap to
+  an inline scan, it scans it so and the row scans it again; otherwise the gap's end
+  goes in a slot, from which the regex row takes it instead of matching again. The
+  slot is a memo of one pure function, keyed by row, position and input. Not under
+  tolerant recovery or a completions probe; the reference driver runs the item as
+  written. A gap spelled as
   `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
   and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
-- A budgeted assembly selection is priced with every gap gate lowered as its item, so
-  adding the gates moves no site in or out of the selection: in Jess's CSS, SCSS and
-  .jess grammars it is site for site the selection of the same grammars without them.
-  `emitAssemblySource` takes `gapNeutral` for that pricing.
+- A budgeted assembly selection RANKS sites with every gap gate lowered as its item, so
+  adding the gates moves no site's place in the order. It fits and debits the source
+  it ships, gates included, so the budget bounds the artifact.
+  `emitAssemblySource` takes `gapNeutral` for the ranking. Test:
+  `test/unit/table-gap-gate-selection.test.ts`.
 - **A routed arm gate reads two characters where its next term says them.** Where the
   term after a `routed()` token states its first two characters outright (a literal of
   two or more characters, or a case-sensitive regex that opens with a character class
@@ -70,12 +82,24 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `regex(/:(?=[ \t\n\r\f])/)`), and no gap before it can start with the first, the
   encoder emits `OP_RGATE2`: where the character after the token is one of the first,
   the next one must be one of the second, or the arm fails at the token's end with the
-  term's own set, as entering it would. Two code-unit reads, no scan. Jess's Less
+  term's own set, as entering it would. Two reads, no scan; the second is a code point,
+  so an astral second character is in its set. Jess's Less
   name-once statement (jess#515) no longer enters its spaced-declaration arm on a
   glued head (`div:hover`, `color:red`). Test: `test/unit/table-routed-arm-gate2.test.ts`.
 - An optional repeat item no longer tests its lead gate twice: the repeat's own item
   class covers it. And with no separator or gap in front of the item, the item class is
   tested once per iteration, not twice.
+- Fixed: **gates and first sets see the trivia live where they run.** A rule body
+  reached under two trivia scopes is encoded under each, where its rows can depend on
+  the scope (a first set through a nullable term, a gap gate, a routed gate, a
+  reference that installs its rule's trivia), keyed by the trivia's first set. And a
+  first set, the gap walk and the encoding of a rule referenced from a cleared region
+  take the trivia that reference installs (`triviaThroughRef`, as `ref.ts` does). In
+  0.58.0 a routed arm in a rule with no trivia, run under a caller's comment trivia,
+  failed on `a/*c*/:b`, and a repeat in `noTrivia(…)` over a rule of a comment-trivia
+  map with an optional-literal lead stopped at the comment; the new gates had the same
+  blind spot. Test: `test/unit/table-trivia-scope.test.ts`, registered in
+  `check:differentials`.
 - Fixed: a `sepBy` of `min: 1` whose first item fails reports the item's derived set at
   the list's start in every table reader, as the interpreter does (`repeat.ts`
   `failAt`). The tables reported what the failed item left, e.g. `")"` inside the group
