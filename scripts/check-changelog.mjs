@@ -41,7 +41,7 @@
  *    matter get bypassed with it.
  *
  * E. VERDICT SETTINGS — only with `--base=<ref>`, on EVERY PR: an edit to the floor,
- *    α, sign-flip count, shard or round counts, or a suite's warm-up and sample settings
+ *    α, sign-flip count, node major, shard or round counts, or a suite's warm-up and sample settings
  *    in `bench/xproc-gate.json` is named in an entry this PR adds.
  *
  * D. PEAK-RECORD GATE — only with `--base=<ref>`, on EVERY PR:
@@ -391,13 +391,13 @@ else if (peakGateConfigs.some((g) => readPeak(readFileSync(resolve(ROOT, g.confi
 
 // ── E. Verdict settings ─────────────────────────────────────────────────────────
 //
-// The cross-process gate's floor, its two α values, its sign-flip count, its shard and
+// The cross-process gate's node major, floor, two α values, sign-flip count, shard and
 // round counts, and each suite's warm-up and sample settings ARE the gate. Loosening any of them is how a gate gets quietly weakened, so
 // the same rule as a peak record applies: an edit must be named in an entry this PR
 // adds. No hatch.
 
 const VERDICT_CONFIG = 'bench/xproc-gate.json'
-const VERDICT_KEYS = ['shards', 'floorPct', 'alphaMedian', 'alphaMean', 'flips', 'rounds', 'roundsByCase', 'density', 'workloads']
+const VERDICT_KEYS = ['node', 'shards', 'floorPct', 'alphaMedian', 'alphaMean', 'flips', 'rounds', 'roundsByCase', 'density', 'workloads']
 if (existsSync(resolve(ROOT, VERDICT_CONFIG))) {
   const settings = (source, label) => {
     let cfg

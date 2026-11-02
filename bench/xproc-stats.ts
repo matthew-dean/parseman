@@ -110,8 +110,9 @@ export function mergeShards(
   cases: readonly string[],
   roundsFor: (id: string) => number,
   /**
-   * The node major the verdict is taken for. Every shard must have measured on it: rounds
-   * from two runtimes are two distributions, and the round counts were sized on one.
+   * The node major committed in `bench/xproc-gate.json`. Every shard must have measured
+   * on it, and all on ONE exact `process.version`: rounds from two runtimes are two
+   * distributions, and the round counts were sized on one.
    */
   node: string,
 ): { logs: Map<string, number[]>; minLogs: Map<string, number[]>; seeds: number[]; versions: string[] } {
@@ -136,6 +137,9 @@ export function mergeShards(
     seeds.push(shard.seed)
     if (typeof shard.node !== 'string' || nodeMajor(shard.node) === '') throw new Error(`shard ${f.name} does not record its node version`)
     if (nodeMajor(shard.node) !== node) throw new Error(`shard ${f.name} ran on node ${shard.node}, not node ${node}`)
+    if (versions.length > 0 && versions[0] !== shard.node) {
+      throw new Error(`shard ${f.name} ran on node ${shard.node}, another shard on ${versions[0]}: one verdict, one runtime`)
+    }
     versions.push(shard.node)
     for (const c of cases) {
       for (const [label, src, into] of [['rounds', shard.logs, logs], ['minima', shard.minLogs, minLogs]] as const) {
@@ -165,4 +169,16 @@ export function aggregateSeed(seeds: readonly number[]): number {
     h = Math.imul(h ^ (s >>> 16), 0x01000193) >>> 0
   }
   return h >>> 0
+}
+
+/**
+ * Flags that change WHAT is measured or how it is judged. In shard and aggregate modes,
+ * the modes CI's verdict runs in, they are refused, so an edit to `ci.yml` alone cannot
+ * shrink the rounds, drop cases, swap the reference or turn the verdict off. Everything
+ * they could change is committed in `bench/xproc-gate.json`, where §E guards it.
+ */
+export const VERDICT_MODE_FORBIDDEN = ['--rounds', '--case', '--suite', '--report-only', '--self', '--ref', '--head-ref'] as const
+
+export function verdictModeArgErrors(argv: readonly string[]): string[] {
+  return VERDICT_MODE_FORBIDDEN.filter(flag => argv.some(a => a === flag || a.startsWith(`${flag}=`)))
 }

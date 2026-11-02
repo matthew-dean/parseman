@@ -59,7 +59,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { materialise, previousRelease, git, fail, sign, sameSource, summary } from './ab-harness.ts'
-import { aggregateSeed, caseVerdict, mergeShards, nodeMajor, type Shard, type VerdictSettings } from './xproc-stats.ts'
+import { aggregateSeed, caseVerdict, mergeShards, nodeMajor, verdictModeArgErrors, type Shard, type VerdictSettings } from './xproc-stats.ts'
 
 const GATE = 'xproc-gate'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -68,6 +68,8 @@ const CONFIG_PATH = path.join(HERE, 'xproc-gate.json')
 
 type SuiteConfig = { warmup: number; warmupMs: number; samples: number; parsesPerSample: number }
 type Config = {
+  /** The node major every shard must run on; the round counts were sized on it. */
+  node: number
   /** How many shards CI runs. The aggregate refuses any other count; ci.yml's matrix is tested against it. */
   shards: number
   /** Rounds per shard for every case not named in `roundsByCase`. */
@@ -100,6 +102,15 @@ const PEAK_CONFIG = (JSON.parse(readFileSync(path.join(HERE, 'workloads', 'confi
 }).peak
 const SHARD_OUT = argValue('--shard-out')
 const AGGREGATE = argValue('--aggregate')
+if (SHARD_OUT !== null || AGGREGATE !== null) {
+  const forbidden = verdictModeArgErrors(process.argv.slice(2))
+  if (forbidden.length > 0) {
+    fail(GATE, `${forbidden.join(', ')} cannot be used with --shard-out or --aggregate: the verdict measures exactly what ${path.relative(process.cwd(), CONFIG_PATH)} commits.`)
+  }
+}
+if (SHARD_OUT !== null && nodeMajor(process.version) !== String(CONFIG.node)) {
+  fail(GATE, `this shard runs on node ${process.version}; ${CONFIG_PATH} commits node ${CONFIG.node}, the runtime the round counts were sized on.`)
+}
 const REF_ARG = argValue('--ref')
 if (PEAK && (SELF || REF_ARG !== null)) fail(GATE, '--peak names its own reference and cannot be combined with --ref or --self.')
 const SUITE = PEAK ? 'workloads' : argValue('--suite')
@@ -164,7 +175,7 @@ if (AGGREGATE !== null) {
   const expected = Number(argValue('--expect-shards'))
   if (expected !== CONFIG.shards) fail(GATE, `--expect-shards=${expected} does not match the committed shard count ${CONFIG.shards} in ${CONFIG_PATH}`)
   try {
-    const merged = mergeShards(files, expected, REF, cases.map(c => c.id), roundsFor, nodeMajor(process.version))
+    const merged = mergeShards(files, expected, REF, cases.map(c => c.id), roundsFor, String(CONFIG.node))
     logs = merged.logs
     minLogs = merged.minLogs
     SEED = aggregateSeed(merged.seeds)

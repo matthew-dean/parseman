@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, signTestP, type VerdictSettings } from '../../bench/xproc-stats.ts'
+import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, signTestP, verdictModeArgErrors, type VerdictSettings } from '../../bench/xproc-stats.ts'
 
 /** Deterministic generator for the tests (mulberry32, as the gate uses). */
 function seeded(seed: number): () => number {
@@ -157,6 +157,10 @@ describe('mergeShards fails closed', () => {
     expect(() => mergeShards([shard(1)], 1, 'abc12345', cases, roundsFor, '24')).toThrow('not node 24')
   })
 
+  it('fails when shards ran on two exact node versions, even of one major', () => {
+    expect(() => mergeShards([shard(1), shard(2, { node: 'v26.13.1' })], 2, 'abc12345', cases, roundsFor, '26')).toThrow('one verdict, one runtime')
+  })
+
   it('fails on corrupt JSON, a missing seed, or a repeated seed', () => {
     expect(() => mergeShards([{ name: 'bad.json', text: '{' }], 1, 'abc12345', cases, roundsFor, '26')).toThrow('bad.json is not JSON')
     expect(() => mergeShards([shard(1, { seed: undefined })], 1, 'abc12345', cases, roundsFor, '26')).toThrow('has no seed')
@@ -181,5 +185,27 @@ describe('the committed shard count is the one CI runs', () => {
     const list = /shard: \[([^\]]*)\]/.exec(job)?.[1]?.split(',').map(x => Number(x.trim()))
     expect(list).toEqual(Array.from({ length: config.shards }, (_, i) => i + 1))
     expect(ci).toContain(`--expect-shards=${config.shards}`)
+  })
+})
+
+describe('verdict modes refuse flags that change what is measured', () => {
+  it('names every forbidden flag present, bare or with a value', () => {
+    expect(verdictModeArgErrors(['--shard-out=x.json', '--peak', '--seed=4'])).toEqual([])
+    expect(verdictModeArgErrors(['--aggregate=d', '--expect-shards=20', '--rounds=2', '--case=json', '--suite=density']))
+      .toEqual(['--rounds', '--case', '--suite'])
+    expect(verdictModeArgErrors(['--shard-out=x', '--report-only', '--self', '--ref=abc', '--head-ref=def']))
+      .toEqual(['--report-only', '--self', '--ref', '--head-ref'])
+  })
+})
+
+describe('the committed node major is the one CI pins', () => {
+  it('matches node-version in both xproc jobs', async () => {
+    const { readFileSync } = await import('node:fs')
+    const root = new URL('../../', import.meta.url)
+    const config = JSON.parse(readFileSync(new URL('bench/xproc-gate.json', root), 'utf8')) as { node: number }
+    const ci = readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8')
+    const jobs = ci.slice(ci.indexOf('  xproc-shard:'), ci.indexOf('  macro-perf:'))
+    const pins = [...jobs.matchAll(/node-version: (\S+)/g)].map(m => m[1])
+    expect(pins).toEqual([String(config.node), String(config.node)])
   })
 })

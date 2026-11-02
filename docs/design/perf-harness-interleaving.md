@@ -343,9 +343,15 @@ the process is what a user runs:
     how code loads.
   - **Refusals.** The worker exits 2 without measuring if `process.execArgv` is
     non-empty, if any `NODE_*` variable is set, or if source maps are enabled.
-  - **Pinned runtime.** CI pins the shards to Node 26, the current LTS. Each shard
-    records `process.version`, and the aggregate refuses a shard from another major,
-    or from a different major than its own.
+  - **Pinned runtime.** CI pins the shards to Node 26, the current LTS, and
+    `bench/xproc-gate.json` commits `node: 26` (§E guards it). A shard refuses to
+    run on another major. Each shard records `process.version`, and the aggregate
+    refuses a shard from another major, and shards that ran on more than one exact
+    version.
+  - **Verdict modes are not configurable from `ci.yml`.** With `--shard-out` or
+    `--aggregate`, the gate refuses `--rounds`, `--case`, `--suite`,
+    `--report-only`, `--self`, `--ref` and `--head-ref`. Everything those could
+    change is committed in `bench/xproc-gate.json`.
   - **History.** Workers once ran under `--import tsx/esm`. That turns source maps on
     and runs esbuild's per-module output rather than the bundle users get.
 - **One instance per process, at steady state.** A worker builds one case, warms
@@ -446,33 +452,45 @@ guarantees).
 | `css/stylesheet` | per token, +3.2% / +3.7% | 0.98 | 1.00 | 1.00 | 1.00 | 0.0% |
 | `expected/narrow` | per parse, +1.7% / +3.3% | 0.21 | 0.32 | 0.54 | **0.80** | 0.0% |
 | `rollback/medium` | per parse, +5.1% / +5.1% | 1.00 | 1.00 | 1.00 | 1.00 | 0.0% |
+| `rollback/medium` | per parse, +2.9% / +2.2% | 0.38 | — | 0.85 | **0.96** | 0.0% |
 
 `expected/narrow`'s plant came out closest to 2%, and it sets the count: 900
 rounds, 45 per shard. The other two get the same count. The ruling for css was
-about 900 after a +1.9% plant was missed at 300. `rollback/medium`'s plant came
-out at +5.1%, so the gate's power on it at 2% is shown only by the shift model
-(0.94 at 900), which is not proof here.
+about 900 after a +1.9% plant was missed at 300. `rollback/medium`'s plant size
+does not follow the dose: a checksum over 0.40, 0.16 and 0.12 of the input cost
++5.1%, +2.9% and +4.4%. Its smallest real plant (+2.9% median, +2.2% mean) is
+caught 0.96 of the time at 900.
 
-The other nine cases are not bimodal, so the shift model holds for them. On
-Node 26, at their counts, from symmetrised identical-code rounds (200 draws each):
+The other nine cases are not bimodal, so the shift model holds for them. Their
+pool is every identical-code round on Node 26 so far: 430–850 rounds per case,
+from three CI rounds. A pool the size of the draw would overstate power, because a
+draw would then repeat the pool's own sample. Symmetrised, 200 draws per cell:
 
-| case | rounds | identical code fails | uniform +2% | 1 in 5 processes +20% |
-| --- | ---: | ---: | ---: | ---: |
-| `expected/none` | 100 | 0.0% | 1.00 | 0.89 |
-| `expected/wide` | 100 | 0.0% | 1.00 | 0.91 |
-| `less/mixins` | 100 | 0.0% | 1.00 | 0.94 |
-| `less/stylesheet` | 100 | 0.0% | 1.00 | 0.97 |
-| `rollback/dense` | 100 | 0.0% | 1.00 | 0.90 |
-| `rollback/sparse` | 100 | 0.0% | 0.99 | 0.93 |
-| `graphql/document` | 160 | 0.0% | 1.00 | 1.00 |
-| `json/document` | 160 | 0.0% | 1.00 | 1.00 |
-| `rollback/none` | 160 | 0.0% | 1.00 | 1.00 |
+| case | rounds | identical code fails | uniform +2% | 1 in 5 processes +20% | 1 in 10 +40% | 1 in 20 +80% |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `expected/none` | 100 | 0.0% | 1.00 | 0.91 | 0.32 | 0.01 |
+| `expected/wide` | 100 | 0.0% | 1.00 | 0.94 | 0.32 | 0.01 |
+| `less/mixins` | 100 | 0.0% | 1.00 | 0.93 | 0.32 | 0.01 |
+| `less/stylesheet` | 100 | 0.0% | 1.00 | 0.96 | 0.31 | 0.02 |
+| `rollback/sparse` | 100 | 0.0% | 1.00 | 0.94 | 0.34 | 0.01 |
+| `graphql/document` | 160 | 0.0% | 1.00 | 0.92 | 0.61 | 0.15 |
+| `json/document` | 160 | 0.0% | 1.00 | 0.99 | 0.72 | 0.13 |
+| `rollback/dense` | 160 | 0.0% | 1.00 | 0.99 | 0.78 | 0.10 |
+| `rollback/none` | 160 | 0.0% | 1.00 | 0.99 | 0.76 | 0.19 |
 
-Those pools are small, 100–160 rounds per case from one run of 20 shards, so treat
-the third decimal as noise.
+`rollback/dense` has 160 rounds for margin: at 100 its mixture power was 0.90 on
+a smaller pool.
+
+**Known limit: a rare, large slowdown is mostly missed.** If one process in ten
+runs 40% slower, a 100-round case catches it about a third of the time. At one
+in twenty 80% slower, it almost never does. The median does not move. The mean
+moves, but by less than one far-out process in either direction moves it in the
+noise. The 900-round cases catch the same shapes 0.60–0.90 of the time. Closing
+this for the quiet cases would take several times their rounds.
 
 In `bench/xproc-gate.json` that is 20 shards of 5 rounds, 8 for `graphql/document`,
-`json/document` and `rollback/none`, and 45 for the three bimodal cases. A release
+`json/document`, `rollback/none` and `rollback/dense`, and 45 for the three bimodal
+cases. A release
 shard takes about 10½ minutes (mean 631 s, max 661 s), and a peak shard about 4.
 With 40 shard jobs against a 20-runner limit, the gate takes about 20 minutes of
 wall time.
@@ -500,6 +518,7 @@ columns resample real rounds (symmetrised for identical code).
 | `css/stylesheet`, per-token plant, +3.2% median | 10 × 90 rounds | caught at 900 | 0.98 at 300 |
 | `expected/narrow`, per-parse plant, +1.7% median / +3.3% mean | 10 × 90 | caught at 900 | 0.80 at 900 |
 | `rollback/medium`, per-parse plant, +5.1% | 10 × 90 | caught at 900 | 1.00 at 300 |
+| `rollback/medium`, per-parse plant, +2.9% median / +2.2% mean | 10 × 90 | caught at 900 | 0.96 at 900 |
 
 **On the earlier configurations (Node 24, then a mix of 24 and 26, 10 shards).**
 These show the mechanics and the plants that apply to every case. They are not

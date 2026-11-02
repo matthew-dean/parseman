@@ -151,10 +151,10 @@ const dialects = [...new Set(dialectsRaw)] as Dialect[]
  */
 const REPORT_ONLY = process.argv.includes('--report-only')
 /**
- * Advisory: measure, print and summarise as usual, but never fail. CI runs the timing
- * step this way until the macro A/B moves to the cross-process design the perf verdict
- * uses (docs/design/perf-gates.md): its in-process timing still reads the instance
- * lottery, so a red here is not evidence enough to block.
+ * Advisory: a candidate row over its ratio ceiling is reported, not failed. CI runs the
+ * timing step this way until the macro A/B moves to the cross-process design the perf
+ * verdict uses (docs/design/perf-gates.md): its in-process timing still reads the
+ * instance lottery. Every harness and structural check still fails the run.
  */
 const ADVISORY = process.argv.includes('--advisory')
 /** A PR's base commit: also report HEAD against it. */
@@ -278,7 +278,7 @@ const provenanceValid = allRows.every(row => row.head.engine === 'macro'
   && row.reference.lowering === 'macro→static-table-assembly')
 const aaWorstSwing = Math.max(...selfRows.map(row => Math.max(row.ratio, 1 / row.ratio))) * aaSwingPlant
 const expectedFullRows = expectedRowKeys(dialects).length * 2
-const timingErrors = macroTimingErrors({
+const acceptance = {
   fullRows,
   expectedFullRows,
   pairingArtifacts,
@@ -288,7 +288,12 @@ const timingErrors = macroTimingErrors({
   aaSwingCeiling: CONFIG.aaSwingCeiling,
   candidateRatios: ratios,
   candidateRatioCeiling: CONFIG.candidateRatioCeiling,
-})
+}
+const timingErrors = macroTimingErrors(acceptance)
+// `--advisory` makes the timing ROWS advisory, nothing else: a missing row, a pairing
+// artifact, a forced row, bad provenance or an A/A swing past its ceiling is a harness or
+// structural failure and still exits 1.
+const blockingErrors = ADVISORY ? macroTimingErrors({ ...acceptance, candidateRatios: [] }) : timingErrors
 const measurementValid = timingErrors.length === 0
 
 process.stdout.write(`${JSON.stringify({
@@ -361,4 +366,4 @@ if (MERGE_BASE !== null) {
       { stdio: ['ignore', 2, 'inherit'], cwd: ROOT })
   }
 }
-process.exit(ADVISORY ? 0 : macroTimingExitCode(timingErrors))
+process.exit(macroTimingExitCode(blockingErrors))
