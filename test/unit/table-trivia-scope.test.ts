@@ -207,6 +207,8 @@ describe('a table rule with no trivia of its own, run inside a caller\'s trivia'
     list: sepBy(num, sequence(pad, literal(','))),
     // A gap that cannot match empty gives the item a first set, and a gap gate.
     spaced: sequence(num, many(sequence(regex(/ +/), literal('*'), num))),
+    // A routed arm: the trivia after its token is not known, so it has no gate.
+    routed: dispatch(word, otherwise(choice(sequence(routed(), literal(':'), word), sequence(routed(), literal('!'))))),
   }
   for (const [shape, body] of Object.entries(shapes)) {
     it(shape, () => {
@@ -218,7 +220,7 @@ describe('a table rule with no trivia of its own, run inside a caller\'s trivia'
       const legs: Array<readonly [string, Parse]> = readers(encodeTable({ E })).map(([n, e]) => [n, asParse(e.E)] as const)
       const compiled = compile(E) as unknown as { parseWithContext: (input: string, ctx: unknown, pos: number) => ReturnType<Parse> }
       legs.push(['compile()', ((input, pos, ctx) => compiled.parseWithContext(input, ctx, pos)) as Parse] as const)
-      for (const s of ['/*c*/*', '/*c*/*1!', ' /*c*/*1!', '*1!', '/*c*/!', 'x', '/*c*/x', 'a/*c*/*', 'a /*c*/*', 'a/*c*/x', '1,2', '1/*c*/,2', '1 /*c*/,2', '1 /*c*/*2', '1 *2 /*c*/ *3']) {
+      for (const s of ['/*c*/*', '/*c*/*1!', ' /*c*/*1!', '*1!', '/*c*/!', 'x', '/*c*/x', 'a/*c*/*', 'a /*c*/*', 'a/*c*/x', '1,2', '1/*c*/,2', '1 /*c*/,2', '1 /*c*/*2', '1 *2 /*c*/ *3', 'a/*c*/:b', 'a:b', 'a /*c*/!', 'a/*c*/?']) {
         const input = `${s};`
         const want = result(parser({ trivia: comment }, sequence(E, literal(';'))), input, false)
         for (const [name, parse] of legs) {
@@ -283,3 +285,29 @@ describe('a regex construct the first-set reader does not model is unknown, not 
     expect(run(g.Pick!, 'a').ok).toBe(true)
   })
 })
+
+describe('a construct encoded once for every scope it runs in', () => {
+  it('a routed() fallback reached inside noTrivia and outside it', () => {
+    const y = sequence(routed(sequence(num, many(sequence(pad, literal('*'), num)))), literal(';'))
+    const g = rules({ trivia: comment }, () => ({ S: sequence(literal('['), noTrivia(sequence(literal('|'), y)), y, literal(']')) })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['[|1;1 /*c*/*2;]', '[|1 *2;1/*c*/*2;]', '[|1;1;]', '[|1 /*c*/*2;1;]']) {
+        expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+      }
+    }
+  })
+})
+
+describe('a choice of another grammar over a reference that installs its rule\'s trivia', () => {
+  it('enters the arm where the installed trivia comes first, in the interpreter too', () => {
+    const lib = rules({ trivia: comment }, (g: Record<string, Comb>) => ({ R: sequence(optional(literal('x')), literal('+'), num), Rr: g.R! })) as Record<string, Comb>
+    const g = rules(() => ({ S: noTrivia(sequence(literal('>'), many(choice(literal('a'), lib.Rr!)), literal(';'))) })) as Record<string, Comb>
+    expect(run(g.S!, '>/*c*/+1;').ok).toBe(true)
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['>/*c*/+1;', '>a/*c*/+1;', '>+1;', '>x/*c*/+1;', '>a;', '>/*c*/;']) {
+        expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+      }
+    }
+  })
+})
+

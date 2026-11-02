@@ -1,6 +1,8 @@
 import type { Combinator } from '../types.ts'
 import type { HostMode } from '../cst/host-mode.ts'
 import { ref } from './ref.ts'
+import { matchesEmpty, union } from './first-set.ts'
+import { hasOwnTriviaBoundary } from './trivia-boundary.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { parser as grammarParser } from './grammar.ts'
 import { collectGrammarReflection, NODE_TAG, NODE_TYPE, type GrammarWithReflection } from '../cst/reflection.ts'
@@ -315,6 +317,29 @@ export function linkRules(
     claimedRules.add(winners.get(key)!.parser).add(rule)
   }
 
+  // A reference that installs its rule's trivia may start with that trivia
+  // (`widenForInstall`); an alias of it copied its first set at `define()`, so it
+  // takes the widened one too.
+  for (const key of keys) {
+    const trivia = cache[key]!._meta.grammarTrivia
+    if (trivia !== undefined) widenForInstall(cache[key]!, trivia)
+  }
+  for (let round = 0, changed = true; changed && round < keys.length; round++) {
+    changed = false
+    for (const key of keys) {
+      const rule = cache[key]!
+      if (rule._def.tag !== 'lazy') continue
+      let target: Combinator<unknown>
+      try { target = rule._def.thunk() } catch { continue }
+      if (target._def.tag !== 'lazy') continue
+      const widened = union(rule._meta.firstSet, target._meta.firstSet)
+      if (JSON.stringify(widened) !== JSON.stringify(rule._meta.firstSet)) {
+        rule._meta.firstSet = widened
+        changed = true
+      }
+    }
+  }
+
   // Record the factory's DECLARATION order (the returned object's key order).
   // `cache`'s own key order is reference-creation order — a Proxy artifact — so
   // it can lead with an internal rule instead of the entry rule. Consumers that
@@ -330,3 +355,32 @@ export function linkRules(
 
   return cache
 }
+
+/**
+ * A reference made from a region that cleared trivia installs its rule's trivia
+ * (`ref.ts`). Where the rule opens with a term that may match empty, that trivia
+ * can then come first, so the reference's own first set, which a `choice()` of
+ * another grammar dispatches on, takes in the trivia's: without it the choice
+ * rejected an arm that entering would accept (a comment, then `+1`, against a rule
+ * `sequence(optional('x'), '+', num)` of a comment-trivia map).
+ */
+function widenForInstall(rule: Combinator<unknown>, trivia: Combinator<unknown>): void {
+  if (rule._def.tag !== 'lazy') return
+  let target: Combinator<unknown>
+  try { target = rule._def.thunk() } catch { return }
+  if (!hasOwnTriviaBoundary(target) || !opensNullable(target, 0)) return
+  rule._meta.firstSet = union(rule._meta.firstSet, trivia._meta.firstSet)
+}
+
+function opensNullable(p: Combinator<unknown>, depth: number): boolean {
+  if (depth > 8) return true
+  const d = p._def
+  switch (d.tag) {
+    case 'sequence': return d.parsers.length > 1 && matchesEmpty(d.parsers[0]!)
+    case 'node': case 'label': case 'leaf': case 'transform': case 'attempt': case 'expect': case 'field':
+      return opensNullable(d.parser, depth + 1)
+    case 'choice': return d.parsers.some(a => opensNullable(a, depth + 1))
+    default: return false
+  }
+}
+

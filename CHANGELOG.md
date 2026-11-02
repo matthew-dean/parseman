@@ -113,6 +113,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   map with an optional-literal lead stopped at the comment; the new gates had the same
   blind spot. Test: `test/unit/table-trivia-scope.test.ts`, registered in
   `check:differentials`.
+- Fixed: a `choice()` over a reference into another `rules()` map whose rule installs
+  its trivia (the reference is made from a region that cleared trivia) and opens with
+  a term that may match empty now enters that arm where the trivia comes first. The
+  reference's construction-time first set takes in the trivia's, and an alias's
+  follows it. The interpreter rejected a comment before `+1` against
+  `sequence(optional('x'), '+', num)` from another map, and accepted it from the same
+  map, where the reference is not yet defined when the choice is built.
 - Fixed: a `regex()` with an escape the first-set reader does not model (`\p{L}`,
   `\u{1F600}`, `\cJ`, `\k<name>`) has an unknown first set. The reader took it as its
   letter (`/\p{L}+/u` started with `p`), so `choice(regex(/\p{L}+/u), '1')` rejected

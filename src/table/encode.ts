@@ -632,8 +632,12 @@ class Encoder {
     const rr = this.refResolver()
     let out: boolean
     switch (d.tag) {
-      case 'literal': case 'regex': case 'keywords': case 'routed': case 'token':
+      case 'literal': case 'regex': case 'keywords': case 'token':
         out = false
+        break
+      // `routed()` encodes its fallback under the scope that reaches it.
+      case 'routed':
+        out = d.fallback !== undefined && this.readsScope(d.fallback)
         break
       case 'grammar':
         out = d.clearTrivia !== true && d.triviaParser === undefined && this.readsScope(d.parser)

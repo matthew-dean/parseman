@@ -308,6 +308,33 @@ export const DEFECTS = {
     }],
   },
 
+  'routed-gate-unknown-trivia': {
+    why: 'encoder: a routed gate is laid down where the trivia after its token is not known',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    if (boundary === undefined && !this.triviaKnown) return undefined\n',
+      replace: '',
+    }],
+  },
+
+  'routed-fallback-one-scope': {
+    why: 'encoder: a routed() fallback is encoded once, under the first scope that reaches it',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '        out = d.fallback !== undefined && this.readsScope(d.fallback)\n',
+      replace: '        out = false\n',
+    }],
+  },
+
+  'install-first-set-unwidened': {
+    why: 'interpreter: a reference that installs its rule\'s trivia keeps its rule\'s own first set, without that trivia',
+    edits: [{
+      file: 'src/combinators/parser.ts',
+      find: '  rule._meta.firstSet = union(rule._meta.firstSet, trivia._meta.firstSet)\n',
+      replace: '',
+    }],
+  },
+
   'token-body-caller-scope': {
     why: 'encoder: a token\'s body is encoded under its caller\'s trivia, which a token clears',
     edits: [{
