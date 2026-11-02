@@ -42,20 +42,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   anywhere, but it now also carries the first characters of its non-empty matches. A
   sequence, which tracks nullability itself, unions those with the next term's, so
   `sequence(regex(/[ \t]*/), regex(/[*%]/), regex(/[ \t]*/))` is `{ws, *, %}` instead
-  of `any`. A repeat of such an operator now has an item class and the operator's node
-  a gate: at a value end (`;`, `)`, `,`) an operator chain `A (op A)*` stops on the
-  character instead of opening each level's operator to scan an empty pad and fail.
+  of `any`. A repeat of such an operator now has an item class: at a value end (`;`,
+  `)`, `,`) an operator chain `A (op A)*` stops on the character instead of opening
+  each level's operator to scan an empty pad and fail.
   Jess's SCSS grammar writes its math operators this way: its generated workload parses
   in 13.1% fewer marginal instructions per parse (JIT, against 0.58.0). Trees are
   unchanged.
 
-  The narrowed set is read by three gates only, all in strict assemblies: a repeat
-  item's class, the gap gate below, and a node's gate. Each applies it only where the
-  interpreter does not test that child's set itself: the interpreter's repeat, node
-  and attempt guard on the construction-time set they were built with (now recorded
-  on the def as `guarded`), and where they do, the table tests that same set. A
-  node's gate miss reports what entering the node reports, without the pad
-  (`gateMissExpected`). Everything else reads first sets as 0.58.0 did (`firstSetOf`
+  The narrowed set is read by two gates only, both in strict assemblies: a repeat
+  item's class and the gap gate below. Each applies it only where the interpreter
+  does not test that child's set itself: the interpreter's repeat, node and attempt
+  guard on the construction-time set they were built with (now recorded on the def
+  as `guarded`), and where they do, the table tests that same set. A node's gate is
+  not narrowed: its miss reports a static set, which matches what entering the node
+  reports only where the body's first set is finite without the pad (a `keywords()`
+  term reports `keyword`, a list its item set). Everything else reads first sets as
+  0.58.0 did (`firstSetOf`
   with `consuming` false): a sequence's construction-time set, tolerant recovery's
   resync sentinels (a follow sentinel reads no trivia, as the interpreter's
   `followSentinels`; a list's separator sentinel reads the live trivia, as the
@@ -135,8 +137,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   first set, the gap walk and the encoding of a rule referenced from a cleared region
   take the trivia that reference installs (`triviaThroughRef`, as `ref.ts` does) —
   a choice arm, a gap gate's other arms and a routed gate's next term included —
-  and a
-  `token()` body, which runs with trivia cleared, is encoded under none. In
+  and a `token()` body, which runs with trivia cleared, is encoded under none. That
+  widening is the encoder's: the interpreter's own first sets (its recovery follow
+  sentinels) read a reference as 0.58.0 did (#223). In
   0.58.0 a routed arm in a rule with no trivia, run under a caller's comment trivia,
   failed on `a/*c*/:b`, and a repeat in `noTrivia(…)` over a rule of a comment-trivia
   map with an optional-literal lead stopped at the comment; the new gates had the same
@@ -148,8 +151,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `"ac"` only, in every engine and `compile()`, where the interpreter, which enters
   each arm, adds `"b"`. Under a probe the ordered path now enters every arm, in the
   reference driver, the closure and emitted engines and a lexical choice, and a
-  lexical choice no arm's class admits records each arm's failure. Parses without a
-  probe are unchanged. Test: `test/unit/table-trivia-scope.test.ts`.
+  lexical choice no arm's class admits records each arm's failure. A dispatch miss on
+  an exclusive choice runs every arm under a probe, as the interpreter's `choice()`
+  does. Parses without a probe are unchanged. Test:
+  `test/unit/table-trivia-scope.test.ts`.
 - Fixed: a `regex()` with an escape the first-set reader does not model (`\p{L}`,
   `\u{1F600}`, `\cJ`, `\k<name>`) has an unknown first set. The reader took it as its
   letter (`/\p{L}+/u` started with `p`), so `choice(regex(/\p{L}+/u), '1')` rejected
