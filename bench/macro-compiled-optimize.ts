@@ -150,6 +150,13 @@ const dialects = [...new Set(dialectsRaw)] as Dialect[]
  * the same runner moments earlier instead of timing them again, which halves its cost.
  */
 const REPORT_ONLY = process.argv.includes('--report-only')
+/**
+ * Advisory: a candidate row over its ratio ceiling is reported, not failed. CI runs the
+ * timing step this way until the macro A/B moves to the cross-process design the perf
+ * verdict uses (docs/design/perf-gates.md): its in-process timing still reads the
+ * instance lottery. Every harness and structural check still fails the run.
+ */
+const ADVISORY = process.argv.includes('--advisory')
 /** A PR's base commit: also report HEAD against it. */
 const MERGE_BASE = arg('merge-base')
 const SELF_CONTROL = arg('self-control')
@@ -271,7 +278,7 @@ const provenanceValid = allRows.every(row => row.head.engine === 'macro'
   && row.reference.lowering === 'macro→static-table-assembly')
 const aaWorstSwing = Math.max(...selfRows.map(row => Math.max(row.ratio, 1 / row.ratio))) * aaSwingPlant
 const expectedFullRows = expectedRowKeys(dialects).length * 2
-const timingErrors = macroTimingErrors({
+const acceptance = {
   fullRows,
   expectedFullRows,
   pairingArtifacts,
@@ -281,8 +288,16 @@ const timingErrors = macroTimingErrors({
   aaSwingCeiling: CONFIG.aaSwingCeiling,
   candidateRatios: ratios,
   candidateRatioCeiling: CONFIG.candidateRatioCeiling,
-})
-const measurementValid = timingErrors.length === 0
+}
+const timingErrors = macroTimingErrors(acceptance)
+// `--advisory` makes the timing ROWS advisory, nothing else: a missing row, a pairing
+// artifact, a forced row, bad provenance or an A/A swing past its ceiling is a harness or
+// structural failure and still exits 1.
+const blockingErrors = ADVISORY ? macroTimingErrors({ ...acceptance, candidateRatios: [] }) : timingErrors
+// Under --advisory, a candidate breach is reported as advisory, not as a rejection, so a
+// consumer can tell a valid advisory run from a failed measurement.
+const advisoryReasons = timingErrors.filter(e => !blockingErrors.includes(e))
+const measurementValid = blockingErrors.length === 0
 
 process.stdout.write(`${JSON.stringify({
   macro_geomean_ratio: geomean(ratios),
@@ -302,7 +317,8 @@ process.stdout.write(`${JSON.stringify({
   measurement_valid: measurementValid ? 1 : 0,
   asserted_candidate_slowdown: slowdownPlant,
   asserted_aa_swing: aaSwingPlant,
-  rejection_reasons: timingErrors,
+  rejection_reasons: blockingErrors,
+  advisory_reasons: advisoryReasons,
   rows: scoredRows,
   provenance: {
     harness: realpathSync(import.meta.filename),
@@ -325,10 +341,11 @@ const table = [
   '| fixture | time Δ (head / reference) | A/A control | verdict |',
   '| --- | ---: | ---: | --- |',
   ...scoredRows.map(row => `| ${row.dialect}/${row.fixture} | ${pct(row.ratio)} | ${pct(row.selfRatio)}`
-    + ` | ${REPORT_ONLY ? 'report only' : row.gateRatio > CONFIG.candidateRatioCeiling ? '**FAIL**' : 'ok'} |`),
+    + ` | ${REPORT_ONLY ? 'report only' : row.gateRatio > CONFIG.candidateRatioCeiling ? (ADVISORY ? 'over ceiling (advisory)' : '**FAIL**') : 'ok'} |`),
   '',
   `geomean ${pct(geomean(ratios))}; worst A/A swing ${pct(aaWorstSwing)} against a ${pct(CONFIG.aaSwingCeiling)} ceiling`
-    + (timingErrors.length > 0 ? `; rejected: ${timingErrors.join('; ')}` : ''),
+    + (blockingErrors.length > 0 ? `; rejected: ${blockingErrors.join('; ')}` : '')
+    + (advisoryReasons.length > 0 ? `; advisory: ${advisoryReasons.join('; ')}` : ''),
 ].join('\n')
 process.stderr.write(`\n${table}\n`)
 const summaryFile = process.env['GITHUB_STEP_SUMMARY']
@@ -349,9 +366,9 @@ if (MERGE_BASE !== null) {
     process.stderr.write(`\nmacro-perf: timing HEAD against merge base ${base.slice(0, 8)} (report only)\n`)
     // Its JSON goes to stderr too: this process's stdout is the gate's one JSON object.
     // Same measurement shape as this run: forward its flags, minus the ones that pick the arm.
-    const forwarded = process.argv.slice(2).filter(a => a !== '--' && !/^--(merge-base|ref|report-only|self-control)\b/.test(a))
+    const forwarded = process.argv.slice(2).filter(a => a !== '--' && !/^--(merge-base|ref|report-only|self-control|advisory)\b/.test(a))
     spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, ...forwarded, `--ref=${base}`, '--report-only', `--self-control=${file}`],
       { stdio: ['ignore', 2, 'inherit'], cwd: ROOT })
   }
 }
-process.exit(macroTimingExitCode(timingErrors))
+process.exit(macroTimingExitCode(blockingErrors))
