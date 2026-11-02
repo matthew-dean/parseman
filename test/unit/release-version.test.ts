@@ -359,6 +359,70 @@ describe('publish.yml records on main only with the deploy key', () => {
   })
 })
 
+describe('publish.yml runs no dependency where a credential is held', () => {
+  const yml = readFileSync(join(dirname(new URL(import.meta.url).pathname), '../../.github/workflows/publish.yml'), 'utf8')
+  // Each job's text: the lines under `jobs:` from one two-space-indented key to the next.
+  const jobs = yml.slice(yml.indexOf('\njobs:\n')).split(/\n(?= {2}[\w-]+:\n)/).slice(1)
+    .map((text) => ({ name: /^ {2}([\w-]+):/.exec(text)![1]!, text }))
+
+  it('gives the OIDC token, the write token and the deploy key to one job, which installs nothing but the pinned npm and runs no package code', () => {
+    const privileged = jobs.filter((j) => /id-token: write|contents: write|secrets\./.test(j.text))
+    expect(privileged.map((j) => j.name)).toEqual(['publish'])
+    const body = privileged[0]!.text
+      .split('\n').filter((line) => !/^\s*run: npm install -g npm@\d+\.\d+\.\d+$/.test(line)).join('\n')
+    expect(body).not.toMatch(/\bpnpm\b|\bnpx\b|\byarn\b|\bnpm (ci|i|install|run|test|exec|pack)\b|cache:/)
+    expect(body).toMatch(/npm publish "\$tgz" --provenance --ignore-scripts/)
+  })
+
+  it('pins the npm that packs and publishes', () => {
+    const installs = [...yml.matchAll(/npm install -g (\S+)/g)].map((m) => m[1])
+    expect(installs.length).toBeGreaterThan(0)
+    for (const spec of installs) expect(spec).toMatch(/^npm@\d+\.\d+\.\d+$/)
+  })
+})
+
+describe('publish.yml ships a tarball no test-time dependency touched', () => {
+  const yml = readFileSync(join(dirname(new URL(import.meta.url).pathname), '../../.github/workflows/publish.yml'), 'utf8')
+  const jobs = Object.fromEntries(yml.slice(yml.indexOf('\njobs:\n')).split(/\n(?= {2}[\w-]+:\n)/).slice(1)
+    .map((text) => [/^ {2}([\w-]+):/.exec(text)![1]!, text]))
+
+  it('packs what ships in a job that runs the build alone, and only the build job hands a tarball over', () => {
+    const build = jobs.build!
+    expect(build).toMatch(/pnpm install --frozen-lockfile --ignore-scripts/)
+    expect(build).toMatch(/npm pack --ignore-scripts/)
+    expect(build).not.toMatch(/cache:|pnpm (test|run|exec|build)\b|vitest/)
+    expect(build).toMatch(/if \[ "\$sha" != "\$PREPARED" \]; then/)
+    expect(jobs.prepare).not.toMatch(/upload-artifact/)
+    expect(build).toMatch(/upload-artifact/)
+  })
+
+  it('publishes that tarball by the sha the build job output, and decides the version itself', () => {
+    const publish = jobs.publish!
+    expect(publish).toMatch(/needs: \[prepare, build\]/)
+    expect(publish).toMatch(/SHA256: \$\{\{ needs\.build\.outputs\.sha256 \}\}/)
+    const check = publish.indexOf('sha256sum -c --strict')
+    expect(check).toBeGreaterThan(-1)
+    expect(check).toBeLessThan(publish.indexOf('npm publish "$tgz"'))
+    expect(publish).toMatch(/nextVersion\(\{ declared, published: \[\.\.\.npm, \.\.\.tags\] \}\)/)
+    expect(publish.indexOf('The version is the one main asks for')).toBeLessThan(publish.indexOf('npm publish "$tgz"'))
+    expect(publish).toMatch(/if \[ "\$stamped" != "\$COMMIT" \]; then/)
+  })
+})
+
+describe('publish.yml releases only a commit CI passed', () => {
+  const yml = readFileSync(join(dirname(new URL(import.meta.url).pathname), '../../.github/workflows/publish.yml'), 'utf8')
+
+  it('waits for the required `test` check on this exact commit before stamping', () => {
+    const wait = yml.indexOf('- name: Wait for CI to pass on this commit')
+    expect(wait).toBeGreaterThan(-1)
+    expect(wait).toBeLessThan(yml.indexOf('- name: Stamp the release'))
+    const step = yml.slice(wait, yml.indexOf('\n      - name:', wait + 1))
+    expect(step).toMatch(/commits\/\$GITHUB_SHA\/check-runs\?check_name=test&/)
+    expect(step).toMatch(/"completed success"\) .*break/)
+    expect(step).toMatch(/completed\*\) .*exit 1/)
+  })
+})
+
 describe('the plan decides from what it read', () => {
   // main as v0.2.0 left it: the section that release shipped.
   const shipped020 = '# Changelog\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
