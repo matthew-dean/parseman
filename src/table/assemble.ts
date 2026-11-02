@@ -110,6 +110,7 @@ import {
 import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { failCleanAnalysis } from './fail-clean.ts'
+import { leadMasks, maskHas, maskOfClass, maskOfRanges, type LeadMask } from './left-corner.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
@@ -149,6 +150,21 @@ import {
  */
 const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | undefined> } })
   .process?.env?.PM_TABLE_EMIT !== '0'
+
+/** Left-corner routing prototype (`src/table/left-corner.ts`): off unless `PM_LC=1`. */
+const LC_ENABLED = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+  .process?.env?.PM_LC === '1'
+/** Planted defects, to show the identity sweep can fail (prototype only). */
+const LC_PLANT = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.PM_LC_PLANT ?? ''
+const P_KIDS = LC_PLANT === 'kids'
+const P_NO_REP_RESUME = LC_PLANT === 'no-rep-resume'
+const P_SEP_WRITE = LC_PLANT === 'sep-write'
+const P_STATE = LC_PLANT === 'state'
+const LC_TRACE = LC_PLANT === 'trace'
+type LcStat = { shape: string; hits: number; deep: number; depths: number[] }
+const LC_DEBUG: Map<number, LcStat> | undefined = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+  .process?.env?.PM_LC_DEBUG === '1' ? new Map() : undefined
+if (LC_DEBUG !== undefined) (globalThis as { __lcStats?: Map<number, LcStat> }).__lcStats = LC_DEBUG
 
 /** Failure sentinel — SHARED with the other two engines, see `cell.ts`. */
 import { FAIL, newEndCell } from './cell.ts'
@@ -1412,6 +1428,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const inFlight = new Map<number, { fwd: Piece; set: (p: Piece) => void }>()
 
   function link(ip: number): Piece {
+    if (OVR_DEPTH === LOWER_DEPTH) {
+      const x = OVR_IPS.indexOf(ip)
+      if (x >= 0) return OVR_PIECES[x]!
+    }
     const done = memo.get(ip)
     if (done !== undefined) return done
     const flight = inFlight.get(ip)
@@ -1438,7 +1458,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // holder first so a recursive child can still link back through this site.
     const piece = scopeIsIdentity(code, ip, closureLabels.at(ip))
       ? link(code[ip + 2]!)
-      : countedPiece(lookaheadLedNode(ip) ?? lower(ip), ip)
+      : countedPiece(leftCornerPiece(ip) ?? lookaheadLedNode(ip) ?? lower(ip), ip)
 
     inFlight.delete(ip)
     holder.set(piece)
@@ -1489,7 +1509,760 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
   }
 
+  /* ── LEFT-CORNER ROUTING — PROTOTYPE (`PM_LC=1`, step 1) ──────────────────
+
+   A node whose body begins, through wrappers, sequences and repeats, with
+   another node is the top of a SPINE: every level on it starts at the same
+   position with the same piece. The driver routes on the character at `pos`
+   (a table built here from the gates, lead masks and trivia labels), applies
+   the context each level would install, calls the deepest node the character
+   reaches ONCE, and then completes the levels outward. A level whose
+   continuation cannot start at the character after that node completes with the
+   node as its only child: its reducer runs on it directly, with no frame. A
+   level whose continuation can start runs its own lowered body, freshly linked
+   with its left corner SEEDED with what was already parsed — nothing is read
+   twice. */
+  const LC = LC_ENABLED && !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines && !cfg.tolerant
+  const leadOf = LC ? leadMasks(code, k, cc) : undefined
+  /** Which site's piece a nested `lower` must take for one edge (see `lowerSeeded`). */
+  let LOWER_DEPTH = 0
+  let OVR_IPS: number[] = []
+  let OVR_PIECES: Piece[] = []
+  let OVR_DEPTH = -1
+  let SEED_ARMED = false
+  let SEED_POS = -1
+  let SEED_END = -1
+  let SEED_PV: unknown
+  let SEED_RV: unknown
+  /** The per-call save stack the spine driver pushes level contexts onto. */
+  const SV: unknown[] = []
+  let SP = 0
+
+  const K_WRAP = 0, K_SCOPE = 1, K_WITHCTX = 2, K_NODE = 3, K_SEQ = 4, K_REP = 5, K_CHOICE = 6
+  const V_PLAIN = 0, V_CHILDREN = 1, V_CHILDREN_FIELDS = 2, V_COLLAPSE = 3, V_CHILDREN_COLLAPSE = 4
+  const V_GENERIC = 5, V_PASS = 6
+  const T_OPT_GATE = 0, T_REP_CLASS = 1, T_GATE_FAIL = 2
+  type Tail = { kind: number; collect: boolean; xf: string[] }
+  type Level = {
+    kind: number
+    ip: number
+    /** The child this level reaches its left corner through. */
+    next: number
+    /** Per-character: may the walk continue past this level? (undefined: always) */
+    pass: ((c: number) => boolean) | undefined
+    candidate: boolean
+    scanFor: FastTriviaScanner | null
+    scopeTrivia: ParseContext['trivia']
+    scopeLabels: ParseContext['triviaKindLabels']
+    cap: boolean
+    rootFlags: number
+    derive: ((s: unknown) => unknown) | undefined
+    extra: unknown
+    variant: number
+    build: NodeBuilder | undefined
+    captureWide: boolean
+    wantFields: boolean
+    readsState: boolean
+    omitsRaw: boolean
+    collapse: boolean
+    readsRaw: boolean
+    leading: Piece[]
+    wantValues: boolean
+    tails: Tail[]
+    resumeMask: LeadMask | null
+    collect: boolean
+    /** A repeat whose item can fail dirty rolls the item's diagnostics back. */
+    itemDirty: boolean
+    reportItem: boolean
+    itemFx: string[]
+    maxOne: boolean
+    sepXf: string[] | undefined
+    resumeTop: number
+    resumed: Piece | undefined
+    /** The site's trivia is not named by the labels: read it from `ctx.trivia` at run time. */
+    trivRuntime: boolean
+    exclusive: boolean
+    choiceFx: string[]
+    prefixFx: string[][]
+    suffixFx: string[][]
+    tObj: unknown
+    tMask: LeadMask | null
+  }
+  function blankLevel(kind: number, ip: number, next: number): Level {
+    return {
+      kind, ip, next, pass: undefined, candidate: false,
+      scanFor: null, scopeTrivia: undefined, scopeLabels: undefined, cap: false, rootFlags: 0,
+      derive: undefined, extra: undefined,
+      variant: -1, build: undefined, captureWide: false, wantFields: false, readsState: false, omitsRaw: false,
+      collapse: false, readsRaw: false,
+      leading: [], wantValues: false, tails: [], resumeMask: null,
+      collect: false, itemDirty: false, reportItem: false, itemFx: EMPTY_FX, maxOne: false, sepXf: undefined,
+      resumeTop: -1, resumed: undefined, trivRuntime: false, exclusive: false, choiceFx: EMPTY_FX, prefixFx: [], suffixFx: [], tObj: undefined, tMask: null,
+    }
+  }
+  function orMask(a: LeadMask, b: LeadMask): void { for (let i = 0; i < 129; i++) if (b[i] === 1) a[i] = 1 }
+  /** The trivia that may run at a site, as a mask; `null` when unknown. */
+  function triviaMaskAt(ip: number): LeadMask | null {
+    const r = triviaLeadRanges(closureLabels.at(ip).tri, trivia)
+    return r === undefined ? null : maskOfRanges(r)
+  }
+
+  /** May the trivia installed now start at `c`? Cached per level on the trivia object. */
+  function triviaMayStart(L: Level, T: ParseContext['trivia'], c: number): boolean {
+    if (T === undefined) return false
+    if (T !== L.tObj) {
+      const fs = T._meta.firstSet
+      if (LC_DEBUG !== undefined) console.error('lc: runtime trivia first set', JSON.stringify(fs).slice(0, 200))
+      L.tObj = T
+      L.tMask = fs.kind === 'empty' ? new Uint8Array(129) : fs.kind === 'ranges' ? maskOfRanges(fs.ranges) : null
+    }
+    return L.tMask === null || maskHas(L.tMask, c)
+  }
+
+  /** The variant `lower(OP_NODE)` selects, or −1 where the spine does not descend. */
+  function nodeVariant(ip: number): number {
+    const op = code[ip]
+    if (op !== OP_NODE) return -1
+    const flags = code[ip + 3]!
+    if (scalarTerminalNodeChild(code, ip) >= 0) return -1
+    const build = code[ip + 1]! >= 0
+    const proj = code[ip + 4]!
+    if (!build || proj >= 0) return -1
+    if ((flags & 128) !== 0 || (flags & 64) !== 0) return -1
+    if (flags === 0) return V_PLAIN
+    if (flags === 2) return V_CHILDREN
+    if (flags === 18) return V_CHILDREN_FIELDS
+    if (passCollapse(code, ip, hostCst)) return V_PASS
+    if (gatedPassCollapse(code, ip, hostCst) !== undefined) return -2
+    if (flags === 32) return V_COLLAPSE
+    if (flags === 34) return V_CHILDREN_COLLAPSE
+    return V_GENERIC
+  }
+
+  type Route = {
+    levels: Level[]
+    d: number
+    atom: Piece | undefined
+    cuts: { at: number; cut: number; scope: number }[]
+    cutAtoms: (Piece | undefined)[]
+  }
+
+  /**
+   * The route one character takes from `top`: the levels it enters (shared with
+   * every other character that walks the same path) and the deepest node it
+   * reaches, which is called once. Every decision is the one the level's own
+   * piece makes on that character: a gate's class, a dispatching choice's arm,
+   * a gated collapse's blockers, a sequence's leading terms and trivia.
+   */
+  function routeFor(top: number, c: number, memoL: Map<string, Level>): Route {
+    const levels: Level[] = []
+    let key = ''
+    let ip = top
+    let best = 0
+    let terminal = -1
+    const push = (L0: () => Level, at: number): Level => {
+      key += '>' + String(at)
+      let L = memoL.get(key)
+      if (L === undefined) { L = L0(); memoL.set(key, L) }
+      levels.push(L)
+      return L
+    }
+    for (let guard = 0; guard < 96; guard++) {
+      const op = code[ip]
+      if (op === OP_NODE) {
+        const variant = nodeVariant(ip)
+        if (variant === -1) { terminal = ip; break }
+        const flags = code[ip + 3]!
+        if (variant === -2) {
+          const gated = gatedPassCollapse(code, ip, hostCst)!
+          const triviaLead = triviaLeadRanges(closureLabels.at(code[ip + 2]!).tri, trivia)
+          if (triviaLead === undefined) { terminal = ip; break }
+          const blockers = [
+            ...gated.leads.map(g => cc[code[g + 1]!]!),
+            resolveClass(encodeClassSpec([
+              ...triviaLead,
+              ...gated.lits.map(i => { const x = (k[i] as string).codePointAt(0)!; return { lo: x, hi: x } }),
+            ])),
+          ]
+          if (blockers.some(b => classHas(b, c))) { terminal = ip; break }
+          const at = ip
+          push(() => {
+            const L = blankLevel(K_NODE, at, gated.last)
+            L.variant = V_PASS
+            L.candidate = true
+            L.build = fns[code[at + 1]!] as NodeBuilder
+            L.readsRaw = flags === 32
+            return L
+          }, ip)
+          best = levels.length - 1
+          ip = gated.last
+          continue
+        }
+        const at = ip
+        push(() => {
+          const L = blankLevel(K_NODE, at, code[at + 2]!)
+          L.variant = variant
+          L.candidate = true
+          L.build = fns[code[at + 1]!] as NodeBuilder
+          L.readsRaw = flags === 32
+          L.collapse = (flags & 32) !== 0
+          L.readsState = (flags & 8) !== 0
+          L.wantFields = (flags & 16) !== 0 || variant === V_CHILDREN_FIELDS
+          L.captureWide = variant === V_GENERIC && (flags & 4) !== 0
+          L.omitsRaw = (flags & 2) !== 0
+          return L
+        }, ip)
+        best = levels.length - 1
+        ip = code[ip + 2]!
+        continue
+      }
+      if (op === OP_GATE) {
+        if (!classHas(cc[code[ip + 1]!]!, c)) break
+        const at = ip
+        push(() => blankLevel(K_WRAP, at, code[at + 2]!), ip)
+        ip = code[ip + 2]!
+        continue
+      }
+      if (op === OP_RULE) {
+        const at = ip
+        push(() => blankLevel(K_WRAP, at, code[at + 1]!), ip)
+        ip = code[ip + 1]!
+        continue
+      }
+      if (op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN) {
+        const next = code[ip + 2]!
+        const at = ip
+        push(() => {
+          if (scopeIsIdentity(code, at, closureLabels.at(at))) return blankLevel(K_WRAP, at, next)
+          const ki = code[at + 1]!
+          const L = blankLevel(K_SCOPE, at, next)
+          L.scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
+          L.scopeLabels = L.scopeTrivia?._meta.triviaKindLabels
+          L.scanFor = swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
+          L.cap = op === OP_SCOPE_CAP
+          L.rootFlags = op === OP_SCOPE_PLAIN ? 0 : code[at + 3]!
+          return L
+        }, ip)
+        ip = next
+        continue
+      }
+      if (op === OP_WITHCTX) {
+        const at = ip
+        push(() => {
+          const ki = code[at + 1]!
+          const L = blankLevel(K_WITHCTX, at, code[at + 2]!)
+          if (ki < 0) L.derive = fns[~ki] as (s: unknown) => unknown
+          else L.extra = k[ki]
+          return L
+        }, ip)
+        ip = code[ip + 2]!
+        continue
+      }
+      if (op === OP_CHOICE) {
+        const table = disp[code[ip + 1]!]!
+        const n = code[ip + 2]!
+        let arm = -1
+        if (table.exclusive) {
+          const a = table.ascii[c]!
+          if (a === 0) break
+          arm = a - 1
+        } else {
+          if (n > 32) break
+          let count = 0
+          for (let i = 0; i < n; i++) {
+            const cls = table.armCls[i] ?? null
+            if (cls === null || cls.ascii[c] === 1) { count++; arm = i }
+          }
+          if (count !== 1) break
+          const armIp = code[ip + 4 + arm]!
+          if (n === 2 || n === 3) {
+            if (leadingScalarTerminal(code, armIp, 2, true, true) >= 0) break
+          } else if ((largeChoiceLiteralPretest(code, k, armIp) ?? []).length > 0) break
+        }
+        const at = ip
+        const j = arm
+        push(() => {
+          const L = blankLevel(K_CHOICE, at, code[at + 4 + j]!)
+          L.exclusive = table.exclusive
+          L.choiceFx = fx[code[at + 3]!] as string[]
+          for (let i = 0; i < n; i++) {
+            const e = fx[code[at + 4 + n + i]!] as string[]
+            if (i < j) L.prefixFx.push(e)
+            else if (i > j) L.suffixFx.push(e)
+          }
+          L.itemDirty = !CLEAN(at)
+          return L
+        }, ip * 64 + arm)
+        ip = code[ip + 4 + arm]!
+        continue
+      }
+      if (op === OP_SEQ || op === OP_SEQV) {
+        const n = code[ip + 1]!
+        const base = ip + 2
+        let adj = false
+        for (let i = 1; i < n; i++) {
+          const kidIp = code[base + i]!
+          if (code[kidIp] === OP_ADJ || leadingTriviaFieldAt(code, k, kidIp) || holdsGap(code, k, base, n, i, NULLABLE)) { adj = true; break }
+        }
+        if (adj) break
+        let lc = 0
+        while (lc < n) {
+          const t = code[base + lc]!
+          if (code[t] === OP_NOT || code[t] === OP_PEEK || (rowNullable(code, k, t, NULLABLE) && code[t] === OP_OPT)) lc++
+          else break
+        }
+        if (lc >= n || (lc > 0 && op === OP_SEQ)) break
+        let blocked = false
+        for (let i = 0; i < lc; i++) {
+          const t = code[base + i]!
+          if (code[t] !== OP_OPT) continue
+          const m = leadOf!(t)
+          if (m === null || maskHas(m, c)) blocked = true
+        }
+        const trivAt = triviaMaskAt(ip)
+        if (blocked || (lc > 0 && trivAt !== null && maskHas(trivAt, c))) break
+        const at = ip
+        push(() => {
+          const L = blankLevel(K_SEQ, at, code[base + lc]!)
+          L.trivRuntime = trivAt === null
+          L.wantValues = op === OP_SEQ
+          for (let i = 0; i < lc; i++) L.leading.push(link(code[base + i]!))
+          // The continuation: each later term, until one that cannot match empty.
+          let mask: LeadMask | null = trivAt === null ? new Uint8Array(129) : trivAt.slice()
+          for (let i = lc + 1; i < n && mask !== null; i++) {
+            const t = code[base + i]!
+            if (code[t] === OP_OPT && lookaheadClass(code[t + 1]!) !== null) {
+              L.tails.push({ kind: T_OPT_GATE, collect: false, xf: EMPTY_FX })
+              orMask(mask, maskOfClass(lookaheadClass(code[t + 1]!)!))
+            } else if ((code[t] === OP_REP || code[t] === OP_REPV) && code[t + 4]! < 0 && code[t + 2]! === 0 && code[t + 7]! >= 0) {
+              L.tails.push({ kind: T_REP_CLASS, collect: code[t] === OP_REP, xf: EMPTY_FX })
+              if (LC_PLANT !== 'rep-mask') orMask(mask, maskOfClass(cc[code[t + 7]!]!))
+            } else if (code[t] === OP_GATE) {
+              L.tails.push({ kind: T_GATE_FAIL, collect: false, xf: fx[code[t + 3]!] as string[] })
+              orMask(mask, maskOfClass(cc[code[t + 1]!]!))
+              break
+            } else mask = null
+          }
+          L.resumeMask = mask
+          return L
+        }, ip)
+        ip = code[base + lc]!
+        continue
+      }
+      if (op === OP_REP || op === OP_REPV) {
+        const min = code[ip + 2]!
+        const max = code[ip + 3]!
+        const sepIp = code[ip + 4]!
+        if (min !== 1) break
+        const flags = code[ip + 5]!
+        const at = ip
+        push(() => {
+          const L = blankLevel(K_REP, at, code[at + 1]!)
+          L.collect = op === OP_REP
+          L.itemDirty = !CLEAN(code[at + 1]!)
+          L.reportItem = (flags & 4) !== 0
+          L.itemFx = L.reportItem ? fx[code[at + 6]!] as string[] : EMPTY_FX
+          L.maxOne = max >= 0 && max <= 1
+          const trivAt = triviaMaskAt(at)
+          L.trivRuntime = trivAt === null
+          let mask: LeadMask | null = trivAt ?? new Uint8Array(129)
+          if (sepIp >= 0) {
+            let rx = sepIp
+            if (code[rx] === OP_FIELD && fieldSpec(k[code[rx + 1]!]).bits === 0) rx = code[rx + 2]!
+            if (!leadingTriviaFieldAt(code, k, sepIp) && code[rx] === OP_RX) {
+              const m = leadOf!(rx)
+              if (m === null) mask = null
+              else { orMask(mask, m); L.sepXf = fx[code[rx + 2]!] as string[] }
+            } else mask = null
+          } else {
+            const itemClass = code[at + 7]!
+            if (itemClass >= 0) orMask(mask, maskOfClass(cc[itemClass]!))
+            else mask = null
+          }
+          L.resumeMask = mask
+          return L
+        }, ip)
+        ip = code[ip + 1]!
+        continue
+      }
+      break
+    }
+    if (terminal < 0 && code[ip] === OP_NODE) terminal = ip
+    if (terminal >= 0) best = levels.length
+    const d = best
+    // A continuation that can start resumes at the nearest framed node above it.
+    for (let i = 0; i < d; i++) {
+      const L = levels[i]!
+      if ((L.kind !== K_SEQ && L.kind !== K_REP) || L.resumeTop >= 0) continue
+      let h = i - 1
+      while (h >= 0 && !(levels[h]!.kind === K_NODE && levels[h]!.variant !== V_PASS)) h--
+      if (h < 0) { L.resumeMask = null; L.resumeTop = -2; continue }
+      L.resumeTop = h
+      L.resumed = lowerSeeded(levels, h, i)
+    }
+    // A sequence with a leading lookahead runs its left corner after the trivia
+    // installed at run time; where the labels cannot name that trivia it is read
+    // at entry: the entry's, unless a scope above installs its own.
+    const cuts: Route['cuts'] = []
+    const cutAtoms: (Piece | undefined)[] = []
+    for (let i = 0; i < d; i++) {
+      const L = levels[i]!
+      if (L.kind !== K_SEQ || !L.trivRuntime || L.leading.length === 0) continue
+      let cut = 0
+      let scope = -1
+      for (let j = i - 1; j >= 0; j--) {
+        if (levels[j]!.candidate && cut === 0) cut = j
+        if (levels[j]!.kind === K_SCOPE && scope < 0) scope = j
+      }
+      cuts.push({ at: i, cut, scope })
+      cutAtoms.push(cut > 0 ? link(levels[cut]!.ip) : undefined)
+    }
+    return { levels, d, atom: d > 0 ? link(d === levels.length ? terminal : levels[d]!.ip) : undefined, cuts, cutAtoms }
+  }
+
+  /** Build the spine under a node, or `undefined` when no character reaches below it. */
+  function leftCornerPiece(top: number): Piece | undefined {
+    if (!LC || HYBRID !== undefined || code[top] !== OP_NODE) return undefined
+    const sIps = OVR_IPS, sPieces = OVR_PIECES, sDepth = OVR_DEPTH
+    OVR_DEPTH = -1
+    try { return leftCornerPieceIn(top) } finally { OVR_IPS = sIps; OVR_PIECES = sPieces; OVR_DEPTH = sDepth }
+  }
+
+  function leftCornerPieceIn(top: number): Piece | undefined {
+    const memoL = new Map<string, Level>()
+    const routes: Route[] = []
+    let any = false
+    for (let c = 0; c < 128; c++) {
+      const r = routeFor(top, c, memoL)
+      routes.push(r)
+      if (r.d > 0) any = true
+    }
+    if (!any) return undefined
+    const normal = lookaheadLedNode(top) ?? lower(top)
+    const driver: Piece = (input, pos, ctx) => {
+      const c = pos < input.length ? input.charCodeAt(pos) : -1
+      if (c < 0 || c >= 128) return normal(input, pos, ctx)
+      const R = routes[c]!
+      let d = R.d
+      if (d === 0 || ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined) return normal(input, pos, ctx)
+      let atom = R.atom!
+      const cuts = R.cuts
+      for (let x = 0; x < cuts.length; x++) {
+        const X = cuts[x]!
+        const T = X.scope >= 0 ? R.levels[X.scope]!.scopeTrivia : ctx.trivia
+        if (triviaMayStart(R.levels[X.at]!, T, c)) { d = X.cut; atom = R.cutAtoms[x]!; break }
+      }
+      if (d === 0) return normal(input, pos, ctx)
+      return runSpine(R.levels, d, atom, input, pos, ctx)
+    }
+    if (LC_DEBUG === undefined) return driver
+    const KN = ['wrap', 'scope', 'withctx', 'node', 'seq', 'rep', 'choice']
+    const shapeOf = (levels: Level[], d: number): string => levels.slice(0, d).map(L => `${KN[L.kind]!}${L.kind === K_NODE ? ':' + String(k[code[L.ip + 5]!]) + '/v' + L.variant : ''}${L.kind === K_SEQ || L.kind === K_REP ? (L.resumeMask === null ? '[resume-always]' : `[tails ${L.tails.map(t => t.kind).join(',')} mask ${[...L.resumeMask.keys()].filter(x => L.resumeMask![x] === 1).map(x => x < 128 ? JSON.stringify(String.fromCharCode(x)) : 'HI').join('')}${L.trivRuntime ? ' +rt-trivia' : ''}]`) : ''}`).join(' > ')
+    return (input, pos, ctx) => {
+      const c = pos < input.length ? input.charCodeAt(pos) : -1
+      const R = c >= 0 && c < 128 ? routes[c] : undefined
+      const sk = `${top} '${String.fromCharCode(c)}' d=${R?.d ?? 0}: ${R === undefined ? '' : shapeOf(R.levels, R.d)}`
+      const st = LC_DEBUG.get(sk.length) ?? undefined
+      void st
+      const prev = (globalThis as { __lcShapes?: Map<string, number> }).__lcShapes ?? new Map<string, number>()
+      ;(globalThis as { __lcShapes?: Map<string, number> }).__lcShapes = prev
+      prev.set(sk, (prev.get(sk) ?? 0) + 1)
+      return driver(input, pos, ctx)
+    }
+  }
+
+  /** Level `h`'s body down to level `i`, freshly lowered, with `i`'s left corner seeded. */
+  function lowerSeeded(levels: readonly Level[], h: number, i: number): Piece {
+    const sIps = OVR_IPS, sPieces = OVR_PIECES, sDepth = OVR_DEPTH
+    try { return lowerSeededIn(levels, h, i) } finally { OVR_IPS = sIps; OVR_PIECES = sPieces; OVR_DEPTH = sDepth }
+  }
+
+  function lowerSeededIn(levels: readonly Level[], h: number, i: number): Piece {
+    const lcIp = levels[i]!.next
+    const orig = link(lcIp)
+    let piece: Piece = (input, pos, ctx) => {
+      if (SEED_ARMED && pos === SEED_POS) {
+        SEED_ARMED = false
+        if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
+          pushCstChild(ctx, SEED_PV, rawEntry(SEED_PV, input, pos, SEED_END))
+        }
+        EC.e = SEED_END
+        return SEED_RV
+      }
+      return orig(input, pos, ctx)
+    }
+    let child = lcIp
+    const Li = levels[i]!
+    for (let j = i; j >= h; j--) {
+      const at = levels[j]!.ip
+      OVR_IPS = [child]
+      OVR_PIECES = [piece]
+      // The resumed sequence's leading terms were run on the way in: for the
+      // seeded call only, they are decided.
+      if (j === i && Li.kind === K_SEQ) {
+        for (let t = 0; t < Li.leading.length; t++) {
+          const tip = code[at + 2 + t]!
+          const tOrig = Li.leading[t]!
+          OVR_IPS.push(tip)
+          OVR_PIECES.push((input, pos, ctx) => {
+            if (SEED_ARMED && pos === SEED_POS) { EC.e = pos; return null }
+            return tOrig(input, pos, ctx)
+          })
+        }
+      }
+      OVR_DEPTH = LOWER_DEPTH + 1
+      piece = lower(at)
+      OVR_IPS = []
+      OVR_PIECES = []
+      OVR_DEPTH = -1
+      child = at
+    }
+    return piece
+  }
+
+  function lcFail(levels: readonly Level[], from: number, pos: number, ctx: ParseContext, errLen: number): unknown {
+    if (LC_TRACE) console.error(`lc FAIL top=${levels[0]!.ip} from ${from} pos ${pos}`)
+    for (let i = from; i >= 0; i--) {
+      const L = levels[i]!
+      lcUndo(L, ctx)
+      if (L.kind === K_REP) {
+        if (L.itemDirty && ctx._errors !== undefined && ctx._errors.length > errLen) ctx._errors.length = errLen
+        if (!committed(ctx) && L.reportItem) { ctx._fe = pos; ctx._fx = L.itemFx }
+      } else if (L.kind === K_CHOICE) lcChoiceFail(L, pos, ctx, errLen)
+    }
+    lcRestoreOuter(ctx)
+    return FAIL
+  }
+
+  /** The failure of a choice's one dispatched arm, as the choice piece reports it. */
+  function lcChoiceFail(L: Level, pos: number, ctx: ParseContext, errLen: number): void {
+    if (L.exclusive) {
+      if (committed(ctx)) return
+      const armFx = ctx._fx
+      ctx._fe = pos
+      if (armFx === undefined || armFx.length === 0) ctx._fx = L.choiceFx
+      return
+    }
+    let acc: string[] | undefined
+    for (const e of L.prefixFx) acc = accSet(e, acc)
+    const at = ctx._fe ?? pos
+    let best = pos
+    if (at > best) { best = at; acc = undefined }
+    if (at === best) acc = accSet(ctx._fx, acc)
+    if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return }
+    if (L.itemDirty && ctx._errors !== undefined && ctx._errors.length > errLen) ctx._errors.length = errLen
+    if (best === pos) for (const e of L.suffixFx) acc = accSet(e, acc)
+    ctx._fe = pos
+    ctx._fx = acc ?? L.choiceFx
+  }
+
+  function lcUndo(L: Level, ctx: ParseContext): void {
+    switch (L.kind) {
+      case K_SCOPE:
+        if ((L.rootFlags & 1) !== 0) ctx._rootTriviaCapture = SV[--SP] as boolean
+        if (L.cap) ctx.captureTrivia = SV[--SP] as boolean
+        SCAN = SV[--SP] as FastTriviaScanner | null
+        ctx.triviaKindLabels = SV[--SP] as ParseContext['triviaKindLabels']
+        ctx.trivia = SV[--SP] as ParseContext['trivia']
+        return
+      case K_WITHCTX:
+        ctx.state = SV[--SP]
+        return
+      case K_NODE:
+        if (L.variant === V_PASS) return
+        ctx._fields = SV[--SP] as ParseContext['_fields']
+        ctx.captureTrivia = SV[--SP] as boolean
+        return
+      default:
+    }
+  }
+
+  function lcRestoreOuter(ctx: ParseContext): void {
+    ctx._fields = SV[--SP] as ParseContext['_fields']
+    ctx.captureTrivia = SV[--SP] as boolean
+    ctx._cstTriviaLog = SV[--SP] as ParseContext['_cstTriviaLog']
+    ctx._cstRawChildren = SV[--SP] as ParseContext['_cstRawChildren']
+    ctx._cstLeaves = SV[--SP] as ParseContext['_cstLeaves']
+    ctx._cstChildren = SV[--SP] as ParseContext['_cstChildren']
+    ctx._cstBuf = SV[--SP] as ParseContext['_cstBuf']
+  }
+
+  function runSpine(levels: readonly Level[], d: number, atom: Piece, input: string, pos: number, ctx: ParseContext): unknown {
+    const errLen = ctx._errors?.length ?? 0
+    SV[SP++] = ctx._cstBuf
+    SV[SP++] = ctx._cstChildren
+    SV[SP++] = ctx._cstLeaves
+    SV[SP++] = ctx._cstRawChildren
+    SV[SP++] = ctx._cstTriviaLog
+    SV[SP++] = ctx.captureTrivia
+    SV[SP++] = ctx._fields
+    ctx._cstBuf = undefined
+    ctx._cstChildren = undefined
+    ctx._cstLeaves = undefined
+    ctx._cstRawChildren = undefined
+    ctx._cstTriviaLog = undefined
+    for (let i = 0; i < d; i++) {
+      const L = levels[i]!
+      switch (L.kind) {
+        case K_SCOPE:
+          SV[SP++] = ctx.trivia
+          SV[SP++] = ctx.triviaKindLabels
+          SV[SP++] = SCAN
+          SCAN = L.scanFor
+          ctx.trivia = L.scopeTrivia
+          ctx.triviaKindLabels = L.scopeLabels
+          if (L.cap) { SV[SP++] = ctx.captureTrivia; ctx.captureTrivia = true }
+          if ((L.rootFlags & 1) !== 0) { SV[SP++] = ctx._rootTriviaCapture; ctx._rootTriviaCapture = false }
+          if ((L.rootFlags & 2) !== 0) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
+          break
+        case K_WITHCTX:
+          SV[SP++] = ctx.state
+          ctx.state = L.derive !== undefined ? L.derive(ctx.state) : L.extra
+          break
+        case K_NODE:
+          if (L.variant === V_PASS) break
+          SV[SP++] = ctx.captureTrivia
+          SV[SP++] = ctx._fields
+          ctx.captureTrivia = L.captureWide
+          ctx._fields = L.wantFields ? [] : undefined
+          break
+        case K_SEQ:
+          for (let t = 0; t < L.leading.length; t++) {
+            if (L.leading[t]!(input, pos, ctx) === FAIL) return lcFail(levels, i, pos, ctx, errLen)
+          }
+          break
+        case K_REP:
+        case K_CHOICE:
+          ctx._fc = false
+          break
+        default:
+      }
+    }
+    if (LC_TRACE) console.error(`lc enter top=${levels[0]!.ip} d=${d} pos ${pos}`)
+    const v = atom(input, pos, ctx)
+    if (v === FAIL) return lcFail(levels, d - 1, pos, ctx, errLen)
+    let end = EC.e
+    let pv: unknown = v
+    let rv: unknown = v
+    for (let i = d - 1; i >= 0; i--) {
+      const L = levels[i]!
+      if (LC_TRACE) console.error(`lc ascend top=${levels[0]!.ip} level ${i} kind ${L.kind} end ${end} c2 ${JSON.stringify(input[end])}`)
+      switch (L.kind) {
+        case K_NODE: {
+          if (L.variant === V_PASS) {
+            if (rv === undefined) rv = collapseEmpty(ctx, L.build!, input, pos, end, L.readsRaw)
+            pv = rv
+            break
+          }
+          const fieldsArr = ctx._fields
+          lcUndo(L, ctx)
+          const span = { start: pos, end }
+          const kids = pv === undefined ? EMPTY_CH : [pv]
+          const build = L.build!
+          let nd: unknown
+          switch (L.variant) {
+            case V_PLAIN:
+              nd = build(kids, undefined, span, [rawEntry(pv, input, pos, end)], EMPTY_TL, undefined)
+              break
+            case V_CHILDREN:
+              nd = build(P_KIDS ? EMPTY_CH : kids, undefined, span, EMPTY_CH, EMPTY_TL, undefined)
+              break
+            case V_CHILDREN_FIELDS:
+              nd = build(kids, buildFieldMap(fieldsArr), span, EMPTY_CH, EMPTY_TL, undefined)
+              break
+            case V_COLLAPSE:
+              nd = kids.length === 1 ? kids[0] : build(kids, undefined, span, [rawEntry(pv, input, pos, end)], EMPTY_TL, undefined)
+              break
+            case V_CHILDREN_COLLAPSE:
+              nd = kids.length === 1 ? kids[0] : build(EMPTY_CH, undefined, span, EMPTY_CH, EMPTY_TL, undefined)
+              break
+            default: {
+              const fieldMap: FieldMap | undefined = L.wantFields ? buildFieldMap(fieldsArr) : undefined
+              if (L.collapse && kids.length === 1) nd = kids[0]
+              else {
+                const rawKids = L.omitsRaw ? EMPTY_CH : [rawEntry(pv, input, pos, end)]
+                nd = build(kids, fieldMap, span, rawKids, L.captureWide ? EMPTY_TLOG : EMPTY_TL, L.readsState && !P_STATE ? ctx.state : undefined)
+              }
+            }
+          }
+          pv = rv = nd
+          break
+        }
+        case K_SEQ: {
+          const c2 = end < input.length ? input.charCodeAt(end) : -1
+          if (L.resumeMask === null || maskHas(L.resumeMask, c2) || (L.trivRuntime && triviaMayStart(L, ctx.trivia, c2))) {
+            const r = lcResume(levels, i, input, pos, end, pv, rv, ctx)
+            if (L.resumeTop === 0) return r
+            if (r === FAIL) return lcFail(levels, L.resumeTop - 1, pos, ctx, errLen)
+            end = EC.e
+            pv = rv = r
+            i = L.resumeTop
+            break
+          }
+          const vals: unknown[] | undefined = L.wantValues ? [rv] : undefined
+          for (let t = 0; t < L.tails.length; t++) {
+            const T = L.tails[t]!
+            if (T.kind === T_OPT_GATE) vals?.push(null)
+            else if (T.kind === T_REP_CLASS) vals?.push(T.collect ? [] : undefined)
+            else { ctx._fe = end; ctx._fx = T.xf; return lcFail(levels, i - 1, pos, ctx, errLen) }
+          }
+          rv = vals
+          break
+        }
+        case K_REP: {
+          if (!L.maxOne && end < input.length) {
+            const c2 = input.charCodeAt(end)
+            if (!P_NO_REP_RESUME && (L.resumeMask === null || maskHas(L.resumeMask, c2) || (L.trivRuntime && triviaMayStart(L, ctx.trivia, c2)))) {
+              const r = lcResume(levels, i, input, pos, end, pv, rv, ctx)
+              if (L.resumeTop === 0) return r
+              if (r === FAIL) return lcFail(levels, L.resumeTop - 1, pos, ctx, errLen)
+              end = EC.e
+              pv = rv = r
+              i = L.resumeTop
+              break
+            }
+            if (L.sepXf !== undefined && !P_SEP_WRITE) { ctx._fc = false; ctx._fe = end; ctx._fx = L.sepXf }
+          }
+          rv = L.collect ? [rv] : undefined
+          break
+        }
+        default:
+          lcUndo(L, ctx)
+      }
+    }
+    lcRestoreOuter(ctx)
+    if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
+      pushCstChild(ctx, pv, rawEntry(pv, input, pos, end))
+    }
+    EC.e = end
+    return rv
+  }
+
+  /** Run level `i`'s continuation in the frame of the framed node above it. */
+  function lcResume(
+    levels: readonly Level[], i: number, input: string, pos: number, end: number,
+    pv: unknown, rv: unknown, ctx: ParseContext,
+  ): unknown {
+    const L = levels[i]!
+    const h = L.resumeTop
+    for (let j = i; j >= h; j--) lcUndo(levels[j]!, ctx)
+    if (h === 0) lcRestoreOuter(ctx)
+    SEED_ARMED = true
+    SEED_POS = pos
+    SEED_END = end
+    SEED_PV = pv
+    SEED_RV = rv
+    const r = L.resumed!(input, pos, ctx)
+    if (SEED_ARMED) { SEED_ARMED = false; throw new Error(`left-corner seed at ${pos} was not consumed (site ${L.ip})`) }
+    return r
+  }
+
   function lower(ip: number): Piece {
+    LOWER_DEPTH++
+    try { return lowerOp(ip) } finally { LOWER_DEPTH-- }
+  }
+
+  function lowerOp(ip: number): Piece {
     const op = code[ip]
     switch (op) {
       /* ── terminals ───────────────────────────────────────────────────────── */
