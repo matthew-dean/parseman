@@ -25,6 +25,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     older runtime when its assembly is built, with "this parser was printed by parseman
     0.59.0; upgrade the parseman runtime". A consumer that rebuilds its macro-compiled
     parsers on 0.59.0 must depend on `parseman@^0.59.0`.
+  - **Speed.** Against a process in the slow mode, the gate cases parse in 11–37% fewer JIT
+    instructions (`css/stylesheet` −31% on Node 24, −34% on Node 26). Against main's fast
+    mode it is not uniformly a win. `rollback/medium` on Node 26 reads about +4% (12.36M →
+    12.84M per parse), and Jess's synthetic single-file SCSS workload +3.6%: a tree that is
+    never pretenured is copied by the scavenger. Real Jess SCSS projects read 0.2–2.1% fewer.
   - **For grammar authors.** A reducer that builds the nodes a parse keeps with an object
     literal is pretenured or not per process in the same way. Build them with a constructor
     whose `prototype` is `Object.prototype` (see `examples/css/css-node.js`), and copy the

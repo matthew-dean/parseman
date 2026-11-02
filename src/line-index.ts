@@ -99,11 +99,26 @@ export function annotateSpan(span: Span, index: LineIndex): Span {
   }
 }
 
-/** A copy of a span, line fields included when it has them, built by its constructor. */
+const SPAN_KEYS = ['start', 'end', 'startLine', 'startColumn', 'endLine', 'endColumn'] as const
+
+/**
+ * A copy of a span, exactly as given: the same keys in the same order. The two shapes
+ * parseman builds itself, `{ start, end }` and the six-key line span, are rebuilt by their
+ * constructors (`src/cst/plain.d.ts`); any other shape a caller passes (an extra key, a
+ * different order, a partial line span) is spread, as before.
+ */
 export function copySpan(span: Span): Span {
-  return span.startLine === undefined || span.startColumn === undefined || span.endLine === undefined || span.endColumn === undefined
-    ? new PlainSpan(span.start, span.end)
-    : new PlainLineSpan(span.start, span.end, span.startLine, span.startColumn, span.endLine, span.endColumn)
+  // `for…in` walks the keys in order without allocating a key list.
+  let n = 0
+  for (const key in span) {
+    if (key !== SPAN_KEYS[n]) return { ...span }
+    n++
+  }
+  if (n === 2) return new PlainSpan(span.start, span.end)
+  if (n === 6 && span.startLine !== undefined && span.startColumn !== undefined && span.endLine !== undefined && span.endColumn !== undefined) {
+    return new PlainLineSpan(span.start, span.end, span.startLine, span.startColumn, span.endLine, span.endColumn)
+  }
+  return { ...span }
 }
 
 /**

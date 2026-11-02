@@ -178,18 +178,28 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   re-rolls it. Leaves, spans, default nodes, field captures and capture buffers are now
   built by `new` calls (`src/cst/plain.js`), which have no allocation site, and the bench
   fixtures' node builders do the same. With dead code of 0–15,000 bytes appended to
-  `dist/index.js`, all 192 processes of `css/stylesheet`, `expected/narrow` and
-  `rollback/medium` on Node 24 and 26 ran in the fast mode (1–2 mark-compacts, against up
-  to 61). JIT marginal instructions on Node 24: `css/stylesheet` −32.6%,
-  `expected/narrow` −14.6%, `rollback/medium` −12.2%, `json/document` +1.4%. The
-  cross-process gate on Node 26 against 0.58.2 read −16% to −43% on every case that builds
-  a tree. `--jitless` reads +1% to +5%: an interpreter cannot see the mechanism.
+  `dist/index.js`, every process of the gate cases and of four runtime-kept trees (a CST
+  host, builder-less default nodes with and without line tracking, a builder that keeps
+  its span) ran in the fast mode on Node 24 and 26 (1–2 mark-compacts, against up to 61).
+  JIT marginal instructions against a slow-mode main: `css/stylesheet` −31% (Node 24) and
+  −34% (Node 26), `expected/narrow` −14% / −37%, `rollback/medium` −11% / −32%. Against
+  main's fast mode, `rollback/medium` on Node 26 reads about +4% (12.36M → 12.84M): a tree
+  that is never pretenured is copied by the scavenger. `--jitless` reads +1% to +5%: an
+  interpreter cannot see the mechanism.
   The constructors must exist ONCE per process. A first build bundled a copy into each
   entry, so a process that loads `parseman` and `parseman/table` (Jess) built every shape
   under two maps; Jess's SCSS parse ran +3.1% (Node 24) and +6.7% (Node 26) from the
   polymorphic reads. The build now emits `dist/cst/plain.js` once and every entry
   imports it; that SCSS row reads −0.3% on both. Investigation in
   [#224](https://github.com/matthew-dean/parseman/pull/224).
+- **Watched literal sites (not converted).** These are still object literals, and none splits
+  a process today. A tree does not keep them, or they are rare:
+  - field-map entries (`src/compiler/fields.ts` `buildFieldMap`);
+  - the interpreter's `annotateSpanFromLineContext`;
+  - parse-error objects;
+  - the public `annotateTreeSpans`.
+
+  `pnpm perf:pretenure` would show it if one began to.
 
 - **Nullable-regex first sets.** A `regex()` that may match empty still reports `any`, but
   also carries the first characters of its non-empty matches. A sequence led by an optional
