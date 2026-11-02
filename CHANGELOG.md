@@ -3,13 +3,14 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.58.1 — 2026-11-02
 
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
   main entry, which loads the combinators, the compiler and the analysis with them.
   `src/line-index.ts` was already in the run entry's closure, so the entry's module
   list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+
 - **A routed arm's first-character gate reports what its next term fails with.** A
   choice arm led by `routed()` is gated on its next term's first character
   (`OP_RGATE`, 0.58.0), and a miss reported `deriveExpected` of that term. For a
