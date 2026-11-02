@@ -376,6 +376,11 @@ function makeDriver(
   }
 
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
+    // A row that only hands on to one child at the same position (a gate that
+    // passes, a rule trampoline, `OP_STRICT`) continues here rather than
+    // recursing, so the reference driver's stack grows with the grammar's
+    // nesting, not with its gate rows.
+    rows: for (;;) {
     if (COUNT) { tableCounters.rows++; tableCounters.byOp[code[ip]!]!++ }
     switch (code[ip]) {
       case OP_LIT: {
@@ -493,7 +498,7 @@ function makeDriver(
           ctx._fe = pos; ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
-        return exec(code[ip + 2]!, input, pos, ctx)
+        ip = code[ip + 2]!; continue rows
       }
 
       case OP_LABEL: {
@@ -503,7 +508,7 @@ function makeDriver(
         return v
       }
       case OP_RULE:
-        return exec(code[ip + 1]!, input, pos, ctx)
+        ip = code[ip + 1]!; continue rows
 
       /**
        * A COUNTER ROW IS TRANSPARENT HERE, and that is the whole of its handling.
@@ -523,10 +528,10 @@ function makeDriver(
       // in the shipped engines, and this driver is the leg it is compared with.
       case OP_COV:
       case OP_GAPGATE:
-        return exec(code[ip + 1]!, input, pos, ctx)
+        ip = code[ip + 1]!; continue rows
 
       case OP_STRICT:
-        return exec(code[ctx._tolerant || ctx._probe !== undefined ? ip + 2 : ip + 1]!, input, pos, ctx)
+        ip = code[ctx._tolerant || ctx._probe !== undefined ? ip + 2 : ip + 1]!; continue rows
 
       case OP_LIVE: {
         // A HAND-WRITTEN COMBINATOR, run through its own `.parse` — mirrors
@@ -1140,7 +1145,7 @@ function makeDriver(
           ctx._fe = item.span.end; ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
-        return exec(code[ip + 2]!, input, pos, ctx)
+        ip = code[ip + 2]!; continue rows
       }
 
       case OP_ARMGATE: {
@@ -1155,7 +1160,7 @@ function makeDriver(
           ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
-        return exec(code[ip + 2]!, input, pos, ctx)
+        ip = code[ip + 2]!; continue rows
       }
 
       case OP_REJECT: {
@@ -1657,6 +1662,7 @@ function makeDriver(
 
       default:
         throw new Error(`table driver: unknown opcode ${String(code[ip])} at ${ip}`)
+    }
     }
   }
 
