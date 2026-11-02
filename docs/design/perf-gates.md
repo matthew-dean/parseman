@@ -10,8 +10,36 @@ difference is the whole point.
 | `pnpm perf:workloads` | did realistic parsing get slower, on any axis at all? | ~2.5-3 min |
 | `pnpm bench:macro-optimize` | did the shipping Jess macro parsers stay correct and within their measured speed band? | several minutes |
 
-All four run on every code PR, and all four are required. The first three are
-self-contained in this repository. The macro gate also uses the pinned Jess commit
+### Which check gives the verdict (#175)
+
+**Rule: a perf gate measures parseman under the V8 and Node defaults a user gets.**
+No V8 flag, no `NODE_OPTIONS`, no `v8.setFlagsFromString` in a measured process.
+Pretenuring, GC timing and code layout are part of how a user's parser runs, so
+their effects are real regressions or real wins, and a gate that switched them off
+would not see them.
+
+| check | measures | role in CI |
+| --- | --- | --- |
+| `pnpm perf:xproc:gate` | every density case and every workload, HEAD vs the previous release; one parser per process, each side's own `dist/` build under plain `node`; 100–300 rounds per case (`bench/xproc-gate.json`) in 10 shards | **the verdict**, via `xproc-perf` |
+| `pnpm perf:xproc:gate --peak` | the workloads vs the fastest release on record, same design, the committed allowance as the floor | **the verdict** for the peak clause |
+| `pnpm perf:guard:grammars`, `pnpm perf:workloads`, `pnpm perf:workloads:peak` | the same cases, in one process, interleaved, with `--no-compilation-cache` | **not in CI**: local diagnostics only, and their output says so |
+| `pnpm perf:guard`, `pnpm bench:macro-optimize` | as below | as below |
+
+The in-process gates are fast and good at saying WHERE a cost is. They put four
+instances of a case in one heap, though, and V8's per-instance choices land on
+one side of a pair. On identical code that read as a +3.4% head-side bias on
+`expected/none` and an ~8% build-position effect on `json/document`, and it
+failed 8 runs in 20. They also turn V8's compilation cache off, which the rule
+forbids in a measurement, so they do not run in CI: a number posted on a PR gets
+read as a verdict. The cross-process gate has none of those problems. Its
+design, its layout randomisation and its round count are in
+[perf-harness-interleaving.md](./perf-harness-interleaving.md#the-cross-process-gate--pnpm-perfxprocgate).
+
+Of the four tools below, `perf:guard` runs in the pre-commit hook, and the macro
+gate runs on every code PR as an advisory job outside the required `test` check.
+Since #175 the grammar and workload A/B tools are local diagnostics, and the
+cross-process gate covers their cases in CI. The first three are self-contained in
+this repository. The macro gate also uses the pinned Jess commit
 named in `bench/jess/macro-optimize-config.json`; CI checks it out automatically.
 
 The last two are not redundant, and which one you reach for depends on what you
@@ -315,8 +343,15 @@ wrong.
 > it; and the parser's runtime helpers are optimized once per module graph, which
 > passes never rebuilt. The `--self` skew above fits the first cause — one module
 > graph, one source text — though it was not reproduced to confirm. `measurePasses()` now turns the cache off and
-> builds every instance from a fresh module graph. See
-> [Two mechanisms behind it](./perf-harness-interleaving.md#two-mechanisms-behind-it-found-in-the-harness-and-fixed-there).
+> builds every instance from a fresh module graph.
+>
+> **And a third, found after those two were fixed (#175).** V8's allocation-site
+> pretenuring flips a coin per instance: an instance whose allocation sites get
+> pretenured runs 13–25% slower for the rest of the pass. On `expected/none` the
+> coin fell more often on the head side, so identical code read +3.4% and failed 7
+> runs in 20. That is V8 behaviour users get too, so it is not switched off. The
+> verdict moved to the cross-process gate instead. See
+> [Three mechanisms behind it](./perf-harness-interleaving.md#three-mechanisms-behind-it-found-in-the-harness-and-fixed-there).
 
 **The fix is resampling, in `measurePasses()` (`bench/ab-harness.ts`).**
 
@@ -413,7 +448,9 @@ exactly the band it exists to watch.**
 
 - **Below about 3% per case is under the harness's resolution.** More rounds
   would buy resolution at the cost of a slower gate, i.e. a gate that gets
-  skipped. That trade was made deliberately.
+  skipped. That trade was made deliberately. More rounds do not help anyway:
+  the 12 pairs of a pass share one pair of instances. This gate is advisory
+  since #175; the cross-process gate, which resolves a 2% cost, gives the verdict.
 
 - **It is amplified, not more sensitive in real terms.** The same 0.34.0 change
   that cost the real Less grammar +25.5% costs `rollback/dense` +112.8% —
@@ -790,8 +827,8 @@ pnpm perf:workloads --quick                 # 3 passes x 2 rounds x 2 runs — T
 pnpm perf:workloads --only=less             # substring filter on workload id
 pnpm perf:workloads:describe                # what each workload parses, and whether it reaches EOF
 pnpm perf:guard:grammars --quick            # 3 passes x 2 rounds x 2 runs — TRIAGE ONLY, does not gate
-pnpm perf:workloads:peak --base=origin/main # the peak clause, as CI runs it — a
-                                            # PERF-PEAK-WAIVER is honoured only with --base
+pnpm perf:xproc:gate --peak                 # the peak clause, as CI runs it (one shard's worth
+                                            # without --shard-out; CI runs 10 and aggregates)
 
 # Validate the gate itself. A gate nobody has watched fail is not known to work.
 pnpm perf:guard:grammars --ref=7f1ddcd --head-ref=c7780e4   # 0.34.0 without the fix — expect RED
@@ -838,28 +875,15 @@ runner (`sameSource` and `identicalSourceNote` in `bench/ab-harness.ts`).
 ### The per-PR report: this change against its own base
 
 The gate answers "is this slower than the previous release?". A PR also wants "what did
-THIS change do?", so on a pull request each of `grammar-perf`, `workload-perf` and
-`macro-perf` prints a markdown table to the log and the job summary (`$GITHUB_STEP_SUMMARY`):
-every case's median and min change, beside the null control measured in the same passes
-(the A/A control for the macro gate). One table is HEAD against the gate's reference. The
-other is HEAD against the PR's base, `--merge-base=<sha>`. The base table is report only and
-never fails a job.
+THIS change do?". On a pull request, `xproc-perf` writes its per-case table (median and
+mean change, both p-values, the verdict) to the job summary (`$GITHUB_STEP_SUMMARY`).
+That table is against the previous release. Every merge that changes `src/` publishes,
+so the previous release is usually the PR's base. `macro-perf` also prints its
+candidate-against-base table, which is report only.
 
-The base arm usually costs nothing:
-
-- if the PR changes nothing under `src/`, the delta is zero by construction and is not
-  measured;
-- if the base's `src/` equals the reference's (ignoring the `src/version.ts` stamp), the gate
-  table already is the answer. This is the common case: every merge that changes `src/`
-  publishes, so the previous release is the base.
-
-Otherwise the gate re-runs itself against the base with `--report-only`: one more run of
-that gate, about 3 minutes for the grammar gate and 3.5 for the workload gate on GitHub's
-runners. The macro gate is pinned to a release older than any base, so a PR that changes
-`src/` always measures its base. That arm reuses the A/A control the gate just measured on
-the same runner (`--self-control`), so it costs the candidate half of the timing step,
-about 2 minutes. The jobs run in parallel, so the longest job sets the wall time. That is
-`workload-perf` at about 8.5 minutes today, or about 12 when its base arm runs.
+The in-process tools keep their `--merge-base=<sha>` report for local use. It still
+skips the measurement when the PR changes nothing under `src/`, or when the base's `src/`
+equals the reference's.
 
 ### Why the reference is not a pinned sha
 
@@ -891,7 +915,7 @@ reachable, the gate says so and exits non-zero. "The gate did not run" must neve
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
 
-## The peak clause — `pnpm perf:workloads:peak`
+## The peak clause — `pnpm perf:xproc:gate --peak`
 
 ### The blind spot every per-step gate has
 
@@ -985,73 +1009,11 @@ waive it. This is deliberate repetition of a lesson already paid for: both
 `referenceSha` fields carried "bump this at every release" in a *comment* and were
 missed for ten consecutive releases.
 
-### Landing under the bar without moving it — `PERF-PEAK-WAIVER`
-
-Everything above governs **moving** the peak. This governs **landing under it**.
-
-The two options in the section below — fix it, or land it with the number visible
-— were never both executable. A deliberate, *bought* slowdown had exactly one
-route past a red `pnpm perf:workloads:peak`: edit `peak`, or widen
-`allowancePct`. Both make the **slower build the reference**. That is the edit
-§D calls `LAUNDERING RISK` by name, and it destroys the record permanently to get
-one PR through. A change that trades ~2.65x parse time for a ~40x smaller
-artifact is a real trade and should be landable — but not by deleting the bar it
-fails.
-
-So "land it with the number visible" is now a thing you can actually do. A PR
-declares, on one line in the CHANGELOG's **open section**:
-
-```text
-PERF-PEAK-WAIVER bench/workloads/config.json median -164.9% min -158.2% — table lowering: 2.65x parse time buys a 40x smaller artifact
-```
-
-`bench/workload-perf-guard.ts --peak --base=<ref>` then prints its **full drawdown
-report** and exits 0 instead of 1. `scripts/check-changelog.mjs` §D' validates the
-line on every PR.
-
-**When it is legitimate.** When the drawdown is real, understood, measured, and
-bought something nameable — and when the peak should *stay where it is* because
-the slower path is a trade this release makes, not the new normal. If the
-slowdown genuinely is the new normal, **move the peak** (§D above) and say so;
-that is not this.
-
-**It does not move the baseline.** This is the whole point. The committed peak stays
-the bar, and the next PR is measured against the same number, goes red in exactly the
-same way, and must state its own measurement. A waived breach is still a breach on
-the record.
-
-Every property of it is friction on purpose — `docs/design/release-gates.md`: *"A
-gate that fires spuriously gets bypassed, and then the gates that matter get
-bypassed with it."* The inverse holds just as hard, so the waiver:
-
-- **cannot be written without the measurement**, and the numbers must themselves
-  breach `allowancePct`. You cannot waive a gate without saying how badly you
-  failed it. Either spelling of the sign is accepted — the harness prints a
-  slowdown `+164.9%`, prose writes it `-164.9%` — because this is not a gate about
-  punctuation;
-- **cannot understate**. The guard refuses a waiver quoting a figure milder than
-  the mildest breaching pass it just measured;
-- **requires a reason**, not just a number;
-- **is per-PR and non-sticky**: the line must be **absent from the base's
-  CHANGELOG**. The next PR inherits the text, so the identical line waives nothing
-  and that PR must re-measure. Without `--base` the guard cannot check freshness
-  and therefore **refuses the waiver entirely** — which is why CI passes
-  `--base`, and why a push to `main` cannot be waived at all;
-- **cannot be combined with a `peak` edit**. Waiving and re-anchoring are mutually
-  exclusive; a PR doing both is refused;
-- **fails loudly when malformed** rather than being ignored. A waiver that does
-  not parse is a contributor who believes they have waived the gate;
-- **is not `release-exempt`** and deliberately does not extend it. That label's
-  documented scope is §B, and widening a hatch is the bypassed-gate failure
-  itself.
-
-It waives the peak clause's **verdict** only — never §D's requirement to
-document a peak edit, never §A or §B.
-
 ## When it fires
 
 Do not widen the threshold to make a build pass. Either fix the regression, or
-land it with the number visible and an explanation of why it is the price of
-something — which is what `PERF-PEAK-WAIVER` above is for. An honest "3% is the
+re-baseline in the open: move the peak, or change `bench/xproc-gate.json`, with the
+number and the reason in the CHANGELOG, which `scripts/check-changelog.mjs` §D and §E
+require. An honest "3% is the
 cost of correctness, 22% was avoidable" is a result. "Should be faster now" is
 not.

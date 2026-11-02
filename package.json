@@ -95,6 +95,7 @@
     "perf:guard": "node --import tsx/esm bench/perf-guard.ts",
     "perf:guard:grammars": "node --import tsx/esm bench/grammar-perf-guard.ts",
     "perf:xproc": "node --import tsx/esm bench/xproc-ab.ts",
+    "perf:xproc:gate": "node --import tsx/esm bench/xproc-gate.ts",
     "prepare": "git config core.hooksPath scripts/git-hooks || true; node scripts/build.mjs",
     "prepublishOnly": "node scripts/check-changelog.mjs --publish",
     "check:changelog": "node scripts/check-changelog.mjs",

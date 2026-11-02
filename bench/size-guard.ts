@@ -5,7 +5,7 @@
  * parseman publishes a code-size budget in its own docs. Until this gate existed
  * nothing enforced it: `bench:size` (bench/measure-expansion.ts) was a hand-run
  * snapshot that appeared in `package.json` and in ZERO CI workflows, while speed
- * had two blocking gates (`grammar-perf`, `workload-perf`). The published budget
+ * had blocking gates of its own. The published budget
  * drifted by roughly an order of magnitude on real grammars without anything
  * going red.
  *

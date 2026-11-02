@@ -14,6 +14,13 @@ on:
   push:
     branches: [main]
 
+# A new push to a pull request cancels that PR's run in progress: the perf gate alone
+# is about 150 runner-minutes. Pushes to `main` never share a group, so none is ever
+# cancelled or skipped; each one is what a publish waits on.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref) || format('ci-push-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Least privilege: nothing here writes to the repo. Every step only reads the
 # checkout; the coverage artifact is uploaded through the Actions API, which does
 # not need `contents: write`.
@@ -263,38 +270,63 @@ jobs:
           path: coverage/
           retention-days: 14
 
-  # Grammar perf gate — did the code parseman EMITS get slower?
+  # The perf VERDICT — cross-process, default V8 (see docs/design/perf-gates.md).
   #
-  # `perf:guard` (inside the matrix) measures 47-byte microbenchmarks. It passed on
-  # every PR of the 0.34.0 cycle while a real Less grammar got 25% slower. This job
-  # measures a rollback-density sweep instead — see docs/design/perf-gates.md.
+  # The in-process A/B tools (`perf:guard:grammars`, `perf:workloads`) put four
+  # instances of every case in one heap, so V8's per-instance choices (pretenuring,
+  # GC timing, build order) land on one side of a pair and read as ±5–25% per pass
+  # on identical code (#175), and they turn V8's compilation cache off. They are
+  # local diagnostics only and do not run here. This gate changes no V8 setting: every
+  # timed parser is the only parser in its process, built from that side's own dist/
+  # and run under plain `node`, as it is for a user. It buys resolution with processes
+  # instead: 100–300 rounds per case over 10 shards (`bench/xproc-gate.json`), sized by
+  # the power analysis in perf-harness-interleaving.md. Shards run in parallel;
+  # `xproc-perf` takes one verdict over all of them and FAILS if any shard is missing.
   #
-  # It runs on EVERY code PR rather than nightly or at release, because it costs
-  # ~1.5-2 min locally and stays well inside this job's budget. Speed is a
-  # correctness property: a gate too slow to run gets skipped, and then everything
-  # gets skipped with it. That cost went up at 0.46.0 and bought the gate's
-  # honesty — 5 passes instead of 3, both sides RECOMPILED per pass so the passes
-  # are independent at all, and a control pair measuring the null win rate.
-  #
-  # It is a REQUIRED check by way of the `test` aggregate below, not merely a
-  # report. A perf gate nobody has to satisfy is a dashboard.
-  #
-  # Shared-runner noise is handled by the measurement, not by a loose threshold:
-  # both sides are interleaved in ONE process with per-round rotation, so there is
-  # no cross-machine term, and a case fails only when it also loses 3/4 of its
-  # paired samples.
-  grammar-perf:
+  # `target`: `release` is HEAD vs the previous release over every case; `peak` is the
+  # workloads vs the fastest release on record, at the committed allowance.
+  xproc-shard:
     needs: changes
     if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [release, peak]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Measure one shard
+        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --shard-out=xproc-${{ matrix.target }}-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xproc-${{ matrix.target }}-${{ matrix.shard }}
+          path: xproc-${{ matrix.target }}-${{ matrix.shard }}.json
+          retention-days: 7
+
+  xproc-perf:
+    needs: [changes, xproc-shard]
+    if: always() && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [release, peak]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Full history and tags: the gate builds the reference side from the
-          # previous release's v* tag, and a shallow clone has neither.
-          # A missing reference is a hard failure, never a skip.
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -302,84 +334,14 @@ jobs:
           node-version: lts/*
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Rollback-density perf gate vs the previous release
-        run: pnpm perf:guard:grammars ${BASE_SHA:+--merge-base=$BASE_SHA}
-        env:
-          # A PR's base: the gate also REPORTS HEAD against it (report only — the
-          # verdict stays anchored on the previous release). See
-          # `reportAgainstMergeBase` in bench/ab-harness.ts for when it costs a run.
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
-
-  # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
-  #
-  # `grammar-perf` above sweeps two axes and thresholds each. That is the right
-  # shape for attributing a regression and the wrong shape for finding one: it
-  # shipped with a rollback sweep, and `fix(expect)` regressed expected-set width
-  # straight through it in the very next PR. A targeted gate can only ever catch
-  # the regression someone already thought of.
-  #
-  # This job parses realistic stylesheets, documents and payloads end to end and
-  # thresholds each workload on its own, so a cost on any axis shows up as time.
-  # It is separate from `grammar-perf` rather than folded into it because the two
-  # answer different questions and a reader should be able to see which one went
-  # red: this one says "downstream got slower", that one says "and here is the
-  # axis".
-  #
-  # Runs on EVERY code PR. It costs ~2.5-3 min here — five independent measurement
-  # passes, each recompiling both sides, plus a control pair that measures the null
-  # win rate, so neither a busy runner nor a bad draw of the compilation lottery can
-  # fail a PR on its own. See docs/design/perf-gates.md for what it can and cannot see.
-  workload-perf:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          # Full history and tags: the gate builds the reference side from the
-          # previous release's v* tag, and a shallow clone has neither.
-          # A missing reference is a hard failure, never a skip.
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Realistic-workload perf gate vs the previous release
-        run: pnpm perf:workloads ${BASE_SHA:+--merge-base=$BASE_SHA}
-        env:
-          # A PR's base: the gate also REPORTS HEAD against it (report only — the
-          # verdict stays anchored on the previous release). See
-          # `reportAgainstMergeBase` in bench/ab-harness.ts for when it costs a run.
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
-      # The PEAK clause — the same workloads against the fastest release ON RECORD
-      # rather than the previous one. The step above enforces "faster than the last
-      # release"; this one enforces "not below the best we have ever been", which is
-      # the half a per-step comparison structurally cannot see: five consecutive 1%
-      # losses each sit inside the noise floor, no step is flagged, and the sum is
-      # real. Measured at -5.1% accumulating across 0.28.0 -> 0.34.0 on the
-      # standalone sweep.
-      #
-      # Same job, so it reuses the checkout, the install and the warm .cache
-      # worktrees rather than paying for a second runner.
-      #
-      # `--base` is what makes a PERF-PEAK-WAIVER usable, and it is passed here rather
-      # than baked into the script on purpose. A waiver is PER-PR: the guard honours one
-      # only while the line is ABSENT from the base's CHANGELOG, and without a base it
-      # cannot tell this PR's declaration from the one the previous PR left behind — so
-      # it refuses. On a push (no PR) there is no base, and the clause is unwaivable,
-      # which is the correct default for the branch everything is measured against.
-      - name: Peak clause — no drawdown from the fastest release on record
-        run: pnpm perf:workloads:peak ${BASE_SHA:+--base=$BASE_SHA}
-        env:
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          pattern: xproc-${{ matrix.target }}-*
+          path: xproc-shards
+          merge-multiple: true
+      - name: Verdict over every shard
+        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --aggregate=xproc-shards --expect-shards=10
 
-  # Shipping macro-parser gate. The grammar/workload jobs above exercise runtime
-  # compile(); they do not instantiate Jess's macro-emitted parser. Pin Jess as
-  # well as parseman so the fixture and grammar side cannot drift under the gate.
   macro-perf:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -481,8 +443,8 @@ jobs:
   #
   # It is also the CHEAPEST gate here, and the only deterministic one. The metric
   # is a COUNT, not a timing: byte-identical across separate processes (asserted
-  # by test/unit/choice-cost.test.ts), so unlike `grammar-perf` and
-  # `workload-perf` it needs no reference commit, no repeated passes and no
+  # by test/unit/choice-cost.test.ts), so unlike the perf gates
+  # it needs no reference commit, no repeated passes and no
   # `fetch-depth: 0` — just the committed baseline and one interpreted parse of
   # ~33 kB. Seconds, not minutes.
   #
@@ -521,7 +483,7 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: [changes, test-matrix, docs-verify, grammar-perf, release-gate, workload-perf, size-gate, choice-cost-gate]
+    needs: [changes, test-matrix, docs-verify, release-gate, xproc-perf, size-gate, choice-cost-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -530,13 +492,12 @@ jobs:
           set -euo pipefail
           matrix='${{ needs.test-matrix.result }}'
           docs='${{ needs.docs-verify.result }}'
-          perf='${{ needs.grammar-perf.result }}'
           release='${{ needs.release-gate.result }}'
-          workload='${{ needs.workload-perf.result }}'
+          xproc='${{ needs.xproc-perf.result }}'
           size='${{ needs.size-gate.result }}'
           choicecost='${{ needs.choice-cost-gate.result }}'
           code='${{ needs.changes.outputs.code }}'
-          echo "test-matrix=$matrix  docs-verify=$docs  grammar-perf=$perf  release-gate=$release  workload-perf=$workload  size-gate=$size  choice-cost-gate=$choicecost  code-changed=$code"
+          echo "test-matrix=$matrix  docs-verify=$docs  release-gate=$release  xproc-perf=$xproc  size-gate=$size  choice-cost-gate=$choicecost  code-changed=$code"
 
           # docs-verify gates every change — it is never skipped.
           [ "$docs" = "success" ] || { echo "::error::docs:verify did not pass"; exit 1; }
@@ -559,27 +520,14 @@ jobs:
             *) echo "::error::test-matrix result: $matrix"; exit 1 ;;
           esac
 
-          # Same rule for the grammar perf gate: skipped is acceptable ONLY for a
-          # documentation-only PR. Anything else — failure, cancellation, or a skip
-          # from some other cause — fails the required check rather than sliding
-          # through as "not failed". That is what makes this gate block rather than
-          # report.
-          case "$perf" in
+          # The perf verdict: cross-process, default V8, sharded. Same skip rule as
+          # every other gate here: acceptable ONLY for a documentation-only PR.
+          case "$xproc" in
             success) ;;
             skipped)
-              [ "$code" = "false" ] || { echo "::error::grammar-perf skipped but code changed"; exit 1; }
-              echo "documentation-only change — grammar perf gate intentionally skipped" ;;
-            *) echo "::error::grammar-perf result: $perf"; exit 1 ;;
-          esac
-
-          # And the same rule again for the broad workload gate. Two perf gates,
-          # two independent required results: a green here must mean BOTH ran.
-          case "$workload" in
-            success) ;;
-            skipped)
-              [ "$code" = "false" ] || { echo "::error::workload-perf skipped but code changed"; exit 1; }
-              echo "documentation-only change — workload perf gate intentionally skipped" ;;
-            *) echo "::error::workload-perf result: $workload"; exit 1 ;;
+              [ "$code" = "false" ] || { echo "::error::xproc-perf skipped but code changed"; exit 1; }
+              echo "documentation-only change — cross-process perf gate intentionally skipped" ;;
+            *) echo "::error::xproc-perf result: $xproc"; exit 1 ;;
           esac
 
           # And the size gate, on the same footing. Speed had two required results

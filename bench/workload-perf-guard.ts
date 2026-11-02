@@ -66,7 +66,6 @@ import {
   materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, peakThresholds, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
-import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
 import type { Workload } from './workloads/index.ts'
 import { assertWorkloadFullyConsumed } from './workloads/consumption.ts'
 
@@ -183,6 +182,11 @@ console.log(
       ? `PEAK CLAUSE — ${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs the committed release baseline,`
         + ` ${CONFIG.peak.version} (${REF}), drawdown allowance ${CONFIG.peak.allowancePct}%`
       : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,
+)
+
+console.log(
+  `${GATE}: DIAGNOSTIC RUN, NOT A VERDICT. In-process A/B with V8's --no-compilation-cache set at run time,`
+  + `\n  so it does not measure what users run. CI's perf verdict is \`pnpm perf:xproc:gate\` (docs/design/perf-gates.md).`,
 )
 
 const refWorkloads = await loadSide(refDir)
@@ -312,58 +316,6 @@ if (QUICK) {
   process.exit(0)
 }
 
-/**
- * The PEAK-CLAUSE WAIVER — see `scripts/peak-waiver.mjs` for why it is shaped the way
- * it is, and `docs/design/perf-gates.md` §D for when it is legitimate.
- *
- * Short version: a drawdown that is deliberate and BOUGHT something used to have one
- * route past this gate — move `peak`, or widen `allowancePct`. Both make the slower
- * build the reference and destroy the record for everyone after. A waiver lands the
- * same change with the peak UNTOUCHED: the breach is stated in the CHANGELOG, this run
- * still prints its full drawdown report, and the next PR is measured against the same
- * bar and must state its own numbers.
- *
- * Four things must hold, and each maps to a way the hatch could otherwise go quiet:
- *
- *   1. the line parses — a waiver that does not is a contributor who thinks they waived
- *   2. its numbers are a real breach of `allowancePct` — you cannot waive nothing
- *   3. its numbers do not UNDERSTATE what was measured here — the point is the number
- *      being visible, so "median -6%" against a measured -265% is refused
- *   4. it is FRESH — absent from the base's CHANGELOG. Without `--base` that cannot be
- *      checked, so without `--base` the waiver is not honoured at all. Otherwise the
- *      PR after the waiving one inherits the text and the clause is silently off for
- *      the rest of the release cycle, which is the exact failure mode this gate exists
- *      to prevent.
- */
-const PEAK_BASE = argValue('--base')
-const CHANGELOG_PATH = path.join(ROOT, 'CHANGELOG.md')
-const CONFIG_REL = path.relative(ROOT, CONFIG_PATH).split(path.sep).join('/')
-
-function peakWaiver(failed: readonly Verdict[]): { applied: boolean, message: string } {
-  let section: string
-  try {
-    section = openSection(readFileSync(CHANGELOG_PATH, 'utf8'))
-  } catch {
-    return { applied: false, message: '' }
-  }
-  let baseChangelog = ''
-  if (PEAK_BASE !== null) {
-    try {
-      baseChangelog = git(['show', `${PEAK_BASE}:CHANGELOG.md`], ROOT)
-    } catch {
-      baseChangelog = ''
-    }
-  }
-  const d = decideWaiver({
-    section,
-    config: CONFIG_REL,
-    peak: CONFIG.peak,
-    breaching: failed.flatMap(f => f.passes.filter(r => r.breach)),
-    base: PEAK_BASE,
-    baseChangelog,
-  })
-  return { applied: d.applied, message: d.message === '' ? '' : `\n${GATE}:${d.message}` }
-}
 
 // Report-only runs (the merge-base arm below) never gate; the gate is the release.
 if (REPORT_ONLY) process.exit(0)
@@ -393,23 +345,15 @@ if (PEAK) {
     + '\nconsecutive 1% losses are each inside the noise floor and together are a real 5% regression.'
     + '\nThat is not hypothetical — the version sweep measured -5.1% over 0.28.0→0.34.0 with almost'
     + '\nevery step individually insignificant.'
-    + '\n\nThree honest responses, in order of preference:'
+    + '\n\nTwo honest responses, in order of preference:'
     + '\n  1. Find and fix the drawdown. It is real time, on realistic input.'
     + '\n  2. If the cost bought something — a correctness fix, a feature — and the drawdown is the NEW'
     + '\n     NORMAL, document it in the CHANGELOG and move `peak` in bench/workloads/config.json, in'
     + '\n     this PR, with these numbers quoted. This RE-BASELINES: the bar moves to the slower build.'
-    + `\n  3. If the cost bought something and the bar should NOT move, declare a per-PR ${WAIVER_TAG}`
-    + '\n     in the CHANGELOG\'s open section, quoting the numbers above:'
-    + `\n\n       ${WAIVER_TAG} bench/workloads/config.json median <n>% min <n>% — <why this cost buys something>`
-    + '\n\n     The peak stays where it is, this breach stays on the record, and the NEXT PR is measured'
-    + '\n     against the same bar and must state its own numbers. scripts/check-changelog.mjs §D\''
-    + '\n     enforces the form and refuses a stale one. See docs/design/perf-gates.md §D.'
-    + '\n  4. Nothing else. Widening `allowancePct` to fit the drawdown is laundering a regression into'
+    + '\n  3. Nothing else. Widening `allowancePct` to fit the drawdown is laundering a regression into'
     + '\n     the baseline, and check-changelog will make you say so in the CHANGELOG anyway.',
   )
-  const waiver = peakWaiver(failures)
-  console.error(waiver.message)
-  process.exit(waiver.applied ? 0 : 1)
+  process.exit(1)
 }
 if (failures.length > 0) {
   console.error(`\n${GATE}: REGRESSION in ${failures.length} workload(s) vs ${REF}:`)

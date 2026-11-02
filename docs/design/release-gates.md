@@ -223,7 +223,7 @@ moving from dispatch to push needs no change.
 
 | where | what it sees | what it asserts |
 | --- | --- | --- |
-| CI job `release-gate`, on a pull request | the diff against the PR base | A, B, D, D′ |
+| CI job `release-gate`, on a pull request | the diff against the PR base | A, B, D, E |
 | CI job `release-gate`, on a push to `main` | no base to diff | A only |
 | `prepublishOnly --publish` | the stamped tree | A and A′ |
 
@@ -304,12 +304,19 @@ A version between the base and the latest tag is refused because the publish wou
 ignore it. It would ship the next patch, and leave the PR's entries under a heading that
 names an older release. No label waives these checks.
 
-### D. Peak record and D′. Peak-clause waiver — on every PR
+### D. Peak record — on every PR
 
 Any edit to a perf gate's `peak` block is named in an entry the PR adds, with backward
-moves and widened allowances called out by name. A `PERF-PEAK-WAIVER` line lands a
-deliberate, measured drawdown without moving the peak. Both are specified in
-[perf-gates.md](./perf-gates.md) § "The peak clause".
+moves and widened allowances called out by name. See
+[perf-gates.md](./perf-gates.md) § "The peak clause". (A `PERF-PEAK-WAIVER` line used to
+let a drawdown past the in-process peak clause. That clause left CI in #175, and the
+waiver went with it.)
+
+### E. Perf verdict settings — on every PR
+
+Any edit to the cross-process gate's floor, α, sign-flip count or round counts in
+`bench/xproc-gate.json` is named in an entry the PR adds. Those numbers are the gate,
+and loosening one is how a gate gets weakened without anyone deciding to.
 
 ## Which bump
 
@@ -330,12 +337,7 @@ assertion inside this repo had to be updated for it. Observable, therefore minor
 The PR label. It exists for a **revert**, where the version may go down and the entry
 may be a removal, and for a **chained PR** whose entry lives in the PR underneath it.
 It is on the PR, visible next to the diff, which is the difference between a waiver
-and a bypass. It never waives A, D or D′.
-
-### `PERF-PEAK-WAIVER` — waives the peak clause's verdict only
-
-See [perf-gates.md](./perf-gates.md) § D. It is deliberately not an extension of
-`release-exempt`.
+and a bypass. It never waives A, D or E.
 
 ## History
 
