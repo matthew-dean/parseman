@@ -4,7 +4,7 @@ import {
   OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_LIVE, OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT,
   OP_PEEK, OP_REJECT, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX, OP_RX_TRACK, OP_SCAN,
   OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_RGATE2,
 } from './ops.ts'
 
 /**
@@ -47,13 +47,13 @@ export function childSlots(code: ArrayLike<number>, ip: number, out: number[]): 
     // rest — a coverage-encoded program is a program, and omitting it made
     // `opHistogram` throw on every table the coverage build produces.
     case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT:
-    case OP_TOKEN: case OP_ATTEMPT: case OP_LABEL: case OP_COV: case OP_REJECT:
+    case OP_TOKEN: case OP_ATTEMPT: case OP_LABEL: case OP_COV: case OP_REJECT: case OP_GAPGATE:
       out.push(code[ip + 1]!)
       return true
 
     // Single child at `ip + 2`.
     case OP_GATE: case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM:
-    case OP_NODE: case OP_NODE_TRACK: case OP_FIELD: case OP_LEAF: case OP_SOURCE_LEAF: case OP_ARMGATE: case OP_RGATE:
+    case OP_NODE: case OP_NODE_TRACK: case OP_FIELD: case OP_LEAF: case OP_SOURCE_LEAF: case OP_ARMGATE: case OP_RGATE: case OP_RGATE2:
       out.push(code[ip + 2]!)
       return true
 

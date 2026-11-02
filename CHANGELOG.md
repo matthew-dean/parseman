@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.59.0 — 2026-11-01
 
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
@@ -18,6 +18,68 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
   in every table engine. A miss now reports the terminal's own failure set, and a
   label's name. Which arms are gated is unchanged.
+- **A sequence led by an optional pad has its operator's first set.** A `regex()` that
+  may match empty still reports `any` as its own first set, since it can match empty
+  anywhere, but it now also carries the first characters of its non-empty matches. A
+  sequence, which tracks nullability itself, unions those with the next term's, so
+  `sequence(regex(/[ \t]*/), regex(/[*%]/), regex(/[ \t]*/))` is `{ws, *, %}` instead
+  of `any`. A repeat of such an operator now has an item class and the operator's node
+  a gate: at a value end (`;`, `)`, `,`) an operator chain `A (op A)*` stops on the
+  character instead of opening each level's operator to scan an empty pad and fail.
+  Jess's SCSS grammar writes its math operators this way: its generated workload parses
+  in 10.8% fewer instructions with the JIT and 9.1% fewer without it. Trees are
+  unchanged.
+- **A separated list ends on a character its separator cannot start.** Past its
+  minimum, a `sepBy()` whose separator cannot match empty now tests the character after
+  the gap against the separator's first set (already in the table as the recovery
+  sentinel) in both table engines, and ends the list there without entering the
+  separator. A `field(…, { leadingTrivia: true })` separator, a completions probe and
+  tolerant recovery keep entering it. `test/unit/table-loop-continuation.test.ts`
+  compares every table reader with the interpreter over generated operator chains and
+  lists, and is registered in `check:differentials`.
+- **`otherwise(p, { commit: false })`.** A `dispatch()` commits whenever a selected branch
+  fails. The option keeps that cut on the `when()` cases and lets the fallback fail
+  uncommitted, so a statement read once by its name, which no fallback arm reads, ends
+  the statement list instead of stopping the parse, while a broken call (a `when()`
+  case) still stops it. The interpreter, every table engine, the IR printer and the
+  macro evaluator carry it. Test: `test/unit/dispatch-otherwise-commit.test.ts`.
+- **An arm whose next sibling is its own prefix parses the prefix once.**
+  `choice(sequence(X, a), X)`, with the choice's value unused, is encoded with its first
+  arm as `sequence(X, optional(a))`, so an `X` with no `a` after it is not parsed again
+  by the next arm. Failures are reported as before. Jess's SCSS mixin argument
+  (`$name: v`, `v...`, `v`) is this shape. Test: `test/unit/table-prefix-arm.test.ts`.
+- **An optional repeat reads its item's leading gap once.** An optional repeat item
+  that opens with a gap (a `regex()` that may match empty, or one that starts only with
+  whitespace or a comment's `/`) and then a term with a finite first set gets an
+  `OP_GAPGATE` row. The repeat scans the gap with the item's own regex, ends where the
+  character after it opens no such term (and the item's start opens no arm without
+  the gap), and otherwise enters the item with the gap's end in a slot, from which the
+  regex row takes it instead of scanning again. The slot is a memo of one pure
+  function, keyed by row, position and input. Not under tolerant recovery or a
+  completions probe; the reference driver runs the item as written. A gap spelled as
+  `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
+  and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
+- A budgeted assembly selection is priced with every gap gate lowered as its item, so
+  adding the gates moves no site in or out of the selection: in Jess's CSS, SCSS and
+  .jess grammars it is site for site the selection of the same grammars without them.
+  `emitAssemblySource` takes `gapNeutral` for that pricing.
+- **A routed arm gate reads two characters where its next term says them.** Where the
+  term after a `routed()` token states its first two characters outright (a literal of
+  two or more characters, or a case-sensitive regex that opens with a character class
+  followed by another or by a positive lookahead over one, such as
+  `regex(/:(?=[ \t\n\r\f])/)`), and no gap before it can start with the first, the
+  encoder emits `OP_RGATE2`: where the character after the token is one of the first,
+  the next one must be one of the second, or the arm fails at the token's end with the
+  term's own set, as entering it would. Two code-unit reads, no scan. Jess's Less
+  name-once statement (jess#515) no longer enters its spaced-declaration arm on a
+  glued head (`div:hover`, `color:red`). Test: `test/unit/table-routed-arm-gate2.test.ts`.
+- An optional repeat item no longer tests its lead gate twice: the repeat's own item
+  class covers it. And with no separator or gap in front of the item, the item class is
+  tested once per iteration, not twice.
+- Fixed: a `sepBy` of `min: 1` whose first item fails reports the item's derived set at
+  the list's start in every table reader, as the interpreter does (`repeat.ts`
+  `failAt`). The tables reported what the failed item left, e.g. `")"` inside the group
+  of `x:(1;` where the interpreter said what may start a value.
 
 ## 0.58.0 — 2026-10-31
 

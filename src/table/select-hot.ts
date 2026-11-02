@@ -15,7 +15,7 @@
  * A build given a corpus (`assemblyProfile`) ranks by measured calls instead.
  */
 import { childSlots } from './child-slots.ts'
-import { OP_CHOICE, OP_DISPATCH, OP_REP, OP_REPV } from './ops.ts'
+import { OP_CHOICE, OP_DISPATCH, OP_GAPGATE, OP_REP, OP_REPV } from './ops.ts'
 
 const LOOP = 8
 const ROUNDS = 60
@@ -62,7 +62,12 @@ function staticWeights(code: readonly number[], entries: readonly number[]): Map
       const scale = op === OP_REP || op === OP_REPV ? LOOP
         : op === OP_CHOICE || op === OP_DISPATCH ? 1 / Math.max(1, kids.length)
         : 1
-      for (const kid of kids) next.set(kid, Math.min(CAP, (next.get(kid) ?? 0) + w * scale))
+      for (const k of kids) {
+        // A gap gate has no body: weigh its item as the repeat's own child, so
+        // adding the row moves no other site's estimate (`gap-gate.ts`).
+        const kid = code[k] === OP_GAPGATE ? code[k + 1]! : k
+        next.set(kid, Math.min(CAP, (next.get(kid) ?? 0) + w * scale))
+      }
     }
     weight = next
   }

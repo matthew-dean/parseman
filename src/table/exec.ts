@@ -21,8 +21,8 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
-  OP_COV,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE,
+  OP_COV, OP_GAPGATE,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -519,7 +519,10 @@ function makeDriver(
        * a second implementation of it here would be a second place for the phase
        * semantics (entry for a rule, success for an arm) to drift.
        */
+      // The reference runs a gap-gated item as written: the gate is the repeat's,
+      // in the shipped engines, and this driver is the leg it is compared with.
       case OP_COV:
+      case OP_GAPGATE:
         return exec(code[ip + 1]!, input, pos, ctx)
 
       case OP_LIVE: {
@@ -602,6 +605,7 @@ function makeDriver(
 
         let target: number
         let usesRouted: boolean
+        let commits = true
         if (arm === undefined) {
           const other = code[ip + 3]!
           if (other < 0) {
@@ -611,7 +615,8 @@ function makeDriver(
             return FAIL
           }
           target = other
-          usesRouted = code[ip + 4]! === 1
+          usesRouted = (code[ip + 4]! & 1) === 1
+          commits = (code[ip + 4]! & 2) === 0
         } else {
           target = code[armBase + arm]!
           usesRouted = spec.routed[arm] === 1
@@ -638,8 +643,8 @@ function makeDriver(
           rollbackTrivia(ctx, mark)
           // The interpreter marks a failed dispatch branch COMMITTED: the
           // selector already matched, so an enclosing choice must not treat this
-          // as "try the next arm".
-          ctx._fc = true
+          // as "try the next arm". An uncommitted fallback keeps its own flag.
+          if (commits) ctx._fc = true
           return FAIL
         }
         // The end cell already holds the branch's end — dispatch's span runs from `pos`
@@ -1120,7 +1125,10 @@ function makeDriver(
         return sup
       }
 
-      case OP_RGATE: {
+      // The reference tests the first character only: the second is the shipped
+      // engines' (`OP_RGATE2`), and this driver is the leg they are compared with.
+      case OP_RGATE:
+      case OP_RGATE2: {
         const item = ctx._routed
         if (item !== undefined && item.span.start === pos && ctx._probe === undefined && !ctx._tolerant
           && !classHas(cc[code[ip + 1]!]!, lead(input, item.span.end))) {

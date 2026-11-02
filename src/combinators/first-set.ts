@@ -72,7 +72,7 @@ export function classifyFinalChoice(
  * does not. `undefined` → no winner; fall back to the thunk. Monolithic: the winner IS
  * the thunk's target, a no-op. A winner that recurses back to `p` (recursive or
  * self-alias rule) is caught by the shared `seen` guard → `any`, a sound over-approx. */
-function winnerForRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
+export function winnerForRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
   if (resolve === undefined) return undefined
   const name = (p as unknown as { _ruleName?: string })._ruleName
   const w = name === undefined ? undefined : resolve(name)
@@ -325,7 +325,10 @@ function sequenceSet(
     }
     const first = fs(p)
     if (!empties(p) || i + 1 === parsers.length) return first
-    return union(first, afterBoundary(i + 1))
+    // A nullable regex reports `any` as its own set (it may match empty
+    // anywhere); here the empty match is the union with the rest, so only its
+    // non-empty matches' first chars are its own contribution.
+    return union(p._meta.consumingFirstSet ?? first, afterBoundary(i + 1))
   }
   return at(0)
 }

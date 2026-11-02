@@ -27,6 +27,18 @@ export type DispatchOtherwise<T> = {
   readonly kind: 'otherwise'
   readonly parser: Combinator<T>
   readonly usesRouted?: boolean
+  /** `false`: a failure of this branch is not committed (see `otherwise()`). */
+  readonly commit?: false
+}
+/** `otherwise()` options. */
+export type DispatchOtherwiseOptions = {
+  /**
+   * `false` lets the fallback branch fail UNCOMMITTED, so an enclosing choice or
+   * repeat may try something else, while the `when()` cases still commit. The
+   * default `true` is the dispatch cut: a selected branch that fails fails the
+   * whole choice.
+   */
+  commit?: boolean
 }
 
 export type DispatchArm<T = unknown> = DispatchWhen<T> | DispatchWhenMatcher<T> | DispatchOtherwise<T>
@@ -198,8 +210,11 @@ export function makeWhen(opts: DispatchWhenOptions = {}): DispatchWhenFactory {
   return (key, parser) => when(key, parser, opts)
 }
 
-export function otherwise<T>(parser: Combinator<T>): DispatchOtherwise<T> {
-  return { kind: 'otherwise', parser, usesRouted: parserUsesRouted(parser as Combinator<unknown>) }
+export function otherwise<T>(parser: Combinator<T>, opts: DispatchOtherwiseOptions = {}): DispatchOtherwise<T> {
+  const usesRouted = parserUsesRouted(parser as Combinator<unknown>)
+  return opts.commit === false
+    ? { kind: 'otherwise', parser, usesRouted, commit: false }
+    : { kind: 'otherwise', parser, usesRouted }
 }
 
 /**
@@ -256,6 +271,7 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
   }
   let fallback: Combinator<unknown> | undefined
   let fallbackUsesRouted = false
+  let fallbackCommits = true
   const matchers: DispatchMatcherCase[] = []
   const cases: DispatchCase[] = []
   const seen: Array<{ raw: string; folded: string; caseInsensitive: boolean }> = []
@@ -267,6 +283,7 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
       if (i !== arms.length - 1) throw new Error('parseman: otherwise() must be the last dispatch() arm')
       fallback = arm.parser
       fallbackUsesRouted = arm.usesRouted === true
+      fallbackCommits = arm.commit !== false
       continue
     }
     if (arm.kind === 'whenMatcher') {
@@ -325,7 +342,11 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
       selector: selector as Combinator<string>,
       cases,
       ...(matchers.length === 0 ? {} : { matchers }),
-      ...(fallback === undefined ? {} : { otherwise: fallback, ...(fallbackUsesRouted ? { otherwiseUsesRouted: true } : {}) }),
+      ...(fallback === undefined ? {} : {
+        otherwise: fallback,
+        ...(fallbackUsesRouted ? { otherwiseUsesRouted: true } : {}),
+        ...(fallbackCommits ? {} : { otherwiseCommit: false as const }),
+      }),
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<[S, UnionArms<T>]> {
       if (parserUsesRouted(selector as Combinator<unknown>)) {
@@ -335,9 +356,10 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
       const selected = selector.parse(input, pos, ctx)
       if (!selected.ok) return selected
 
-      const branch = byKey.get(selected.value) ??
+      const chosen = byKey.get(selected.value) ??
         (byFoldedKey.size === 0 ? undefined : byFoldedKey.get(asciiFoldKey(selected.value))) ??
-        matchers.find(matcher => matchesDispatchMatcher(selected.value, matcher)) ??
+        matchers.find(matcher => matchesDispatchMatcher(selected.value, matcher))
+      const branch = chosen ??
         (fallback === undefined ? undefined : { keys: [], parser: fallback, caseInsensitive: false, usesRouted: fallbackUsesRouted })
       if (branch === undefined) {
         const expected = cases.flatMap(entry => entry.keys.map(key => JSON.stringify(key)))
@@ -360,7 +382,9 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
       }
       if (!result.ok) {
         rollbackTrivia(ctx, mark)
-        return { ...result, committed: true }
+        // An uncommitted fallback reports its own failure, committed only if
+        // something inside it committed.
+        return chosen === undefined && !fallbackCommits ? result : { ...result, committed: true }
       }
 
       return {

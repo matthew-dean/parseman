@@ -47,11 +47,11 @@
 import type { ParseContext } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
-  OP_ADJ, OP_ARMGATE, OP_RGATE, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
+  OP_ADJ, OP_ARMGATE, OP_RGATE, OP_RGATE2, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE,
 } from './ops.ts'
 import {
   choiceCannotCommit, choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
@@ -67,7 +67,8 @@ import {
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
-import { holdsGap } from './hold-gap.ts'
+import { holdsGap, rowNullable } from './hold-gap.ts'
+import { gapRows } from './gap-gate.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
 
@@ -142,6 +143,8 @@ export const EMITTED_PARAMS = [
   // Appended for the pass-through collapse (`run-support.ts`); old factories
   // ignore it.
   'collapseEmpty',
+  // Appended for the gap gate (`gap-gate.ts`); old factories ignore it.
+  'GAP',
 ] as const
 
 /**
@@ -588,6 +591,12 @@ export function emitAssemblySource(
   extraIps: readonly number[] = [],
   staticBuild = false,
   select?: ReadonlySet<number>,
+  /**
+   * Lower every gap gate (`gap-gate.ts`) as the item it wraps. A selection is
+   * priced and chosen on this lowering, so adding the gates moves no site in or
+   * out of a budget; the artifact is then emitted with them.
+   */
+  gapNeutral = false,
 ): EmitResult {
   const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
@@ -626,6 +635,7 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   const reachable = [...reachableSites(code, roots)]
+  const GAP_ROWS = gapNeutral ? new Set<number>() : gapRows(code, roots)
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -1135,7 +1145,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // `OP_GATE` under a probe or a tolerant recovery is a no-op that forwards to
     // its child, exactly as `assemble.ts:952` resolves it.
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
-    if (op === OP_RULE) return code[ip + 1]!
+    if (op === OP_RULE || op === OP_GAPGATE) return code[ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
     // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
@@ -1154,6 +1164,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
   function lower(ip: number, fname: string): string {
     const op = code[ip]
     const head = `function ${fname}(input,pos,ctx){`
+    const outerHead = head
     const L = labels.at(ip)
     const sinks = sinksAt(ip)
     /**
@@ -1273,6 +1284,26 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       case OP_RX_TRACK: {
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_RX_TRACK
+        // A gap row takes the end a repeat already scanned (`gap-gate.ts`), and
+        // otherwise matches its sticky regex: one compact body, no second copy of
+        // the success path.
+        if (GAP_ROWS.has(ip)) {
+          const re = hoist('gx', `K[${code[ip + 1]!}]`)
+          return `${outerHead}
+let e
+if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end
+else{${re}.lastIndex=pos;e=${re}.test(input)?${re}.lastIndex:-1}
+if(e>=0){
+const v=input.slice(pos,e)
+${captureLeaf('v')}
+${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
+return v
+}
+ctx._fe=pos;ctx._fx=${xf}
+${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+}`
+        }
+        const head = outerHead
         if (!track && scalarSpecs.has(code[ip + 1]!)) {
           const recognize = recognizerRef(code[ip + 1]!)
           return `${head}
@@ -1360,6 +1391,31 @@ return ${child}(input,pos,ctx)
         return `${head}
 const it=ctx._routed
 if(it!==undefined&&it.span.start===pos&&!classHas(${cls},lead(input,it.span.end))){ctx._fe=it.span.end;ctx._fx=${xf};return FAIL}
+return ${child}(input,pos,ctx)
+}`
+      }
+
+      case OP_RGATE2: {
+        const child = link(code[ip + 2]!)
+        if (cfg.tolerant || cfg.probe) return `${head}
+return ${child}(input,pos,ctx)
+}`
+        // ASCII-only classes (the usual case: `:` then whitespace) are read as
+        // code units against their ASCII tables, with no call.
+        const idxs = [code[ip + 1]!, code[ip + 4]!, code[ip + 5]!]
+        const ascii = idxs.every(i => isAsciiOnlyClass(t.cc[i]!))
+        const ref = (idx: number, tag: string): string => {
+          const ci = classes.push([t.cc[idx]!]) - 1
+          classPlan.push([idx])
+          return hoist(tag, `CLS[${ci}][0]`)
+        }
+        const [cls, first, second] = [ref(idxs[0]!, 'cl'), ref(idxs[1]!, 'c1'), ref(idxs[2]!, 'c2')]
+        const has = (c: string, at: string): string => ascii ? `${c}.ascii[${at}]===1` : `classHas(${c},${at})`
+        const xf = fxRef(code[ip + 3]!)
+        return `${head}
+const it=ctx._routed
+if(it!==undefined&&it.span.start===pos){const e=it.span.end;const c=${ascii ? 'input.charCodeAt(e)' : 'lead(input,e)'}
+if(!(${has(cls, 'c')})||(${has(first, 'c')}&&!(${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}))){ctx._fe=e;ctx._fx=${xf};return FAIL}}
 return ${child}(input,pos,ctx)
 }`
       }
@@ -2157,7 +2213,8 @@ return FAIL
         const selector = link(code[ip + 1]!)
         const otherIp = code[ip + 3]!
         const other = otherIp >= 0 ? link(otherIp) : undefined
-        const otherRouted = code[ip + 4]! === 1
+        const otherRouted = (code[ip + 4]! & 1) === 1
+        const otherCommits = (code[ip + 4]! & 2) === 0
         const n = code[ip + 5]!
         validateDispatchSpec(spec, n, code[ip + 4]!)
         const armBase = ip + 6
@@ -2221,7 +2278,7 @@ ${fallbackCase}
 }
 if(v===FAIL){
 ${emitRollback(m2, L.buf, L.raw, sinks)}
-ctx._fc=true
+${other !== undefined && !otherCommits ? 'if(arm!==undefined)' : ''}ctx._fc=true
 return FAIL
 }
 return [key,v]
@@ -2256,6 +2313,50 @@ return [key,v]
         const itemMiss = (at: string): string => itemAscii
           ? `${itemCls}.ascii[input.charCodeAt(${at})]!==1`
           : `!classHas(${itemCls},lead(input,${at}))`
+        // The separator's own first set (ip+7, `assemble.ts` `sepClass`).
+        let sepCls: string | undefined
+        let sepAscii = false
+        if (!REC && sepIp >= 0 && !leadingTriviaFieldAt(code, k, sepIp) && code[ip + 7]! >= 0 && !rowNullable(code, k, sepIp, nullable)) {
+          const resolved = t.cc[code[ip + 7]!]!
+          const ci = classes.push([resolved]) - 1
+          classPlan.push([code[ip + 7]!])
+          sepCls = hoist('rs', `CLS[${ci}][0]`)
+          sepAscii = isAsciiOnlyClass(resolved)
+        }
+        // THE GAP GATE (`gap-gate.ts`, `assemble.ts`): the item's leading gap is
+        // read once here and handed to its regex row through the slot.
+        const gapIp = !gapNeutral && sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1
+        let gapCode = (_rb: string): string => ''
+        if (gapIp >= 0) {
+          const row = code[gapIp + 2]!
+          const re = hoist('gr', `K[${code[row + 1]!}]`)
+          const cls = (idx: number): string => {
+            const resolved = t.cc[idx]!
+            const ci = classes.push([resolved]) - 1
+            classPlan.push([idx])
+            const ref = hoist('gc', `CLS[${ci}][0]`)
+            return isAsciiOnlyClass(resolved) ? `${ref}.ascii[input.charCodeAt(${'@'})]!==1` : `!classHas(${ref},lead(input,${'@'}))`
+          }
+          const follow = cls(code[gapIp + 3]!).replaceAll('@', 'gq')
+          const other = code[gapIp + 4]! >= 0 ? cls(code[gapIp + 4]!).replaceAll('@', 'itemStart') : 'true'
+          gapCode = (rbCode: string): string => `let gapped=false
+if(ctx._probe===undefined){
+${re}.lastIndex=itemStart
+const gq=${re}.test(input)?${re}.lastIndex:-1
+if((gq<0||${follow})&&${other}){
+${rbCode}
+break
+}
+if(gq>=0){
+GAP.row=${row};GAP.at=itemStart;GAP.end=gq;GAP.input=input
+gapped=true
+}
+}
+`
+        }
+        const sepMiss = (at: string): string => sepAscii
+          ? `${sepCls}.ascii[input.charCodeAt(${at})]!==1`
+          : `!classHas(${sepCls},lead(input,${at}))`
         const skipBeforeFirst = sepIp < 0 && min === 0
         const p = tmp()
         // `viaRepItem` is `sep === undefined && count >= min && (count > 0 ||
@@ -2368,7 +2469,7 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
 ${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
@@ -2378,7 +2479,11 @@ let sepEnd=-1
 ${sep !== undefined ? `if(count>0){
 const lb=cstLeavesLen(ctx)
 let sp=cur
-${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}ctx._fc=false
+${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('sp')}){
+${rb}
+break
+}
+`}ctx._fc=false
 ${sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp) ? 'LEAD.at=cur\n' : ''}const sv=${sep}(input,sp,ctx)
 if(sv===FAIL){
 ${rb}
@@ -2393,13 +2498,13 @@ itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(inp
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${itemMiss('itemStart')}){
+${itemCls === undefined || (sep === undefined && hasTrivia === 'false') ? '' : `if(count>=${min}&&${p}gate&&${sep === undefined && hasTrivia === 'hasTrivia' ? 'hasTrivia&&' : ''}${itemMiss('itemStart')}){
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-`}ctx._fc=false
+`}${gapCode(rb)}ctx._fc=false
 const v=${child}(input,itemStart,ctx)
-if(v===FAIL){
+${gapIp >= 0 ? 'if(gapped)GAP.at=-1\n' : ''}if(v===FAIL){
 ${REC
   // THE ROLLBACK MOVES INSIDE THE ARMS. The strict loop rolls back
   // unconditionally before testing `_fc`, which is sound because every path out

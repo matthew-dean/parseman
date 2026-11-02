@@ -196,6 +196,149 @@ export const DEFECTS = {
     }],
   },
 
+  'loop-sep-gate-before-trivia': {
+    why: 'closure engine: a separated list tests its separator class before the trivia in front of it',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '              if (count >= min && gateSep && !classHas(sepClass!, lead(input, sp))) {\n',
+      replace: '              if (count >= min && gateSep && !classHas(sepClass!, lead(input, cur))) {\n',
+    }],
+  },
+
+  'loop-sep-gate-before-trivia-emitted': {
+    why: 'emitted engine: a separated list tests its separator class before the trivia in front of it',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "`if(hasTrivia)sp=${skip}(input,sp,ctx)\\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('sp')}){",
+      replace: "`if(hasTrivia)sp=${skip}(input,sp,ctx)\\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('cur')}){",
+    }],
+  },
+
+  'seq-pad-first-set-drops-rest': {
+    why: 'first sets: a sequence led by a nullable regex reports only the regex\'s own first characters',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: '    return union(p._meta.consumingFirstSet ?? first, afterBoundary(i + 1))\n',
+      replace: '    return p._meta.consumingFirstSet ?? union(first, afterBoundary(i + 1))\n',
+    }],
+  },
+
+  'seplist-first-item-set-dropped': {
+    why: 'encoder: a separated list of min 1 whose first item fails reports that item\'s own failure, not the item set at the list start',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "(d.keepSeparators === true ? 2 : 0) | (d.min >= 1 ? 4 : 0)",
+      replace: "(d.keepSeparators === true ? 2 : 0) | (d.min >= 2 ? 4 : 0)",
+    }],
+  },
+
+  'repeat-lead-gate-kept': {
+    why: 'encoder: an optional repeat item keeps the lead gate its repeat already tests',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '          ? this.withoutLeadGate(this.node(d.parser).ip, itemClass)\n',
+      replace: '          ? this.node(d.parser).ip\n',
+    }],
+  },
+
+  'prefix-arm-any-prefix': {
+    why: 'encoder: an arm is factored over its next sibling even when that sibling is not its prefix',
+    edits: [{
+      file: 'src/table/factor-choice.ts',
+      find: '    if (!prefix.every((t, j) => sameComb(t, terms[j]!, 0))) continue\n',
+      replace: '',
+    }],
+  },
+
+  'prefix-arm-off': {
+    why: 'encoder: an arm whose next sibling is its prefix is left as written (the shared term parses twice)',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const factored = factorSharedEnds(d) ?? factorPrefixArms(d)',
+      replace: 'const factored = factorSharedEnds(d)',
+    }],
+  },
+
+  'gap-scan-wrong-offset': {
+    why: 'closure engine: the gap gate scans the item\'s gap one character late',
+    edits: [{ file: 'src/table/assemble.ts', find: '              gapRe.lastIndex = itemStart\n', replace: '              gapRe.lastIndex = itemStart + 1\n' }],
+  },
+
+  'gap-scan-wrong-offset-emitted': {
+    why: 'emitted engine: the gap gate scans the item\'s gap one character late',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: '${re}.lastIndex=itemStart\n', replace: '${re}.lastIndex=itemStart+1\n' }],
+  },
+
+  'gap-follow-narrowed': {
+    why: 'encoder: the class after an item\'s gap loses its lowest character',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    const cls = this.charClass(lead.follow)\n',
+      replace: "    const cls = this.charClass(lead.follow.kind === 'ranges' ? { kind: 'ranges', ranges: lead.follow.ranges.map((r, i) => i === 0 ? { lo: r.lo + 1, hi: r.hi } : r).filter(r => r.lo <= r.hi) } : lead.follow)\n",
+    }],
+  },
+
+  'gap-slot-any-row': {
+    why: 'closure engine: a gap row takes the slot at its position whatever row the slot was set for',
+    edits: [{ file: 'src/table/assemble.ts', find: 'if (GAP.row === row && GAP.at === pos && GAP.input === input) e = GAP.end', replace: 'if (GAP.at === pos && GAP.input === input) e = GAP.end' }],
+  },
+
+  'gap-slot-any-row-emitted': {
+    why: 'emitted engine: a gap row takes the slot at its position whatever row the slot was set for',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: 'if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end', replace: 'if(GAP.at===pos&&GAP.input===input)e=GAP.end' }],
+  },
+
+  'rgate2-second-at-first': {
+    why: 'closure engine: the two-character routed gate reads its second character at the first character\'s position',
+    edits: [{ file: 'src/table/assemble.ts', find: '(classHas(first, c) && !classHas(second, lead(input, e + 1)))', replace: '(classHas(first, c) && !classHas(second, lead(input, e)))' }],
+  },
+
+  'rgate2-second-at-first-ascii': {
+    why: 'closure engine: the ASCII two-character routed gate reads its second code unit at the first one\'s position',
+    edits: [{ file: 'src/table/assemble.ts', find: 'a2[input.charCodeAt(e + 1)] !== 1', replace: 'a2[input.charCodeAt(e)] !== 1' }],
+  },
+
+  'rgate2-second-at-first-emitted': {
+    why: 'emitted engine: the two-character routed gate reads its second character at the first character\'s position',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: "${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}", replace: "${has(second, ascii ? 'input.charCodeAt(e)' : 'lead(input,e)')}" }],
+  },
+
+  'rgate2-second-narrowed': {
+    why: 'encoder: the second-character class of a two-character routed gate loses its lowest character',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    const b = this.charClass(two.second)\n',
+      replace: "    const b = this.charClass(two.second.kind === 'ranges' ? { kind: 'ranges', ranges: two.second.ranges.map((r, i) => i === 0 ? { lo: r.lo + 1, hi: r.hi } : r).filter(r => r.lo <= r.hi) } : two.second)\n",
+    }],
+  },
+
+  'otherwise-commit-bit-dropped': {
+    why: 'encoder: otherwise(p, { commit: false }) is encoded as a committing fallback',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '(d.otherwiseCommit === false ? 2 : 0)',
+      replace: '0',
+    }],
+  },
+
+  'otherwise-commit-closure-routed': {
+    why: 'closure engine: a routed uncommitted fallback still commits its failure',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '\n        if (commits) ctx._fc = true\n',
+      replace: '\n        ctx._fc = true\n',
+    }],
+  },
+
+  'otherwise-commit-emitted': {
+    why: 'emitted engine: an uncommitted fallback still commits its failure',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "${other !== undefined && !otherCommits ? 'if(arm!==undefined)' : ''}ctx._fc=true",
+      replace: 'ctx._fc=true',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{
