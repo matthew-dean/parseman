@@ -276,7 +276,7 @@ export const DEFECTS = {
     why: 'encoder: a rule body is encoded once, under the first trivia scope that reaches it',
     edits: [{
       file: 'src/table/encode.ts',
-      find: "    if (t === undefined || !this.readsScope(p)) return ''\n",
+      find: "    if (!this.readsScope(p)) return ''\n",
       replace: "    return ''\n",
     }],
   },
@@ -305,6 +305,42 @@ export const DEFECTS = {
       file: 'src/table/encode.ts',
       find: 'this.code[head + 3] = this.expected(arms.flatMap(a => gateMissExpected(a)))',
       replace: 'this.code[head + 3] = this.expected(arms.flatMap(a => deriveExpected(a)))',
+    }],
+  },
+
+  'gate-narrows-unknown-trivia': {
+    why: 'encoder: a gate reads a nullable pad through its non-empty matches where the live trivia is not known',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    return this.activeTrivia !== undefined || this.triviaKnown\n',
+      replace: '    return true\n',
+    }],
+  },
+
+  'routed-boundary-caller-scope': {
+    why: 'encoder: a routed gate reads its next term from a cleared region under no trivia, not the trivia its reference installs',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const first = firstSetOf(next, new Set(), rr, boundary ?? null)',
+      replace: 'const first = firstSetOf(next, new Set(), rr, boundary)',
+    }],
+  },
+
+  'token-body-caller-scope': {
+    why: 'encoder: a token\'s body is encoded under its caller\'s trivia, which a token clears',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '        this.activeTrivia = undefined\n        this.triviaKnown = true\n        const body = this.node(d.parser).ip\n',
+      replace: '        this.triviaKnown = true\n        const body = this.node(d.parser).ip\n',
+    }],
+  },
+
+  'regex-letter-escape-literal': {
+    why: 'regex first sets: an unmodelled letter escape (\\p{L}, \\cJ) is read as its letter',
+    edits: [{
+      file: 'src/regex/first-set.ts',
+      find: "        if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) throw BAIL\n",
+      replace: '',
     }],
   },
 

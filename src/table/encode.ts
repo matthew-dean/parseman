@@ -222,6 +222,29 @@ class Encoder {
   private unfactoredChoice: Combinator<unknown> | undefined = undefined
   /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
   activeTrivia: Combinator<unknown> | undefined = undefined
+  /**
+   * Is the trivia live at this row known? It is not in the body of an entry
+   * that installs none of its own: that body runs under whatever trivia its
+   * caller has (a compiled rule inside another grammar, `run({ trivia })`).
+   * Every scope (`parser({ trivia })`, `noTrivia`, `token()`, a rule's install)
+   * makes it known again.
+   */
+  triviaKnown = true
+  /**
+   * The trivia a gate's first set is derived under: the live table, `null` for a
+   * scope known to have none, or `undefined` where it is not known.
+   */
+  private gateTrivia(): Combinator<unknown> | null | undefined {
+    return this.activeTrivia ?? (this.triviaKnown ? null : undefined)
+  }
+  /**
+   * Whether a gate may read a nullable pad through its non-empty matches
+   * (`firstSetOf`'s `consuming`): only where the trivia that may follow the pad
+   * is known. Elsewhere a gate reads first sets as 0.58.0 did.
+   */
+  private gateConsuming(): boolean {
+    return this.activeTrivia !== undefined || this.triviaKnown
+  }
   classified = false
   scans: ScanSpec[] = []
   /** Ambient `scanSkip` sets, pooled by the ARRAY's identity (stable per grammar). */
@@ -360,7 +383,7 @@ class Encoder {
             // encoder would hold at that row, so both lowerings rank the same
             // failures.
             const final = classifyFinalChoice(
-              node.parsers, this.refResolver(), node.cleared ? undefined : this.activeTrivia,
+              node.parsers, this.refResolver(), node.cleared ? null : this.gateTrivia(), node.cleared || this.gateConsuming(),
             )
             const classes = final.firstSets.map((first, i) => final.nullable[i] ? -1 : this.charClass(first))
             const exclusive = final.exclusive && classes.every(cls => cls >= 0)
@@ -581,7 +604,8 @@ class Encoder {
    */
   private scopeKey(p: Combinator<unknown>): string {
     const t = this.activeTrivia
-    if (t === undefined || !this.readsScope(p)) return ''
+    if (!this.readsScope(p)) return ''
+    if (t === undefined) return this.triviaKnown ? '' : '?'
     let sig = this.triviaSignatures.get(t)
     if (sig === undefined) {
       sig = `t${JSON.stringify(firstSetOf(t, new Set(), this.refResolver()))}`
@@ -872,7 +896,7 @@ class Encoder {
       || op === OP_RX || op === OP_RX_TRACK) return child
     const rr = this.refResolver()
     if (matchesEmpty(p, new Set(), rr)) return child
-    const cls = this.charClass(firstSetOf(p, new Set(), rr, this.activeTrivia ?? null))
+    const cls = this.charClass(firstSetOf(p, new Set(), rr, this.gateTrivia(), this.gateConsuming()))
     if (cls < 0) return child
     const e = gateMissExpected(p)
     return this.emit(OP_GATE, cls, child, this.expected(e.length > 0 ? e : [p._tag]))
@@ -907,7 +931,7 @@ class Encoder {
   private gateFirstSet(p: Combinator<unknown>): FirstSet {
     const cached = p._meta.firstSet
     return p._def.tag === 'lazy' || cached.kind === 'any'
-      ? firstSetOf(p, new Set(), this.refResolver(), this.activeTrivia ?? null)
+      ? firstSetOf(p, new Set(), this.refResolver(), this.gateTrivia(), this.gateConsuming())
       : cached
   }
 
@@ -1037,7 +1061,8 @@ class Encoder {
             continue
           }
           if (matchesEmpty(arm, new Set(), rr)) return undefined
-          const fs = firstSetOf(arm, new Set(), rr, trivia)
+          // Tested where the gate runs, which is only where no trivia is live.
+          const fs = firstSetOf(arm, new Set(), rr, trivia ?? null)
           if (fs.kind === 'any') return undefined
           other = union(other, fs)
         }
@@ -1060,7 +1085,7 @@ class Encoder {
     const op = this.code[ip]
     if (op === OP_LIT || op === OP_LIT_CI || op === OP_RX || op === OP_LIT_TRACK || op === OP_RX_TRACK || op === OP_LIT_CI_TRACK) return -1
     if (matchesEmpty(p, new Set(), this.refResolver())) return -1
-    return this.charClass(firstSetOf(p, new Set(), this.refResolver(), this.activeTrivia ?? null))
+    return this.charClass(firstSetOf(p, new Set(), this.refResolver(), this.gateTrivia(), this.gateConsuming()))
   }
 
   /** Reserve `n` operand slots to patch once children are laid out. */
@@ -1116,8 +1141,10 @@ class Encoder {
     // scope for a `notAdjacent({ kinds })` anywhere inside it — see the same
     // save/restore in `case 'grammar'`.
     this.activeTrivia = p._meta.grammarTrivia
+    this.triviaKnown = p._meta.grammarTrivia !== undefined
     const body = this.node(p).ip
     this.activeTrivia = undefined
+    this.triviaKnown = true
     // GRAMMAR-LEVEL AMBIENT TRIVIA (`rules({ trivia }, …)`).
     //
     // `run()` installs this from `entry._meta.grammarTrivia`, but ONLY for a
@@ -1207,9 +1234,12 @@ class Encoder {
     if (this.activeTrivia !== undefined || runsUnder === undefined || runsUnder === null) return this.node(target).ip
     // The body is encoded under the trivia this row installs for it, so its own
     // gates are derived under the scope they run in.
+    const savedKnown = this.triviaKnown
     this.activeTrivia = runsUnder
+    this.triviaKnown = true
     const ip = this.node(target).ip
     this.activeTrivia = undefined
+    this.triviaKnown = savedKnown
     return this.emit(OP_SCOPE_PLAIN, this.triviaSlot(runsUnder), ip)
   }
 
@@ -1257,7 +1287,10 @@ class Encoder {
     // reports that opener once statically, once per arm when it runs.
     const nextDef = next._def as ParserDef
     if (nextDef.tag !== 'literal' && nextDef.tag !== 'regex' && nextDef.tag !== 'keywords' && nextDef.tag !== 'label') return undefined
-    const first = firstSetOf(next, new Set(), rr, boundary)
+    // Where the trivia after the token is not known, the gate cannot say what may
+    // follow it.
+    if (boundary === undefined && !this.triviaKnown) return undefined
+    const first = firstSetOf(next, new Set(), rr, boundary ?? null)
     const cls = this.charClass(boundary === undefined ? first : union(first, firstSetOf(boundary, new Set(), rr)))
     if (cls < 0) return undefined
     const fx = this.expected(nextDef.tag === 'label' ? deriveExpected(next) : directTerminalFailureExpected(nextDef))
@@ -1568,7 +1601,7 @@ class Encoder {
         // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
-        const finalChoice = classifyFinalChoice(arms, rr, this.activeTrivia)
+        const finalChoice = classifyFinalChoice(arms, rr, this.gateTrivia(), this.gateConsuming())
         // attempt() preserves its child's success language, but the broad
         // classifier deliberately treats the transaction as nullable/unknown so
         // it can never by itself authorize exclusive one-arm selection. Recover
@@ -1580,7 +1613,7 @@ class Encoder {
           if (!finalChoice.nullable[i]) return undefined
           const def = arm._def as ParserDef
           if (def.tag !== 'attempt' || matchesEmpty(def.parser, new Set(), rr)) return undefined
-          return firstSetOf(def.parser, new Set(), rr, this.activeTrivia ?? null)
+          return firstSetOf(def.parser, new Set(), rr, this.gateTrivia(), this.gateConsuming())
         })
         const gateFirst = finalChoice.firstSets.map((first, i) => transactionalFirst[i] ?? first)
         const classes = gateFirst.map((first, i) => finalChoice.nullable[i] && transactionalFirst[i] === undefined
@@ -1651,7 +1684,7 @@ class Encoder {
         const rr = this.refResolver()
         const itemClass = matchesEmpty(d.parser, new Set(), rr)
           ? -1
-          : this.charClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia ?? null))
+          : this.charClass(firstSetOf(d.parser, new Set(), rr, this.gateTrivia(), this.gateConsuming()))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         const item = min === 0 && itemClass >= 0
@@ -1699,9 +1732,10 @@ class Encoder {
           if (gate >= 0) ops.push(gate)
           return this.emit(OP_REP, ...ops)
         }
+        // Without recovery rows there is no ip + 8, so no separator gate.
         return d.min >= 1
-          ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags, this.expected(deriveExpected(d.parser)))
-          : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
+          ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags & ~8, this.expected(deriveExpected(d.parser)))
+          : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags & ~8)
       }
       case 'optional': {
         const head = this.emit(OP_OPT, this.lookaheadGate(d.parser, this.node(d.parser).ip))
@@ -1843,9 +1877,12 @@ class Encoder {
         // A token runs its body with trivia cleared (`token.ts`), so its body is
         // encoded under no trivia.
         const saved = this.activeTrivia
+        const savedKnown = this.triviaKnown
         this.activeTrivia = undefined
+        this.triviaKnown = true
         const body = this.node(d.parser).ip
         this.activeTrivia = saved
+        this.triviaKnown = savedKnown
         return this.emit(OP_TOKEN, body)
       }
       case 'routed':
@@ -2120,10 +2157,12 @@ class Encoder {
         // `ctx.activeTrivia` does. Saved and restored rather than assigned,
         // because a scope is nestable and an inner one does not leak outward.
         const savedTrivia = this.activeTrivia
-        if (d.clearTrivia === true) this.activeTrivia = undefined
-        else if (d.triviaParser !== undefined) this.activeTrivia = d.triviaParser
+        const savedKnown = this.triviaKnown
+        if (d.clearTrivia === true) { this.activeTrivia = undefined; this.triviaKnown = true }
+        else if (d.triviaParser !== undefined) { this.activeTrivia = d.triviaParser; this.triviaKnown = true }
         const bodyIp = this.node(d.parser).ip
         this.activeTrivia = savedTrivia
+        this.triviaKnown = savedKnown
         if (d.clearTrivia === true) return this.emit(op, -1, bodyIp, flags)
         if (d.triviaParser === undefined) {
           return cap || flags !== 0 ? this.emit(op, -1, bodyIp, flags) : bodyIp

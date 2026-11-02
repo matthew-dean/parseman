@@ -39,7 +39,11 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // sets without the nullable-pad refinement (`consuming: false`).
 // Bumped +86B to 60,372B: `gateMissExpected` (a table gate's miss set without
 // the nullable pads that cannot fail) shares `deriveExpected`'s walk.
-const BASELINE_RAW_BYTES = 60_372
+// Bumped +65B to 60,437B: the regex first-set reader treats an unmodelled letter
+// escape (`\p{L}`, `\cJ`, `\k<…>`) as unknown instead of as its letter, the
+// pads a gate miss skips include wrapped ones, and `classifyFinalChoice` takes
+// `consuming`.
+const BASELINE_RAW_BYTES = 60_437
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

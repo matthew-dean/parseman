@@ -27,6 +27,7 @@ export function classifyFinalChoice(
   arms: readonly Combinator<unknown>[],
   resolve?: RefResolver,
   activeTrivia?: Combinator<unknown> | null,
+  consuming = true,
 ): FinalChoiceClassification {
   const firstSets: FirstSet[] = []
   const nullable: boolean[] = []
@@ -38,7 +39,7 @@ export function classifyFinalChoice(
   for (const arm of arms) {
     const empty = matchesEmpty(arm, new Set(), resolve)
     nullable.push(empty)
-    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve, activeTrivia))
+    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve, activeTrivia, consuming))
     if (empty) exclusive = false
   }
   if (exclusive) {

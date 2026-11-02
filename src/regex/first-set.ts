@@ -215,6 +215,11 @@ function parseRegex(src: string): Node {
       default:
         // A digit escape is a backreference we don't resolve → widen.
         if (e >= '1' && e <= '9') return ANY
+        // Any other LETTER escape is a construct this reader does not model
+        // (`\p{L}`, `\u{1F600}`, `\cJ`, `\k<name>`): read as its letter it named
+        // a first set the pattern does not have, so the whole pattern is
+        // unknown, as `parseClassRanges` already treats one inside a class.
+        if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) throw BAIL
         // Any other escape is a literal char (escaped metachar, `\/`, etc.).
         return charNode(fromRange(e.codePointAt(0)!, e.codePointAt(0)!), e === '\n')
     }

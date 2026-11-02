@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, compile, dispatch, literal, many, noTrivia, optional, otherwise, parser, regex, routed, rules, sepBy, sequence,
+  choice, compile, dispatch, label, literal, many, noTrivia, optional, otherwise, parser, regex, routed, rules, sepBy, sequence, token,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -193,5 +193,89 @@ describe('a choice at a position where trivia has not been skipped', () => {
         expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
       }
     }
+  })
+})
+
+describe('a table rule with no trivia of its own, run inside a caller\'s trivia', () => {
+  // The rule's entry installs no trivia, so its body runs under whatever its
+  // caller has. Its gates are derived as 0.58.0 derived them there.
+  const shapes: Record<string, Comb> = {
+    choice: choice(sequence(pad, literal('*')), literal('x')),
+    many: sequence(many(sequence(pad, literal('*'), num)), literal('!')),
+    optional: sequence(optional(sequence(pad, literal('*'), num)), literal('!')),
+    later: sequence(literal('a'), choice(sequence(pad, literal('*')), literal('x'))),
+    list: sepBy(num, sequence(pad, literal(','))),
+  }
+  for (const [shape, body] of Object.entries(shapes)) {
+    it(shape, () => {
+      const E = rules(() => ({ E: body })).E as Comb
+      // A table entry is a function of (input, pos, ctx), as a compiled parser's
+      // context entry is; either stands in for E's own parse.
+      type Parse = Comb['parse']
+      const asParse = (e: unknown): Parse => (typeof e === 'function' ? e : (e as Comb).parse.bind(e)) as Parse
+      const legs: Array<readonly [string, Parse]> = readers(encodeTable({ E })).map(([n, e]) => [n, asParse(e.E)] as const)
+      const compiled = compile(E) as unknown as { parseWithContext: (input: string, ctx: unknown, pos: number) => ReturnType<Parse> }
+      legs.push(['compile()', ((input, pos, ctx) => compiled.parseWithContext(input, ctx, pos)) as Parse] as const)
+      for (const s of ['/*c*/*', '/*c*/*1!', ' /*c*/*1!', '*1!', '/*c*/!', 'x', '/*c*/x', 'a/*c*/*', 'a /*c*/*', 'a/*c*/x', '1,2', '1/*c*/,2', '1 /*c*/,2']) {
+        const input = `${s};`
+        const want = result(parser({ trivia: comment }, sequence(E, literal(';'))), input, false)
+        for (const [name, parse] of legs) {
+          expect(result(parser({ trivia: comment }, sequence({ ...E, parse }, literal(';'))), input, false), `${name} ${JSON.stringify(input)}`).toBe(want)
+        }
+      }
+    })
+  }
+})
+
+describe('a gate through a reference from a cleared region takes the trivia it installs', () => {
+  it('a routed arm whose next term is such a reference, and a choice arm that is one', () => {
+    const g = rules({ trivia: comment }, (g: Record<string, Comb>) => ({
+      S: noTrivia(sequence(literal('>'), choice(g.St!, g.C!, literal('x')), literal(';'))),
+      St: dispatch(word, otherwise(choice(sequence(routed(), label('colon', g.Colon!)), sequence(routed(), literal('!'))))),
+      Colon: sequence(optional(literal('+')), literal(':'), word),
+      C: sequence(optional(literal('+')), literal('='), num),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['>a/*c*/:b;', '>a:b;', '>a/*c*/+:b;', '>a!;', '>/*c*/=1;', '>+=1;', '>/*c*/+=1;', '>x;']) {
+        expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+      }
+    }
+  })
+
+  it('a token\'s body runs under no trivia, so a reference inside it installs its rule\'s', () => {
+    const g = rules({ trivia: comment }, (g: Record<string, Comb>) => ({
+      S: sequence(literal('>'), token(sequence(literal('['), g.R!, literal(']'))), literal(';')),
+      R: sequence(num, many(sequence(optional(literal(' ')), literal('+'), num))),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['>[1+2];', '>[1/*c*/+2];', '>[1 +2];', '>/*c*/[1+2];', '>[1+/*c*/2];', '>[1 /*c*/+2];']) {
+        expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+      }
+    }
+  })
+})
+
+describe('a regex construct the first-set reader does not model is unknown, not its letter', () => {
+  it('\\p{…}, \\cX and \\k<…> in a separator, a routed arm and a choice', () => {
+    const g = rules((g: Record<string, Comb>) => ({
+      List: sequence(sepBy(num, sequence(regex(/\p{Zs}*/u), literal(','))), literal(';')),
+      St: dispatch(word, otherwise(choice(sequence(routed(), regex(/:\p{L}+/u), literal(';')), sequence(routed(), literal('!'), literal(';'))))),
+      Pick: choice(regex(/\p{L}+/u), literal('1')),
+      Ctl: choice(regex(/\cJ+/), regex(/(?<q>['"])x\k<q>/), literal('c')),
+    })) as Record<string, Comb>
+    const cases: Record<string, string[]> = {
+      List: ['1,2;', '1 ,2;', '1;', '1,;'],
+      St: ['a:b;', 'a:p;', 'a!;', 'a:;'],
+      Pick: ['a', 'p', '1', 'é'],
+      Ctl: ['\n', '"x"', "'x'", 'c', 'k'],
+    }
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const [rule, inputs] of Object.entries(cases)) {
+        for (const input of inputs) {
+          expect(result(entries[rule]!, input, false), `${name} ${rule} ${JSON.stringify(input)}`).toBe(result(g[rule]!, input, false))
+        }
+      }
+    }
+    expect(run(g.Pick!, 'a').ok).toBe(true)
   })
 })

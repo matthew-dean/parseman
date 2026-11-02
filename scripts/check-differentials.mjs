@@ -308,6 +308,10 @@ const REGISTRY = [
       { defect: 'gap-gate-under-trivia', expect: 'moves' },
       { defect: 'gap-gate-under-trivia-emitted', expect: 'moves' },
       { defect: 'choice-miss-names-pad', expect: 'moves' },
+      { defect: 'gate-narrows-unknown-trivia', expect: 'moves' },
+      { defect: 'routed-boundary-caller-scope', expect: 'moves' },
+      { defect: 'token-body-caller-scope', expect: 'moves' },
+      { defect: 'regex-letter-escape-literal', expect: 'moves' },
     ],
   },
   {

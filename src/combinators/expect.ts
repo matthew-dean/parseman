@@ -38,7 +38,8 @@ export function deriveExpected(c: Combinator<unknown>): string[] {
 
 /**
  * What `c` fails with where its first character opens none of its terms: as
- * `deriveExpected`, but a nullable regex in a sequence's prefix names nothing,
+ * `deriveExpected`, but a nullable regex in a sequence's prefix (bare or behind a
+ * wrapper sharing its `_meta`) names nothing,
  * since it matches empty there and cannot fail. A table gate that rejects a
  * position on a first set taken through such a regex (`firstSetOf`, 0.59.0)
  * reports this, which is what entering the arm reports.
@@ -66,7 +67,10 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>, skipPads
     case 'sequence': {
       const out: string[] = []
       for (const term of def.parsers) {
-        if (!isZeroWidthAssertion(term) && !(skipPads && term._def.tag === 'regex' && matchesEmpty(term))) out.push(...deriveExpected(term))
+        // The pads skipped are exactly those `sequenceSet` reads through: a term
+        // carrying a nullable regex's `consumingFirstSet`, bare or behind a wrapper
+        // that shares its `_meta`.
+        if (!isZeroWidthAssertion(term) && !(skipPads && term._meta.consumingFirstSet !== undefined && matchesEmpty(term))) out.push(...deriveExpected(term))
         if (!matchesEmpty(term)) break
       }
       return out

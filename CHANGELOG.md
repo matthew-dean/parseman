@@ -33,7 +33,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   without knowing the trivia, keeps the pad as `any`, as do tolerant recovery's
   resync sentinels (`firstSetOf` with `consuming` false). A table gate that rejects
   an arm on the narrowed set reports what entering the arm reports, without the pad,
-  which matches empty and cannot fail (`gateMissExpected`).
+  bare or behind a wrapper, which matches empty and cannot fail (`gateMissExpected`).
+  The narrowing applies only where the trivia that may follow the pad is known: in
+  the body of an entry that installs no trivia of its own, which runs under its
+  caller's (a compiled rule inside another grammar, `run({ trivia })`), gates read
+  first sets as 0.58.0 did, and a routed gate is not laid down where the trivia
+  after its token is unknown. `examples/toml-ish`'s emitted table is 43 B larger
+  for the expected sets this reports.
 - **A separated list ends on a character its separator cannot start.** Past its
   minimum, a `sepBy()` whose separator cannot match empty and is not itself one
   terminal now tests the character after the gap against the separator's first set in
@@ -98,13 +104,20 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   the scope (a first set through a nullable term, a gap gate, a routed gate, a
   reference that installs its rule's trivia), keyed by the trivia's first set. And a
   first set, the gap walk and the encoding of a rule referenced from a cleared region
-  take the trivia that reference installs (`triviaThroughRef`, as `ref.ts` does), and a
+  take the trivia that reference installs (`triviaThroughRef`, as `ref.ts` does) —
+  a choice arm, a gap gate's other arms and a routed gate's next term included —
+  and a
   `token()` body, which runs with trivia cleared, is encoded under none. In
   0.58.0 a routed arm in a rule with no trivia, run under a caller's comment trivia,
   failed on `a/*c*/:b`, and a repeat in `noTrivia(…)` over a rule of a comment-trivia
   map with an optional-literal lead stopped at the comment; the new gates had the same
   blind spot. Test: `test/unit/table-trivia-scope.test.ts`, registered in
   `check:differentials`.
+- Fixed: a `regex()` with an escape the first-set reader does not model (`\p{L}`,
+  `\u{1F600}`, `\cJ`, `\k<name>`) has an unknown first set. The reader took it as its
+  letter (`/\p{L}+/u` started with `p`), so `choice(regex(/\p{L}+/u), '1')` rejected
+  `a` in every engine, the interpreter included, and the 0.59.0 separator and routed
+  gates rejected valid input on it.
 - Fixed: a `sepBy` of `min: 1` whose first item fails reports the item's derived set at
   the list's start in every table reader, as the interpreter does (`repeat.ts`
   `failAt`). The tables reported what the failed item left, e.g. `")"` inside the group
