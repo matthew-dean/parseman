@@ -207,6 +207,8 @@ describe('a table rule with no trivia of its own, run inside a caller\'s trivia'
     list: sepBy(num, sequence(pad, literal(','))),
     // A gap that cannot match empty gives the item a first set, and a gap gate.
     spaced: sequence(num, many(sequence(regex(/ +/), literal('*'), num))),
+    // A node at the body's start, where no trivia has been skipped.
+    node: node('N', sequence(pad, literal('*'), num)),
     // A routed arm: the trivia after its token is not known, so it has no gate.
     routed: dispatch(word, otherwise(choice(sequence(routed(), literal(':'), word), sequence(routed(), literal('!'))))),
   }
@@ -334,6 +336,8 @@ describe('where the interpreter tests a first set itself, the table tests the sa
         cleared: rules({ trivia: comment }, () => ({ S: noTrivia(sequence(literal('>'), many(choice(literal('a'), lib.R!)), literal(';'))) })).S as Comb,
         node: rules(() => ({ S: sequence(literal('>'), many(choice(literal('a'), node('W', lib.R!))), literal(';')) })).S as Comb,
         item: rules(() => ({ S: sequence(literal('>'), many(lib.R!), literal(';')) })).S as Comb,
+        clearedItem: rules({ trivia: comment }, () => ({ S: noTrivia(sequence(literal('>'), many(lib.R!), literal(';'))) })).S as Comb,
+        clearedNode: rules({ trivia: comment }, () => ({ S: noTrivia(sequence(literal('>'), node('W', lib.R!), literal(';'))) })).S as Comb,
         attempt: rules(() => ({ S: sequence(literal('>'), many(attempt(lib.R!)), literal(';')) })).S as Comb,
       }
       for (const [caller, S] of Object.entries(callers)) {
