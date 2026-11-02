@@ -1,0 +1,42 @@
+less  color: red;                  jit      A       39801  A2       39991 (0.48%)  B       35374 (-11.12%)  load 15.0
+less  margin: 0 auto;              jit      A       58484  A2       59557 (1.84%)  B       58919 (0.74%)  load 11.7
+less  font: 12px/1.5 a, b;         jit      A      105472  A2      105253 (-0.21%)  B      102249 (-3.06%)  load 14.7
+less  width: 1px + 2px * 3;        jit      A       65638  A2       64100 (-2.34%)  B       60341 (-8.07%)  load 14.9
+scss  color: red;                  jit      A       52420  A2       52461 (0.08%)  B       51425 (-1.90%)  load 13.3
+scss  margin: 0 auto;              jit      A       83595  A2       83297 (-0.36%)  B       89548 (7.12%)  load 10.8
+scss  font: 12px/1.5 a, b;         jit      A      155850  A2      155625 (-0.14%)  B      169143 (8.53%)  load 14.5
+scss  width: 1px + 2px * 3;        jit      A       76117  A2       75928 (-0.25%)  B       76737 (0.81%)  load 12.4
+jess  color: red;                  jit      A       25491  A2       25452 (-0.15%)  B       24306 (-4.65%)  load 11.4
+jess  margin: 0 auto;              jit      A       36607  A2       36642 (0.10%)  B       38028 (3.88%)  load 18.0
+jess  font: 12px/1.5 a, b;         jit      A       55300  A2       55507 (0.37%)  B       60207 (8.87%)  load 18.2
+jess  width: $(1px + 2px * 3);     jit      A      150617  A2      150622 (0.00%)  B      159819 (6.11%)  load 14.4
+css   color: red;                  jit      A       22624  A2       23034 (1.81%)  B       23103 (2.12%)  load 14.6
+css   margin: 0 auto;              jit      A       34925  A2       34989 (0.18%)  B       38748 (10.95%)  load 14.1
+css   font: 12px/1.5 a, b;         jit      A       58149  A2       58214 (0.11%)  B       63035 (8.40%)  load 15.8
+css   width: calc(1px + 2px * 3);  jit      A       59573  A2       59420 (-0.26%)  B       62843 (5.49%)  load 14.9
+less  benchmark.less               jit      A   507369735  A2   505904620 (-0.29%)  B   477488983 (-5.89%)  load 13.0
+less  bootstrap4-all.less          jit      A   524461264  A2   523798059 (-0.13%)  B   506308092 (-3.46%)  load 17.1
+css   benchmark.css                jit      A   331271552  A2   328882088 (-0.72%)  B   343444565 (3.67%)  load 23.7
+scss  gen-workload.scss            jit      A  1271159104  A2  1269992266 (-0.09%)  B  1336324200 (5.13%)  load 27.2
+jess  jess-x8.jess                 jit      A   123049729  A2   123290035 (0.20%)  B   124069980 (0.83%)  load 29.5
+less  color: red;                  jitless  A      332403  A2      338418 (1.81%)  B      321575 (-3.26%)  load 33.7
+less  margin: 0 auto;              jitless  A      519328  A2      520068 (0.14%)  B      534344 (2.89%)  load 37.3
+less  font: 12px/1.5 a, b;         jitless  A      801695  A2      800414 (-0.16%)  B      839120 (4.67%)  load 25.9
+less  width: 1px + 2px * 3;        jitless  A      574316  A2      576147 (0.32%)  B      556538 (-3.10%)  load 31.8
+scss  color: red;                  jitless  A      473651  A2      473998 (0.07%)  B      486430 (2.70%)  load 46.8
+scss  margin: 0 auto;              jitless  A      742406  A2      741391 (-0.14%)  B      826728 (11.36%)  load 31.0
+scss  font: 12px/1.5 a, b;         jitless  A     1297164  A2     1297355 (0.01%)  B     1511994 (16.56%)  load 22.3
+scss  width: 1px + 2px * 3;        jitless  A      740565  A2      740725 (0.02%)  B      778878 (5.17%)  load 19.4
+jess  color: red;                  jitless  A      263985  A2      264649 (0.25%)  B      253174 (-4.10%)  load 21.1
+jess  margin: 0 auto;              jitless  A      372015  A2      370021 (-0.54%)  B      396728 (6.64%)  load 25.5
+jess  font: 12px/1.5 a, b;         jitless  A      562460  A2      562185 (-0.05%)  B      641780 (14.10%)  load 26.4
+jess  width: $(1px + 2px * 3);     jitless  A     1314010  A2     1314660 (0.05%)  B     1507739 (14.74%)  load 29.8
+css   color: red;                  jitless  A      218518  A2      217978 (-0.25%)  B      238337 (9.07%)  load 25.1
+css   margin: 0 auto;              jitless  A      316855  A2      316237 (-0.20%)  B      369776 (16.70%)  load 23.4
+css   font: 12px/1.5 a, b;         jitless  A      509017  A2      510762 (0.34%)  B      570424 (12.06%)  load 20.5
+css   width: calc(1px + 2px * 3);  jitless  A      506229  A2      505261 (-0.19%)  B      581898 (14.95%)  load 19.0
+less  benchmark.less               jitless  A  2247256773  A2  2258736203 (0.51%)  B  2323384969 (3.39%)  load 22.8
+less  bootstrap4-all.less          jitless  A  2454872348  A2  2436948581 (-0.73%)  B  2580432581 (5.11%)  load 19.4
+css   benchmark.css                jitless  A  1707434622  A2  1714709047 (0.43%)  B  1874418472 (9.78%)  load 17.4
+scss  gen-workload.scss            jitless  A  9446738749  A2  9438264931 (-0.09%)  B 10247577798 (8.48%)  load 32.6
+jess  jess-x8.jess                 jitless  A   885295670  A2   884850607 (-0.05%)  B   927306781 (4.75%)  load 24.2
