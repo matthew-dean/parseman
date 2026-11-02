@@ -30,9 +30,6 @@ export type PlainLineSpanObject = { start: number; end: number; startLine: numbe
 export declare const PlainLineSpan: new (start: number, end: number, startLine: number, startColumn: number, endLine: number, endColumn: number) => PlainLineSpanObject
 export declare const PlainTaggedNode: new (type: string, tags: readonly string[], span: Span, state: unknown, children: unknown[]) => { _tag: 'node'; type: string; tags: readonly string[]; span: Span; state: unknown; children: unknown[] }
 export declare const PlainTriviaField: new (name: string, value: unknown, span: Span, leading: string, trailing: string) => { name: string; value: unknown; span: Span; leading: string; trailing: string }
-/** A kept one- or two-item array, without an array literal's allocation site. */
-export declare function plainList1<T>(a: T): T[]
-export declare function plainList2<T>(a: T, b: T): T[]
 export declare const PlainNode: new (type: string, span: Span, state: unknown, children: unknown[]) => PlainNodeObject
 export declare const PlainField: new (name: string, value: unknown, span: Span) => PlainFieldObject
 export declare const PlainBuf: new (rawOnly: true | undefined, noRaw: true | undefined, rawLen: number) => CstCaptureBuf

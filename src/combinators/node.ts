@@ -333,7 +333,7 @@ export function node<N>(
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build
               ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, st, tags)
-              : new PlainNode(nodeType, ctx.trackLines ? copySpan(span) : new PlainSpan(r.span.start, r.span.end), st ?? null, children)
+              : new PlainNode(nodeType, ctx.trackLines ? copySpan(span) : new PlainSpan(r.span.start, r.span.end), st ?? null, [...children])
       const rawEntry = isCstChild(built)
         ? built
         // A direct semantic object is opaque to the raw CST, but its source is

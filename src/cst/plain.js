@@ -72,21 +72,3 @@ export function PlainBuf(rawOnly, noRaw, rawLen) {
 for (const f of [PlainSpan, PlainLineSpan, PlainLeaf, PlainNode, PlainTaggedNode, PlainField, PlainTriviaField, PlainBuf]) {
   f.prototype = Object.prototype
 }
-
-// Arrays a tree keeps. An array literal has an allocation site too; a copy of an empty
-// array does not. The template is emptied after creation so its copies start with
-// generic (object) elements and a push never transitions their elements kind.
-const NO_ITEMS = [null]
-NO_ITEMS.length = 0
-
-export function plainList1(a) {
-  const list = NO_ITEMS.slice()
-  list.push(a)
-  return list
-}
-
-export function plainList2(a, b) {
-  const list = NO_ITEMS.slice()
-  list.push(a, b)
-  return list
-}

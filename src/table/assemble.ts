@@ -83,7 +83,7 @@ import {
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
-import { PlainBuf, PlainField, PlainLeaf, PlainNode, PlainSpan, plainList1, plainList2 } from '../cst/plain.js'
+import { PlainBuf, PlainField, PlainLeaf, PlainNode, PlainSpan } from '../cst/plain.js'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
@@ -581,8 +581,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._fields = undefined
       const value = child(input, pos, ctx)
       if (trailing && value !== FAIL && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
-      const kids = buf.ch ?? (buf.single !== undefined ? plainList1(buf.single) : EMPTY_CH)
-      const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? plainList1(buf.rawSingle) : EMPTY_CH)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+      const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
       ctx._fields = savedFields
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
@@ -711,8 +711,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
-      const kids = buf.ch ?? (buf.single !== undefined ? plainList1(buf.single) : EMPTY_CH)
-      const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? plainList1(buf.rawSingle) : EMPTY_CH)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+      const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
       ctx._fields = savedFields
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
@@ -821,7 +821,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
-      const kids = buf.ch ?? (buf.single !== undefined ? plainList1(buf.single) : EMPTY_CH)
+      const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
       ctx._fields = savedFields
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
@@ -3778,8 +3778,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             }
             const value = regexValue ? input.slice(pos, end) : spec as string
             const leaf = new PlainLeaf(value, new PlainSpan(pos, end))
-            const kids = plainList1(leaf)
-            const rawKids = plainList1(leaf)
+            const kids = [leaf]
+            const rawKids = [leaf]
             const span = new PlainSpan(pos, end)
             EC.e = end
             const nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
@@ -3915,11 +3915,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(ctx._fields) : undefined
           ctx._fields = savedFields
           if (structural) ctx._triviaCaptureMask = savedMask
-          const kids = rawOnly ? EMPTY_CH : buf.ch ?? (buf.single !== undefined ? plainList1(buf.single) : EMPTY_CH)
+          const kids = rawOnly ? EMPTY_CH : buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
           const hostKids = kids
           const rawKids = omitsRaw
             ? EMPTY_CH
-            : buf.raw ?? (buf.rawSingle !== undefined ? plainList1(buf.rawSingle) : EMPTY_CH)
+            : buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
           const tlog = buf.tl ?? EMPTY_TLOG
           ctx._cstBuf = sBuf
           ctx.captureTrivia = sCap
@@ -3958,7 +3958,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           } else if (host !== undefined) {
             nd = host(type, hostKids, fieldMap, span, rawKids, tlog, st, tags)
           } else {
-            nd = new PlainNode(type, span, st ?? null, kids)
+            nd = new PlainNode(type, span, st ?? null, kids === EMPTY_CH ? kids : [...kids])
           }
           // A ROOT NODE IS NOT A CHILD. `node()` pushes only when it was entered
           // from an enclosing collector — `saved.buf !== undefined || saved.ch !==
@@ -4115,7 +4115,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, plainList1, plainList2,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4200,7 +4200,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, plainList1, plainList2,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf,
       )
       emitReached = em.reached
     } catch (e) {

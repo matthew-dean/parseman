@@ -12,8 +12,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   layout re-rolls it.
   - Leaves, spans (line-tracked spans too), default nodes, CST-host nodes, field captures and
     CST capture buffers are now built by `new` calls (`src/cst/plain.js`), which have no
-    allocation site, and the one- and two-item arrays a tree keeps are copies of an empty
-    array rather than array literals. Their prototype is
+    allocation site. A default node keeps a spread copy of its children rather than the
+    capture buffer's array literal. Their prototype is
     `Object.prototype`: each is still a plain object with the same keys in the same order,
     and every tree is byte-identical.
   - The constructors exist once per process. The build emits `dist/cst/plain.js` and every

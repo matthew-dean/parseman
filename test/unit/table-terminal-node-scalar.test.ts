@@ -91,7 +91,7 @@ function expectSpecial(prog: TableProgram): void {
   const ip = nodeIp(prog)
   expect(scalarTerminalNodeChild(prog.code, ip)).toBe(prog.code[ip + 2])
   const source = emitAssemblySource(resolveTable(prog), prog, STRICT, [], true).source
-  expect(source).toContain('const kids=_L1(leaf),rawKids=_L1(leaf),span=new _SP(pos,end)')
+  expect(source).toContain('const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)')
   expect(source).toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
   expect(emitAssemblySource(resolveTable(prog), prog, STRICT).source)
     .not.toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
@@ -154,7 +154,7 @@ describe('direct terminal-node scalar materialization', () => {
       { ...STRICT, trackLines: true },
     ]) {
       const source = emitAssemblySource(resolveTable(eligible), eligible, cfg).source
-      expect(source).not.toContain('const kids=_L1(leaf),rawKids=_L1(leaf),span=new _SP(pos,end)')
+      expect(source).not.toContain('const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)')
     }
 
     // Coverage emission is deliberately refused, so its cfg-dependent bypass
@@ -252,8 +252,8 @@ describe('direct terminal-node scalar materialization', () => {
     const prog = program(original)
     const planted = precompiled(prog, source => {
       const bad = source.replace(
-        'const kids=_L1(leaf),rawKids=_L1(leaf),span=new _SP(pos,end)',
-        'const kids=_L1(leaf),rawKids=[],span=new _SP(pos,end)',
+        'const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)',
+        'const kids=[leaf],rawKids=[],span=new _SP(pos,end)',
       )
       expect(bad).not.toBe(source)
       return bad
