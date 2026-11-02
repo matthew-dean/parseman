@@ -68,6 +68,7 @@ const EXEC = pathToFileURL(path.resolve(ROOT, 'src/table/exec.ts')).href
  */
 const NOT_A_SHIPPED_GRAMMAR: Readonly<Record<string, string>> = {
   'css/stub-build.ts': 'CST node constructors used BY examples/css/parser.ts; exports no combinator',
+  'css/css-node.d.ts': 'types for css-node.js, the node constructor stub-build.ts uses; exports no combinator',
   'lang/ast.ts': 'AST type declarations and constructors; exports no combinator',
   'json/chevrotain-bench.ts': 'benchmark scaffolding — a Chevrotain comparison harness, not a published example',
   'spec-gen.ts': 'a script that prints EBNF and railroad diagrams; exports no combinator',
@@ -153,7 +154,7 @@ function outcome(rule: unknown, input: string, dropExpected = false): string {
  */
 function preambleFor(modulePath: string, reserved: readonly string[]): Promise<string> {
   const dir = path.dirname(modulePath)
-  const siblings = readdirSync(dir).filter(f => f.endsWith('.ts')).map(f => path.join(dir, f))
+  const siblings = readdirSync(dir).filter(f => f.endsWith('.ts') && !f.endsWith('.d.ts')).map(f => path.join(dir, f))
   return (async () => {
     const imports: string[] = []
     const names = new Set<string>()

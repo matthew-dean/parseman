@@ -50,6 +50,9 @@ describe('parseman/run — the minimal execution entry', () => {
       // it adds one leaf module and pulls in nothing, so the closure grows by one and
       // the entry still builds no grammars.
       'src/cst/host-mode.ts',
+      // The tree-object constructors: import-free, and one shared copy across every
+      // bundle (see `src/cst/plain.d.ts`). A parse builds leaves, so the driver needs it.
+      'src/cst/plain.js',
       // Root trivia-map support is part of the execution result now, but the helper
       // stays a tiny import-free view over the already-collected number log.
       'src/cst/trivia-entries.ts',
