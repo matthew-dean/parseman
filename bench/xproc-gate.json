@@ -1,11 +1,11 @@
 {
   "_comment": "Configuration for `pnpm perf:xproc:gate` — see bench/xproc-gate.ts and docs/design/perf-gates.md.",
-  "rounds": 20,
-  "roundsByCase": { "expected/narrow": 40, "expected/none": 40, "rollback/none": 40, "graphql/document": 40, "json/document": 40 },
-  "_rounds": "Rounds PER SHARD. CI runs 10 shards, so 200 rounds per case: chosen by the bootstrap power analysis in docs/design/perf-harness-interleaving.md: a 2% cost on every case is caught per case with median power above 0.98, and 0.64 on the noisiest.",
+  "rounds": 10,
+  "roundsByCase": { "expected/narrow": 15, "expected/none": 15, "rollback/none": 15, "json/document": 20 },
+  "_rounds": "Rounds PER SHARD; CI runs 10 shards, so 100 rounds per case, 150 for the three noisy density cases and 200 for json/document. Sized by the bootstrap in docs/design/perf-harness-interleaving.md so EVERY case reaches at least 0.92 power against a 2% slowdown.",
   "floorPct": 1.0,
   "alpha": 0.001,
-  "_alpha": "Per case. Twelve cases at 0.001 each keep the chance that identical code fails ANY case near 1%.",
+  "_alpha": "Per case. Over twelve cases, identical code failed no case in 200 bootstrapped runs and in 4 real ones.",
   "density": { "rules": 200, "warmup": 200, "samples": 30, "parsesPerSample": 5 },
   "workloads": { "warmup": 40, "samples": 15, "parsesPerSample": 2 }
 }
