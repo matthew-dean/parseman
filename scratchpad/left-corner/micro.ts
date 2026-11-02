@@ -42,3 +42,5 @@ const stats = (globalThis as { __lcStats?: Map<number, { shape: string; hits: nu
 if (stats) for (const [ip, s] of stats) if (s.hits > 0) process.stderr.write(`${ip}: hits=${s.hits / N} deep=${s.deep / N} depths=${JSON.stringify(s.depths.map(x => x / N))}  ${s.shape}\n`)
 const shapes = (globalThis as { __lcShapes?: Map<string, number> }).__lcShapes
 if (shapes) for (const [k, v] of shapes) process.stderr.write(`${v / N}x ${k}\n`)
+const cnts = (globalThis as { __lcCounts?: Record<string, number> }).__lcCounts
+if (cnts) process.stderr.write('counts ' + JSON.stringify(Object.fromEntries(Object.entries(cnts).map(([k, v]) => [k, v / N]))) + '\n')
