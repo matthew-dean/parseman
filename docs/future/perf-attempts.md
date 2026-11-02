@@ -374,6 +374,35 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   ≤2.1%). Parked because Parseman cannot fix this alone.
   [#224](https://github.com/matthew-dean/parseman/pull/224).
 
+- **0.59.0 against 0.58.1 on Node 26: whole-family vs partial pretenuring.** The
+  cross-process gate read `expected/narrow` +12.3% and `rollback/medium` +4.7% (Node
+  26.13, macOS) where the Node 26 self-check stayed within ±2.6%. Per process, with the
+  gate's worker parameters and mark-compact counts (diagnostic flags only):
+  - Pretenuring off (`--no-allocation-site-pretenuring`), both builds are identical:
+    0.54–0.56 ms, 31G instructions, about 238 scavenges. So the allocation volume is
+    unchanged, and so is the table: a build with a byte-identical `expected/narrow`
+    table behaves as 0.59.0.
+  - 0.58.1 pretenures in every process and tenures the whole tree family: 10–16 sites
+    per process (allocation-count fingerprints near 330, 1,000–1,450 and 210–290), at
+    0.58–0.70 ms with about 24 mark-compacts and 1.35 ms per scavenge.
+  - 0.59.0 pretenures in 2 of 12 to 9 of 16 processes, and then only six sites in
+    three pairs (fingerprints near 367, 520–527 and 1,539–2,445). The rest of the
+    family stays young. That leaves tenured parents pointing at young children:
+    1.56–1.59 ms per scavenge, 0.67–0.83 ms per parse. Processes that pretenure
+    nothing run 0.54–0.57 ms, faster than any 0.58.1 process.
+  - `--no-maglev-pretenure-store-values` changes neither build.
+  - Bisected by the share of slow processes and their cost: no commit carries it. The
+    per-parse closure code is nearly unchanged between the commits where it moves, and
+    a commit's slow-mode cost varies from run to run (0.62 ms, then 0.75 ms).
+  - No source lever: no new field, allocation or object in 0.59.0 causes it. Jess's
+    Less parser on Node 26 is unaffected and 0.9–1.6% faster than on 0.58.0
+    (`benchmark.less`, bootstrap, a small file; 12 processes each, 5–7 mark-compacts on
+    both sides).
+  - Candidate, not built: make Parseman's tree objects tenure together with a
+    grammar's nodes, or decouple the two, so a partial tenuring cannot leave
+    old-to-young pointers. It would change how the tree is built, with unknown effect on
+    real grammars.
+
 - **`.jess` `ExpressionLogical` capture replay.** `and`/`or` in `.jess` are choice arms that
   reparse their left operand up to three times. Fixing it in the engine needs capture
   replay, for about 2% of the `.jess` parse. Reshape the grammar later instead.
