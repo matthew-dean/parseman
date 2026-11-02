@@ -915,6 +915,23 @@ reachable, the gate says so and exits non-zero. "The gate did not run" must neve
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
 
+## The pretenuring check — `pnpm perf:pretenure`
+
+Every process must parse in the fast mode, whatever the bundle layout. V8 decides per
+object-literal allocation site whether to allocate straight into old space, from where
+scavenges fall during warm-up. When the objects a parse keeps come from literals,
+identical processes split into a fast mode and a slow one that runs dozens of
+mark-compacts, and appending dead code to the bundle re-rolls which is which (#224).
+Parseman builds its tree objects with constructors so that cannot happen
+(`src/cst/plain.d.ts`).
+
+`bench/pretenure-check.ts` builds `dist/`, appends 0, 970, 4,000 and 15,000 bytes of
+never-called code to `dist/index.js`, and runs `css/stylesheet`, `expected/narrow` and
+`rollback/medium` in fresh plain-`node` processes. It fails if any process runs more
+than `maxMarkCompacts` mark-compacts (`bench/pretenure-check.json`). The fast mode runs 1–2;
+on `main` before #230 the same check read 49–69 on Node 26. It is not in CI: run it on
+Node 24 and Node 26 for any change to what a parse allocates (about 3 minutes each).
+
 ## The peak clause — `pnpm perf:xproc:gate --peak`
 
 ### The blind spot every per-step gate has
