@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.59.0 — 2026-11-02
 
 - **Tree objects are built by constructors, so V8 cannot pretenure them.** V8 decides per
   object-literal allocation site whether to allocate straight into old space, from where
@@ -17,11 +17,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   - The constructors exist once per process. The build emits `dist/cst/plain.js` and every
     entry that builds trees imports it: a copy per bundle would give one shape two hidden
     classes, and a process that loads `parseman` and `parseman/table` would read both.
-  - **Artifacts.** The emitted engine receives the constructors as five new trailing factory
-    parameters. An artifact printed by an earlier version runs on this runtime (it ignores
-    them). An artifact printed by this version needs this runtime or later: on an older one
-    its first parse throws `_SP is not a constructor`. A consumer that rebuilds its
-    macro-compiled parsers on this version must require this version or later.
+  - **Artifacts built by 0.59.0 need runtime ≥0.59.0.** The emitted engine receives the
+    constructors as five new trailing factory parameters. An artifact printed by an earlier
+    version runs on this runtime (it ignores them). An artifact printed by 0.59.0 on an
+    older runtime throws `_SP is not a constructor` on its first parse. A consumer that
+    rebuilds its macro-compiled parsers on 0.59.0 must depend on `parseman@^0.59.0`.
   - **For grammar authors.** A reducer that builds the nodes a parse keeps with an object
     literal is pretenured or not per process in the same way. Build them with a constructor
     whose `prototype` is `Object.prototype` (see `examples/css/css-node.js`), and copy the
