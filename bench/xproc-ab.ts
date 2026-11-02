@@ -168,9 +168,10 @@ function measure(dir: string, caseId: string): Reading {
 }
 
 // The same cache directory and checks the grammar gate uses, plus its refusal of a
-// cached reference whose `src/` was edited.
+// cached reference whose `src/` was edited. The density grammar and the node
+// constructors it imports (`tree-node.js`) are copied over both sides.
 const materialise = (sha: string | null): string =>
-  materialiseAt('grammar-gate', ROOT, sha, ['bench/grammar-density/grammar.ts'])
+  materialiseAt('grammar-gate', ROOT, sha, ['bench/grammar-density'])
 const refDir = materialise(REF)
 const headDir = materialise(HEAD_REF)
 const headSha = sh(['rev-parse', '--short', 'HEAD']).trim()
