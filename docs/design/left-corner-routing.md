@@ -99,14 +99,17 @@ anything is entered.
 - **Emitted engine (`emit-assembly.ts`).** For a selected site, emits the same chain as
   straight-line code from the same rows. Selection prices a route-top site as its route
   plus its fallback body.
-- **Interpreter (`compose()`).** Recommendation: it does not route. `compose()` is the pure
-  interpreter path with zero build cost (see
-  [Runtime and size contract](runtime-and-size-contract.md)). The route analysis is defined
-  once, over table rows, so the interpreter stays the unrouted semantic reference that the
-  identity sweeps compare against. A second analysis over combinators would be a parallel
-  implementation. This is the one engine the owner's brief listed as a reader. If it must
-  route, the analysis needs one abstract site interface shared by both graphs. That
-  decision is the owner's.
+- **Interpreter (`compose()`).** Ruled: it does not route. It stays unrouted, as the
+  semantic reference. The owner's words were "even the interpreter with a proper routing
+  table could do this, not just a 'compiled' grammar". The ruling reads that as saying the
+  mechanism is not compile-only, not as requiring that the interpreter route. Two reasons:
+  - Routing the interpreter would need a second analysis over combinators, a parallel
+    implementation. The route analysis is defined once, over table rows.
+  - The identity sweeps need the interpreter as an unmodified oracle. 0.59.0's five review
+    rounds showed how much.
+
+  `compose()` also stays the pure interpreter path with zero build cost (see
+  [Runtime and size contract](runtime-and-size-contract.md)). The owner may override this.
 
 ## Lexical corner factoring (statement level)
 
