@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, missingOperandFlags, signTestP, verdictModeArgErrors, type VerdictSettings } from '../../bench/xproc-stats.ts'
+import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, missingOperandFlags, pinnedReferenceError, signTestP, verdictModeArgErrors, type VerdictSettings } from '../../bench/xproc-stats.ts'
 
 /** Deterministic generator for the tests (mulberry32, as the gate uses). */
 function seeded(seed: number): () => number {
@@ -253,4 +253,52 @@ describe('mode flags need their operand', () => {
       expect(r.stderr).toContain(`${flag} needs a value`)
     }
   }, 120_000)
+})
+
+describe('the reference is resolved once per run', () => {
+  const releases = [{ tag: 'v0.58.2', sha: '617aab0e' }, { tag: 'v0.58.1', sha: '80562d9b' }, { tag: 'v0.58.0', sha: 'eaa3d1a1' }]
+
+  it('accepts the previous release, and the one before it when a release was tagged mid-run', () => {
+    expect(pinnedReferenceError('617aab0e', releases)).toBeNull()
+    expect(pinnedReferenceError('80562d9b', releases)).toBeNull()
+    expect(pinnedReferenceError('80562d9bf00', releases)).toBeNull()
+  })
+
+  it('refuses an older release, an unknown sha, or a stub too short to identify one', () => {
+    expect(pinnedReferenceError('eaa3d1a1', releases)).toMatch(/not the previous release \(v0.58.2 617aab0e or v0.58.1 80562d9b\)/)
+    expect(pinnedReferenceError('deadbeef', releases)).toMatch(/not the previous release/)
+    expect(pinnedReferenceError('617a', releases)).toMatch(/not a commit sha/)
+  })
+
+  it('refuses revision syntax that would make git resolve something else', () => {
+    for (const bad of ['80562d9b~5', '80562d9b^', '80562d9b^{commit}', 'v0.58.1', '80562D9B', ' 80562d9b']) {
+      expect(pinnedReferenceError(bad, releases)).toMatch(/not a commit sha/)
+    }
+  })
+
+  it('passes ONE reference, from one job, to every shard and the aggregate, for both targets', async () => {
+    const { readFileSync } = await import('node:fs')
+    const ci = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8')
+    const job = (name: string): string => {
+      const start = ci.indexOf(`\n  ${name}:\n`)
+      const next = ci.slice(start + 1).search(/\n  [a-z-]+:\n/)
+      return ci.slice(start, next === -1 ? undefined : start + 1 + next)
+    }
+    // Resolved once, for each target.
+    const ref = job('xproc-ref')
+    expect(ref).toContain('pnpm perf:xproc:gate --print-reference')
+    expect(ref).toContain('pnpm perf:xproc:gate --peak --print-reference')
+    expect(ref).toMatch(/release: \$\{\{ steps\.ref\.outputs\.release \}\}/)
+    expect(ref).toMatch(/peak: \$\{\{ steps\.peak\.outputs\.peak \}\}/)
+    // Every consumer takes the SAME expression, keyed by its own target, and needs that job.
+    const pinned = '--reference=${{ needs.xproc-ref.outputs[matrix.target] }}'
+    for (const name of ['xproc-shard', 'xproc-perf']) {
+      const body = job(name)
+      expect(body).toMatch(/needs: \[changes, xproc-ref/)
+      expect(body).toContain('target: [release, peak]')
+      const runs = body.split('\n').filter(l => l.includes('pnpm perf:xproc:gate'))
+      expect(runs).toHaveLength(1)
+      expect(runs[0]).toContain(pinned)
+    }
+  })
 })

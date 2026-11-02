@@ -224,6 +224,14 @@ export function git(args: string[], cwd: string, timeout?: number): string {
  * previous one. CI checks out with `fetch-depth: 0`, which brings the tags.
  */
 export function previousRelease(root: string, gate: string): { tag: string; sha: string } {
+  return previousReleases(root, gate, 1)[0]!
+}
+
+/**
+ * The newest `count` previous releases, newest first, by the same rule as
+ * `previousRelease`. Fails when there is none.
+ */
+export function previousReleases(root: string, gate: string, count: number): Array<{ tag: string; sha: string }> {
   const head = git(['rev-parse', 'HEAD'], root).trim()
   const contains = (rev: string): boolean => {
     try {
@@ -233,14 +241,19 @@ export function previousRelease(root: string, gate: string): { tag: string; sha:
       return false
     }
   }
+  const out: Array<{ tag: string; sha: string }> = []
   const tags = git(['tag', '--list', 'v*', '--sort=-v:refname'], root).split('\n').filter(t => /^v\d+\.\d+\.\d+$/.test(t))
   for (const tag of tags) {
+    if (out.length >= count) break
     const sha = git(['rev-parse', `${tag}^{commit}`], root).trim()
     const stamped = git(['log', '-1', '--format=%s', sha], root).trim() === `release: ${tag.slice(1)}`
     const source = contains(sha) ? sha : stamped && contains(`${sha}^`) ? git(['rev-parse', `${sha}^`], root).trim() : null
-    if (source !== null && source !== head) return { tag, sha: sha.slice(0, 8) }
+    if (source !== null && source !== head) out.push({ tag, sha: sha.slice(0, 8) })
   }
-  return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
+  if (out.length === 0) {
+    return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
+  }
+  return out
 }
 
 /** Bound for the cache-verification git calls — they are local metadata reads. */
