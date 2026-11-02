@@ -42,9 +42,14 @@ describe('signTestP', () => {
         expect(p).toBeLessThanOrEqual(prev)
         prev = p
       }
-      // Symmetry: P(X >= n/2) = 1/2 + P(X = n/2)/2 for even n, so it sits just above 1/2.
-      if (n % 2 === 0) expect(signTestP(n / 2, n)).toBeGreaterThan(0.5)
-      expect(signTestP(Math.floor(n / 2) + 1, n)).toBeLessThan(0.5)
+      // Symmetry. Even n: P(X >= n/2) = 1/2 + P(X = n/2)/2, just above 1/2, and
+      // P(X >= n/2 + 1) just below. Odd n: P(X >= (n + 1)/2) is exactly 1/2.
+      if (n % 2 === 0) {
+        expect(signTestP(n / 2, n)).toBeGreaterThan(0.5)
+        expect(signTestP(n / 2 + 1, n)).toBeLessThan(0.5)
+      } else {
+        expect(signTestP((n + 1) / 2, n)).toBeCloseTo(0.5, 12)
+      }
     }
     // A clearly significant excess is still significant at large n.
     expect(signTestP(700, 1200)).toBeLessThan(1e-8)
