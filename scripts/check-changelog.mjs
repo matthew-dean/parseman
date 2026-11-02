@@ -77,7 +77,7 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import {
   parseVersion, compareVersions, headingVersion, pendingEntries, shippedPaths, UNRELEASED,
-  consumerFieldChanges, staleEntries, staleDeclaration, sectionEntries,
+  consumerFieldChanges, staleEntries, staleDeclaration, sectionEntries, withoutEach,
 } from './release.mjs'
 
 const argv = process.argv.slice(2)
@@ -289,8 +289,8 @@ const baseChangelog = showAtBase('CHANGELOG.md') ?? ''
 // The entries this PR ADDS to the section being released. Diffed against the base's
 // pending entries, because `main`'s Unreleased can still hold entries an auto-patch
 // already shipped: "the section is non-empty" would pass a PR that wrote nothing.
-const basePending = new Set(pendingEntries(baseChangelog, baseVersion))
-const added = pendingEntries(changelog, baseVersion).filter((e) => !basePending.has(e))
+// By occurrence, so an entry worded like one already pending still counts as added.
+const added = withoutEach(pendingEntries(changelog, baseVersion), pendingEntries(baseChangelog, baseVersion))
 const sectionName = unreleased ? UNRELEASED : version
 
 
