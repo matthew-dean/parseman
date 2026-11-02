@@ -364,7 +364,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   bimodal because V8 pretenures the sites that build a parse's tree (the reducer's node
   literal and Parseman's leaf and span literals) in some processes and not in others. A
   pretenured process runs 34–61 mark-compacts where the others run 0–2, and is 7–8% slower
-  (`css/stylesheet` 2.30 ms against 2.15 ms, with 108G instructions per process against 96G).
+  (`css/stylesheet` 2.33 ms against 2.15 ms, with 108G instructions per process against 96G).
   JIT tiers and deopts are the same in both modes. Building leaves, spans and the fixture
   reducers' nodes with constructors put every process in the fast mode: 12 of 12, 8 of 8 and
   8 of 8. The density cases read the same on Node 24, which rarely pretenures them. Leaves
@@ -372,6 +372,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   pretenured, at 127G instructions against 108G. Reducers alone did not either. Jess's Less
   parser does not flip on Node 26 (`benchmark.less` and bootstrap, 24 processes each, IQR
   ≤2.1%). Parked because Parseman cannot fix this alone.
+  [#224](https://github.com/matthew-dean/parseman/pull/224).
 
 - **`.jess` `ExpressionLogical` capture replay.** `and`/`or` in `.jess` are choice arms that
   reparse their left operand up to three times. Fixing it in the engine needs capture
