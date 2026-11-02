@@ -16,11 +16,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   nothing in CI read it any more. See `docs/design/perf-gates.md` and
   `docs/design/perf-harness-interleaving.md` (#175).
 
+- **The CLI no longer prints a `module.register()` deprecation warning on Node 26.**
+  `parseman diagnose`/`fix` install a hook that drops `with { type: 'macro' }` from
+  imports, through `module.register()`, which Node 26 deprecates (DEP0205) with a
+  warning on stderr ahead of the command's own output. The hook now goes through
+  `module.registerHooks()` where Node has it (22.15+, 23.5+) and keeps `register()`
+  on 20.x and earlier 22.x, which have nothing else.
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
   main entry, which loads the combinators, the compiler and the analysis with them.
   `src/line-index.ts` was already in the run entry's closure, so the entry's module
   list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+- **A routed arm's first-character gate reports what its next term fails with.** A
+  choice arm led by `routed()` is gated on its next term's first character
+  (`OP_RGATE`, 0.58.0), and a miss reported `deriveExpected` of that term. For a
+  `keywords()` or `word()` term that lists each word, where the term itself, and the
+  interpreter, report `keyword`: `dispatch(regex(/[a-z]+/), otherwise(choice(
+  sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
+  in every table engine. A miss now reports the terminal's own failure set, and a
+  label's name. Which arms are gated is unchanged.
 
 ## 0.58.0 — 2026-10-31
 

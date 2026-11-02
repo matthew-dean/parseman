@@ -284,6 +284,69 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   whole file `--jitless` +0.3%. Running the composite gap under the leaf's sink save, clear
   and restore costs about what the skipped operator attempt cost. SCSS gains because its
   gap is one regex. `b4f684c5`, reverted by `fdea063f` on `perf/less-gap`.
+- **Direct values: node children as locals, not context collectors.** The emitted assembly
+  passes a node's children and raw entries to each piece as two arguments; a frame binds
+  fresh arrays and a leaf is a push. Trees identical on 461 Less files; the failing-input
+  differential (span, expected set, unconsumed offset) caught four planted defects. In a
+  selective assembly every crossing pays an adapter (Jess's shipped Less build: +9.4% JIT),
+  so it was limited to assemblies with no closure pieces, which leaves the shipped build
+  unchanged (`color: red;` 37.7k → 37.3k, A/A 37.3k). With every site emitted, `color: red;`
+  is 24.1k (base 24.5k) against 11.2k for the hand-written recognizer the plan was priced
+  on. Removing every remaining frame item (`_fields`, `captureTrivia`, trivia-log stores)
+  reached 22.1–22.6k, inlining small shared regions changed nothing, and a first-character
+  gate before the labelled trivia skip saved 0.6k. The earlier frame and push costs were
+  priced as additions to the hand-written code, not as shares of the generated code. A
+  profile of the generated code puts it, per declaration, at: calls between pieces ~5.8k
+  (53 functions, 13 inlined regions, against ~12); reducers ~4.7k (hand-written 3.7k);
+  labelled-trivia scanning ~3.4k (`skipDeferredTrivia`, its gap memo, `scanWithLabels`, six
+  log reads per sequence term); GC ~3.0k (hand-written 1.0k: expected-set arrays of failed
+  arms, `_routed` objects, capturing frames' arrays); pushes 1.1k, marks 0.7k, frames 0.45k.
+  Every-site artifact 4.68 MB (~17×). Rejected: still about 2× the hand-written code with
+  frames and pushes gone. Branch `perf/direct-values` @ `d5d98460`, unmerged.
+- **Allocation-free expected-set merges on failed arms.** On Jess's shipped Less build, a
+  declaration makes 3 expected-set merges in the closure engine, 2 of which copy an array
+  (18 strings), plus one routed-token object: about 300 B of the 5.4 KB a declaration
+  allocates (the hand-written recognizer: 2.2 KB). The extra allocation is frames and
+  spans. With merges made free (a probe valid on accepted input only), `color: red;` and
+  the keyword list stayed inside the A/A and the whole file moved −0.8%. Not built; the
+  probe was a dist edit, no branch kept.
+- **Left-corner routing, first form: one shared walk, no gap routing.** Every level from a
+  node down to the first node a character reaches starts at the same position with the
+  same piece. So route on that character (gates, dispatching choices, lead masks, trivia
+  labels), call the deepest node once, and complete each enclosing level as its reducer
+  on the lone child. A level whose continuation can start runs a freshly linked copy of
+  itself with its left corner seeded, so nothing is read twice. Census for Less
+  `color: red;` (closure engine, `assemblyBudget` 0): the levels above `Value` cost 9.9k of
+  the declaration's 39.8k JIT instructions (25%) and ~100k of 332k `--jitless` (30%).
+  About 4.7k of the 9.9k is reducers, so the ceiling is ~13%. Trees identical on 11.4k
+  inputs × 4 variants, with planted defects caught. Less `color: red;` −11% JIT, but
+  every value followed by a space resumed at each level, and one runtime walker made the
+  call sites megamorphic: CSS +3.7% / +9.8%, SCSS +5.1% / +8.5% (JIT / `--jitless`),
+  space runs up to +17% `--jitless`. Measured against `main` @ `44c9d269`. Branch
+  `perf/left-corner-routing` @ `2844597c`, closure engine only, behind `PM_LC=1`. The
+  second form, below under Queued, replaces it.
+- **Partitioned factoring of Less `Value`'s 17-arm choice.** This would generalize
+  `factor-choice.ts` to composite-`ref` corners and to factoring only the arms that share
+  a corner. Not built: the choice already routes to its arm in O(1). For every letter,
+  digit, `#`, `"`, `[`, `` ` `` and `+`, the first-character mask selects one arm, so `red`
+  goes straight to `IdentifierOrFunction`. Only `@ - . $ % ( ~ \` have two or three
+  candidates, and for `@` the existing literal pretests already rule out `@{` and `@@`
+  (0 visits). Site visits on the closure engine:
+
+  | File | `Value` entries | Failed arm entries |
+  | --- | --- | --- |
+  | `benchmark.less` | 5172 | 164 (3%) |
+  | `bootstrap-less-port` (90 files, 240 KB) | 4627 | 292 (6%) |
+
+  Most failures are `(`, where `QueryColonFeature` is tried before `Paren`, and `.`/`#`,
+  where `MixinReference` is tried before `Dimension`. At about 2k JIT instructions per
+  failed arm, that is 0.07–0.1% of a whole file, which is the ceiling for any
+  partitioning of these arms. What `Value` does cost is per entry: its frame, the choice,
+  and the `dispatch()` behind an identifier. On Less `red` that is 3.9k JIT / 28k
+  `--jitless` above a bare keyword node; on `@x`, 2.4k / 23k above the variable reference
+  node. That cost is the left-corner routing's to remove: through the choice, and through
+  the `dispatch()` (Queued, above). Census on `perf/left-corner-routing` @ `99ebc7e4`
+  (`scratchpad/left-corner/visits.ts`).
 
 ## Parked
 
@@ -302,6 +365,49 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ## Queued and in progress
 
+- **Left-corner routing (accepted direction, prototype).** Every level from a node down
+  to the first node a character reaches starts at the same position with the same piece.
+  Each route is its own chain of closures, so wrappers that only route cost nothing. The
+  route calls the deepest node once and completes each enclosing level as its reducer on
+  the lone child. A continuation is routed on the next token: a captured token, or a
+  skipped one. Which one it is comes from the scope's trivia definition, never from the
+  character, so whitespace routes as a captured token in a `noTrivia` scope or as an
+  `optional(<regex>)` gap, and as skipped where the trivia skips it. A skipped gap, the
+  `OP_GAPGATE` gap and the `optional` gap are each read once, and the read's end is
+  handed to the term that reads it next. Literal separators are routed too, and no route
+  is installed whose top always resumes. Census for Less `color: red;` (closure engine,
+  `assemblyBudget` 0): the levels above `Value` are 9.9k of the declaration's 39.8k JIT
+  instructions (25%) and ~100k of 332k `--jitless` (30%); about 4.7k of the 9.9k is
+  reducers, so the ceiling is ~13%. Trees identical on 11.5k inputs × 4 variants, and on
+  Less with `mathMode` `always` and `parens`. Planted defects caught: a wrong reducer
+  state on 44 and 50 rows, a dropped lone child on 249–5241 rows per dialect, a skipped
+  choice failure on 1 (Less) and 13 (SCSS), a skipped repeat report on 47 (Less). The
+  mirrored separator and gate-failure writes never run on these grammars, because the
+  separator gate decides every list. The `optional`-gap write runs 2.8k times on CSS, but a
+  later write always replaces it. Interleaved marginal instructions against the same tree
+  with the switch off (`release/0.59.0` @ `52326958`), A/A null within ±1.2% (±2.3% on
+  one `--jitless` file):
+  - Less `color: red;` −12.3% JIT / −16.3% `--jitless`; SCSS −9.0% / −10.4%; `.jess`
+    −7.0% / −12.9%; CSS −5.7% / −8.1%.
+  - Whole files, all faster in both modes: `benchmark.less` −4.7% / −9.6%,
+    `bootstrap-less-port` (90 files, 240 KB) −3.9% / −6.2%, `benchmark.css` −4.7% / −3.9%,
+    `gen-workload.scss` −2.9% / −2.5%, a 36 KB `.jess` workload −3.6% / −3.8%.
+  - Open: a value that continues at every level loses. `font: 12px/1.5 a, b;` (a slash,
+    then a space, then a comma) is +7.9% / +5.3% on CSS and +5.5% / +5.6% on `.jess`.
+    Branch @ `b9bfdc8e`.
+  - Resume fix, first attempt (@ `6a5f776e`): a level that resumes opens only the frame it
+    skipped, with the value in hand, and runs from its left corner; it is no longer a
+    seeded copy of the level. That case is now +5.2% / +4.2% on CSS and +6.1% / +5.0% on
+    `.jess`. `grid-area: 1 / 2 / 3;` and `border-radius: a / b;` are faster in every
+    dialect in both modes, and every whole file stays faster.
+  - Turning off each of that case's three routes in turn removes about 1% each; with all
+    three off, the switch still costs +0.8%. So what is left is a fixed cost per route
+    (entry, the collector save and restore, the final publish) plus the driver every
+    node call passes through, not the resume.
+  The build-out derives the routes into table rows at encode time for every engine, on
+  `main` after 0.59.0. The next large piece is `Value`'s 17-arm choice (~8.5k of
+  `color: red;`), the across-arms case `factor-choice.ts` handles. Branch
+  `perf/left-corner-routing`, raw samples under `scratchpad/left-corner/results/`.
 - **Comment-sensitive selection
   ([#179](https://github.com/matthew-dean/parseman/issues/179)).** Comment-only edits to
   Jess's SCSS grammar moved the emitted function count from 61 to 55: the build measured
