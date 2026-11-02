@@ -12,18 +12,76 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { kind: token, k: 8, job: 1 }
-          - { kind: token, k: 8, job: 2 }
-          - { kind: token, k: 8, job: 3 }
-          - { kind: token, k: 8, job: 4 }
-          - { kind: token, k: 16, job: 1 }
-          - { kind: token, k: 16, job: 2 }
-          - { kind: token, k: 16, job: 3 }
-          - { kind: token, k: 16, job: 4 }
-          - { kind: token, k: 32, job: 1 }
-          - { kind: token, k: 32, job: 2 }
-          - { kind: token, k: 32, job: 3 }
-          - { kind: token, k: 32, job: 4 }
+          - { kind: aa, job: 1 }
+          - { kind: aa, job: 2 }
+          - { kind: aa, job: 3 }
+          - { kind: aa, job: 4 }
+          - { kind: aa, job: 5 }
+          - { kind: aa, job: 6 }
+          - { kind: aa, job: 7 }
+          - { kind: aa, job: 8 }
+          - { kind: aa, job: 9 }
+          - { kind: aa, job: 10 }
+          - { kind: aa, job: 11 }
+          - { kind: aa, job: 12 }
+          - { kind: aa, job: 13 }
+          - { kind: aa, job: 14 }
+          - { kind: aa, job: 15 }
+          - { kind: aa, job: 16 }
+          - { kind: aa, job: 17 }
+          - { kind: aa, job: 18 }
+          - { kind: aa, job: 19 }
+          - { kind: aa, job: 20 }
+          - { kind: aa, job: 21 }
+          - { kind: aa, job: 22 }
+          - { kind: aa, job: 23 }
+          - { kind: aa, job: 24 }
+          - { kind: aa, job: 25 }
+          - { kind: aa, job: 26 }
+          - { kind: aa, job: 27 }
+          - { kind: aa, job: 28 }
+          - { kind: aa, job: 29 }
+          - { kind: aa, job: 30 }
+          - { kind: aa, job: 31 }
+          - { kind: aa, job: 32 }
+          - { kind: aa, job: 33 }
+          - { kind: aa, job: 34 }
+          - { kind: aa, job: 35 }
+          - { kind: aa, job: 36 }
+          - { kind: aa, job: 37 }
+          - { kind: aa, job: 38 }
+          - { kind: aa, job: 39 }
+          - { kind: aa, job: 40 }
+          - { kind: uniform, job: 1 }
+          - { kind: uniform, job: 2 }
+          - { kind: uniform, job: 3 }
+          - { kind: uniform, job: 4 }
+          - { kind: uniform, job: 5 }
+          - { kind: uniform, job: 6 }
+          - { kind: uniform, job: 7 }
+          - { kind: uniform, job: 8 }
+          - { kind: uniform, job: 9 }
+          - { kind: uniform, job: 10 }
+          - { kind: mixture, job: 1 }
+          - { kind: mixture, job: 2 }
+          - { kind: mixture, job: 3 }
+          - { kind: mixture, job: 4 }
+          - { kind: mixture, job: 5 }
+          - { kind: mixture, job: 6 }
+          - { kind: mixture, job: 7 }
+          - { kind: mixture, job: 8 }
+          - { kind: mixture, job: 9 }
+          - { kind: mixture, job: 10 }
+          - { kind: token, job: 1 }
+          - { kind: token, job: 2 }
+          - { kind: token, job: 3 }
+          - { kind: token, job: 4 }
+          - { kind: token, job: 5 }
+          - { kind: token, job: 6 }
+          - { kind: token, job: 7 }
+          - { kind: token, job: 8 }
+          - { kind: token, job: 9 }
+          - { kind: token, job: 10 }
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -37,7 +95,7 @@ jobs:
           REF=$(git rev-parse --short=8 origin/main)
           case "${{ matrix.kind }}" in
             uniform) node bench/experiments/plant175.mjs uniform 0.66 ;;
-            token) node bench/experiments/plant175.mjs token ${{ matrix.k }} ;;
+            token) node bench/experiments/plant175.mjs token 8 ;;
             mixture) node bench/experiments/plant175.mjs mixture 6 ;;
           esac
-          time pnpm perf:xproc:gate --ref=$REF --suite=workloads --rounds=10 --shard-out=shard.json 2>&1 | grep -E '^\s+(ok|FAIL) |^ROWS|seed|Error|refusing|exited'
+          time pnpm perf:xproc:gate --ref=$REF --shard-out=shard.json 2>&1 | grep -E '^\s+(ok|FAIL) |^ROWS|seed|Error|refusing|exited'
