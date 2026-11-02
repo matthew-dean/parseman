@@ -414,7 +414,7 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, miss?: (c: string) => string): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
@@ -432,7 +432,14 @@ if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(EC.e>${t}s)cur=EC.e
 else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt)}`
-  if (l.tri !== TRI_UNKNOWN) return scanned
+  // A character no trivia of this slot can start opens the empty gap, which
+  // records nothing, so the term runs at `cur` with no marks around a scan.
+  if (l.tri !== TRI_UNKNOWN) return miss === undefined ? scanned : `const ${t}c=input.charCodeAt(cur)
+if(${miss(`${t}c`)}){
+${fast}
+}else{
+${scanned}
+}`
   return `if(ctx.trivia===undefined){
 ${fast}
 }else{
@@ -974,6 +981,19 @@ return 1
     return `if(${gateMissTest(child)}){${miss}}\n`
   }
 
+  /**
+   * The test that no trivia of slot `ki` can start at the code unit `c`: the
+   * slot's first characters, as code points, decide every code unit below the
+   * surrogates; a surrogate, or `NaN` past the end of input, is left to the scan.
+   * `undefined` where the first set is unbounded or too wide to print.
+   */
+  function triviaMiss(ki: number): ((c: string) => string) | undefined {
+    const leads = triviaLeadRanges(ki, t.trivia)
+    if (leads === undefined || leads.length > 16) return undefined
+    if (leads.length === 0) return c => `${c}<55296`
+    return c => `${c}<55296&&!(${leads.map(r => r.lo === r.hi ? `${c}===${r.lo}` : `(${c}>=${r.lo}&&${c}<=${r.hi})`).join('||')})`
+  }
+
   function skipFor(l: SiteLabel): string {
     if (l.tri < 0) return '_skipTrivia'
     const ki = l.tri
@@ -991,11 +1011,16 @@ return 1
     if (!hasScan) {
       // No installed scanner: the labelled/`trackLines` path, which records
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
-      // buffer, so an in-node site skips the call that asks.
+      // buffer, so an in-node site skips the call that asks. A character no gap
+      // can start answers first, with no call (`triviaMiss`).
+      const miss = triviaMiss(ki)
+      const pre = miss === undefined ? '' : `const c=input.charCodeAt(cur)
+if(${miss('c')})return cur
+`
       skipDefs.push(l.buf
-        ? `function ${nm}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
+        ? `function ${nm}(input,cur,ctx){${pre === '' ? '' : `\n${pre}`}return skipDeferredTrivia(input,cur,ctx)}`
         : `function ${nm}(input,cur,ctx){
-if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
+${pre}if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)}`)
       return nm
     }
@@ -1830,7 +1855,7 @@ return v
             const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
             parts.push(holdsGap(code, k, base, n, i, nullable)
               ? emitHoldTerm(callee, vn, tmp(), L, skipFor(L))
-              : emitTerm(callee, vn, tmp(), L, skipFor(L)))
+              : emitTerm(callee, vn, tmp(), L, skipFor(L), L.tri >= 0 ? triviaMiss(L.tri) : undefined))
           }
           names.push(vn)
         }

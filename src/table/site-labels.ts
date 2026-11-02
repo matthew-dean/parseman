@@ -65,6 +65,7 @@ import {
   OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 import { childSlots } from './child-slots.ts'
+import { leadRanges } from '../lead-ranges.ts'
 
 /** No scope on this path installs a known trivia — the lattice's top element. */
 export const TRI_UNKNOWN = -2
@@ -380,5 +381,5 @@ export function triviaLeadRanges(
   const fs = trivia[tri]?._meta.firstSet
   if (fs === undefined) return undefined
   if (fs.kind === 'empty') return []
-  return fs.kind === 'ranges' && fs.ranges !== undefined ? fs.ranges : undefined
+  return fs.kind === 'ranges' && fs.ranges !== undefined ? leadRanges(fs.ranges) : undefined
 }

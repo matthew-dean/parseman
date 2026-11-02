@@ -85,13 +85,29 @@ function shortScanner(source: string, flags: string): ShortScanner | null {
  * ASCII-case-fold a first-set: for every ASCII letter reachable as a leading char,
  * also admit its opposite-case twin (A–Z ↔ a–z). Non-letter code points and `any`/
  * `empty` are unchanged. Only widens the set (sound superset) — used to correct a
- * case-insensitive regex's flag-agnostic first-set for first-char dispatch. Unicode
- * case-folding beyond ASCII is deliberately NOT applied (parseman first-sets are
- * ASCII-BMP for dispatch); a non-ASCII letter keeps its own code point only, which
- * stays sound (the interpreter's real `/i` match still runs).
+ * case-insensitive regex's flag-agnostic first-set for first-char dispatch. A set
+ * that reaches a code point at or above 128 becomes `any()`, unless it holds every
+ * one of them: non-ASCII letters fold under `/i` too (`é`↔`É`), and a set missing a
+ * twin would refuse a real match.
  */
+/**
+ * Does the set hold every code unit from 128 to U+FFFF? Without `u`, `/i` folds a
+ * code unit at or above 128 only to another one at or above 128 (it never folds
+ * to ASCII), so such a set already holds every twin its members have.
+ */
+function coversNonAscii(ranges: readonly { lo: number; hi: number }[]): boolean {
+  let next = 128
+  for (const r of [...ranges].sort((a, b) => a.lo - b.lo)) {
+    if (r.lo > next) return false
+    if (r.hi >= next) next = r.hi + 1
+    if (next > 0xffff) return true
+  }
+  return false
+}
+
 function asciiCaseFold(fs: FirstSet): FirstSet {
   if (fs.kind !== 'ranges') return fs
+  if (fs.ranges.some(r => r.hi >= 128) && !coversNonAscii(fs.ranges)) return any()
   const ranges: { lo: number; hi: number }[] = fs.ranges.map(r => ({ lo: r.lo, hi: r.hi }))
   const add = (lo: number, hi: number): void => { if (lo <= hi) ranges.push({ lo, hi }) }
   for (const r of fs.ranges) {
@@ -120,16 +136,19 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   const anchored = new RegExp(source, 'y' + resolvedFlags.replace(/[gy]/g, ''))
   const scan = shortScanner(source, resolvedFlags)
 
-  const raw = firstSetFromRegex(source)
+  const raw = firstSetFromRegex(source, resolvedFlags)
   // The first-set analyzer is flag-agnostic, so for a CASE-INSENSITIVE pattern it
   // returns only the literal-case leading chars — e.g. `/red|blue/i` → `{r,b}`, NOT
   // `{r,R,b,B}`. Using that narrow set for first-char DISPATCH would false-EXCLUDE the
   // opposite-case input (`ReD` gated out of a `/(?:red|…)/i` arm), so widen it under
   // `i`. The widening is FLAG-AWARE because `i` alone and `i`+`u` fold different sets:
-  //   - `/i` WITHOUT `u`: ECMAScript case-insensitive matching folds ONLY the ASCII
-  //     Basic-Latin case pairs (`a`↔`A` … `z`↔`Z`) — a plain `/[a-z]/i` does NOT match
-  //     `ſ`(U+017F) or `K`(U+212A). So `asciiCaseFold` is a SOUND, tight superset, and
-  //     it preserves at-keyword dispatch (`/@media…/i` still gates on `@`).
+  //   - `/i` WITHOUT `u`: an ASCII character folds only to its ASCII twin — a plain
+  //     `/[a-z]/i` does NOT match `ſ`(U+017F) or `K`(U+212A) — so for a set of ASCII
+  //     characters `asciiCaseFold` is a SOUND, tight superset, and it preserves
+  //     at-keyword dispatch (`/@media…/i` still gates on `@`). A character at or above
+  //     128 folds by `toUpperCase` (`/é/i` matches `É`, `/σ/i` matches `Σ` and `ς`), which
+  //     this does not enumerate, so a set that reaches 128 widens to `any()` — unless it
+  //     already holds all of 128–U+FFFF (`[\u0080-\uffff]`), which no fold leaves.
   //   - `/ui` or `/iv` (Unicode mode — the `u` OR the ES2024 `v` Unicode-sets flag):
   //     matching uses Unicode *simple case folding*, so `/[a-z]/ui` (and `/[a-z]/iv`)
   //     ALSO match `ſ`→s and `K`→k. ASCII-folding can't enumerate those astral/BMP case

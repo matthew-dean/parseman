@@ -54,6 +54,10 @@ describe('parseman/run — the minimal execution entry', () => {
       // stays a tiny import-free view over the already-collected number log.
       'src/cst/trivia-entries.ts',
       'src/functional/run.ts',
+      // A recovery sentinel tests a lead against a first set, reading an astral
+      // lead through its high surrogate. One import-free leaf, shared with the
+      // combinators and the table engines so the test has one definition.
+      'src/lead-ranges.ts',
       // Recovery diagnostics can carry line/column when the caller provides a
       // tracking ctx. Keep this helper outside compiler/ so the run entry can
       // annotate parse errors without dragging codegen into compiled-parser users.
