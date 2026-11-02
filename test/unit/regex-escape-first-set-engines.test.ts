@@ -10,7 +10,9 @@
  * - code point `\u{…}`;
  * - `/é/i`, which also matches `É`;
  * - `v`-mode nested classes and set operations (`[[^a]]`, `[[a-c]--b]`);
- * - astral literals, which `lead()` reads as one code point.
+ * - astral literals and escaped surrogate pairs, which `lead()` reads as one
+ *   code point;
+ * - `v` regexes, which no code-unit scanner may stand in for.
  *
  * Each engine then refused input the regex matches. Every case here runs through
  * the interpreter, `execRules`, the closure engine and the emitted assembly:
@@ -20,7 +22,7 @@
  * - every case parses its input whole.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, many, node, optional, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { choice, literal, many, node, optional, regex, rules, sequence, trivia } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
@@ -64,6 +66,30 @@ const CASES: Case[] = [
   { name: 'choice arm astral class (u)', grammar: one(choice(regex(/[😀]x/u), regex(/[a-z]+/))), inputs: ['😀x'] },
   { name: 'choice arm astral literal (no u)', grammar: one(choice(regex(/😀x/), regex(/[a-z]+/))), inputs: ['😀x'] },
   { name: 'optional astral literal (u)', grammar: one(sequence(optional(regex(/😀/u)), regex(/[a-z]+/))), inputs: ['😀a', 'a'] },
+  // Under `u`, an escaped surrogate pair is one code point, as a literal pair is.
+  { name: 'choice arm escaped pair \\uD83D\\uDE00 (u)', grammar: one(choice(regex(new RegExp('\\uD83D\\uDE00x', 'u')), regex(/[a-z]+/))), inputs: ['😀x', 'a'] },
+  { name: 'choice arm escaped pair in a class (u)', grammar: one(choice(regex(new RegExp('[\\uD83D\\uDE00]x', 'u')), regex(/[a-z]+/))), inputs: ['😀x', 'a'] },
+  { name: 'optional escaped pair (u)', grammar: one(sequence(optional(regex(new RegExp('\\uD83D\\uDE00', 'u'))), regex(/[a-z]+/))), inputs: ['😀a', 'a'] },
+  // A set holding a high surrogate starts every astral character it begins, so it
+  // overlaps an astral `u` arm: the choice must try both.
+  { name: 'choice arms high-surrogate set then astral (u)', grammar: one(choice(regex(/[\u0080-\uffff]x/), regex(/😀y/u))), inputs: ['😀y', 'éx'] },
+  { name: 'choice arms astral (u) then high-surrogate set', grammar: one(choice(regex(/😀y/u), regex(/[\ud800-\udbff][\udc00-\udfff]x/))), inputs: ['😀x', '😀y'] },
+  { name: 'trivia astral literal (no u)', grammar: words(trivia(regex(/(?: |😀)+/))), inputs: ['a😀b', 'a b'] },
+  // A collapse opening with optional terms runs its node alone where nothing it
+  // holds, trivia included, can start (`gatedPassCollapse`).
+  {
+    name: 'trivia astral literal (no u) inside a gated collapse',
+    grammar: rules<Grammar>({ trivia: trivia(regex(/(?: |😀)+/)) }, g => ({
+      Doc: g.Unary!,
+      Unary: node('Unary', sequence(optional(literal('!')), g.Word!), c => c, { collapse: true }),
+      Word: node('Word', regex(/[a-z]+/), c => c),
+    })),
+    inputs: ['😀a', '!😀a', 'a'],
+  },
+  // A `v` regex reads code points and case-folds as Unicode does, so no code-unit scanner stands in for it.
+  { name: 'token v-mode [😀a]x', grammar: one(regex(new RegExp('[😀a]x', 'v'))), inputs: ['😀x', 'ax'] },
+  { name: 'token v-mode [^a]x', grammar: one(regex(new RegExp('[^a]x', 'v'))), inputs: ['😀x'] },
+  { name: 'token /k/iv on the Kelvin sign', grammar: one(regex(new RegExp('k', 'iv'))), inputs: ['\u212a', 'k'] },
   {
     name: 'tolerant node over an astral class (u)',
     grammar: rules<Grammar>(g => ({ Doc: many(g.Item!), Item: choice(g.Word!), Word: node('Word', regex(/[a-z😀]+/u), c => c) })),

@@ -3,6 +3,7 @@ import type {
   AutoNotCheck, CharRange, ChoiceStrategy, GatedArm,
 } from '../types.ts'
 import { union, intersects, matchesEmpty } from './first-set.ts'
+import { astralLeadViaSurrogate } from '../lead-ranges.ts'
 import { deriveExpected } from './expect.ts'
 import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
 import { scalarOf } from './scalar.ts'
@@ -481,7 +482,7 @@ function inFirstSet(code: number, fs: FirstSet): boolean {
   if (fs.kind === 'any') return true
   if (fs.kind === 'empty') return false
   for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
-  return false
+  return code > 0xffff && astralLeadViaSurrogate(fs.ranges, code)
 }
 
 function areDisjoint(sets: FirstSet[]): boolean {

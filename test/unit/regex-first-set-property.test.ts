@@ -3,32 +3,45 @@
  *
  * A `regex()` terminal's first set gates choice dispatch, optional terms and
  * trivia skips in every engine. Those gates read the input's leading CODE POINT
- * (`lead()`), so the property is stated over code points.
+ * (`lead()`). Under `u`/`v` the set holds code points. Outside Unicode mode it
+ * holds code units, and an astral lead is read through its high surrogate
+ * (`astralLeadViaSurrogate`).
  *
  * The property: if the regex matches at least one character at position 0 of
- * some input, that input's leading code point is in the first set. A NULLABLE
+ * some input, that input's lead is in the first set, read as above. A NULLABLE
  * regex must report `any`.
  *
  * Patterns are generated from a seeded grammar covering the syntax the analyzer
- * reads: escapes (control, octal, code point, property, shorthand, backreference),
- * flat and negated classes, `v`-mode nested classes, set operations and `\q{}`,
- * astral literals, groups, lookarounds, alternation, and quantifiers including
- * `{0}`. Each pattern runs under each flag set from `i`/`u`/`v`/`s`/`m` that
- * compiles.
+ * reads:
+ * - escapes: control, octal, code point, escaped surrogate pair, property,
+ *   shorthand, backreference;
+ * - flat and negated classes;
+ * - `v`-mode nested classes, set operations and `\q{}`;
+ * - astral literals;
+ * - groups, lookarounds, alternation, and quantifiers including `{0}`.
+ * Each pattern runs under each flag set from `i`/`u`/`v`/`s`/`m` that compiles.
  *
- * For each code point outside the computed set, a sticky `RegExp` is tried on
- * that character followed by each of a few suffixes, and must not match. The
- * code points tried:
+ * Every generated pattern also gets a WITNESS, a string it is built to match: one
+ * branch of each alternation, nothing for a lookaround or an anchor, and for each
+ * atom the first candidate the atom matches alone under those flags. A probe is a
+ * code point followed by the witness's remainder, or by a few fixed suffixes.
+ * Probes are tried on both sides of the set:
+ * - a match from a probe outside the set is a failure;
+ * - a match from a probe inside it counts toward the floor, so a run that cannot
+ *   reach a match does not pass.
+ * The code points probed:
  * - every code unit below U+0400;
  * - both neighbours of every range boundary in the set;
  * - every surrogate boundary;
  * - astral samples;
+ * - the witness's own lead;
  * - seeded random draws.
  *
  * A failure names the seed, the pattern, the flags and the character.
- * `pnpm check:differentials` plants a `v`-class misreading and requires this
- * file to go red.
+ * `pnpm check:differentials` plants first-set defects and requires this file to
+ * go red.
  */
+import { writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { regex } from '../../src/combinators/regex.ts'
 import type { FirstSet } from '../../src/types.ts'
@@ -44,51 +57,97 @@ function lcg(seed: number): () => number {
 const ATOMS = [
   'a', 'z', 'A', '0', '_', '-', '.', '/', '#', ' ', 'é', 'É', 'σ', 'ſ', 'K', '😀', '𝒳',
   '\\d', '\\w', '\\s', '\\D', '\\W', '\\S', '\\.', '\\/', '\\n', '\\t', '\\0', '\\012', '\\cJ', '\\cz', '\\c1',
-  '\\x41', '\\u00e9', '\\u{1F600}', '\\u{20}', '\\uD83D', '\\uDE00', '\\p{L}', '\\P{L}', '\\p{White_Space}', '\\k<n>', '\\1',
-  '[a-z]', '[^a-z]', '[0-9_]', '[\\d.]', '[ \\t]', '[^\\n]', '[é-ÿ]', '[😀]', '[\\u0080-\\uffff]', '[\\012]', '[\\cJ]',
+  '\\x41', '\\u00e9', '\\u{1F600}', '\\u{20}', '\\uD83D', '\\uDE00', '\\uD83D\\uDE00', '\\p{L}', '\\P{L}', '\\p{White_Space}', '\\k<n>', '\\1',
+  '[a-z]', '[^a-z]', '[0-9_]', '[\\d.]', '[ \\t]', '[^\\n]', '[é-ÿ]', '[😀]', '[\\uD83D\\uDE00]', '[\\u0080-\\uffff]', '[\\012]', '[\\cJ]',
   '[[^a]]', '[[a-c]--b]', '[a[^b]]', '[[^a]&&[a-z]]', '[\\q{ab|c}]', '[\\p{L}--[a-z]]',
 ]
 const QUANTS = ['', '', '', '?', '*', '+', '{0}', '{2}', '{1,3}', '{0,}']
 const FLAG_SETS = ['', 'i', 'u', 'v', 's', 'm', 'iu', 'iv', 'is', 'us', 'vs', 'ium']
 const SUFFIXES = ['', 'a', ' ', '\n', '😀']
 
-function generate(rand: () => number): string {
-  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!
-  const seq = (depth: number): string => {
-    let out = ''
-    const n = 1 + Math.floor(rand() * 3)
-    for (let i = 0; i < n; i++) out += atom(depth)
-    return out
-  }
-  const atom = (depth: number): string => {
-    const r = rand()
-    if (depth < 2 && r < 0.12) return `(?:${seq(depth + 1)}|${seq(depth + 1)})${pick(QUANTS)}`
-    if (depth < 2 && r < 0.18) return `(?<n>${seq(depth + 1)})`
-    if (depth < 2 && r < 0.24) return `${pick(['(?=', '(?!', '(?<=', '(?<!'])}${seq(depth + 1)})`
-    if (r < 0.27) return pick(['^', '$', '\\b', '\\B'])
-    return pick(ATOMS) + pick(QUANTS)
-  }
-  return seq(0)
+/** What an atom may match alone: the first of these it matches is its witness. */
+const CANDIDATES = [
+  'a', 'z', 'A', 'K', '0', '_', '-', '.', '/', '#', ' ', '\t', '\n', '\0', '\x01', '\x1a', 'é', 'É', 'σ', 'ſ', 'ÿ',
+  '😀', '𝒳', '\uD83D', '\uDE00', '\u212a', 'b', 'c', 'ab', 'q', 'u', 'u'.repeat(32), '\\c', '\\c1',
+  'p{L}', 'P{L}', 'p{White_Space}', 'k<n>', '[', ']', '[]', 'a]', 'a--b]', '[&&a]',
+]
+// Outside Unicode mode a quantifier after a multi-character atom (`\c1{2}`,
+// `k<n>{0}`) binds its last character, so each candidate is also tried with that
+// character repeated or dropped.
+const QUANTIFIED = CANDIDATES.flatMap(c => [c, c + c.slice(-1), c + c, c.slice(0, -1)])
+
+type Pattern = { readonly source: string; readonly witness: (flags: string, named: boolean) => string }
+
+const repeatFor = (q: string): number => q === '{0}' ? 0 : q === '{2}' ? 2 : 1
+
+/** The first candidate `atom` followed by `q` matches whole under `flags`. */
+const atomWitness = (atom: string, q: string, flags: string, named: boolean): string => {
+  // A backreference to a group that has matched nothing yet matches empty.
+  if (named && (atom === '\\k<n>' || atom === '\\1')) return ''
+  let re: RegExp
+  try { re = new RegExp(`(?:${atom}${q})`, `${flags}y`) } catch { return '' }
+  const whole = (c: string): boolean => { re.lastIndex = 0; return re.exec(c)?.[0] === c }
+  return QUANTIFIED.find(c => c !== '' && whole(c)) ?? ''
 }
 
-const inSet = (fs: FirstSet, cp: number): boolean =>
-  fs.kind === 'any' || (fs.kind === 'ranges' && fs.ranges.some(r => cp >= r.lo && cp <= r.hi))
+function generate(rand: () => number): Pattern {
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!
+  const seq = (depth: number): Pattern => {
+    const parts: Pattern[] = []
+    const n = 1 + Math.floor(rand() * 3)
+    for (let i = 0; i < n; i++) parts.push(atom(depth))
+    return { source: parts.map(p => p.source).join(''), witness: (f, named) => parts.map(p => p.witness(f, named)).join('') }
+  }
+  const atom = (depth: number): Pattern => {
+    const r = rand()
+    if (depth < 2 && r < 0.12) {
+      const a = seq(depth + 1), b = seq(depth + 1), q = pick(QUANTS), arm = rand() < 0.5 ? a : b
+      return { source: `(?:${a.source}|${b.source})${q}`, witness: (f, named) => arm.witness(f, named).repeat(repeatFor(q)) }
+    }
+    if (depth < 2 && r < 0.18) {
+      const inner = seq(depth + 1)
+      return { source: `(?<n>${inner.source})`, witness: inner.witness }
+    }
+    if (depth < 2 && r < 0.24) {
+      const inner = seq(depth + 1)
+      return { source: `${pick(['(?=', '(?!', '(?<=', '(?<!'])}${inner.source})`, witness: () => '' }
+    }
+    if (r < 0.27) return { source: pick(['\\b', '\\B']), witness: () => '' }
+    const a = pick(ATOMS), q = pick(QUANTS)
+    return { source: a + q, witness: (f, named) => atomWitness(a, q, f, named) }
+  }
+  // `^` and `$` stand where they can match: an anchor mid-pattern mostly makes
+  // a pattern no input satisfies, which no probe can test.
+  const body = seq(0)
+  const head = rand() < 0.1 ? '^' : '', tail = rand() < 0.1 ? '$' : ''
+  return { source: head + body.source + tail, witness: body.witness }
+}
+
+/** The engines' lead test, stated independently: a `u`/`v` set holds code
+ * points; outside Unicode mode an astral lead reads through its high surrogate. */
+const inSet = (fs: FirstSet, cp: number, unicode: boolean): boolean => {
+  if (fs.kind === 'any') return true
+  if (fs.kind !== 'ranges') return false
+  const has = (c: number): boolean => fs.ranges.some(r => c >= r.lo && c <= r.hi)
+  return has(cp) || (!unicode && cp > 0xffff && has(0xd800 + ((cp - 0x10000) >> 10)))
+}
 
 /** The code points worth trying for one first set. */
-function probes(fs: FirstSet, rand: () => number): number[] {
+function probes(fs: FirstSet, witnessLead: number | undefined, rand: () => number): number[] {
   const out = new Set<number>()
   for (let c = 0; c < 0x400; c++) out.add(c)
   for (const c of [0xd7ff, 0xd800, 0xdbff, 0xdc00, 0xdfff, 0xe000, 0xfeff, 0xffff, 0x10000, 0x1f600, 0x1d4b3, 0x10ffff]) out.add(c)
   if (fs.kind === 'ranges') {
     for (const r of fs.ranges) for (const c of [r.lo - 1, r.lo, r.hi, r.hi + 1]) if (c >= 0 && c <= 0x10ffff) out.add(c)
   }
+  if (witnessLead !== undefined) out.add(witnessLead)
   for (let k = 0; k < 64; k++) out.add(Math.floor(rand() * 0x110000))
   return [...out]
 }
 
 /** Can `re` match at least one character at position 0 of an input led by `cp`? */
-function startsWith(re: RegExp, cp: number): boolean {
-  for (const suffix of SUFFIXES) {
+function startsWith(re: RegExp, cp: number, suffixes: readonly string[]): boolean {
+  for (const suffix of suffixes) {
     re.lastIndex = 0
     const m = re.exec(String.fromCodePoint(cp) + suffix)
     if (m !== null && m[0].length > 0) return true
@@ -102,9 +161,13 @@ describe('regex first sets: no character outside the set starts a match (seed ' 
     const failures: string[] = []
     let checked = 0
     let bounded = 0
-    let probed = 0
+    let blind = 0
+    let matched = 0
+    const blindCases: string[] = []
     for (let n = 0; n < PATTERNS; n++) {
-      const source = generate(rand)
+      const pattern = generate(rand)
+      const source = pattern.source
+      const named = source.includes('(?<n>')
       for (const flags of FLAG_SETS) {
         let re: RegExp
         try { re = new RegExp(source, `${flags}y`) } catch { continue }
@@ -115,21 +178,32 @@ describe('regex first sets: no character outside the set starts a match (seed ' 
         if (empty && fs.kind !== 'any') { failures.push(`seed ${SEED}: /${source}/${flags} matches empty but reports a bounded set`); continue }
         if (fs.kind === 'any') continue
         bounded++
-        for (const cp of probes(fs, rand)) {
-          if (inSet(fs, cp)) continue
-          probed++
-          if (!startsWith(re, cp)) continue
+        const unicode = flags.includes('u') || flags.includes('v')
+        const witness = pattern.witness(flags, named)
+        const witnessLead = witness.codePointAt(0)
+        const rest = witnessLead === undefined ? '' : witness.slice(witnessLead > 0xffff ? 2 : 1)
+        const suffixes = [rest, ...SUFFIXES]
+        let hits = 0
+        for (const cp of probes(fs, witnessLead, rand)) {
+          if (!startsWith(re, cp, suffixes)) continue
+          if (inSet(fs, cp, unicode)) { hits++; continue }
           failures.push(`seed ${SEED}: /${source}/${flags} can start with U+${cp.toString(16).toUpperCase()}, outside its first set`)
           break
         }
+        matched += hits
+        if (hits === 0) { blind++; blindCases.push(`/${source}/${flags} witness ${JSON.stringify(witness)}`) }
         if (failures.length >= 10) break
       }
       if (failures.length >= 10) break
     }
+    // FIRST_SET_REPORT names a file to write the run's coverage and blind cases to.
+    const report = process.env.FIRST_SET_REPORT
+    if (report) writeFileSync(report, `seed ${SEED}: ${bounded} bounded, ${blind} blind (${(100 * blind / bounded).toFixed(1)}%), ${matched} matching probes\n${blindCases.join('\n')}\n`)
     expect(failures).toEqual([])
     expect(checked, 'patterns compiled under some flag set').toBeGreaterThan(PATTERNS)
-    // A run in which every set widened to `any` would prove nothing.
+    // A run in which every set widened to `any`, or no probe could match, would prove nothing.
     expect(bounded, 'pattern/flag pairs with a bounded first set').toBeGreaterThan(checked / 4)
-    expect(probed, 'characters tried outside a bounded set').toBeGreaterThan(bounded * 1000)
+    expect(blind, 'bounded pairs no probe matched').toBeLessThan(bounded / 8)
+    expect(matched, 'probes inside a bounded set that matched').toBeGreaterThan(bounded * 2)
   }, 300_000)
 })

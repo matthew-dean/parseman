@@ -1,5 +1,6 @@
 import type { Combinator, FirstSet, ParseContext, ParseError, ParseResult, RecoveryHelpers } from '../types.ts'
 import { cstCaptureActive, pushCstChild } from '../cst/capture-buffer.ts'
+import { astralLeadViaSurrogate } from '../lead-ranges.ts'
 import { annotateSpanFromLineContext, recordLineRangeFromContext } from '../line-index.ts'
 
 /**
@@ -86,6 +87,7 @@ export function firstSetSentinel(fs: FirstSet): Combinator<null> | null {
         for (const r of ranges) {
           if (code >= r.lo && code <= r.hi) return { ok: true, value: null, span: { start: pos, end: pos } }
         }
+        if (code > 0xffff && astralLeadViaSurrogate(ranges, code)) return { ok: true, value: null, span: { start: pos, end: pos } }
       }
       return { ok: false, expected: [], span: { start: pos, end: pos } }
     },

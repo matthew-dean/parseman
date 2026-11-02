@@ -23,7 +23,7 @@
  */
 import type { FirstSet } from '../types.ts'
 import { any, empty, fromRange, union } from '../combinators/first-set.ts'
-import { shorthandRanges, parseClassRanges } from './classes.ts'
+import { shorthandRanges, parseClassRanges, readUnicodeEscape } from './classes.ts'
 
 // A minimal regex AST. Each node answers two questions: what first chars can a
 // non-empty match begin with (`firstSet`), and can the node match zero chars
@@ -206,10 +206,10 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
     const e = src[i + 1]
     if (e === undefined) throw BAIL
     // \uXXXX
-    if (e === 'u' && /^[0-9a-fA-F]{4}$/.test(src.slice(i + 2, i + 6))) {
-      const cp = Number.parseInt(src.slice(i + 2, i + 6), 16)
-      i += 6
-      return charNode(fromRange(cp, cp), cp === 0x0a)
+    const uni = readUnicodeEscape(src, i, unicode)
+    if (uni !== null) {
+      i = uni.next
+      return charNode(fromRange(uni.cp, uni.cp), uni.cp === 0x0a)
     }
     // \u{X…}: a code point in Unicode mode. Without `u` it is a literal `u` under
     // a `{…}` quantifier, which may repeat it zero times, so it widens.
@@ -349,7 +349,9 @@ export function regexCanMatchEmpty(source: string): boolean {
 }
 
 /**
- * `flags` decides only how `\u{…}` reads (a code point under `u`/`v`); case
+ * `flags` decides how atoms read: under `u`/`v` each is one code point, else one
+ * code unit, so a non-`u` set holds a high surrogate where an astral character
+ * can start a match (`astralLeadViaSurrogate` reads an astral lead through it). Case
  * folding under `i` is the caller's, since only it knows what it gates.
  */
 export function firstSetFromRegex(source: string, flags = ''): { firstSet: FirstSet; canMatchNewline: boolean } {
@@ -364,16 +366,6 @@ export function firstSetFromRegex(source: string, flags = ''): { firstSet: First
   // narrow first-set would let first-char dispatch wrongly skip it. Only a
   // pattern that must consume ≥1 char has a meaningful first-set.
   if (nullable(ast)) return { firstSet: any(), canMatchNewline: canConsumeNewline(ast) }
-  return { firstSet: pairedSurrogates(firstSet(ast), flags), canMatchNewline: canConsumeNewline(ast) }
+  return { firstSet: firstSet(ast), canMatchNewline: canConsumeNewline(ast) }
 }
 
-/**
- * A first set is read against the input's leading CODE POINT. Outside Unicode
- * mode a regex matches code units, so a high surrogate it can start with may be
- * the first half of any astral code point: the set then holds them all.
- */
-function pairedSurrogates(fs: FirstSet, flags: string): FirstSet {
-  if (fs.kind !== 'ranges' || flags.includes('u') || flags.includes('v')) return fs
-  if (!fs.ranges.some(r => r.lo <= 0xdbff && r.hi >= 0xd800)) return fs
-  return union(fs, fromRange(0x10000, 0x10ffff))
-}

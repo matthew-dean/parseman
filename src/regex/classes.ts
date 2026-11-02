@@ -38,12 +38,20 @@ export function shorthandRanges(ch: 'd' | 'w' | 's'): Array<[number, number]> {
   return [[48, 57], [65, 90], [97, 122], [95, 95]]
 }
 
-/** `\uXXXX` at `body[i]` → its code point and the index past it, or null. */
-export function readUnicodeEscape(body: string, i: number): { cp: number; next: number } | null {
+/** `\uXXXX` at `body[i]` → its code point and the index past it, or null. Under
+ * `unicode`, an escaped high surrogate followed by an escaped low one is one
+ * code point (`\uD83D\uDE00` is U+1F600). */
+export function readUnicodeEscape(body: string, i: number, unicode = false): { cp: number; next: number } | null {
   if (body[i] !== '\\' || body[i + 1] !== 'u') return null
   const hex = body.slice(i + 2, i + 6)
   if (!/^[0-9a-fA-F]{4}$/.test(hex)) return null
-  return { cp: Number.parseInt(hex, 16), next: i + 6 }
+  const cp = Number.parseInt(hex, 16)
+  if (unicode && cp >= 0xd800 && cp <= 0xdbff && body[i + 6] === '\\' && body[i + 7] === 'u') {
+    const lowHex = body.slice(i + 8, i + 12)
+    const low = /^[0-9a-fA-F]{4}$/.test(lowHex) ? Number.parseInt(lowHex, 16) : -1
+    if (low >= 0xdc00 && low <= 0xdfff) return { cp: 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00), next: i + 12 }
+  }
+  return { cp, next: i + 6 }
 }
 
 /** Regex syntax characters that cannot appear in a LITERAL fragment unescaped. */
@@ -151,7 +159,7 @@ export function parseClassRanges(body: string, unicode = false): Array<[number, 
     const ch = body[i]
     if (ch === undefined) return null
     if (ch === '\\') {
-      const uni = readUnicodeEscape(body, i)
+      const uni = readUnicodeEscape(body, i, unicode)
       if (uni) {
         i = uni.next
         return { cp: uni.cp }

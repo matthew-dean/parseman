@@ -1081,11 +1081,11 @@ function parseScanShapeCore(source: string): ScanShape | null {
 /**
  * Flag-aware wrapper around `parseScanShape`. Lowering to a raw code-point scan
  * assumes default regex semantics, so any flag that changes matching (`i` case
- * folding, `u` surrogate handling, `m`/`s` anchor/dot behavior) disables it.
+ * folding, `u`/`v` code points and sets, `m`/`s` anchor/dot behavior) disables it.
  * `g`/`y` are stickiness-only and safe.
  */
 export function scanShapeFromRegex(source: string, flags: string): ScanShape | null {
-  if (/[msu]/.test(flags)) return null
+  if (/[msuv]/.test(flags)) return null
   if (/i/.test(flags)) return caseFoldShape(source)
   return parseScanShape(source)
 }

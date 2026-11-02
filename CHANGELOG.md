@@ -17,15 +17,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     that reaches 128 widens. The emitted scan lowering declines digit escapes.
   - Test: `test/unit/regex-escape-first-set-engines.test.ts`, registered in
     `check:differentials`.
-  - Under `u`/`v` a literal or class member is read as one code point, so `/😀x/u` starts
-    with U+1F600 rather than its high surrogate. A `v`-mode nested class or set operation
-    (`[[^a]]`, `[[a-c]--b]`, `\q{…}`) widens instead of being read up to its first `]`.
-    Outside Unicode mode, a set that holds a high surrogate also holds every astral code
-    point, since the engines gate on the input's leading code point. Identifier classes
-    such as `[\u0080-\uffff]` therefore admit astral characters, which grows tables that
-    carry them: Jess's grammars by 0.7–1.4%, and the CSS example by 1,167 B.
+  - Under `u`/`v` a literal, a class member or an escaped surrogate pair (`\uD83D\uDE00`)
+    is read as one code point, so `/😀x/u` starts with U+1F600 rather than its high
+    surrogate. A `v`-mode nested class or set operation (`[[^a]]`, `[[a-c]--b]`, `\q{…}`)
+    widens instead of being read up to its first `]`.
+  - Every engine gates on the input's leading code point. Outside Unicode mode a first set
+    holds code units, so each lead test now reads an astral lead through its high
+    surrogate. Identifier classes such as `[\u0080-\uffff]` therefore admit astral
+    characters. Table sizes are unchanged.
+  - The emitted scan lowering declines `v` regexes, as it declines `u`.
   - `test/unit/regex-first-set-property.test.ts` checks the property over seeded generated
-    patterns: no code point outside a regex's first set starts a match. It is registered in
+    patterns: no code point outside a regex's first set starts a match. Each probe is
+    followed by the rest of a witness the pattern is built to match. It is registered in
     `check:differentials`.
 - **A trivia skip at a character no trivia can start returns without scanning.** Both
   table engines now test the character first. The closure engine reads a per-slot table

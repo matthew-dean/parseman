@@ -1,4 +1,5 @@
 import type { CharRange, FirstSet, Combinator, ParserDef } from '../types.ts'
+import { astralLeadViaSurrogate, leadRanges } from '../lead-ranges.ts'
 
 /**
  * Resolve a NAMED cross-artifact rule reference (`g.Foo`) whose own thunk does not
@@ -101,8 +102,9 @@ export function union(a: FirstSet, b: FirstSet): FirstSet {
 export function intersects(a: FirstSet, b: FirstSet): boolean {
   if (a.kind === 'any' || b.kind === 'any') return true
   if (a.kind === 'empty' || b.kind === 'empty') return false
-  for (const ra of a.ranges) {
-    for (const rb of b.ranges) {
+  const bs = leadRanges(b.ranges)
+  for (const ra of leadRanges(a.ranges)) {
+    for (const rb of bs) {
       if (ra.lo <= rb.hi && rb.lo <= ra.hi) return true
     }
   }
@@ -126,7 +128,7 @@ export function startsFirstSet(combinator: Combinator<unknown>, input: string, p
   const code = input.codePointAt(pos)
   if (code === undefined) return false
   for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
-  return false
+  return code > 0xffff && astralLeadViaSurrogate(fs.ranges, code)
 }
 
 export function fromRange(lo: number, hi: number): FirstSet {

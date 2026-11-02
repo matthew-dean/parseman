@@ -243,6 +243,60 @@ export const DEFECTS = {
     }],
   },
 
+  'first-set-escaped-pair-split': {
+    why: 'regex first sets: under `u`, an escaped surrogate pair is read as its two halves',
+    edits: [{
+      file: 'src/regex/classes.ts',
+      find: 'if (unicode && cp >= 0xd800 && cp <= 0xdbff',
+      replace: 'if (false && unicode && cp >= 0xd800 && cp <= 0xdbff',
+    }],
+  },
+
+  'lead-class-astral-plain': {
+    why: 'table engines: a class holding a high surrogate refuses the astral leads it begins',
+    edits: [{
+      file: 'src/table/program.ts',
+      find: 'for (const { lo, hi: up } of leadRanges(decodeClassSpec(spec))) {',
+      replace: 'for (const { lo, hi: up } of decodeClassSpec(spec)) {',
+    }],
+  },
+
+  'lead-first-set-astral-plain': {
+    why: 'interpreter: a first set holding a high surrogate refuses the astral leads it begins',
+    edits: [{
+      file: 'src/lead-ranges.ts',
+      find: '  const high = 0xd800 + ((code - 0x10000) >> 10)\n',
+      replace: '  const high = -1\n',
+    }],
+  },
+
+  'lead-intersects-astral-plain': {
+    why: 'first sets: a high-surrogate set is taken as disjoint from the astral set it begins',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: '  const bs = leadRanges(b.ranges)\n  for (const ra of leadRanges(a.ranges)) {',
+      replace: '  const bs = b.ranges\n  for (const ra of a.ranges) {',
+    }],
+  },
+
+  'lead-trivia-collapse-astral-plain': {
+    why: 'emitted gated collapse: trivia holding a high surrogate is taken not to start at an astral lead',
+    edits: [{
+      file: 'src/table/site-labels.ts',
+      find: '? leadRanges(fs.ranges) : undefined',
+      replace: '? fs.ranges : undefined',
+    }],
+  },
+
+  'scan-shape-v-as-code-units': {
+    why: 'emitted scanners: a `v` regex is lowered to a code-unit scan',
+    edits: [{
+      file: 'src/table/scan-shapes.ts',
+      find: 'if (/[msuv]/.test(flags)) return null',
+      replace: 'if (/[msu]/.test(flags)) return null',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{
