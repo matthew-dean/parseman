@@ -35,6 +35,7 @@ import { sequence } from '../combinators/sequence.ts'
 import { leaf, sourceLeaf } from '../combinators/token.ts'
 import { noTrivia, parser } from '../combinators/grammar.ts'
 import { attempt } from '../combinators/attempt.ts'
+import { optional } from '../combinators/repeat.ts'
 import { mayCommitFailure } from '../analysis/commitment.ts'
 
 type ChoiceDef = Extract<ParserDef, { tag: 'choice' }>
@@ -170,4 +171,56 @@ export function factorSharedEnds(d: ChoiceDef): Combinator<unknown> | undefined 
   // A choice that fails is rolled back and reports where it started; so does an
   // `attempt`. The sequence alone would report where its inner choice failed.
   return out === undefined ? undefined : attempt(out)
+}
+
+/**
+ * AN ARM WHOSE NEXT SIBLING IS ITS OWN PREFIX — `choice(sequence(X, a), X)`.
+ *
+ * On input where `X` matches and `a` does not, the choice parses `X`, fails `a`,
+ * rolls back, and parses `X` again for the next arm. Where the choice's value is
+ * unused (its sequence arms are `valueUnused`, so only their captures reach the
+ * enclosing node), the first arm may be `sequence(X, optional(a))`:
+ *
+ * - `X` then `a` matches: the arm as it was.
+ * - `X` matches, `a` fails uncommitted: the optional matches empty, rolls `a`'s
+ *   captures back and leaves the gap before it unrecorded, so the arm ends where
+ *   `X` did with `X`'s captures, which is what the retried next arm produced.
+ * - `a` fails committed: the arm fails committed, as it did.
+ * - `X` fails: the arm fails as before, and the next arm, kept as it is, fails the
+ *   same way, so the choice merges the same sets in the same order.
+ *
+ * `X` is the next arm's sequence of terms, or that arm itself as a single term,
+ * and "the same" is `sameComb`. Gated arms, `autoNot` and strategies that reorder
+ * are left alone.
+ */
+export function factorPrefixArms(d: ChoiceDef): Combinator<unknown> | undefined {
+  const arms = d.parsers
+  if (arms.length < 2) return undefined
+  if (d.strategy.tag !== 'firstMatch' && d.strategy.tag !== 'sharedPrefix') return undefined
+  if (d.gates.some(g => g !== null) || d.autoNot.some(a => a !== null)) return undefined
+  const out = [...arms]
+  let changed = false
+  for (let i = 0; i + 1 < arms.length; i++) {
+    const arm = arms[i]!
+    if (arm._def.tag !== 'sequence' || arm._def.valueUnused !== true) continue
+    const terms = arm._def.parsers
+    const next = arms[i + 1]!
+    const prefix = next._def.tag === 'sequence' && next._def.valueUnused === true ? next._def.parsers : [next]
+    if (prefix.length >= terms.length) continue
+    if (!prefix.every((t, j) => sameComb(t, terms[j]!, 0))) continue
+    const rest = terms.slice(prefix.length)
+    // A rest that cannot fail (already `optional`, or `many`) has nothing to factor.
+    if (rest.every(never)) continue
+    const tail = rest.length === 1 ? rest[0]! : sequence(...(rest as [Combinator<unknown>, ...Combinator<unknown>[]]))
+    if (tail !== rest[0]) (tail._def as { valueUnused?: boolean }).valueUnused = true
+    const parts: Combinator<unknown>[] = [...terms.slice(0, prefix.length), optional(tail)]
+    const seq = sequence(...(parts as [Combinator<unknown>, ...Combinator<unknown>[]]))
+    ;(seq._def as { valueUnused?: boolean }).valueUnused = true
+    out[i] = seq
+    changed = true
+  }
+  if (!changed) return undefined
+  const rebuilt = choice(...(out as [Combinator<unknown>, ...Combinator<unknown>[]]))
+  const st = rebuilt._def.tag === 'choice' ? rebuilt._def.strategy : undefined
+  return st !== undefined && (st.tag === 'firstMatch' || st.tag === 'sharedPrefix') ? rebuilt : undefined
 }

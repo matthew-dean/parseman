@@ -196,6 +196,278 @@ export const DEFECTS = {
     }],
   },
 
+  'loop-sep-gate-before-trivia': {
+    why: 'closure engine: a separated list tests its separator class before the trivia in front of it',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '              if (count >= min && gateSep && !classHas(sepClass!, lead(input, sp))) {\n',
+      replace: '              if (count >= min && gateSep && !classHas(sepClass!, lead(input, cur))) {\n',
+    }],
+  },
+
+  'loop-sep-gate-before-trivia-emitted': {
+    why: 'emitted engine: a separated list tests its separator class before the trivia in front of it',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "`if(hasTrivia)sp=${skip}(input,sp,ctx)\\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('sp')}){",
+      replace: "`if(hasTrivia)sp=${skip}(input,sp,ctx)\\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('cur')}){",
+    }],
+  },
+
+  'seq-pad-first-set-drops-rest': {
+    why: 'first sets: a sequence led by a nullable regex reports only the regex\'s own first characters',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: '    return union((consuming ? p._meta.consumingFirstSet : undefined) ?? first, afterBoundary(i + 1))\n',
+      replace: '    return (consuming ? p._meta.consumingFirstSet : undefined) ?? union(first, afterBoundary(i + 1))\n',
+    }],
+  },
+
+  'seplist-first-item-set-dropped': {
+    why: 'encoder: a separated list of min 1 whose first item fails reports that item\'s own failure, not the item set at the list start',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "(d.keepSeparators === true ? 2 : 0) | (d.min >= 1 ? 4 : 0)",
+      replace: "(d.keepSeparators === true ? 2 : 0) | (d.min >= 2 ? 4 : 0)",
+    }],
+  },
+
+  'repeat-lead-gate-kept': {
+    why: 'encoder: an optional repeat item keeps the lead gate its repeat already tests',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '          ? this.withoutLeadGate(this.node(d.parser).ip, itemClass)\n',
+      replace: '          ? this.node(d.parser).ip\n',
+    }],
+  },
+
+  'prefix-arm-any-prefix': {
+    why: 'encoder: an arm is factored over its next sibling even when that sibling is not its prefix',
+    edits: [{
+      file: 'src/table/factor-choice.ts',
+      find: '    if (!prefix.every((t, j) => sameComb(t, terms[j]!, 0))) continue\n',
+      replace: '',
+    }],
+  },
+
+  'prefix-arm-off': {
+    why: 'encoder: an arm whose next sibling is its prefix is left as written (the shared term parses twice)',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '            const prefix = factorPrefixArms(d)\n',
+      replace: '            const prefix = undefined\n',
+    }],
+  },
+
+  'prefix-arm-tolerant-factored': {
+    why: 'closure and emitted engines: tolerant recovery runs the factored prefix arm',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'return link(code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!)',
+      replace: 'return link(code[ip + 1]!)',
+    }, {
+      file: 'src/table/emit-assembly.ts',
+      find: 'if (op === OP_STRICT) return code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!',
+      replace: 'if (op === OP_STRICT) return code[ip + 1]!',
+    }],
+  },
+
+  'scope-memo-one-slot': {
+    why: 'encoder: a rule body is encoded once, under the first trivia scope that reaches it',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "    if (!this.readsScope(p)) return ''\n",
+      replace: "    return ''\n",
+    }],
+  },
+
+  'gap-gate-unknown-trivia': {
+    why: 'encoder: a gap gate is laid down where the live trivia is not known',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    if (this.activeTrivia === undefined && !this.triviaKnown) return ip\n',
+      replace: '',
+    }],
+  },
+
+  'choice-miss-names-pad': {
+    why: 'encoder: a choice that rejects an arm on its first set reports the arm\'s nullable pad, which entering it never reports',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'this.code[head + 3] = this.expected(arms.flatMap(a => gateMissExpected(a)))',
+      replace: 'this.code[head + 3] = this.expected(arms.flatMap(a => deriveExpected(a)))',
+    }],
+  },
+
+  'gate-narrows-unknown-trivia': {
+    why: 'encoder: a gate reads a nullable pad through its non-empty matches where the live trivia is not known',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    return this.activeTrivia !== undefined || this.triviaKnown\n',
+      replace: '    return true\n',
+    }],
+  },
+
+  'routed-gate-unknown-trivia': {
+    why: 'encoder: a routed gate is laid down where the trivia after its token is not known',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    if (boundary === undefined && !this.triviaKnown) return undefined\n',
+      replace: '',
+    }],
+  },
+
+  'routed-fallback-one-scope': {
+    why: 'encoder: a routed() fallback is encoded once, under the first scope that reaches it',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '        out = d.fallback !== undefined && this.readsScope(d.fallback)\n',
+      replace: '        out = false\n',
+    }],
+  },
+
+  'install-first-set-unwidened': {
+    why: 'interpreter: a reference that installs its rule\'s trivia keeps its rule\'s own first set, without that trivia',
+    edits: [{
+      file: 'src/combinators/parser.ts',
+      find: '  rule._meta.firstSet = union(rule._meta.firstSet, trivia._meta.firstSet)\n',
+      replace: '',
+    }],
+  },
+
+  'token-body-caller-scope': {
+    why: 'encoder: a token\'s body is encoded under its caller\'s trivia, which a token clears',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '        this.activeTrivia = undefined\n        this.triviaKnown = true\n        const body = this.node(d.parser).ip\n',
+      replace: '        this.triviaKnown = true\n        const body = this.node(d.parser).ip\n',
+    }],
+  },
+
+  'regex-letter-escape-literal': {
+    why: 'regex first sets: an unmodelled letter escape (\\p{L}, \\cJ) is read as its letter',
+    edits: [{
+      file: 'src/regex/first-set.ts',
+      find: "        if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) throw BAIL\n",
+      replace: '',
+    }],
+  },
+
+  'ref-first-set-caller-trivia': {
+    why: 'first sets: a reference from a cleared region is read under the caller\'s scope, not the trivia it installs',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: 'consuming && activeTrivia === null ? triviaThroughRef(p, target, null) : activeTrivia, consuming)',
+      replace: 'activeTrivia, consuming)',
+    }],
+  },
+
+  'gap-lead-caller-trivia': {
+    why: 'encoder: the gap walk reads a reference under the caller\'s scope, not the trivia it installs',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'return this.gapLead(target, triviaThroughRef(c, target, trivia), depth + 1)',
+      replace: 'return this.gapLead(target, trivia, depth + 1)',
+    }],
+  },
+
+  'rgate2-second-code-units': {
+    why: 'encoder: the two-character routed gate\'s second set stays in code units',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'return astral.length === 0 ? s : union(s, { kind: \'ranges\', ranges: astral })',
+      replace: 'return s',
+    }, {
+      file: 'src/table/encode.ts',
+      find: '    const second = d.value.codePointAt(1)!\n',
+      replace: '    const second = d.value.charCodeAt(1)\n',
+    }],
+  },
+
+  'gap-scan-wrong-offset': {
+    why: 'closure engine: the gap gate scans the item\'s gap one character late',
+    edits: [{ file: 'src/table/assemble.ts', find: '              gapRe.lastIndex = itemStart\n', replace: '              gapRe.lastIndex = itemStart + 1\n' }],
+  },
+
+  'gap-scan-wrong-offset-emitted': {
+    why: 'emitted engine: the gap gate scans the item\'s gap one character late',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: '${re}.lastIndex=itemStart\n', replace: '${re}.lastIndex=itemStart+1\n' }],
+  },
+
+  'gap-follow-narrowed': {
+    why: 'encoder: the class after an item\'s gap loses its lowest character',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    const cls = this.charClass(lead.follow)\n',
+      replace: "    const cls = this.charClass(lead.follow.kind === 'ranges' ? { kind: 'ranges', ranges: lead.follow.ranges.map((r, i) => i === 0 ? { lo: r.lo + 1, hi: r.hi } : r).filter(r => r.lo <= r.hi) } : lead.follow)\n",
+    }],
+  },
+
+  'gap-slot-any-row': {
+    why: 'closure engine: a gap row takes the slot at its position whatever row the slot was set for',
+    edits: [{ file: 'src/table/assemble.ts', find: 'if (GAP.row === row && GAP.at === pos && GAP.input === input) e = GAP.end', replace: 'if (GAP.at === pos && GAP.input === input) e = GAP.end' }],
+  },
+
+  'gap-inline-scan-wrong-offset-emitted': {
+    why: 'emitted engine: a gap gate whose regex lowers to an inline scan scans the item\'s gap one character late',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: "const m = emitShapeMatch(shape, 'itemStart',", replace: "const m = emitShapeMatch(shape, 'itemStart+1'," }],
+  },
+  'gap-slot-any-row-emitted': {
+    why: 'emitted engine: a gap row takes the slot at its position whatever row the slot was set for',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: 'if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end', replace: 'if(GAP.at===pos&&GAP.input===input)e=GAP.end' }],
+  },
+
+  'rgate2-second-at-first': {
+    why: 'closure engine: the two-character routed gate reads its second character at the first character\'s position',
+    edits: [{ file: 'src/table/assemble.ts', find: '(classHas(first, c) && !classHas(second, lead(input, e + 1)))', replace: '(classHas(first, c) && !classHas(second, lead(input, e)))' }],
+  },
+
+  'rgate2-second-at-first-ascii': {
+    why: 'closure engine: the ASCII two-character routed gate reads its second code unit at the first one\'s position',
+    edits: [{ file: 'src/table/assemble.ts', find: 'a2[input.charCodeAt(e + 1)] !== 1', replace: 'a2[input.charCodeAt(e)] !== 1' }],
+  },
+
+  'rgate2-second-at-first-emitted': {
+    why: 'emitted engine: the two-character routed gate reads its second character at the first character\'s position',
+    edits: [{ file: 'src/table/emit-assembly.ts', find: "${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}", replace: "${has(second, ascii ? 'input.charCodeAt(e)' : 'lead(input,e)')}" }],
+  },
+
+  'rgate2-second-narrowed': {
+    why: 'encoder: the second-character class of a two-character routed gate loses its lowest character',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    const b = this.charClass(two.second)\n',
+      replace: "    const b = this.charClass(two.second.kind === 'ranges' ? { kind: 'ranges', ranges: two.second.ranges.map((r, i) => i === 0 ? { lo: r.lo + 1, hi: r.hi } : r).filter(r => r.lo <= r.hi) } : two.second)\n",
+    }],
+  },
+
+  'otherwise-commit-bit-dropped': {
+    why: 'encoder: otherwise(p, { commit: false }) is encoded as a committing fallback',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '(d.otherwiseCommit === false ? 2 : 0)',
+      replace: '0',
+    }],
+  },
+
+  'otherwise-commit-closure-routed': {
+    why: 'closure engine: a routed uncommitted fallback still commits its failure',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '\n        if (commits) ctx._fc = true\n',
+      replace: '\n        ctx._fc = true\n',
+    }],
+  },
+
+  'otherwise-commit-emitted': {
+    why: 'emitted engine: an uncommitted fallback still commits its failure',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "${other !== undefined && !otherCommits ? 'if(arm!==undefined)' : ''}ctx._fc=true",
+      replace: 'ctx._fc=true',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{

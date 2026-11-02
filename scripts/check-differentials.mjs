@@ -130,7 +130,9 @@ function normalise(out) {
     // sweep "moves" under every plant and the gate reports universal teeth. This
     // was the second self-inflicted false positive found while writing it.
     .replace(/sweep-\d+\.jsonl/g, '<sink>')
-    .replace(/\bat \d{2}:\d{2}:\d{2}\b/g, 'at <time>')
+    // vitest prints `Start at  13:09:10` with TWO spaces: one space here let the
+    // clock leak through, so a blind plant read as caught whenever the second ticked.
+    .replace(/\bat\s+\d{2}:\d{2}:\d{2}\b/g, 'at <time>')
     .trim()
 }
 
@@ -219,6 +221,99 @@ const REGISTRY = [
     cleanExit: 0,
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-routed-arm-gate.test.ts']),
     plants: [{ defect: 'rgate-miss-set-short', expect: 'moves' }],
+  },
+  {
+    id: 'loop-continuation',
+    needs: 'repo',
+    file: 'test/unit/table-loop-continuation.test.ts',
+    legs: 'generated padded-operator chains and separated lists (operators, prefix minus, groups, spacing, one-character defects) through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-loop-continuation.test.ts']),
+    plants: [
+      { defect: 'loop-sep-gate-before-trivia', expect: 'moves' },
+      { defect: 'loop-sep-gate-before-trivia-emitted', expect: 'moves' },
+      { defect: 'seq-pad-first-set-drops-rest', expect: 'moves' },
+      { defect: 'seplist-first-item-set-dropped', expect: 'moves' },
+      { defect: 'repeat-lead-gate-kept', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'dispatch-otherwise-commit',
+    needs: 'repo',
+    file: 'test/unit/dispatch-otherwise-commit.test.ts',
+    legs: 'a statement dispatch with a committing call case and an otherwise() fallback, committed and uncommitted, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/dispatch-otherwise-commit.test.ts']),
+    plants: [
+      { defect: 'otherwise-commit-bit-dropped', expect: 'moves' },
+      { defect: 'otherwise-commit-closure-routed', expect: 'moves' },
+      { defect: 'otherwise-commit-emitted', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'prefix-arm',
+    needs: 'repo',
+    file: 'test/unit/table-prefix-arm.test.ts',
+    legs: 'generated argument lists over choice(sequence(X, a), X) inside a node, plus a choice whose next arm is not a prefix, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input, and the shared term visit count',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-prefix-arm.test.ts']),
+    plants: [
+      { defect: 'prefix-arm-any-prefix', expect: 'moves' },
+      { defect: 'prefix-arm-off', expect: 'moves' },
+      { defect: 'prefix-arm-tolerant-factored', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'gap-gate',
+    needs: 'repo',
+    file: 'test/unit/table-gap-gate.test.ts',
+    legs: 'generated SCSS-shaped operator chains (padded operators, a sum arm led by another level\'s gap, comments and tabs in gaps, one-character defects) through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar (AST, CST host, tolerant) and vs execRules (line tracking): whole RunResult digests per input, and operator-node visit counts',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-gap-gate.test.ts']),
+    plants: [
+      { defect: 'gap-scan-wrong-offset', expect: 'moves' },
+      { defect: 'gap-scan-wrong-offset-emitted', expect: 'moves' },
+      { defect: 'gap-inline-scan-wrong-offset-emitted', expect: 'moves' },
+      { defect: 'gap-follow-narrowed', expect: 'moves' },
+      { defect: 'gap-slot-any-row', expect: 'moves' },
+      { defect: 'gap-slot-any-row-emitted', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'routed-arm-gate2',
+    needs: 'repo',
+    file: 'test/unit/table-routed-arm-gate2.test.ts',
+    legs: 'a name-once statement dispatch whose spaced-declaration arm is gated on a colon and the gap after it (OP_RGATE2), glued and spaced heads, through execRules (one-character gate), closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input, and arm visit counts',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-routed-arm-gate2.test.ts']),
+    plants: [
+      { defect: 'rgate2-second-at-first', expect: 'moves' },
+      { defect: 'rgate2-second-at-first-ascii', expect: 'moves' },
+      { defect: 'rgate2-second-at-first-emitted', expect: 'moves' },
+      { defect: 'rgate2-second-narrowed', expect: 'moves' },
+      { defect: 'rgate2-second-code-units', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'trivia-scope',
+    needs: 'repo',
+    file: 'test/unit/table-trivia-scope.test.ts',
+    legs: 'rule bodies with a gap gate, an optional-literal lead, a separator and a routed arm, run under a caller\'s comment trivia (encoded first as entries, and first reached from the caller) and as rules of a trivia map referenced from a cleared region, over generated inputs with comments in every gap, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar, strict and tolerant: whole RunResult digests and expected sets per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-trivia-scope.test.ts']),
+    plants: [
+      { defect: 'scope-memo-one-slot', expect: 'moves' },
+      { defect: 'ref-first-set-caller-trivia', expect: 'moves' },
+      { defect: 'gap-lead-caller-trivia', expect: 'moves' },
+      { defect: 'gap-gate-unknown-trivia', expect: 'moves' },
+      { defect: 'choice-miss-names-pad', expect: 'moves' },
+      { defect: 'gate-narrows-unknown-trivia', expect: 'moves' },
+      { defect: 'token-body-caller-scope', expect: 'moves' },
+      { defect: 'routed-gate-unknown-trivia', expect: 'moves' },
+      { defect: 'routed-fallback-one-scope', expect: 'moves' },
+      { defect: 'install-first-set-unwidened', expect: 'moves' },
+      { defect: 'regex-letter-escape-literal', expect: 'moves' },
+    ],
   },
   {
     id: 'jess-oracle',
@@ -310,7 +405,7 @@ function plant(id) {
     const before = readFileSync(p, 'utf8')
     const n = before.split(e.find).length - 1
     if (n !== 1) {
-      for (const s of saved) writeFileSync(s.path, s.text)
+      for (const s of [...saved].reverse()) writeFileSync(s.path, s.text)
       throw new Error(
         `plant '${id}': anchor occurs ${n} times in ${e.file}, expected exactly 1.\n`
         + 'The code moved out from under the plant. Re-derive it against the current source —\n'
@@ -325,7 +420,9 @@ function plant(id) {
 
 function unplant() {
   if (planted === null) return
-  for (const s of planted) writeFileSync(s.path, s.text)
+  // NEWEST FIRST: two edits to one file each saved the text before them, so
+  // restoring in order would end on the first edit's result.
+  for (const s of [...planted].reverse()) writeFileSync(s.path, s.text)
   planted = null
 }
 

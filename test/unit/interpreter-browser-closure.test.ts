@@ -31,7 +31,22 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // document trivia an unlabelled scanner.
 // Bumped +46B to 59,793B: a labelled trivia spec carries the slots the table
 // engines' root-selection fast path primes (`table/trivia-gap.ts`).
-const BASELINE_RAW_BYTES = 59_793
+// Bumped +257B to 60,050B: a nullable `regex()` carries the first chars of its
+// non-empty matches, so a sequence led by an optional pad (`ws* '*' ws*`) has a
+// finite first set instead of `any`.
+// Bumped +236B to 60,286B: `firstSetOf` reads a reference from a cleared region
+// under the trivia it installs (`triviaThroughRef`), and recovery reads first
+// sets without the nullable-pad refinement (`consuming: false`).
+// Bumped +86B to 60,372B: `gateMissExpected` (a table gate's miss set without
+// the nullable pads that cannot fail) shares `deriveExpected`'s walk.
+// Bumped +65B to 60,437B: the regex first-set reader treats an unmodelled letter
+// escape (`\p{L}`, `\cJ`, `\k<…>`) as unknown instead of as its letter, the
+// pads a gate miss skips include wrapped ones, and `classifyFinalChoice` takes
+// `consuming`.
+// Bumped +828B to 61,265B: `rules()` widens the first set of a reference that
+// installs its rule's trivia over a nullable opening term, and propagates it to
+// aliases (`widenForInstall`), so another grammar's `choice()` enters that arm.
+const BASELINE_RAW_BYTES = 61_265
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

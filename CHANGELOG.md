@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.59.0 — 2026-11-01
 
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
@@ -18,6 +18,117 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
   in every table engine. A miss now reports the terminal's own failure set, and a
   label's name. Which arms are gated is unchanged.
+- **A sequence led by an optional pad has its operator's first set.** A `regex()` that
+  may match empty still reports `any` as its own first set, since it can match empty
+  anywhere, but it now also carries the first characters of its non-empty matches. A
+  sequence, which tracks nullability itself, unions those with the next term's, so
+  `sequence(regex(/[ \t]*/), regex(/[*%]/), regex(/[ \t]*/))` is `{ws, *, %}` instead
+  of `any`. A repeat of such an operator now has an item class and the operator's node
+  a gate: at a value end (`;`, `)`, `,`) an operator chain `A (op A)*` stops on the
+  character instead of opening each level's operator to scan an empty pad and fail.
+  Jess's SCSS grammar writes its math operators this way: its generated workload parses
+  in 13.1% fewer marginal instructions per parse (JIT, against 0.58.0). Trees are
+  unchanged. The narrowed set is the table's (`firstSetOf`). A sequence's
+  construction-time first set, which the interpreter's `choice()` dispatches on
+  without knowing the trivia, keeps the pad as `any`, as do tolerant recovery's
+  resync sentinels (`firstSetOf` with `consuming` false). A table gate that rejects
+  an arm on the narrowed set reports what entering the arm reports, without the pad,
+  bare or behind a wrapper, which matches empty and cannot fail (`gateMissExpected`).
+  The narrowing applies only where the trivia that may follow the pad is known: in
+  the body of an entry that installs no trivia of its own, which runs under its
+  caller's (a compiled rule inside another grammar, `run({ trivia })`), gates read
+  first sets as 0.58.0 did, and a routed gate is not laid down where the trivia
+  after its token is unknown. `examples/toml-ish`'s emitted table is 43 B larger
+  for the expected sets this reports.
+- **A separated list ends on a character its separator cannot start.** Past its
+  minimum, a `sepBy()` whose separator cannot match empty and is not itself one
+  terminal now tests the character after the gap against the separator's first set in
+  both table engines, and ends the list there without entering the separator. The
+  class is the list row's own (flag 8, `ip + 8`), not the recovery sentinel, and is
+  laid down only where entering the separator costs more than the test: a literal or
+  regex separator is one character test already, so its list is not tested at every
+  item. A `field(…, { leadingTrivia: true })` separator, a completions probe and
+  tolerant recovery keep entering it. `test/unit/table-loop-continuation.test.ts`
+  compares every table reader with the interpreter over generated operator chains and
+  lists, and is registered in `check:differentials`.
+- **`otherwise(p, { commit: false })`.** A `dispatch()` commits whenever a selected branch
+  fails. The option keeps that cut on the `when()` cases and lets the fallback fail
+  uncommitted, so a statement read once by its name, which no fallback arm reads, ends
+  the statement list instead of stopping the parse, while a broken call (a `when()`
+  case) still stops it. The interpreter, every table engine, the IR printer and the
+  macro evaluator carry it. Test: `test/unit/dispatch-otherwise-commit.test.ts`.
+- **An arm whose next sibling is its own prefix parses the prefix once.**
+  `choice(sequence(X, a), X)`, with the choice's value unused, is encoded with its first
+  arm as `sequence(X, optional(a))`, so an `X` with no `a` after it is not parsed again
+  by the next arm. A strict parse reports failures as before. Tolerant recovery and a
+  completions probe run the choice as written: inside the factored arm, `X`'s own
+  recovery would take `a`'s first set for all that may follow it. The table holds both
+  encodings under a new `OP_STRICT` row, which an assembly resolves to one of them.
+  Jess's SCSS mixin argument (`$name: v`, `v...`, `v`) is this shape. Test:
+  `test/unit/table-prefix-arm.test.ts`.
+- **An optional repeat reads its item's leading gap once.** An optional repeat item
+  that opens with a gap (a `regex()` that may match empty, or one that starts only with
+  whitespace or a comment's `/`) and then a term with a finite first set gets an
+  `OP_GAPGATE` row. The repeat scans the gap with the item's own regex, ends where the
+  character after it opens no such term (and the item's start opens no arm without
+  the gap), and otherwise enters the item. Where the emitted engine lowers the gap to
+  an inline scan, it scans it so and the row scans it again; otherwise the gap's end
+  goes in a slot, from which the regex row takes it instead of matching again. The
+  slot is a memo of one pure function, keyed by row, position and input. Not under
+  tolerant recovery or a completions probe; the reference driver runs the item as
+  written. The gate holds for no trivia between the gap and its term, so it is laid
+  down only where the encoder knows none runs there. A gap spelled as
+  `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
+  and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
+- A budgeted assembly selection RANKS sites with every gap gate lowered as its item, so
+  adding the gates moves no site's place in the order. It fits and debits the source
+  it ships, gates included, so the budget bounds the artifact.
+  `emitAssemblySource` takes `gapNeutral` for the ranking. Test:
+  `test/unit/table-gap-gate-selection.test.ts`.
+- **A routed arm gate reads two characters where its next term says them.** Where the
+  term after a `routed()` token states its first two characters outright (a literal of
+  two or more characters, or a case-sensitive regex that opens with a character class
+  followed by another or by a positive lookahead over one, such as
+  `regex(/:(?=[ \t\n\r\f])/)`), and no gap before it can start with the first, the
+  encoder emits `OP_RGATE2`: where the character after the token is one of the first,
+  the next one must be one of the second, or the arm fails at the token's end with the
+  term's own set, as entering it would. Two reads, no scan; the second is a code point,
+  so an astral second character is in its set. Jess's Less
+  name-once statement (jess#515) no longer enters its spaced-declaration arm on a
+  glued head (`div:hover`, `color:red`). Test: `test/unit/table-routed-arm-gate2.test.ts`.
+- An optional repeat item no longer tests its lead gate twice: the repeat's own item
+  class covers it. And with no separator or gap in front of the item, the item class is
+  tested once per iteration, not twice.
+- Fixed: **gates and first sets see the trivia live where they run.** A rule body
+  reached under two trivia scopes is encoded under each, where its rows can depend on
+  the scope (a first set through a nullable term, a gap gate, a routed gate, a
+  reference that installs its rule's trivia), keyed by the trivia's first set. And a
+  first set, the gap walk and the encoding of a rule referenced from a cleared region
+  take the trivia that reference installs (`triviaThroughRef`, as `ref.ts` does) —
+  a choice arm, a gap gate's other arms and a routed gate's next term included —
+  and a
+  `token()` body, which runs with trivia cleared, is encoded under none. In
+  0.58.0 a routed arm in a rule with no trivia, run under a caller's comment trivia,
+  failed on `a/*c*/:b`, and a repeat in `noTrivia(…)` over a rule of a comment-trivia
+  map with an optional-literal lead stopped at the comment; the new gates had the same
+  blind spot. Test: `test/unit/table-trivia-scope.test.ts`, registered in
+  `check:differentials`.
+- Fixed: a `choice()` over a reference into another `rules()` map whose rule installs
+  its trivia (the reference is made from a region that cleared trivia) and opens with
+  a term that may match empty now enters that arm where the trivia comes first. The
+  reference's construction-time first set takes in the trivia's, and an alias's
+  follows it. The interpreter rejected a comment before `+1` against
+  `sequence(optional('x'), '+', num)` from another map, and accepted it from the same
+  map, where the reference is not yet defined when the choice is built.
+- Fixed: a `regex()` with an escape the first-set reader does not model (`\p{L}`,
+  `\u{1F600}`, `\cJ`, `\k<name>`) has an unknown first set. The reader took it as its
+  letter (`/\p{L}+/u` started with `p`), so `choice(regex(/\p{L}+/u), '1')` rejected
+  `a` in every engine, the interpreter included, and the 0.59.0 separator and routed
+  gates rejected valid input on it.
+- Fixed: a `sepBy` of `min: 1` whose first item fails reports the item's derived set at
+  the list's start in every table reader, as the interpreter does (`repeat.ts`
+  `failAt`). The tables reported what the failed item left, e.g. `")"` inside the group
+  of `x:(1;` where the interpreter said what may start a value.
 
 ## 0.58.0 — 2026-10-31
 

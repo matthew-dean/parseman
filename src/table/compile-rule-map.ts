@@ -355,7 +355,10 @@ export function compileRuleMap(
     const roots = assemblyExtraIps(artifact)
     let siteBytes, fixed
     try {
-      siteBytes = emitAssemblySource(table, artifact, cfg, roots, true).siteBytes
+      // RANKED with every gap gate lowered as its item (`gapNeutral`), so the
+      // gates move no site's place in the order; the fit below is judged by the
+      // source that ships, gates included.
+      siteBytes = emitAssemblySource(table, artifact, cfg, roots, true, undefined, true).siteBytes
       // What any selective assembly costs before its first site body: the shared
       // prelude and the factory's tail. A budget that cannot cover it buys nothing.
       fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set()).source.length

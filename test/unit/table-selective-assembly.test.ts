@@ -27,6 +27,7 @@ import { cssRules } from '../../examples/css/parser.ts'
 import { jsonRules, jsonWs } from '../../bench/table-grammars.ts'
 import type { Combinator } from '../../src/types.ts'
 import { choice, literal, many, noTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { seeded } from '../helpers/table-readers.ts'
 
 /**
  * `Words` runs under two DIFFERENT trivia scopes and inside `noTrivia`, so its
@@ -74,11 +75,8 @@ function subsets(sites: readonly number[], exhaustive: boolean): Array<[string, 
     ['every third', new Set(sites.filter((_, i) => i % 3 === 0))],
   ]
   for (const seed of [1, 7, 42, 99]) {
-    let x = seed
-    out.push([`draw ${seed}`, new Set(sites.filter(() => {
-      x = (x * 1103515245 + 12345) % 2147483648
-      return x % 4 !== 0
-    }))])
+    const rnd = seeded(seed)
+    out.push([`draw ${seed}`, new Set(sites.filter(() => rnd(4) !== 0))])
   }
   if (exhaustive) {
     for (const ip of sites) {
