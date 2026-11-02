@@ -14,11 +14,20 @@
  * `dist/index.js`. Run each case in fresh processes under plain `node` and count the
  * mark-compacts each one ran. Fails if any process exceeds `maxMarkCompacts`.
  *
- * Usage: pnpm perf:pretenure        (about 3 minutes; run it on Node 24 and Node 26)
+ * Usage:
+ *   pnpm perf:pretenure                     about 6 minutes; run it on Node 24 and Node 26
+ *   pnpm perf:pretenure --plant=<site>      the same check with one converted site class
+ *                                           turned back into a literal; it must FAIL
+ *   pnpm perf:pretenure --pads=0,970        override the pads
+ *
+ * Plants, each applied to the staged copy of `dist/` only: `span`, `leaf`, `node`
+ * (default and CST-host nodes), `line-span`, `field`, `buffer` (each turns its
+ * `src/cst/plain.js` constructor into one that returns an object literal), and
+ * `children` (a default node keeps the capture buffer's array instead of a copy).
  */
 import { build } from 'esbuild'
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { builtinModules } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +38,22 @@ const GATE = 'pretenure-check'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const CONFIG = JSON.parse(readFileSync(path.join(HERE, 'pretenure-check.json'), 'utf8')) as Config
+const arg = (name: string): string | undefined => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3)
+const padsArg = arg('pads')
+if (padsArg !== undefined) CONFIG.pads = padsArg.split(',').map(Number)
+const plant = arg('plant')
+
+/** A converted site class, turned back into an object literal (one allocation site). */
+const PLANTS: Record<string, { file: string; find: RegExp; replace: string } | { append: string }> = {
+  span: { append: 'PlainSpan = function (start, end) { return { start, end } }' },
+  leaf: { append: "PlainLeaf = function (value, span) { return { _tag: 'leaf', value, span } }" },
+  node: { append: "PlainNode = function (type, span, state, children) { return { _tag: 'node', type, span, state, children } }" },
+  'line-span': { append: 'PlainLineSpan = function (start, end, startLine, startColumn, endLine, endColumn) { return { start, end, startLine, startColumn, endLine, endColumn } }' },
+  field: { append: 'PlainField = function (name, value, span) { return { name, value, span } }' },
+  buffer: { append: 'PlainBuf = function (rawOnly, noRaw, rawLen) { return { rawOnly, noRaw, rawLen, single: undefined, ch: undefined, rawSingle: undefined, raw: undefined, tl: undefined } }' },
+  children: { file: '*', find: /kids ?=== ?EMPTY_CH ?\? ?kids ?: ?\[\.\.\.kids\]/g, replace: 'kids' },
+}
+if (plant !== undefined && !(plant in PLANTS)) throw new Error(`${GATE}: no plant ${plant}; plants: ${Object.keys(PLANTS).join(', ')}`)
 
 execFileSync(process.execPath, ['scripts/build.mjs'], { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'] })
 
@@ -56,6 +81,24 @@ await build({
     },
   }],
 })
+
+if (plant !== undefined) {
+  const p = PLANTS[plant]!
+  if ('append' in p) {
+    const file = path.join(stage, 'dist', 'cst', 'plain.js')
+    writeFileSync(file, `${readFileSync(file, 'utf8')}\n${p.append}\n`)
+  } else {
+    let hits = 0
+    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith('.js') ? [path.join(dir, e.name)] : [])
+    for (const file of walk(path.join(stage, 'dist'))) {
+      const text = readFileSync(file, 'utf8')
+      const next = text.replace(p.find, () => { hits++; return p.replace })
+      if (next !== text) writeFileSync(file, next)
+    }
+    if (hits === 0) throw new Error(`${GATE}: plant ${plant} matched nothing — re-derive it against the current dist`)
+  }
+  console.log(`${GATE}: PLANT ${plant} applied to the staged dist — this run must FAIL`)
+}
 
 const runtime = path.join(stage, 'dist', 'index.js')
 const original = readFileSync(runtime, 'utf8')

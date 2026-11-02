@@ -925,12 +925,25 @@ mark-compacts, and appending dead code to the bundle re-rolls which is which (#2
 Parseman builds its tree objects with constructors so that cannot happen
 (`src/cst/plain.d.ts`).
 
-`bench/pretenure-check.ts` builds `dist/`, appends 0, 970, 4,000 and 15,000 bytes of
-never-called code to `dist/index.js`, and runs `css/stylesheet`, `expected/narrow` and
-`rollback/medium` in fresh plain-`node` processes. It fails if any process runs more
-than `maxMarkCompacts` mark-compacts (`bench/pretenure-check.json`). The fast mode runs 1–2;
-on `main` before #230 the same check read 49–69 on Node 26. It is not in CI: run it on
-Node 24 and Node 26 for any change to what a parse allocates (about 3 minutes each).
+`bench/pretenure-check.ts` builds `dist/` and appends 0, 970, 4,000 and 15,000 bytes of
+never-called code to `dist/index.js`. It then runs seven cases in fresh plain-`node`
+processes:
+- `css/stylesheet`, `expected/narrow` and `rollback/medium`, whose fixture builders copy what
+  they keep;
+- `css/cst`, a CST host (`cstBuildHost()` nodes over parseman's leaves and spans);
+- `nolines/doc` and `lines/doc`, builder-less default nodes without and with line tracking;
+- `spans/doc`, a builder that keeps the span parseman passes it.
+
+The check fails if any process runs more than `maxMarkCompacts` (3) mark-compacts
+(`bench/pretenure-check.json`). The fast mode runs 1–2. On `main` before #230 the same check
+read 49–69 on Node 26. It is not in CI: run it on Node 24 and Node 26 for any change to what
+a parse allocates, about 6 minutes each.
+
+`--plant=<site>` turns one converted site class back into an object literal in the staged
+`dist/`, and the run must then FAIL. On Node 26 it does for `span`, `leaf`, `node`,
+`line-span` and `children`. `field` and `buffer` cannot make it fail, because no tree keeps a
+field capture or a capture buffer: they die with their node. Node 24 pretenures fewer sites,
+so `line-span` fails on Node 26 only; run the plants on Node 26.
 
 ## The peak clause — `pnpm perf:xproc:gate --peak`
 

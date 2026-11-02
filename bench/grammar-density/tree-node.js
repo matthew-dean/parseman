@@ -17,5 +17,14 @@ export function TreeNode(type, start, end, children, rawCount, triviaLen) {
   this.triviaLen = triviaLen
 }
 
+// A node that keeps the span object parseman passed its builder, so a regression in how
+// parseman builds spans reaches a long-lived tree (`bench/pretenure-check.ts`).
+export function SpanKeepingNode(type, span, children) {
+  this.type = type
+  this.span = span
+  this.children = children
+}
+
 TreeSpan.prototype = Object.prototype
+SpanKeepingNode.prototype = Object.prototype
 TreeNode.prototype = Object.prototype
