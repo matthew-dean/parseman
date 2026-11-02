@@ -290,12 +290,12 @@ export const DEFECTS = {
     }],
   },
 
-  'choice-miss-names-pad': {
-    why: 'encoder: a choice that rejects an arm on its first set reports the arm\'s nullable pad, which entering it never reports',
+  'node-miss-names-pad': {
+    why: 'encoder: a node gate that rejects on its narrowed first set reports the nullable pad, which entering the node never reports',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'this.code[head + 3] = this.expected(arms.flatMap(a => gateMissExpected(a)))',
-      replace: 'this.code[head + 3] = this.expected(arms.flatMap(a => deriveExpected(a)))',
+      find: 'const e = d.guarded === true ? deriveExpected(d.parser) : gateMissExpected(d.parser)',
+      replace: 'const e = deriveExpected(d.parser)',
     }],
   },
 
@@ -326,11 +326,29 @@ export const DEFECTS = {
     }],
   },
 
-  'install-first-set-unwidened': {
-    why: 'interpreter: a reference that installs its rule\'s trivia keeps its rule\'s own first set, without that trivia',
+  'choice-classes-derived-when-disjoint': {
+    why: 'encoder: a choice the interpreter dispatches on construction-time sets is classed by its derived sets',
     edits: [{
-      file: 'src/combinators/parser.ts',
-      find: '  rule._meta.firstSet = union(rule._meta.firstSet, trivia._meta.firstSet)\n',
+      file: 'src/table/encode.ts',
+      find: 'd.disjoint && !factoredChoices.has(p))',
+      replace: 'false)',
+    }],
+  },
+
+  'follow-class-live-trivia': {
+    why: 'encoder: a recovery follow class takes the live trivia, which the interpreter\'s follow sentinels do not',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false))',
+      replace: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia, false))',
+    }],
+  },
+
+  'guard-set-derived': {
+    why: 'encoder: where the interpreter guards on a child\'s construction-time set, the table gates on a derived one',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: '    if (guarded) return firstSetOf(p, new Set(), rr, undefined, false)\n',
       replace: '',
     }],
   },
@@ -357,7 +375,7 @@ export const DEFECTS = {
     why: 'first sets: a reference from a cleared region is read under the caller\'s scope, not the trivia it installs',
     edits: [{
       file: 'src/combinators/first-set.ts',
-      find: 'consuming && activeTrivia === null ? triviaThroughRef(p, target, null) : activeTrivia, consuming)',
+      find: 'activeTrivia === null ? triviaThroughRef(p, target, null) : activeTrivia, consuming)',
       replace: 'activeTrivia, consuming)',
     }],
   },

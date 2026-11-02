@@ -185,7 +185,7 @@ export function node<N>(
   if (project !== undefined && build !== undefined) {
     throw new Error('node() options cannot combine project with a build callback')
   }
-  const baseDef = { tag: 'node' as const, parser: combinator, ...(type === undefined ? {} : { type }), ...(build === undefined ? {} : { build }) }
+  const baseDef = { tag: 'node' as const, parser: combinator, ...(type === undefined ? {} : { type }), ...(build === undefined ? {} : { build }), ...(combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator) ? { guarded: true as const } : {}) }
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,

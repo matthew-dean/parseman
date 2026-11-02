@@ -28,6 +28,12 @@ export function classifyFinalChoice(
   resolve?: RefResolver,
   activeTrivia?: Combinator<unknown> | null,
   consuming = true,
+  /**
+   * Read each arm's construction-time `_meta.firstSet`, the set a disjoint
+   * interpreter `choice()` dispatches on (`choice.ts`), instead of deriving it:
+   * the table then lets in exactly the arms the interpreter lets in.
+   */
+  constructionSets = false,
 ): FinalChoiceClassification {
   const firstSets: FirstSet[] = []
   const nullable: boolean[] = []
@@ -39,7 +45,7 @@ export function classifyFinalChoice(
   for (const arm of arms) {
     const empty = matchesEmpty(arm, new Set(), resolve)
     nullable.push(empty)
-    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve, activeTrivia, consuming))
+    firstSets.push(empty ? { kind: 'any' } : constructionSets ? arm._meta.firstSet : firstSetOf(arm, new Set(), resolve, activeTrivia, consuming))
     if (empty) exclusive = false
   }
   if (exclusive) {
@@ -360,13 +366,16 @@ export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): First
  * referenced rule can be replaced with a WIDER first-set, so a baked deep set
  * would wrongly skip valid input — the compose path defers dispatch to fuse time.
  *
- * `consuming: false` is the derivation RECOVERY reads its resync sentinels from
- * (`sequence.ts` `followSentinels`, the table's follow and separator classes):
- * a nullable regex stands as `any`, and a reference is read under the scope it
- * is given, as before 0.59.0. A sentinel is a class standing in for "this parser
- * may start here", and a pad's non-empty first characters (a space) are not the
- * parser starting. Gates take the default: what may be READ first, with the
- * trivia a reference installs.
+ * `consuming: false` reads a nullable regex as `any`, as first sets read before
+ * 0.59.0. Recovery derives its resync sentinels so (`sequence.ts`
+ * `followSentinels`, the table's follow and separator classes, with no trivia),
+ * as do a construction-time sequence set and a table choice's classes. Only a
+ * repeat item's, a gap's and a node's gate read a pad through its non-empty
+ * matches.
+ *
+ * `activeTrivia` is the live trivia, `null` for a scope known to have none (where
+ * a reference installs its rule's trivia, `triviaThroughRef`), and `undefined`
+ * where it is not known.
  *
  * `resolve` binds NAMED cross-artifact holes (`g.Foo`) against a fused winner map —
  * see `RefResolver`. Diagnostic-only today: it is what lets the gating analysis ask
@@ -415,7 +424,7 @@ function firstSetBody(
       // Under a scope KNOWN to have no trivia (`null`), the target runs under the
       // trivia the reference installs for it (`triviaThroughRef`). `undefined`
       // says nothing about the scope, and the target is read as it stands.
-      return firstSetOf(target, seen, resolve, consuming && activeTrivia === null ? triviaThroughRef(p, target, null) : activeTrivia, consuming)
+      return firstSetOf(target, seen, resolve, activeTrivia === null ? triviaThroughRef(p, target, null) : activeTrivia, consuming)
     }
     case 'choice': {
       let out: FirstSet = empty()
@@ -456,7 +465,7 @@ function firstSetBody(
     // with a rule reference — resolve through it like any other wrapper.
     case 'attempt':   return fs(d.parser)
     // A token runs its body with trivia cleared (`token.ts`).
-    case 'token':     return firstSetOf(d.parser, seen, resolve, consuming ? null : activeTrivia, consuming)
+    case 'token':     return firstSetOf(d.parser, seen, resolve, activeTrivia === undefined ? undefined : null, consuming)
     case 'grammar':   return firstSetOf(
       d.parser,
       seen,

@@ -38,6 +38,13 @@ import { attempt } from '../combinators/attempt.ts'
 import { optional } from '../combinators/repeat.ts'
 import { mayCommitFailure } from '../analysis/commitment.ts'
 
+/**
+ * The choices this module builds. The interpreter never runs them: it runs the
+ * authored choice, so a factored one's `disjoint` says nothing about which arms
+ * the interpreter lets in (`Encoder` classifies them by their derived sets).
+ */
+export const factoredChoices = new WeakSet<Combinator<unknown>>()
+
 type ChoiceDef = Extract<ParserDef, { tag: 'choice' }>
 
 /** Own keys every combinator may carry beside its definition; all derived from it. */
@@ -152,6 +159,7 @@ export function factorSharedEnds(d: ChoiceDef): Combinator<unknown> | undefined 
   // it walks everything the arms reach.
   if (arms.some(a => mayCommitFailure(a))) return undefined
   const middle = choice(...(shapes.map(s => s.terms[at]!) as [Combinator<unknown>, ...Combinator<unknown>[]]))
+  factoredChoices.add(middle)
   // The inner choice must keep arm order: a strategy that reorders (longest
   // literal first) or classifies would pick a different arm. Nor may it add an
   // automatic lookahead the arms as written do not have: `'start'` before
@@ -221,6 +229,7 @@ export function factorPrefixArms(d: ChoiceDef): Combinator<unknown> | undefined 
   }
   if (!changed) return undefined
   const rebuilt = choice(...(out as [Combinator<unknown>, ...Combinator<unknown>[]]))
+  factoredChoices.add(rebuilt)
   const st = rebuilt._def.tag === 'choice' ? rebuilt._def.strategy : undefined
   return st !== undefined && (st.tag === 'firstMatch' || st.tag === 'sharedPrefix') ? rebuilt : undefined
 }

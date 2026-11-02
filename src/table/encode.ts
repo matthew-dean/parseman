@@ -1,6 +1,6 @@
 import { scanRefs } from './program.ts'
 import { regexFirstTwo } from '../regex/first-set.ts'
-import { factorPrefixArms, factorSharedEnds } from './factor-choice.ts'
+import { factorPrefixArms, factorSharedEnds, factoredChoices } from './factor-choice.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union, winnerForRef, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
@@ -383,7 +383,7 @@ class Encoder {
             // encoder would hold at that row, so both lowerings rank the same
             // failures.
             const final = classifyFinalChoice(
-              node.parsers, this.refResolver(), node.cleared ? null : this.gateTrivia(), node.cleared || this.gateConsuming(),
+              node.parsers, this.refResolver(), node.cleared ? null : this.gateTrivia(), false, node.disjoint,
             )
             const classes = final.firstSets.map((first, i) => final.nullable[i] ? -1 : this.charClass(first))
             const exclusive = final.exclusive && classes.every(cls => cls >= 0)
@@ -716,7 +716,9 @@ class Encoder {
     let fs: FirstSet = { kind: 'empty' }
     const rr = this.refResolver()
     for (let j = i + 1; j < parsers.length; j++) {
-      fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia, false))
+      // As the interpreter's `followSentinels` derive them (`sequence.ts`): with no
+      // trivia, whatever scope the sequence runs in.
+      fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false))
     }
     return this.charClass(fs)
   }
@@ -900,9 +902,9 @@ class Encoder {
       || op === OP_RX || op === OP_RX_TRACK) return child
     const rr = this.refResolver()
     if (matchesEmpty(p, new Set(), rr)) return child
-    const cls = this.charClass(firstSetOf(p, new Set(), rr, this.gateTrivia(), this.gateConsuming()))
+    const cls = this.charClass(firstSetOf(p, new Set(), rr, this.activeTrivia, false))
     if (cls < 0) return child
-    const e = gateMissExpected(p)
+    const e = deriveExpected(p)
     return this.emit(OP_GATE, cls, child, this.expected(e.length > 0 ? e : [p._tag]))
   }
 
@@ -932,11 +934,19 @@ class Encoder {
    * `{`, `Call` at `}`). The resolved set is the one a choice arm's gate uses,
    * over the final merged map.
    */
-  private gateFirstSet(p: Combinator<unknown>): FirstSet {
+  private gateFirstSet(p: Combinator<unknown>, guarded: boolean, narrowed: boolean): FirstSet {
     const cached = p._meta.firstSet
-    return p._def.tag === 'lazy' || cached.kind === 'any'
-      ? firstSetOf(p, new Set(), this.refResolver(), this.gateTrivia(), this.gateConsuming())
-      : cached
+    if (p._def.tag !== 'lazy' && cached.kind !== 'any') return cached
+    const rr = this.refResolver()
+    // GUARDED: the interpreter tests this child's set before entering it (its set
+    // was finite when the wrapper was built), so the table tests the same set: a
+    // reference's resolved target, as its construction-time set reads it, without
+    // the trivia it installs. Otherwise the interpreter enters the child, and the
+    // gate is the set the child can start with where it runs. Only a node's and a
+    // repeat item's gate read a nullable pad through its non-empty matches (the
+    // operator of `A (pad op pad A)*`); an attempt's reads first sets as 0.58.0 did.
+    if (guarded) return firstSetOf(p, new Set(), rr, undefined, false)
+    return firstSetOf(p, new Set(), rr, this.gateTrivia(), narrowed && this.gateConsuming())
   }
 
   /**
@@ -1608,7 +1618,12 @@ class Encoder {
         // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
-        const finalChoice = classifyFinalChoice(arms, rr, this.gateTrivia(), this.gateConsuming())
+        // The arms' classes let in what the interpreter's `choice()` lets in. A
+        // disjoint one dispatches on its arms' construction-time sets (no trivia,
+        // a nullable pad as `any`), and the table reads those same sets; any
+        // other tries each arm, and the table's classes are the arms' derived
+        // sets under the trivia that runs there, a nullable pad as `any`.
+        const finalChoice = classifyFinalChoice(arms, rr, this.gateTrivia(), false, d.disjoint && !factoredChoices.has(p))
         // attempt() preserves its child's success language, but the broad
         // classifier deliberately treats the transaction as nullable/unknown so
         // it can never by itself authorize exclusive one-arm selection. Recover
@@ -1620,7 +1635,7 @@ class Encoder {
           if (!finalChoice.nullable[i]) return undefined
           const def = arm._def as ParserDef
           if (def.tag !== 'attempt' || matchesEmpty(def.parser, new Set(), rr)) return undefined
-          return firstSetOf(def.parser, new Set(), rr, this.gateTrivia(), this.gateConsuming())
+          return firstSetOf(def.parser, new Set(), rr, this.activeTrivia, false)
         })
         const gateFirst = finalChoice.firstSets.map((first, i) => transactionalFirst[i] ?? first)
         const classes = gateFirst.map((first, i) => finalChoice.nullable[i] && transactionalFirst[i] === undefined
@@ -1675,10 +1690,10 @@ class Encoder {
         // THE CHOICE'S OWN SET IS THE ARMS' FLATMAP, NOT `deriveExpected(p)`.
         // It is the pure-dispatch-miss and empty-dynamic fallback, where source
         // order and duplicates remain observable. `deriveExpected` would dedupe.
-        this.code[head + 3] = this.expected(arms.flatMap(a => gateMissExpected(a)))
+        this.code[head + 3] = this.expected(arms.flatMap(a => deriveExpected(a)))
         for (let i = 0; i < kids.length; i++) {
           this.code[head + 4 + i] = kids[i]!
-          this.code[head + 4 + kids.length + i] = this.expected(gateMissExpected(arms[i]!))
+          this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
         if (arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))) {
@@ -1689,9 +1704,11 @@ class Encoder {
       case 'many':
       case 'oneOrMore': {
         const rr = this.refResolver()
+        // The item's gate tests what the interpreter's repeat guard tests where it
+        // has one (`repeat.ts`), and otherwise what the item can start with.
         const itemClass = matchesEmpty(d.parser, new Set(), rr)
           ? -1
-          : this.charClass(firstSetOf(d.parser, new Set(), rr, this.gateTrivia(), this.gateConsuming()))
+          : this.charClass(this.gateFirstSet(d.parser, d.guarded === true, true))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
         const item = min === 0 && itemClass >= 0
@@ -1734,7 +1751,7 @@ class Encoder {
           const ops = [
             child, d.min, d.max ?? -1, sep, flags,
             this.expected(deriveExpected(d.parser)),
-            this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia, false)),
+            this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), undefined, false)),
           ]
           if (gate >= 0) ops.push(gate)
           return this.emit(OP_REP, ...ops)
@@ -1873,11 +1890,14 @@ class Encoder {
         // accepts (the reducer reroutes via `winners`, but this recognizer gate did
         // not). Resolve the ref's gate through `winners`, exactly as the `lazy` case
         // resolves the call. Non-ref bodies keep the cached set (byte-identical).
-        const fs = this.gateFirstSet(d.parser)
+        const fs = this.gateFirstSet(d.parser, d.guarded === true, true)
         if (fs.kind === 'any') return body
         const cls = this.charClass(fs)
         if (cls < 0) return body
-        const e = deriveExpected(d.parser)
+        // A guarded node fails as the interpreter's guard does (`node.ts`); an
+        // unguarded one as entering it would, where a pad the gate read through
+        // matches empty and never fails.
+        const e = d.guarded === true ? deriveExpected(d.parser) : gateMissExpected(d.parser)
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
       case 'token': {
@@ -2085,7 +2105,7 @@ class Encoder {
         // not a slower equivalent.
         // Same override-aware resolution as the node gate: a bare-ref inner resolves
         // its gate through `winners` so a widened winner is not gated out.
-        const fs = this.gateFirstSet(d.parser)
+        const fs = this.gateFirstSet(d.parser, d.guarded === true, false)
         if (fs.kind === 'any' || matchesEmpty(d.parser, new Set(), this.refResolver())) return inner
         const cls = this.charClass(fs)
         if (cls < 0) return inner

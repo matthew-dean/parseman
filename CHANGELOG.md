@@ -28,18 +28,23 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   character instead of opening each level's operator to scan an empty pad and fail.
   Jess's SCSS grammar writes its math operators this way: its generated workload parses
   in 13.1% fewer marginal instructions per parse (JIT, against 0.58.0). Trees are
-  unchanged. The narrowed set is the table's (`firstSetOf`). A sequence's
-  construction-time first set, which the interpreter's `choice()` dispatches on
-  without knowing the trivia, keeps the pad as `any`, as do tolerant recovery's
-  resync sentinels (`firstSetOf` with `consuming` false). A table gate that rejects
-  an arm on the narrowed set reports what entering the arm reports, without the pad,
-  bare or behind a wrapper, which matches empty and cannot fail (`gateMissExpected`).
-  The narrowing applies only where the trivia that may follow the pad is known: in
-  the body of an entry that installs no trivia of its own, which runs under its
-  caller's (a compiled rule inside another grammar, `run({ trivia })`), gates read
-  first sets as 0.58.0 did, and a routed gate is not laid down where the trivia
-  after its token is unknown. `examples/toml-ish`'s emitted table is 43 B larger
-  for the expected sets this reports.
+  unchanged.
+
+  The narrowed set is read by three gates only, all in strict assemblies: a repeat
+  item's class, the gap gate below, and a node's gate. Each applies it only where the
+  interpreter does not test that child's set itself: the interpreter's repeat, node
+  and attempt guard on the construction-time set they were built with (now recorded
+  on the def as `guarded`), and where they do, the table tests that same set. A
+  node's gate miss reports what entering the node reports, without the pad
+  (`gateMissExpected`). Everything else reads first sets as 0.58.0 did (`firstSetOf`
+  with `consuming` false): a sequence's construction-time set, tolerant recovery's
+  resync sentinels (which, as the interpreter's `followSentinels`, read no trivia),
+  optional and lookahead gates, an attempt's gate, and a choice's classes. A choice
+  the interpreter dispatches on its arms' construction-time sets (`disjoint`) is
+  classed on those same sets. Where the trivia that may follow a pad is not known (the
+  body of an entry that installs no trivia of its own, which runs under its caller's),
+  no gate is narrowed and no routed gate is laid down. `examples/graphql` and
+  `examples/css` emit 11 B and 26 B more for the trivia-free recovery classes.
 - **A separated list ends on a character its separator cannot start.** Past its
   minimum, a `sepBy()` whose separator cannot match empty and is not itself one
   terminal now tests the character after the gap against the separator's first set in
@@ -113,13 +118,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   map with an optional-literal lead stopped at the comment; the new gates had the same
   blind spot. Test: `test/unit/table-trivia-scope.test.ts`, registered in
   `check:differentials`.
-- Fixed: a `choice()` over a reference into another `rules()` map whose rule installs
-  its trivia (the reference is made from a region that cleared trivia) and opens with
-  a term that may match empty now enters that arm where the trivia comes first. The
-  reference's construction-time first set takes in the trivia's, and an alias's
-  follows it. The interpreter rejected a comment before `+1` against
-  `sequence(optional('x'), '+', num)` from another map, and accepted it from the same
-  map, where the reference is not yet defined when the choice is built.
 - Fixed: a `regex()` with an escape the first-set reader does not model (`\p{L}`,
   `\u{1F600}`, `\cJ`, `\k<name>`) has an unknown first set. The reader took it as its
   letter (`/\p{L}+/u` started with `p`), so `choice(regex(/\p{L}+/u), '1')` rejected

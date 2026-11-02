@@ -43,10 +43,9 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // escape (`\p{L}`, `\cJ`, `\k<…>`) as unknown instead of as its letter, the
 // pads a gate miss skips include wrapped ones, and `classifyFinalChoice` takes
 // `consuming`.
-// Bumped +828B to 61,265B: `rules()` widens the first set of a reference that
-// installs its rule's trivia over a nullable opening term, and propagates it to
-// aliases (`widenForInstall`), so another grammar's `choice()` enters that arm.
-const BASELINE_RAW_BYTES = 61_265
+// Bumped +11B to 60,448B: `node()`, `attempt()` and the repeats record whether
+// they guard their child (`guarded`), which the table's gates mirror.
+const BASELINE_RAW_BYTES = 60_448
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

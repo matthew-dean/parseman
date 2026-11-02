@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, compile, dispatch, label, literal, many, noTrivia, optional, otherwise, parser, regex, routed, rules, sepBy, sequence, token,
+  attempt, choice, compile, dispatch, label, literal, many, node, noTrivia, oneOrMore, oneOrMoreSep, optional, otherwise, parser, regex, routed, rules, sepBy, sequence, token,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -299,13 +299,92 @@ describe('a construct encoded once for every scope it runs in', () => {
 })
 
 describe('a choice of another grammar over a reference that installs its rule\'s trivia', () => {
-  it('enters the arm where the installed trivia comes first, in the interpreter too', () => {
+  // The interpreter's choice dispatches on the reference's construction-time set,
+  // which does not read the trivia it installs; the table's classes keep the same
+  // arms out (0.58.0's derivation).
+  it('decides as the interpreter does', () => {
     const lib = rules({ trivia: comment }, (g: Record<string, Comb>) => ({ R: sequence(optional(literal('x')), literal('+'), num), Rr: g.R! })) as Record<string, Comb>
     const g = rules(() => ({ S: noTrivia(sequence(literal('>'), many(choice(literal('a'), lib.Rr!)), literal(';'))) })) as Record<string, Comb>
-    expect(run(g.S!, '>/*c*/+1;').ok).toBe(true)
     for (const [name, entries] of readers(encodeTable(g))) {
       for (const input of ['>/*c*/+1;', '>a/*c*/+1;', '>+1;', '>x/*c*/+1;', '>a;', '>/*c*/;']) {
         expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+      }
+    }
+  })
+})
+
+describe('where the interpreter tests a first set itself, the table tests the same one', () => {
+  // The interpreter's choice dispatches, and its repeat, node and attempt guard,
+  // on construction-time sets, which do not read a reference's installed trivia
+  // or a pad's non-empty matches. Reached across two maps, where a reference is
+  // defined when the wrapper is built, every reader must decide as it does.
+  const body = (): Comb => sequence(optional(literal('x')), literal('+'), num)
+  const shapes: Record<string, () => Comb> = {
+    seq: body,
+    choice: () => choice(body(), literal('y')),
+    oneOrMore: () => oneOrMore(body()),
+    sepBy: () => oneOrMoreSep(body(), literal(',')),
+  }
+  for (const [shape, make] of Object.entries(shapes)) {
+    it(shape, () => {
+      const lib = rules({ trivia: comment }, (g: Record<string, Comb>) => ({ R: make(), Touch: sequence(literal('!'), g.R!) })) as Record<string, Comb>
+      const callers: Record<string, Comb> = {
+        choice: rules(() => ({ S: sequence(literal('>'), many(choice(literal('a'), lib.R!)), literal(';')) })).S as Comb,
+        bare: rules(() => ({ S: sequence(literal('>'), lib.R!, literal(';')) })).S as Comb,
+        cleared: rules({ trivia: comment }, () => ({ S: noTrivia(sequence(literal('>'), many(choice(literal('a'), lib.R!)), literal(';'))) })).S as Comb,
+        node: rules(() => ({ S: sequence(literal('>'), many(choice(literal('a'), node('W', lib.R!))), literal(';')) })).S as Comb,
+        item: rules(() => ({ S: sequence(literal('>'), many(lib.R!), literal(';')) })).S as Comb,
+        attempt: rules(() => ({ S: sequence(literal('>'), many(attempt(lib.R!)), literal(';')) })).S as Comb,
+      }
+      for (const [caller, S] of Object.entries(callers)) {
+        for (const [name, entries] of readers(encodeTable({ S }))) {
+          for (const input of ['>/*c*/+1;', '>+1;', '>x/*c*/+1;', '>a/*c*/+1;', '>/*c*/y;', '>+1,/*c*/+2;']) {
+            for (const tolerant of [false, true]) {
+              expect(result(entries.S!, input, tolerant), `${name} ${caller} ${JSON.stringify(input)} ${tolerant}`).toBe(result(S, input, tolerant))
+            }
+          }
+        }
+      }
+    })
+  }
+
+  it('a node over a pad reports what entering it reports', () => {
+    const g = rules({ trivia: regex(/[ \t]+/) }, () => ({
+      S: sequence(word, node('N', sequence(pad, literal('b')))),
+      A: sequence(word, attempt(sequence(pad, literal('b')))),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['a?', 'a b', 'ab', 'a', 'a  ?']) {
+        expect(result(entries.S!, input, false), `${name} S ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+        expect(result(entries.A!, input, false), `${name} A ${JSON.stringify(input)}`).toBe(result(g.A!, input, false))
+      }
+    }
+  })
+})
+
+describe('tolerant recovery resyncs where the interpreter does', () => {
+  it('a choice whose arms open with pads, and a list reached across maps', () => {
+    const hash = regex(/#[^\n]*\n/)
+    const g = rules({ trivia: comment }, () => ({
+      S: sequence(literal('>'), choice(sequence(num, literal('+'), pad), oneOrMoreSep(sequence(pad, literal(';')), literal(','))), literal('<')),
+      E: sequence(literal('>'), choice(sequence(optional(sequence(pad, literal(';'))), literal(';')), num), literal('<')),
+    })) as Record<string, Comb>
+    const lib = rules({ trivia: hash }, (g: Record<string, Comb>) => ({
+      R: sequence(oneOrMoreSep(literal('+'), literal(',')), oneOrMore(sequence(optional(literal('x')), literal(';')))),
+      A: g.R!,
+    })) as Record<string, Comb>
+    const X = rules(() => ({ S: sequence(literal('>'), lib.R!, literal('<')) })).S as Comb
+    for (const tolerant of [false, true]) {
+      for (const [name, entries] of readers(encodeTable(g))) {
+        for (const input of ['>,:<', '>1+<', '> ;,;<', '>;<', '>1+ <', '> <', '> ;;<', '>2<']) {
+          expect(result(entries.S!, input, tolerant), `${name} S ${JSON.stringify(input)} ${tolerant}`).toBe(result(g.S!, input, tolerant))
+          expect(result(entries.E!, input, tolerant), `${name} E ${JSON.stringify(input)} ${tolerant}`).toBe(result(g.E!, input, tolerant))
+        }
+      }
+      for (const [name, entries] of readers(encodeTable({ S: X }))) {
+        for (const input of ['>#c\n;<', '>#c\n+;<', '>+;<', '>#c\n;ba<', '>+,+x;<']) {
+          expect(result(entries.S!, input, tolerant), `${name} X ${JSON.stringify(input)} ${tolerant}`).toBe(result(X, input, tolerant))
+        }
       }
     }
   })
