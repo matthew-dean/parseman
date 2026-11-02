@@ -415,7 +415,11 @@ if (existsSync(resolve(ROOT, VERDICT_CONFIG))) {
   } catch {
     // New on this branch: introducing the verdict is itself an edit to it.
   }
-  const changedKeys = VERDICT_KEYS.filter((k) => before === null || JSON.stringify(before[k]) !== JSON.stringify(now[k]))
+  // Compared structurally: reordering keys in roundsByCase or a suite block is not a change.
+  const canonical = (v) => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x)
+    ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]]))
+    : x))
+  const changedKeys = VERDICT_KEYS.filter((k) => before === null || canonical(before[k]) !== canonical(now[k]))
   if (changedKeys.length > 0) {
     if (!added.join('\n').includes(VERDICT_CONFIG)) {
       fail(

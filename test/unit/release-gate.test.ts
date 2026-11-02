@@ -560,3 +560,39 @@ describe('a missing input is a harder failure than a wrong one', { timeout: SUIT
     expect(r.ok).toBe(true)
   })
 })
+
+describe('the perf verdict settings (§E)', { timeout: SUITE_BUDGET_MS }, () => {
+  const VERDICT = 'bench/xproc-gate.json'
+  const cfg = (o: Record<string, unknown>): Record<string, string> => ({ [VERDICT]: `${JSON.stringify(o, null, 2)}\n` })
+  const base = { node: 26, shards: 20, floorPct: 1, rounds: 5, roundsByCase: { 'a/x': 45, 'b/y': 8 }, density: { warmup: 200, warmupMs: 1000 } }
+
+  it('REFUSES a change to a verdict setting that no added entry names', () => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: cfg(base) },
+      { changelog: released('0.36.0'), files: cfg({ ...base, roundsByCase: { 'a/x': 30, 'b/y': 8 } }) },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/changes the perf verdict's settings in bench\/xproc-gate\.json \(roundsByCase\)/)
+  })
+
+  it('ACCEPTS the change when an added entry names the file', () => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: cfg(base) },
+      { changelog: pending('0.36.0', `- fewer rounds in ${VERDICT}, with the measurement`), files: cfg({ ...base, density: { warmup: 200, warmupMs: 500 } }) },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(true)
+    expect(r.out).toMatch(/perf verdict settings changed in bench\/xproc-gate\.json \(density\)/)
+  })
+
+  it('does not count reordered keys as a change', () => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: cfg(base) },
+      { changelog: released('0.36.0'), files: cfg({ density: { warmupMs: 1000, warmup: 200 }, roundsByCase: { 'b/y': 8, 'a/x': 45 }, rounds: 5, floorPct: 1, shards: 20, node: 26 }) },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(true)
+    expect(r.out).toMatch(/perf verdict settings unchanged/)
+  })
+})

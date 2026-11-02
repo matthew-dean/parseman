@@ -294,7 +294,10 @@ const timingErrors = macroTimingErrors(acceptance)
 // artifact, a forced row, bad provenance or an A/A swing past its ceiling is a harness or
 // structural failure and still exits 1.
 const blockingErrors = ADVISORY ? macroTimingErrors({ ...acceptance, candidateRatios: [] }) : timingErrors
-const measurementValid = timingErrors.length === 0
+// Under --advisory, a candidate breach is reported as advisory, not as a rejection, so a
+// consumer can tell a valid advisory run from a failed measurement.
+const advisoryReasons = timingErrors.filter(e => !blockingErrors.includes(e))
+const measurementValid = blockingErrors.length === 0
 
 process.stdout.write(`${JSON.stringify({
   macro_geomean_ratio: geomean(ratios),
@@ -314,7 +317,8 @@ process.stdout.write(`${JSON.stringify({
   measurement_valid: measurementValid ? 1 : 0,
   asserted_candidate_slowdown: slowdownPlant,
   asserted_aa_swing: aaSwingPlant,
-  rejection_reasons: timingErrors,
+  rejection_reasons: blockingErrors,
+  advisory_reasons: advisoryReasons,
   rows: scoredRows,
   provenance: {
     harness: realpathSync(import.meta.filename),
@@ -340,7 +344,8 @@ const table = [
     + ` | ${REPORT_ONLY ? 'report only' : row.gateRatio > CONFIG.candidateRatioCeiling ? (ADVISORY ? 'over ceiling (advisory)' : '**FAIL**') : 'ok'} |`),
   '',
   `geomean ${pct(geomean(ratios))}; worst A/A swing ${pct(aaWorstSwing)} against a ${pct(CONFIG.aaSwingCeiling)} ceiling`
-    + (timingErrors.length > 0 ? `; rejected: ${timingErrors.join('; ')}` : ''),
+    + (blockingErrors.length > 0 ? `; rejected: ${blockingErrors.join('; ')}` : '')
+    + (advisoryReasons.length > 0 ? `; advisory: ${advisoryReasons.join('; ')}` : ''),
 ].join('\n')
 process.stderr.write(`\n${table}\n`)
 const summaryFile = process.env['GITHUB_STEP_SUMMARY']
