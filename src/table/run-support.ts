@@ -14,6 +14,7 @@
  */
 import type { ParseContext } from '../types.ts'
 import { popCstChild, pushCstChild } from '../cst/capture-buffer.ts'
+import { PlainLeaf, PlainSpan } from '../cst/plain.ts'
 
 export type Span = { start: number; end: number }
 export type LineSpan = Span & {
@@ -51,11 +52,7 @@ export function rawEntry(v: unknown, input: string, s: number, e: number): unkno
     const tg = (v as { _tag?: string })._tag
     if (tg === 'node' || tg === 'leaf' || tg === 'parseError') return v
   }
-  return {
-    _tag: 'leaf',
-    value: typeof v === 'string' ? v : (typeof v === 'object' && v !== null ? input.slice(s, e) : ''),
-    span: { start: s, end: e },
-  }
+  return new PlainLeaf(typeof v === 'string' ? v : (typeof v === 'object' && v !== null ? input.slice(s, e) : ''), s, e)
 }
 
 /** `input`'s code point at `pos`, or −1 at EOF. Surrogate-pair aware. */
@@ -95,7 +92,7 @@ export function collapseEmpty(
   // A frame keeps the raw entry of the child it does not count, for a reducer
   // that reads `rawChildren`.
   const raw = readsRaw ? [rawEntry(undefined, input, pos, end)] : EMPTY_KIDS
-  const nd = build(EMPTY_KIDS, undefined, { start: pos, end }, raw, EMPTY_TRIVIA, undefined)
+  const nd = build(EMPTY_KIDS, undefined, new PlainSpan(pos, end), raw, EMPTY_TRIVIA, undefined)
   if (collected) pushCstChild(ctx, nd, ctx._cstBuf?.noRaw === true ? undefined : rawEntry(nd, input, pos, end))
   return nd
 }

@@ -24,11 +24,20 @@ export function mk(
   span: { start: number; end: number },
   triviaLog: readonly number[],
 ): WorkloadNode {
-  return {
-    type,
-    span: { start: span.start, end: span.end },
-    children: [...children],
-    rawCount: rawChildren.length,
-    triviaLen: triviaLog.length,
-  }
+  return new WorkloadNodeObj(type, span.start, span.end, [...children], rawChildren.length, triviaLog.length)
 }
+// Constructor-built, as a user should build tree nodes: a `new` call has no allocation
+// site, so V8 cannot pretenure it (see src/cst/plain.ts). Instances stay plain objects.
+function WorkloadSpanFn(this: { start: number; end: number }, start: number, end: number): void { this.start = start; this.end = end }
+function WorkloadNodeFn(this: WorkloadNode, type: string, start: number, end: number, children: unknown[], rawCount: number, triviaLen: number): void {
+  this.type = type
+  this.span = new WorkloadSpan(start, end)
+  this.children = children
+  this.rawCount = rawCount
+  this.triviaLen = triviaLen
+}
+WorkloadSpanFn.prototype = Object.prototype
+WorkloadNodeFn.prototype = Object.prototype
+const WorkloadSpan = WorkloadSpanFn as unknown as new (start: number, end: number) => { start: number; end: number }
+const WorkloadNodeObj = WorkloadNodeFn as unknown as new (type: string, start: number, end: number, children: unknown[], rawCount: number, triviaLen: number) => WorkloadNode
+

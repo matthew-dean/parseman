@@ -52,22 +52,29 @@ type DensityBuild = (
  * both need to serialize and run the same node construction work before their
  * timings are comparable.
  */
-const stylesheetNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
-  type: 'Stylesheet', span: { start: span.start, end: span.end }, children: [...children],
-  rawCount: rawChildren.length, triviaLen: triviaLog.length,
-})
-const ruleNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
-  type: 'Rule', span: { start: span.start, end: span.end }, children: [...children],
-  rawCount: rawChildren.length, triviaLen: triviaLog.length,
-})
-const declarationNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
-  type: 'Declaration', span: { start: span.start, end: span.end }, children: [...children],
-  rawCount: rawChildren.length, triviaLen: triviaLog.length,
-})
-const dimensionNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
-  type: 'Dimension', span: { start: span.start, end: span.end }, children: [...children],
-  rawCount: rawChildren.length, triviaLen: triviaLog.length,
-})
+// Constructor-built, as a user should build tree nodes: a `new` call has no allocation
+// site, so V8 cannot pretenure it (see src/cst/plain.ts). Instances stay plain objects.
+function DensitySpanFn(this: { start: number; end: number }, start: number, end: number): void { this.start = start; this.end = end }
+function DensityNodeFn(this: DensityNode, type: string, start: number, end: number, children: unknown[], rawCount: number, triviaLen: number): void {
+  this.type = type
+  this.span = new DensitySpan(start, end)
+  this.children = children
+  this.rawCount = rawCount
+  this.triviaLen = triviaLen
+}
+DensitySpanFn.prototype = Object.prototype
+DensityNodeFn.prototype = Object.prototype
+const DensitySpan = DensitySpanFn as unknown as new (start: number, end: number) => { start: number; end: number }
+const DensityNodeObj = DensityNodeFn as unknown as new (type: string, start: number, end: number, children: unknown[], rawCount: number, triviaLen: number) => DensityNode
+
+const stylesheetNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) =>
+  new DensityNodeObj('Stylesheet', span.start, span.end, [...children], rawChildren.length, triviaLog.length)
+const ruleNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) =>
+  new DensityNodeObj('Rule', span.start, span.end, [...children], rawChildren.length, triviaLog.length)
+const declarationNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) =>
+  new DensityNodeObj('Declaration', span.start, span.end, [...children], rawChildren.length, triviaLog.length)
+const dimensionNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) =>
+  new DensityNodeObj('Dimension', span.start, span.end, [...children], rawChildren.length, triviaLog.length)
 
 const ws = regex(/[ \t\n\r\f]+/)
 const comment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)

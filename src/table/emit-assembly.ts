@@ -142,6 +142,9 @@ export const EMITTED_PARAMS = [
   // Appended for the pass-through collapse (`run-support.ts`); old factories
   // ignore it.
   'collapseEmpty',
+  // Appended for constructor-built tree objects (`cst/plain.ts`): a `new` call has
+  // no allocation site, so V8 cannot pretenure them. Old factories ignore them.
+  '_SP', '_LF', '_LFO', '_ND', '_FC', '_BUF',
 ] as const
 
 /**
@@ -180,9 +183,9 @@ if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
 if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
 }
-function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,{_tag:'leaf',value,span:{start:s,end:e}})}
+function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,new _LF(value,s,e))}
 function _pushLeafBuf(ctx,value,s,e){
-const l={_tag:'leaf',value,span:{start:s,end:e}}
+const l=new _LF(value,s,e)
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(l)
 else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
@@ -242,7 +245,7 @@ if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTrivi
 /** Printed only into assemblies that open a count-only raw buffer. */
 const NO_RAW_RUNTIME_PRELUDE = `
 function _pushLeafNoRawBuf(ctx,value,s,e){
-const l={_tag:'leaf',value,span:{start:s,end:e}}
+const l=new _LF(value,s,e)
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(l)
 else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
@@ -1431,7 +1434,7 @@ try{return ${child}(input,pos,ctx)}finally{ctx.state=saved}
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
-return ${fn}(v,{start:pos,end:EC.e})
+return ${fn}(v,new _SP(pos,EC.e))
 }`
       }
 
@@ -1461,7 +1464,7 @@ return v
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
 const f=ctx._fields
-if(f!==undefined)f.push({name:${name},value:v,span:{start:pos,end:EC.e}})
+if(f!==undefined)f.push(new _FC(${name},v,pos,EC.e))
 return v
 }`
         }
@@ -1512,7 +1515,7 @@ return err
         // The SPAN is the routed item's own object, not a copy — `assemble.ts`
         // hands the same one to the leaf, and a fresh `{start,end}` here would
         // be a different tree for any consumer comparing by identity.
-        const push = `pushCstLeaf(ctx,{_tag:'leaf',value:it.value,span:it.span})`
+        const push = `pushCstLeaf(ctx,new _LFO(it.value,it.span))`
         return `${head}
 const it=ctx._routed
 if(it===undefined||pos!==it.span.start){
@@ -1621,8 +1624,8 @@ ctx._triviaLog=sOtl
 }
 if(v===FAIL)return FAIL
 const e=EC.e
-const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
-if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:${capturesSource ? 'input.slice(pos,e)' : 'out'},span:{start:pos,end:e}})
+const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,new _SP(pos,e))`}
+if(wasCap)pushCstLeaf(ctx,new _LF(${capturesSource ? 'input.slice(pos,e)' : 'out'},pos,e))
 EC.e=e
 return out
 }`
@@ -1647,7 +1650,7 @@ ${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
 ${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
 const v=${pending ? 'tp?_pfTokValue:' : ''}input.slice(pos,e)
 ${pending ? 'if(tp){_pfTokBody=-1;_pfTokValue=undefined}' : ''}
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,new _LF(v,pos,e))
 EC.e=e
 return v
 }`
@@ -1687,7 +1690,7 @@ ctx._rootTriviaLog=sRtl
 }
 if(e<0)return FAIL
 const v=input.slice(pos,e)
-if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(wasCap)pushCstLeaf(ctx,new _LF(v,pos,e))
 EC.e=e
 return v
 }`
@@ -1695,7 +1698,7 @@ return v
 const e=${run}(input,pos,ctx)
 if(e<0)return FAIL
 const v=input.slice(pos,e)
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,new _LF(v,pos,e))
 EC.e=e
 return v
 }`
@@ -1837,7 +1840,7 @@ return v
         const close = (): string => REC ? `${parts.join('\n')}\n}finally{ctx._sync=${sy}}\n}` : `${parts.join('\n')}\n}`
         if (n === 1) {
           parts.push(fused
-            ? projection === 0 ? 'return v0' : `return ${fn}([v0],{start:pos,end:EC.e})`
+            ? projection === 0 ? 'return v0' : `return ${fn}([v0],new _SP(pos,EC.e))`
             : wantValues ? 'return [v0]' : 'return undefined')
           return close()
         }
@@ -1870,7 +1873,7 @@ return v
         }
         parts.push('EC.e=cur')
         parts.push(fused
-          ? projection >= 0 ? `return ${names[projection]}` : `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
+          ? projection >= 0 ? `return ${names[projection]}` : `return ${fn}([${names.join(',')}],new _SP(pos,cur))`
           : wantValues ? `return [${names.join(',')}]` : 'return undefined')
         return close()
       }
@@ -2479,8 +2482,8 @@ return out
 const end=${recognize}(input,pos)
 if(end<0){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 const value=${value}
-const leaf={_tag:'leaf',value,span:{start:pos,end}}
-const kids=[leaf],rawKids=[leaf],span={start:pos,end}
+const leaf=new _LF(value,pos,end)
+const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)
 EC.e=end
 const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
 ${L.buf && L.raw === RAW_OMIT
@@ -2608,8 +2611,8 @@ ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
 ${collapseChildren
-    ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`
-    : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`}
+    ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,new _SP(pos,end),EMPTY_CH,EMPTY_TL,undefined)`
+    : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},new _SP(pos,end),EMPTY_CH,EMPTY_TL,undefined)`}
 ${publish}
 EC.e=end
 return nd
@@ -2639,26 +2642,26 @@ return nd
           const direct = `${build}(kids,fieldMap,span,rawKids,${captureWide ? 'tlog' : 'EMPTY_TL'},st)`
           value = hostCst ? `nd=_pfHost!==undefined?${hostCall}:${direct}` : `nd=${direct}`
         } else {
-          value = `nd=_pfHost!==undefined?_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,st,${tags}):{_tag:'node',type:${ty},span,state:st??null,children:kids}`
+          value = `nd=_pfHost!==undefined?_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,st,${tags}):new _ND(${ty},span,st??null,kids)`
         }
         // HOST COLLAPSE applies wherever the node's VALUE comes from the host —
         // any node under a CST host, not only the builder-less ones.
         const collapsible = keepChildren && (hostCst || (build === undefined && proj < 0))
         const openCapture = omitsRaw
-          ? `const buf={noRaw:true,rawLen:0}
+          ? `const buf=new _BUF(undefined,true,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
           : keepChildren
-          ? `const buf={}
+          ? `const buf=new _BUF(undefined,undefined,undefined)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
-          : `const buf={rawOnly:true}
+          : `const buf=new _BUF(true,undefined,undefined)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
@@ -2701,7 +2704,7 @@ ctx._cstTriviaLog=sTl
 ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
-const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}
+const span=${tracked ? 'spanLines(ctx,pos,end)' : 'new _SP(pos,end)'}
 const st=${readsState ? 'ctx.state' : 'undefined'}
 let nd
 ${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]

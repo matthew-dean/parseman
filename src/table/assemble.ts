@@ -83,6 +83,7 @@ import {
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
+import { PlainBuf, PlainField, PlainLeaf, PlainLeafOf, PlainNode, PlainSpan } from '../cst/plain.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
@@ -542,7 +543,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const CLEAN = REC ? (): boolean => false : failCleanAnalysis(code)
 
   function pushLeaf(ctx: ParseContext, value: string, s: number, e: number): void {
-    const lf: Leaf = { _tag: 'leaf', value, span: { start: s, end: e } }
+    const lf = new PlainLeaf(value, s, e)
     pushCstLeaf(ctx, lf)
   }
 
@@ -592,7 +593,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const span = { start: pos, end }
+      const span = new PlainSpan(pos, end)
       const node = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, rawEntry(node, input, pos, end))
@@ -646,7 +647,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      const node = build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -684,7 +685,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = build(captured, fieldMap, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      const node = build(captured, fieldMap, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -722,7 +723,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const span = { start: pos, end }
+      const span = new PlainSpan(pos, end)
       const node = kids.length === 1
         ? kids[0]
         : build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
@@ -764,7 +765,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       const end = EC.e
       const node = captured.length === 1
         ? captured[0]
-        : build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+        : build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -1959,7 +1960,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           return (input, pos, ctx) => {
             const v = child(input, pos, ctx)
             if (v === FAIL) return FAIL
-            ctx._fields?.push({ name, value: v, span: { start: pos, end: EC.e } })
+            ctx._fields?.push(new PlainField(name, v, pos, EC.e))
             return v
           }
         }
@@ -1984,7 +1985,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (input, pos, ctx) => {
           const v = child(input, pos, ctx)
           if (v === FAIL) return FAIL
-          return fn(v, { start: pos, end: EC.e })
+          return fn(v, new PlainSpan(pos, EC.e))
         }
       }
 
@@ -2107,7 +2108,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._fe = pos; ctx._fx = ROUTED_FX
             return FAIL
           }
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: item.value, span: item.span })
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeafOf(item.value, item.span))
           EC.e = item.span.end
           return item.value
         }
@@ -2295,7 +2296,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (v === FAIL) return FAIL
           const end = EC.e
           const value = input.slice(pos, end)
-          if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, pos, end))
           EC.e = end
           return value
         }
@@ -2330,7 +2331,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (ctx._probe !== undefined) failAt(ctx, suffixExpected, end)
           }
           const value = input.slice(pos, end)
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, pos, end))
           EC.e = end
           return value
         }
@@ -2373,7 +2374,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             }
             if (end < 0) return FAIL
             const value = input.slice(pos, end)
-            if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+            if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, pos, end))
             EC.e = end
             return value
           }
@@ -2382,7 +2383,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const end = run(input, pos, ctx)
           if (end < 0) return FAIL
           const value = input.slice(pos, end)
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, pos, end))
           EC.e = end
           return value
         }
@@ -2418,12 +2419,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           if (v === FAIL) return FAIL
           const end = EC.e
-          const out = fn(v, { start: pos, end })
-          if (wasCapturing) pushCstLeaf(ctx, {
-            _tag: 'leaf',
-            value: op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out,
-            span: { start: pos, end },
-          })
+          const out = fn(v, new PlainSpan(pos, end))
+          if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out, pos, end))
           EC.e = end
           return out
         }
@@ -2605,7 +2602,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runSyncTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+              return projection >= 0 ? values[projection] : fn!(values, new PlainSpan(pos, cur))
             }
           }
           if (wantValues) {
@@ -2700,7 +2697,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runAdjTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+              return projection >= 0 ? values[projection] : fn!(values, new PlainSpan(pos, cur))
             }
           }
           if (wantValues) {
@@ -2743,7 +2740,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
               if (v === FAIL) return FAIL
-              return projection === 0 ? v : fn!([v], { start: pos, end: EC.e })
+              return projection === 0 ? v : fn!([v], new PlainSpan(pos, EC.e))
             }
           }
           if (wantValues) {
@@ -2771,7 +2768,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               EC.e = cur
               return projection === 0 ? v0
                 : projection === 1 ? TERMV
-                : fn!([v0, TERMV], { start: pos, end: cur })
+                : fn!([v0, TERMV], new PlainSpan(pos, cur))
             }
           }
           if (wantValues) {
@@ -2809,7 +2806,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return projection === 0 ? v0
                 : projection === 1 ? v1
                 : projection === 2 ? TERMV
-                : fn!([v0, v1, TERMV], { start: pos, end: cur })
+                : fn!([v0, v1, TERMV], new PlainSpan(pos, cur))
             }
           }
           if (wantValues) {
@@ -2914,7 +2911,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const cur = runDirectTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
             EC.e = cur
-            return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+            return projection >= 0 ? values[projection] : fn!(values, new PlainSpan(pos, cur))
           }
         }
         if (wantValues) {
@@ -3781,10 +3778,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
             const value = regexValue ? input.slice(pos, end) : spec as string
-            const leaf = { _tag: 'leaf', value, span: { start: pos, end } }
+            const leaf = new PlainLeaf(value, pos, end)
             const kids = [leaf]
             const rawKids = [leaf]
-            const span = { start: pos, end }
+            const span = new PlainSpan(pos, end)
             EC.e = end
             const nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
             if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
@@ -3897,8 +3894,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const sCap = ctx.captureTrivia
           const sBuf = ctx._cstBuf
           const buf: CstCaptureBuf = rawOnly
-            ? { rawOnly: true }
-            : omitsRaw ? { noRaw: true, rawLen: 0 } : {}
+            ? new PlainBuf(true, undefined, undefined)
+            : omitsRaw ? new PlainBuf(undefined, true, 0) : new PlainBuf(undefined, undefined, undefined)
           ctx._cstBuf = buf
           // `begin` sets this true and the caller immediately cleared it when the
           // node does not capture wide. Net: the flag IS `captureWide`, a const.
@@ -3929,7 +3926,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ctx.captureTrivia = sCap
           if (v === FAIL) return FAIL
           const end = EC.e
-          const span = tracked ? spanLines(ctx, pos, end) : { start: pos, end }
+          const span = tracked ? spanLines(ctx, pos, end) : new PlainSpan(pos, end)
           const st = readsState ? ctx.state : undefined
 
           let nd: unknown
@@ -3962,7 +3959,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           } else if (host !== undefined) {
             nd = host(type, hostKids, fieldMap, span, rawKids, tlog, st, tags)
           } else {
-            nd = { _tag: 'node', type, span, state: st ?? null, children: kids }
+            nd = new PlainNode(type, span, st ?? null, kids)
           }
           // A ROOT NODE IS NOT A CHILD. `node()` pushes only when it was entered
           // from an enclosing collector — `saved.buf !== undefined || saved.ch !==
@@ -4003,7 +4000,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const at = fe === undefined || fe < 0 ? pos : fe
           return { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: { start: at, end: at } }
         }
-        return { ok: true, value: v, span: { start: pos, end: EC.e } }
+        return { ok: true, value: v, span: new PlainSpan(pos, EC.e) }
       },
     }
   }
@@ -4119,6 +4116,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
+        PlainSpan, PlainLeaf, PlainLeafOf, PlainNode, PlainField, PlainBuf,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4203,6 +4201,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
+        PlainSpan, PlainLeaf, PlainLeafOf, PlainNode, PlainField, PlainBuf,
       )
       emitReached = em.reached
     } catch (e) {
