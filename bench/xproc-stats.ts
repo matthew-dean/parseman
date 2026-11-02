@@ -204,3 +204,28 @@ export const OPERAND_FLAGS = ['--shard-out', '--aggregate', '--expect-shards'] a
 export function missingOperandFlags(argv: readonly string[]): string[] {
   return OPERAND_FLAGS.filter(flag => argv.some(a => a === flag || a === `${flag}=`))
 }
+
+/**
+ * Which reference a verdict-mode run may use, given the one CI resolved once for the
+ * run (`--reference`) and the previous releases visible now, newest first.
+ *
+ * Publish-on-merge tags a release whenever a PR merges, so a tag can land while
+ * another PR's run is in flight. Re-resolving "the previous release" in each job then
+ * gives shards and the aggregate different references (the first live failure: shards
+ * at v0.58.1, the aggregate at v0.58.2). So the reference is resolved once and passed
+ * to every job. It must still be a real previous release: the newest one now, or the
+ * one before it, which is the most a release can advance during one run. An older
+ * reference is refused, so an edit to `ci.yml` cannot quietly measure against a slower
+ * release.
+ */
+export function pinnedReferenceError(
+  pinned: string,
+  releases: ReadonlyArray<{ tag: string; sha: string }>,
+): string | null {
+  const allowed = releases.slice(0, 2)
+  // A plain hex sha only: `<sha>~5` would pass a prefix match while git resolved an ancestor.
+  if (!/^[0-9a-f]{7,40}$/.test(pinned)) return `--reference=${pinned} is not a commit sha`
+  const hit = allowed.find(r => r.sha.startsWith(pinned) || pinned.startsWith(r.sha))
+  if (hit !== undefined) return null
+  return `--reference=${pinned} is not the previous release (${allowed.map(r => `${r.tag} ${r.sha}`).join(' or ') || 'none'})`
+}

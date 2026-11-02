@@ -395,6 +395,14 @@ the process is what a user runs:
 
   Its own sign-flip stream is seeded from the shard seeds, so re-running only the
   aggregate gives the same verdict.
+- **One reference per run.** The `xproc-ref` job resolves the reference once
+  (`--print-reference`), and every shard and the aggregate receive that sha as
+  `--reference`. Publish-on-merge tags a release on every merge. The first live run
+  overlapped one: its shards resolved v0.58.1 and its aggregate v0.58.2, so the
+  aggregate failed on reference mismatch. The pinned sha must still be the previous
+  release, or the one before it when a release lands mid-run; an older one is
+  refused. For `peak` it must be the committed peak. The aggregate checks every
+  shard measured exactly that sha.
 - **Per-case rounds.** Noisy cases get more rounds than quiet ones
   (`roundsByCase` in `bench/xproc-gate.json`). An edit to any setting the
   verdict rests on must be named in the CHANGELOG (`scripts/check-changelog.mjs`
