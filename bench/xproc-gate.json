@@ -1,11 +1,13 @@
 {
   "_comment": "Configuration for `pnpm perf:xproc:gate` — see bench/xproc-gate.ts and docs/design/perf-gates.md.",
-  "rounds": 10,
-  "roundsByCase": { "expected/narrow": 15, "expected/none": 15, "rollback/none": 15, "json/document": 20 },
-  "_rounds": "Rounds PER SHARD; CI runs 10 shards, so 100 rounds per case, 150 for the three noisy density cases and 200 for json/document. Sized by the bootstrap in docs/design/perf-harness-interleaving.md so EVERY case reaches at least 0.92 power against a 2% slowdown.",
+  "rounds": 15,
+  "roundsByCase": { "less/mixins": 10, "rollback/dense": 10, "rollback/medium": 10, "graphql/document": 20, "json/document": 30 },
+  "_rounds": "Rounds PER SHARD; CI runs 10 shards. Sized by the bootstrap in docs/design/perf-harness-interleaving.md so every case has power >= 0.84 against both a uniform 2% slowdown and 20% of processes 20% slower.",
   "floorPct": 1.0,
-  "alpha": 0.001,
-  "_alpha": "Per case. Over twelve cases, identical code failed no case in 200 bootstrapped runs and in 4 real ones.",
+  "alphaMedian": 0.0005,
+  "alphaMean": 0.0005,
+  "_alpha": "Per case, split between the median sign test and the mean sign-flip test; a case fails if either does.",
+  "flips": 20000,
   "density": { "rules": 200, "warmup": 200, "samples": 30, "parsesPerSample": 5 },
   "workloads": { "warmup": 40, "samples": 15, "parsesPerSample": 2 }
 }

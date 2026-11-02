@@ -14,6 +14,13 @@ on:
   push:
     branches: [main]
 
+# A new push to a pull request cancels that PR's run in progress: the perf gate alone
+# is about 150 runner-minutes. Pushes to `main` never share a group, so none is ever
+# cancelled or skipped; each one is what a publish waits on.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref) || format('ci-push-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Least privilege: nothing here writes to the repo. Every step only reads the
 # checkout; the coverage artifact is uploaded through the Actions API, which does
 # not need `contents: write`.
@@ -270,10 +277,11 @@ jobs:
   # GC timing, build order) land on one side of a pair and read as ±5–25% per pass
   # on identical code (#175), and they turn V8's compilation cache off. They are
   # local diagnostics only and do not run here. This gate changes no V8 setting: every
-  # timed parser is the only parser in its process, as it is for a user, and it buys
-  # resolution with processes instead: 200 rounds per case (10 shards x 20), sized by
-  # the power analysis in perf-harness-interleaving.md. Shards run in parallel; `xproc-perf` takes one
-  # verdict over all of them and FAILS if any shard is missing.
+  # timed parser is the only parser in its process, built from that side's own dist/
+  # and run under plain `node`, as it is for a user. It buys resolution with processes
+  # instead: 100–300 rounds per case over 10 shards (`bench/xproc-gate.json`), sized by
+  # the power analysis in perf-harness-interleaving.md. Shards run in parallel;
+  # `xproc-perf` takes one verdict over all of them and FAILS if any shard is missing.
   #
   # `target`: `release` is HEAD vs the previous release over every case; `peak` is the
   # workloads vs the fastest release on record, at the committed allowance.

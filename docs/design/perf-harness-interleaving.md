@@ -329,30 +329,49 @@ first line. The verdict is the cross-process gate below, which sets no flag.
 
 ### The cross-process gate — `pnpm perf:xproc:gate`
 
-`bench/xproc-gate.ts`. Every timed parser is the only parser in its process, as
-it is for a user:
+`bench/xproc-gate.ts`. Every timed parser is the only parser in its process, and
+the process is what a user runs:
 
-- **One instance per process.** A worker process loads one side, builds one
-  case, warms it, times it, and prints a median, a min and a digest of its parse
-  result. Nothing else is compiled in that process, so there is no "built last"
-  slot and no other instance to share a heap with.
+- **The user's build, plain `node`.** Each side is built with its OWN
+  `scripts/build.mjs`, the `dist/` bundle a user of that version installs.
+  `bench/xproc-worker.ts` is bundled once by esbuild, with parseman left external
+  as `./dist/index.js`. Workers start as `node worker.mjs`: no flags, no loader,
+  and `NODE_OPTIONS` is deleted from their environment. The worker exits 2 without
+  measuring if `process.execArgv` is non-empty, `NODE_OPTIONS` is set, or source
+  maps are enabled. (Workers once ran under `--import tsx/esm`. That turns source
+  maps on and runs esbuild's per-module output rather than the bundle users get.)
+- **One instance per process.** A worker builds one case, warms it, times it,
+  and prints a median, a min and a digest of its parse result. Nothing else is
+  compiled in that process, so there is no "built last" slot and no other
+  instance to share a heap with.
+- **One path for both sides.** Before each worker, its side's `dist/` is copied
+  into `.cache/xproc-gate-run`, so every process loads the same paths and only
+  the code differs.
 - **Rounds.** Each round runs one reference process and one head process per
-  case, back to back. Which side goes first is random each round. Every random
-  choice comes from one seeded generator, and the seed is printed and stored
-  (`--seed=<n>` replays a run).
-- **Statistic.** Per case, each round gives `ln(head / ref)` of the two process
-  medians. A case FAILS when the median of those over all rounds is above
-  `floorPct` (1%) AND an exact one-sided sign test over rounds gives p below
-  `alpha` (0.001). The sign test assumes only that, on identical code, head is as
-  likely to lose a round as win it. The random order makes that true.
-- **Sharded.** CI runs 10 shards of 20 rounds in parallel and a job that takes
-  one verdict over all 200 rounds. It FAILS if any shard is missing.
-- **One path for both sides.** Before each worker, its side's `src/` is copied
-  into `.cache/xproc-gate-run`, so every process loads its modules from the same
-  paths and only the code differs.
+  case, back to back, in random order. Every random choice comes from one seeded
+  generator, and the seed is printed and stored (`--seed=<n>` replays a run).
+- **Two tests, α split.** Per case, each round gives `ln(head / ref)` of the two
+  process medians. A case FAILS when EITHER
+  - the median slowdown is above `floorPct` (1%) and an exact one-sided sign test
+    gives p below `alphaMedian` (0.0005), OR
+  - the mean slowdown is above `floorPct` and a one-sided sign-flip test on the
+    mean gives p below `alphaMean` (0.0005). It flips each round's sign at random
+    20,000 times. `(1 + hits) / (1 + flips)` keeps the p-value valid with a
+    sampled set of flips.
+
+  Both tests assume only that, on identical code, a round is as likely to favour
+  either side by any amount. The random order makes that true. The median test
+  is robust to the heavy tails. The mean test sees a regression that only some
+  processes suffer, such as a site V8 now pretenures in one process in five. The
+  median barely moves for that. The functions are in `bench/xproc-stats.ts`,
+  with tests in `test/bench/xproc-stats.test.ts`.
+- **Sharded, fail-closed.** CI runs 10 shards in parallel and one job that takes
+  the verdict over all of them. That job FAILS on a missing or extra shard, a
+  shard against another reference, a repeated seed, the wrong round count for any
+  case, or any non-finite value.
 - **Per-case rounds.** Noisy cases get more rounds than quiet ones
-  (`roundsByCase` in `bench/xproc-gate.json`). The aggregate fails if a shard
-  carries the wrong number of rounds for any case.
+  (`roundsByCase` in `bench/xproc-gate.json`). An edit to any of these settings
+  must be named in the CHANGELOG (`scripts/check-changelog.mjs` §E).
 
 #### Layout randomisation, and why it is not a reconfiguration
 
@@ -392,34 +411,45 @@ code, x64, the first 240 rounds:
 | `css/stylesheet` | 4.0% | `json/document` | 11.4% |
 | `rollback/sparse` | 5.0% | | |
 
-The round counts come from a bootstrap over 1,040 identical-code rounds per case.
-Those rounds came from 50 CI jobs on seven CPU models (AMD EPYC 7763, 9V45 and
-9V74; Intel Xeon 8370C, 8573C, 6973P-C and 6975P-C), so the spread between
-runners is in the estimate. The bootstrap draws n rounds per case, adds a 2%
-shift for power, applies the verdict, and repeats 400 times.
+The round counts come from a bootstrap over 1,440–1,840 identical-code rounds
+per case. Those rounds came from 90 CI jobs on seven CPU models (AMD EPYC 7763,
+9V45 and 9V74; Intel Xeon 8370C, 8573C, 6973P-C and 6975P-C), so the spread
+between runners is in the estimate. The bootstrap draws n rounds per case, adds a
+shift, applies the verdict, and repeats 300 times. Two shifts are tested:
 
-The sign test was chosen over Wilcoxon because the spread has heavy tails. A
-process that pretenures, or lands badly, sits far out. On the first 240 rounds
-at 200 rounds per case, Wilcoxon's worst-case power was 0.26 against the sign
-test's 0.64.
+- **uniform +2%:** every head process is 2% slower;
+- **mixture:** one head process in five is 20% slower. That is about +4% on the
+  mean and almost nothing on the median: the shape of a site V8 now pretenures
+  in some processes.
 
-Power against a 2% slowdown, sign test, α 0.001 per case, 1% floor:
+A review of the first version found that the median sign test alone caught the
+mixture in only 4–33% of runs. Hence the second test. The sign test is the median's test, rather than Wilcoxon, because the tails
+are heavy: a process that pretenures, or lands badly, sits far out. On the first
+240 rounds at 200 rounds per case, Wilcoxon's worst-case power was 0.26 against the
+sign test's 0.64.
 
-| case | 100 rounds | 150 | 200 | rounds per case in the gate |
-| --- | ---: | ---: | ---: | ---: |
-| `css/stylesheet`, `expected/wide`, `less/mixins`, `rollback/dense`, `rollback/medium` | 1.00 | | | 100 |
-| `less/stylesheet`, `rollback/sparse` | 0.99 | | | 100 |
-| `graphql/document` | 0.93 | | | 100 |
-| `expected/narrow` | 0.82 | 0.95 | | 150 |
-| `expected/none` | 0.78 | 0.93 | | 150 |
-| `rollback/none` | 0.74 | 0.92 | | 150 |
-| `json/document` | 0.56 | 0.79 | 0.92 | 200 |
+Power with both tests (α 0.0005 each, 1% floor). "u" is the uniform shift and "m"
+the mixture:
 
-Every case is at 0.92 or above. That is 10 shards of 10 rounds, with 15 and 20
-rounds for the noisy cases. On #210's own CI, `release` shards took 5–9 minutes
-each, `peak` shards less, and each aggregate under a minute. Wall time is about
-12 minutes when runners are free. Runner time is about 150 minutes per PR, which
-a public repository does not pay for.
+| case | 100 rounds | 150 | 200 | 300 | in the gate |
+| --- | --- | --- | --- | --- | ---: |
+| `less/mixins` | u 1.00, m 0.95 | | | | 100 |
+| `rollback/dense` | u 1.00, m 0.89 | | | | 100 |
+| `rollback/medium` | u 1.00, m 0.92 | | | | 100 |
+| `css/stylesheet` | u 1.00, m 0.70 | u 1.00, m 0.92 | | | 150 |
+| `expected/wide` | u 1.00, m 0.80 | u 1.00, m 0.98 | | | 150 |
+| `less/stylesheet` | u 0.98, m 0.83 | u 1.00, m 0.99 | | | 150 |
+| `rollback/sparse` | u 0.98, m 0.80 | u 1.00, m 0.98 | | | 150 |
+| `expected/narrow` | u 0.85, m 0.75 | u 0.98, m 0.97 | | | 150 |
+| `expected/none` | u 0.75, m 0.75 | u 0.96, m 0.96 | | | 150 |
+| `rollback/none` | u 0.75, m 0.66 | u 0.94, m 0.95 | | | 150 |
+| `graphql/document` | u 0.87, m 0.46 | u 0.98, m 0.83 | u 1.00, m 0.96 | | 200 |
+| `json/document` | u 0.54, m 0.17 | u 0.81, m 0.35 | u 0.94, m 0.60 | u 1.00, m 0.84 | 300 |
+
+Every case is at 0.84 or above against both shapes. Identical code failed no case
+in any bootstrap at these counts. In `bench/xproc-gate.json` that is 15 rounds per
+shard, 10 for the three quietest cases, 20 for `graphql/document` and 30 for
+`json/document`.
 
 #### Validation on x64 CI
 
