@@ -351,7 +351,7 @@ export function regexCanMatchEmpty(source: string): boolean {
 /**
  * `flags` decides how atoms read: under `u`/`v` each is one code point, else one
  * code unit, so a non-`u` set holds a high surrogate where an astral character
- * can start a match (`astralLeadViaSurrogate` reads an astral lead through it). Case
+ * can start a match (`rangesHaveLead` reads an astral lead through it). Case
  * folding under `i` is the caller's, since only it knows what it gates.
  */
 export function firstSetFromRegex(source: string, flags = ''): { firstSet: FirstSet; canMatchNewline: boolean } {

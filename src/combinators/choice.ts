@@ -3,7 +3,6 @@ import type {
   AutoNotCheck, CharRange, ChoiceStrategy, GatedArm,
 } from '../types.ts'
 import { union, intersects, matchesEmpty } from './first-set.ts'
-import { rangesHaveLead } from '../lead-ranges.ts'
 import { deriveExpected } from './expect.ts'
 import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
 import { scalarOf } from './scalar.ts'
@@ -481,7 +480,12 @@ function codesToFirstSet(codes: number[]): FirstSet {
 function inFirstSet(code: number, fs: FirstSet): boolean {
   if (fs.kind === 'any') return true
   if (fs.kind === 'empty') return false
-  return rangesHaveLead(fs.ranges, code)
+  for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
+  // `rangesHaveLead`, inline: this is a hot path.
+  if (code <= 0xffff) return false
+  const high = 0xd800 + ((code - 0x10000) >> 10)
+  for (const r of fs.ranges) if (high >= r.lo && high <= r.hi) return true
+  return false
 }
 
 function areDisjoint(sets: FirstSet[]): boolean {

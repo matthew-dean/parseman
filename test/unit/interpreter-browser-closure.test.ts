@@ -35,11 +35,11 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // readers decode `\u{…}`, `\cX`, `\p{…}`, `\k<…>` and legacy octal escapes instead
 // of reading them as letters, and `/i` widens a set that reaches 128 unless it
 // already holds every code unit from 128 up.
-// Bumped +762B to 61,351B: under `u`/`v` a literal, class member or escaped surrogate
+// Bumped +1,334B to 61,923B: under `u`/`v` a literal, class member or escaped surrogate
 // pair is one code point, a `v`-mode nested class or set operation widens, and outside
-// Unicode mode a first set reads an astral lead through its high surrogate
-// (`rangesHaveLead`, `leadRanges`).
-const BASELINE_RAW_BYTES = 61_351
+// Unicode mode a first set reads an astral lead through its high surrogate, in lead
+// tests and in intersections (`rangesHaveLead`, `leadRanges`, `implicitLeadsDropped`).
+const BASELINE_RAW_BYTES = 61_923
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

@@ -248,6 +248,7 @@ const REGISTRY = [
       { defect: 'lead-trivia-collapse-astral-plain', expect: 'moves' },
       { defect: 'scan-shape-v-as-code-units', expect: 'moves' },
       { defect: 'first-set-narrow-raw', expect: 'moves' },
+      { defect: 'first-set-narrow-astral-explicit', expect: 'moves' },
     ],
   },
   {

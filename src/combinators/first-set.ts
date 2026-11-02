@@ -1,5 +1,5 @@
 import type { CharRange, FirstSet, Combinator, ParserDef } from '../types.ts'
-import { leadRanges, rangesHaveLead } from '../lead-ranges.ts'
+import { implicitLeadsDropped, leadRanges } from '../lead-ranges.ts'
 
 /**
  * Resolve a NAMED cross-artifact rule reference (`g.Foo`) whose own thunk does not
@@ -127,7 +127,12 @@ export function startsFirstSet(combinator: Combinator<unknown>, input: string, p
   if (fs.kind === 'empty') return false
   const code = input.codePointAt(pos)
   if (code === undefined) return false
-  return rangesHaveLead(fs.ranges, code)
+  for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
+  // `rangesHaveLead`, inline: this is a hot path.
+  if (code <= 0xffff) return false
+  const high = 0xd800 + ((code - 0x10000) >> 10)
+  for (const r of fs.ranges) if (high >= r.lo && high <= r.hi) return true
+  return false
 }
 
 export function fromRange(lo: number, hi: number): FirstSet {
@@ -284,7 +289,7 @@ function narrowBy(acc: FirstSet | null, constraint: FirstSet): FirstSet | null {
     const hi = Math.min(a.hi, b.hi)
     if (lo <= hi) ranges.push({ lo, hi })
   }
-  return ranges.length === 0 ? { kind: 'empty' } : { kind: 'ranges', ranges }
+  return ranges.length === 0 ? { kind: 'empty' } : { kind: 'ranges', ranges: implicitLeadsDropped(ranges) }
 }
 
 /**

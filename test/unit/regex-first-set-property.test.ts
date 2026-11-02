@@ -5,7 +5,7 @@
  * trivia skips in every engine. Those gates read the input's leading CODE POINT
  * (`lead()`). Under `u`/`v` the set holds code points. Outside Unicode mode it
  * holds code units, and an astral lead is read through its high surrogate
- * (`astralLeadViaSurrogate`).
+ * (`rangesHaveLead`).
  *
  * The property: if the regex matches at least one character at position 0 of
  * some input, that input's lead is in the first set, read as above. A NULLABLE

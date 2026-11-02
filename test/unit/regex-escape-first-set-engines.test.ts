@@ -126,3 +126,13 @@ describe('escapes and /i letters are read the same by every engine', () => {
     })
   }
 })
+
+describe('an intersected first set keeps its code-unit form', () => {
+  it('a peek() over a high-surrogate class adds no astral range a table would encode wide', () => {
+    const fs = sequence(peek(regex(/[\u0080-￿]/)), regex(/[\u0080-￿]+/))._meta.firstSet
+    expect(fs).toEqual({ kind: 'ranges', ranges: [{ lo: 0x80, hi: 0xffff }] })
+    // An astral code point the high surrogates do not already admit stays explicit.
+    const mixed = sequence(peek(choice(regex(/[a-z]/), literal('😀'))), choice(regex(/[a-z]/), literal('😀')))._meta.firstSet
+    expect(mixed).toEqual({ kind: 'ranges', ranges: [{ lo: 0x61, hi: 0x7a }, { lo: 0x1f600, hi: 0x1f600 }] })
+  })
+})

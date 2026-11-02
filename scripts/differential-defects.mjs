@@ -263,11 +263,10 @@ export const DEFECTS = {
 
   'lead-first-set-astral-plain': {
     why: 'interpreter: a first set holding a high surrogate refuses the astral leads it begins',
-    edits: [{
-      file: 'src/lead-ranges.ts',
-      find: '  const high = 0xd800 + ((code - 0x10000) >> 10)\n',
-      replace: '  const high = -1\n',
-    }],
+    edits: [
+      { file: 'src/combinators/first-set.ts', find: '  if (code <= 0xffff) return false\n', replace: '  return false\n' },
+      { file: 'src/combinators/choice.ts', find: '  if (code <= 0xffff) return false\n', replace: '  return false\n' },
+    ],
   },
 
   'lead-intersects-astral-plain': {
@@ -294,6 +293,15 @@ export const DEFECTS = {
       file: 'src/combinators/first-set.ts',
       find: '  const bs = leadRanges(constraint.ranges)\n  for (const a of leadRanges(acc.ranges)) for (const b of bs) {',
       replace: '  const bs = constraint.ranges\n  for (const a of acc.ranges) for (const b of bs) {',
+    }],
+  },
+
+  'first-set-narrow-astral-explicit': {
+    why: 'first sets: an intersection keeps the astral ranges its high surrogates imply, so tables encode it wide',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: "{ kind: 'ranges', ranges: implicitLeadsDropped(ranges) }",
+      replace: "{ kind: 'ranges', ranges }",
     }],
   },
 
