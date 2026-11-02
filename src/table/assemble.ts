@@ -162,6 +162,10 @@ const P_NO_REP_RESUME = LC_PLANT === 'no-rep-resume'
 const P_SEP_WRITE = LC_PLANT === 'sep-write'
 const P_STATE = LC_PLANT === 'state'
 const LC_TRACE = LC_PLANT === 'trace'
+const P_OPTGAP_WRITE = LC_PLANT === 'optgap-write'
+const P_GATE_WRITE = LC_PLANT === 'gate-write'
+const P_CHOICE_FAIL = LC_PLANT === 'choice-fail'
+const P_REPORT_ITEM = LC_PLANT === 'report-item'
 type LcStat = { shape: string; hits: number; deep: number; depths: number[] }
 const LC_DEBUG: Map<number, LcStat> | undefined = (globalThis as { process?: { env?: Record<string, string | undefined> } })
   .process?.env?.PM_LC_DEBUG === '1' ? new Map() : undefined
@@ -2004,7 +2008,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (sepIp >= 0) {
             const sepLeads = leadingTriviaFieldAt(code, k, sepIp)
             const sepClassIndex = !sepLeads ? code[at + 7]! : -1
-            L.sepGated = sepClassIndex >= 0 && !rowNullable(code, k, sepIp, NULLABLE) && !P_SEP_WRITE
+            L.sepGated = sepClassIndex >= 0 && !rowNullable(code, k, sepIp, NULLABLE)
+            if (LC_DEBUG !== undefined && !L.sepGated) console.error(`lc: ungated separator at ${at} (sep op ${code[sepIp]})`)
             if (L.sepGated) L.sepCls = cc[sepClassIndex]!
             else {
               let rx = sepIp
@@ -2210,6 +2215,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     ctx._fx = acc ?? L.choiceFx
   }
 
+  function lcCount(k: string): void {
+    const g = globalThis as { __lcCounts?: Record<string, number> }
+    g.__lcCounts ??= {}
+    g.__lcCounts[k] = (g.__lcCounts[k] ?? 0) + 1
+  }
   /** Returned up a chain when a continuation must resume at an enclosing node. */
   const RESUME: unknown = Object.freeze({ resume: true })
   /** Where a pending resume runs, and what it runs. */
@@ -2334,7 +2344,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const errLen = ctx._errors?.length ?? 0
           ctx._fc = false
           const r = next(input, pos, ctx)
-          if (r === FAIL) { lcChoiceFail(L, pos, ctx, errLen); return FAIL }
+          if (r === FAIL) { if (!P_CHOICE_FAIL) lcChoiceFail(L, pos, ctx, errLen); return FAIL }
           if (innermost) PV = r
           return r
         }
@@ -2348,7 +2358,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const r = next(input, pos, ctx)
           if (r === FAIL) {
             if (dirty && ctx._errors !== undefined && ctx._errors.length > errLen) ctx._errors.length = errLen
-            if (!committed(ctx) && report) { ctx._fe = pos; ctx._fx = itemFx }
+            if (!committed(ctx) && report && !P_REPORT_ITEM) { ctx._fe = pos; ctx._fx = itemFx }
             return FAIL
           }
           if (r === RESUME) return r
@@ -2363,7 +2373,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (classHas(sepCls!, cq)) return lcSchedule(L, pos, end, r)
             } else if (sepMask !== undefined) {
               if (maskHas(sepMask, cq)) return lcSchedule(L, pos, end, r)
-              ctx._fc = false; ctx._fe = q; ctx._fx = sepXf
+              if (LC_DEBUG !== undefined) lcCount('sep-write')
+              if (!P_SEP_WRITE) { ctx._fc = false; ctx._fe = q; ctx._fx = sepXf }
             } else if (q < input.length && classHas(itemCls!, cq)) return lcSchedule(L, pos, end, r)
           }
           EC.e = end
@@ -2414,14 +2425,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                     if (g >= 0) { RES_GAP_ROW = T.gapRow; RES_GAP_AT = q; RES_GAP_END = g }
                     return lcSchedule(L, pos, end, r)
                   }
-                  ctx._fe = at; ctx._fx = T.xf
+                  if (LC_DEBUG !== undefined) lcCount('optgap-write')
+                  if (!P_OPTGAP_WRITE) { ctx._fe = at; ctx._fx = T.xf }
                 }
                 vals?.push(T.collect ? [] : undefined)
                 break
               }
               default:
                 if (classHas(T.cls!, cq)) return lcSchedule(L, pos, end, r)
-                ctx._fe = q; ctx._fx = T.xf
+                if (LC_DEBUG !== undefined) lcCount('gate-write')
+                if (!P_GATE_WRITE) { ctx._fe = q; ctx._fx = T.xf }
                 return FAIL
             }
           }

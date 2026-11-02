@@ -22,6 +22,8 @@ function walk(dir: string, ext: string, out: string[]): void {
   if (!existsSync(dir)) return
   for (const e of readdirSync(dir).sort()) { const p = join(dir, e); if (statSync(p).isDirectory()) walk(p, ext, out); else if (p.endsWith(ext)) out.push(p) }
 }
+// Failure right at a value's end, where a skipped continuation's expected set is the answer.
+const EDGE = ['a{b:c )}', 'a{b:c)}', 'a{b:1 )}', 'a{b:1)}', 'a{b:c d)}', 'a{b:c,)}', 'a{b:c !}', 'a{b:c/)}', 'a{b:c / )}', 'a{b:1px+)}', 'a{b:1px + )}', 'a{b:1px * )}', 'a{b:c ]}', 'a{b:c]}', 'a{b:(c)}', 'a{b:f(c d)}', 'a{b:f(c,)}', 'a{b:c 1/2 d}', 'a{b: c , d ; }', 'a{b:c/*x*/ d}', 'a{b:c /*x*/,d}']
 const MICRO: Record<Dialect, string[]> = {
   less: ['a { color: red; }', 'a { margin: 0 auto; }', 'a { font: 12px/1.5 a, b; }', 'a { width: 1px + 2px * 3; }', 'a { color: -@x; }', 'a { color: - @x; }', 'a { b: foo(a, b); }', 'a { b: if((1 = 1), a, b); }', 'a { color: red ; }', 'a { color: red /* c */; }', 'a { color: red !important; }', '@x: red;', '@x: red, blue;', 'a { color: red', 'a { color: red )', 'a { color: , }', 'a { color: red,; }', 'a{color:red)}', 'a{color:red]}', '@x:red)', 'a{color:red,)}', 'a{b:foo(red)}', 'a{b:foo(red,)}'],
   scss: ['a { color: red; }', 'a { margin: 0 auto; }', 'a { font: 12px/1.5 a, b; }', 'a { width: 1px + 2px * 3; }', 'a { color: -$x; }', 'a { color: - $x; }', '$x: red;', 'a { color: red', 'a { color: red )'],
@@ -40,14 +42,19 @@ for (const p of [...files, ...ROOTS[dialect].extra]) {
   for (const f of [0.31, 0.5, 0.77]) inputs.push({ name: `${p}@${f}`, input: s.slice(0, Math.floor(s.length * f)) })
 }
 MICRO[dialect].forEach((m, i) => inputs.push({ name: `micro${i}`, input: m }))
+EDGE.forEach((m, i) => inputs.push({ name: `edge${i}`, input: m }))
 const mod = await import(`pm-macro:${resolvePath(JESS_ROOT, MODULE[dialect])}`) as Record<string, Record<string, Parameters<typeof run>[0]>>
 const entry = mod[exportName(dialect, variant)]!['Stylesheet']!
 if (typeof entry !== 'function') throw new Error('not assembled')
-const opts = VARIANT_SETTINGS[variant].hostMode === 'cst' ? { build: cstBuildHost() } : {}
+const opts: { build?: ReturnType<typeof cstBuildHost>; state?: unknown } = VARIANT_SETTINGS[variant].hostMode === 'cst' ? { build: cstBuildHost() } : {}
+const mathMode = process.env.PM_SWEEP_MATH
 const out: string[] = [`# ${dialect} ${variant} PM_LC=${process.env.PM_LC ?? ''} files=${files.length} inputs=${inputs.length}`]
 for (const f of inputs) {
   let cells: string[]
+  if (mathMode !== undefined) opts.state = { mathMode, source: f.input }
   try { cells = digestRow(run(entry, f.input, opts)) } catch (e) { cells = ['threw: ' + ((e as Error).message.split('\n')[0] ?? '')] }
   out.push(`${f.name}\t${cells.join('\t')}`)
 }
 process.stdout.write(out.join('\n') + '\n')
+const counts = (globalThis as { __lcCounts?: Record<string, number> }).__lcCounts
+if (counts) process.stderr.write('counts ' + JSON.stringify(counts) + '\n')
