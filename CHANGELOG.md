@@ -28,9 +28,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   character instead of opening each level's operator to scan an empty pad and fail.
   Jess's SCSS grammar writes its math operators this way: its generated workload parses
   in 13.1% fewer marginal instructions per parse (JIT, against 0.58.0). Trees are
-  unchanged. Tolerant recovery's resync sentinels read first sets as before
-  (`firstSetOf` with `consuming` false): a pad's own characters are not a point
-  where its sequence starts.
+  unchanged. The narrowed set is the table's (`firstSetOf`). A sequence's
+  construction-time first set, which the interpreter's `choice()` dispatches on
+  without knowing the trivia, keeps the pad as `any`, as do tolerant recovery's
+  resync sentinels (`firstSetOf` with `consuming` false). A table gate that rejects
+  an arm on the narrowed set reports what entering the arm reports, without the pad,
+  which matches empty and cannot fail (`gateMissExpected`).
 - **A separated list ends on a character its separator cannot start.** Past its
   minimum, a `sepBy()` whose separator cannot match empty and is not itself one
   terminal now tests the character after the gap against the separator's first set in
@@ -67,7 +70,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   goes in a slot, from which the regex row takes it instead of matching again. The
   slot is a memo of one pure function, keyed by row, position and input. Not under
   tolerant recovery or a completions probe; the reference driver runs the item as
-  written. A gap spelled as
+  written. The gate holds for no trivia between the gap and its term, so it applies
+  only where no trivia is live. A gap spelled as
   `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
   and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
 - A budgeted assembly selection RANKS sites with every gap gate lowered as its item, so
