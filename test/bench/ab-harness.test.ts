@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,8 @@ import {
   measurePasses,
   pairedMedianDelta,
   mergeBaseNote,
+  identicalSourceNote,
+  sameSource,
   pairedMedianRatio,
   previousRelease,
   score,
@@ -116,6 +118,12 @@ describe('paired A/B scoring', () => {
  * report which of the three are optimized afterwards. An instance that comes back
  * optimized without being asked shares its feedback vector and code with the one
  * that was — the compilation-cache sharing `isolateCompilation` exists to remove.
+ *
+ * Asked with `%ActiveTierIsTurbofan`, not a bit of `%GetOptimizationStatus`. That
+ * status is a bit set whose layout V8 does not keep stable: V8 14 (Node 26) dropped
+ * the `kMaybeDeopted` bit, so every later bit moved down one and `& 16`, which is
+ * "optimized" through V8 13 (Node 24), became "maglev". The probe then read false
+ * for all three on Node 26 while the cache sharing it looks for was still there.
  */
 function optimizedAfterOptimizingOne(isolate: boolean): boolean[] {
   const script = `
@@ -127,7 +135,7 @@ function optimizedAfterOptimizingOne(isolate: boolean): boolean[] {
     for (const f of fs) { %PrepareFunctionForOptimization(f); f(3); }
     %OptimizeFunctionOnNextCall(fs[1]); fs[1](3);
     for (const f of fs) f(3);
-    console.log(JSON.stringify(fs.map(f => (%GetOptimizationStatus(f) & 16) !== 0)));
+    console.log(JSON.stringify(fs.map(f => %ActiveTierIsTurbofan(f))));
   `
   return nodeModule(script, ['--allow-natives-syntax']) as boolean[]
 }
@@ -279,6 +287,7 @@ describe('the merge-base arm is measured only when nothing already answers it', 
     }
     try {
       git('init', '-q', '-b', 'main')
+      commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.0'")
       const release = commit('src/a.ts', '1')
       // The release commit stamps only src/version.ts, which does not count.
       const base = commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.1'")
@@ -294,5 +303,55 @@ describe('the merge-base arm is measured only when nothing already answers it', 
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('a gate whose two sides have the same src/ reports and does not fail', () => {
+  it('compares src/ only, with the version stamp aside', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-same-src-'))
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: dir, encoding: 'utf8' }).trim()
+    const commit = (file: string, body: string): string => {
+      execFileSync('mkdir', ['-p', join(dir, 'src')])
+      writeFileSync(join(dir, file), body)
+      git('add', '-A')
+      git('commit', '-qm', file)
+      return git('rev-parse', 'HEAD')
+    }
+    try {
+      git('init', '-q', '-b', 'main')
+      commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.0'")
+      const release = commit('src/a.ts', '1')
+      commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.1'")
+      const ci = commit('ci.yml', 'x')
+      expect(sameSource(dir, release, ci)).toBe(true)
+      // The working tree, which a run without --head-ref measures, is compared as it stands.
+      expect(sameSource(dir, release, null)).toBe(true)
+      writeFileSync(join(dir, 'src/a.ts'), '2')
+      expect(sameSource(dir, release, null)).toBe(false)
+      writeFileSync(join(dir, 'src/a.ts'), '1')
+      writeFileSync(join(dir, 'src/b.ts'), 'new')
+      expect(sameSource(dir, release, null)).toBe(false)
+      rmSync(join(dir, 'src/b.ts'))
+      // Only the version literal is aside: code added to src/version.ts is a src/ change.
+      expect(sameSource(dir, release, commit('src/version.ts', "export const PARSEMAN_VERSION = '0.1.1'\nexport const slow = 1"))).toBe(false)
+      expect(sameSource(dir, release, commit('src/a.ts', '2'))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('says why, and names what breached as the noise floor', () => {
+    expect(identicalSourceNote('g', 'v0.1.0', [])).toMatch(/A\/A control and gates nothing\. No case breached\./)
+    expect(identicalSourceNote('g', 'v0.1.0', ['json/document'])).toMatch(/breached on json\/document: that is the noise floor/)
+  })
+
+  it.each(['grammar-perf-guard.ts', 'workload-perf-guard.ts'])('%s exits before its verdict when the sides are identical', (file) => {
+    const src = readFileSync(fileURLToPath(new URL(`../../bench/${file}`, import.meta.url)), 'utf8')
+    expect(src).toMatch(/const IDENTICAL = !SELF && sameSource\(ROOT, REF, HEAD_REF\)/)
+    const exit = src.indexOf('if (IDENTICAL) {')
+    expect(exit).toBeGreaterThan(-1)
+    expect(exit).toBeLessThan(src.indexOf('const failures = rows.filter(v => v.failed)'))
+    expect(src).toMatch(/!REPORT_ONLY && !SELF && !QUICK && !IDENTICAL/)
   })
 })

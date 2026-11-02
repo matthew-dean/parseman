@@ -68,6 +68,16 @@ export const compareVersions = (a, b) => {
   return comparePrerelease(a.pre, b.pre)
 }
 
+/** The highest stable version in `list`, parsed, or null. Prereleases and non-versions are skipped. */
+const newestStable = (list) => {
+  let latest = null
+  for (const raw of list) {
+    const v = parseVersion(raw)
+    if (v !== null && v.pre === null && (latest === null || compareVersions(v, latest) > 0)) latest = v
+  }
+  return latest
+}
+
 /**
  * The version a merge publishes. `declared` is package.json's version on `main`;
  * `published` is every version already out (npm's list and the `v*` tags).
@@ -84,11 +94,7 @@ export function nextVersion({ declared, published }) {
   if (d.pre !== null) {
     throw new Error(`package.json declares the prerelease ${d.raw}; publish-on-merge releases stable versions only.`)
   }
-  let latest = null
-  for (const raw of published) {
-    const v = parseVersion(raw)
-    if (v !== null && v.pre === null && (latest === null || compareVersions(v, latest) > 0)) latest = v
-  }
+  const latest = newestStable(published)
   if (latest === null || compareVersions(d, latest) > 0) {
     return { version: d.raw, latest: latest?.raw ?? null, declared: true }
   }
@@ -229,6 +235,12 @@ export function pendingEntries(changelog, published) {
   const v = headingVersion(top.heading)
   const p = parseVersion(published ?? '')
   return v !== null && p !== null && compareVersions(parseVersion(v), p) > 0 ? entries(top.lines) : []
+}
+
+/** The entries under `version`'s `##` section, or null when there is none. */
+export function sectionEntries(changelog, version) {
+  const section = parse(changelog).sections.find((s) => headingVersion(s.heading) === version)
+  return section === undefined ? null : entries(section.lines)
 }
 
 /**
@@ -457,6 +469,68 @@ function differencesFrom(version) {
 }
 
 /**
+ * The plan's decision, from what it read: package.json's `declared` version, the
+ * versions on `npm`, the stable `v*` `tags`, the release HEAD is the record commit of
+ * (`own`) or is already contained in (`superseded`), and `differences(latest)`, the
+ * packed files that differ from that release's tarball. Kept apart from the reading so
+ * each branch is tested.
+ *
+ * npm's newest stable version must have its tag. A publish whose tag push failed leaves
+ * one without, and from then on every later release would read the CHANGELOG of the tag
+ * before it, and file the untagged release's entries under the next version, and a
+ * re-run of an old commit would not be recognised as one. So that state stops the run
+ * until the tag is pushed (docs/design/release-gates.md § If a step fails).
+ */
+export function decide({ declared, npm, tags, own, superseded, differences, changelog, released }) {
+  const next = nextVersion({ declared, published: [...npm, ...tags] })
+  const skip = (reason) => ({ ...next, release: false, reason })
+  if (own !== null) return skip(`this is ${own}'s release commit, recorded on main by the run that published it`)
+  if (superseded !== null) return skip(`this commit is already contained in ${superseded}, so a run for it releases nothing`)
+
+  const onNpm = newestStable(npm)
+  if (onNpm !== null && !tags.some((t) => parseVersion(t)?.raw === onNpm.raw)) {
+    throw new Error(
+      `parseman@${onNpm.raw} is on npm but has no v${onNpm.raw} tag: the run that published it did not tag it.\n`
+        + '  Push that tag first (docs/design/release-gates.md, "Publish succeeded, tag failed"),\n'
+        + '  then re-run this. Releasing on top of it would file its CHANGELOG entries under the next version.',
+    )
+  }
+
+  // package.json still names a release that has shipped. Normal while main trails its
+  // tags, but every entry in its CHANGELOG section must then be one the tag records as
+  // shipped (the stamp may have dated the section, folded Unreleased entries in, or moved
+  // an entry an earlier auto-patch shipped to that release). An entry the tag lacks was
+  // filed under a version another merge had already spent: a pull
+  // request that declared X passed its gate before X shipped, and merged after. Releasing
+  // would ship the next patch with an empty section and leave those entries under X.
+  const d = parseVersion(declared)
+  if (d !== null && tags.some((t) => parseVersion(t)?.raw === d.raw)) {
+    // Any release section of the tag: the stamp moves an entry an earlier auto-patch
+    // shipped out of the declared section and leaves it under that earlier release.
+    const shipped = new Set(parse(released(`v${d.raw}`)).sections
+      .filter((s) => headingVersion(s.heading) !== null).flatMap((s) => entries(s.lines)))
+    const stale = (sectionEntries(changelog, d.raw) ?? []).filter((e) => !shipped.has(e))
+    if (stale.length > 0) {
+      throw new Error(
+        `package.json declares ${d.raw}, which v${d.raw} already released, and CHANGELOG.md's ## ${d.raw}\n`
+          + `  section has ${stale.length} entr${stale.length === 1 ? 'y' : 'ies'} that release did not ship, starting with:\n`
+          + `    ${stale[0].split('\n')[0]}\n`
+          + '  A pull request declared a version another merge shipped first. In a pull request, move those\n'
+          + `  entries under "## Unreleased" and delete the ## ${d.raw} heading, then run \`node scripts/release.mjs sync\`:\n`
+          + `  it files the ${d.raw} that shipped from its tag. Or rename the section to a version above the latest\n`
+          + '  release and set package.json and src/version.ts to it. `sync` alone changes nothing while main\n'
+          + `  has a ## ${d.raw} section. If a shipped entry was only reworded on main, restore its v${d.raw} wording.`,
+      )
+    }
+  }
+
+  if (next.declared) return { ...next, release: true }
+  const differ = differences(next.latest)
+  if (differ.length === 0) return skip(`nothing parseman@${next.latest} ships changed, so ${next.version} is not published`)
+  return { ...next, release: true, differ }
+}
+
+/**
  * Decide whether this commit publishes, and as which version.
  *
  * Skipped when the package would be byte-identical to the latest release: the tree is
@@ -467,47 +541,37 @@ function differencesFrom(version) {
  */
 function plan() {
   const pkg = readPkg()
-  const npm = JSON.parse(run('npm', ['view', pkg.name, 'versions', '--json']))
-  const tags = releaseTags().map((t) => t.v.raw)
-  const next = nextVersion({ declared: pkg.version, published: [...[npm].flat(), ...tags] })
+  const changelog = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8')
+  const npm = [JSON.parse(run('npm', ['view', pkg.name, 'versions', '--json']))].flat()
   const log = (msg) => console.error(msg)
-  log(`declared (package.json): ${pkg.version}; latest release (npm and v* tags): ${next.latest ?? 'none'}`)
-
-  const own = releaseCommitOf()
-  if (own !== null) {
-    const reason = `this is ${own}'s release commit, recorded on main by the run that published it`
-    log(`→ skip: ${reason}.`)
-    return { release: false, version: next.version, reason }
+  const d = decide({
+    declared: pkg.version,
+    npm,
+    tags: releaseTags().map((t) => t.tag),
+    own: releaseCommitOf(),
+    superseded: supersedingRelease(),
+    changelog,
+    released: (tag) => run('git', ['show', `${tag}:CHANGELOG.md`]),
+    differences: (latest) => {
+      // Stamped with the latest release's version so the version is not itself a
+      // difference; restored afterwards so a local dry run leaves the checkout as it found it.
+      applyVersion(ROOT, latest)
+      try {
+        return differencesFrom(latest)
+      } finally {
+        applyVersion(ROOT, pkg.version)
+      }
+    },
+  })
+  log(`declared (package.json): ${pkg.version}; latest release (npm and v* tags): ${d.latest ?? 'none'}`)
+  if (!d.release) log(`→ skip: ${d.reason}.`)
+  else if (d.declared) log(`→ ${d.version}: package.json declares a version above the latest release.`)
+  else {
+    log(`→ ${d.version}: ${d.differ.length} packed file(s) differ from parseman@${d.latest}:`)
+    for (const f of d.differ.slice(0, 20)) log(`    ${f}`)
+    if (d.differ.length > 20) log(`    … and ${d.differ.length - 20} more`)
   }
-  const superseded = supersedingRelease()
-  if (superseded !== null) {
-    const reason = `this commit is already contained in ${superseded}, so a run for it releases nothing`
-    log(`→ skip: ${reason}.`)
-    return { release: false, version: next.version, reason }
-  }
-
-  if (next.declared) {
-    log(`→ ${next.version}: package.json declares a version above the latest release.`)
-    return { release: true, version: next.version }
-  }
-  // Stamped with the latest release's version so the version is not itself a difference;
-  // restored afterwards so a local dry run leaves the checkout as it found it.
-  applyVersion(ROOT, next.latest)
-  let differ
-  try {
-    differ = differencesFrom(next.latest)
-  } finally {
-    applyVersion(ROOT, pkg.version)
-  }
-  if (differ.length === 0) {
-    const reason = `nothing parseman@${next.latest} ships changed, so ${next.version} is not published`
-    log(`→ skip: ${reason}.`)
-    return { release: false, version: next.version, reason }
-  }
-  log(`→ ${next.version}: ${differ.length} packed file(s) differ from parseman@${next.latest}:`)
-  for (const f of differ.slice(0, 20)) log(`    ${f}`)
-  if (differ.length > 20) log(`    … and ${differ.length - 20} more`)
-  return { release: true, version: next.version }
+  return d
 }
 
 /**

@@ -18,6 +18,84 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   exclusive dispatch runs its selected arm with no mark of its own, so an
   `optional()` or a choice arm over such a choice, whose arm (a node or not) scans
   trivia and then fails, restores the two logs too. See `test/unit/table-node-arm-trivia-rollback.test.ts`.
+- **Regex first sets read escapes that are not their letter.** The first-set analyzer read
+  several escapes as the escaped letter: `\p{…}`/`\P{…}`, `\u{…}` under `u`, `\cJ`, the legacy
+  octal `\012`, and `\k<name>`. The class and literal readers read `\012` as NUL followed by
+  digits. Under `/i` without `u`, a non-ASCII letter's case twin (`é`/`É`, `σ`/`Σ`/`ς`) was
+  left out.
+  - Because a first set gates choice dispatch, optional terms and trivia skips, the table
+    engines could refuse input the regex matches. For example, `choice(regex(/\cJa/), …)`
+    failed on a newline.
+  - Each escape now maps to its character or widens to any character, and a case-folded set
+    that reaches 128 widens. The emitted scan lowering declines digit escapes.
+  - Test: `test/unit/regex-escape-first-set-engines.test.ts`, registered in
+    `check:differentials`.
+  - Under `u`/`v` a literal, a class member or an escaped surrogate pair (`\uD83D\uDE00`)
+    is read as one code point, so `/😀x/u` starts with U+1F600 rather than its high
+    surrogate. A `v`-mode nested class or set operation (`[[^a]]`, `[[a-c]--b]`, `\q{…}`)
+    widens instead of being read up to its first `]`.
+  - Every engine gates on the input's leading code point. Outside Unicode mode a first set
+    holds code units, so each lead test now reads an astral lead through its high
+    surrogate, and first-set intersection (choice disjointness, `peek()` constraints)
+    compares sets as read. Identifier classes such as `[\u0080-\uffff]` therefore admit
+    astral characters. Table sizes are unchanged.
+  - The emitted scan lowering declines `v` regexes, as it declines `u`.
+  - `test/unit/regex-first-set-property.test.ts` checks the property over seeded generated
+    patterns: no code point outside a regex's first set starts a match. Each probe is
+    followed by the rest of a witness the pattern is built to match. It checks the same
+    at every node of generated `sequence`/`choice`/`optional`/`peek`/`not`/`literal` trees
+    over those regexes. It is registered in `check:differentials`.
+- **A trivia skip at a character no trivia can start returns without scanning.** Both
+  table engines now test the character first. The closure engine reads a per-slot table
+  that its scopes install with their trivia; the emitted assembly prints the slot's first
+  characters into its skips. A sequence term at such a character runs with no trivia
+  marks around it. Such a gap is empty and records nothing in any sink, so trees, root
+  trivia and CSTs are unchanged. Jess's Less build parses `benchmark.less` in 3.9% fewer
+  instructions with the JIT and 8.8% fewer with `--jitless`. Test:
+  `test/unit/table-trivia-lead-gate.test.ts`, registered in `check:differentials`.
+- **The perf verdict is a cross-process gate under default V8: `pnpm perf:xproc:gate`,
+  configured in `bench/xproc-gate.json`.** Each case is timed in fresh processes,
+  one parser per process, from each side's own `dist/` build under plain `node`. A
+  case fails on either a median slowdown (sign test) or a mean slowdown (sign-flip
+  test). Each test needs a 1% floor and α 0.0005, with 100–900 rounds per case over 20
+  CI shards pinned to Node 26. The fat-tailed cases are sized from real planted
+  costs. On x64, no identical-code run failed (6 on earlier configurations, 1 on
+  this one). Planted costs that applied to every process, to one process in five,
+  and to every token were each caught. The in-process A/B tools (`perf:guard:grammars`, `perf:workloads`)
+  leave CI and stay as local diagnostics. The `PERF-PEAK-WAIVER` line is removed:
+  nothing in CI read it any more. See `docs/design/perf-gates.md` and
+  `docs/design/perf-harness-interleaving.md` (#175).
+
+- **The CLI no longer prints a `module.register()` deprecation warning on Node 26.**
+  `parseman diagnose`/`fix` install a hook that drops `with { type: 'macro' }` from
+  imports, through `module.register()`, which Node 26 deprecates (DEP0205) with a
+  warning on stderr ahead of the command's own output. The hook now goes through
+  `module.registerHooks()` where Node has it (22.15+, 23.5+) and keeps `register()`
+  on 20.x and earlier 22.x, which have nothing else.
+- **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
+  runs a compiled grammar and reports line/column positions imported them from the
+  main entry, which loads the combinators, the compiler and the analysis with them.
+  `src/line-index.ts` was already in the run entry's closure, so the entry's module
+  list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+- **A routed arm's first-character gate reports what its next term fails with.** A
+  choice arm led by `routed()` is gated on its next term's first character
+  (`OP_RGATE`, 0.58.0), and a miss reported `deriveExpected` of that term. For a
+  `keywords()` or `word()` term that lists each word, where the term itself, and the
+  interpreter, report `keyword`: `dispatch(regex(/[a-z]+/), otherwise(choice(
+  sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
+  in every table engine. A miss now reports the terminal's own failure set, and a
+  label's name. Which arms are gated is unchanged.
+- **A whole-token `balanced()` in a failed arm leaves no error in the emitted
+  assembly.** Such a group is lowered as one lexical program over its interpreted
+  scan, and the scan records a `parseError` for an unclosed group. The emitted
+  engine's side-sink census counted only `OP_SCAN` as an `_errors` writer, so a
+  choice arm or `optional()` that failed after an unclosed group restored the arm's
+  captures but not its error: `choice(sequence(balanced('(', ')'), literal('!')),
+  literal('('))` on `(x` succeeded through the second arm and still returned the
+  first arm's `")"` error. The closure engine and the reference driver were right.
+  A budgeted selection is priced without these marks, so they move no site in or
+  out of it. See `test/unit/table-lex-program-scan-errors.test.ts` and
+  `test/unit/table-scan-sink-selection.test.ts`.
 
 ## 0.58.0 — 2026-10-31
 

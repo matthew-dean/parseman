@@ -24,6 +24,29 @@ export interface NextVersion {
 
 export declare function nextVersion(input: { declared: string; published: readonly string[] }): NextVersion
 
+export interface Decision extends NextVersion {
+  release: boolean
+  /** Why nothing is released, when `release` is false. */
+  reason?: string
+  /** The packed files that differ from the latest release, for an undeclared release. */
+  differ?: string[]
+}
+
+export declare function decide(input: {
+  declared: string
+  npm: readonly string[]
+  tags: readonly string[]
+  own: string | null
+  superseded: string | null
+  differences: (latest: string) => string[]
+  /** main's CHANGELOG.md. */
+  changelog: string
+  /** CHANGELOG.md at a release tag (`vX.Y.Z`). */
+  released: (tag: string) => string
+}): Decision
+
+export declare function sectionEntries(changelog: string, version: string): string[] | null
+
 export declare const NON_CONSUMER_FIELDS: readonly string[]
 export declare const CONSUMER_LIFECYCLE_SCRIPTS: readonly string[]
 export declare function consumerFieldChanges(a: unknown, b: unknown): string[]
