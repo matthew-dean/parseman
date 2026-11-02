@@ -69,6 +69,8 @@ const CASES: Case[] = [
   // Under `u`, an escaped surrogate pair is one code point, as a literal pair is.
   { name: 'choice arm escaped pair \\uD83D\\uDE00 (u)', grammar: one(choice(regex(new RegExp('\\uD83D\\uDE00x', 'u')), regex(/[a-z]+/))), inputs: ['😀x', 'a'] },
   { name: 'choice arm escaped pair in a class (u)', grammar: one(choice(regex(new RegExp('[\\uD83D\\uDE00]x', 'u')), regex(/[a-z]+/))), inputs: ['😀x', 'a'] },
+  // Read as two halves, `\\uD83D\\uDE00*` would require the high surrogate, and `.x` would be refused.
+  { name: 'choice arm repeated escaped pair (u)', grammar: one(choice(regex(new RegExp('\\uD83D\\uDE00*\\.x', 'u')), regex(/[a-z]+/))), inputs: ['.x', '😀😀.x', 'a'] },
   { name: 'optional escaped pair (u)', grammar: one(sequence(optional(regex(new RegExp('\\uD83D\\uDE00', 'u'))), regex(/[a-z]+/))), inputs: ['😀a', 'a'] },
   // A set holding a high surrogate starts every astral character it begins, so it
   // overlaps an astral `u` arm: the choice must try both.
