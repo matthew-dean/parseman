@@ -104,6 +104,9 @@ const runtime = path.join(stage, 'dist', 'index.js')
 const original = readFileSync(runtime, 'utf8')
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'NODE_OPTIONS'))
 const failures: string[] = []
+// The fast mode's own counts depend on heap sizing, so print them: on a smaller machine they
+// may read higher and leave less room under maxMarkCompacts.
+const calibration: string[] = []
 console.log(`${GATE}: node ${process.version}, ${CONFIG.processes} processes per case and pad, at most ${CONFIG.maxMarkCompacts} mark-compacts each`)
 for (const pad of CONFIG.pads) {
   writeFileSync(runtime, pad === 0 ? original : `${original}\nfunction __layoutPad(){let a=0;${'a+=1;'.repeat(Math.max(0, Math.floor((pad - 40) / 5)))}return a}\n`)
@@ -114,12 +117,14 @@ for (const pad of CONFIG.pads) {
       counts.push((JSON.parse(out.trim().split('\n').at(-1) ?? '{}') as { markCompacts: number }).markCompacts)
     }
     const worst = Math.max(...counts)
+    if (pad === CONFIG.pads[0]) calibration.push(`${id} ${counts.join('/')}`)
     const ok = worst <= CONFIG.maxMarkCompacts
     console.log(`  ${ok ? 'ok  ' : 'FAIL'}  pad ${String(pad).padStart(6)}  ${id.padEnd(16)}  mark-compacts ${counts.join(' ')}`)
     if (!ok) failures.push(`${id} at pad ${pad}: a process ran ${worst} mark-compacts`)
   }
 }
 writeFileSync(runtime, original)
+console.log(`\n${GATE}: calibration at pad ${CONFIG.pads[0]} (mark-compacts per process): ${calibration.join(', ')}`)
 
 if (failures.length > 0) {
   console.error(`\n${GATE}: FAILED — a process left the fast mode. Something the parse keeps is built by an object or array literal again; see src/cst/plain.d.ts.\n  ${failures.join('\n  ')}`)

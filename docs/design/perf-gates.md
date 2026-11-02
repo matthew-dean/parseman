@@ -935,7 +935,9 @@ processes:
 - `spans/doc`, a builder that keeps the span parseman passes it.
 
 The check fails if any process runs more than `maxMarkCompacts` (3) mark-compacts
-(`bench/pretenure-check.json`). The fast mode runs 1–2. On `main` before #230 the same check
+(`bench/pretenure-check.json`). The fast mode runs 1–2 on the machine that set the threshold.
+Fast-mode counts depend on heap sizing, and a smaller machine may read 3–4. Every run prints
+a calibration line with the pad-0 counts per case: read it before trusting a failure. On `main` before #230 the same check
 read 49–69 on Node 26. It is not in CI: run it on Node 24 and Node 26 for any change to what
 a parse allocates, about 6 minutes each.
 
