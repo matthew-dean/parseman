@@ -3706,11 +3706,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               break
             }
             let gapped = false
-            // The gate is derived for no trivia between the gap and its term
-            // (`Encoder.gapLead`); a row run under trivia — a body shared with a
-            // trivia scope, or a compiled rule inside a caller's scope — enters
-            // the item as written.
-            if (gapRe !== undefined && !hasTrivia && ctx._probe === undefined) {
+            if (gapRe !== undefined && ctx._probe === undefined) {
               gapRe.lastIndex = itemStart
               const q = gapRe.test(input) ? gapRe.lastIndex : -1
               // No arm with the gap can match where the gap fails, or where the

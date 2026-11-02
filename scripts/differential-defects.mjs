@@ -281,21 +281,12 @@ export const DEFECTS = {
     }],
   },
 
-  'gap-gate-under-trivia': {
-    why: 'closure engine: a gap gate runs where trivia is live',
+  'gap-gate-unknown-trivia': {
+    why: 'encoder: a gap gate is laid down where the live trivia is not known',
     edits: [{
-      file: 'src/table/assemble.ts',
-      find: 'if (gapRe !== undefined && !hasTrivia && ctx._probe === undefined) {',
-      replace: 'if (gapRe !== undefined && ctx._probe === undefined) {',
-    }],
-  },
-
-  'gap-gate-under-trivia-emitted': {
-    why: 'emitted engine: a gap gate runs where trivia is live',
-    edits: [{
-      file: 'src/table/emit-assembly.ts',
-      find: "if(ctx._probe===undefined&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}){\n${m.setup",
-      replace: "if(ctx._probe===undefined){\n${m.setup",
+      file: 'src/table/encode.ts',
+      find: '    if (this.activeTrivia === undefined && !this.triviaKnown) return ip\n',
+      replace: '',
     }],
   },
 
@@ -314,15 +305,6 @@ export const DEFECTS = {
       file: 'src/table/encode.ts',
       find: '    return this.activeTrivia !== undefined || this.triviaKnown\n',
       replace: '    return true\n',
-    }],
-  },
-
-  'routed-boundary-caller-scope': {
-    why: 'encoder: a routed gate reads its next term from a cleared region under no trivia, not the trivia its reference installs',
-    edits: [{
-      file: 'src/table/encode.ts',
-      find: 'const first = firstSetOf(next, new Set(), rr, boundary ?? null)',
-      replace: 'const first = firstSetOf(next, new Set(), rr, boundary)',
     }],
   },
 

@@ -994,6 +994,9 @@ class Encoder {
    * written.
    */
   private gapGated(item: Combinator<unknown>, ip: number): number {
+    // The gate holds only where no trivia runs between the gap and its term, so
+    // not where the live trivia is unknown.
+    if (this.activeTrivia === undefined && !this.triviaKnown) return ip
     const lead = this.gapLead(item, this.activeTrivia, 0)
     if (lead === undefined) return ip
     const cls = this.charClass(lead.follow)

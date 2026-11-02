@@ -205,6 +205,8 @@ describe('a table rule with no trivia of its own, run inside a caller\'s trivia'
     optional: sequence(optional(sequence(pad, literal('*'), num)), literal('!')),
     later: sequence(literal('a'), choice(sequence(pad, literal('*')), literal('x'))),
     list: sepBy(num, sequence(pad, literal(','))),
+    // A gap that cannot match empty gives the item a first set, and a gap gate.
+    spaced: sequence(num, many(sequence(regex(/ +/), literal('*'), num))),
   }
   for (const [shape, body] of Object.entries(shapes)) {
     it(shape, () => {
@@ -216,7 +218,7 @@ describe('a table rule with no trivia of its own, run inside a caller\'s trivia'
       const legs: Array<readonly [string, Parse]> = readers(encodeTable({ E })).map(([n, e]) => [n, asParse(e.E)] as const)
       const compiled = compile(E) as unknown as { parseWithContext: (input: string, ctx: unknown, pos: number) => ReturnType<Parse> }
       legs.push(['compile()', ((input, pos, ctx) => compiled.parseWithContext(input, ctx, pos)) as Parse] as const)
-      for (const s of ['/*c*/*', '/*c*/*1!', ' /*c*/*1!', '*1!', '/*c*/!', 'x', '/*c*/x', 'a/*c*/*', 'a /*c*/*', 'a/*c*/x', '1,2', '1/*c*/,2', '1 /*c*/,2']) {
+      for (const s of ['/*c*/*', '/*c*/*1!', ' /*c*/*1!', '*1!', '/*c*/!', 'x', '/*c*/x', 'a/*c*/*', 'a /*c*/*', 'a/*c*/x', '1,2', '1/*c*/,2', '1 /*c*/,2', '1 /*c*/*2', '1 *2 /*c*/ *3']) {
         const input = `${s};`
         const want = result(parser({ trivia: comment }, sequence(E, literal(';'))), input, false)
         for (const [name, parse] of legs) {
@@ -231,6 +233,7 @@ describe('a gate through a reference from a cleared region takes the trivia it i
   it('a routed arm whose next term is such a reference, and a choice arm that is one', () => {
     const g = rules({ trivia: comment }, (g: Record<string, Comb>) => ({
       S: noTrivia(sequence(literal('>'), choice(g.St!, g.C!, literal('x')), literal(';'))),
+      R: noTrivia(sequence(literal('>'), g.St!, literal(';'))),
       St: dispatch(word, otherwise(choice(sequence(routed(), label('colon', g.Colon!)), sequence(routed(), literal('!'))))),
       Colon: sequence(optional(literal('+')), literal(':'), word),
       C: sequence(optional(literal('+')), literal('='), num),
@@ -238,6 +241,7 @@ describe('a gate through a reference from a cleared region takes the trivia it i
     for (const [name, entries] of readers(encodeTable(g))) {
       for (const input of ['>a/*c*/:b;', '>a:b;', '>a/*c*/+:b;', '>a!;', '>/*c*/=1;', '>+=1;', '>/*c*/+=1;', '>x;']) {
         expect(result(entries.S!, input, false), `${name} ${JSON.stringify(input)}`).toBe(result(g.S!, input, false))
+        expect(result(entries.R!, input, false), `${name} R ${JSON.stringify(input)}`).toBe(result(g.R!, input, false))
       }
     }
   })

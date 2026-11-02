@@ -76,8 +76,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   goes in a slot, from which the regex row takes it instead of matching again. The
   slot is a memo of one pure function, keyed by row, position and input. Not under
   tolerant recovery or a completions probe; the reference driver runs the item as
-  written. The gate holds for no trivia between the gap and its term, so it applies
-  only where no trivia is live. A gap spelled as
+  written. The gate holds for no trivia between the gap and its term, so it is laid
+  down only where the encoder knows none runs there. A gap spelled as
   `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
   and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
 - A budgeted assembly selection RANKS sites with every gap gate lowered as its item, so
