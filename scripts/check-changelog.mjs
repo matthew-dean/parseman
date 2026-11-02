@@ -545,22 +545,23 @@ if (headPv !== null && basePv !== null && compareVersions(headPv, basePv) > 0) {
           return false
         })
       }
+      // `sync` copies only the release sections main lacks, so the section goes first.
+      const catchUp =
+        `  The next release would carry this section in place of v${version}'s own. Delete the\n` +
+        `  "## ${version}" section, then run \`node scripts/release.mjs sync\`: with no section for ${version},\n` +
+        '  it copies the released one whole.'
       const lost = unmatched(theirs, mine)
       const extra = unmatched(mine, theirs)
       if (lost.length > 0) {
         fail(
           `package.json declares ${version}, the latest release, and CHANGELOG.md's "## ${version}" section lacks\n` +
-            `  ${lost.length} entr${lost.length === 1 ? 'y' : 'ies'} v${version} shipped, starting with:\n    ${lost[0].split('\n')[0]}\n` +
-            `  The next release would carry this section in place of v${version}'s own. Catch main up with\n` +
-            '  `node scripts/release.mjs sync`, which copies the released section whole.',
+            `  ${lost.length} entr${lost.length === 1 ? 'y' : 'ies'} v${version} shipped, starting with:\n    ${lost[0].split('\n')[0]}\n${catchUp}`,
         )
       }
       if (extra.length > 0) {
         fail(
           `package.json declares ${version}, the latest release, and CHANGELOG.md's "## ${version}" section has\n` +
-            `  ${extra.length} entr${extra.length === 1 ? 'y' : 'ies'} v${version}'s own section did not ship, starting with:\n    ${extra[0].split('\n')[0]}\n` +
-            `  The next release would carry this section in place of v${version}'s own. Catch main up with\n` +
-            '  `node scripts/release.mjs sync`, which copies the released section whole.',
+            `  ${extra.length} entr${extra.length === 1 ? 'y' : 'ies'} v${version}'s own section did not ship, starting with:\n    ${extra[0].split('\n')[0]}\n${catchUp}`,
         )
       }
     }

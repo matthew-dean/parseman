@@ -430,6 +430,8 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     const r = gate(dir, `--base=${baseSha}`)
     expect(r.ok).toBe(false)
     expect(r.out).toMatch(/"## 0\.36\.3" section has\s+1 entry v0\.36\.3's own section did not ship[\s\S]*- fix three/)
+    // `sync` copies only sections main lacks, so the fix deletes this one first.
+    expect(r.out).toMatch(/Delete the\s+"## 0\.36\.3" section, then run `node scripts\/release\.mjs sync`/)
   })
 
   it('REJECTS entries filed under the latest tag\'s version: the publish ships 0.36.4 and they replace 0.36.3\'s section', () => {
