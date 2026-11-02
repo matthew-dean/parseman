@@ -28,4 +28,3 @@ export function mk(
 ): WorkloadNode {
   return new TreeNode(type, span.start, span.end, [...children], rawChildren.length, triviaLog.length)
 }
-

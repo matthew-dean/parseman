@@ -1500,7 +1500,7 @@ return v
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-const err={_tag:'parseError',span:${prog.lines === 1 ? 'spanLines(ctx,pos,pos)' : '{start:pos,end:pos}'},expected:${xf}}
+const err={_tag:'parseError',span:${prog.lines === 1 ? 'spanLines(ctx,pos,pos)' : 'new _SP(pos,pos)'},expected:${xf}}
 const es=ctx._errors
 if(es!==undefined)es.push(err)
 ${REC ? 'if(ctx._tolerant===true)captureError(ctx,err)\n' : ''}ctx._fc=false
@@ -2213,7 +2213,7 @@ return FAIL
         const routedCall = (target: string): string => `{const savedRouted=ctx._routed
 ${emitRollback(m1, L.buf, L.raw, sinks)}
 ${emitMark(m2, L.buf, L.raw, sinks, false)}
-ctx._routed={value:key,span:{start:pos,end:selEnd}}
+ctx._routed={value:key,span:new _SP(pos,selEnd)}
 try{v=${target}(input,pos,ctx)}finally{ctx._routed=savedRouted}
 break}`
         const plainCall = (target: string): string => `v=${target}(input,selEnd,ctx);break`

@@ -198,7 +198,6 @@ function linkMatcher(m: readonly [number, string, string, number]): (key: string
   }
 }
 
-type Leaf = { _tag: 'leaf'; value: string; span: { start: number; end: number } }
 
 /**
  * The `COV` slot's value when a parse installs no collector. ONE shared function
@@ -1381,7 +1380,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return (input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot) => {
       const savedRouted = ctx._routed
       if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-      ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+      ctx._routed = { value: key, span: new PlainSpan(pos, selEnd) }
       let v: unknown
       try {
         v = child(input, pos, ctx)
@@ -1913,7 +1912,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // table engines. Do not use the incoming ctx bit: a grammar scope can
         // declare tracking even when the outer run context begins untracked.
         const expectSpan = (ctx: ParseContext, pos: number) =>
-          prog.lines === 1 ? spanLines(ctx, pos, pos) : { start: pos, end: pos }
+          prog.lines === 1 ? spanLines(ctx, pos, pos) : new PlainSpan(pos, pos)
         // TOLERANT `expect()` EMBEDS ITS ERROR IN THE TREE, not only in the flat
         // `_errors` side-channel (`combinators/expect.ts:150`, and codegen's
         // `_ctx._rec.capture` at codegen.ts:4470) — so a tree walk finds every

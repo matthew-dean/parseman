@@ -25,7 +25,6 @@ export function mk(
   return new CssNodeObject(type, span.start, span.end, [...children], rawChildren.length, triviaLog.length)
 }
 
-
 export function buildLazyTriviaMap(triviaLog: readonly number[], _input: string): { entries: number } {
   return { entries: Math.floor(triviaLog.length / 2) }
 }
