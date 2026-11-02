@@ -8,6 +8,7 @@
   "alphaMean": 0.0005,
   "_alpha": "Per case, split between the median sign test and the mean sign-flip test; a case fails if either does.",
   "flips": 20000,
-  "density": { "rules": 200, "warmup": 200, "samples": 30, "parsesPerSample": 5 },
-  "workloads": { "warmup": 40, "samples": 15, "parsesPerSample": 2 }
+  "density": { "rules": 200, "warmup": 200, "warmupMs": 1000, "samples": 30, "parsesPerSample": 5 },
+  "workloads": { "warmup": 40, "warmupMs": 1500, "samples": 15, "parsesPerSample": 2 },
+  "_warmup": "A worker warms for BOTH the parse count and the time. A count alone stopped some processes before V8 finished tiering: css/stylesheet ran 14% faster after 1.5 s of warm-up than after 40 parses, and that difference varies between processes."
 }

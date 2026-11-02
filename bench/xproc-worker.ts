@@ -18,6 +18,8 @@ type Args = {
   heapPad: number
   rules: number
   warmup: number
+  /** Warm for at least this long as well as `warmup` parses: tiering finishes on a clock, not a count. */
+  warmupMs: number
   samples: number
   parsesPerSample: number
 }
@@ -55,7 +57,8 @@ if (a.suite === 'density') {
 }
 
 const digest = createHash('sha256').update(JSON.stringify(parse())).digest('hex').slice(0, 16)
-for (let k = 0; k < a.warmup; k++) parse()
+const warmStart = performance.now()
+for (let k = 0; k < a.warmup || performance.now() - warmStart < a.warmupMs; k++) parse()
 const samples: number[] = []
 for (let k = 0; k < a.samples; k++) {
   const t0 = performance.now()

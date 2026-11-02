@@ -66,7 +66,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const CONFIG_PATH = path.join(HERE, 'xproc-gate.json')
 
-type SuiteConfig = { warmup: number; samples: number; parsesPerSample: number }
+type SuiteConfig = { warmup: number; warmupMs: number; samples: number; parsesPerSample: number }
 type Config = {
   /** Rounds per shard for every case not named in `roundsByCase`. */
   rounds: number
