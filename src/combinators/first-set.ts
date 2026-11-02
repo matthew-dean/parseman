@@ -1,5 +1,5 @@
 import type { CharRange, FirstSet, Combinator, ParserDef } from '../types.ts'
-import { astralLeadViaSurrogate, leadRanges } from '../lead-ranges.ts'
+import { leadRanges, rangesHaveLead } from '../lead-ranges.ts'
 
 /**
  * Resolve a NAMED cross-artifact rule reference (`g.Foo`) whose own thunk does not
@@ -127,8 +127,7 @@ export function startsFirstSet(combinator: Combinator<unknown>, input: string, p
   if (fs.kind === 'empty') return false
   const code = input.codePointAt(pos)
   if (code === undefined) return false
-  for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
-  return code > 0xffff && astralLeadViaSurrogate(fs.ranges, code)
+  return rangesHaveLead(fs.ranges, code)
 }
 
 export function fromRange(lo: number, hi: number): FirstSet {
@@ -276,8 +275,11 @@ function narrowBy(acc: FirstSet | null, constraint: FirstSet): FirstSet | null {
   if (acc === null) return constraint
   if (acc.kind === 'any') return constraint
   if (acc.kind === 'empty' || constraint.kind === 'empty') return { kind: 'empty' }
+  // Each side admits astral leads through its high surrogates, so intersect them as
+  // read: `peek(/😀/)` (code units) and `literal('😀')` (a code point) overlap.
   const ranges: CharRange[] = []
-  for (const a of acc.ranges) for (const b of constraint.ranges) {
+  const bs = leadRanges(constraint.ranges)
+  for (const a of leadRanges(acc.ranges)) for (const b of bs) {
     const lo = Math.max(a.lo, b.lo)
     const hi = Math.min(a.hi, b.hi)
     if (lo <= hi) ranges.push({ lo, hi })

@@ -4,6 +4,13 @@
  */
 import type { CharRange } from './types.ts'
 
+/** Whether `ranges` admit an input led by the code point `code`: in a range, or
+ * an astral lead through its high surrogate (`astralLeadViaSurrogate`). */
+export function rangesHaveLead(ranges: readonly CharRange[], code: number): boolean {
+  for (const r of ranges) if (code >= r.lo && code <= r.hi) return true
+  return code > 0xffff && astralLeadViaSurrogate(ranges, code)
+}
+
 /**
  * Whether `ranges` admit the astral lead `code` (above U+FFFF) through its high
  * surrogate. Outside Unicode mode a regex reads code units, so a set holding a

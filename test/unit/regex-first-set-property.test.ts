@@ -37,6 +37,14 @@
  * - the witness's own lead;
  * - seeded random draws.
  *
+ * The same property is then checked over COMPOSITIONS: small trees of
+ * `sequence`, `choice`, `optional`, `peek`, `not` and `literal` over generated
+ * regex atoms, at every node of the tree. Each tree has an equivalent `RegExp`:
+ * `(?=…)` for `peek`, `(?!…)` for `not`, alternation for `choice`. It backtracks
+ * where the combinators commit, so it accepts at least the leads they accept.
+ * A probe the `RegExp` matches with a lead outside the node's first set is a
+ * failure. So is one the interpreter itself accepts there.
+ *
  * A failure names the seed, the pattern, the flags and the character.
  * `pnpm check:differentials` plants first-set defects and requires this file to
  * go red.
@@ -44,7 +52,9 @@
 import { writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { regex } from '../../src/combinators/regex.ts'
-import type { FirstSet } from '../../src/types.ts'
+import { choice, literal, not, optional, peek, sequence } from '../../src/index.ts'
+import { run } from '../../src/functional/run.ts'
+import type { Combinator, FirstSet } from '../../src/types.ts'
 
 const SEED = Number(process.env.FIRST_SET_SEED ?? 0x51ed)
 const PATTERNS = Number(process.env.FIRST_SET_PATTERNS ?? 400)
@@ -204,6 +214,116 @@ describe('regex first sets: no character outside the set starts a match (seed ' 
     // A run in which every set widened to `any`, or no probe could match, would prove nothing.
     expect(bounded, 'pattern/flag pairs with a bounded first set').toBeGreaterThan(checked / 4)
     expect(blind, 'bounded pairs no probe matched').toBeLessThan(bounded / 8)
+    expect(matched, 'probes inside a bounded set that matched').toBeGreaterThan(bounded * 2)
+  }, 300_000)
+})
+
+type Tree = { readonly p: Combinator<unknown>; readonly source: string; readonly witness: (flags: string) => string; readonly kids: readonly Tree[] }
+
+const TREE_FLAGS = ['', 'u', 'v', 's', 'm', 'us']
+const LITERALS = ['a', 'b', 'é', 'K', 'ab', ' ', '-', '_', '😀', '😁', '𝒳']
+const TREES = Number(process.env.FIRST_SET_TREES ?? 400)
+
+/** A tree over generated regex atoms; `flags` is shared, since the tree's `RegExp` has one set. */
+function tree(rand: () => number, flags: string, depth: number): Tree {
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!
+  const r = rand()
+  const sub = (): Tree => tree(rand, flags, depth + 1)
+  if (depth < 3 && r < 0.2) {
+    const kids = [sub(), sub(), ...(rand() < 0.4 ? [sub()] : [])]
+    const [first, ...rest] = kids.map(k => k.p)
+    return { p: sequence(first!, ...rest), source: kids.map(k => k.source).join(''), witness: f => kids.map(k => k.witness(f)).join(''), kids }
+  }
+  if (depth < 3 && r < 0.35) {
+    const kids = [sub(), sub()], arm = rand() < 0.5 ? 0 : 1
+    return { p: choice(kids[0]!.p, kids[1]!.p), source: `(?:${kids[0]!.source}|${kids[1]!.source})`, witness: f => kids[arm]!.witness(f), kids }
+  }
+  if (depth < 3 && r < 0.42) {
+    const k = sub()
+    return { p: optional(k.p), source: `(?:${k.source})?`, witness: k.witness, kids: [k] }
+  }
+  if (depth < 3 && r < 0.55) {
+    // A lookahead guards the term after it, so it stands in a sequence. Mostly it
+    // looks for that term's lead, so the node can match at all: as the term itself,
+    // as a literal (a code point) or as a regex (code units without `u`).
+    const next = sub(), lead = next.witness(flags).codePointAt(0), q = rand()
+    const k: Tree = q < 0.25 || lead === undefined ? next
+      : q < 0.5 ? { p: literal(String.fromCodePoint(lead)), source: String.fromCodePoint(lead), witness: () => String.fromCodePoint(lead), kids: [] }
+      : q < 0.75 ? { p: regex(String.fromCodePoint(lead).replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&'), flags), source: `(?:${String.fromCodePoint(lead).replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&')})`, witness: () => String.fromCodePoint(lead), kids: [] }
+      : sub()
+    return { p: sequence(peek(k.p), next.p), source: `(?=${k.source})${next.source}`, witness: next.witness, kids: [k, next] }
+  }
+  if (depth < 3 && r < 0.62) {
+    const k = sub(), next = sub()
+    return { p: sequence(not(k.p), next.p), source: `(?!${k.source})${next.source}`, witness: next.witness, kids: [k, next] }
+  }
+  if (r < 0.75) {
+    const lit = pick(LITERALS)
+    return { p: literal(lit), source: lit, witness: () => lit, kids: [] }
+  }
+  // Group names and backreferences cannot be repeated inside one `RegExp`.
+  const usable = (source: string): boolean => {
+    // An anchor at an atom's edge mostly makes the tree unsatisfiable mid-sequence.
+    if (/\(\?<n>|\\k<n>|\\1/.test(source) || source.startsWith('^') || source.endsWith('$')) return false
+    try { new RegExp(source, flags); return true } catch { return false }
+  }
+  let atom = generate(rand)
+  while (!usable(atom.source)) atom = generate(rand)
+  const source = atom.source
+  return { p: regex(source, flags), source: `(?:${source})`, witness: f => atom.witness(f, false), kids: [] }
+}
+
+describe('composed first sets: no character outside the first set of a node starts a match (seed ' + SEED + ')', () => {
+  it('holds at every node of generated combinator trees', () => {
+    const rand = lcg(SEED ^ 0x7ee5)
+    const failures: string[] = []
+    let nodes = 0
+    let bounded = 0
+    let blind = 0
+    let matched = 0
+    const blindCases: string[] = []
+    const check = (t: Tree, flags: string): void => {
+      for (const k of t.kids) check(k, flags)
+      let re: RegExp
+      try { re = new RegExp(t.source, `${flags}y`) } catch { return }
+      nodes++
+      const fs = t.p._meta.firstSet
+      if (fs.kind === 'any') return
+      bounded++
+      const witness = t.witness(flags)
+      const witnessLead = witness.codePointAt(0)
+      const rest = witnessLead === undefined ? '' : witness.slice(witnessLead > 0xffff ? 2 : 1)
+      const suffixes = [rest, ...SUFFIXES]
+      let hits = 0
+      for (const cp of probes(fs, witnessLead, rand)) {
+        const inside = inSet(fs, cp, false)
+        if (startsWith(re, cp, suffixes)) {
+          if (inside) { hits++; continue }
+          failures.push(`seed ${SEED}: ${t.source} (/${flags}) can start with U+${cp.toString(16).toUpperCase()}, outside its first set`)
+          return
+        }
+        if (inside) continue
+        // The interpreter must not accept where the first set says nothing starts.
+        for (const suffix of suffixes) {
+          const res = run(t.p, String.fromCodePoint(cp) + suffix)
+          if (res.ok && res.span.end > 0) {
+            failures.push(`seed ${SEED}: ${t.source} (/${flags}) is accepted by the interpreter at U+${cp.toString(16).toUpperCase()}, outside its first set`)
+            return
+          }
+        }
+      }
+      matched += hits
+      if (hits === 0) { blind++; blindCases.push(`${t.source} (/${flags}) witness ${JSON.stringify(witness)}`) }
+    }
+    for (let n = 0; n < TREES && failures.length < 10; n++) {
+      const flags = TREE_FLAGS[Math.floor(rand() * TREE_FLAGS.length)]!
+      check(tree(rand, flags, 0), flags)
+    }
+    const report = process.env.FIRST_SET_REPORT
+    if (report) writeFileSync(`${report}.trees`, `seed ${SEED}: ${nodes} nodes, ${bounded} bounded, ${blind} blind (${(100 * blind / bounded).toFixed(1)}%), ${matched} matching probes\n${blindCases.join('\n')}\n`)
+    expect(failures).toEqual([])
+    expect(bounded, 'tree nodes with a bounded first set').toBeGreaterThan(nodes / 4)
+    expect(blind, 'bounded nodes no probe matched').toBeLessThan(bounded / 8)
     expect(matched, 'probes inside a bounded set that matched').toBeGreaterThan(bounded * 2)
   }, 300_000)
 })

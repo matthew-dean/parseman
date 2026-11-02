@@ -288,6 +288,15 @@ export const DEFECTS = {
     }],
   },
 
+  'first-set-narrow-raw': {
+    why: 'first sets: a `peek()` constraint is intersected as raw ranges, so a code-unit set and the astral code point it begins meet nowhere',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: '  const bs = leadRanges(constraint.ranges)\n  for (const a of leadRanges(acc.ranges)) for (const b of bs) {',
+      replace: '  const bs = constraint.ranges\n  for (const a of acc.ranges) for (const b of bs) {',
+    }],
+  },
+
   'scan-shape-v-as-code-units': {
     why: 'emitted scanners: a `v` regex is lowered to a code-unit scan',
     edits: [{

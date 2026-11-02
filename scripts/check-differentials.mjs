@@ -236,7 +236,7 @@ const REGISTRY = [
     id: 'regex-escape-first-sets',
     needs: 'repo',
     file: 'test/unit/regex-escape-first-set-engines.test.ts',
-    legs: 'trivia, choice arms, optional terms, gated collapses and tokens over regexes with octal, control, property, code-point and surrogate-pair escapes, astral literals, high-surrogate sets, v-mode classes and non-ASCII /i letters, through the interpreter, execRules, closure and emitted tableRules: whole RunResult digests across the table engines, value/span/unconsumed against the interpreter',
+    legs: 'trivia, choice arms, optional terms, peek-guarded sequences, gated collapses and tokens over regexes with octal, control, property, code-point and surrogate-pair escapes, astral literals, high-surrogate sets, v-mode classes and non-ASCII /i letters, through the interpreter, execRules, closure and emitted tableRules: whole RunResult digests across the table engines, value/span/unconsumed against the interpreter',
     cleanExit: 0,
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/regex-escape-first-set-engines.test.ts']),
     plants: [
@@ -247,19 +247,21 @@ const REGISTRY = [
       { defect: 'lead-intersects-astral-plain', expect: 'moves' },
       { defect: 'lead-trivia-collapse-astral-plain', expect: 'moves' },
       { defect: 'scan-shape-v-as-code-units', expect: 'moves' },
+      { defect: 'first-set-narrow-raw', expect: 'moves' },
     ],
   },
   {
     id: 'regex-first-set-property',
     needs: 'repo',
     file: 'test/unit/regex-first-set-property.test.ts',
-    legs: 'regex() first sets of seeded generated patterns (escapes incl. surrogate pairs, classes, v-mode nesting and set operations, \\q{}, astral literals, groups, lookarounds, quantifiers) under i/u/v/s/m flag sets vs a sticky RegExp tried at code points on both sides of the set, each followed by the rest of a witness the pattern is built to match: a match outside the set is a failure, and too few matches inside it fail the floor',
+    legs: 'regex() first sets of seeded generated patterns (escapes incl. surrogate pairs, classes, v-mode nesting and set operations, \\q{}, astral literals, groups, lookarounds, quantifiers) under i/u/v/s/m flag sets vs a sticky RegExp tried at code points on both sides of the set, each followed by the rest of a witness the pattern is built to match: a match outside the set is a failure, and too few matches inside it fail the floor; then the same at every node of generated sequence/choice/optional/peek/not/literal trees over those atoms, against the tree as one RegExp and against the interpreter',
     cleanExit: 0,
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/regex-first-set-property.test.ts']),
     plants: [
       { defect: 'first-set-v-class-flat', expect: 'moves' },
       { defect: 'first-set-property-escape-as-letter', expect: 'moves' },
       { defect: 'first-set-escaped-pair-split', expect: 'moves' },
+      { defect: 'first-set-narrow-raw', expect: 'moves' },
     ],
   },
   {

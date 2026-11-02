@@ -22,7 +22,7 @@
  * - every case parses its input whole.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, literal, many, node, optional, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { choice, literal, many, node, optional, peek, regex, rules, sequence, trivia } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
@@ -88,6 +88,12 @@ const CASES: Case[] = [
     })),
     inputs: ['😀a', '!😀a', 'a'],
   },
+  // A `peek()` constraint and the term it guards are intersected as leads: a
+  // code-unit set holding a high surrogate meets the astral code point it begins.
+  { name: 'peek code units then astral literal', grammar: one(choice(sequence(peek(regex(/😀/)), literal('😀')), regex(/[a-z]+/))), inputs: ['😀', 'a'] },
+  { name: 'peek astral literal then code units', grammar: one(choice(sequence(peek(literal('😀')), regex(/😀x/)), literal('a'))), inputs: ['😀x', 'a'] },
+  { name: 'peek high surrogates then astral (u)', grammar: one(choice(sequence(peek(regex(/[\uD800-\uDBFF]/)), regex(/😀/u)), literal('a'))), inputs: ['😀', 'a'] },
+  { name: 'optional peek then astral literal', grammar: one(sequence(optional(sequence(peek(regex(/😀/)), literal('😀'))), literal('a'))), inputs: ['😀a', 'a'] },
   // A `v` regex reads code points and case-folds as Unicode does, so no code-unit scanner stands in for it.
   { name: 'token v-mode [😀a]x', grammar: one(regex(new RegExp('[😀a]x', 'v'))), inputs: ['😀x', 'ax'] },
   { name: 'token v-mode [^a]x', grammar: one(regex(new RegExp('[^a]x', 'v'))), inputs: ['😀x'] },

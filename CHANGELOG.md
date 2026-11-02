@@ -23,13 +23,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     widens instead of being read up to its first `]`.
   - Every engine gates on the input's leading code point. Outside Unicode mode a first set
     holds code units, so each lead test now reads an astral lead through its high
-    surrogate. Identifier classes such as `[\u0080-\uffff]` therefore admit astral
-    characters. Table sizes are unchanged.
+    surrogate, and first-set intersection (choice disjointness, `peek()` constraints)
+    compares sets as read. Identifier classes such as `[\u0080-\uffff]` therefore admit
+    astral characters. Table sizes are unchanged.
   - The emitted scan lowering declines `v` regexes, as it declines `u`.
   - `test/unit/regex-first-set-property.test.ts` checks the property over seeded generated
     patterns: no code point outside a regex's first set starts a match. Each probe is
-    followed by the rest of a witness the pattern is built to match. It is registered in
-    `check:differentials`.
+    followed by the rest of a witness the pattern is built to match. It checks the same
+    at every node of generated `sequence`/`choice`/`optional`/`peek`/`not`/`literal` trees
+    over those regexes. It is registered in `check:differentials`.
 - **A trivia skip at a character no trivia can start returns without scanning.** Both
   table engines now test the character first. The closure engine reads a per-slot table
   that its scopes install with their trivia; the emitted assembly prints the slot's first
