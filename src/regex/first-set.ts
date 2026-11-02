@@ -72,7 +72,7 @@ const BAIL = Symbol('regex-bail')
  * Closure over a single cursor `i` — recursive-descent: alt → seq → quantified
  * → atom.
  */
-function parseRegex(src: string, unicode = false): Node {
+function parseRegex(src: string, unicode = false, sets = false): Node {
   let i = 0
 
   const parseAlt = (): Node => {
@@ -128,9 +128,13 @@ function parseRegex(src: string, unicode = false): Node {
       case '^':
       case '$': i++; return EMPTY // anchors are zero-width
       case '{': i++; return charNode(fromRange(0x7b, 0x7b), false) // a `{` with nothing to quantify is a literal brace
-      default:
-        i += ch.length
-        return charNode(fromRange(ch.codePointAt(0)!, ch.codePointAt(0)!), ch === '\n')
+      default: {
+        // Unicode mode reads a literal as one code point (an astral one is two
+        // code units); otherwise each code unit is its own atom.
+        const cp = unicode ? src.codePointAt(i)! : src.charCodeAt(i)
+        i += cp > 0xffff ? 2 : 1
+        return charNode(fromRange(cp, cp), ch === '\n')
+      }
     }
   }
 
@@ -163,6 +167,24 @@ function parseRegex(src: string, unicode = false): Node {
     let k = i + 1
     const negated = src[k] === '^'
     if (negated) k++
+    if (sets) {
+      // `v` mode nests classes and adds set operations (`[[^a]--b]`, `[a&&b]`) and
+      // string members (`\q{…}`). Only a flat class is enumerated here; the rest
+      // match one character (or string) of a set this does not compute.
+      let depth = 1
+      let nested = false
+      while (k < src.length && depth > 0) {
+        const c = src[k]!
+        if (c === '\\') { if (src[k + 1] === 'q') nested = true; k += 2; continue }
+        if (c === '[') { depth++; nested = true }
+        else if (c === ']') { depth--; if (depth === 0) break }
+        else if ((c === '-' || c === '&') && src[k + 1] === c) nested = true
+        k++
+      }
+      if (src[k] !== ']') throw BAIL
+      if (nested) { i = k + 1; return charNode(any(), true) }
+      k = i + 1 + (negated ? 1 : 0)
+    }
     let body = ''
     while (k < src.length && src[k] !== ']') {
       if (src[k] === '\\') { body += src[k]! + (src[k + 1] ?? ''); k += 2 }
@@ -170,7 +192,7 @@ function parseRegex(src: string, unicode = false): Node {
     }
     if (src[k] !== ']') throw BAIL
     i = k + 1
-    const ranges = parseClassRanges(body)
+    const ranges = parseClassRanges(body, unicode)
     // A negated class can start with (almost) any char, so the first-set widens to
     // `any`, but its newline capability is still cheap and useful to know:
     // `[^,\r\n]*` is a workhorse "field until line end" regex and must not force
@@ -333,7 +355,7 @@ export function regexCanMatchEmpty(source: string): boolean {
 export function firstSetFromRegex(source: string, flags = ''): { firstSet: FirstSet; canMatchNewline: boolean } {
   let ast: Node
   try {
-    ast = parseRegex(source, flags.includes('u') || flags.includes('v'))
+    ast = parseRegex(source, flags.includes('u') || flags.includes('v'), flags.includes('v'))
   } catch {
     return { firstSet: any(), canMatchNewline: true }
   }
@@ -342,5 +364,16 @@ export function firstSetFromRegex(source: string, flags = ''): { firstSet: First
   // narrow first-set would let first-char dispatch wrongly skip it. Only a
   // pattern that must consume ≥1 char has a meaningful first-set.
   if (nullable(ast)) return { firstSet: any(), canMatchNewline: canConsumeNewline(ast) }
-  return { firstSet: firstSet(ast), canMatchNewline: canConsumeNewline(ast) }
+  return { firstSet: pairedSurrogates(firstSet(ast), flags), canMatchNewline: canConsumeNewline(ast) }
+}
+
+/**
+ * A first set is read against the input's leading CODE POINT. Outside Unicode
+ * mode a regex matches code units, so a high surrogate it can start with may be
+ * the first half of any astral code point: the set then holds them all.
+ */
+function pairedSurrogates(fs: FirstSet, flags: string): FirstSet {
+  if (fs.kind !== 'ranges' || flags.includes('u') || flags.includes('v')) return fs
+  if (!fs.ranges.some(r => r.lo <= 0xdbff && r.hi >= 0xd800)) return fs
+  return union(fs, fromRange(0x10000, 0x10ffff))
 }

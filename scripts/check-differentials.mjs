@@ -242,6 +242,18 @@ const REGISTRY = [
     plants: [{ defect: 'first-set-property-escape-as-letter', expect: 'moves' }],
   },
   {
+    id: 'regex-first-set-property',
+    needs: 'repo',
+    file: 'test/unit/regex-first-set-property.test.ts',
+    legs: 'regex() first sets of seeded generated patterns (escapes, classes, v-mode nesting and set operations, \\q{}, astral literals, groups, lookarounds, quantifiers) under i/u/v/s/m flag sets vs a sticky RegExp tried at code points outside the set: a match there is a failure',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/regex-first-set-property.test.ts']),
+    plants: [
+      { defect: 'first-set-v-class-flat', expect: 'moves' },
+      { defect: 'first-set-property-escape-as-letter', expect: 'moves' },
+    ],
+  },
+  {
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',

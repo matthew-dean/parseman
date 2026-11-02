@@ -8,7 +8,9 @@
  * - control `\cJ`;
  * - property `\p{…}`;
  * - code point `\u{…}`;
- * - `/é/i`, which also matches `É`.
+ * - `/é/i`, which also matches `É`;
+ * - `v`-mode nested classes and set operations (`[[^a]]`, `[[a-c]--b]`);
+ * - astral literals, which `lead()` reads as one code point.
  *
  * Each engine then refused input the regex matches. Every case here runs through
  * the interpreter, `execRules`, the closure engine and the emitted assembly:
@@ -18,16 +20,16 @@
  * - every case parses its input whole.
  */
 import { describe, expect, it } from 'vitest'
-import { choice, many, optional, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { choice, many, node, optional, regex, rules, sequence, trivia } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
-import { run, type RunResult } from '../../src/functional/run.ts'
+import { run, type RunOptions, type RunResult } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import type { Combinator } from '../../src/types.ts'
 
 type Grammar = Record<string, Combinator<unknown>>
-type Case = { readonly name: string; readonly grammar: Grammar; readonly inputs: readonly string[] }
+type Case = { readonly name: string; readonly grammar: Grammar; readonly inputs: readonly string[]; readonly opts?: RunOptions }
 
 const words = (t: Combinator<unknown>): Grammar =>
   rules<Grammar>({ trivia: t }, g => ({ Doc: many(g.Word!), Word: regex(/[a-z]+/) }))
@@ -52,12 +54,28 @@ const CASES: Case[] = [
   { name: 'choice arm \\u{41} (u)', grammar: one(choice(regex(/\u{41}x/u), regex(/[a-z]+/))), inputs: ['Ax'] },
   { name: 'choice arm /éx/i', grammar: one(choice(regex(/éx/i), regex(/[a-z]+/))), inputs: ['Éx'] },
   { name: 'optional \\cJ', grammar: one(sequence(optional(regex(/\cJ/)), regex(/[a-z]+/))), inputs: ['\na', 'a'] },
+  // `v` mode (spelled through `RegExp`: the TypeScript target predates it) nests classes: `[[^a-z]]` is every character but a–z, not `{[, ^, a–z}`.
+  { name: 'trivia v-mode [[^a-z]]', grammar: words(trivia(regex(new RegExp('[[^a-z]]+', 'v')))), inputs: ['a b', 'a0b'] },
+  { name: 'choice arm v-mode [[^a]]', grammar: one(choice(regex(new RegExp('[[^a]]x', 'v')), regex(/[a-z]+/))), inputs: ['0x', 'a'] },
+  { name: 'choice arm v-mode [[a-c]--b]', grammar: one(choice(regex(new RegExp('[[a-c]--b]x', 'v')), regex(/[d-z]+/))), inputs: ['cx', 'd'] },
+  { name: 'choice arm v-mode [a[^b]]', grammar: one(choice(regex(new RegExp('[a[^b]]x', 'v')), regex(/[b-z]+/))), inputs: ['0x', 'b'] },
+  // An astral literal is one code point under `u`, the code point `lead()` reads.
+  { name: 'choice arm astral literal (u)', grammar: one(choice(regex(/😀x/u), regex(/[a-z]+/))), inputs: ['😀x', 'a'] },
+  { name: 'choice arm astral class (u)', grammar: one(choice(regex(/[😀]x/u), regex(/[a-z]+/))), inputs: ['😀x'] },
+  { name: 'choice arm astral literal (no u)', grammar: one(choice(regex(/😀x/), regex(/[a-z]+/))), inputs: ['😀x'] },
+  { name: 'optional astral literal (u)', grammar: one(sequence(optional(regex(/😀/u)), regex(/[a-z]+/))), inputs: ['😀a', 'a'] },
+  {
+    name: 'tolerant node over an astral class (u)',
+    grammar: rules<Grammar>(g => ({ Doc: many(g.Item!), Item: choice(g.Word!), Word: node('Word', regex(/[a-z😀]+/u), c => c) })),
+    inputs: ['😀', 'a😀'],
+    opts: { tolerant: true },
+  },
 ]
 
 const shape = (r: RunResult): unknown => [r.ok, r.ok ? r.value : null, r.span, r.unconsumedFrom]
 
 describe('escapes and /i letters are read the same by every engine', () => {
-  for (const { name, grammar, inputs } of CASES) {
+  for (const { name, grammar, inputs, opts = {} } of CASES) {
     it(name, () => {
       const prog = encodeTable(grammar)
       const reference = execRules(prog).Doc!
@@ -65,11 +83,11 @@ describe('escapes and /i letters are read the same by every engine', () => {
       const { asm: _none, ...noAsm } = prog
       const emitted = tableRules(noAsm).Doc!
       for (const input of inputs) {
-        const want = run(reference, input)
+        const want = run(reference, input, opts)
         expect(want.ok && want.unconsumedFrom === null, `${JSON.stringify(input)} parses whole`).toBe(true)
-        expect(shape(run(grammar.Doc!, input)), `${JSON.stringify(input)}: interpreter`).toEqual(shape(want))
-        expect(digestValue(run(closure, input)), `${JSON.stringify(input)}: closure`).toBe(digestValue(want))
-        expect(digestValue(run(emitted, input)), `${JSON.stringify(input)}: emitted`).toBe(digestValue(want))
+        expect(shape(run(grammar.Doc!, input, opts)), `${JSON.stringify(input)}: interpreter`).toEqual(shape(want))
+        expect(digestValue(run(closure, input, opts)), `${JSON.stringify(input)}: closure`).toBe(digestValue(want))
+        expect(digestValue(run(emitted, input, opts)), `${JSON.stringify(input)}: emitted`).toBe(digestValue(want))
       }
     })
   }

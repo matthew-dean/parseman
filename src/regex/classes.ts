@@ -144,7 +144,7 @@ type ClassAtom = { cp: number } | { set: Array<[number, number]> }
  * than being mis-read as a literal letter, so callers fall back to a safe
  * over-approximation instead of a wrong set.
  */
-export function parseClassRanges(body: string): Array<[number, number]> | null {
+export function parseClassRanges(body: string, unicode = false): Array<[number, number]> | null {
   const ranges: Array<[number, number]> = []
   let i = 0
   const readAtom = (): ClassAtom | null => {
@@ -168,8 +168,10 @@ export function parseClassRanges(body: string): Array<[number, number]> | null {
       if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) return null
       return { cp: e.codePointAt(0)! }
     }
-    i += ch.length
-    return { cp: ch.codePointAt(0)! }
+    // Unicode mode reads a member as one code point; otherwise as one code unit.
+    const cp = unicode ? body.codePointAt(i)! : body.charCodeAt(i)
+    i += cp > 0xffff ? 2 : 1
+    return { cp }
   }
   while (i < body.length) {
     const lo = readAtom()
