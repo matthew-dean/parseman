@@ -325,6 +325,29 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   space runs up to +17% `--jitless`. Measured against `main` @ `44c9d269`. Branch
   `perf/left-corner-routing` @ `2844597c`, closure engine only, behind `PM_LC=1`. The
   second form, below under Queued, replaces it.
+- **Partitioned factoring of Less `Value`'s 17-arm choice.** This would generalize
+  `factor-choice.ts` to composite-`ref` corners and to factoring only the arms that share
+  a corner. Not built: the choice already routes to its arm in O(1). For every letter,
+  digit, `#`, `"`, `[`, `` ` `` and `+`, the first-character mask selects one arm, so `red`
+  goes straight to `IdentifierOrFunction`. Only `@ - . $ % ( ~ \` have two or three
+  candidates, and for `@` the existing literal pretests already rule out `@{` and `@@`
+  (0 visits). Site visits on the closure engine:
+
+  | File | `Value` entries | Failed arm entries |
+  | --- | --- | --- |
+  | `benchmark.less` | 5172 | 164 (3%) |
+  | `bootstrap-less-port` (90 files, 240 KB) | 4627 | 292 (6%) |
+
+  Most failures are `(`, where `QueryColonFeature` is tried before `Paren`, and `.`/`#`,
+  where `MixinReference` is tried before `Dimension`. At about 2k JIT instructions per
+  failed arm, that is 0.07–0.1% of a whole file, which is the ceiling for any
+  partitioning of these arms. What `Value` does cost is per entry: its frame, the choice,
+  and the `dispatch()` behind an identifier. On Less `red` that is 3.9k JIT / 28k
+  `--jitless` above a bare keyword node; on `@x`, 2.4k / 23k above the variable reference
+  node. That cost is the left-corner routing's to remove: through the choice, and through
+  the `dispatch()` (Queued, above). Census on `perf/left-corner-routing` @ `99ebc7e4`
+  (`scratchpad/left-corner/visits.ts`).
+
 ## Parked
 
 - **Test the decisive first term before opening frames.** Failed attempts the first term
