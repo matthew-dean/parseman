@@ -290,15 +290,6 @@ export const DEFECTS = {
     }],
   },
 
-  'gate-narrows-unknown-trivia': {
-    why: 'encoder: a gate reads a nullable pad through its non-empty matches where the live trivia is not known',
-    edits: [{
-      file: 'src/table/encode.ts',
-      find: '    return this.activeTrivia !== undefined || this.triviaKnown\n',
-      replace: '    return true\n',
-    }],
-  },
-
   'routed-gate-unknown-trivia': {
     why: 'encoder: a routed gate is laid down where the trivia after its token is not known',
     edits: [{

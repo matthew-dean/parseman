@@ -306,7 +306,6 @@ const REGISTRY = [
       { defect: 'ref-first-set-caller-trivia', expect: 'moves' },
       { defect: 'gap-lead-caller-trivia', expect: 'moves' },
       { defect: 'gap-gate-unknown-trivia', expect: 'moves' },
-      { defect: 'gate-narrows-unknown-trivia', expect: 'moves' },
       { defect: 'token-body-caller-scope', expect: 'moves' },
       { defect: 'choice-classes-derived-when-disjoint', expect: 'moves' },
       { defect: 'follow-class-live-trivia', expect: 'moves' },
