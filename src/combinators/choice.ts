@@ -481,6 +481,10 @@ function inFirstSet(code: number, fs: FirstSet): boolean {
   if (fs.kind === 'any') return true
   if (fs.kind === 'empty') return false
   for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
+  // `rangesHaveLead`, inline: this is a hot path.
+  if (code <= 0xffff) return false
+  const high = 0xd800 + ((code - 0x10000) >> 10)
+  for (const r of fs.ranges) if (high >= r.lo && high <= r.hi) return true
   return false
 }
 

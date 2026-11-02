@@ -5,6 +5,41 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **Regex first sets read escapes that are not their letter.** The first-set analyzer read
+  several escapes as the escaped letter: `\p{…}`/`\P{…}`, `\u{…}` under `u`, `\cJ`, the legacy
+  octal `\012`, and `\k<name>`. The class and literal readers read `\012` as NUL followed by
+  digits. Under `/i` without `u`, a non-ASCII letter's case twin (`é`/`É`, `σ`/`Σ`/`ς`) was
+  left out.
+  - Because a first set gates choice dispatch, optional terms and trivia skips, the table
+    engines could refuse input the regex matches. For example, `choice(regex(/\cJa/), …)`
+    failed on a newline.
+  - Each escape now maps to its character or widens to any character, and a case-folded set
+    that reaches 128 widens. The emitted scan lowering declines digit escapes.
+  - Test: `test/unit/regex-escape-first-set-engines.test.ts`, registered in
+    `check:differentials`.
+  - Under `u`/`v` a literal, a class member or an escaped surrogate pair (`\uD83D\uDE00`)
+    is read as one code point, so `/😀x/u` starts with U+1F600 rather than its high
+    surrogate. A `v`-mode nested class or set operation (`[[^a]]`, `[[a-c]--b]`, `\q{…}`)
+    widens instead of being read up to its first `]`.
+  - Every engine gates on the input's leading code point. Outside Unicode mode a first set
+    holds code units, so each lead test now reads an astral lead through its high
+    surrogate, and first-set intersection (choice disjointness, `peek()` constraints)
+    compares sets as read. Identifier classes such as `[\u0080-\uffff]` therefore admit
+    astral characters. Table sizes are unchanged.
+  - The emitted scan lowering declines `v` regexes, as it declines `u`.
+  - `test/unit/regex-first-set-property.test.ts` checks the property over seeded generated
+    patterns: no code point outside a regex's first set starts a match. Each probe is
+    followed by the rest of a witness the pattern is built to match. It checks the same
+    at every node of generated `sequence`/`choice`/`optional`/`peek`/`not`/`literal` trees
+    over those regexes. It is registered in `check:differentials`.
+- **A trivia skip at a character no trivia can start returns without scanning.** Both
+  table engines now test the character first. The closure engine reads a per-slot table
+  that its scopes install with their trivia; the emitted assembly prints the slot's first
+  characters into its skips. A sequence term at such a character runs with no trivia
+  marks around it. Such a gap is empty and records nothing in any sink, so trees, root
+  trivia and CSTs are unchanged. Jess's Less build parses `benchmark.less` in 3.9% fewer
+  instructions with the JIT and 8.8% fewer with `--jitless`. Test:
+  `test/unit/table-trivia-lead-gate.test.ts`, registered in `check:differentials`.
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
   main entry, which loads the combinators, the compiler and the analysis with them.

@@ -46,7 +46,7 @@ import { foldCode, foldExpr } from './token-dispatch.ts'
  */
 function firstSetOfRegexSource(source: string, flags: string): Set<number> | null {
   let fs
-  try { fs = firstSetFromRegex(source).firstSet } catch { return null }
+  try { fs = firstSetFromRegex(source, flags).firstSet } catch { return null }
   if (fs.kind === 'any') return null
   const out = new Set<number>()
   if (fs.kind === 'empty') return out
@@ -58,6 +58,9 @@ function firstSetOfRegexSource(source: string, flags: string): Set<number> | nul
   // Under `/i` the analyzer's ranges may name only one case; admit both, since a
   // gate narrower than the real first set would skip a valid token.
   if (flags.includes('i')) {
+    // Unicode-mode folding, and any non-ASCII member, fold to characters this
+    // does not enumerate (`ſ`→`s`, `é`→`É`).
+    if (flags.includes('u') || flags.includes('v') || [...out].some(c => c >= 128)) return null
     for (const c of [...out]) {
       if (c >= 65 && c <= 90) out.add(c + 32)
       else if (c >= 97 && c <= 122) out.add(c - 32)

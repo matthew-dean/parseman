@@ -69,7 +69,7 @@ import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserD
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA, LEAD, triviaFieldCapture } from '../combinators/field-trivia.ts'
-import { skipDeferredTrivia } from './trivia-gap.ts'
+import { skipDeferredTrivia, triviaLeadTable } from './trivia-gap.ts'
 import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
@@ -959,7 +959,31 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return out
   }
 
+  /**
+   * NO TRIVIA CAN START AT `cur` — `triviaLeadTable` for the installed trivia. A
+   * gap there is empty: nothing to scan, nothing recorded, so nothing for a
+   * sequence term to mark. One table per trivia slot, built with the assembly;
+   * the installed trivia is matched to its slot only when it changes (a trivia
+   * the caller passed that is no slot gets its own table then).
+   */
+  const LEAD_TABLES = trivia.map(tp => tp === undefined ? null : triviaLeadTable(tp))
+  let LEAD_OF: Combinator<unknown> | undefined
+  let LEAD_TABLE: Uint8Array | null = null
+  function cannotStartTrivia(input: string, cur: number, triviaP: Combinator<unknown>): boolean {
+    if (triviaP !== LEAD_OF) {
+      LEAD_OF = triviaP
+      const slot = trivia.indexOf(triviaP)
+      LEAD_TABLE = slot >= 0 ? LEAD_TABLES[slot]! : triviaLeadTable(triviaP)
+    }
+    const table = LEAD_TABLE
+    if (table === null) return false
+    const c = input.charCodeAt(cur)
+    return c < 128 && table[c] === 0
+  }
+
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
+    const t = ctx.trivia
+    if (t !== undefined && cannotStartTrivia(input, cur, t)) return cur
     const s = SCAN
     if (s !== null
       && ctx._triviaLog === undefined
@@ -1041,7 +1065,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * into them.
    */
   function nextTerm(child: Piece, input: string, cur: number, ctx: ParseContext): number {
-    if (ctx.trivia === undefined) {
+    const t = ctx.trivia
+    if (t === undefined || cannotStartTrivia(input, cur, t)) {
       const v = child(input, cur, ctx)
       if (v === FAIL) return -1
       TERMV = v
@@ -1089,7 +1114,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   /** A non-first term at a site proven to run under an open node capture buffer. */
   function nextTermBuffered(child: Piece, input: string, cur: number, ctx: ParseContext): number {
-    if (ctx.trivia === undefined) {
+    const t = ctx.trivia
+    if (t === undefined || cannotStartTrivia(input, cur, t)) {
       const v = child(input, cur, ctx)
       if (v === FAIL) return -1
       TERMV = v
@@ -2016,6 +2042,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // known here, so the scope piece holds the scanner it installs as a `const`.
         const scanFor: FastTriviaScanner | null =
           swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
+        // The scope installs its slot's lead table with its trivia, so the gate
+        // (`cannotStartTrivia`) never has to look the slot up.
+        const scopeLead = ki < 0 ? null : LEAD_TABLES[ki]!
         const child = link(code[ip + 2]!)
         // TWO PIECES, SELECTED HERE — not one piece that tests the opcode. Capture
         // is fixed for the whole parse, so `code[ip] === OP_SCOPE_CAP` is an
@@ -2032,6 +2061,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const savedScan = SCAN
               const savedCap = ctx.captureTrivia
               SCAN = scanFor
+              const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+              LEAD_OF = scopeTrivia
+              LEAD_TABLE = scopeLead
               ctx.trivia = scopeTrivia
               ctx.triviaKindLabels = scopeLabels
               ctx.captureTrivia = true
@@ -2040,6 +2072,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               ctx.trivia = saved
               ctx.triviaKindLabels = savedLabels
               SCAN = savedScan
+              LEAD_OF = savedLeadOf
+              LEAD_TABLE = savedLead
               return v
             }
           : (input, pos, ctx) => {
@@ -2047,12 +2081,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const savedLabels = ctx.triviaKindLabels
               const savedScan = SCAN
               SCAN = scanFor
+              const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+              LEAD_OF = scopeTrivia
+              LEAD_TABLE = scopeLead
               ctx.trivia = scopeTrivia
               ctx.triviaKindLabels = scopeLabels
               const v = child(input, pos, ctx)
               ctx.trivia = saved
               ctx.triviaKindLabels = savedLabels
               SCAN = savedScan
+              LEAD_OF = savedLeadOf
+              LEAD_TABLE = savedLead
               return v
             }
         return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)

@@ -196,6 +196,124 @@ export const DEFECTS = {
     }],
   },
 
+  /**
+   * The trivia lead gate (`trivia-gap.ts` `triviaLeadTable`, `emit-assembly.ts`
+   * `triviaMiss`) answers a skip at a character no trivia can start without
+   * scanning. Narrowing its lead set lets it refuse a gap that is there: the
+   * trivia stays in the input and the parse, its recorded trivia or both move.
+   */
+  'trivia-lead-closure-narrow': {
+    why: 'closure engine: the trivia lead table loses the trivia\'s last first-character range',
+    edits: [{
+      file: 'src/table/trivia-gap.ts',
+      find: 'for (const r of fs.ranges) for',
+      replace: 'for (const r of fs.ranges.slice(0, -1)) for',
+    }],
+  },
+
+  'trivia-lead-emitted-narrow': {
+    why: 'emitted engine: the printed trivia lead test loses the trivia\'s last first-character range',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'return c => `${c}<55296&&!(${leads.map(',
+      replace: 'return c => `${c}<55296&&!(${leads.slice(0, -1).map(',
+    }],
+  },
+
+  /**
+   * The regex first-set analyzer reads an escape as its letter. Every first set
+   * built on it then refuses input the regex matches: a trivia gap, a choice arm
+   * or an optional term is skipped where it should run.
+   */
+  'first-set-property-escape-as-letter': {
+    why: 'regex first sets: `\\p{…}` is read as the letter p',
+    edits: [{
+      file: 'src/regex/first-set.ts',
+      find: "case 'p': case 'P': return charNode(any(), true)",
+      replace: "case 'p': case 'P': return charNode(fromRange(e.codePointAt(0)!, e.codePointAt(0)!), false)",
+    }],
+  },
+
+  'first-set-v-class-flat': {
+    why: 'regex first sets: a `v`-mode nested class is read as a flat one, up to its first `]`',
+    edits: [{
+      file: 'src/regex/first-set.ts',
+      find: 'if (nested) { i = k + 1; return charNode(any(), true) }',
+      replace: 'if (nested && false) { i = k + 1; return charNode(any(), true) }',
+    }],
+  },
+
+  'first-set-escaped-pair-split': {
+    why: 'regex first sets: under `u`, an escaped surrogate pair is read as its two halves',
+    edits: [{
+      file: 'src/regex/classes.ts',
+      find: 'if (unicode && cp >= 0xd800 && cp <= 0xdbff',
+      replace: 'if (false && unicode && cp >= 0xd800 && cp <= 0xdbff',
+    }],
+  },
+
+  'lead-class-astral-plain': {
+    why: 'table engines: a class holding a high surrogate refuses the astral leads it begins',
+    edits: [{
+      file: 'src/table/program.ts',
+      find: 'for (const { lo, hi: up } of leadRanges(decodeClassSpec(spec))) {',
+      replace: 'for (const { lo, hi: up } of decodeClassSpec(spec)) {',
+    }],
+  },
+
+  'lead-first-set-astral-plain': {
+    why: 'interpreter: a first set holding a high surrogate refuses the astral leads it begins',
+    edits: [
+      { file: 'src/combinators/first-set.ts', find: '  if (code <= 0xffff) return false\n', replace: '  return false\n' },
+      { file: 'src/combinators/choice.ts', find: '  if (code <= 0xffff) return false\n', replace: '  return false\n' },
+    ],
+  },
+
+  'lead-intersects-astral-plain': {
+    why: 'first sets: a high-surrogate set is taken as disjoint from the astral set it begins',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: '  const bs = leadRanges(b.ranges)\n  for (const ra of leadRanges(a.ranges)) {',
+      replace: '  const bs = b.ranges\n  for (const ra of a.ranges) {',
+    }],
+  },
+
+  'lead-trivia-collapse-astral-plain': {
+    why: 'emitted gated collapse: trivia holding a high surrogate is taken not to start at an astral lead',
+    edits: [{
+      file: 'src/table/site-labels.ts',
+      find: '? leadRanges(fs.ranges) : undefined',
+      replace: '? fs.ranges : undefined',
+    }],
+  },
+
+  'first-set-narrow-raw': {
+    why: 'first sets: a `peek()` constraint is intersected as raw ranges, so a code-unit set and the astral code point it begins meet nowhere',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: '  const bs = leadRanges(constraint.ranges)\n  for (const a of leadRanges(acc.ranges)) for (const b of bs) {',
+      replace: '  const bs = constraint.ranges\n  for (const a of acc.ranges) for (const b of bs) {',
+    }],
+  },
+
+  'first-set-narrow-astral-explicit': {
+    why: 'first sets: an intersection keeps the astral ranges its high surrogates imply, so tables encode it wide',
+    edits: [{
+      file: 'src/combinators/first-set.ts',
+      find: "{ kind: 'ranges', ranges: implicitLeadsDropped(ranges) }",
+      replace: "{ kind: 'ranges', ranges }",
+    }],
+  },
+
+  'scan-shape-v-as-code-units': {
+    why: 'emitted scanners: a `v` regex is lowered to a code-unit scan',
+    edits: [{
+      file: 'src/table/scan-shapes.ts',
+      find: 'if (/[msuv]/.test(flags)) return null',
+      replace: 'if (/[msu]/.test(flags)) return null',
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{

@@ -38,12 +38,20 @@ export function shorthandRanges(ch: 'd' | 'w' | 's'): Array<[number, number]> {
   return [[48, 57], [65, 90], [97, 122], [95, 95]]
 }
 
-/** `\uXXXX` at `body[i]` → its code point and the index past it, or null. */
-export function readUnicodeEscape(body: string, i: number): { cp: number; next: number } | null {
+/** `\uXXXX` at `body[i]` → its code point and the index past it, or null. Under
+ * `unicode`, an escaped high surrogate followed by an escaped low one is one
+ * code point (`\uD83D\uDE00` is U+1F600). */
+export function readUnicodeEscape(body: string, i: number, unicode = false): { cp: number; next: number } | null {
   if (body[i] !== '\\' || body[i + 1] !== 'u') return null
   const hex = body.slice(i + 2, i + 6)
   if (!/^[0-9a-fA-F]{4}$/.test(hex)) return null
-  return { cp: Number.parseInt(hex, 16), next: i + 6 }
+  const cp = Number.parseInt(hex, 16)
+  if (unicode && cp >= 0xd800 && cp <= 0xdbff && body[i + 6] === '\\' && body[i + 7] === 'u') {
+    const lowHex = body.slice(i + 8, i + 12)
+    const low = /^[0-9a-fA-F]{4}$/.test(lowHex) ? Number.parseInt(lowHex, 16) : -1
+    if (low >= 0xdc00 && low <= 0xdfff) return { cp: 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00), next: i + 12 }
+  }
+  return { cp, next: i + 6 }
 }
 
 /** Regex syntax characters that cannot appear in a LITERAL fragment unescaped. */
@@ -66,6 +74,8 @@ export function literalCodePoints(frag: string): number[] | null {
       // Any other word-character escape is a class (`\d`), an assertion (`\b`), a
       // backreference or a hex, unicode or control escape, never the character itself.
       if (!(e in CLASS_ESCAPES) && /\w/.test(e)) return null
+      // `\0` then a digit is a legacy octal escape, not NUL followed by a digit.
+      if (e === '0' && frag[i + 2] !== undefined && frag[i + 2]! >= '0' && frag[i + 2]! <= '9') return null
       out.push(e in CLASS_ESCAPES ? CLASS_ESCAPES[e]! : e.codePointAt(0)!)
       i += 2
       continue
@@ -142,14 +152,14 @@ type ClassAtom = { cp: number } | { set: Array<[number, number]> }
  * than being mis-read as a literal letter, so callers fall back to a safe
  * over-approximation instead of a wrong set.
  */
-export function parseClassRanges(body: string): Array<[number, number]> | null {
+export function parseClassRanges(body: string, unicode = false): Array<[number, number]> | null {
   const ranges: Array<[number, number]> = []
   let i = 0
   const readAtom = (): ClassAtom | null => {
     const ch = body[i]
     if (ch === undefined) return null
     if (ch === '\\') {
-      const uni = readUnicodeEscape(body, i)
+      const uni = readUnicodeEscape(body, i, unicode)
       if (uni) {
         i = uni.next
         return { cp: uni.cp }
@@ -157,14 +167,19 @@ export function parseClassRanges(body: string): Array<[number, number]> | null {
       const e = body[i + 1]
       if (e === undefined) return null
       i += 2
+      // A digit after `\0`, or any other digit escape, is a legacy octal escape
+      // (`[\012]` holds a newline), which this does not decode.
+      if ((e === '0' && body[i] !== undefined && body[i]! >= '0' && body[i]! <= '9') || (e >= '1' && e <= '9')) return null
       if (e in CLASS_ESCAPES) return { cp: CLASS_ESCAPES[e]! }
       if (e === 'd' || e === 'w' || e === 's') return { set: shorthandRanges(e) }
       // Any other letter escape is a class we can't safely lower (\D, \W, \S, …).
       if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) return null
       return { cp: e.codePointAt(0)! }
     }
-    i += ch.length
-    return { cp: ch.codePointAt(0)! }
+    // Unicode mode reads a member as one code point; otherwise as one code unit.
+    const cp = unicode ? body.codePointAt(i)! : body.charCodeAt(i)
+    i += cp > 0xffff ? 2 : 1
+    return { cp }
   }
   while (i < body.length) {
     const lo = readAtom()

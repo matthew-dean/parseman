@@ -23,7 +23,7 @@
  */
 import type { FirstSet } from '../types.ts'
 import { any, empty, fromRange, union } from '../combinators/first-set.ts'
-import { shorthandRanges, parseClassRanges } from './classes.ts'
+import { shorthandRanges, parseClassRanges, readUnicodeEscape } from './classes.ts'
 
 // A minimal regex AST. Each node answers two questions: what first chars can a
 // non-empty match begin with (`firstSet`), and can the node match zero chars
@@ -72,7 +72,7 @@ const BAIL = Symbol('regex-bail')
  * Closure over a single cursor `i` — recursive-descent: alt → seq → quantified
  * → atom.
  */
-function parseRegex(src: string): Node {
+function parseRegex(src: string, unicode = false, sets = false): Node {
   let i = 0
 
   const parseAlt = (): Node => {
@@ -128,9 +128,13 @@ function parseRegex(src: string): Node {
       case '^':
       case '$': i++; return EMPTY // anchors are zero-width
       case '{': i++; return charNode(fromRange(0x7b, 0x7b), false) // a `{` with nothing to quantify is a literal brace
-      default:
-        i += ch.length
-        return charNode(fromRange(ch.codePointAt(0)!, ch.codePointAt(0)!), ch === '\n')
+      default: {
+        // Unicode mode reads a literal as one code point (an astral one is two
+        // code units); otherwise each code unit is its own atom.
+        const cp = unicode ? src.codePointAt(i)! : src.charCodeAt(i)
+        i += cp > 0xffff ? 2 : 1
+        return charNode(fromRange(cp, cp), ch === '\n')
+      }
     }
   }
 
@@ -163,6 +167,24 @@ function parseRegex(src: string): Node {
     let k = i + 1
     const negated = src[k] === '^'
     if (negated) k++
+    if (sets) {
+      // `v` mode nests classes and adds set operations (`[[^a]--b]`, `[a&&b]`) and
+      // string members (`\q{…}`). Only a flat class is enumerated here; the rest
+      // match one character (or string) of a set this does not compute.
+      let depth = 1
+      let nested = false
+      while (k < src.length && depth > 0) {
+        const c = src[k]!
+        if (c === '\\') { if (src[k + 1] === 'q') nested = true; k += 2; continue }
+        if (c === '[') { depth++; nested = true }
+        else if (c === ']') { depth--; if (depth === 0) break }
+        else if ((c === '-' || c === '&') && src[k + 1] === c) nested = true
+        k++
+      }
+      if (src[k] !== ']') throw BAIL
+      if (nested) { i = k + 1; return charNode(any(), true) }
+      k = i + 1 + (negated ? 1 : 0)
+    }
     let body = ''
     while (k < src.length && src[k] !== ']') {
       if (src[k] === '\\') { body += src[k]! + (src[k + 1] ?? ''); k += 2 }
@@ -170,7 +192,7 @@ function parseRegex(src: string): Node {
     }
     if (src[k] !== ']') throw BAIL
     i = k + 1
-    const ranges = parseClassRanges(body)
+    const ranges = parseClassRanges(body, unicode)
     // A negated class can start with (almost) any char, so the first-set widens to
     // `any`, but its newline capability is still cheap and useful to know:
     // `[^,\r\n]*` is a workhorse "field until line end" regex and must not force
@@ -184,9 +206,19 @@ function parseRegex(src: string): Node {
     const e = src[i + 1]
     if (e === undefined) throw BAIL
     // \uXXXX
-    if (e === 'u' && /^[0-9a-fA-F]{4}$/.test(src.slice(i + 2, i + 6))) {
-      const cp = Number.parseInt(src.slice(i + 2, i + 6), 16)
-      i += 6
+    const uni = readUnicodeEscape(src, i, unicode)
+    if (uni !== null) {
+      i = uni.next
+      return charNode(fromRange(uni.cp, uni.cp), uni.cp === 0x0a)
+    }
+    // \u{X…}: a code point in Unicode mode. Without `u` it is a literal `u` under
+    // a `{…}` quantifier, which may repeat it zero times, so it widens.
+    if (e === 'u' && src[i + 2] === '{') {
+      const close = src.indexOf('}', i + 3)
+      const hex = close < 0 ? '' : src.slice(i + 3, close)
+      if (!unicode || !/^[0-9a-fA-F]{1,6}$/.test(hex)) { i += 2; return ANY }
+      const cp = Number.parseInt(hex, 16)
+      i = close + 1
       return charNode(fromRange(cp, cp), cp === 0x0a)
     }
     // \xHH
@@ -194,6 +226,17 @@ function parseRegex(src: string): Node {
       const cp = Number.parseInt(src.slice(i + 2, i + 4), 16)
       i += 4
       return charNode(fromRange(cp, cp), cp === 0x0a)
+    }
+    // \cX: the control character X names. Anything else after `\c` is not one.
+    if (e === 'c') {
+      const x = src[i + 2]
+      if (x !== undefined && /^[A-Za-z]$/.test(x)) {
+        const cp = x.charCodeAt(0) % 32
+        i += 3
+        return charNode(fromRange(cp, cp), cp === 0x0a)
+      }
+      i += 2
+      return ANY
     }
     i += 2
     switch (e) {
@@ -207,7 +250,12 @@ function parseRegex(src: string): Node {
       case 't': return charNode(fromRange(0x09, 0x09), false)
       case 'f': return charNode(fromRange(0x0c, 0x0c), false)
       case 'v': return charNode(fromRange(0x0b, 0x0b), false)
-      case '0': return charNode(fromRange(0, 0), false)
+      // `\0` then a digit is a legacy octal escape (`\012` is a newline), not NUL.
+      case '0': return src[i] !== undefined && src[i]! >= '0' && src[i]! <= '9' ? ANY : charNode(fromRange(0, 0), false)
+      // A property escape (`\p{…}`/`\P{…}`) matches one character of a class this
+      // analyzer does not enumerate; `\k<name>` is a backreference, which may match empty.
+      case 'p': case 'P': return charNode(any(), true)
+      case 'k': return ANY
       default:
         // A digit escape is a backreference we don't resolve → widen.
         if (e >= '1' && e <= '9') return ANY
@@ -300,10 +348,16 @@ export function regexCanMatchEmpty(source: string): boolean {
   try { return nullable(parseRegex(source)) } catch { return true }
 }
 
-export function firstSetFromRegex(source: string): { firstSet: FirstSet; canMatchNewline: boolean } {
+/**
+ * `flags` decides how atoms read: under `u`/`v` each is one code point, else one
+ * code unit, so a non-`u` set holds a high surrogate where an astral character
+ * can start a match (`rangesHaveLead` reads an astral lead through it). Case
+ * folding under `i` is the caller's, since only it knows what it gates.
+ */
+export function firstSetFromRegex(source: string, flags = ''): { firstSet: FirstSet; canMatchNewline: boolean } {
   let ast: Node
   try {
-    ast = parseRegex(source)
+    ast = parseRegex(source, flags.includes('u') || flags.includes('v'), flags.includes('v'))
   } catch {
     return { firstSet: any(), canMatchNewline: true }
   }
@@ -314,3 +368,4 @@ export function firstSetFromRegex(source: string): { firstSet: FirstSet; canMatc
   if (nullable(ast)) return { firstSet: any(), canMatchNewline: canConsumeNewline(ast) }
   return { firstSet: firstSet(ast), canMatchNewline: canConsumeNewline(ast) }
 }
+

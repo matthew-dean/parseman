@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { classifiedTrivia, trivia as triviaOf } from '../combinators/map.ts'
 import { fastTriviaScanner, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import { regex } from '../combinators/regex.ts'
+import { leadRanges } from '../lead-ranges.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
@@ -642,7 +643,7 @@ export function decodeClassSpec(spec: string): Array<{ lo: number; hi: number }>
 export function resolveClass(spec: string): ResolvedClass {
   const ascii = new Uint8Array(128)
   const hi: number[] = []
-  for (const { lo, hi: up } of decodeClassSpec(spec)) {
+  for (const { lo, hi: up } of leadRanges(decodeClassSpec(spec))) {
     if (lo < 128) for (let c = lo; c <= Math.min(up, 127); c++) ascii[c] = 1
     if (up >= 128) hi.push(Math.max(lo, 128), up)
   }

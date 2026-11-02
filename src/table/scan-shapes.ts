@@ -235,6 +235,9 @@ function parseSeqParts(source: string): SeqPart[] | null {
       let cp: number
       if (uni) { cp = uni.cp; i = uni.next }
       else if (e === undefined) return null
+      // A digit escape is a backreference or a legacy octal escape (`\012`); only a
+      // lone `\0` is NUL.
+      else if (e >= '0' && e <= '9' && (e !== '0' || (source[i + 2] !== undefined && source[i + 2]! >= '0' && source[i + 2]! <= '9'))) return null
       else if (e in CLASS_ESCAPES) { cp = CLASS_ESCAPES[e]!; i += 2 }
       else if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) return null
       else { cp = e.codePointAt(0)!; i += 2 }
@@ -1078,11 +1081,11 @@ function parseScanShapeCore(source: string): ScanShape | null {
 /**
  * Flag-aware wrapper around `parseScanShape`. Lowering to a raw code-point scan
  * assumes default regex semantics, so any flag that changes matching (`i` case
- * folding, `u` surrogate handling, `m`/`s` anchor/dot behavior) disables it.
+ * folding, `u`/`v` code points and sets, `m`/`s` anchor/dot behavior) disables it.
  * `g`/`y` are stickiness-only and safe.
  */
 export function scanShapeFromRegex(source: string, flags: string): ScanShape | null {
-  if (/[msu]/.test(flags)) return null
+  if (/[msuv]/.test(flags)) return null
   if (/i/.test(flags)) return caseFoldShape(source)
   return parseScanShape(source)
 }

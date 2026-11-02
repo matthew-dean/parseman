@@ -48,6 +48,25 @@ export function skipDeferredTrivia(input: string, cur: number, ctx: ParseContext
   return scan
 }
 
+/**
+ * THE CHARACTERS A TRIVIA CAN START WITH, as a table over ASCII: `1` where a run
+ * may start, `0` where none can. `null` when the trivia's first set is unbounded.
+ *
+ * A gap at a character outside the table is the empty gap. It consumes nothing
+ * and records nothing in any sink (trivia log, root log, capture buffer, line
+ * table), so a skip there can answer `cur` without scanning. A character at or
+ * above 128, or past the end of input, is not decided by the table.
+ */
+export function triviaLeadTable(triviaP: Combinator<unknown>): Uint8Array | null {
+  const fs = triviaP._meta.firstSet
+  if (fs.kind === 'any') return null
+  const table = new Uint8Array(128)
+  if (fs.kind === 'ranges') {
+    for (const r of fs.ranges) for (let c = Math.max(0, r.lo); c <= Math.min(127, r.hi); c++) table[c] = 1
+  }
+  return table
+}
+
 /** The end of the run at `cur` when nothing root-selected lies in it, else −1. */
 function clearRunEnd(input: string, cur: number, ctx: ParseContext, triviaP: Combinator<unknown> | undefined, plain: boolean): number {
   const rootKinds = ctx._rootTriviaKindIndex
