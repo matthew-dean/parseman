@@ -1768,7 +1768,12 @@ class Encoder {
         // start there too, not whatever the item's own failure left (a deeper
         // set the interpreter discards, `repeat.ts` `failAt(pos)`).
         const gate = this.sepGate(d.separator, sep)
-        const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 1 ? 4 : 0) | (gate >= 0 ? 8 : 0)
+        // The ITEM's set, reported where the list ends under `min`, falls back to
+        // the item's tag where it derives empty (`repeat.ts` `failAt`); a resync
+        // error carries the set as derived. Bit 16 says that set is empty.
+        const itemSet = deriveExpected(d.parser)
+        const itemFx = this.expected(itemSet.length > 0 ? itemSet : [d.parser._tag])
+        const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 1 ? 4 : 0) | (gate >= 0 ? 8 : 0) | (itemSet.length === 0 ? 16 : 0)
         // A RECOVERY table always carries ip + 6 (the ITEM's expected set, which
         // the resync error reports) and ip + 7 (the SEPARATOR's sentinel class, so
         // a tolerant list resyncs to its own separator OR the enclosing
@@ -1779,7 +1784,7 @@ class Encoder {
         if (this.rec) {
           const ops = [
             child, d.min, d.max ?? -1, sep, flags,
-            this.expected(deriveExpected(d.parser)),
+            itemFx,
             // As 0.58.0: the interpreter resyncs on the separator itself
             // (`orSentinel`), which runs under the live trivia.
             this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia, false)),
@@ -1789,7 +1794,7 @@ class Encoder {
         }
         // Without recovery rows there is no ip + 8, so no separator gate.
         return d.min >= 1
-          ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags & ~8, this.expected(deriveExpected(d.parser)))
+          ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags & ~8, itemFx)
           : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags & ~8)
       }
       case 'optional': {

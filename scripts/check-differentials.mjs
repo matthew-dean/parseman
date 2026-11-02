@@ -325,6 +325,10 @@ const REGISTRY = [
       { defect: 'probe-exclusive-miss-exec', expect: 'moves' },
       { defect: 'probe-exclusive-miss-closure', expect: 'moves' },
       { defect: 'probe-exclusive-miss-emitted', expect: 'moves' },
+      { defect: 'list-item-no-tag-fallback', expect: 'moves' },
+      { defect: 'list-resync-tag-exec', expect: 'moves' },
+      { defect: 'list-resync-tag-closure', expect: 'moves' },
+      { defect: 'list-resync-tag-emitted', expect: 'moves' },
     ],
   },
   {

@@ -1250,7 +1250,7 @@ function makeDriver(
         // own sync. The item's expected set is at ip + 6 and the separator's
         // sentinel class at ip + 7, both laid down only for a recovery table.
         const mySync = REC ? ctx._sync : undefined
-        const recFx = REC ? fx[code[ip + 6]!] as string[] : undefined
+        const recFx = !REC ? undefined : (code[ip + 5]! & 16) !== 0 ? [] : fx[code[ip + 6]!] as string[]
         const sepSent = REC ? sentinelFor(code[ip + 7]!) : undefined
         const itemClassIndex = sep < 0 ? code[ip + 7]! : -1
         const itemClass = REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined

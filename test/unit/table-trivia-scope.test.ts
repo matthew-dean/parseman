@@ -515,3 +515,25 @@ describe('the interpreter reads a reference under noTrivia as 0.58.0 did', () =>
     expect(spans('>q /*c*/;<')).toEqual([[1, 8], [8, 10]])
   })
 })
+
+describe('a list that ends under its minimum reports its item as the interpreter does', () => {
+  // `repeat.ts` `failAt`: the item's derived set, or its tag where that derives
+  // empty; a resync error carries the derived set as it is.
+  it('an item whose derived set is empty, strict and tolerant', () => {
+    for (const trivia of [undefined, comment]) {
+      const g = rules(trivia === undefined ? {} : { trivia }, () => ({
+        S: sequence(literal('>'), oneOrMoreSep(oneOrMoreSep(sequence(pad, literal(';')), literal(',')), literal(',')), literal('<')),
+        T: sequence(literal('>'), oneOrMoreSep(oneOrMoreSep(literal(';'), literal(','), { min: 2 }), literal(',')), literal('<')),
+      })) as Record<string, Comb>
+      for (const [name, entries] of readers(encodeTable(g))) {
+        for (const rule of ['S', 'T'] as const) {
+          for (const input of ['>', '><', '>;<', '>;,;<', '>?<', '>;,?,;<', '>,<']) {
+            for (const tolerant of [false, true]) {
+              expect(result(entries[rule]!, input, tolerant), `${name} ${rule} ${tolerant} ${JSON.stringify(input)}`).toBe(result(g[rule]!, input, tolerant))
+            }
+          }
+        }
+      }
+    }
+  })
+})

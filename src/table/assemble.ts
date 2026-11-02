@@ -3548,6 +3548,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          */
         if (REC) {
           const itemFx = fx[code[ip + 6]!] as string[]
+          // A resync error carries the item's set as derived (bit 16: empty).
+          const recFx = (flags & 16) !== 0 ? EMPTY_FX : itemFx
           const sepSent = sentinelFor(code[ip + 7]!)
           return (input, pos, ctx) => {
             const out: unknown[] | undefined = collect ? [] : undefined
@@ -3608,7 +3610,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                   const rr = recoverScan(
                     input, itemStart, ctx,
                     sep === undefined ? mySync : orSentinel(sepSent ?? mySync, sepSent === undefined ? undefined : mySync),
-                    itemFx,
+                    recFx,
                   )
                   if (out !== undefined) out.push(rr.error)
                   captureError(ctx, rr.error)

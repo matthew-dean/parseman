@@ -2502,7 +2502,7 @@ ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
         // is taken unconditionally by the closure engine (`assemble.ts:2067`), so
         // it is resolved separately from `itemFx` — reusing that one would hand
         // `EMPTY_FX` to every recovered error in a grammar that does not report.
-        const recFx = REC ? fxRef(code[ip + 6]!) : ''
+        const recFx = !REC ? '' : (flags & 16) !== 0 ? '[]' : fxRef(code[ip + 6]!)
         const sepSent = REC ? sentRef(code[ip + 7]!) : 'undefined'
         const recSent = sep === undefined
           ? my

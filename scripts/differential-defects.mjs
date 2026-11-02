@@ -425,6 +425,42 @@ export const DEFECTS = {
     }],
   },
 
+  'list-item-no-tag-fallback': {
+    why: 'encoder: a list ending under its minimum reports an item set that derives empty, where the interpreter reports the item\'s tag',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const itemFx = this.expected(itemSet.length > 0 ? itemSet : [d.parser._tag])',
+      replace: 'const itemFx = this.expected(itemSet)',
+    }],
+  },
+
+  'list-resync-tag-exec': {
+    why: 'reference driver: a resync error carries the item\'s tag fallback where the interpreter carries the empty derived set',
+    edits: [{
+      file: 'src/table/exec.ts',
+      find: '(code[ip + 5]! & 16) !== 0 ? [] : fx[code[ip + 6]!] as string[]',
+      replace: 'fx[code[ip + 6]!] as string[]',
+    }],
+  },
+
+  'list-resync-tag-closure': {
+    why: 'closure engine: a resync error carries the item\'s tag fallback',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'const recFx = (flags & 16) !== 0 ? EMPTY_FX : itemFx',
+      replace: 'const recFx = itemFx',
+    }],
+  },
+
+  'list-resync-tag-emitted': {
+    why: 'emitted engine: a resync error carries the item\'s tag fallback',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "(flags & 16) !== 0 ? '[]' : fxRef(code[ip + 6]!)",
+      replace: 'fxRef(code[ip + 6]!)',
+    }],
+  },
+
   'follow-class-live-trivia': {
     why: 'encoder: a recovery follow class takes the live trivia, which the interpreter\'s follow sentinels do not',
     edits: [{

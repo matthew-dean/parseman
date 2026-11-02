@@ -155,6 +155,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   an exclusive choice runs every arm under a probe, as the interpreter's `choice()`
   does. Parses without a probe are unchanged. Test:
   `test/unit/table-trivia-scope.test.ts`.
+- Fixed: a `sepBy` of `min: 1` whose item's derived set is empty reports the item's
+  tag where the list ends under its minimum, as the interpreter's `failAt` does, in
+  every table engine; a resync error still carries the empty derived set. A list row
+  says which with flag bit 16. Test: `test/unit/table-trivia-scope.test.ts`.
 - Fixed: a `regex()` with an escape the first-set reader does not model (`\p{L}`,
   `\u{1F600}`, `\cJ`, `\k<name>`) has an unknown first set. The reader took it as its
   letter (`/\p{L}+/u` started with `p`), so `choice(regex(/\p{L}+/u), '1')` rejected
