@@ -1,6 +1,6 @@
 # Token Stage C: executable replacement lowering
 
-> **Current state (0.58).** Selected lexical bodies ship as `OP_LEX_BODY` and
+> **Current state (0.59.0).** Selected lexical bodies ship as `OP_LEX_BODY` and
 > `OP_LEX_PROGRAM` (`src/table/lex-body.ts`, `src/table/lex-program.ts`), described in
 > `docs/design/internals.md`. `LexBodyProgram`, named below, is not a type
 > in `src/`: the shipped wire specs are `LexBodySpec` and `LexProgramSpec` in
