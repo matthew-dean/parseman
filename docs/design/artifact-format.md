@@ -33,6 +33,11 @@ so a stale artifact is not rejected with a clear message. That check is
 [#186](https://github.com/matthew-dean/parseman/issues/186). Until it lands, the rule above
 is a design rule, not a runtime guarantee.
 
+One narrower check does exist. A printed assembly factory opens with
+`FACTORY_ARITY_GUARD` (`src/table/emit.ts`): it throws, naming the version that printed
+it, when the runtime calling it passes fewer helpers than `EMITTED_PARAMS` had when it
+was printed. It counts helpers; it does not compare versions.
+
 ## Composition works on rule maps, not on printed tables
 
 `compose()` resolves rule references **by name** over the merged rule map. At run time it
