@@ -297,10 +297,11 @@ it to be:
 - stable, because the publish refuses a prerelease and would stop every release after it;
 - the next patch, minor or major of the latest release, or that release itself (a
   `sync` PR), whose `## X.Y.Z` section must then hold every entry that release's own
-  section shipped and nothing it did not (release integrity refuses an entry it did not
-  ship, wherever `package.json` names a tagged version). A re-dated heading is fine. A
-  section that lost an entry is not: the next stamp keeps `main`'s section for a version
-  `main` has, so it would replace that release's own. The
+  section shipped and nothing else, not even an entry an earlier release shipped. A
+  re-dated heading is fine. A section that lost or gained an entry is not: the next stamp
+  keeps `main`'s section for a version `main` has, so it would replace that release's own.
+  A `vX.Y.Z` tag whose commit has no `CHANGELOG.md` fails the gate, as it would the
+  publish plan, rather than counting as no tag. The
   latest release is the newest stable `v*` tag, or the base's version when that is
   higher.
 
