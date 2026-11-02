@@ -40,6 +40,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   trivia and CSTs are unchanged. Jess's Less build parses `benchmark.less` in 3.9% fewer
   instructions with the JIT and 8.8% fewer with `--jitless`. Test:
   `test/unit/table-trivia-lead-gate.test.ts`, registered in `check:differentials`.
+- **The perf verdict is a cross-process gate under default V8: `pnpm perf:xproc:gate`,
+  configured in `bench/xproc-gate.json`.** Each case is timed in fresh processes,
+  one parser per process, from each side's own `dist/` build under plain `node`. A
+  case fails on either a median slowdown (sign test) or a mean slowdown (sign-flip
+  test). Each test needs a 1% floor and α 0.0005, with 100–900 rounds per case over 20
+  CI shards pinned to Node 26. The fat-tailed cases are sized from real planted
+  costs. On x64, no identical-code run failed (6 on earlier configurations, 1 on
+  this one). Planted costs that applied to every process, to one process in five,
+  and to every token were each caught. The in-process A/B tools (`perf:guard:grammars`, `perf:workloads`)
+  leave CI and stay as local diagnostics. The `PERF-PEAK-WAIVER` line is removed:
+  nothing in CI read it any more. See `docs/design/perf-gates.md` and
+  `docs/design/perf-harness-interleaving.md` (#175).
+
+- **The CLI no longer prints a `module.register()` deprecation warning on Node 26.**
+  `parseman diagnose`/`fix` install a hook that drops `with { type: 'macro' }` from
+  imports, through `module.register()`, which Node 26 deprecates (DEP0205) with a
+  warning on stderr ahead of the command's own output. The hook now goes through
+  `module.registerHooks()` where Node has it (22.15+, 23.5+) and keeps `register()`
+  on 20.x and earlier 22.x, which have nothing else.
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
   main entry, which loads the combinators, the compiler and the analysis with them.

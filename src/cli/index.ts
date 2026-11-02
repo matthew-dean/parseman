@@ -44,7 +44,7 @@
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { resolve, relative, join, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { register } from 'node:module'
+import * as nodeModule from 'node:module'
 import { diagnoseGrammar, examinedNothing, type GrammarDiagnosis } from '../analysis/diagnose.ts'
 import { renderDiagnosis } from '../analysis/diagnose-render.ts'
 import { DEFAULT_WIDTH } from '../analysis/terminal.ts'
@@ -147,6 +147,11 @@ async function registerTsIfNeeded(path: string): Promise<void> {
  *
  * Source is not rewritten: the attribute is removed from the load/resolve CONTEXT, so
  * nothing depends on parsing the importer's text.
+ *
+ * The hooks return whatever the next hook returns, without awaiting it, so the same
+ * module serves both hook APIs: `registerHooks()` runs it in-thread, where `next*`
+ * returns a result, and `register()` runs it on the hooks thread, where it returns a
+ * promise.
  */
 const MACRO_ATTR_HOOK = `
 const strip = (context) => {
@@ -156,18 +161,25 @@ const strip = (context) => {
   delete rest.type
   return { ...context, importAttributes: rest }
 }
-export async function resolve(specifier, context, nextResolve) {
+export function resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, strip(context))
 }
-export async function load(url, context, nextLoad) {
+export function load(url, context, nextLoad) {
   return nextLoad(url, strip(context))
 }
 `
 let macroAttrRegistered = false
-function registerMacroAttributeHook(): void {
+async function registerMacroAttributeHook(): Promise<void> {
   if (macroAttrRegistered) return
   macroAttrRegistered = true
-  register(`data:text/javascript,${encodeURIComponent(MACRO_ATTR_HOOK)}`)
+  const url = `data:text/javascript,${encodeURIComponent(MACRO_ATTR_HOOK)}`
+  // `register()` is deprecated from Node 26 (DEP0205) and prints a warning into the
+  // CLI's stderr. `registerHooks()` replaces it but only exists from 22.15 / 23.5, so
+  // the 20.x and early-22.x lines in `engines` keep the old API.
+  if (typeof nodeModule.registerHooks === 'function') {
+    nodeModule.registerHooks(await import(url) as nodeModule.RegisterHooksOptions)
+  }
+  else nodeModule.register(url)
 }
 
 async function loadGrammar(path: string, exportName: string | undefined): Promise<unknown> {
@@ -176,7 +188,7 @@ async function loadGrammar(path: string, exportName: string | undefined): Promis
   catch { throw new CliError(`no such grammar module: ${path}`) }
   await registerTsIfNeeded(abs)
   // AFTER the TS loader, so this hook is outermost and `nextLoad` still runs it.
-  registerMacroAttributeHook()
+  await registerMacroAttributeHook()
   let mod: Record<string, unknown>
   try { mod = await import(pathToFileURL(abs).href) as Record<string, unknown> }
   catch (e) {
