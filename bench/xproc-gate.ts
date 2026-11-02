@@ -145,7 +145,8 @@ function pinnedRelease(pinned: string): { tag: string; sha: string } {
   if (error !== null) fail(GATE, error)
   const hit = releases.find(r => r.sha.startsWith(pinned) || pinned.startsWith(r.sha))!
   if (hit !== releases[0]) console.log(`  ${releases[0]!.tag} was tagged during this run; this run measures against ${hit.tag}, the reference it started with.`)
-  return { tag: hit.tag, sha: pinned }
+  // The release's own sha, never the raw input: what is measured is exactly the release.
+  return { tag: hit.tag, sha: hit.sha }
 }
 
 /** `--print-reference`: resolve the reference once and hand it to the rest of the run. */

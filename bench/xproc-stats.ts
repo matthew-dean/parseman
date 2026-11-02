@@ -223,7 +223,9 @@ export function pinnedReferenceError(
   releases: ReadonlyArray<{ tag: string; sha: string }>,
 ): string | null {
   const allowed = releases.slice(0, 2)
+  // A plain hex sha only: `<sha>~5` would pass a prefix match while git resolved an ancestor.
+  if (!/^[0-9a-f]{7,40}$/.test(pinned)) return `--reference=${pinned} is not a commit sha`
   const hit = allowed.find(r => r.sha.startsWith(pinned) || pinned.startsWith(r.sha))
-  if (hit !== undefined && pinned.length >= 7) return null
+  if (hit !== undefined) return null
   return `--reference=${pinned} is not the previous release (${allowed.map(r => `${r.tag} ${r.sha}`).join(' or ') || 'none'})`
 }

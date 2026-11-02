@@ -267,7 +267,13 @@ describe('the reference is resolved once per run', () => {
   it('refuses an older release, an unknown sha, or a stub too short to identify one', () => {
     expect(pinnedReferenceError('eaa3d1a1', releases)).toMatch(/not the previous release \(v0.58.2 617aab0e or v0.58.1 80562d9b\)/)
     expect(pinnedReferenceError('deadbeef', releases)).toMatch(/not the previous release/)
-    expect(pinnedReferenceError('617a', releases)).toMatch(/not the previous release/)
+    expect(pinnedReferenceError('617a', releases)).toMatch(/not a commit sha/)
+  })
+
+  it('refuses revision syntax that would make git resolve something else', () => {
+    for (const bad of ['80562d9b~5', '80562d9b^', '80562d9b^{commit}', 'v0.58.1', '80562D9B', ' 80562d9b']) {
+      expect(pinnedReferenceError(bad, releases)).toMatch(/not a commit sha/)
+    }
   })
 
   it('passes ONE reference, from one job, to every shard and the aggregate, for both targets', async () => {
