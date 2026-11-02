@@ -3,6 +3,19 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **An emitted assembly factory takes four fewer parameters.** `TRIVIALABELS`,
+  `scanTrivia`, `commitTriviaScan` and `scanTriviaCompact` were declared by every factory
+  and read by no generated code; they were kept so factories from older runtimes would
+  still bind by position, but an artifact is only ever run by the runtime that emitted
+  it. Each emitted factory's parameter list is shorter by those four names, and the
+  closure engine no longer builds the per-assembly trivia-label map no factory read.
+  - **An artifact printed by 0.59.0 or earlier does not run on this runtime.** Its
+    factory takes its helpers by position, so it needs the parser rebuilt by this
+    version. A 0.59.0 artifact's factory refuses with its arity guard; one printed
+    before 0.59.0 has no guard and would bind the wrong helpers.
+
 ## 0.59.0 — 2026-11-02
 
 - **Tree objects are built by constructors, so V8 cannot pretenure them.** V8 decides per
@@ -102,12 +115,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
   in every table engine. A miss now reports the terminal's own failure set, and a
   label's name. Which arms are gated is unchanged.
-- **An emitted assembly factory takes four fewer parameters.** `TRIVIALABELS`,
-  `scanTrivia`, `commitTriviaScan` and `scanTriviaCompact` were declared by every factory
-  and read by no generated code; they were kept so factories from older runtimes would
-  still bind by position, but an artifact is only ever run by the runtime that emitted
-  it. Each emitted factory's parameter list is shorter by those four names, and the
-  closure engine no longer builds the per-assembly trivia-label map no factory read.
 - **A whole-token `balanced()` in a failed arm leaves no error in the emitted
   assembly.** Such a group is lowered as one lexical program over its interpreted
   scan, and the scan records a `parseError` for an unclosed group. The emitted
