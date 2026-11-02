@@ -27,6 +27,10 @@ import { encodeTable } from '../../src/table/encode.ts'
 import { run } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { readers, seeded } from '../helpers/table-readers.ts'
+import { cfgKey, tableRules } from '../../src/table/assemble.ts'
+import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
+import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
+import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 
 type Comb = Combinator<unknown>
 
@@ -395,6 +399,18 @@ describe('tolerant recovery resyncs where the interpreter does', () => {
 })
 
 
+/** The emitted engine with its completion-probe assemblies precompiled (a build emits none by default). */
+function probeEmitted(prog: TableProgram): Record<string, unknown> {
+  const resolved = resolveTable(prog)
+  const asm: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => ({ ...cfg, probe: true })).map(cfg => {
+    const out = emitAssemblySource(resolved, prog, cfg, [])
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+    const factory = new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory']
+    return { key: cfgKey(cfg), factory, plan: out.plan, reached: [...out.reached] }
+  })
+  return tableRules({ ...prog, asm })
+}
+
 /** Every offset's completions through `entry` (a table reader's entry for `rule`), sorted and deduplicated. */
 function completions(rule: Comb, entry: unknown, input: string): string[] {
   const target = typeof entry === 'function' ? { ...rule, parse: entry as Comb['parse'] } : entry as Comb
@@ -420,12 +436,16 @@ describe('a choice the interpreter tries arm by arm keeps every arm\'s failure',
   it('under a completion probe, an ordered choice enters an arm its class excludes', () => {
     const g = rules(() => ({
       S: sequence(literal('>'), choice(literal('ab'), literal('ac'), literal('b')), literal(';')),
-      T: sequence(literal('>'), token(choice(literal('$.'), sequence(literal('$^'), word), sequence(literal('$'), word))), literal(';')),
+      T: sequence(literal('>'), choice(
+        sequence(token(choice(literal('$.'), sequence(literal('$^'), word), sequence(literal('$'), word))), literal(';')),
+        literal('!'),
+      )),
       U: sequence(literal('>'), token(choice(
         keywords(['@media']), keywords(['@supports']), keywords(['@layer']), regex(/@(?:-[a-z]+-)?keyframes/),
       )), literal(';')),
     })) as Record<string, Comb>
-    for (const [name, entries] of readers(encodeTable(g))) {
+    const prog = encodeTable(g)
+    for (const [name, entries] of [...readers(prog), ['emitted probe', probeEmitted(prog)] as const]) {
       for (const rule of ['S', 'T', 'U'] as const) {
         for (const input of ['>ax', '>a', '>b;', '>x', '>$', '>$1', '>', '>!', '>@foo']) {
           expect(completions(g[rule]!, entries[rule], input), `${name} ${rule} ${JSON.stringify(input)}`).toEqual(completions(g[rule]!, g[rule], input))
