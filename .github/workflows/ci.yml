@@ -294,7 +294,7 @@ jobs:
       fail-fast: false
       matrix:
         target: [release, peak]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -303,7 +303,9 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          # PINNED: the round counts in bench/xproc-gate.json were sized on this major,
+          # and the aggregate refuses shards from any other. Move it with a re-derivation.
+          node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Measure one shard
@@ -331,7 +333,9 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          # PINNED: the round counts in bench/xproc-gate.json were sized on this major,
+          # and the aggregate refuses shards from any other. Move it with a re-derivation.
+          node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@v4
@@ -340,7 +344,7 @@ jobs:
           path: xproc-shards
           merge-multiple: true
       - name: Verdict over every shard
-        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --aggregate=xproc-shards --expect-shards=10
+        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --aggregate=xproc-shards --expect-shards=20
 
   macro-perf:
     needs: changes
@@ -385,7 +389,7 @@ jobs:
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
       - name: Macro timing gate vs 0.57.0 with adjacent self-control
-        run: pnpm bench:macro-optimize -- ${BASE_SHA:+--merge-base=$BASE_SHA}
+        run: pnpm bench:macro-optimize -- --advisory ${BASE_SHA:+--merge-base=$BASE_SHA}
         env:
           JESS_ROOT: ${{ github.workspace }}/.cache/jess
           # Report-only arm against the PR's base. It reuses this step's A/A control,

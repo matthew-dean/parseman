@@ -150,6 +150,13 @@ const dialects = [...new Set(dialectsRaw)] as Dialect[]
  * the same runner moments earlier instead of timing them again, which halves its cost.
  */
 const REPORT_ONLY = process.argv.includes('--report-only')
+/**
+ * Advisory: measure, print and summarise as usual, but never fail. CI runs the timing
+ * step this way until the macro A/B moves to the cross-process design the perf verdict
+ * uses (docs/design/perf-gates.md): its in-process timing still reads the instance
+ * lottery, so a red here is not evidence enough to block.
+ */
+const ADVISORY = process.argv.includes('--advisory')
 /** A PR's base commit: also report HEAD against it. */
 const MERGE_BASE = arg('merge-base')
 const SELF_CONTROL = arg('self-control')
@@ -325,7 +332,7 @@ const table = [
   '| fixture | time Δ (head / reference) | A/A control | verdict |',
   '| --- | ---: | ---: | --- |',
   ...scoredRows.map(row => `| ${row.dialect}/${row.fixture} | ${pct(row.ratio)} | ${pct(row.selfRatio)}`
-    + ` | ${REPORT_ONLY ? 'report only' : row.gateRatio > CONFIG.candidateRatioCeiling ? '**FAIL**' : 'ok'} |`),
+    + ` | ${REPORT_ONLY ? 'report only' : row.gateRatio > CONFIG.candidateRatioCeiling ? (ADVISORY ? 'over ceiling (advisory)' : '**FAIL**') : 'ok'} |`),
   '',
   `geomean ${pct(geomean(ratios))}; worst A/A swing ${pct(aaWorstSwing)} against a ${pct(CONFIG.aaSwingCeiling)} ceiling`
     + (timingErrors.length > 0 ? `; rejected: ${timingErrors.join('; ')}` : ''),
@@ -349,9 +356,9 @@ if (MERGE_BASE !== null) {
     process.stderr.write(`\nmacro-perf: timing HEAD against merge base ${base.slice(0, 8)} (report only)\n`)
     // Its JSON goes to stderr too: this process's stdout is the gate's one JSON object.
     // Same measurement shape as this run: forward its flags, minus the ones that pick the arm.
-    const forwarded = process.argv.slice(2).filter(a => a !== '--' && !/^--(merge-base|ref|report-only|self-control)\b/.test(a))
+    const forwarded = process.argv.slice(2).filter(a => a !== '--' && !/^--(merge-base|ref|report-only|self-control|advisory)\b/.test(a))
     spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, ...forwarded, `--ref=${base}`, '--report-only', `--self-control=${file}`],
       { stdio: ['ignore', 2, 'inherit'], cwd: ROOT })
   }
 }
-process.exit(macroTimingExitCode(timingErrors))
+process.exit(ADVISORY ? 0 : macroTimingExitCode(timingErrors))

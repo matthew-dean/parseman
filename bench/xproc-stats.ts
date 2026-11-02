@@ -86,7 +86,17 @@ export function caseVerdict(d: readonly number[], s: VerdictSettings, random: ()
   return { center, mean, slower, n: d.length, pMedian, pMean, failedMedian, failedMean, failed: failedMedian || failedMean }
 }
 
-export type Shard = { reference: string; seed: number; logs: Record<string, number[]>; minLogs: Record<string, number[]> }
+export type Shard = {
+  reference: string
+  seed: number
+  /** `process.version` of the node every worker in the shard ran on. */
+  node: string
+  logs: Record<string, number[]>
+  minLogs: Record<string, number[]>
+}
+
+/** `v26.13.0` → `26`. */
+export const nodeMajor = (version: string): string => /^v(\d+)\./.exec(version)?.[1] ?? ''
 
 /**
  * Merge shard files into per-case rounds, failing CLOSED. A missing, duplicated,
@@ -99,7 +109,12 @@ export function mergeShards(
   reference: string,
   cases: readonly string[],
   roundsFor: (id: string) => number,
-): { logs: Map<string, number[]>; minLogs: Map<string, number[]>; seeds: number[] } {
+  /**
+   * The node major the verdict is taken for. Every shard must have measured on it: rounds
+   * from two runtimes are two distributions, and the round counts were sized on one.
+   */
+  node: string,
+): { logs: Map<string, number[]>; minLogs: Map<string, number[]>; seeds: number[]; versions: string[] } {
   if (!Number.isSafeInteger(expected) || expected < 1) throw new Error('expected shard count must be a positive integer')
   if (files.length !== expected) {
     throw new Error(`expected ${expected} shard files, found ${files.length}: ${files.map(f => f.name).join(', ')}`)
@@ -107,6 +122,7 @@ export function mergeShards(
   const logs = new Map(cases.map(c => [c, [] as number[]]))
   const minLogs = new Map(cases.map(c => [c, [] as number[]]))
   const seeds: number[] = []
+  const versions: string[] = []
   for (const f of files) {
     let shard: Shard
     try {
@@ -118,6 +134,9 @@ export function mergeShards(
     if (!Number.isSafeInteger(shard.seed)) throw new Error(`shard ${f.name} has no seed`)
     if (seeds.includes(shard.seed)) throw new Error(`shard ${f.name} repeats seed ${shard.seed}`)
     seeds.push(shard.seed)
+    if (typeof shard.node !== 'string' || nodeMajor(shard.node) === '') throw new Error(`shard ${f.name} does not record its node version`)
+    if (nodeMajor(shard.node) !== node) throw new Error(`shard ${f.name} ran on node ${shard.node}, not node ${node}`)
+    versions.push(shard.node)
     for (const c of cases) {
       for (const [label, src, into] of [['rounds', shard.logs, logs], ['minima', shard.minLogs, minLogs]] as const) {
         const d = src?.[c]
@@ -131,5 +150,19 @@ export function mergeShards(
       }
     }
   }
-  return { logs, minLogs, seeds }
+  return { logs, minLogs, seeds, versions }
+}
+
+/**
+ * The aggregate's own random stream, derived from the shard seeds rather than drawn,
+ * so re-running only the aggregate over the same shards gives the same sign-flip
+ * p-values and the same verdict.
+ */
+export function aggregateSeed(seeds: readonly number[]): number {
+  let h = 0x811c9dc5
+  for (const s of [...seeds].sort((a, b) => a - b)) {
+    h = Math.imul(h ^ (s >>> 0), 0x01000193) >>> 0
+    h = Math.imul(h ^ (s >>> 16), 0x01000193) >>> 0
+  }
+  return h >>> 0
 }

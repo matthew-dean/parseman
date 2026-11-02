@@ -4,7 +4,7 @@
  * The gate bundles this file once with esbuild. Every import of parseman's
  * `src/index.ts` becomes the side's own `./dist/index.js`, built by that side's
  * `scripts/build.mjs`: the same bundle a user installs. The gate then runs it with plain
- * `node`, with no flags, no `NODE_OPTIONS` and no loader. This file refuses to measure
+ * `node`, with no flags, no loader, and no `NODE_*` variable in its environment. This file refuses to measure
  * if any of those got in anyway.
  */
 import { createHash } from 'node:crypto'
@@ -26,7 +26,7 @@ type Args = {
 
 const runtimeChanged = [
   process.execArgv.length > 0 ? `execArgv ${JSON.stringify(process.execArgv)}` : null,
-  process.env['NODE_OPTIONS'] !== undefined ? `NODE_OPTIONS=${process.env['NODE_OPTIONS']}` : null,
+  ...Object.keys(process.env).filter(k => k.startsWith('NODE_')).map(k => `${k}=${process.env[k]}`),
   process.sourceMapsEnabled ? 'source maps enabled' : null,
 ].filter(x => x !== null)
 if (runtimeChanged.length > 0) {

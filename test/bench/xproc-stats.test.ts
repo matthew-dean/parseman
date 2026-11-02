@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { caseVerdict, meanFlipP, mergeShards, signTestP, type VerdictSettings } from '../../bench/xproc-stats.ts'
+import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, signTestP, type VerdictSettings } from '../../bench/xproc-stats.ts'
 
 /** Deterministic generator for the tests (mulberry32, as the gate uses). */
 function seeded(seed: number): () => number {
@@ -110,6 +110,7 @@ describe('mergeShards fails closed', () => {
     text: JSON.stringify({
       reference: 'abc12345',
       seed,
+      node: 'v26.13.0',
       logs: { 'a/x': [0.01, -0.01], 'b/y': [0, 0.02, -0.02] },
       minLogs: { 'a/x': [0.01, -0.01], 'b/y': [0, 0.02, -0.02] },
       ...over,
@@ -117,42 +118,68 @@ describe('mergeShards fails closed', () => {
   })
 
   it('merges every round of every shard', () => {
-    const m = mergeShards([shard(1), shard(2)], 2, 'abc12345', cases, roundsFor)
+    const m = mergeShards([shard(1), shard(2)], 2, 'abc12345', cases, roundsFor, '26')
     expect(m.logs.get('a/x')).toHaveLength(4)
     expect(m.logs.get('b/y')).toHaveLength(6)
     expect(m.seeds).toEqual([1, 2])
   })
 
   it('fails on a missing shard', () => {
-    expect(() => mergeShards([shard(1)], 2, 'abc12345', cases, roundsFor)).toThrow('expected 2 shard files, found 1')
+    expect(() => mergeShards([shard(1)], 2, 'abc12345', cases, roundsFor, '26')).toThrow('expected 2 shard files, found 1')
   })
 
   it('fails on an extra shard, or with no expected count', () => {
-    expect(() => mergeShards([shard(1), shard(2), shard(3)], 2, 'abc12345', cases, roundsFor)).toThrow('found 3')
-    expect(() => mergeShards([shard(1)], Number.NaN, 'abc12345', cases, roundsFor)).toThrow('positive integer')
+    expect(() => mergeShards([shard(1), shard(2), shard(3)], 2, 'abc12345', cases, roundsFor, '26')).toThrow('found 3')
+    expect(() => mergeShards([shard(1)], Number.NaN, 'abc12345', cases, roundsFor, '26')).toThrow('positive integer')
   })
 
   it('fails on a shard measured against another reference', () => {
-    expect(() => mergeShards([shard(1, { reference: 'ffff0000' })], 1, 'abc12345', cases, roundsFor)).toThrow('measured against ffff0000')
+    expect(() => mergeShards([shard(1, { reference: 'ffff0000' })], 1, 'abc12345', cases, roundsFor, '26')).toThrow('measured against ffff0000')
   })
 
   it('fails on the wrong number of rounds for a case', () => {
     const short = shard(1, { logs: { 'a/x': [0.01], 'b/y': [0, 0.02, -0.02] } })
-    expect(() => mergeShards([short], 1, 'abc12345', cases, roundsFor)).toThrow('has 1 rounds for a/x, expected 2')
+    expect(() => mergeShards([short], 1, 'abc12345', cases, roundsFor, '26')).toThrow('has 1 rounds for a/x, expected 2')
     const missing = shard(1, { logs: { 'b/y': [0, 0.02, -0.02] } })
-    expect(() => mergeShards([missing], 1, 'abc12345', cases, roundsFor)).toThrow('has 0 rounds for a/x')
+    expect(() => mergeShards([missing], 1, 'abc12345', cases, roundsFor, '26')).toThrow('has 0 rounds for a/x')
   })
 
   it('fails on null or non-finite values', () => {
     const nul = shard(1, { logs: { 'a/x': [0.01, null], 'b/y': [0, 0.02, -0.02] } })
-    expect(() => mergeShards([nul], 1, 'abc12345', cases, roundsFor)).toThrow('non-finite rounds value for a/x: null')
+    expect(() => mergeShards([nul], 1, 'abc12345', cases, roundsFor, '26')).toThrow('non-finite rounds value for a/x: null')
     const nan = shard(1, { minLogs: { 'a/x': [0.01, 'x'], 'b/y': [0, 0.02, -0.02] } })
-    expect(() => mergeShards([nan], 1, 'abc12345', cases, roundsFor)).toThrow('non-finite minima value for a/x')
+    expect(() => mergeShards([nan], 1, 'abc12345', cases, roundsFor, '26')).toThrow('non-finite minima value for a/x')
+  })
+
+  it('fails on a shard from another node major, or one that does not say', () => {
+    expect(() => mergeShards([shard(1), shard(2, { node: 'v24.22.1' })], 2, 'abc12345', cases, roundsFor, '26')).toThrow('ran on node v24.22.1, not node 26')
+    expect(() => mergeShards([shard(1, { node: undefined })], 1, 'abc12345', cases, roundsFor, '26')).toThrow('does not record its node version')
+    expect(() => mergeShards([shard(1)], 1, 'abc12345', cases, roundsFor, '24')).toThrow('not node 24')
   })
 
   it('fails on corrupt JSON, a missing seed, or a repeated seed', () => {
-    expect(() => mergeShards([{ name: 'bad.json', text: '{' }], 1, 'abc12345', cases, roundsFor)).toThrow('bad.json is not JSON')
-    expect(() => mergeShards([shard(1, { seed: undefined })], 1, 'abc12345', cases, roundsFor)).toThrow('has no seed')
-    expect(() => mergeShards([shard(1), shard(1)], 2, 'abc12345', cases, roundsFor)).toThrow('repeats seed 1')
+    expect(() => mergeShards([{ name: 'bad.json', text: '{' }], 1, 'abc12345', cases, roundsFor, '26')).toThrow('bad.json is not JSON')
+    expect(() => mergeShards([shard(1, { seed: undefined })], 1, 'abc12345', cases, roundsFor, '26')).toThrow('has no seed')
+    expect(() => mergeShards([shard(1), shard(1)], 2, 'abc12345', cases, roundsFor, '26')).toThrow('repeats seed 1')
+  })
+})
+
+describe('aggregateSeed', () => {
+  it('depends on the set of shard seeds, not their order or the moment it runs', () => {
+    expect(aggregateSeed([3, 1, 2])).toBe(aggregateSeed([1, 2, 3]))
+    expect(aggregateSeed([1, 2, 3])).not.toBe(aggregateSeed([1, 2, 4]))
+  })
+})
+
+describe('the committed shard count is the one CI runs', () => {
+  it('matches every xproc-shard matrix in ci.yml', async () => {
+    const { readFileSync } = await import('node:fs')
+    const root = new URL('../../', import.meta.url)
+    const config = JSON.parse(readFileSync(new URL('bench/xproc-gate.json', root), 'utf8')) as { shards: number }
+    const ci = readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8')
+    const job = ci.slice(ci.indexOf('  xproc-shard:'), ci.indexOf('  xproc-perf:'))
+    const list = /shard: \[([^\]]*)\]/.exec(job)?.[1]?.split(',').map(x => Number(x.trim()))
+    expect(list).toEqual(Array.from({ length: config.shards }, (_, i) => i + 1))
+    expect(ci).toContain(`--expect-shards=${config.shards}`)
   })
 })

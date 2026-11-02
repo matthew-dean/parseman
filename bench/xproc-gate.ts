@@ -59,7 +59,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { materialise, previousRelease, git, fail, sign, sameSource, summary } from './ab-harness.ts'
-import { caseVerdict, mergeShards, type Shard, type VerdictSettings } from './xproc-stats.ts'
+import { aggregateSeed, caseVerdict, mergeShards, nodeMajor, type Shard, type VerdictSettings } from './xproc-stats.ts'
 
 const GATE = 'xproc-gate'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -68,6 +68,8 @@ const CONFIG_PATH = path.join(HERE, 'xproc-gate.json')
 
 type SuiteConfig = { warmup: number; warmupMs: number; samples: number; parsesPerSample: number }
 type Config = {
+  /** How many shards CI runs. The aggregate refuses any other count; ci.yml's matrix is tested against it. */
+  shards: number
   /** Rounds per shard for every case not named in `roundsByCase`. */
   rounds: number
   /** Rounds per shard where a case needs another count to reach its power target. */
@@ -124,7 +126,7 @@ const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF)
  * `--seed=<n>` reproduces which side went first in every round and every process's
  * layout padding. The seed is printed and written to the shard file.
  */
-const SEED = Number(argValue('--seed') ?? Math.floor(Math.random() * 2 ** 31))
+let SEED = Number(argValue('--seed') ?? Math.floor(Math.random() * 2 ** 31))
 let state = SEED >>> 0
 const random = (): number => {
   // mulberry32
@@ -159,11 +161,15 @@ let minLogs: Map<string, number[]>
 if (AGGREGATE !== null) {
   const files = readdirSync(AGGREGATE).filter(f => f.endsWith('.json'))
     .map(name => ({ name, text: readFileSync(path.join(AGGREGATE, name), 'utf8') }))
+  const expected = Number(argValue('--expect-shards'))
+  if (expected !== CONFIG.shards) fail(GATE, `--expect-shards=${expected} does not match the committed shard count ${CONFIG.shards} in ${CONFIG_PATH}`)
   try {
-    const merged = mergeShards(files, Number(argValue('--expect-shards')), REF, cases.map(c => c.id), roundsFor)
+    const merged = mergeShards(files, expected, REF, cases.map(c => c.id), roundsFor, nodeMajor(process.version))
     logs = merged.logs
     minLogs = merged.minLogs
-    console.log(`  aggregated ${files.length} shards, seeds ${merged.seeds.join(' ')}`)
+    SEED = aggregateSeed(merged.seeds)
+    state = SEED >>> 0
+    console.log(`  aggregated ${files.length} shards on node ${[...new Set(merged.versions)].join(', ')}, seeds ${merged.seeds.join(' ')}; verdict seed ${SEED}`)
   } catch (error) {
     fail(GATE, (error as Error).message)
   }
@@ -261,10 +267,11 @@ function measure(stage: string, dist: string, suite: 'density' | 'workloads', id
   cpSync(dist, path.join(stage, 'dist'), { recursive: true })
   const s = CONFIG[suite]
   const args = { suite, id, heapPad: Math.floor(random() * 65_536), rules: CONFIG.density.rules, ...s }
-  const env: NodeJS.ProcessEnv = { ...process.env, PM_XPROC_LAYOUT_PAD: 'x'.repeat(Math.floor(random() * 4096)) }
-  // A worker runs exactly what a user runs. `NODE_OPTIONS` would put flags on it behind
-  // the command line's back, so it never reaches one.
-  delete env['NODE_OPTIONS']
+  // An ALLOWLIST, not a denylist. `NODE_V8_COVERAGE` made parses 6x slower and
+  // `NODE_COMPILE_CACHE` changes how code loads; both passed a guard that only removed
+  // NODE_OPTIONS. A worker gets PATH, HOME and the padding, and nothing else.
+  const env: NodeJS.ProcessEnv = { PM_XPROC_LAYOUT_PAD: 'x'.repeat(Math.floor(random() * 4096)) }
+  for (const k of ['PATH', 'HOME'] as const) if (process.env[k] !== undefined) env[k] = process.env[k]
   const r = spawnSync(process.execPath, [path.join(stage, 'worker.mjs'), JSON.stringify(args)], {
     cwd: stage, encoding: 'utf8', timeout: WORKER_TIMEOUT_MS, env,
   })
@@ -276,7 +283,7 @@ function measure(stage: string, dist: string, suite: 'density' | 'workloads', id
 }
 
 if (SHARD_OUT !== null) {
-  const shard: Shard = { reference: REF, seed: SEED, logs: Object.fromEntries(logs!), minLogs: Object.fromEntries(minLogs!) }
+  const shard: Shard = { reference: REF, seed: SEED, node: process.version, logs: Object.fromEntries(logs!), minLogs: Object.fromEntries(minLogs!) }
   writeFileSync(SHARD_OUT, JSON.stringify(shard))
 }
 

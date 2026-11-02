@@ -1,7 +1,8 @@
 {
   "_comment": "Configuration for `pnpm perf:xproc:gate` — see bench/xproc-gate.ts and docs/design/perf-gates.md.",
-  "rounds": 10,
-  "roundsByCase": { "css/stylesheet": 30, "expected/narrow": 30, "rollback/medium": 30, "graphql/document": 15, "json/document": 15, "rollback/none": 15 },
+  "shards": 20,
+  "rounds": 5,
+  "roundsByCase": { "css/stylesheet": 45, "expected/narrow": 45, "rollback/medium": 45, "graphql/document": 8, "json/document": 8, "rollback/none": 8 },
   "_rounds": "Rounds PER SHARD; CI runs 10 shards. Sized by the bootstrap in docs/design/perf-harness-interleaving.md so every case has power >= 0.84 against both a uniform 2% slowdown and one process in five 20% slower, under the steady-state warm-up below.",
   "floorPct": 1.0,
   "alphaMedian": 0.0005,
