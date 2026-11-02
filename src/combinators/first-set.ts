@@ -439,7 +439,6 @@ function firstSetBody(
     case 'transform':
     case 'label':
     case 'trivia':
-    case 'token':
     case 'leaf':
     case 'node':
     case 'sepBy':
@@ -448,6 +447,8 @@ function firstSetBody(
     // the inner's construction-time set, which reads `any` when the inner opens
     // with a rule reference — resolve through it like any other wrapper.
     case 'attempt':   return fs(d.parser)
+    // A token runs its body with trivia cleared (`token.ts`).
+    case 'token':     return firstSetOf(d.parser, seen, resolve, consuming ? null : activeTrivia, consuming)
     case 'grammar':   return firstSetOf(
       d.parser,
       seen,

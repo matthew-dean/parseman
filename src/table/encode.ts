@@ -593,8 +593,8 @@ class Encoder {
   private readsScopeMemo = new Map<Combinator<unknown>, boolean>()
   /**
    * Can `p`'s rows depend on the trivia scope it is encoded under? No for a
-   * terminal, a scope of its own (`parser({ trivia })`, `noTrivia`), and a
-   * wrapper over a construct that reads none; yes wherever a first set, a gate or
+   * terminal, a scope of its own (`parser({ trivia })`, `noTrivia`, `token()`),
+   * and a wrapper over a construct that reads none; yes wherever a first set, a gate or
    * a reference's install is derived with the scope: a sequence with a nullable
    * term before another (the trivia between them), a routed arm (the trivia after
    * its token), a reference that installs its rule's trivia from a cleared
@@ -608,14 +608,14 @@ class Encoder {
     const rr = this.refResolver()
     let out: boolean
     switch (d.tag) {
-      case 'literal': case 'regex': case 'keywords': case 'routed':
+      case 'literal': case 'regex': case 'keywords': case 'routed': case 'token':
         out = false
         break
       case 'grammar':
         out = d.clearTrivia !== true && d.triviaParser === undefined && this.readsScope(d.parser)
         break
       case 'node': case 'label': case 'leaf': case 'transform': case 'attempt': case 'expect':
-      case 'not': case 'peek': case 'optional': case 'many': case 'oneOrMore':
+      case 'not': case 'peek': case 'optional': case 'many': case 'oneOrMore': case 'field':
         out = this.readsScope(d.parser)
         break
       case 'sepBy':
@@ -1839,7 +1839,13 @@ class Encoder {
         return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
       case 'token': {
-        return this.emit(OP_TOKEN, this.node(d.parser).ip)
+        // A token runs its body with trivia cleared (`token.ts`), so its body is
+        // encoded under no trivia.
+        const saved = this.activeTrivia
+        this.activeTrivia = undefined
+        const body = this.node(d.parser).ip
+        this.activeTrivia = saved
+        return this.emit(OP_TOKEN, body)
       }
       case 'routed':
         return this.emit(OP_ROUTED, d.fallback === undefined ? -1 : this.node(d.fallback).ip)
