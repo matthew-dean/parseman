@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, missingOperandFlags, pinnedReferenceError, signTestP, verdictModeArgErrors, type VerdictSettings } from '../../bench/xproc-stats.ts'
+import { aggregateSeed, caseVerdict, meanFlipP, mergeShards, missingOperandFlags, pinnedReferenceError, printReferenceArgErrors, signTestP, verdictModeArgErrors, type VerdictSettings } from '../../bench/xproc-stats.ts'
 
 /** Deterministic generator for the tests (mulberry32, as the gate uses). */
 function seeded(seed: number): () => number {
@@ -256,49 +256,108 @@ describe('mode flags need their operand', () => {
 })
 
 describe('the reference is resolved once per run', () => {
-  const releases = [{ tag: 'v0.58.2', sha: '617aab0e' }, { tag: 'v0.58.1', sha: '80562d9b' }, { tag: 'v0.58.0', sha: 'eaa3d1a1' }]
+  // Tag commit times (unix seconds). HEAD (the run's commit) is made at 1000.
+  const releases = [
+    { tag: 'v0.58.2', sha: '617aab0e', date: 2000 },
+    { tag: 'v0.58.1', sha: '80562d9b', date: 500 },
+    { tag: 'v0.58.0', sha: 'eaa3d1a1', date: 100 },
+  ]
+  const HEAD = 1000
 
-  it('accepts the previous release, and the one before it when a release was tagged mid-run', () => {
-    expect(pinnedReferenceError('617aab0e', releases)).toBeNull()
-    expect(pinnedReferenceError('80562d9b', releases)).toBeNull()
-    expect(pinnedReferenceError('80562d9bf00', releases)).toBeNull()
+  it('accepts the previous release', () => {
+    expect(pinnedReferenceError('617aab0e', releases, HEAD)).toBeNull()
+    expect(pinnedReferenceError('617aab0e', releases, 3000)).toBeNull()
+  })
+
+  it('accepts the one before it only when the newest was tagged after the run\'s commit', () => {
+    // v0.58.2 (2000) is newer than HEAD (1000): it arrived mid-run, so the pin is v0.58.1.
+    expect(pinnedReferenceError('80562d9b', releases, HEAD)).toBeNull()
+    expect(pinnedReferenceError('80562d9bf00', releases, HEAD)).toBeNull()
+    // HEAD at 3000 already postdates v0.58.2: it was the previous release when the run
+    // started, so pinning v0.58.1 is refused.
+    expect(pinnedReferenceError('80562d9b', releases, 3000)).toMatch(/is v0\.58\.1, but v0\.58\.2 was tagged before this run's commit/)
+    expect(pinnedReferenceError('80562d9b', releases, 2000)).toMatch(/was tagged before this run's commit/)
   })
 
   it('refuses an older release, an unknown sha, or a stub too short to identify one', () => {
-    expect(pinnedReferenceError('eaa3d1a1', releases)).toMatch(/not the previous release \(v0.58.2 617aab0e or v0.58.1 80562d9b\)/)
-    expect(pinnedReferenceError('deadbeef', releases)).toMatch(/not the previous release/)
-    expect(pinnedReferenceError('617a', releases)).toMatch(/not a commit sha/)
+    expect(pinnedReferenceError('eaa3d1a1', releases, HEAD)).toMatch(/not the previous release \(v0.58.2 617aab0e or v0.58.1 80562d9b\)/)
+    expect(pinnedReferenceError('deadbeef', releases, HEAD)).toMatch(/not the previous release/)
+    expect(pinnedReferenceError('617a', releases, HEAD)).toMatch(/not a commit sha/)
   })
 
   it('refuses revision syntax that would make git resolve something else', () => {
     for (const bad of ['80562d9b~5', '80562d9b^', '80562d9b^{commit}', 'v0.58.1', '80562D9B', ' 80562d9b']) {
-      expect(pinnedReferenceError(bad, releases)).toMatch(/not a commit sha/)
+      expect(pinnedReferenceError(bad, releases, HEAD)).toMatch(/not a commit sha/)
     }
   })
 
-  it('passes ONE reference, from one job, to every shard and the aggregate, for both targets', async () => {
+  it('--print-reference refuses any reference handed to it', () => {
+    expect(printReferenceArgErrors(['--print-reference'])).toEqual([])
+    expect(printReferenceArgErrors(['--print-reference', '--peak'])).toEqual([])
+    expect(printReferenceArgErrors(['--print-reference', '--ref=047f920'])).toEqual(['--ref'])
+    expect(printReferenceArgErrors(['--print-reference', '--reference=617aab0e', '--head-ref=x', '--self']))
+      .toEqual(['--reference', '--head-ref', '--self'])
+  })
+
+  it('makes the gate exit when --print-reference is given --ref', async () => {
+    const { spawnSync } = await import('node:child_process')
+    const { fileURLToPath } = await import('node:url')
+    const gate = fileURLToPath(new URL('../../bench/xproc-gate.ts', import.meta.url))
+    const r = spawnSync(process.execPath, ['--import', 'tsx/esm', gate, '--print-reference', '--ref=047f920'], { encoding: 'utf8', timeout: 60_000 })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('--print-reference resolves the reference itself; it refuses --ref')
+  }, 120_000)
+
+  /**
+   * The steps of one job in ci.yml: each step's `env:` map and its `run:` command. A
+   * small parser for the shape this file uses, so the test reads the actual argument
+   * each call receives rather than searching for a substring.
+   */
+  async function steps(job: string): Promise<Array<{ env: Record<string, string>; run: string }>> {
     const { readFileSync } = await import('node:fs')
-    const ci = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8')
-    const job = (name: string): string => {
-      const start = ci.indexOf(`\n  ${name}:\n`)
-      const next = ci.slice(start + 1).search(/\n  [a-z-]+:\n/)
-      return ci.slice(start, next === -1 ? undefined : start + 1 + next)
+    const lines = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8').split('\n')
+    const start = lines.indexOf(`  ${job}:`)
+    expect(start).toBeGreaterThan(-1)
+    let end = lines.findIndex((l, i) => i > start && /^  [a-z-]+:$/.test(l))
+    if (end === -1) end = lines.length
+    const out: Array<{ env: Record<string, string>; run: string }> = []
+    let cur: { env: Record<string, string>; run: string } | null = null
+    let inEnv = false
+    for (const line of lines.slice(start + 1, end)) {
+      if (/^      - /.test(line)) { cur = { env: {}, run: '' }; out.push(cur); inEnv = false }
+      if (cur === null) continue
+      const key = /^(?:      - |        )([a-z-]+):\s?(.*)$/.exec(line)
+      if (key !== null) {
+        inEnv = key[1] === 'env' && key[2] === ''
+        if (key[1] === 'run') cur.run = key[2]!
+        continue
+      }
+      const env = /^          ([A-Z_]+): (.*)$/.exec(line)
+      if (inEnv && env !== null) cur.env[env[1]!] = env[2]!
     }
-    // Resolved once, for each target.
-    const ref = job('xproc-ref')
-    expect(ref).toContain('pnpm perf:xproc:gate --print-reference')
-    expect(ref).toContain('pnpm perf:xproc:gate --peak --print-reference')
-    expect(ref).toMatch(/release: \$\{\{ steps\.ref\.outputs\.release \}\}/)
-    expect(ref).toMatch(/peak: \$\{\{ steps\.peak\.outputs\.peak \}\}/)
-    // Every consumer takes the SAME expression, keyed by its own target, and needs that job.
-    const pinned = '--reference=${{ needs.xproc-ref.outputs[matrix.target] }}'
-    for (const name of ['xproc-shard', 'xproc-perf']) {
-      const body = job(name)
-      expect(body).toMatch(/needs: \[changes, xproc-ref/)
-      expect(body).toContain('target: [release, peak]')
-      const runs = body.split('\n').filter(l => l.includes('pnpm perf:xproc:gate'))
-      expect(runs).toHaveLength(1)
-      expect(runs[0]).toContain(pinned)
+    return out
+  }
+
+  /** The value of one `--flag=` argument in a shell command, with surrounding quotes removed. */
+  const argOf = (run: string, flag: string): string[] =>
+    [...run.matchAll(new RegExp(`(?:^|\\s)${flag}=("[^"]*"|\\S+)`, 'g'))].map(m => m[1]!.replace(/^"(.*)"$/, '$1'))
+
+  it('resolves the reference once, in xproc-ref, for both targets', async () => {
+    const runs = (await steps('xproc-ref')).map(s => s.run).filter(r => r.includes('perf:xproc:gate'))
+    expect(runs).toEqual(['pnpm perf:xproc:gate --print-reference', 'pnpm perf:xproc:gate --peak --print-reference'])
+  })
+
+  it('hands every shard and the aggregate exactly that reference, through env, for both targets', async () => {
+    for (const job of ['xproc-shard', 'xproc-perf']) {
+      const gates = (await steps(job)).filter(s => s.run.includes('perf:xproc:gate'))
+      expect(gates).toHaveLength(1)
+      const { env, run } = gates[0]!
+      // The argument is the env variable, never an interpolated expression...
+      expect(argOf(run, '--reference')).toEqual(['$XPROC_REFERENCE'])
+      expect(run).not.toContain('${{')
+      // ...and the variable is the one job output, keyed by this job's target.
+      expect(env['XPROC_REFERENCE']).toBe('${{ needs.xproc-ref.outputs[matrix.target] }}')
+      expect(env['XPROC_TARGET']).toBe('${{ matrix.target }}')
     }
   })
 })

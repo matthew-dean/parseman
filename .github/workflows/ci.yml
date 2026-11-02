@@ -338,7 +338,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Measure one shard
-        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --reference=${{ needs.xproc-ref.outputs[matrix.target] }} --shard-out=xproc-${{ matrix.target }}-${{ matrix.shard }}.json
+        # The reference reaches the script through env, never by interpolating `${{ }}`
+        # into the command: a job output is data, and a shell must not parse it as code.
+        env:
+          XPROC_REFERENCE: ${{ needs.xproc-ref.outputs[matrix.target] }}
+          XPROC_TARGET: ${{ matrix.target }}
+          XPROC_SHARD: ${{ matrix.shard }}
+        run: pnpm perf:xproc:gate $([ "$XPROC_TARGET" = peak ] && echo --peak) --reference="$XPROC_REFERENCE" --shard-out="xproc-$XPROC_TARGET-$XPROC_SHARD.json"
       - uses: actions/upload-artifact@v4
         with:
           name: xproc-${{ matrix.target }}-${{ matrix.shard }}
@@ -376,7 +382,10 @@ jobs:
           path: xproc-shards
           merge-multiple: true
       - name: Verdict over every shard
-        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --reference=${{ needs.xproc-ref.outputs[matrix.target] }} --aggregate=xproc-shards --expect-shards=20
+        env:
+          XPROC_REFERENCE: ${{ needs.xproc-ref.outputs[matrix.target] }}
+          XPROC_TARGET: ${{ matrix.target }}
+        run: pnpm perf:xproc:gate $([ "$XPROC_TARGET" = peak ] && echo --peak) --reference="$XPROC_REFERENCE" --aggregate=xproc-shards --expect-shards=20
 
   macro-perf:
     needs: changes
