@@ -2,7 +2,7 @@
 set -e
 cd ~/git/worktrees/parseman-left-corner
 export JESS_ROOT=~/git/worktrees/jess-lc PM_BUDGET=0
-OUT=/tmp/claude-501/matrix.jsonl
+OUT=/tmp/claude-501/matrix-1b.jsonl
 : > $OUT
 mic() { echo "{\"d\":\"$1\",\"rule\":\"Declaration\",\"input\":\"$2\",\"n1\":$3,\"n2\":$4}"; }
 fil() { echo "{\"d\":\"$1\",\"rule\":\"Stylesheet\",\"file\":\"/private/tmp/claude-501/-Users-matthew-git-oss-jess/8341857d-0f0c-4f2b-9bb9-258cd289a43b/scratchpad/fixtures/$2\",\"n1\":$3,\"n2\":$4}"; }

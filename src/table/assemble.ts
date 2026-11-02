@@ -1011,6 +1011,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (s !== null
       && ctx._triviaLog === undefined
       && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
+      // A left-corner route that scanned this gap to decide hands its end over.
+      if (LC && cur === TM_AT && s === TM_S && input === TM_IN) return TM_END
       return s(input, cur)
     }
     // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER — see `skipTriviaScanned`.
@@ -1565,15 +1567,118 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   let SEED_END = -1
   let SEED_PV: unknown
   let SEED_RV: unknown
-  /** The per-call save stack the spine driver pushes level contexts onto. */
-  const SV: unknown[] = []
-  let SP = 0
 
   const K_WRAP = 0, K_SCOPE = 1, K_WITHCTX = 2, K_NODE = 3, K_SEQ = 4, K_REP = 5, K_CHOICE = 6
   const V_PLAIN = 0, V_CHILDREN = 1, V_CHILDREN_FIELDS = 2, V_COLLAPSE = 3, V_CHILDREN_COLLAPSE = 4
   const V_GENERIC = 5, V_PASS = 6
-  const T_OPT_GATE = 0, T_REP_CLASS = 1, T_GATE_FAIL = 2
-  type Tail = { kind: number; collect: boolean; xf: string[] }
+  const T_OPT_GATE = 0, T_REP_CLASS = 1, T_GATE_FAIL = 2, T_REP_GAP = 3, T_REP_OPTGAP = 4
+  /**
+   * One continuation term after a left corner, as the piece that runs it
+   * decides at its start: an `optional` behind a gate, a repeat behind its item
+   * class, a repeat whose item opens with a gap (`OP_GAPGATE`: the gap's regex,
+   * then the class after it, or the class of an arm without the gap), or a gate
+   * that must match.
+   */
+  type Tail = {
+    kind: number
+    collect: boolean
+    xf: string[]
+    cls: ResolvedClass | undefined
+    gapRe: RegExp | undefined
+    gapRow: number
+    follow: ResolvedClass | undefined
+    other: ResolvedClass | undefined
+    followMask: LeadMask | undefined
+  }
+  function tailOf(kind: number): Tail {
+    return { kind, collect: false, xf: EMPTY_FX, cls: undefined, gapRe: undefined, gapRow: -1, follow: undefined, other: undefined, followMask: undefined }
+  }
+  /**
+   * A repeat item that opens, through a sequence's first term and trivia-free
+   * scopes, with `optional(<regex>)` and then a term `F` with a finite lead: the
+   * gap the `OP_GAPGATE` row names, written as an optional. Where `F` cannot
+   * start after the gap (or, with no gap, at the item's start) the item fails at
+   * `F`, with `F`'s own expected set.
+   */
+  function optGapOf(item: number): { row: number; re: RegExp; follow: LeadMask; xf: string[] } | undefined {
+    let at = item
+    for (let guard = 0; guard < 8; guard++) {
+      const op = code[at]
+      if ((op === OP_SCOPE || op === OP_SCOPE_PLAIN) && code[at + 1]! < 0) { at = code[at + 2]!; continue }
+      if (op !== OP_SEQ && op !== OP_SEQV) return undefined
+      const t0 = code[at + 2]!
+      if (code[at + 1]! >= 2 && code[t0] === OP_OPT && code[code[t0 + 1]!] === OP_RX) {
+        const tm = triviaMaskAt(at)
+        if (tm === null || tm.some(x => x === 1)) return undefined
+        const F = code[at + 3]!
+        const fop = code[F]
+        if (fop !== OP_LIT && fop !== OP_RX && fop !== OP_GATE) return undefined
+        if (rowNullable(code, k, F, NULLABLE)) return undefined
+        const follow = leadOf!(F)
+        if (follow === null) return undefined
+        const row = code[t0 + 1]!
+        return { row, re: k[code[row + 1]!] as RegExp, follow, xf: fx[code[F + (fop === OP_GATE ? 3 : 2)]!] as string[] }
+      }
+      at = t0
+    }
+    return undefined
+  }
+  if (LC) {
+    // The regex rows those gaps read: a route that read one hands its end over.
+    for (const ip of reachableSites(code, [...Object.values(prog.rules), ...labelExtraIps])) {
+      if ((code[ip] === OP_REP || code[ip] === OP_REPV) && code[ip + 4]! < 0 && code[ip + 2]! === 0) {
+        const g = optGapOf(code[ip + 1]!)
+        if (g !== undefined) GAP_ROWS.add(g.row)
+      }
+    }
+  }
+
+  /** The tail term at `t`, or `undefined` where its start cannot be decided here. */
+  function classifyTail(t: number): Tail | undefined {
+    const op = code[t]
+    if (op === OP_OPT && lookaheadClass(code[t + 1]!) !== null) {
+      const T = tailOf(T_OPT_GATE)
+      T.cls = lookaheadClass(code[t + 1]!)!
+      return T
+    }
+    if ((op === OP_REP || op === OP_REPV) && code[t + 4]! < 0 && code[t + 2]! === 0) {
+      const item = code[t + 1]!
+      const itemCls = code[t + 7]! >= 0 ? cc[code[t + 7]!]! : undefined
+      if (code[item] === OP_GAPGATE) {
+        const T = tailOf(T_REP_GAP)
+        T.collect = op === OP_REP
+        T.cls = itemCls
+        T.gapRow = code[item + 2]!
+        T.gapRe = k[code[T.gapRow + 1]!] as RegExp
+        T.follow = cc[code[item + 3]!]!
+        T.other = code[item + 4]! >= 0 ? cc[code[item + 4]!]! : undefined
+        return T
+      }
+      const og = optGapOf(item)
+      if (og !== undefined) {
+        const T = tailOf(T_REP_OPTGAP)
+        T.collect = op === OP_REP
+        T.cls = itemCls
+        T.gapRow = og.row
+        T.gapRe = og.re
+        T.followMask = og.follow
+        T.xf = og.xf
+        return T
+      }
+      if (itemCls === undefined || LC_PLANT === 'rep-mask') return undefined
+      const T = tailOf(T_REP_CLASS)
+      T.collect = op === OP_REP
+      T.cls = itemCls
+      return T
+    }
+    if (op === OP_GATE) {
+      const T = tailOf(T_GATE_FAIL)
+      T.cls = cc[code[t + 1]!]!
+      T.xf = fx[code[t + 3]!] as string[]
+      return T
+    }
+    return undefined
+  }
   type Level = {
     kind: number
     ip: number
@@ -1608,6 +1713,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     itemFx: string[]
     maxOne: boolean
     sepXf: string[] | undefined
+    /** A separator the repeat itself gates (`OP_REP` ip+7): a miss writes nothing. */
+    sepGated: boolean
+    sepCls: ResolvedClass | undefined
+    sepMask: LeadMask | undefined
+    itemCls: ResolvedClass | undefined
     resumeTop: number
     resumed: Piece | undefined
     /** The site's trivia is not named by the labels: read it from `ctx.trivia` at run time. */
@@ -1628,6 +1738,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       collapse: false, readsRaw: false,
       leading: [], wantValues: false, tails: [], resumeMask: null,
       collect: false, itemDirty: false, reportItem: false, itemFx: EMPTY_FX, maxOne: false, sepXf: undefined,
+      sepGated: false, sepCls: undefined, sepMask: undefined, itemCls: undefined,
       resumeTop: -1, resumed: undefined, trivRuntime: false, exclusive: false, choiceFx: EMPTY_FX, prefixFx: [], suffixFx: [], tObj: undefined, tMask: null,
     }
   }
@@ -1676,6 +1787,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     atom: Piece | undefined
     cuts: { at: number; cut: number; scope: number }[]
     cutAtoms: (Piece | undefined)[]
+    chain: Piece | undefined
+    cutChains: (Piece | undefined)[]
   }
 
   /**
@@ -1859,22 +1972,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           L.wantValues = op === OP_SEQ
           for (let i = 0; i < lc; i++) L.leading.push(link(code[base + i]!))
           // The continuation: each later term, until one that cannot match empty.
-          let mask: LeadMask | null = trivAt === null ? new Uint8Array(129) : trivAt.slice()
-          for (let i = lc + 1; i < n && mask !== null; i++) {
-            const t = code[base + i]!
-            if (code[t] === OP_OPT && lookaheadClass(code[t + 1]!) !== null) {
-              L.tails.push({ kind: T_OPT_GATE, collect: false, xf: EMPTY_FX })
-              orMask(mask, maskOfClass(lookaheadClass(code[t + 1]!)!))
-            } else if ((code[t] === OP_REP || code[t] === OP_REPV) && code[t + 4]! < 0 && code[t + 2]! === 0 && code[t + 7]! >= 0) {
-              L.tails.push({ kind: T_REP_CLASS, collect: code[t] === OP_REP, xf: EMPTY_FX })
-              if (LC_PLANT !== 'rep-mask') orMask(mask, maskOfClass(cc[code[t + 7]!]!))
-            } else if (code[t] === OP_GATE) {
-              L.tails.push({ kind: T_GATE_FAIL, collect: false, xf: fx[code[t + 3]!] as string[] })
-              orMask(mask, maskOfClass(cc[code[t + 1]!]!))
-              break
-            } else mask = null
+          // Decided at run time on the token after the gap, read once.
+          let known = true
+          for (let i = lc + 1; i < n; i++) {
+            const T = classifyTail(code[base + i]!)
+            if (T === undefined) { known = false; break }
+            L.tails.push(T)
+            if (T.kind === T_GATE_FAIL) break
           }
-          L.resumeMask = mask
+          L.resumeMask = known ? new Uint8Array(129) : null
           return L
         }, ip)
         ip = code[base + lc]!
@@ -1894,23 +2000,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           L.reportItem = (flags & 4) !== 0
           L.itemFx = L.reportItem ? fx[code[at + 6]!] as string[] : EMPTY_FX
           L.maxOne = max >= 0 && max <= 1
-          const trivAt = triviaMaskAt(at)
-          L.trivRuntime = trivAt === null
-          let mask: LeadMask | null = trivAt ?? new Uint8Array(129)
+          let known = true
           if (sepIp >= 0) {
-            let rx = sepIp
-            if (code[rx] === OP_FIELD && fieldSpec(k[code[rx + 1]!]).bits === 0) rx = code[rx + 2]!
-            if (!leadingTriviaFieldAt(code, k, sepIp) && code[rx] === OP_RX) {
-              const m = leadOf!(rx)
-              if (m === null) mask = null
-              else { orMask(mask, m); L.sepXf = fx[code[rx + 2]!] as string[] }
-            } else mask = null
+            const sepLeads = leadingTriviaFieldAt(code, k, sepIp)
+            const sepClassIndex = !sepLeads ? code[at + 7]! : -1
+            L.sepGated = sepClassIndex >= 0 && !rowNullable(code, k, sepIp, NULLABLE) && !P_SEP_WRITE
+            if (L.sepGated) L.sepCls = cc[sepClassIndex]!
+            else {
+              let rx = sepIp
+              if (code[rx] === OP_FIELD && fieldSpec(k[code[rx + 1]!]).bits === 0) rx = code[rx + 2]!
+              const m = !sepLeads && (code[rx] === OP_RX || code[rx] === OP_LIT) ? leadOf!(rx) : null
+              if (m === null) known = false
+              else { L.sepMask = m; L.sepXf = fx[code[rx + 2]!] as string[] }
+            }
           } else {
             const itemClass = code[at + 7]!
-            if (itemClass >= 0) orMask(mask, maskOfClass(cc[itemClass]!))
-            else mask = null
+            if (itemClass >= 0) L.itemCls = cc[itemClass]!
+            else known = false
           }
-          L.resumeMask = mask
+          L.resumeMask = known ? new Uint8Array(129) : null
           return L
         }, ip)
         ip = code[ip + 1]!
@@ -1920,9 +2028,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
     if (terminal < 0 && code[ip] === OP_NODE) terminal = ip
     if (terminal >= 0) best = levels.length
-    const d = best
     // A continuation that can start resumes at the nearest framed node above it.
-    for (let i = 0; i < d; i++) {
+    for (let i = 0; i < best; i++) {
       const L = levels[i]!
       if ((L.kind !== K_SEQ && L.kind !== K_REP) || L.resumeTop >= 0) continue
       let h = i - 1
@@ -1931,6 +2038,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       L.resumeTop = h
       L.resumed = lowerSeeded(levels, h, i)
     }
+    // A level that always resumes at the top makes the whole route the normal
+    // path plus the walk: the top keeps its own piece for that character.
+    for (let i = 0; i < best; i++) {
+      const L = levels[i]!
+      if ((L.kind === K_SEQ || L.kind === K_REP) && L.resumeMask === null && L.resumeTop <= 0) best = 0
+    }
+    const d = best
     // A sequence with a leading lookahead runs its left corner after the trivia
     // installed at run time; where the labels cannot name that trivia it is read
     // at entry: the entry's, unless a scope above installs its own.
@@ -1948,7 +2062,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       cuts.push({ at: i, cut, scope })
       cutAtoms.push(cut > 0 ? link(levels[cut]!.ip) : undefined)
     }
-    return { levels, d, atom: d > 0 ? link(d === levels.length ? terminal : levels[d]!.ip) : undefined, cuts, cutAtoms }
+    const atom = d > 0 ? link(d === levels.length ? terminal : levels[d]!.ip) : undefined
+    return { levels, d, atom, cuts, cutAtoms, chain: d > 0 ? chainFor(levels, d, atom!) : undefined, cutChains: cuts.map((x, j) => x.cut > 0 ? chainFor(levels, x.cut, cutAtoms[j]!) : undefined) }
   }
 
   /** Build the spine under a node, or `undefined` when no character reaches below it. */
@@ -1976,15 +2091,31 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       const R = routes[c]!
       let d = R.d
       if (d === 0 || ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined) return normal(input, pos, ctx)
-      let atom = R.atom!
+      let chain = R.chain!
       const cuts = R.cuts
       for (let x = 0; x < cuts.length; x++) {
         const X = cuts[x]!
         const T = X.scope >= 0 ? R.levels[X.scope]!.scopeTrivia : ctx.trivia
-        if (triviaMayStart(R.levels[X.at]!, T, c)) { d = X.cut; atom = R.cutAtoms[x]!; break }
+        if (triviaMayStart(R.levels[X.at]!, T, c)) { d = X.cut; chain = R.cutChains[x]!; break }
       }
       if (d === 0) return normal(input, pos, ctx)
-      return runSpine(R.levels, d, atom, input, pos, ctx)
+      const sBuf = ctx._cstBuf, sCh = ctx._cstChildren, sLv = ctx._cstLeaves
+      const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
+      ctx._cstBuf = undefined
+      ctx._cstChildren = undefined
+      ctx._cstLeaves = undefined
+      ctx._cstRawChildren = undefined
+      ctx._cstTriviaLog = undefined
+      const r = chain(input, pos, ctx)
+      ctx._cstBuf = sBuf
+      ctx._cstChildren = sCh
+      ctx._cstLeaves = sLv
+      ctx._cstRawChildren = sRaw
+      ctx._cstTriviaLog = sTl
+      if (r === RESUME) return lcResume(input, pos, ctx)
+      if (r === FAIL) return FAIL
+      if (sBuf !== undefined || sCh !== undefined) pushCstChild(ctx, PV, rawEntry(PV, input, pos, EC.e))
+      return r
     }
     if (LC_DEBUG === undefined) return driver
     const KN = ['wrap', 'scope', 'withctx', 'node', 'seq', 'rep', 'choice']
@@ -2026,6 +2157,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const Li = levels[i]!
     for (let j = i; j >= h; j--) {
       const at = levels[j]!.ip
+      // As `link` does: a rule reference and an identity scope are their child.
+      const op = code[at]
+      if (op === OP_RULE || ((op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN) && scopeIsIdentity(code, at, closureLabels.at(at)))) {
+        child = at
+        continue
+      }
       OVR_IPS = [child]
       OVR_PIECES = [piece]
       // The resumed sequence's leading terms were run on the way in: for the
@@ -2051,20 +2188,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return piece
   }
 
-  function lcFail(levels: readonly Level[], from: number, pos: number, ctx: ParseContext, errLen: number): unknown {
-    if (LC_TRACE) console.error(`lc FAIL top=${levels[0]!.ip} from ${from} pos ${pos}`)
-    for (let i = from; i >= 0; i--) {
-      const L = levels[i]!
-      lcUndo(L, ctx)
-      if (L.kind === K_REP) {
-        if (L.itemDirty && ctx._errors !== undefined && ctx._errors.length > errLen) ctx._errors.length = errLen
-        if (!committed(ctx) && L.reportItem) { ctx._fe = pos; ctx._fx = L.itemFx }
-      } else if (L.kind === K_CHOICE) lcChoiceFail(L, pos, ctx, errLen)
-    }
-    lcRestoreOuter(ctx)
-    return FAIL
-  }
-
   /** The failure of a choice's one dispatched arm, as the choice piece reports it. */
   function lcChoiceFail(L: Level, pos: number, ctx: ParseContext, errLen: number): void {
     if (L.exclusive) {
@@ -2087,205 +2210,273 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     ctx._fx = acc ?? L.choiceFx
   }
 
-  function lcUndo(L: Level, ctx: ParseContext): void {
-    switch (L.kind) {
-      case K_SCOPE:
-        if ((L.rootFlags & 1) !== 0) ctx._rootTriviaCapture = SV[--SP] as boolean
-        if (L.cap) ctx.captureTrivia = SV[--SP] as boolean
-        SCAN = SV[--SP] as FastTriviaScanner | null
-        ctx.triviaKindLabels = SV[--SP] as ParseContext['triviaKindLabels']
-        ctx.trivia = SV[--SP] as ParseContext['trivia']
-        return
-      case K_WITHCTX:
-        ctx.state = SV[--SP]
-        return
-      case K_NODE:
-        if (L.variant === V_PASS) return
-        ctx._fields = SV[--SP] as ParseContext['_fields']
-        ctx.captureTrivia = SV[--SP] as boolean
-        return
-      default:
-    }
+  /** Returned up a chain when a continuation must resume at an enclosing node. */
+  const RESUME: unknown = Object.freeze({ resume: true })
+  /** Where a pending resume runs, and what it runs. */
+  let RES_AT = -1
+  let RES_PIECE: Piece | undefined
+  let RES_GAP_ROW = -1
+  let RES_GAP_AT = -1
+  let RES_GAP_END = -1
+  /** The value of the last node a chain completed: the child its parent counts. */
+  let PV: unknown
+  /** The last trivia gap a route scanned to decide, handed to the scan that follows. */
+  let TM_S: FastTriviaScanner | null = null
+  let TM_AT = -1
+  let TM_IN: string | undefined
+  let TM_END = -1
+  /** One gap read, shared by every level of an ascent that asks for the same one. */
+  let GM_RE: RegExp | undefined
+  let GM_AT = -1
+  let GM_IN: string | undefined
+  let GM_Q = -1
+
+  /** The end of the trivia the next term would skip at `end`; −1 where it cannot be read purely. */
+  function lcGap(L: Level, input: string, end: number, ctx: ParseContext): number {
+    const T = ctx.trivia
+    if (T === undefined) return end
+    if (!triviaMayStart(L, T, lead(input, end))) return end
+    const sc = SCAN
+    if (sc === null) return -1
+    const q = sc(input, end)
+    TM_S = sc; TM_AT = end; TM_IN = input; TM_END = q
+    return q
   }
 
-  function lcRestoreOuter(ctx: ParseContext): void {
-    ctx._fields = SV[--SP] as ParseContext['_fields']
-    ctx.captureTrivia = SV[--SP] as boolean
-    ctx._cstTriviaLog = SV[--SP] as ParseContext['_cstTriviaLog']
-    ctx._cstRawChildren = SV[--SP] as ParseContext['_cstRawChildren']
-    ctx._cstLeaves = SV[--SP] as ParseContext['_cstLeaves']
-    ctx._cstChildren = SV[--SP] as ParseContext['_cstChildren']
-    ctx._cstBuf = SV[--SP] as ParseContext['_cstBuf']
+  function lcGapRead(re: RegExp, input: string, at: number): number {
+    if (re === GM_RE && at === GM_AT && input === GM_IN) return GM_Q
+    re.lastIndex = at
+    const q = re.test(input) ? re.lastIndex : -1
+    GM_RE = re; GM_AT = at; GM_IN = input; GM_Q = q
+    return q
   }
 
-  function runSpine(levels: readonly Level[], d: number, atom: Piece, input: string, pos: number, ctx: ParseContext): unknown {
-    const errLen = ctx._errors?.length ?? 0
-    SV[SP++] = ctx._cstBuf
-    SV[SP++] = ctx._cstChildren
-    SV[SP++] = ctx._cstLeaves
-    SV[SP++] = ctx._cstRawChildren
-    SV[SP++] = ctx._cstTriviaLog
-    SV[SP++] = ctx.captureTrivia
-    SV[SP++] = ctx._fields
-    ctx._cstBuf = undefined
-    ctx._cstChildren = undefined
-    ctx._cstLeaves = undefined
-    ctx._cstRawChildren = undefined
-    ctx._cstTriviaLog = undefined
-    for (let i = 0; i < d; i++) {
-      const L = levels[i]!
-      switch (L.kind) {
-        case K_SCOPE:
-          SV[SP++] = ctx.trivia
-          SV[SP++] = ctx.triviaKindLabels
-          SV[SP++] = SCAN
-          SCAN = L.scanFor
-          ctx.trivia = L.scopeTrivia
-          ctx.triviaKindLabels = L.scopeLabels
-          if (L.cap) { SV[SP++] = ctx.captureTrivia; ctx.captureTrivia = true }
-          if ((L.rootFlags & 1) !== 0) { SV[SP++] = ctx._rootTriviaCapture; ctx._rootTriviaCapture = false }
-          if ((L.rootFlags & 2) !== 0) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
-          break
-        case K_WITHCTX:
-          SV[SP++] = ctx.state
-          ctx.state = L.derive !== undefined ? L.derive(ctx.state) : L.extra
-          break
-        case K_NODE:
-          if (L.variant === V_PASS) break
-          SV[SP++] = ctx.captureTrivia
-          SV[SP++] = ctx._fields
-          ctx.captureTrivia = L.captureWide
-          ctx._fields = L.wantFields ? [] : undefined
-          break
-        case K_SEQ:
-          for (let t = 0; t < L.leading.length; t++) {
-            if (L.leading[t]!(input, pos, ctx) === FAIL) return lcFail(levels, i, pos, ctx, errLen)
-          }
-          break
-        case K_REP:
-        case K_CHOICE:
-          ctx._fc = false
-          break
-        default:
-      }
-    }
-    if (LC_TRACE) console.error(`lc enter top=${levels[0]!.ip} d=${d} pos ${pos}`)
-    const v = atom(input, pos, ctx)
-    if (v === FAIL) return lcFail(levels, d - 1, pos, ctx, errLen)
-    let end = EC.e
-    let pv: unknown = v
-    let rv: unknown = v
-    for (let i = d - 1; i >= 0; i--) {
-      const L = levels[i]!
-      if (LC_TRACE) console.error(`lc ascend top=${levels[0]!.ip} level ${i} kind ${L.kind} end ${end} c2 ${JSON.stringify(input[end])}`)
-      switch (L.kind) {
-        case K_NODE: {
-          if (L.variant === V_PASS) {
-            if (rv === undefined) rv = collapseEmpty(ctx, L.build!, input, pos, end, L.readsRaw)
-            pv = rv
-            break
-          }
-          const fieldsArr = ctx._fields
-          lcUndo(L, ctx)
-          const span = { start: pos, end }
-          const kids = pv === undefined ? EMPTY_CH : [pv]
-          const build = L.build!
-          let nd: unknown
-          switch (L.variant) {
-            case V_PLAIN:
-              nd = build(kids, undefined, span, [rawEntry(pv, input, pos, end)], EMPTY_TL, undefined)
-              break
-            case V_CHILDREN:
-              nd = build(P_KIDS ? EMPTY_CH : kids, undefined, span, EMPTY_CH, EMPTY_TL, undefined)
-              break
-            case V_CHILDREN_FIELDS:
-              nd = build(kids, buildFieldMap(fieldsArr), span, EMPTY_CH, EMPTY_TL, undefined)
-              break
-            case V_COLLAPSE:
-              nd = kids.length === 1 ? kids[0] : build(kids, undefined, span, [rawEntry(pv, input, pos, end)], EMPTY_TL, undefined)
-              break
-            case V_CHILDREN_COLLAPSE:
-              nd = kids.length === 1 ? kids[0] : build(EMPTY_CH, undefined, span, EMPTY_CH, EMPTY_TL, undefined)
-              break
-            default: {
-              const fieldMap: FieldMap | undefined = L.wantFields ? buildFieldMap(fieldsArr) : undefined
-              if (L.collapse && kids.length === 1) nd = kids[0]
-              else {
-                const rawKids = L.omitsRaw ? EMPTY_CH : [rawEntry(pv, input, pos, end)]
-                nd = build(kids, fieldMap, span, rawKids, L.captureWide ? EMPTY_TLOG : EMPTY_TL, L.readsState && !P_STATE ? ctx.state : undefined)
-              }
-            }
-          }
-          pv = rv = nd
-          break
-        }
-        case K_SEQ: {
-          const c2 = end < input.length ? input.charCodeAt(end) : -1
-          if (L.resumeMask === null || maskHas(L.resumeMask, c2) || (L.trivRuntime && triviaMayStart(L, ctx.trivia, c2))) {
-            const r = lcResume(levels, i, input, pos, end, pv, rv, ctx)
-            if (L.resumeTop === 0) return r
-            if (r === FAIL) return lcFail(levels, L.resumeTop - 1, pos, ctx, errLen)
-            end = EC.e
-            pv = rv = r
-            i = L.resumeTop
-            break
-          }
-          const vals: unknown[] | undefined = L.wantValues ? [rv] : undefined
-          for (let t = 0; t < L.tails.length; t++) {
-            const T = L.tails[t]!
-            if (T.kind === T_OPT_GATE) vals?.push(null)
-            else if (T.kind === T_REP_CLASS) vals?.push(T.collect ? [] : undefined)
-            else { ctx._fe = end; ctx._fx = T.xf; return lcFail(levels, i - 1, pos, ctx, errLen) }
-          }
-          rv = vals
-          break
-        }
-        case K_REP: {
-          if (!L.maxOne && end < input.length) {
-            const c2 = input.charCodeAt(end)
-            if (!P_NO_REP_RESUME && (L.resumeMask === null || maskHas(L.resumeMask, c2) || (L.trivRuntime && triviaMayStart(L, ctx.trivia, c2)))) {
-              const r = lcResume(levels, i, input, pos, end, pv, rv, ctx)
-              if (L.resumeTop === 0) return r
-              if (r === FAIL) return lcFail(levels, L.resumeTop - 1, pos, ctx, errLen)
-              end = EC.e
-              pv = rv = r
-              i = L.resumeTop
-              break
-            }
-            if (L.sepXf !== undefined && !P_SEP_WRITE) { ctx._fc = false; ctx._fe = end; ctx._fx = L.sepXf }
-          }
-          rv = L.collect ? [rv] : undefined
-          break
-        }
-        default:
-          lcUndo(L, ctx)
-      }
-    }
-    lcRestoreOuter(ctx)
-    if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
-      pushCstChild(ctx, pv, rawEntry(pv, input, pos, end))
-    }
-    EC.e = end
-    return rv
-  }
-
-  /** Run level `i`'s continuation in the frame of the framed node above it. */
-  function lcResume(
-    levels: readonly Level[], i: number, input: string, pos: number, end: number,
-    pv: unknown, rv: unknown, ctx: ParseContext,
-  ): unknown {
-    const L = levels[i]!
-    const h = L.resumeTop
-    for (let j = i; j >= h; j--) lcUndo(levels[j]!, ctx)
-    if (h === 0) lcRestoreOuter(ctx)
+  /** Arm the seed and run the pending resume at the node it targets. */
+  function lcResume(input: string, pos: number, ctx: ParseContext): unknown {
+    const piece = RES_PIECE!
     SEED_ARMED = true
+    const gapped = RES_GAP_ROW >= 0
+    if (gapped) { GAP.row = RES_GAP_ROW; GAP.at = RES_GAP_AT; GAP.end = RES_GAP_END; GAP.input = input }
+    RES_GAP_ROW = -1
+    const r = piece(input, pos, ctx)
+    if (gapped) GAP.at = -1
+    if (SEED_ARMED) { SEED_ARMED = false; throw new Error(`left-corner seed at ${pos} was not consumed`) }
+    if (r !== FAIL) PV = r
+    return r
+  }
+
+  function lcSchedule(L: Level, pos: number, end: number, rv: unknown): unknown {
+    if (LC_TRACE) console.error(`lc resume level ${L.ip} kind ${L.kind} known=${String(L.resumeMask !== null)} tails=${L.tails.map(t => t.kind).join(',')} at ${end} -> top ${L.resumeTop}`)
+    RES_AT = L.resumeTop
+    RES_PIECE = L.resumed
     SEED_POS = pos
     SEED_END = end
-    SEED_PV = pv
+    SEED_PV = PV
     SEED_RV = rv
-    const r = L.resumed!(input, pos, ctx)
-    if (SEED_ARMED) { SEED_ARMED = false; throw new Error(`left-corner seed at ${pos} was not consumed (site ${L.ip})`) }
-    return r
+    return RESUME
+  }
+
+  /**
+   * One level of a route, as its own closure over the next level's: the
+   * character decided which levels these are, so every call here is to one
+   * known closure, and wrappers that only route add none.
+   */
+  function chainFor(levels: readonly Level[], d: number, atom: Piece): Piece {
+    let next: Piece = atom
+    for (let i = d - 1; i >= 0; i--) next = levelPiece(levels[i]!, i, next, i === d - 1)
+    return next
+  }
+
+  function levelPiece(L: Level, i: number, next: Piece, innermost: boolean): Piece {
+    switch (L.kind) {
+      case K_WRAP:
+        if (!innermost) return next
+        return (input, pos, ctx) => {
+          const r = next(input, pos, ctx)
+          if (r !== FAIL) PV = r
+          return r
+        }
+      case K_SCOPE: {
+        const scanFor = L.scanFor, tri = L.scopeTrivia, labels = L.scopeLabels, cap = L.cap
+        const root1 = (L.rootFlags & 1) !== 0, root2 = (L.rootFlags & 2) !== 0
+        return (input, pos, ctx) => {
+          const sT = ctx.trivia, sL = ctx.triviaKindLabels, sS = SCAN, sC = ctx.captureTrivia
+          const sR = ctx._rootTriviaCapture
+          SCAN = scanFor
+          ctx.trivia = tri
+          ctx.triviaKindLabels = labels
+          if (cap) ctx.captureTrivia = true
+          if (root1) ctx._rootTriviaCapture = false
+          if (root2) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
+          const r = next(input, pos, ctx)
+          if (root1) ctx._rootTriviaCapture = sR
+          if (cap) ctx.captureTrivia = sC
+          ctx.trivia = sT
+          ctx.triviaKindLabels = sL
+          SCAN = sS
+          if (innermost && r !== FAIL) PV = r
+          return r
+        }
+      }
+      case K_WITHCTX: {
+        const derive = L.derive, extra = L.extra
+        return (input, pos, ctx) => {
+          const saved = ctx.state
+          ctx.state = derive !== undefined ? derive(saved) : extra
+          const r = next(input, pos, ctx)
+          ctx.state = saved
+          if (innermost && r !== FAIL) PV = r
+          return r
+        }
+      }
+      case K_CHOICE:
+        return (input, pos, ctx) => {
+          const errLen = ctx._errors?.length ?? 0
+          ctx._fc = false
+          const r = next(input, pos, ctx)
+          if (r === FAIL) { lcChoiceFail(L, pos, ctx, errLen); return FAIL }
+          if (innermost) PV = r
+          return r
+        }
+      case K_REP: {
+        const dirty = L.itemDirty, report = L.reportItem, itemFx = L.itemFx, collect = L.collect
+        const known = L.resumeMask !== null, maxOne = L.maxOne
+        const sepGated = L.sepGated, sepCls = L.sepCls, sepMask = L.sepMask, sepXf = L.sepXf, itemCls = L.itemCls
+        return (input, pos, ctx) => {
+          const errLen = dirty ? ctx._errors?.length ?? 0 : 0
+          ctx._fc = false
+          const r = next(input, pos, ctx)
+          if (r === FAIL) {
+            if (dirty && ctx._errors !== undefined && ctx._errors.length > errLen) ctx._errors.length = errLen
+            if (!committed(ctx) && report) { ctx._fe = pos; ctx._fx = itemFx }
+            return FAIL
+          }
+          if (r === RESUME) return r
+          if (innermost) PV = r
+          const end = EC.e
+          if (!maxOne && end < input.length) {
+            if (!known) return lcSchedule(L, pos, end, r)
+            const q = lcGap(L, input, end, ctx)
+            if (q < 0) return lcSchedule(L, pos, end, r)
+            const cq = lead(input, q)
+            if (sepGated) {
+              if (classHas(sepCls!, cq)) return lcSchedule(L, pos, end, r)
+            } else if (sepMask !== undefined) {
+              if (maskHas(sepMask, cq)) return lcSchedule(L, pos, end, r)
+              ctx._fc = false; ctx._fe = q; ctx._fx = sepXf
+            } else if (q < input.length && classHas(itemCls!, cq)) return lcSchedule(L, pos, end, r)
+          }
+          EC.e = end
+          return collect ? [r] : undefined
+        }
+      }
+      case K_SEQ: {
+        const leading = L.leading, nLead = leading.length, tails = L.tails, nTails = tails.length
+        const known = L.resumeMask !== null, wantValues = L.wantValues
+        return (input, pos, ctx) => {
+          for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+          const r = next(input, pos, ctx)
+          if (r === FAIL || r === RESUME) return r
+          if (innermost) PV = r
+          const end = EC.e
+          if (!known) return lcSchedule(L, pos, end, r)
+          const q = lcGap(L, input, end, ctx)
+          if (q < 0) return lcSchedule(L, pos, end, r)
+          const cq = lead(input, q)
+          const vals: unknown[] | undefined = wantValues ? [r] : undefined
+          for (let t = 0; t < nTails; t++) {
+            const T = tails[t]!
+            switch (T.kind) {
+              case T_OPT_GATE:
+                if (classHas(T.cls!, cq)) return lcSchedule(L, pos, end, r)
+                vals?.push(null)
+                break
+              case T_REP_CLASS:
+                if (classHas(T.cls!, cq)) return lcSchedule(L, pos, end, r)
+                vals?.push(T.collect ? [] : undefined)
+                break
+              case T_REP_GAP: {
+                if ((T.cls === undefined || classHas(T.cls, cq)) && q < input.length) {
+                  const g = lcGapRead(T.gapRe!, input, q)
+                  if ((g >= 0 && classHas(T.follow!, lead(input, g))) || (T.other !== undefined && classHas(T.other, cq))) {
+                    if (g >= 0) { RES_GAP_ROW = T.gapRow; RES_GAP_AT = q; RES_GAP_END = g }
+                    return lcSchedule(L, pos, end, r)
+                  }
+                }
+                vals?.push(T.collect ? [] : undefined)
+                break
+              }
+              case T_REP_OPTGAP: {
+                if ((T.cls === undefined || classHas(T.cls, cq)) && q < input.length) {
+                  const g = lcGapRead(T.gapRe!, input, q)
+                  const at = g >= 0 ? g : q
+                  if (maskHas(T.followMask!, lead(input, at))) {
+                    if (g >= 0) { RES_GAP_ROW = T.gapRow; RES_GAP_AT = q; RES_GAP_END = g }
+                    return lcSchedule(L, pos, end, r)
+                  }
+                  ctx._fe = at; ctx._fx = T.xf
+                }
+                vals?.push(T.collect ? [] : undefined)
+                break
+              }
+              default:
+                if (classHas(T.cls!, cq)) return lcSchedule(L, pos, end, r)
+                ctx._fe = q; ctx._fx = T.xf
+                return FAIL
+            }
+          }
+          EC.e = end
+          return vals
+        }
+      }
+      default: {
+        if (L.variant === V_PASS) {
+          const build = L.build!, readsRaw = L.readsRaw
+          return (input, pos, ctx) => {
+            const r = next(input, pos, ctx)
+            if (r === FAIL || r === RESUME) return r
+            if (r !== undefined) { PV = r; return r }
+            const nd = collapseEmpty(ctx, build, input, pos, EC.e, readsRaw)
+            PV = nd
+            return nd
+          }
+        }
+        const build = L.build!, variant = L.variant, captureWide = L.captureWide, wantFields = L.wantFields
+        const readsState = L.readsState && !P_STATE, omitsRaw = L.omitsRaw, collapse = L.collapse
+        const kidsOnly = variant === V_CHILDREN || variant === V_CHILDREN_FIELDS || variant === V_CHILDREN_COLLAPSE
+        return (input, pos, ctx) => {
+          const sCap = ctx.captureTrivia, sF = ctx._fields
+          ctx.captureTrivia = captureWide
+          ctx._fields = wantFields ? [] : undefined
+          const r = next(input, pos, ctx)
+          const fieldsArr = ctx._fields
+          ctx.captureTrivia = sCap
+          ctx._fields = sF
+          if (r === FAIL) return FAIL
+          if (r === RESUME) {
+            if (RES_AT !== i || i === 0) return r
+            return lcResume(input, pos, ctx)
+          }
+          if (innermost) PV = r
+          const end = EC.e
+          const pv = PV
+          const span = { start: pos, end }
+          const kids = pv === undefined ? EMPTY_CH : [pv]
+          let nd: unknown
+          if (kidsOnly) {
+            if (variant === V_CHILDREN_COLLAPSE && kids.length === 1) nd = pv
+            else nd = build(variant === V_CHILDREN_COLLAPSE ? EMPTY_CH : (P_KIDS ? EMPTY_CH : kids), variant === V_CHILDREN_FIELDS ? buildFieldMap(fieldsArr) : undefined, span, EMPTY_CH, EMPTY_TL, undefined)
+          } else if (variant === V_GENERIC) {
+            if (collapse && kids.length === 1) nd = pv
+            else nd = build(kids, wantFields ? buildFieldMap(fieldsArr) : undefined, span, omitsRaw ? EMPTY_CH : [rawEntry(pv, input, pos, end)], captureWide ? EMPTY_TLOG : EMPTY_TL, readsState ? ctx.state : undefined)
+          } else if (variant === V_COLLAPSE && kids.length === 1) nd = pv
+          else nd = build(kids, undefined, span, [rawEntry(pv, input, pos, end)], EMPTY_TL, undefined)
+          PV = nd
+          EC.e = end
+          return nd
+        }
+      }
+    }
   }
 
   function lower(ip: number): Piece {
@@ -4475,8 +4666,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             }
             let gapped = false
             if (gapRe !== undefined && ctx._probe === undefined) {
-              gapRe.lastIndex = itemStart
-              const q = gapRe.test(input) ? gapRe.lastIndex : -1
+              // A left-corner route that read this gap to decide hands its end over.
+              let q: number
+              if (LC && GAP.row === gapRow && GAP.at === itemStart && GAP.input === input) q = GAP.end
+              else { gapRe.lastIndex = itemStart; q = gapRe.test(input) ? gapRe.lastIndex : -1 }
               // No arm with the gap can match where the gap fails, or where the
               // character after it opens nothing; an arm without it needs its
               // own lead at the item's start.
