@@ -162,6 +162,9 @@ const P_NO_REP_RESUME = LC_PLANT === 'no-rep-resume'
 const P_SEP_WRITE = LC_PLANT === 'sep-write'
 const P_STATE = LC_PLANT === 'state'
 const LC_TRACE = LC_PLANT === 'trace'
+const P_DISPATCH_COMMIT = LC_PLANT === 'dispatch-commit'
+const P_GUARD_SKIP = LC_PLANT === 'guard-skip'
+const P_ROUTED_LEAF = LC_PLANT === 'routed-leaf'
 const LC_SKIP = new Set(((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.PM_LC_SKIP ?? '').split(',').filter(x => x !== '').map(Number))
 const LC_COUNT = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.PM_LC_COUNT === '1'
 const P_OPTGAP_WRITE = LC_PLANT === 'optgap-write'
@@ -1809,6 +1812,121 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     cutAtoms: (Piece | undefined)[]
     chain: Piece | undefined
     cutChains: (Piece | undefined)[]
+    /** A choice the route passes whose other arms the choice pretests: any pretest that matches cuts the route there. */
+    guards: { recs: ScalarRecognizer[]; cut: number; chain: Piece | undefined }[]
+    /** The route reached the token a `dispatch()` already routed (arm routes), or ends in a `dispatch()`. */
+    routedAtom: boolean
+  }
+
+  /** The token a `dispatch()` routed into an arm route, read by `ROUTED_ATOM`. */
+  let RT_KEY = ''
+  let RT_END = -1
+  /** `routed()` at the bottom of an arm route: the leaf the arm's node counts. */
+  const ROUTED_ATOM: Piece = (_input, pos) => {
+    const e = RT_END
+    PV = P_ROUTED_LEAF ? RT_KEY : { _tag: 'leaf', value: RT_KEY, span: { start: pos, end: e } }
+    EC.e = e
+    return RT_KEY
+  }
+  /** A piece whose value is the one node it publishes (a node behind wrappers or arms). */
+  function nodeValued(ip: number, depth = 0): boolean {
+    if (depth > 12) return false
+    const op = code[ip]
+    if (op === OP_NODE) return true
+    if (op === OP_GATE || op === OP_SCOPE || op === OP_SCOPE_PLAIN || op === OP_SCOPE_CAP || op === OP_WITHCTX) return nodeValued(code[ip + 2]!, depth + 1)
+    if (op === OP_RULE) return nodeValued(code[ip + 1]!, depth + 1)
+    if (op === OP_CHOICE) {
+      const n = code[ip + 2]!
+      for (let i = 0; i < n; i++) if (!nodeValued(code[ip + 4 + i]!, depth + 1)) return false
+      return n > 0
+    }
+    return false
+  }
+  const DISPATCH_ATOMS = new Map<number, Piece | null>()
+  /**
+   * A `dispatch()` as the bottom of a route: its selector is the left corner,
+   * read once; its key picks the arm as the dispatch does; the arm then runs as a
+   * route of its own down to the routed token, so the arm's node completes as a
+   * lone level too. Only where every arm re-reads the selector's token
+   * (`routed()`), so the selector's match is the arm's start.
+   */
+  function dispatchAtomFor(ip: number, c: number): Piece | undefined {
+    const memoKey = ip * 128 + c
+    const done = DISPATCH_ATOMS.get(memoKey)
+    if (done !== undefined) return done ?? undefined
+    DISPATCH_ATOMS.set(memoKey, null)
+    const spec = dsp[code[ip + 2]!]!
+    const selector = link(code[ip + 1]!)
+    const otherIp = code[ip + 3]!
+    const otherRouted = (code[ip + 4]! & 1) === 1
+    const otherCommits = (code[ip + 4]! & 2) === 0
+    const n = code[ip + 5]!
+    if (spec.routed.some(r => r !== 1) || (otherIp >= 0 && !otherRouted)) return undefined
+    type Arm = { piece: Piece; needsRouted: boolean; commits: boolean }
+    const memoL = new Map<string, Level>()
+    const armOf = (aIp: number, commits: boolean): Arm | undefined => {
+      const r = routeFor(aIp, c, memoL, true)
+      if (r.d > 0 && r.routedAtom) return { piece: r.chain!, needsRouted: false, commits }
+      if (r.d > 0) return { piece: r.chain!, needsRouted: true, commits }
+      return nodeValued(aIp) ? { piece: link(aIp), needsRouted: true, commits } : undefined
+    }
+    const arms: Arm[] = []
+    for (let i = 0; i < n; i++) {
+      const a = armOf(code[ip + 6 + i]!, true)
+      if (a === undefined) return undefined
+      arms.push(a)
+    }
+    const other = otherIp >= 0 ? armOf(otherIp, otherCommits) : undefined
+    if (otherIp >= 0 && other === undefined) return undefined
+    const byKey = spec.byKey
+    const byFold = spec.byFold
+    const hasFold = byFold.size > 0
+    const match = spec.match
+    const preds = match.map(m => linkMatcher(m))
+    const classify = (key: string): number | undefined => {
+      const a = byKey.get(key) ?? (hasFold ? byFold.get(asciiFoldKey(key)) : undefined)
+      if (a !== undefined) return a
+      for (let i = 0; i < preds.length; i++) if (preds[i]!(key)) return match[i]![3]
+      return undefined
+    }
+    const expected = spec.expected as string[]
+    const piece: Piece = (input, pos, ctx) => {
+      const fl = ctx._fields?.length ?? 0
+      const el = ctx._errors?.length ?? 0
+      const selVal = selector(input, pos, ctx)
+      if (selVal === FAIL) return FAIL
+      const selEnd = EC.e
+      const key = selVal as string
+      const a = classify(key)
+      let A: Arm
+      if (a === undefined) {
+        if (other === undefined) { ctx._fe = selEnd; ctx._fx = expected; return FAIL }
+        A = other
+      } else A = arms[a]!
+      // The arm re-reads the selector's match: the selector's marks are undone.
+      if (ctx._fields !== undefined && ctx._fields.length > fl) ctx._fields.length = fl
+      if (ctx._errors !== undefined && ctx._errors.length > el) ctx._errors.length = el
+      let v: unknown
+      if (A.needsRouted) {
+        const saved = ctx._routed
+        ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+        try { v = A.piece(input, pos, ctx) } finally { ctx._routed = saved }
+      } else {
+        RT_KEY = key
+        RT_END = selEnd
+        v = A.piece(input, pos, ctx)
+      }
+      if (v === FAIL) {
+        if (ctx._fields !== undefined && ctx._fields.length > fl) ctx._fields.length = fl
+        if (ctx._errors !== undefined && ctx._errors.length > el) ctx._errors.length = el
+        if (A.commits && !P_DISPATCH_COMMIT) ctx._fc = true
+        return FAIL
+      }
+      PV = v
+      return [key, v]
+    }
+    DISPATCH_ATOMS.set(memoKey, piece)
+    return piece
   }
 
   /**
@@ -1818,12 +1936,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * piece makes on that character: a gate's class, a dispatching choice's arm,
    * a gated collapse's blockers, a sequence's leading terms and trivia.
    */
-  function routeFor(top: number, c: number, memoL: Map<string, Level>): Route {
+  function routeFor(top: number, c: number, memoL: Map<string, Level>, armMode = false): Route {
     const levels: Level[] = []
     let key = ''
     let ip = top
     let best = 0
     let terminal = -1
+    let atomPiece: Piece | undefined
+    let routedAtom = false
+    const guardAt: { at: number; recs: ScalarRecognizer[] }[] = []
     const push = (L0: () => Level, at: number): Level => {
       key += '>' + String(at)
       let L = memoL.get(key)
@@ -1942,11 +2063,32 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             for (let i = 0; i < n; i++) { const cls = table.armCls[i] ?? null; if (cls === null || cls.ascii[c] === 1) arms.push(i) }
             console.error(`lc-choice ${ip} n=${n} '${String.fromCharCode(c)}' arms=${arms.join(',')}`)
           }
-          if (count !== 1) break
-          const armIp = code[ip + 4 + arm]!
-          if (n === 2 || n === 3) {
-            if (leadingScalarTerminal(code, armIp, 2, true, true) >= 0) break
-          } else if ((largeChoiceLiteralPretest(code, k, armIp) ?? []).length > 0) break
+          // The terminals the choice pretests an arm with before it enters it.
+          const pretests = (a: number): readonly number[] => {
+            const aIp = code[ip + 4 + a]!
+            if (n === 2 || n === 3) {
+              const t = leadingScalarTerminal(code, aIp, 2, true, true)
+              return t >= 0 ? [t] : []
+            }
+            return largeChoiceLiteralPretest(code, k, aIp) ?? []
+          }
+          if (count !== 1) {
+            // Several arms claim `c`: the route still passes when every arm but one
+            // is pretested, and only while none of those pretests matches.
+            let open = -1
+            const recs: ScalarRecognizer[] = []
+            let ok = true
+            for (let i = 0; i < n && ok; i++) {
+              const cls = table.armCls[i] ?? null
+              if (!(cls === null || cls.ascii[c] === 1)) continue
+              const pt = pretests(i)
+              if (pt.length === 0) { if (open >= 0) ok = false; else open = i }
+              else for (const t of pt) recs.push(scalarFor(t)!)
+            }
+            if (!ok || open < 0) break
+            arm = open
+            guardAt.push({ at: levels.length, recs })
+          } else if (pretests(arm).length > 0) break
         }
         const at = ip
         const j = arm
@@ -1965,6 +2107,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ip = code[ip + 4 + arm]!
         continue
       }
+      if (op === OP_ROUTED && armMode) {
+        atomPiece = ROUTED_ATOM
+        routedAtom = true
+        break
+      }
+      if (op === OP_DISPATCH && !armMode) {
+        atomPiece = dispatchAtomFor(ip, c)
+        if (atomPiece !== undefined) routedAtom = true
+        break
+      }
       if (op === OP_SEQ || op === OP_SEQV) {
         const n = code[ip + 1]!
         const base = ip + 2
@@ -1980,7 +2132,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (code[t] === OP_NOT || code[t] === OP_PEEK || (rowNullable(code, k, t, NULLABLE) && code[t] === OP_OPT)) lc++
           else break
         }
-        if (lc >= n || (lc > 0 && op === OP_SEQ)) break
+        if (lc >= n || (lc > 0 && (op === OP_SEQ || armMode))) break
         let blocked = false
         for (let i = 0; i < lc; i++) {
           const t = code[base + i]!
@@ -2052,8 +2204,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       break
     }
-    if (terminal < 0 && code[ip] === OP_NODE) terminal = ip
-    if (terminal >= 0) best = levels.length
+    if (terminal < 0 && atomPiece === undefined && code[ip] === OP_NODE) terminal = ip
+    if (terminal >= 0 || atomPiece !== undefined) best = levels.length
     // A continuation that can start resumes at the nearest framed node above it.
     for (let i = 0; i < best; i++) {
       const L = levels[i]!
@@ -2106,8 +2258,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       cuts.push({ at: i, cut, scope })
       cutAtoms.push(cut > 0 ? link(levels[cut]!.ip) : undefined)
     }
-    const atom = d > 0 ? link(d === levels.length ? terminal : levels[d]!.ip) : undefined
-    return { levels, d, atom, cuts, cutAtoms, chain: d > 0 ? chainFor(levels, d, atom!) : undefined, cutChains: cuts.map((x, j) => x.cut > 0 ? chainFor(levels, x.cut, cutAtoms[j]!) : undefined) }
+    const atomSetsPV = d === levels.length && atomPiece !== undefined
+    const atom = d > 0 ? (atomSetsPV ? atomPiece : link(d === levels.length ? terminal : levels[d]!.ip)) : undefined
+    const guards: Route['guards'] = []
+    for (const g of guardAt) {
+      if (g.at >= d) continue
+      let cut = 0
+      for (let j = g.at - 1; j >= 0; j--) if (levels[j]!.candidate) { cut = j; break }
+      guards.push({ recs: g.recs, cut, chain: cut > 0 ? chainFor(levels, cut, link(levels[cut]!.ip), false) : undefined })
+    }
+    return {
+      levels, d, atom, cuts, cutAtoms, guards, routedAtom: atomSetsPV && routedAtom,
+      chain: d > 0 ? chainFor(levels, d, atom!, atomSetsPV) : undefined,
+      cutChains: cuts.map((x, j) => x.cut > 0 ? chainFor(levels, x.cut, cutAtoms[j]!, false) : undefined),
+    }
   }
 
   /** A regex row that takes a gap end a route already read, else runs as lowered. */
@@ -2157,6 +2321,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const X = cuts[x]!
         const T = X.scope >= 0 ? R.levels[X.scope]!.scopeTrivia : ctx.trivia
         if (triviaMayStart(R.levels[X.at]!, T, c)) { d = X.cut; chain = R.cutChains[x]!; break }
+      }
+      const guards = R.guards
+      for (let x = 0; x < guards.length; x++) {
+        const G = guards[x]!
+        if (G.cut >= d) continue
+        const recs = G.recs
+        for (let t = 0; t < recs.length; t++) {
+          if (!P_GUARD_SKIP && recs[t]!(input, pos) >= 0) { d = G.cut; chain = G.chain!; break }
+        }
       }
       if (d === 0) return normal(input, pos, ctx)
       const sBuf = ctx._cstBuf, sCh = ctx._cstChildren, sLv = ctx._cstLeaves
@@ -2342,9 +2515,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * character decided which levels these are, so every call here is to one
    * known closure, and wrappers that only route add none.
    */
-  function chainFor(levels: readonly Level[], d: number, atom: Piece): Piece {
+  function chainFor(levels: readonly Level[], d: number, atom: Piece, atomSetsPV: boolean): Piece {
     let next: Piece = atom
-    for (let i = d - 1; i >= 0; i--) next = levelPiece(levels[i]!, i, next, i === d - 1)
+    for (let i = d - 1; i >= 0; i--) next = levelPiece(levels[i]!, i, next, i === d - 1 && !atomSetsPV)
     return next
   }
 
