@@ -154,7 +154,7 @@ Recovery operands (follow-set classes, item expected sets) are in every table (`
 3. **Splice.** It replaces the declaration with the printed table and prepends `import { tableRules } from 'parseman/table'`.
 4. **Carry IR.** A composable piece also carries its combinator IR (`compiler/ir-serialize.ts`, re-evaluated by `plugin/ir-eval.ts`), so a downstream build can re-lower it. Under a Rollup-family bundler that IR goes into a `<chunk>.parseman.json` sidecar instead of the artifact; nothing at run time reads it.
 
-Artifacts are stamped with the Parséman version (`src/version.ts`); nothing reads the stamp back yet.
+Artifacts are stamped with the Parséman version (`src/version.ts`); nothing reads the stamp back yet. A printed assembly factory does check the runtime that calls it: it throws, naming the version that printed it, when the runtime passes fewer helpers than it was printed with (`FACTORY_ARITY_GUARD` in `table/emit.ts`).
 
 ## 10. Gates that keep this honest
 
