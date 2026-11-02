@@ -535,8 +535,18 @@ if (headPv !== null && basePv !== null && compareVersions(headPv, basePv) > 0) {
     if (tagged !== null) {
       const theirs = sectionEntries(tagged, latest.raw) ?? []
       const mine = sectionEntries(changelog, latest.raw) ?? []
-      const lost = theirs.filter((e) => !mine.includes(e))
-      const extra = mine.filter((e) => !theirs.includes(e))
+      // One for one, so an entry listed twice is an extra, not a match.
+      const unmatched = (a, b) => {
+        const left = [...b]
+        return a.filter((e) => {
+          const i = left.indexOf(e)
+          if (i === -1) return true
+          left.splice(i, 1)
+          return false
+        })
+      }
+      const lost = unmatched(theirs, mine)
+      const extra = unmatched(mine, theirs)
       if (lost.length > 0) {
         fail(
           `package.json declares ${version}, the latest release, and CHANGELOG.md's "## ${version}" section lacks\n` +

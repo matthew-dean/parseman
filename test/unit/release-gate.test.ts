@@ -421,6 +421,17 @@ describe('entry gate', { timeout: SUITE_BUDGET_MS }, () => {
     expect(r.out).toMatch(/"## 0\.36\.3" section has\s+1 entry v0\.36\.3's own section did not ship[\s\S]*- something/)
   })
 
+  it('REJECTS a sync whose section for the latest tag lists a shipped entry twice', () => {
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: src(1) },
+      { version: '0.36.3', changelog: `# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.36.3 — 2026-07-26\n\n- fix three\n\n- fix three\n\n## 0.36.0 — 2026-07-24\n\n- something\n`, files: src(2) },
+    )
+    tagRelease(dir, baseSha, shipped)
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/"## 0\.36\.3" section has\s+1 entry v0\.36\.3's own section did not ship[\s\S]*- fix three/)
+  })
+
   it('REJECTS entries filed under the latest tag\'s version: the publish ships 0.36.4 and they replace 0.36.3\'s section', () => {
     const { dir, baseSha } = repo(
       { changelog: released('0.36.0'), files: src(1) },
