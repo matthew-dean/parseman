@@ -50,6 +50,8 @@ const CASES: Case[] = [
   { name: 'trivia /[à-ÿ]/i', grammar: words(trivia(regex(/(?:[ \n]|[à-ÿ])+/i))), inputs: ['aÀb', 'aÿb'] },
   // A set holding every code unit from 128 up keeps its first set under `/i`.
   { name: 'choice arm /[\u0080-\uffff]/i', grammar: one(choice(regex(/[\u0080-\uffff]x/i), regex(/[a-z]+/))), inputs: ['Éx', 'ab'] },
+  // ...and, without `u`, its high surrogates admit an astral lead: dispatch reads `😀` as one code point.
+  { name: 'choice arm /[\u0080-\uffff]+/i on an astral lead', grammar: one(choice(regex(/[\u0080-\uffff]+/i), regex(/[a-z]+/))), inputs: ['😀', '😀é', 'ab'] },
   { name: 'choice arm \\cJ', grammar: one(choice(regex(/\cJa/), regex(/[a-z]+/))), inputs: ['\na', 'a'] },
   { name: 'choice arm \\012', grammar: one(choice(regex(new RegExp('\\012a')), regex(/[a-z]+/))), inputs: ['\na'] },
   { name: 'choice arm \\p{Lu} (u)', grammar: one(choice(regex(/\p{Lu}x/u), regex(/[a-z]+/))), inputs: ['Ax'] },
