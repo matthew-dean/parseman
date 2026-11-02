@@ -7,6 +7,7 @@ import { shorthandRanges, parseClassRanges } from '../regex/classes.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
 import { directTerminalFailureExpected } from './expected.ts'
 import type { ScalarParser } from './scalar.ts'
+import { PlainLeaf, PlainSpan } from '../cst/plain.js'
 
 /**
  * A regex terminal's first-set (for choice-dispatch fast paths) is derived by
@@ -195,9 +196,9 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
       if (scanEnd !== undefined) {
         if (scanEnd === null) return failAt(ctx, directTerminalFailureExpected(def), pos)
         const value = input.slice(pos, scanEnd)
-        const span = { start: pos, end: scanEnd }
+        const span = new PlainSpan(pos, scanEnd)
         if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, scanEnd)
-        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
+        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, span))
         return { ok: true, value, span }
       }
       anchored.lastIndex = pos
@@ -205,9 +206,9 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
       if (m === null) {
         return failAt(ctx, directTerminalFailureExpected(def), pos)
       }
-      const span = { start: pos, end: pos + m[0]!.length }
+      const span = new PlainSpan(pos, pos + m[0]!.length)
       if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, span.end)
-      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: m[0]!, span })
+      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(m[0]!, span))
       return { ok: true, value: m[0]!, span }
     },
   }

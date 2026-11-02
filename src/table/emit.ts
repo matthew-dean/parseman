@@ -3,6 +3,14 @@ import type { FoldedProgram, TableProgram } from './program.ts'
 import { resolveTable } from './program.ts'
 import { EMITTED_PARAMS, Unemittable, emitAssemblySource } from './emit-assembly.ts'
 import { cfgKey, type RunCfg } from './assemble.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
+
+/**
+ * Opens every printed assembly factory. A runtime older than the printer passes fewer
+ * helpers; refuse it when the assembly is built, instead of failing partway through the
+ * first parse on whichever helper is reached first. Runs once per assembly.
+ */
+export const FACTORY_ARITY_GUARD = `if(arguments.length<${EMITTED_PARAMS.length})throw new Error(${JSON.stringify(`parseman: this parser was printed by parseman ${PARSEMAN_VERSION}; upgrade the parseman runtime to at least that version`)});`
 
 /**
  * Print a program as the module a build emits.
@@ -221,7 +229,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly AssemblyCfg[]): strin
     const plan = em.plan
     out.push('{'
       + `key:${key},`
-      + `factory:function(${EMITTED_PARAMS.join(',')}){${em.source}\n},`
+      + `factory:function(${EMITTED_PARAMS.join(',')}){${FACTORY_ARITY_GUARD}${em.source}\n},`
       + 'plan:{'
       + `classes:[${plan.classes.map(r => `[${r.join(',')}]`).join(',')}],`
       + `armExpected:[${plan.armExpected.map(r => `[${r.join(',')}]`).join(',')}],`
