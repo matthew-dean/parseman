@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.58.2 — 2026-11-02
 
 - **The perf verdict is a cross-process gate under default V8: `pnpm perf:xproc:gate`,
   configured in `bench/xproc-gate.json`.** Each case is timed in fresh processes,
@@ -24,11 +24,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   warning on stderr ahead of the command's own output. The hook now goes through
   `module.registerHooks()` where Node has it (22.15+, 23.5+) and keeps `register()`
   on 20.x and earlier 22.x, which have nothing else.
+
+## 0.58.1 — 2026-11-02
+
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
   main entry, which loads the combinators, the compiler and the analysis with them.
   `src/line-index.ts` was already in the run entry's closure, so the entry's module
   list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+
 - **A routed arm's first-character gate reports what its next term fails with.** A
   choice arm led by `routed()` is gated on its next term's first character
   (`OP_RGATE`, 0.58.0), and a miss reported `deriveExpected` of that term. For a
