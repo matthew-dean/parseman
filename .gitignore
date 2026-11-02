@@ -5,6 +5,8 @@ dist/
 # Declaration files belong in dist/ (see tsconfig.build.json). Any *.d.ts under
 # src/ is an accidental tsc emit — ignore so it can never be committed again.
 src/**/*.d.ts
+# Hand-written: types the plain-JavaScript tree-object constructors (src/cst/plain.js).
+!src/cst/plain.d.ts
 src/**/*.d.ts.map
 *.tsbuildinfo
 .claude/worktrees/

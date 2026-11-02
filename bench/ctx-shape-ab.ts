@@ -68,7 +68,7 @@ const T: Thresholds = {
 }
 
 /** Copied onto both sides so the cases are byte-identical across them. */
-const COPY = ['bench/ctx-shape-cases.ts', 'bench/workloads', 'examples'] as const
+const COPY = ['bench/ctx-shape-cases.ts', 'bench/workloads', 'bench/grammar-density', 'examples'] as const // grammar-density: the fixtures' `tree-node.js`
 
 type BuiltCase = { id: string; bytes: number; make: () => { parse: () => unknown } }
 

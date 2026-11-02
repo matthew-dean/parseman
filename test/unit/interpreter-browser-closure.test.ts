@@ -39,7 +39,12 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // pair is one code point, a `v`-mode nested class or set operation widens, and outside
 // Unicode mode a first set reads an astral lead through its high surrogate, in lead
 // tests and in intersections (`rangesHaveLead`, `leadRanges`, `implicitLeadsDropped`).
-const BASELINE_RAW_BYTES = 61_923
+// Bumped +367B to 62,290B: the interpreter's terminals build their CST leaves and spans
+// with the shared tree-object constructors (`src/cst/plain.js`), which V8 cannot pretenure.
+// Bumped +726B to 63,016B: the interpreter's default CST nodes, routed leaves, trivia field
+// captures and line-tracked spans are constructor-built too, and a default node keeps a
+// spread copy of its children.
+const BASELINE_RAW_BYTES = 63_016
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

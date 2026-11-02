@@ -1,6 +1,7 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
+import { PlainLeaf } from '../cst/plain.js'
 
 type LeafCstValue<U> = (ctx: ParseContext, input: string, start: number, end: number, value: U) => unknown
 
@@ -70,7 +71,7 @@ export function token(root: Combinator<unknown>): Combinator<string> {
 
       const span = result.span
       const value = input.slice(pos, span.end)
-      if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
+      if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, span))
       return { ok: true, value, span }
     },
   }
@@ -133,11 +134,7 @@ function makeLeaf<T, U>(
       }
       if (!result.ok) return result
       const value = fn(result.value, result.span)
-      if (wasCapturing) pushCstLeaf(ctx, {
-        _tag: 'leaf',
-        value: cstValue(ctx, input, pos, result.span.end, value),
-        span: result.span,
-      })
+      if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(cstValue(ctx, input, pos, result.span.end, value), result.span))
       return { ok: true, value, span: result.span }
     },
   }

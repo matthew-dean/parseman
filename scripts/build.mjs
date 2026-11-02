@@ -60,23 +60,37 @@ const shared = {
   target: 'es2022',
 }
 
-const capabilitySource = resolve('src/compiler/token-capability.ts')
+/**
+ * Private modules every bundle must SHARE rather than copy, each emitted once and
+ * imported by the entries that use it:
+ *
+ * - the static token capability, for the compiling entries;
+ * - `cst/plain.js`, the tree-object constructors, for every entry. Each constructor
+ *   defines its own hidden class, so a copy per bundle would give one shape two maps,
+ *   and every site that reads both — Jess imports `parseman` and `parseman/table` in one
+ *   process — turns polymorphic. See `src/cst/plain.d.ts`.
+ */
+const sharedModules = [
+  { source: resolve('src/compiler/token-capability.ts'), output: 'dist/compiler/token-capability.js', filter: /token-capability\.ts$/, entries: compileEntries },
+  { source: resolve('src/cst/plain.js'), output: 'dist/cst/plain.js', filter: /plain\.js$/, entries: new Set(entryPoints) },
+]
 
-/** Externalize one private static capability implementation for every public entry. */
-function externalCapability(entry) {
+/** Externalize each shared module this entry uses, as a relative import of its one copy. */
+function externalShared(entry) {
   const entryOutput = `dist/${relative('src', entry).replace(/\.ts$/, '.js')}`
-  const capabilityOutput = 'dist/compiler/token-capability.js'
-  let ref = relative(dirname(entryOutput), capabilityOutput).split(sep).join('/')
-  if (!ref.startsWith('.')) ref = `./${ref}`
-  return {
-    name: 'shared-token-capability',
-    setup(ctx) {
-      ctx.onResolve({ filter: /token-capability\.ts$/ }, args => {
-        if (resolve(args.resolveDir, args.path) !== capabilitySource) return undefined
-        return { path: ref, external: true }
-      })
-    },
-  }
+  return sharedModules.filter(m => m.entries.has(entry)).map(m => {
+    let ref = relative(dirname(entryOutput), m.output).split(sep).join('/')
+    if (!ref.startsWith('.')) ref = `./${ref}`
+    return {
+      name: `shared:${m.output}`,
+      setup(ctx) {
+        ctx.onResolve({ filter: m.filter }, args => {
+          if (resolve(args.resolveDir, args.path) !== m.source) return undefined
+          return { path: ref, external: true }
+        })
+      },
+    }
+  })
 }
 
 async function buildPublicEntry(entry) {
@@ -86,13 +100,13 @@ async function buildPublicEntry(entry) {
     format: 'esm',
     outdir: 'dist',
     outbase: 'src',
-    plugins: compileEntries.has(entry) ? [externalCapability(entry)] : [],
+    plugins: externalShared(entry),
   })
 }
 
 await Promise.all([
   ...entryPoints.map(buildPublicEntry),
-  build({ ...shared, entryPoints: [capabilitySource], format: 'esm', outfile: 'dist/compiler/token-capability.js' }),
+  ...sharedModules.map(m => build({ ...shared, entryPoints: [m.source], format: 'esm', outfile: m.output })),
 ])
 
 // `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so
