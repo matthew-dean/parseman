@@ -6,7 +6,9 @@
  * primitive — applied to the `run()` result of each path over one input:
  *
  *   interpreted   the combinator graph                         (semantic reference)
- *   compiled      compileRuleMap()'s closure artifact (`a:[]`)  (what a macro build ships)
+ *   compiled      tableRules({ ...prog, asm: [] })             (closures only: the shape a macro
+ *                                                              build ships with no selected sites;
+ *                                                              not compileRuleMap()'s own output)
  *   table         encodeTable() + tableRules()                 (the shipped engine, emitted where it can)
  *   reference     encodeTable() + execRules()                  (the reference driver)
  */

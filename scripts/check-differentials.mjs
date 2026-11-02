@@ -178,7 +178,7 @@ const REGISTRY = [
     id: 'table-lowering-identity',
     needs: 'repo',
     file: 'test/unit/table-identity.test.ts (bench/table-lowering-identity.ts)',
-    legs: 'interpreted combinator graph vs the compileRuleMap() closure artifact vs tableRules (shipped) vs execRules (reference driver), digested per case',
+    legs: 'interpreted combinator graph vs the closures-only table (tableRules over the program with asm: []) vs tableRules (shipped) vs execRules (reference driver), digested per case',
     cleanExit: 0,
     // The vitest test, not the hand-run sweep it replaced: that printed its
     // mismatches and exited 0 whatever it found, so it was a report, not a gate.
