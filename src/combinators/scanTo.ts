@@ -12,6 +12,7 @@ import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { token } from './token.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
+import { PlainLeaf, PlainSpan } from '../cst/plain.js'
 
 export type ScanToOptions = {
   /**
@@ -154,7 +155,7 @@ export function scanTo(
       // returned value carries it). Skipped when no collector is active.
       const emit = (end: number) => {
         if (end > pos && cstCaptureActive(ctx)) {
-          const leaf = { _tag: 'leaf', value: input.slice(pos, end), span: { start: pos, end } }
+          const leaf = new PlainLeaf(input.slice(pos, end), new PlainSpan(pos, end))
           pushCstLeaf(ctx, leaf)
         }
       }

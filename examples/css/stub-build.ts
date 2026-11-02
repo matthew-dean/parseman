@@ -2,6 +2,8 @@
  * CST-shaped node builder for CSS perf regression — no Jess AST, but every
  * node() rule allocates a tree node from captured children (no collapse).
  */
+import { CssNodeObject } from './css-node.js'
+
 export type CssNode = {
   _tag: 'node'
   type: string
@@ -20,14 +22,7 @@ export function mk(
   span: { start: number; end: number },
   triviaLog: readonly number[],
 ): CssNode {
-  return {
-    _tag: 'node',
-    type,
-    span: { start: span.start, end: span.end },
-    children: [...children],
-    rawCount: rawChildren.length,
-    localTriviaLen: triviaLog.length,
-  }
+  return new CssNodeObject(type, span.start, span.end, [...children], rawChildren.length, triviaLog.length)
 }
 
 export function buildLazyTriviaMap(triviaLog: readonly number[], _input: string): { entries: number } {
