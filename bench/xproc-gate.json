@@ -1,0 +1,17 @@
+{
+  "_comment": "Configuration for `pnpm perf:xproc:gate` — see bench/xproc-gate.ts and docs/design/perf-gates.md.",
+  "node": 26,
+  "_node": "Shards must run on this node major, all on one exact version. The round counts below were sized on it; moving it means re-deriving them.",
+  "shards": 20,
+  "rounds": 5,
+  "roundsByCase": { "css/stylesheet": 45, "expected/narrow": 45, "rollback/medium": 45, "graphql/document": 8, "json/document": 8, "rollback/none": 8, "rollback/dense": 8 },
+  "_rounds": "Rounds PER SHARD; CI runs 20 shards, so 100 rounds per case, 160 for graphql/document, json/document, rollback/none and rollback/dense, and 900 for the three cases that are bimodal per process on Node 26 (css/stylesheet, expected/narrow, rollback/medium). The bimodal cases are sized from REAL planted costs on Node 26: expected/narrow, the binding one, is caught 0.80 of the time at 900 rounds at +1.7%. The others are sized from the shift model on a pooled 430-850 rounds per case. See docs/design/perf-harness-interleaving.md.",
+  "floorPct": 1.0,
+  "alphaMedian": 0.0005,
+  "alphaMean": 0.0005,
+  "_alpha": "Per case, split between the median sign test and the mean sign-flip test; a case fails if either does.",
+  "flips": 20000,
+  "density": { "rules": 200, "warmup": 200, "warmupMs": 1000, "samples": 30, "parsesPerSample": 5 },
+  "workloads": { "warmup": 40, "warmupMs": 1500, "samples": 15, "parsesPerSample": 2 },
+  "_warmup": "A worker warms for BOTH the parse count and the time. A count alone stopped some processes before V8 finished tiering: css/stylesheet ran 14% faster after 1.5 s of warm-up than after 40 parses, and that difference varies between processes."
+}
