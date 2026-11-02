@@ -414,18 +414,20 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     is −13.3% / −17.3%. Every whole file is faster in both modes (`benchmark.less`
     −6.8% / −9.4%, `bootstrap-less-port` −2.0% / −9.1%). The open `font` item is
     unchanged. CSS `calc(1px + 2px * 3)` is +0.7% `--jitless`, not yet attributed.
-  - Open question: can the dispatch's routing be derived, so authors needn't write
-    `dispatch()`? The route above still reads the hand-written dispatch's exact keys and
-    prefix and suffix matchers. A plain `choice()` would need them derived from the arms'
-    leading literals: read the identifier corner once, route on its text and on the next
-    captured token. Not built.
-  The build-out derives the routes into table rows at encode time for every engine, on
-  `main` after 0.59.0. Branch `perf/left-corner-routing`, raw samples under
+  - Open question, not built: can a `dispatch()` be derived from a plain `choice()`, so
+    authors needn't write one? The route above still reads the hand-written dispatch's
+    exact keys and prefix and suffix matchers. Deriving them would mean reading the
+    arms' shared identifier corner once and routing on its text and on the next captured
+    token, from the arms' leading literals.
+  Planned separately, and also not built yet: the build-out compiles the routes above
+  into table rows at encode time, read by every engine, on `main` after 0.59.0. Branch `perf/left-corner-routing`, raw samples under
   `scratchpad/left-corner/results/`.
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
   ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.
-  Breakdown in `--jitless`:
+  Breakdown in `--jitless`. The first three rows split the declaration and sum to ~92%
+  (the property token and a small remainder make up the rest). The reducer row overlaps
+  them: each reducer is also counted in the level it runs in.
   - Value, after the routes: ~86k (31%).
   - The Declaration level: ~126k (46%). Of that, the declaration's frame and sequence,
     four scope switches, three choices, three optionals, the colon and the value gap.
@@ -439,10 +441,11 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     Removing them takes the identifier as the statement's left corner, routed on the next
     captured token: [jess#515](https://github.com/jesscss/jess/pull/515) grammar-side, or
     the dispatch derivation above. The rest is the item's frame and terminator.
-  - Reducers (Jess grammar code): ~40k `--jitless` / ~5.9k JIT. `Declaration` is
-    2.5k / 21.5k, the identifier's keyword 1.2k / 3.3k, the five value-chain levels
-    0.3–0.7k JIT each. A framed node costs parseman ~2.5k JIT / ~19k `--jitless` around a
-    reducer that is nearly free (a keyword node over an identifier).
+  - Reducers (Jess grammar code), counted inside the rows above. Each pair below is
+    `--jitless` / JIT. All reducers: ~40k / ~5.9k (14%). `Declaration`: 21.5k / 2.5k.
+    The identifier's keyword: 3.3k / 1.2k. The five value-chain levels: 1.6k–4.5k /
+    0.3k–0.7k each. A framed node costs parseman ~19k / ~2.5k around a reducer that is
+    nearly free (a keyword node over an identifier).
   Census on `perf/left-corner-routing` @ `25597760`; probe edits were made only in a scratch
   checkout of the grammar.
 - **Comment-sensitive selection
