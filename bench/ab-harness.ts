@@ -44,7 +44,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, symlinkSync, rmSync } from 'node:fs'
-import { register } from 'node:module'
+import * as nodeModule from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import v8 from 'node:v8'
@@ -224,6 +224,16 @@ export function git(args: string[], cwd: string, timeout?: number): string {
  * previous one. CI checks out with `fetch-depth: 0`, which brings the tags.
  */
 export function previousRelease(root: string, gate: string): { tag: string; sha: string } {
+  const { tag, sha } = previousReleases(root, gate, 1)[0]!
+  return { tag, sha }
+}
+
+/**
+ * The newest `count` previous releases, newest first, by the same rule as
+ * `previousRelease`, each with its tag commit's committer time (unix seconds). Fails
+ * when there is none.
+ */
+export function previousReleases(root: string, gate: string, count: number): Array<{ tag: string; sha: string; date: number }> {
   const head = git(['rev-parse', 'HEAD'], root).trim()
   const contains = (rev: string): boolean => {
     try {
@@ -233,14 +243,19 @@ export function previousRelease(root: string, gate: string): { tag: string; sha:
       return false
     }
   }
+  const out: Array<{ tag: string; sha: string; date: number }> = []
   const tags = git(['tag', '--list', 'v*', '--sort=-v:refname'], root).split('\n').filter(t => /^v\d+\.\d+\.\d+$/.test(t))
   for (const tag of tags) {
+    if (out.length >= count) break
     const sha = git(['rev-parse', `${tag}^{commit}`], root).trim()
     const stamped = git(['log', '-1', '--format=%s', sha], root).trim() === `release: ${tag.slice(1)}`
     const source = contains(sha) ? sha : stamped && contains(`${sha}^`) ? git(['rev-parse', `${sha}^`], root).trim() : null
-    if (source !== null && source !== head) return { tag, sha: sha.slice(0, 8) }
+    if (source !== null && source !== head) out.push({ tag, sha: sha.slice(0, 8), date: Number(git(['log', '-1', '--format=%ct', sha], root).trim()) })
   }
-  return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
+  if (out.length === 0) {
+    return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
+  }
+  return out
 }
 
 /** Bound for the cache-verification git calls — they are local metadata reads. */
@@ -600,14 +615,30 @@ export function isolateCompilation(): void {
  * Tags every `file:` module resolved from a tagged parent with the parent's tag,
  * so a tagged entry pulls in a whole graph of its own. Node keys its module map on
  * the URL, query included. Runs ahead of tsx's hooks and lets tsx resolve first.
+ *
+ * `next` returns a result in-thread (`registerHooks`) and a promise on the hooks
+ * thread (`register`), so the one module serves both.
  */
-const GRAPH_HOOKS = `export async function resolve(specifier, context, next) {
-  const r = await next(specifier, context)
+const GRAPH_HOOKS = `const tagged = (r, context) => {
   const tag = /[?&]pm-graph=(\\d+)/.exec(context.parentURL ?? '')?.[1]
   if (tag === undefined || !r.url.startsWith('file:') || /[?&]pm-graph=/.test(r.url)) return r
   return { ...r, url: r.url + (r.url.includes('?') ? '&' : '?') + 'pm-graph=' + tag }
+}
+export function resolve(specifier, context, next) {
+  const r = next(specifier, context)
+  return r instanceof Promise ? r.then(r => tagged(r, context)) : tagged(r, context)
 }`
 let graphCount = 0
+let graphHooks: Promise<void> | undefined
+
+/** `register()` is deprecated from Node 26 (DEP0205); `registerHooks()` only exists from 22.15 / 23.5. */
+async function installGraphHooks(): Promise<void> {
+  const url = `data:text/javascript,${encodeURIComponent(GRAPH_HOOKS)}`
+  if (typeof nodeModule.registerHooks === 'function') {
+    nodeModule.registerHooks(await import(url) as nodeModule.RegisterHooksOptions)
+  }
+  else nodeModule.register(url)
+}
 
 /**
  * An importer for ONE fresh module graph: every file imported through it, and
@@ -634,14 +665,17 @@ let graphCount = 0
  */
 export function freshGraph(): (file: string) => Promise<unknown> {
   if (graphCount === 0) {
-    register(`data:text/javascript,${encodeURIComponent(GRAPH_HOOKS)}`)
+    graphHooks = installGraphHooks()
     // ponytail: every graph would otherwise cache tsx's source maps for all of its
     // modules — about half the heap of a gate run. Stack traces lose TS lines; the
     // gates report through `fail()`, not traces.
     process.setSourceMapsEnabled(false)
   }
   const tag = ++graphCount
-  return file => import(`${pathToFileURL(file).href}?pm-graph=${tag}`)
+  return async file => {
+    await graphHooks
+    return import(`${pathToFileURL(file).href}?pm-graph=${tag}`)
+  }
 }
 
 /**

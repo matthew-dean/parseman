@@ -40,12 +40,34 @@ Two scripts carry it:
    `src/version.ts`, renames `## Unreleased` to `## X.Y.Z — <date>`, and commits that
    in the runner as `release: X.Y.Z`. A section the pull request already named for
    `X.Y.Z` takes the date and any Unreleased entries.
-4. **Guard and preflight.** `check-changelog.mjs --publish` and
-   `check-main-release-state.mjs` pass on the stamped tree, `X.Y.Z` is not on npm,
-   the tag `vX.Y.Z` does not exist, and the full preflight from `AGENTS.md` passes.
-5. **Publish** with `npm publish --provenance`. With the `RELEASE_DEPLOY_KEY` secret,
-   **record** the release on `main` (below). Then **tag** the stamped commit `vX.Y.Z`
-   with a git push, and wait until npm serves the new version.
+4. **Guard and preflight.** CI's `test` check has passed on this exact commit (the run
+   waits for it), `check-changelog.mjs --publish` and `check-main-release-state.mjs` pass
+   on the stamped tree, `X.Y.Z` is not on npm, the tag `vX.Y.Z` does not exist, and the
+   full preflight from `AGENTS.md` passes. The wait is there because `main` does not
+   require a pull request to be up to date with it before merging: two pull requests
+   that each passed CI can merge into a commit nothing has tested, and the preflight
+   runs none of the perf, size or wasted-work gates that `test` requires.
+5. **Pack** the stamped tree with `npm pack`, and keep its sha256.
+6. **Build what ships**, in a second job: re-stamp the same commit (same date and commit
+   time, so the same sha, which the job checks), install with `--ignore-scripts`, run
+   `scripts/build.mjs` and `npm pack --ignore-scripts`. Its tarball must be step 5's,
+   byte for byte (the build is reproducible: the 0.58.0 tarball rebuilds to npm's sha).
+7. **Publish**, in a third job: decide the version again from `package.json`, npm and the
+   tags, re-stamp the same commit, check the tarball step 6 packed against the sha that
+   job output, and `npm publish` it with `--provenance --ignore-scripts`. With the
+   `RELEASE_DEPLOY_KEY` secret, **record** the release on `main` (below). Then **tag** the
+   stamped commit `vX.Y.Z` with a git push, and wait until npm serves the new version.
+
+Steps 1-5 run in the `prepare` job, which has a read-only token and nothing else. It
+installs every devDependency, runs three packages' install scripts, and runs the whole
+test suite, so its tarball is not the one that ships: any of that code could rewrite
+`dist/` before the pack, and provenance would attest the result. The `build` job's
+tarball ships; only the build toolchain runs there, and it must agree with `prepare`'s. Only the `publish` job holds the OIDC token (`id-token: write`), the
+`contents: write` token and the deploy key. It installs nothing but the pinned npm it
+publishes with, and runs git, that npm and the dependency-free `scripts/release.mjs`. Any step of a job with `id-token: write` can
+request an OIDC token, and a job's secrets sit in the runner's memory for the whole job,
+so in a single job any dependency could have minted a publish credential for `parseman`
+or read the deploy key.
 
 ### Where the released version is recorded
 
@@ -154,9 +176,13 @@ decision. It builds `dist/` and leaves tracked files as it found them.
 
   ```sh
   sha=$(gh run view <run-id> --json headSha --jq .headSha)
-  git checkout --detach "$sha" && RELEASE_DATE=<date the run used> node scripts/release.mjs stamp X.Y.Z
+  # <date> and <time>: the line the `prepare` job's stamp step printed
+  git checkout --detach "$sha" && RELEASE_DATE=<date> GIT_AUTHOR_DATE="@<time> +0000" \
+    GIT_COMMITTER_DATE="@<time> +0000" node scripts/release.mjs stamp X.Y.Z
   git push origin HEAD:refs/tags/vX.Y.Z
   ```
+
+  With the run's date and time the stamp is the published commit, sha for sha.
 
 - **A declared version shipped first by another merge.** The release gate checks a
   declared version against the tags when the pull request runs, not when it merges. If
@@ -203,7 +229,7 @@ moving from dispatch to push needs no change.
 
 | where | what it sees | what it asserts |
 | --- | --- | --- |
-| CI job `release-gate`, on a pull request | the diff against the PR base | A, B, D, D′ |
+| CI job `release-gate`, on a pull request | the diff against the PR base | A, B, D, E |
 | CI job `release-gate`, on a push to `main` | no base to diff | A only |
 | `prepublishOnly --publish` | the stamped tree | A and A′ |
 
@@ -288,12 +314,19 @@ A version between the base and the latest tag is refused because the publish wou
 ignore it. It would ship the next patch, and leave the PR's entries under a heading that
 names an older release. No label waives these checks.
 
-### D. Peak record and D′. Peak-clause waiver — on every PR
+### D. Peak record — on every PR
 
 Any edit to a perf gate's `peak` block is named in an entry the PR adds, with backward
-moves and widened allowances called out by name. A `PERF-PEAK-WAIVER` line lands a
-deliberate, measured drawdown without moving the peak. Both are specified in
-[perf-gates.md](./perf-gates.md) § "The peak clause".
+moves and widened allowances called out by name. See
+[perf-gates.md](./perf-gates.md) § "The peak clause". (A `PERF-PEAK-WAIVER` line used to
+let a drawdown past the in-process peak clause. That clause left CI in #175, and the
+waiver went with it.)
+
+### E. Perf verdict settings — on every PR
+
+Any edit to the cross-process gate's floor, α, sign-flip count or round counts in
+`bench/xproc-gate.json` is named in an entry the PR adds. Those numbers are the gate,
+and loosening one is how a gate gets weakened without anyone deciding to.
 
 ## Which bump
 
@@ -314,12 +347,7 @@ assertion inside this repo had to be updated for it. Observable, therefore minor
 The PR label. It exists for a **revert**, where the version may go down and the entry
 may be a removal, and for a **chained PR** whose entry lives in the PR underneath it.
 It is on the PR, visible next to the diff, which is the difference between a waiver
-and a bypass. It never waives A, D or D′.
-
-### `PERF-PEAK-WAIVER` — waives the peak clause's verdict only
-
-See [perf-gates.md](./perf-gates.md) § D. It is deliberately not an extension of
-`release-exempt`.
+and a bypass. It never waives A, D or E.
 
 ## History
 

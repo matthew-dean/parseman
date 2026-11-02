@@ -24,7 +24,7 @@ function covers(fs: FirstSet, code: number): boolean {
   return fs.ranges.some(r => code >= r.lo && code <= r.hi)
 }
 
-function toSet(fs: FirstSet, cap = 0x2ff): Set<number> | 'any' {
+function toSet(fs: FirstSet, cap = 0x3ff): Set<number> | 'any' {
   if (fs.kind === 'any') return 'any'
   const s = new Set<number>()
   if (fs.kind === 'empty') return s
@@ -39,13 +39,13 @@ function toSet(fs: FirstSet, cap = 0x2ff): Set<number> | 'any' {
 // whether the engine matches the empty string.
 const FILLERS = ['', 'a', 'A', '0', '9', '_', '-', '.', '+', '"', "'", '\\', '/', '*', ' ', '\t', '\n',
   'aaaa', '0000', 'abc', '123', '1.5', '1e3', '"x"', '/**/', '//x', '#fff', 'px', 'true', 'xyz', 'ff']
-function empirical(src: string): { set: Set<number>; nullable: boolean } | null {
+function empirical(src: string, flags = ''): { set: Set<number>; nullable: boolean } | null {
   let re: RegExp
-  try { re = new RegExp('^(?:' + src + ')') } catch { return null }
+  try { re = new RegExp('^(?:' + src + ')', flags) } catch { return null }
   let nullable = false
   try { const m = re.exec(''); nullable = !!m && m[0] === '' } catch { /* ignore */ }
   const set = new Set<number>()
-  for (let c = 0; c <= 0x2ff; c++) {
+  for (let c = 0; c <= 0x3ff; c++) {
     const ch = String.fromCharCode(c)
     for (const f of FILLERS) {
       const m = re.exec(ch + f)
@@ -126,6 +126,15 @@ describe('regex first-set — soundness vs the RegExp engine (fuzz)', () => {
     '(?=[abc])x', '(?![0-9])[a-z]', 'foo(?<name>[0-9]+)', '[\\d.]+', '[-+]?\\d',
     'true', 'false', 'null', '\\u00e9', '\\x41', '[\\u0041-\\u005a]', 'p{2}',
     'a*', 'a*b', '(a|b)?c', '[a-z]*[0-9]', 'x?y?z', '(ab)+', '[^\\n]+',
+    // Escapes whose meaning is not their letter: legacy octal, control, property,
+    // code point, named backreference — in and out of a class.
+    '\\012', '[\\012]', '(?: |\\012)+', '\\0', '\\01', '[\\1]', '[\\0-\\012]', '\\cJ', '(?: |\\cJ)+',
+    '\\c1', '\\c', '\\p{L}', '\\P{L}', '\\k<n>', '\\u{20}', '\\u{20}+', '\\u{0}', '[\\cJ]',
+  ]
+  // The same in Unicode mode, where `\\p{…}`, `\\u{…}` and `\\k<…>` are what they say.
+  const unicodeCurated = [
+    '\\p{White_Space}+', '\\P{L}', '\\p{Lu}[a-z]', '\\u{20}+', '\\u{e9}', '\\u{1F600}', '(?<n>a)\\k<n>',
+    '\\cJ', '[\\u{41}-\\u{5a}]', 'é', '[\\d.]+',
   ]
 
   // Deterministic LCG — no Math.random (keeps failures reproducible).
@@ -168,6 +177,17 @@ describe('regex first-set — soundness vs the RegExp engine (fuzz)', () => {
         const missing = [...emp.set].filter(c => !set.has(c))
         if (missing.length) unsound.push(`${JSON.stringify(src)} missing ${JSON.stringify(missing.slice(0, 8))}`)
         if (emp.nullable) nullableViolations.push(JSON.stringify(src))
+      }
+    }
+    for (const src of unicodeCurated) {
+      const emp = empirical(src, 'u')
+      if (!emp) throw new Error(`not a Unicode-mode pattern: ${src}`)
+      const set = toSet(firstSetFromRegex(src, 'u').firstSet)
+      checked++
+      if (set !== 'any') {
+        const missing = [...emp.set].filter(c => !set.has(c))
+        if (missing.length) unsound.push(`/${src}/u missing ${JSON.stringify(missing.slice(0, 8))}`)
+        if (emp.nullable) nullableViolations.push(`/${src}/u`)
       }
     }
     expect(checked).toBeGreaterThan(1000)

@@ -15,6 +15,7 @@ import {
   sameSource,
   pairedMedianRatio,
   previousRelease,
+  previousReleases,
   score,
   type Calibration,
   type Samples,
@@ -118,6 +119,12 @@ describe('paired A/B scoring', () => {
  * report which of the three are optimized afterwards. An instance that comes back
  * optimized without being asked shares its feedback vector and code with the one
  * that was — the compilation-cache sharing `isolateCompilation` exists to remove.
+ *
+ * Asked with `%ActiveTierIsTurbofan`, not a bit of `%GetOptimizationStatus`. That
+ * status is a bit set whose layout V8 does not keep stable: V8 14 (Node 26) dropped
+ * the `kMaybeDeopted` bit, so every later bit moved down one and `& 16`, which is
+ * "optimized" through V8 13 (Node 24), became "maglev". The probe then read false
+ * for all three on Node 26 while the cache sharing it looks for was still there.
  */
 function optimizedAfterOptimizingOne(isolate: boolean): boolean[] {
   const script = `
@@ -129,7 +136,7 @@ function optimizedAfterOptimizingOne(isolate: boolean): boolean[] {
     for (const f of fs) { %PrepareFunctionForOptimization(f); f(3); }
     %OptimizeFunctionOnNextCall(fs[1]); fs[1](3);
     for (const f of fs) f(3);
-    console.log(JSON.stringify(fs.map(f => (%GetOptimizationStatus(f) & 16) !== 0)));
+    console.log(JSON.stringify(fs.map(f => %ActiveTierIsTurbofan(f))));
   `
   return nodeModule(script, ['--allow-natives-syntax']) as boolean[]
 }
@@ -245,6 +252,19 @@ describe('the previous release is resolved from the v* tags', () => {
     const h = history()
     try {
       expect(previousRelease(h.dir, 'test')).toEqual({ tag: 'v0.1.1', sha: h.at('R') })
+    } finally {
+      rmSync(h.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('lists the newest previous releases in order, by the same rule', () => {
+    const h = history()
+    try {
+      const two = previousReleases(h.dir, 'test', 2)
+      expect(two.map(({ tag, sha }) => ({ tag, sha }))).toEqual([{ tag: 'v0.1.1', sha: h.at('R') }, { tag: 'v0.1.0', sha: h.at('A') }])
+      // Each carries its tag commit's committer time, which the mid-run check compares to HEAD's.
+      for (const r of two) expect(Number.isSafeInteger(r.date) && r.date > 0).toBe(true)
+      expect(previousReleases(h.dir, 'test', 5)).toHaveLength(2)
     } finally {
       rmSync(h.dir, { recursive: true, force: true })
     }

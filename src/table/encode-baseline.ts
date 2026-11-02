@@ -1,5 +1,6 @@
 import type { Combinator, FirstSet, ParserDef } from '../types.ts'
 import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
+import { leadRanges } from '../lead-ranges.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import {
@@ -34,7 +35,7 @@ function disjointSets(sets: readonly FirstSet[]): boolean {
   const seen: Array<{ lo: number; hi: number }> = []
   for (const fs of sets) {
     if (fs.kind !== 'ranges' || fs.ranges.length === 0) return false
-    for (const r of fs.ranges) {
+    for (const r of leadRanges(fs.ranges)) {
       for (const p of seen) if (r.lo <= p.hi && p.lo <= r.hi) return false
       seen.push(r)
     }
