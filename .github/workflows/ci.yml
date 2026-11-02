@@ -15,7 +15,7 @@ on:
     branches: [main]
 
 # A new push to a pull request cancels that PR's run in progress: the perf gate alone
-# is about 150 runner-minutes. Pushes to `main` never share a group, so none is ever
+# takes about 300 runner-minutes. Pushes to `main` never share a group, so none is ever
 # cancelled or skipped; each one is what a publish waits on.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref) || format('ci-push-{0}', github.run_id) }}
@@ -279,7 +279,7 @@ jobs:
   # local diagnostics only and do not run here. This gate changes no V8 setting: every
   # timed parser is the only parser in its process, built from that side's own dist/
   # and run under plain `node`, as it is for a user. It buys resolution with processes
-  # instead: 100–300 rounds per case over 10 shards (`bench/xproc-gate.json`), sized by
+  # instead: 100–900 rounds per case over 20 shards (`bench/xproc-gate.json`), sized by
   # the power analysis in perf-harness-interleaving.md. Shards run in parallel;
   # `xproc-perf` takes one verdict over all of them and FAILS if any shard is missing.
   #

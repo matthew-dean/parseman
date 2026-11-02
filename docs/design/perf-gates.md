@@ -20,7 +20,7 @@ would not see them.
 
 | check | measures | role in CI |
 | --- | --- | --- |
-| `pnpm perf:xproc:gate` | every density case and every workload, HEAD vs the previous release; one parser per process, each side's own `dist/` build under plain `node`; 100–300 rounds per case (`bench/xproc-gate.json`) in 10 shards | **the verdict**, via `xproc-perf` |
+| `pnpm perf:xproc:gate` | every density case and every workload, HEAD vs the previous release; one parser per process, each side's own `dist/` build under plain `node`; 100–900 rounds per case (`bench/xproc-gate.json`) in 20 shards, pinned to Node 26 | **the verdict**, via `xproc-perf` |
 | `pnpm perf:xproc:gate --peak` | the workloads vs the fastest release on record, same design, the committed allowance as the floor | **the verdict** for the peak clause |
 | `pnpm perf:guard:grammars`, `pnpm perf:workloads`, `pnpm perf:workloads:peak` | the same cases, in one process, interleaved, with `--no-compilation-cache` | **not in CI**: local diagnostics only, and their output says so |
 | `pnpm perf:guard`, `pnpm bench:macro-optimize` | as below | as below |

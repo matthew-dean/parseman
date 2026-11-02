@@ -9,9 +9,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   configured in `bench/xproc-gate.json`.** Each case is timed in fresh processes,
   one parser per process, from each side's own `dist/` build under plain `node`. A
   case fails on either a median slowdown (sign test) or a mean slowdown (sign-flip
-  test). Each test needs a 1% floor and α 0.0005, with 100–300 rounds per case over 10
-  CI shards. On x64, 0 of 6 identical-code runs failed. Planted costs that applied
-  to every process, to one process in five, and to every token were each caught. The in-process A/B tools (`perf:guard:grammars`, `perf:workloads`)
+  test). Each test needs a 1% floor and α 0.0005, with 100–900 rounds per case over 20
+  CI shards pinned to Node 26. The fat-tailed cases are sized from real planted
+  costs. On x64, no identical-code run failed (6 on earlier configurations, 1 on
+  this one). Planted costs that applied to every process, to one process in five,
+  and to every token were each caught. The in-process A/B tools (`perf:guard:grammars`, `perf:workloads`)
   leave CI and stay as local diagnostics. The `PERF-PEAK-WAIVER` line is removed:
   nothing in CI read it any more. See `docs/design/perf-gates.md` and
   `docs/design/perf-harness-interleaving.md` (#175).

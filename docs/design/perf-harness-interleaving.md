@@ -332,14 +332,22 @@ first line. The verdict is the cross-process gate below, which sets no flag.
 `bench/xproc-gate.ts`. Every timed parser is the only parser in its process, and
 the process is what a user runs:
 
-- **The user's build, plain `node`.** Each side is built with its OWN
-  `scripts/build.mjs`, the `dist/` bundle a user of that version installs.
+- **The user's build, plain `node`, one pinned runtime.** Each side is built with
+  its OWN `scripts/build.mjs`, the `dist/` bundle a user of that version installs.
   `bench/xproc-worker.ts` is bundled once by esbuild, with parseman left external
-  as `./dist/index.js`. Workers start as `node worker.mjs`: no flags, no loader,
-  and `NODE_OPTIONS` is deleted from their environment. The worker exits 2 without
-  measuring if `process.execArgv` is non-empty, `NODE_OPTIONS` is set, or source
-  maps are enabled. (Workers once ran under `--import tsx/esm`. That turns source
-  maps on and runs esbuild's per-module output rather than the bundle users get.)
+  as `./dist/index.js`. Workers start as `node worker.mjs` with no flags and no
+  loader.
+  - **Environment.** A worker's environment is an allowlist: `PATH`, `HOME` and the
+    layout pad. A denylist that removed only `NODE_OPTIONS` let `NODE_V8_COVERAGE`
+    through, which made parses 6× slower, and `NODE_COMPILE_CACHE`, which changes
+    how code loads.
+  - **Refusals.** The worker exits 2 without measuring if `process.execArgv` is
+    non-empty, if any `NODE_*` variable is set, or if source maps are enabled.
+  - **Pinned runtime.** CI pins the shards to Node 26, the current LTS. Each shard
+    records `process.version`, and the aggregate refuses a shard from another major,
+    or from a different major than its own.
+  - **History.** Workers once ran under `--import tsx/esm`. That turns source maps on
+    and runs esbuild's per-module output rather than the bundle users get.
 - **One instance per process, at steady state.** A worker builds one case, warms
   it for a parse count AND a time (1 s for density cases, 1.5 s for workloads),
   times it, and prints a median, a min and a digest of its parse result. A count
@@ -369,13 +377,23 @@ the process is what a user runs:
   processes suffer, such as a site V8 now pretenures in one process in five. The
   median barely moves for that. The functions are in `bench/xproc-stats.ts`,
   with tests in `test/bench/xproc-stats.test.ts`.
-- **Sharded, fail-closed.** CI runs 10 shards in parallel and one job that takes
-  the verdict over all of them. That job FAILS on a missing or extra shard, a
-  shard against another reference, a repeated seed, the wrong round count for any
-  case, or any non-finite value.
+- **Sharded, fail-closed.** CI runs `shards` (20) shards in parallel and one job
+  that takes the verdict over all of them. That job FAILS on any of these:
+  - a missing or extra shard, or a shard count other than the committed one (a test
+    holds `ci.yml`'s matrix to it);
+  - a shard against another reference;
+  - a shard from another Node major;
+  - a repeated seed;
+  - the wrong round count for any case;
+  - any non-finite value.
+
+  Its own sign-flip stream is seeded from the shard seeds, so re-running only the
+  aggregate gives the same verdict.
 - **Per-case rounds.** Noisy cases get more rounds than quiet ones
-  (`roundsByCase` in `bench/xproc-gate.json`). An edit to any of these settings
-  must be named in the CHANGELOG (`scripts/check-changelog.mjs` §E).
+  (`roundsByCase` in `bench/xproc-gate.json`). An edit to any setting the
+  verdict rests on must be named in the CHANGELOG (`scripts/check-changelog.mjs`
+  §E): the floor, α, flips, shard and round counts, and each suite's warm-up and
+  sample settings.
 
 #### Layout randomisation, and why it is not a reconfiguration
 
@@ -403,98 +421,104 @@ and head lost 42–53% of rounds on every case.
 #### How many rounds
 
 Each process is one draw of V8's layout, tiering and pretenuring choices, so the
-per-round spread is wide, and wider in some cases than others. Per-round
-`ln(head / ref)` on identical code, the final configuration, x64, 40 shards:
+per-round spread is wide. On Node 26, three cases are BIMODAL per process. In
+`css/stylesheet`, `expected/narrow` and `rollback/medium`, about a third of
+processes run ~22% slower than the rest. About half of their identical-code rounds
+land more than 10% from zero. Every other case has at most 4% of rounds there.
+Whether that slow mode is a Node 26 regression users see is being investigated
+separately. Here it is measured as it is.
 
-| case | p5 … p95 | case | p5 … p95 |
-| --- | --- | --- | --- |
-| `rollback/dense` | −4.4% … +5.3% | `css/stylesheet` | −21.2% … +26.7% |
-| `rollback/sparse` | −5.0% … +5.0% | `expected/narrow` | −16.1% … +30.2% |
-| `less/mixins` | −5.9% … +5.0% | `rollback/medium` | −18.4% … +10.8% |
-| `less/stylesheet` | −5.7% … +7.1% | `json/document` | −6.5% … +6.5% |
-| `expected/wide` | −4.8% … +4.7% | `graphql/document` | −4.4% … +3.7% |
-| `expected/none` | −8.1% … +7.5% | `rollback/none` | −6.1% … +7.9% |
+**A pure-shift bootstrap is invalid for a bimodal case.** The usual estimate takes
+identical-code rounds and adds a shift. That assumes a regression moves every
+process by the same amount. Where processes sit in two modes, a code change moves
+processes between the modes as well as within them. Every per-token plant on
+`css/stylesheet` widened its middle 50% from −4%…+5% to about −15%…+13%.
 
-The round counts come from a bootstrap over those rounds, 400–1,200 per case, from
-40 CI jobs on six CPU models (AMD EPYC 7763, 9V45, 9V74; Intel Xeon 8370C, 8573C,
-6973P-C). The spread between runners is therefore in the estimate.
+A real +1.9% css plant was missed at 300 rounds (sign p 0.009). The shift model
+had put power at that count at 1.00. So for the three bimodal cases the round
+counts come from REAL planted costs: 10 shards × 90 rounds each on Node 26,
+resampled at smaller counts. Identical-code rounds come from 20 Node-26 shards,
+symmetrised (each round drawn with a random sign, the null the random order
+guarantees).
 
-The pool is symmetrised first: each round is drawn with a random sign. That is
-exactly the null the tests assume, because the order is random. A raw pool carries
-a sample mean of its own (`expected/narrow`'s 600 rounds averaged +1.3% from a few
-far-out processes), and resampling it would put that offset into every draw.
+| case | planted cost, median / mean | catch at 300 | 450 | 600 | 900 | identical code fails at 900 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `css/stylesheet` | per token, +3.2% / +3.7% | 0.98 | 1.00 | 1.00 | 1.00 | 0.0% |
+| `expected/narrow` | per parse, +1.7% / +3.3% | 0.21 | 0.32 | 0.54 | **0.80** | 0.0% |
+| `rollback/medium` | per parse, +5.1% / +5.1% | 1.00 | 1.00 | 1.00 | 1.00 | 0.0% |
 
-The bootstrap draws n rounds per case, adds a shift, applies the verdict, and
-repeats 300 times (1,000 for identical code). It tests two shifts:
+`expected/narrow`'s plant came out closest to 2%, and it sets the count: 900
+rounds, 45 per shard. The other two get the same count. The ruling for css was
+about 900 after a +1.9% plant was missed at 300. `rollback/medium`'s plant came
+out at +5.1%, so the gate's power on it at 2% is shown only by the shift model
+(0.94 at 900), which is not proof here.
 
-- **uniform +2%:** every head process is 2% slower;
-- **mixture:** one head process in five is 20% slower. That is about +4% on the
-  mean and almost nothing on the median: the shape of a site V8 now pretenures
-  in some processes.
+The other nine cases are not bimodal, so the shift model holds for them. On
+Node 26, at their counts, from symmetrised identical-code rounds (200 draws each):
 
-A review of the first version found that the median sign test alone caught the
-mixture in only 4–33% of runs. Hence the second test. The median's test is the
-sign test rather than Wilcoxon because the tails are heavy. On an earlier pool at
-200 rounds per case, Wilcoxon's worst-case power was 0.26 against the sign test's
-0.64.
+| case | rounds | identical code fails | uniform +2% | 1 in 5 processes +20% |
+| --- | ---: | ---: | ---: | ---: |
+| `expected/none` | 100 | 0.0% | 1.00 | 0.89 |
+| `expected/wide` | 100 | 0.0% | 1.00 | 0.91 |
+| `less/mixins` | 100 | 0.0% | 1.00 | 0.94 |
+| `less/stylesheet` | 100 | 0.0% | 1.00 | 0.97 |
+| `rollback/dense` | 100 | 0.0% | 1.00 | 0.90 |
+| `rollback/sparse` | 100 | 0.0% | 0.99 | 0.93 |
+| `graphql/document` | 160 | 0.0% | 1.00 | 1.00 |
+| `json/document` | 160 | 0.0% | 1.00 | 1.00 |
+| `rollback/none` | 160 | 0.0% | 1.00 | 1.00 |
 
-Power with both tests, α 0.0005 each, 1% floor. "u" is the uniform shift and "m"
-the mixture:
+Those pools are small, 100–160 rounds per case from one run of 20 shards, so treat
+the third decimal as noise.
 
-| case | 100 rounds | 150 | 200 | 300 | in the gate | identical code fails |
-| --- | --- | --- | --- | --- | ---: | ---: |
-| `expected/none` | u 0.92, m 0.85 | | | | 100 | 0.2% |
-| `expected/wide` | u 1.00, m 0.89 | | | | 100 | 0.0% |
-| `less/mixins` | u 1.00, m 0.90 | | | | 100 | 0.2% |
-| `less/stylesheet` | u 0.99, m 0.87 | | | | 100 | 0.0% |
-| `rollback/dense` | u 1.00, m 0.94 | | | | 100 | 0.0% |
-| `rollback/sparse` | u 1.00, m 0.93 | | | | 100 | 0.3% |
-| `graphql/document` | u 1.00, m 0.73 | u 1.00, m 0.90 | | | 150 | 0.0% |
-| `json/document` | u 0.93, m 0.72 | u 1.00, m 0.91 | | | 150 | 0.0% |
-| `rollback/none` | u 0.95, m 0.84 | u 1.00, m 0.97 | | | 150 | 0.0% |
-| `css/stylesheet` | u 0.92, m 0.21 | u 1.00, m 0.50 | u 1.00, m 0.66 | u 1.00, m 0.90 | 300 | 0.3% |
-| `expected/narrow` | u 0.68, m 0.22 | u 0.84, m 0.43 | u 0.95, m 0.59 | u 0.99, m 0.86 | 300 | 0.1% |
-| `rollback/medium` | u 0.75, m 0.29 | u 0.95, m 0.52 | u 0.99, m 0.81 | u 1.00, m 0.95 | 300 | 0.0% |
+In `bench/xproc-gate.json` that is 20 shards of 5 rounds, 8 for `graphql/document`,
+`json/document` and `rollback/none`, and 45 for the three bimodal cases. A release
+shard takes about 10½ minutes (mean 631 s, max 661 s), and a peak shard about 4.
+With 40 shard jobs against a 20-runner limit, the gate takes about 20 minutes of
+wall time.
 
-Every case is at 0.84 or above against both shapes. Summed over the twelve cases,
-identical code fails a case about 1% of the time. In `bench/xproc-gate.json` that
-is 10 rounds per shard, 15 for `graphql/document`, `json/document` and
-`rollback/none`, and 30 for `css/stylesheet`, `expected/narrow` and
-`rollback/medium`.
+The profile has moved four times while the gate was built:
+- when workers moved from `tsx` to the `dist/` bundle;
+- when warm-up moved to a clock;
+- when the runner's `lts/*` moved from Node 24 to 26;
+- with every change to which cases run where.
 
-The profile moved twice while the gate was built: once when the workers moved
-from `tsx` to the `dist/` bundle, and once when warm-up moved to a clock. The
-counts above are the third derivation, made on the configuration that ships.
-Re-derive them from a fresh A/A after any change to how a worker runs.
+**Re-derive the counts from fresh A/A and planted runs after ANY change to how a
+worker runs, including the Node version.** The §E check forces a CHANGELOG entry
+whenever the counts change, and the aggregate refuses shards from another major.
 
 #### Validation on x64 CI
 
-Shards of identical code (A/A), and shards with three planted costs in the head
-side's `src/`, on six CPU models. A real run is 10 shards and one aggregate verdict.
-The "bootstrap" column is 200 runs drawn from the pooled rounds at the gate's round
-counts; for identical code the pool is symmetrised as above.
+A real run is the gate's committed shard count and one aggregate verdict. The bootstrap
+columns resample real rounds (symmetrised for identical code).
 
-| measured | shards | per-case size, median / mean | real runs that FAIL | bootstrap runs that FAIL |
-| --- | ---: | --- | ---: | ---: |
-| identical code, previous round counts | 40 | −0.2% … +0.2% / −0.8% … +1.3% | **0 / 4** | 3 / 200 (raw pool) |
-| identical code, final round counts | 20 | −0.3% … +0.4% / −1.0% … +0.5% | **0 / 2** | 1 / 200 |
-| uniform: a checksum over ⅔ of the input per parse | 10 | +0.7% (`less/*`) … +6.1% (`json`) | **1 / 1**, 10 cases | 200 / 200 |
-| mixture: in one process in five, a checksum over 6× the input | 10 | means +1.1% … +12.5%, medians ≈ 0–2% | **1 / 1**, 8 cases, 6 of them by the mean test alone | 200 / 200 |
-| per token: 8 iterations in `lead()` | 10 | `css` +4.9%, `less/mixins` +4.7%, `less/stylesheet` +5.2% | **1 / 1**, all three slow workloads | 200 / 200 |
-| per token: 4 iterations in `lead()` | 10 | `less/mixins` +1.9%, `less/stylesheet` +2.5%, `css` +0.5% | **1 / 1**, both Less workloads | 200 / 200 |
+**On Node 26, the configuration that ships:**
 
-The per-token plant is the one that reaches the slow CSS and Less workloads. A
-fixed cost per parse, like the uniform checksum, is a small share of their long
-parses. At 4 iterations the plant's cost did not land on `css/stylesheet` at
-all. At 8 it landed at +4.9% and was caught. A uniform +2% on `css/stylesheet` is
-caught by the bootstrap in every draw at its 300 rounds.
+| measured | shards | real runs that FAIL | bootstrap |
+| --- | ---: | ---: | --- |
+| identical code | 20 | **0 / 1** | no case failed more than 1 / 200 |
+| `css/stylesheet`, per-token plant, +3.2% median | 10 × 90 rounds | caught at 900 | 0.98 at 300 |
+| `expected/narrow`, per-parse plant, +1.7% median / +3.3% mean | 10 × 90 | caught at 900 | 0.80 at 900 |
+| `rollback/medium`, per-parse plant, +5.1% | 10 × 90 | caught at 900 | 1.00 at 300 |
+
+**On the earlier configurations (Node 24, then a mix of 24 and 26, 10 shards).**
+These show the mechanics and the plants that apply to every case. They are not
+the round counts' evidence.
+
+| measured | real runs that FAIL | bootstrap runs that FAIL |
+| --- | ---: | ---: |
+| identical code | **0 / 6** | 1–3 / 200 |
+| uniform: a checksum over ⅔ of the input per parse (+0.7% … +6.1%) | **1 / 1**, 10 cases | 200 / 200 |
+| mixture: in one process in five, a checksum over 6× the input | **1 / 1**, 8 cases, 6 by the mean test alone | 200 / 200 |
+| per token, 8 iterations in `lead()` (css +4.9%, `less/*` +4.7% / +5.2%) | **1 / 1**, all three slow workloads | 200 / 200 |
+| per token, 4 iterations (`less/*` +1.9% / +2.5%; css +0.5%) | **1 / 1**, both Less workloads | 200 / 200 |
+
+On Node 26, css per-token plants at 300 rounds were caught at +3.7%, +4.2% and
++4.6% median, and missed at +1.9%. That miss is what moved css to 900 rounds.
 
 Before, in process, on identical code, 8 runs in 20 failed (`expected/none` 7,
 center +3.4%), and `json/document` failed 3–5 runs in 20 in the workload gate.
 
-A `release` shard takes about 11 minutes (round q: mean 640 s, max 680 s), and a
-`peak` shard about 6½. Each PR spends about 175 runner-minutes, and the gate's
-wall time is about 13 minutes when runners are free.
 
 ## How to tell
 
