@@ -38,13 +38,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   node's gate miss reports what entering the node reports, without the pad
   (`gateMissExpected`). Everything else reads first sets as 0.58.0 did (`firstSetOf`
   with `consuming` false): a sequence's construction-time set, tolerant recovery's
-  resync sentinels (which, as the interpreter's `followSentinels`, read no trivia),
-  optional and lookahead gates, an attempt's gate, and a choice's classes. A choice
-  the interpreter dispatches on its arms' construction-time sets (`disjoint`) is
-  classed on those same sets. Where the trivia that may follow a pad is not known (the
-  body of an entry that installs no trivia of its own, which runs under its caller's),
-  no gate is narrowed and no routed gate is laid down. `examples/graphql` and
-  `examples/css` emit 11 B and 26 B more for the trivia-free recovery classes.
+  resync sentinels (a follow sentinel reads no trivia, as the interpreter's
+  `followSentinels`; a list's separator sentinel reads the live trivia, as the
+  interpreter parses the separator there), optional and lookahead gates, an
+  attempt's gate, and a choice's classes. A choice the interpreter dispatches on its
+  arms' construction-time sets (`disjoint`) is classed on those same sets. Any other
+  choice tries its arms in order and merges their failures; where an arm's class
+  takes a reference's installed trivia and that makes the classes disjoint, the site
+  stays on the ordered path, so the arms beside it still report what they wanted.
+  Where the trivia that may follow a pad is not known (the body of an entry that
+  installs no trivia of its own, which runs under its caller's), no gate is narrowed
+  and no routed gate is laid down. `examples/graphql` and `examples/css` emit 6 B and
+  21 B more for the trivia-free follow classes.
 - **A separated list ends on a character its separator cannot start.** Past its
   minimum, a `sepBy()` whose separator cannot match empty and is not itself one
   terminal now tests the character after the gap against the separator's first set in
@@ -118,6 +123,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   map with an optional-literal lead stopped at the comment; the new gates had the same
   blind spot. Test: `test/unit/table-trivia-scope.test.ts`, registered in
   `check:differentials`.
+- Fixed: **a completions probe sees every arm of an ordered choice.** The table
+  engines skipped an arm whose class excluded the character, so its opener never
+  reached `completionsAt`: `choice('ab', 'ac', 'b')` completed `>a` with `"ab"`,
+  `"ac"` only, in every engine and `compile()`, where the interpreter, which enters
+  each arm, adds `"b"`. Under a probe the ordered path now enters every arm, in the
+  reference driver, the closure and emitted engines and a lexical choice, and a
+  lexical choice no arm's class admits records each arm's failure. Parses without a
+  probe are unchanged. Test: `test/unit/table-trivia-scope.test.ts`.
 - Fixed: a `regex()` with an escape the first-set reader does not model (`\p{L}`,
   `\u{1F600}`, `\cJ`, `\k<name>`) has an unknown first set. The reader took it as its
   letter (`/\p{L}+/u` started with `p`), so `choice(regex(/\p{L}+/u), '1')` rejected
