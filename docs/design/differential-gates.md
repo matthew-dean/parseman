@@ -178,7 +178,7 @@ Registered today:
 | differential | legs | plants |
 |---|---|---|
 | `scan-shape-oracle` | emitted straight-line scan vs sticky `RegExp.exec`, per regex, per position | `scan-class-narrow` |
-| `table-lowering-identity` | interpreted vs the `compileRuleMap()` closure artifact vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
+| `table-lowering-identity` | interpreted vs the closures-only table (`tableRules` over the program with `asm: []`, not `compileRuleMap()`'s own output) vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
 | `macro-optimize-contract` | the macro timing gate's structured acceptance errors vs the process exit status required CI reads | `macro-timing-exit-off` |
 | `lex-selected-vs-character` | selected lexical bodies vs the CHARACTER lowering of the same grammar, in `execRules`, closure and emitted `tableRules`; whole results and completion probes | `lex-choice-exclusive-off`, `lex-repeat-min-short`, `lex-rule-trivia-glued` |
 | `routed-arm-gate` | routed choice arms behind `OP_RGATE` in `execRules`, closure and emitted `tableRules` vs the interpreted grammar | `rgate-miss-set-short` |
