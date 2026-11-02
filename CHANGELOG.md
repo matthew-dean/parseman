@@ -5,6 +5,26 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **Tree objects are built by constructors, so V8 cannot pretenure them.** V8 decides per
+  object-literal allocation site whether to allocate straight into old space, from where
+  scavenges happen to fall during warm-up. Identical processes split into a fast and a slow
+  mode (on Node 26, 1 against up to 61 mark-compacts per run), and any change in bundle
+  layout re-rolls it.
+  - Leaves, spans, default nodes, field captures and CST capture buffers are now built by
+    `new` calls (`src/cst/plain.js`), which have no allocation site. Their prototype is
+    `Object.prototype`: each is still a plain object with the same keys in the same order,
+    and every tree is byte-identical.
+  - The constructors exist once per process. The build emits `dist/cst/plain.js` and every
+    entry imports it: a copy per bundle would give one shape two hidden classes.
+  - **Artifacts.** The emitted engine receives the constructors as five new trailing factory
+    parameters. An artifact printed by an earlier version runs on this runtime (it ignores
+    them); an artifact printed by this version needs this runtime or later. Rebuild and
+    publish macro-compiled parsers against this version together with the dependency bump.
+  - **For grammar authors.** A reducer that builds the nodes a parse keeps with an object
+    literal is pretenured or not per process in the same way. Build them with a constructor
+    whose `prototype` is `Object.prototype`, and copy kept arrays with `slice()`; see
+    `examples/css/css-node.js`.
+
 - **Regex first sets read escapes that are not their letter.** The first-set analyzer read
   several escapes as the escaped letter: `\p{…}`/`\P{…}`, `\u{…}` under `u`, `\cJ`, the legacy
   octal `\012`, and `\k<name>`. The class and literal readers read `\012` as NUL followed by

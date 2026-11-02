@@ -83,7 +83,7 @@ import {
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
-import { PlainBuf, PlainField, PlainLeaf, PlainLeafOf, PlainNode, PlainSpan } from '../cst/plain.ts'
+import { PlainBuf, PlainField, PlainLeaf, PlainNode, PlainSpan } from '../cst/plain.js'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
@@ -543,7 +543,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const CLEAN = REC ? (): boolean => false : failCleanAnalysis(code)
 
   function pushLeaf(ctx: ParseContext, value: string, s: number, e: number): void {
-    const lf = new PlainLeaf(value, s, e)
+    const lf = new PlainLeaf(value, new PlainSpan(s, e))
     pushCstLeaf(ctx, lf)
   }
 
@@ -1960,7 +1960,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           return (input, pos, ctx) => {
             const v = child(input, pos, ctx)
             if (v === FAIL) return FAIL
-            ctx._fields?.push(new PlainField(name, v, pos, EC.e))
+            ctx._fields?.push(new PlainField(name, v, new PlainSpan(pos, EC.e)))
             return v
           }
         }
@@ -2108,7 +2108,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._fe = pos; ctx._fx = ROUTED_FX
             return FAIL
           }
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeafOf(item.value, item.span))
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(item.value, item.span))
           EC.e = item.span.end
           return item.value
         }
@@ -2296,7 +2296,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (v === FAIL) return FAIL
           const end = EC.e
           const value = input.slice(pos, end)
-          if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, pos, end))
+          if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, new PlainSpan(pos, end)))
           EC.e = end
           return value
         }
@@ -2331,7 +2331,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (ctx._probe !== undefined) failAt(ctx, suffixExpected, end)
           }
           const value = input.slice(pos, end)
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, pos, end))
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, new PlainSpan(pos, end)))
           EC.e = end
           return value
         }
@@ -2374,7 +2374,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             }
             if (end < 0) return FAIL
             const value = input.slice(pos, end)
-            if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, pos, end))
+            if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, new PlainSpan(pos, end)))
             EC.e = end
             return value
           }
@@ -2383,7 +2383,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const end = run(input, pos, ctx)
           if (end < 0) return FAIL
           const value = input.slice(pos, end)
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, pos, end))
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, new PlainSpan(pos, end)))
           EC.e = end
           return value
         }
@@ -2420,7 +2420,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (v === FAIL) return FAIL
           const end = EC.e
           const out = fn(v, new PlainSpan(pos, end))
-          if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out, pos, end))
+          if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out, new PlainSpan(pos, end)))
           EC.e = end
           return out
         }
@@ -3778,7 +3778,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
             const value = regexValue ? input.slice(pos, end) : spec as string
-            const leaf = new PlainLeaf(value, pos, end)
+            const leaf = new PlainLeaf(value, new PlainSpan(pos, end))
             const kids = [leaf]
             const rawKids = [leaf]
             const span = new PlainSpan(pos, end)
@@ -3894,8 +3894,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const sCap = ctx.captureTrivia
           const sBuf = ctx._cstBuf
           const buf: CstCaptureBuf = rawOnly
-            ? new PlainBuf(true, undefined, undefined)
-            : omitsRaw ? new PlainBuf(undefined, true, 0) : new PlainBuf(undefined, undefined, undefined)
+            ? new PlainBuf(true, undefined, 0)
+            : omitsRaw ? new PlainBuf(undefined, true, 0) : new PlainBuf(undefined, undefined, 0)
           ctx._cstBuf = buf
           // `begin` sets this true and the caller immediately cleared it when the
           // node does not capture wide. Net: the flag IS `captureWide`, a const.
@@ -4116,7 +4116,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
-        PlainSpan, PlainLeaf, PlainLeafOf, PlainNode, PlainField, PlainBuf,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4201,7 +4201,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
-        PlainSpan, PlainLeaf, PlainLeafOf, PlainNode, PlainField, PlainBuf,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf,
       )
       emitReached = em.reached
     } catch (e) {

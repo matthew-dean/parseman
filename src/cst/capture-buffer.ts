@@ -1,6 +1,6 @@
 import type { ParseContext, Span } from '../types.ts'
 import { annotateSpanFromLineContext } from '../line-index.ts'
-import { PlainBuf } from './plain.ts'
+import { PlainBuf } from './plain.js'
 
 /** Lazy per-node capture state — arrays materialized on first push. */
 export type CstCaptureBuf = {
@@ -43,7 +43,7 @@ export function beginCstNodeCapture(ctx: ParseContext): CstNodeCaptureSaved {
     cap: ctx.captureTrivia,
     buf: ctx._cstBuf,
   }
-  ctx._cstBuf = new PlainBuf(undefined, undefined, undefined)
+  ctx._cstBuf = new PlainBuf(undefined, undefined, 0)
   ctx._cstChildren = undefined
   ctx._cstLeaves = undefined
   ctx._cstRawChildren = undefined

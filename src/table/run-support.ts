@@ -14,7 +14,7 @@
  */
 import type { ParseContext } from '../types.ts'
 import { popCstChild, pushCstChild } from '../cst/capture-buffer.ts'
-import { PlainLeaf, PlainSpan } from '../cst/plain.ts'
+import { PlainLeaf, PlainSpan } from '../cst/plain.js'
 
 export type Span = { start: number; end: number }
 export type LineSpan = Span & {
@@ -52,7 +52,7 @@ export function rawEntry(v: unknown, input: string, s: number, e: number): unkno
     const tg = (v as { _tag?: string })._tag
     if (tg === 'node' || tg === 'leaf' || tg === 'parseError') return v
   }
-  return new PlainLeaf(typeof v === 'string' ? v : (typeof v === 'object' && v !== null ? input.slice(s, e) : ''), s, e)
+  return new PlainLeaf(typeof v === 'string' ? v : (typeof v === 'object' && v !== null ? input.slice(s, e) : ''), new PlainSpan(s, e))
 }
 
 /** `input`'s code point at `pos`, or −1 at EOF. Surrogate-pair aware. */

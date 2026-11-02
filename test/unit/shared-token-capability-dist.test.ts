@@ -7,6 +7,14 @@ import { build } from 'esbuild'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const esmLeaf = resolve(ROOT, 'dist/compiler/token-capability.js')
+/** The tree-object constructors: ONE copy, shared by every entry that builds trees (`src/cst/plain.d.ts`). */
+const plainLeaf = resolve(ROOT, 'dist/cst/plain.js')
+const treeEntries = new Set([
+  'dist/index', 'dist/plugin/index', 'dist/table/index', 'dist/analysis/diagnostics', 'dist/cli/index',
+  'dist/run/index', 'dist/language-service/index',
+])
+const withPlain = (entry: string, ...paths: string[]): Set<string> =>
+  new Set(treeEntries.has(entry) ? [...paths, plainLeaf] : paths)
 const marker = 'lexical capability census is incomplete'
 const compileEntries = [
   'dist/index', 'dist/plugin/index', 'dist/table/index',
@@ -44,16 +52,25 @@ describe('built token-capability topology', () => {
     expect(readFileSync(esmLeaf, 'utf8')).toContain(marker)
     for (const entry of compileEntries) {
       const path = resolve(ROOT, `${entry}.js`)
-      expect(staticLoadGraph(path), `${entry}.js`).toEqual(new Set([path, esmLeaf]))
+      expect(staticLoadGraph(path), `${entry}.js`).toEqual(withPlain(entry, path, esmLeaf))
       expect(readFileSync(path, 'utf8')).not.toContain(marker)
     }
     for (const entry of noncompileEntries) {
       const path = resolve(ROOT, `${entry}.js`)
-      expect(staticLoadGraph(path), `${entry}.js`).toEqual(new Set([path]))
+      expect(staticLoadGraph(path), `${entry}.js`).toEqual(withPlain(entry, path))
       expect(readFileSync(path, 'utf8')).not.toMatch(/compiler\/token-capability\.(?:js|cjs)/)
     }
     const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as { exports: Record<string, unknown> }
     expect(Object.keys(pkg.exports)).not.toContain('./compiler/token-capability')
+  })
+
+  it('defines the tree-object constructors once, in the shared leaf', () => {
+    // Two copies would give one shape two hidden classes, and a process that loads two
+    // entries (Jess imports `parseman` and `parseman/table`) would read both.
+    for (const entry of [...compileEntries, ...noncompileEntries]) {
+      expect(readFileSync(resolve(ROOT, `${entry}.js`), 'utf8'), `${entry}.js`).not.toMatch(/function PlainSpan\b/)
+    }
+    expect(readFileSync(plainLeaf, 'utf8')).toMatch(/function PlainSpan\b/)
   })
 
   it('keeps the private leaf CSP-safe across import and require entry points', async () => {
