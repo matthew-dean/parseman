@@ -380,8 +380,8 @@ and head lost 42–53% of rounds on every case.
 #### How many rounds
 
 Each process is one draw of V8's layout and pretenuring choices, so the
-per-round spread is wide. The interquartile range of `ln(head / ref)` on
-identical code, x64, 240 rounds:
+per-round spread is wide. Interquartile range of `ln(head / ref)` on identical
+code, x64, the first 240 rounds:
 
 | case | IQR | case | IQR |
 | --- | ---: | --- | ---: |
@@ -392,23 +392,56 @@ identical code, x64, 240 rounds:
 | `css/stylesheet` | 4.0% | `json/document` | 11.4% |
 | `rollback/sparse` | 5.0% | | |
 
-The round count comes from a bootstrap over those identical-code rounds: draw n
-rounds per case, add a 2% shift for the power estimate, apply the verdict, and
-repeat 300 times.
+The round counts come from a bootstrap over 1,040 identical-code rounds per case.
+Those rounds came from 50 CI jobs on seven CPU models (AMD EPYC 7763, 9V45 and
+9V74; Intel Xeon 8370C, 8573C, 6973P-C and 6975P-C), so the spread between
+runners is in the estimate. The bootstrap draws n rounds per case, adds a 2%
+shift for power, applies the verdict, and repeats 400 times.
 
-| test | rounds | identical code fails any case | per-case power at +2%: median / worst |
-| --- | ---: | ---: | --- |
-| sign, α 0.001 | 120 | 2.0% | 0.98 / 0.39 |
-| sign, α 0.001 | 160 | 1.3% | 0.99 / 0.52 |
-| **sign, α 0.001** | **200** | **0.7%** | **1.00 / 0.64** (`expected/narrow`) |
-| Wilcoxon, α 0.001 | 200 | 0.0% | 1.00 / 0.26 (`json/document`) |
+The sign test was chosen over Wilcoxon because the spread has heavy tails. A
+process that pretenures, or lands badly, sits far out. On the first 240 rounds
+at 200 rounds per case, Wilcoxon's worst-case power was 0.26 against the sign
+test's 0.64.
 
-The sign test beats Wilcoxon here because the spread has heavy tails: a process
-that pretenures, or lands badly, is far out. At 200 rounds, a 2% cost on every
-case is caught on almost every case. A 2% cost on the noisiest case alone is
-caught about two times in three.
+Power against a 2% slowdown, sign test, α 0.001 per case, 1% floor:
 
-TBD-XPROC-RESULTS
+| case | 100 rounds | 150 | 200 | rounds per case in the gate |
+| --- | ---: | ---: | ---: | ---: |
+| `css/stylesheet`, `expected/wide`, `less/mixins`, `rollback/dense`, `rollback/medium` | 1.00 | | | 100 |
+| `less/stylesheet`, `rollback/sparse` | 0.99 | | | 100 |
+| `graphql/document` | 0.93 | | | 100 |
+| `expected/narrow` | 0.82 | 0.95 | | 150 |
+| `expected/none` | 0.78 | 0.93 | | 150 |
+| `rollback/none` | 0.74 | 0.92 | | 150 |
+| `json/document` | 0.56 | 0.79 | 0.92 | 200 |
+
+Every case is at 0.92 or above. That is 10 shards of 10 rounds, with 15 and 20
+rounds for the noisy cases. On #210's own CI, `release` shards took 5–9 minutes
+each, `peak` shards less, and each aggregate under a minute. Wall time is about
+12 minutes when runners are free. Runner time is about 150 minutes per PR, which
+a public repository does not pay for.
+
+#### Validation on x64 CI
+
+The final configuration, run as 40 identical-code shards and 40 shards with a
+planted cost, on six CPU models. The planted cost is a checksum over two thirds
+of the input, added to `parseWithContext` in the head side's `src/`. Measured
+across processes it costs +2.0% to +4.2% on nine cases. It costs +0.2% to +0.6%
+on the three slow CSS and Less workloads, where the same fixed cost is a smaller
+share of a longer parse.
+
+| | identical code | planted cost |
+| --- | --- | --- |
+| real full runs (10 shards each) that FAIL | **0 / 4** | **4 / 4** |
+| bootstrap runs at the final round counts that FAIL | **0 / 200** | **200 / 200** |
+| per-case pooled center | −0.2% … +0.4% | as above |
+| cases caught, per bootstrap run of 200 | n/a | 176–200 / 200 on each case at +2.0% or more; at most 7 / 200 on the three cases under the 1% floor |
+
+Before, in process, on identical code: 8 runs in 20 failed (`expected/none` 7,
+center +3.4%), and `json/document` failed 3 to 5 runs in 20 in the workload gate.
+
+A shard took 457 s on average and 594 s at most, setup included.
+
 
 The rest of this page records the symptoms as they were found. Re-reading them
 with the mechanisms above: the identical-code incidents fit mechanism 1,

@@ -274,7 +274,7 @@ if (AGGREGATE !== null) {
       minLogs.get(c.id)!.push(...shard.minLogs[c.id]!)
     }
   }
-  console.log(`  aggregated ${files.length} shards, ${logs.get(cases[0]!.id)!.length} rounds per case`)
+  console.log(`  aggregated ${files.length} shards: ${cases.map(c => `${c.id} ${logs.get(c.id)!.length}`).join(', ')} rounds`)
 }
 const t0 = Date.now()
 const ROUNDS = Math.max(...cases.map(c => roundsFor(c.id)))
@@ -319,7 +319,7 @@ if (SHARD_OUT !== null) {
 }
 const gating = !REPORT_ONLY && !SELF && !IDENTICAL
 summary([
-  `#### ${GATE}: ${SELF ? 'self-check' : `HEAD vs ${REFERENCE.tag}`} — one process per side per case, ${logs.get(cases[0]!.id)!.length} rounds`,
+  `#### ${GATE}: ${SELF ? 'self-check' : `HEAD vs ${REFERENCE.tag}`} — one process per side per case, ${Math.min(...cases.map(c => logs.get(c.id)!.length))}–${Math.max(...cases.map(c => logs.get(c.id)!.length))} rounds per case`,
   '',
   '| case | center Δ | min Δ | head slower | sign-test p | verdict |',
   '| --- | ---: | ---: | ---: | ---: | --- |',
