@@ -27,7 +27,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   a gate: at a value end (`;`, `)`, `,`) an operator chain `A (op A)*` stops on the
   character instead of opening each level's operator to scan an empty pad and fail.
   Jess's SCSS grammar writes its math operators this way: its generated workload parses
-  in 10.8% fewer instructions with the JIT and 9.1% fewer without it. Trees are
+  in 13.1% fewer marginal instructions per parse (JIT, against 0.58.0). Trees are
   unchanged. Tolerant recovery's resync sentinels read first sets as before
   (`firstSetOf` with `consuming` false): a pad's own characters are not a point
   where its sequence starts.
@@ -94,7 +94,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   the scope (a first set through a nullable term, a gap gate, a routed gate, a
   reference that installs its rule's trivia), keyed by the trivia's first set. And a
   first set, the gap walk and the encoding of a rule referenced from a cleared region
-  take the trivia that reference installs (`triviaThroughRef`, as `ref.ts` does). In
+  take the trivia that reference installs (`triviaThroughRef`, as `ref.ts` does), and a
+  `token()` body, which runs with trivia cleared, is encoded under none. In
   0.58.0 a routed arm in a rule with no trivia, run under a caller's comment trivia,
   failed on `a/*c*/:b`, and a repeat in `noTrivia(…)` over a rule of a comment-trivia
   map with an optional-literal lead stopped at the comment; the new gates had the same
