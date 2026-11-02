@@ -5,6 +5,7 @@ import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
 import { directTerminalFailureExpected } from './expected.ts'
 import type { ScalarParser } from './scalar.ts'
+import { PlainLeaf, PlainSpan } from '../cst/plain.js'
 
 /**
  * ASCII case-fold equality — the interpreter twin of the compiler's `foldEq`
@@ -96,9 +97,9 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
         const code = value.charCodeAt(0)
         return function parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
           if (input.charCodeAt(pos) === code) {
-            const span = { start: pos, end: pos + 1 }
+            const span = new PlainSpan(pos, pos + 1)
             if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, span.end)
-            if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
+            if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, span))
             return { ok: true, value, span }
           }
           return failAt(ctx, expected, pos)
@@ -111,9 +112,9 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
         }
         const matchedValue = caseInsensitive ? input.slice(pos, end) : value
         if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
-          const span = { start: pos, end }
+          const span = new PlainSpan(pos, end)
           if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, end)
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: matchedValue, span })
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(matchedValue, span))
           return { ok: true, value: matchedValue, span }
         }
         return failAt(ctx, expected, pos)

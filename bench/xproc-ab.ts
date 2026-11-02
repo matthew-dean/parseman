@@ -191,10 +191,10 @@ function materialise(sha: string | null): string {
   const nm = path.join(dir, 'node_modules')
   if (!existsSync(nm)) symlinkSync(path.join(ROOT, 'node_modules'), nm, 'dir')
   mkdirSync(path.join(dir, 'bench', 'grammar-density'), { recursive: true })
-  copyFileSync(
-    path.join(HERE, 'grammar-density', 'grammar.ts'),
-    path.join(dir, 'bench', 'grammar-density', 'grammar.ts'),
-  )
+  // The grammar and the node constructors it imports (`tree-node.js`, `.d.ts`).
+  for (const f of ['grammar.ts', 'tree-node.js', 'tree-node.d.ts']) {
+    copyFileSync(path.join(HERE, 'grammar-density', f), path.join(dir, 'bench', 'grammar-density', f))
+  }
   return dir
 }
 
