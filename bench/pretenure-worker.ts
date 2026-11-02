@@ -18,14 +18,22 @@ if (process.execArgv.length > 0 || process.env['NODE_OPTIONS'] !== undefined) {
 const [id, parsesArg] = process.argv.slice(2)
 const parses = Number(parsesArg)
 let parse: () => unknown
+let input = ''
+/** The root a complete parse of this case builds: its `type`, and for the doc cases its child count. */
+let expectType = 'Stylesheet'
+let expectChildren: number | undefined
+// A planted defect for `--plant=truncated`: the input gains a fragment no case's grammar
+// consumes, so the parse fails or stops early. The check must then fail.
+const plantTruncated = process.env['PRETENURE_PLANT'] === 'truncated'
+const planted = (text: string): string => plantTruncated ? `${text.slice(0, text.length >> 1)}\n}}} !!! {{{\n${text.slice(text.length >> 1)}` : text
 const density = DENSITY_CASES.find(c => c.id === id)
 if (density !== undefined) {
   const compiled = compile(caseGrammar(density))
-  const input = caseInput(density, 200)
+  input = planted(caseInput(density, 200))
   parse = () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
 } else if (id === 'css/cst') {
   // A CST host: the tree is `cstBuildHost()`'s nodes over parseman's leaves and spans.
-  const input = buildWorkloads().find(w => w.id === 'css/stylesheet')!.input
+  input = planted(buildWorkloads().find(w => w.id === 'css/stylesheet')!.input)
   const compiled = compile(Stylesheet, undefined, { hostMode: 'cst' })
   parse = () => compiled.parseWithContext(input, { trackLines: false, build: cstBuildHost() }, 0)
 } else if (id === 'nolines/doc' || id === 'lines/doc' || id === 'spans/doc') {
@@ -42,14 +50,51 @@ if (density !== undefined) {
       : node('Item', sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/), literal(';'))),
   }))
   const compiled = compile(g.Doc)
-  const input = Array.from({ length: 3000 }, (_, i) => `k${String.fromCharCode(97 + (i % 26))}: ${i};`).join('\n')
+  input = planted(Array.from({ length: 3000 }, (_, i) => `k${String.fromCharCode(97 + (i % 26))}: ${i};`).join('\n'))
+  expectType = 'Doc'
+  expectChildren = 3000
   parse = () => compiled.parseWithContext(input, { trackLines: false }, 0)
 } else {
   const w = buildWorkloads().find(x => x.id === id)
   if (w === undefined) throw new Error(`no case ${String(id)}`)
-  const built = w.make()
-  parse = () => built.parse()
+  // The workload's own parse reads its fixed input, so the plant compiles the same grammar
+  // over a planted copy instead.
+  input = planted(w.input)
+  if (plantTruncated) {
+    const compiled = compile(Stylesheet)
+    parse = () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+  } else {
+    const built = w.make()
+    parse = () => built.parse()
+  }
 }
+
+/**
+ * Every parse must succeed, consume the input to its end (trailing whitespace aside) and,
+ * on the first parse, build the expected root. A parse that fails or stops early measures a
+ * smaller workload and would pass for the wrong reason.
+ */
+const complete = (r: unknown, first: boolean): void => {
+  const res = r as { ok?: unknown; span?: { end?: unknown }; value?: unknown }
+  const end = res.span?.end
+  if (res.ok !== true || typeof end !== 'number') {
+    console.error(`pretenure-worker: ${String(id)} did not parse`)
+    process.exit(3)
+  }
+  if (input.slice(end).trim() !== '') {
+    console.error(`pretenure-worker: ${String(id)} stopped at ${end} of ${input.length}`)
+    process.exit(3)
+  }
+  if (first) {
+    const root = res.value as { type?: unknown; children?: unknown } | undefined
+    const children = Array.isArray(root?.children) ? root.children.length : undefined
+    if (root?.type !== expectType || (expectChildren !== undefined && children !== expectChildren)) {
+      console.error(`pretenure-worker: ${String(id)} built ${String(root?.type)} with ${String(children)} children, expected ${expectType}${expectChildren === undefined ? '' : ` with ${expectChildren}`}`)
+      process.exit(3)
+    }
+  }
+}
+complete(parse(), true)
 
 if (id === 'lines/doc') {
   const doc = (parse() as { value?: { span?: { startLine?: number } } }).value
@@ -63,7 +108,7 @@ new PerformanceObserver(list => {
     if (typeof detail === 'object' && detail !== null && 'kind' in detail && detail.kind === constants.NODE_PERFORMANCE_GC_MAJOR) markCompacts++
   }
 }).observe({ entryTypes: ['gc'] })
-for (let i = 0; i < parses; i++) parse()
+for (let i = 0; i < parses; i++) complete(parse(), false)
 // GC entries are delivered asynchronously.
 await new Promise(resolve => setTimeout(resolve, 20))
 console.log(JSON.stringify({ markCompacts }))

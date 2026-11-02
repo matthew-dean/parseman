@@ -941,6 +941,14 @@ a calibration line with the pad-0 counts per case: read it before trusting a fai
 read 49–69 on Node 26. It is not in CI: run it on Node 24 and Node 26 for any change to what
 a parse allocates, about 6 minutes each.
 
+Each worker checks every parse before it reports a count. The parse must succeed and reach
+the end of its input (trailing whitespace aside), and the first parse must build the expected
+root (`Stylesheet`, or `Doc` with 3,000 items). A parse that fails or stops early would
+measure a smaller workload and pass for the wrong reason, so the worker refuses to count it
+and the case fails. `--plant=truncated` proves it: every input gains a fragment its grammar
+cannot consume, and the density and doc cases fail. The CSS grammar is permissive and accepts
+the fragment.
+
 `--plant=<site>` turns one converted site class back into an object literal in the staged
 `dist/`, and the run must then FAIL. On Node 26 it does for `span`, `leaf`, `node`,
 `line-span` and `children`. `field` and `buffer` cannot make it fail, because no tree keeps a
