@@ -30,6 +30,27 @@ describe('signTestP', () => {
     }
     expect(signTestP(0, 10)).toBe(1)
     expect(signTestP(10, 10)).toBeCloseTo(1 / 1024, 15)
+    expect(signTestP(11, 10)).toBe(0)
+  })
+
+  it('stays a probability past n = 1,024, where the direct form overflows', () => {
+    for (const n of [1023, 1024, 1040, 1200, 5000]) {
+      let prev = 1
+      for (const k of [0, Math.floor(n / 2), Math.floor(n / 2) + Math.floor(Math.sqrt(n)), Math.floor(0.6 * n), n]) {
+        const p = signTestP(k, n)
+        expect(Number.isFinite(p) && p >= 0 && p <= 1).toBe(true)
+        expect(p).toBeLessThanOrEqual(prev)
+        prev = p
+      }
+      // Symmetry: P(X >= n/2) = 1/2 + P(X = n/2)/2 for even n, so it sits just above 1/2.
+      if (n % 2 === 0) expect(signTestP(n / 2, n)).toBeGreaterThan(0.5)
+      expect(signTestP(Math.floor(n / 2) + 1, n)).toBeLessThan(0.5)
+    }
+    // A clearly significant excess is still significant at large n.
+    expect(signTestP(700, 1200)).toBeLessThan(1e-8)
+    // 0.6 of 1,200 rounds slower: z ≈ 6.9, so the tail is about 2.5e-12.
+    expect(signTestP(720, 1200)).toBeGreaterThan(1e-13)
+    expect(signTestP(720, 1200)).toBeLessThan(1e-10)
   })
 })
 

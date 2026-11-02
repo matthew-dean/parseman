@@ -8,15 +8,26 @@
  * Both tests rest on that symmetry and on nothing else.
  */
 
-/** Exact one-sided binomial tail: P(X >= k) for X ~ Bin(n, 1/2). */
+/**
+ * Exact one-sided binomial tail: P(X >= k) for X ~ Bin(n, 1/2).
+ *
+ * Summed in log space. The direct form, `C(n, i)` accumulated in a double over `2 ** n`,
+ * overflows near n = 1,024: first to 0 (every case over the floor fails), then to NaN
+ * (the median test never fails). 20 shards x 52 rounds already reaches that, so the
+ * terms are `exp(ln C(n, i) − n ln 2)`, each in [0, 1].
+ */
 export function signTestP(k: number, n: number): number {
+  if (!Number.isSafeInteger(n) || n < 0 || !Number.isSafeInteger(k)) throw new Error(`signTestP: bad arguments k=${k} n=${n}`)
+  if (k <= 0) return 1
+  if (k > n) return 0
+  const logHalfN = n * Math.LN2
+  let logC = 0
   let p = 0
-  let c = 1
   for (let i = 0; i <= n; i++) {
-    if (i >= k) p += c
-    c = c * (n - i) / (i + 1)
+    if (i >= k) p += Math.exp(logC - logHalfN)
+    if (i < n) logC += Math.log((n - i) / (i + 1))
   }
-  return p / 2 ** n
+  return Math.min(1, p)
 }
 
 /**
@@ -78,6 +89,7 @@ export function caseVerdict(d: readonly number[], s: VerdictSettings, random: ()
   for (const x of d) if (!Number.isFinite(x)) throw new Error(`caseVerdict: non-finite round ${x}`)
   const slower = d.filter(x => x > 0).length
   const pMedian = signTestP(slower, d.length)
+  if (!(pMedian >= 0 && pMedian <= 1)) throw new Error(`caseVerdict: sign-test p ${pMedian} is not a probability`)
   const pMean = meanFlipP(d, s.flips, random)
   const center = pct(median(d))
   const mean = pct(d.reduce((a, x) => a + x, 0) / d.length)

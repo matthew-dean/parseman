@@ -318,7 +318,10 @@ jobs:
 
   xproc-perf:
     needs: [changes, xproc-shard]
-    if: always() && needs.changes.outputs.code == 'true'
+    # `!cancelled()`, not `always()`: a superseded run skips the verdict instead of starting
+    # it after its shards were cancelled. A shard that FAILS does not cancel the run, so
+    # the verdict still runs then, finds the shard missing, and fails.
+    if: ${{ !cancelled() && needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
