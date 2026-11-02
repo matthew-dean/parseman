@@ -438,7 +438,7 @@ describe('a choice the interpreter tries arm by arm keeps every arm\'s failure',
       S: sequence(literal('>'), choice(literal('ab'), literal('ac'), literal('b')), literal(';')),
       T: sequence(literal('>'), choice(
         sequence(token(choice(literal('$.'), sequence(literal('$^'), word), sequence(literal('$'), word))), literal(';')),
-        literal('!'),
+        literal('$!'),
       )),
       U: sequence(literal('>'), token(choice(
         keywords(['@media']), keywords(['@supports']), keywords(['@layer']), regex(/@(?:-[a-z]+-)?keyframes/),
