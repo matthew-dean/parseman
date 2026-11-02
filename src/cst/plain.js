@@ -15,9 +15,27 @@ export function PlainLeaf(value, span) {
   this.span = span
 }
 
+export function PlainLineSpan(start, end, startLine, startColumn, endLine, endColumn) {
+  this.start = start
+  this.end = end
+  this.startLine = startLine
+  this.startColumn = startColumn
+  this.endLine = endLine
+  this.endColumn = endColumn
+}
+
 export function PlainNode(type, span, state, children) {
   this._tag = 'node'
   this.type = type
+  this.span = span
+  this.state = state
+  this.children = children
+}
+
+export function PlainTaggedNode(type, tags, span, state, children) {
+  this._tag = 'node'
+  this.type = type
+  this.tags = tags
   this.span = span
   this.state = state
   this.children = children
@@ -27,6 +45,14 @@ export function PlainField(name, value, span) {
   this.name = name
   this.value = value
   this.span = span
+}
+
+export function PlainTriviaField(name, value, span, leading, trailing) {
+  this.name = name
+  this.value = value
+  this.span = span
+  this.leading = leading
+  this.trailing = trailing
 }
 
 // Every field assigned, so the three buffer kinds share one shape. `rawLen` is always a
@@ -43,4 +69,24 @@ export function PlainBuf(rawOnly, noRaw, rawLen) {
   this.tl = undefined
 }
 
-for (const f of [PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf]) f.prototype = Object.prototype
+for (const f of [PlainSpan, PlainLineSpan, PlainLeaf, PlainNode, PlainTaggedNode, PlainField, PlainTriviaField, PlainBuf]) {
+  f.prototype = Object.prototype
+}
+
+// Arrays a tree keeps. An array literal has an allocation site too; a copy of an empty
+// array does not. The template is emptied after creation so its copies start with
+// generic (object) elements and a push never transitions their elements kind.
+const NO_ITEMS = [null]
+NO_ITEMS.length = 0
+
+export function plainList1(a) {
+  const list = NO_ITEMS.slice()
+  list.push(a)
+  return list
+}
+
+export function plainList2(a, b) {
+  const list = NO_ITEMS.slice()
+  list.push(a, b)
+  return list
+}

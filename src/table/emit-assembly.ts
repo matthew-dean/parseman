@@ -144,7 +144,7 @@ export const EMITTED_PARAMS = [
   'collapseEmpty',
   // Appended for constructor-built tree objects (`cst/plain.d.ts`): a `new` call has
   // no allocation site, so V8 cannot pretenure them. Old factories ignore them.
-  '_SP', '_LF', '_ND', '_FC', '_BUF',
+  '_SP', '_LF', '_ND', '_FC', '_BUF', '_L1', '_L2',
 ] as const
 
 /**
@@ -188,10 +188,10 @@ function _pushLeafBuf(ctx,value,s,e){
 const l=new _LF(value,new _SP(s,e))
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(l)
-else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
+else if(b.single!==undefined){b.ch=_L2(b.single,l);b.single=undefined}
 else b.single=l
 if(b.raw!==undefined)b.raw.push(l)
-else if(b.rawSingle!==undefined){b.raw=[b.rawSingle,l];b.rawSingle=undefined}
+else if(b.rawSingle!==undefined){b.raw=_L2(b.rawSingle,l);b.rawSingle=undefined}
 else b.rawSingle=l
 }
 function _capturedFlatChildren(children){
@@ -248,14 +248,14 @@ function _pushLeafNoRawBuf(ctx,value,s,e){
 const l=new _LF(value,new _SP(s,e))
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(l)
-else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
+else if(b.single!==undefined){b.ch=_L2(b.single,l);b.single=undefined}
 else b.single=l
 b.rawLen++
 }
 function _pushNodeNoRawBuf(ctx,value){
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(value)
-else if(b.single!==undefined){b.ch=[b.single,value];b.single=undefined}
+else if(b.single!==undefined){b.ch=_L2(b.single,value);b.single=undefined}
 else b.single=value
 b.rawLen++
 }
@@ -2483,7 +2483,7 @@ const end=${recognize}(input,pos)
 if(end<0){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 const value=${value}
 const leaf=new _LF(value,new _SP(pos,end))
-const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)
+const kids=_L1(leaf),rawKids=_L1(leaf),span=new _SP(pos,end)
 EC.e=end
 const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
 ${L.buf && L.raw === RAW_OMIT
@@ -2559,12 +2559,12 @@ return collapseEmpty(ctx,${build},input,pos,EC.e,${flags === 32})
             : L.buf && L.raw === RAW_CAPTURE ? `if(sBuf!==undefined){
 if(sBuf.rawOnly!==true){
 if(sBuf.ch!==undefined)sBuf.ch.push(nd)
-else if(sBuf.single!==undefined){sBuf.ch=[sBuf.single,nd];sBuf.single=undefined}
+else if(sBuf.single!==undefined){sBuf.ch=_L2(sBuf.single,nd);sBuf.single=undefined}
 else sBuf.single=nd
 }
 const rawNd=rawEntry(nd,input,pos,end)
 if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
-else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
+else if(sBuf.rawSingle!==undefined){sBuf.raw=_L2(sBuf.rawSingle,rawNd);sBuf.rawSingle=undefined}
 else sBuf.rawSingle=rawNd
 }else if(sCh!==undefined){
 sCh.push(nd)
@@ -2574,12 +2574,12 @@ if(sBuf.noRaw===true)_pushNodeNoRawBuf(ctx,nd)
 else{
 if(sBuf.rawOnly!==true){
 if(sBuf.ch!==undefined)sBuf.ch.push(nd)
-else if(sBuf.single!==undefined){sBuf.ch=[sBuf.single,nd];sBuf.single=undefined}
+else if(sBuf.single!==undefined){sBuf.ch=_L2(sBuf.single,nd);sBuf.single=undefined}
 else sBuf.single=nd
 }
 const rawNd=rawEntry(nd,input,pos,end)
 if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
-else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
+else if(sBuf.rawSingle!==undefined){sBuf.raw=_L2(sBuf.rawSingle,rawNd);sBuf.rawSingle=undefined}
 else sBuf.rawSingle=rawNd
 }
 }else if(sCh!==undefined){
@@ -2668,18 +2668,18 @@ ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
         const finishCapture = omitsRaw
-          ? `const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
+          ? `const kids=buf.ch??(buf.single!==undefined?_L1(buf.single):EMPTY_CH)
 const hostKids=kids
 const rawKids=EMPTY_CH
 const tlog=buf.tl??EMPTY_TLOG`
           : keepChildren
-          ? `const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
+          ? `const kids=buf.ch??(buf.single!==undefined?_L1(buf.single):EMPTY_CH)
 const hostKids=kids
-const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
+const rawKids=buf.raw??(buf.rawSingle!==undefined?_L1(buf.rawSingle):EMPTY_CH)
 const tlog=buf.tl??EMPTY_TLOG`
           : `const kids=EMPTY_CH
 const hostKids=kids
-const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
+const rawKids=buf.raw??(buf.rawSingle!==undefined?_L1(buf.rawSingle):EMPTY_CH)
 const tlog=buf.tl??EMPTY_TLOG`
         return `${head}
 ${!hostCst && !tracked ? gp : ''}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog

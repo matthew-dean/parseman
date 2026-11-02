@@ -14,7 +14,7 @@
  */
 import type { ParseContext } from '../types.ts'
 import { popCstChild, pushCstChild } from '../cst/capture-buffer.ts'
-import { PlainLeaf, PlainSpan } from '../cst/plain.js'
+import { PlainLeaf, PlainLineSpan, PlainSpan } from '../cst/plain.js'
 
 export type Span = { start: number; end: number }
 export type LineSpan = Span & {
@@ -38,7 +38,7 @@ export function lineCol(ctx: ParseContext, offset: number): [number, number] {
 
 export function spanLines(ctx: ParseContext, start: number, end: number): LineSpan {
   const s = lineCol(ctx, start), e = lineCol(ctx, end)
-  return { start, end, startLine: s[0], startColumn: s[1], endLine: e[0], endColumn: e[1] }
+  return new PlainLineSpan(start, end, s[0], s[1], e[0], e[1])
 }
 
 /**

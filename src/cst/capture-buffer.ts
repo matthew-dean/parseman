@@ -1,6 +1,6 @@
 import type { ParseContext, Span } from '../types.ts'
-import { annotateSpanFromLineContext } from '../line-index.ts'
-import { PlainBuf } from './plain.js'
+import { annotateSpanFromLineContext, lineSpanFromContext } from '../line-index.ts'
+import { PlainBuf, PlainLeaf, plainList1, plainList2 } from './plain.js'
 
 /** Lazy per-node capture state — arrays materialized on first push. */
 export type CstCaptureBuf = {
@@ -58,10 +58,10 @@ export function finishCstBuf(buf: CstCaptureBuf | undefined): {
   triviaLog: number[]
 } {
   if (!buf) return { children: EMPTY, rawChildren: EMPTY, triviaLog: EMPTY_TL }
-  const children = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY)
+  const children = buf.ch ?? (buf.single !== undefined ? plainList1(buf.single) : EMPTY)
   const rawChildren = buf.noRaw === true
     ? EMPTY
-    : buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY)
+    : buf.raw ?? (buf.rawSingle !== undefined ? plainList1(buf.rawSingle) : EMPTY)
   const triviaLog = buf.tl ?? EMPTY_TL
   return { children, rawChildren, triviaLog }
 }
@@ -80,14 +80,21 @@ export function endCstNodeCapture(
   return materialized
 }
 
+/** Every caller passes a leaf `{ _tag, value, span }` (parseman's own terminals; this is not public API). */
+function isLeaf(v: unknown): v is { _tag: 'leaf'; value: unknown; span: Span } {
+  return typeof v === 'object' && v !== null && (v as { _tag?: unknown })._tag === 'leaf'
+}
+
 export function pushCstLeaf(ctx: ParseContext, leaf: unknown): void {
   if (!ctx.trackLines) {
     pushCstChild(ctx, leaf, leaf)
     return
   }
-  const annotated = leaf && typeof leaf === 'object' && (leaf as { span?: unknown }).span
-    ? { ...(leaf as Record<string, unknown>), span: annotateSpanFromLineContext((leaf as { span: Span }).span, ctx) }
-    : leaf
+  const annotated = isLeaf(leaf)
+    ? new PlainLeaf(leaf.value, lineSpanFromContext(leaf.span, ctx))
+    : leaf && typeof leaf === 'object' && (leaf as { span?: unknown }).span
+      ? { ...(leaf as Record<string, unknown>), span: annotateSpanFromLineContext((leaf as { span: Span }).span, ctx) }
+      : leaf
   pushCstChild(ctx, annotated, annotated)
 }
 
@@ -97,13 +104,13 @@ export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknow
   if (b) {
     if (b.rawOnly !== true) {
       if (b.ch) b.ch.push(built)
-      else if (b.single !== undefined) { b.ch = [b.single, built]; b.single = undefined }
+      else if (b.single !== undefined) { b.ch = plainList2(b.single, built); b.single = undefined }
       else b.single = built
     }
 
     if (b.noRaw === true) b.rawLen = (b.rawLen ?? 0) + 1
     else if (b.raw) b.raw.push(rawEntry)
-    else if (b.rawSingle !== undefined) { b.raw = [b.rawSingle, rawEntry]; b.rawSingle = undefined }
+    else if (b.rawSingle !== undefined) { b.raw = plainList2(b.rawSingle, rawEntry); b.rawSingle = undefined }
     else b.rawSingle = rawEntry
     return
   }
