@@ -62,7 +62,10 @@ const CONFIG_PATH = path.join(HERE, 'xproc-gate.json')
 
 type SuiteConfig = { warmup: number; samples: number; parsesPerSample: number }
 type Config = {
+  /** Rounds per shard for every case not named in `roundsByCase`. */
   rounds: number
+  /** Rounds per shard for the noisy cases, sized so each reaches its power target. */
+  roundsByCase: Record<string, number>
   floorPct: number
   alpha: number
   density: SuiteConfig & { rules: number }
@@ -150,27 +153,38 @@ const REFERENCE = PEAK
 const REF = REFERENCE.sha
 const HEAD_REF = SELF ? REF : argValue('--head-ref')
 const FILTER = argValue('--case')
-const ROUNDS = Number(argValue('--rounds') ?? CONFIG.rounds)
-if (!Number.isSafeInteger(ROUNDS) || ROUNDS < 2) fail(GATE, `--rounds must be an integer >= 2`)
+const ROUNDS_ARG = argValue('--rounds')
+if (ROUNDS_ARG !== null && !(Number.isSafeInteger(Number(ROUNDS_ARG)) && Number(ROUNDS_ARG) >= 2)) fail(GATE, '--rounds must be an integer >= 2')
+/** `--rounds` overrides every case; otherwise each case gets its configured count. */
+const roundsFor = (id: string): number => ROUNDS_ARG !== null ? Number(ROUNDS_ARG) : CONFIG.roundsByCase[id] ?? CONFIG.rounds
 
 const COPY = ['bench/grammar-density', 'bench/workloads', 'examples'] as const
 const refDir = AGGREGATE === null ? materialise(GATE, ROOT, REF, COPY) : ''
-const headDir = AGGREGATE !== null ? '' : HEAD_REF === null ? workingTreeCopy() : materialise(GATE, ROOT, HEAD_REF, COPY)
+const headDir = AGGREGATE !== null ? '' : HEAD_REF === null ? ROOT : materialise(GATE, ROOT, HEAD_REF, COPY)
 
 /**
- * The working tree, copied to a sibling of the reference's directory so neither
- * side runs from a different kind of path. `-worktree` is as long as an 8-digit sha.
+ * Both sides run from ONE directory. Before each worker its side's `src/` is copied
+ * into `.cache/xproc-gate-run`, so every process loads modules at the same paths and
+ * only the code differs. Paths are inputs to a process's layout: with the head in the
+ * working tree and the reference in `.cache/`, identical code read `graphql/document`
+ * −5.7% and `css/stylesheet` +1.8% in 10 runs of 10, and two same-length paths
+ * still left `expected/narrow` at −0.9%. Everything else in the stage is the working
+ * tree's, as the in-process tools copy it.
  */
-function workingTreeCopy(): string {
-  const dir = path.join(ROOT, '.cache', `${GATE}-worktree`)
-  rmSync(dir, { recursive: true, force: true })
-  mkdirSync(dir, { recursive: true })
-  for (const rel of ['src', 'package.json', 'tsconfig.json', ...COPY]) {
-    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
-    cpSync(path.join(ROOT, rel), path.join(dir, rel), { recursive: true })
+const STAGE = path.join(ROOT, '.cache', `${GATE}-run`)
+if (AGGREGATE === null) {
+  rmSync(STAGE, { recursive: true, force: true })
+  mkdirSync(STAGE, { recursive: true })
+  for (const rel of ['package.json', 'tsconfig.json', ...COPY]) {
+    mkdirSync(path.dirname(path.join(STAGE, rel)), { recursive: true })
+    cpSync(path.join(ROOT, rel), path.join(STAGE, rel), { recursive: true })
   }
-  symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir')
-  return dir
+  symlinkSync(path.join(ROOT, 'node_modules'), path.join(STAGE, 'node_modules'), 'dir')
+}
+function stage(dir: string): string {
+  rmSync(path.join(STAGE, 'src'), { recursive: true, force: true })
+  cpSync(path.join(dir, 'src'), path.join(STAGE, 'src'), { recursive: true })
+  return STAGE
 }
 const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF)
 
@@ -196,7 +210,7 @@ function measure(dir: string, suite: string, id: string): Reading {
   const envPad = Math.floor(random() * 4096)
   const r = spawnSync(
     process.execPath,
-    ['--import', 'tsx/esm', SELF_FILE, `--worker=${JSON.stringify([dir, suite, id, heapPad])}`],
+    ['--import', 'tsx/esm', SELF_FILE, `--worker=${JSON.stringify([stage(dir), suite, id, heapPad])}`],
     // The environment's size moves the initial stack, so it is randomised too. The
     // variable's name is read by nothing: it is only bytes in the environment.
     { cwd: ROOT, encoding: 'utf8', timeout: WORKER_TIMEOUT_MS, env: { ...process.env, PM_XPROC_LAYOUT_PAD: 'x'.repeat(envPad) } },
@@ -232,7 +246,8 @@ function signTestP(k: number, n: number): number {
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
 console.log(
   `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`
-  + `\n  ${ROUNDS} rounds x ${cases.length} cases, ONE PROCESS PER SIDE PER CASE PER ROUND, random order, default V8, seed ${SEED}`
+  + `\n  ${cases.map(c => `${c.id} ${roundsFor(c.id)}`).join(', ')} rounds,`
+  + `\n  ${cases.length} cases, ONE PROCESS PER SIDE PER CASE PER ROUND, random order, default V8, seed ${SEED}`
   + `\n  a case FAILS when its median per-round slowdown exceeds ${FLOOR}% AND the sign test over rounds gives p < ${CONFIG.alpha}\n`,
 )
 
@@ -252,7 +267,9 @@ if (AGGREGATE !== null) {
     console.log(`  shard ${f}: seed ${shard.seed}`)
     for (const c of cases) {
       const d = shard.logs[c.id]
-      if (d === undefined) fail(GATE, `shard ${f} has no rounds for ${c.id}`)
+      if (d === undefined || d.length !== roundsFor(c.id)) {
+        fail(GATE, `shard ${f} has ${d?.length ?? 0} rounds for ${c.id}, expected ${roundsFor(c.id)}`)
+      }
       logs.get(c.id)!.push(...d)
       minLogs.get(c.id)!.push(...shard.minLogs[c.id]!)
     }
@@ -260,9 +277,11 @@ if (AGGREGATE !== null) {
   console.log(`  aggregated ${files.length} shards, ${logs.get(cases[0]!.id)!.length} rounds per case`)
 }
 const t0 = Date.now()
+const ROUNDS = Math.max(...cases.map(c => roundsFor(c.id)))
 for (let round = 0; AGGREGATE === null && round < ROUNDS; round++) {
   for (let n = 0; n < cases.length; n++) {
     const c = cases[n]!
+    if (round >= roundsFor(c.id)) continue
     const refFirst = random() < 0.5
     const first = measure(refFirst ? refDir : headDir, c.suite, c.id)
     const second = measure(refFirst ? headDir : refDir, c.suite, c.id)
@@ -295,7 +314,7 @@ console.log(`ROWS ${JSON.stringify(Object.fromEntries(cases.map(c => [c.id, logs
 if (SHARD_OUT !== null) {
   const shard: Shard = { reference: REF, seed: SEED, logs: Object.fromEntries(logs), minLogs: Object.fromEntries(minLogs) }
   writeFileSync(SHARD_OUT, JSON.stringify(shard))
-  console.log(`\n${GATE}: wrote ${ROUNDS} rounds to ${SHARD_OUT}; the verdict is taken over all shards.`)
+  console.log(`\n${GATE}: wrote this shard's rounds to ${SHARD_OUT}; the verdict is taken over all shards.`)
   process.exit(0)
 }
 const gating = !REPORT_ONLY && !SELF && !IDENTICAL

@@ -323,9 +323,9 @@ user gets.** No `--` flag on the measured process, no `NODE_OPTIONS`, no
 structure creates a bias, as several instances in one heap did, the
 measurement design changes, not V8.
 
-The in-process gates still set `--no-compilation-cache` (mechanism 1 above),
-so they are advisory, `--report-only`, in CI. The verdict is the cross-process
-gate below, which needs no flag at all.
+The in-process tools still set `--no-compilation-cache` (mechanism 1 above),
+so they are out of CI and kept as local diagnostics. Their output says so on its
+first line. The verdict is the cross-process gate below, which sets no flag.
 
 ### The cross-process gate — `pnpm perf:xproc:gate`
 
@@ -347,8 +347,12 @@ it is for a user:
   likely to lose a round as win it. The random order makes that true.
 - **Sharded.** CI runs 10 shards of 20 rounds in parallel and a job that takes
   one verdict over all 200 rounds. It FAILS if any shard is missing.
-- **Same path shape.** The working tree is copied to `.cache/xproc-gate-worktree`,
-  a sibling of the reference's `.cache/xproc-gate-<sha>`, with the same length.
+- **One path for both sides.** Before each worker, its side's `src/` is copied
+  into `.cache/xproc-gate-run`, so every process loads its modules from the same
+  paths and only the code differs.
+- **Per-case rounds.** Noisy cases get more rounds than quiet ones
+  (`roundsByCase` in `bench/xproc-gate.json`). The aggregate fails if a shard
+  carries the wrong number of rounds for any case.
 
 #### Layout randomisation, and why it is not a reconfiguration
 

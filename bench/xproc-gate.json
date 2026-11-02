@@ -1,6 +1,7 @@
 {
   "_comment": "Configuration for `pnpm perf:xproc:gate` — see bench/xproc-gate.ts and docs/design/perf-gates.md.",
   "rounds": 20,
+  "roundsByCase": { "expected/narrow": 40, "expected/none": 40, "rollback/none": 40, "graphql/document": 40, "json/document": 40 },
   "_rounds": "Rounds PER SHARD. CI runs 10 shards, so 200 rounds per case: chosen by the bootstrap power analysis in docs/design/perf-harness-interleaving.md: a 2% cost on every case is caught per case with median power above 0.98, and 0.64 on the noisiest.",
   "floorPct": 1.0,
   "alpha": 0.001,

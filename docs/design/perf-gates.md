@@ -22,7 +22,7 @@ would not see them.
 | --- | --- | --- |
 | `pnpm perf:xproc:gate` | every density case and every workload, HEAD vs the previous release, one parser per process, default V8, 200 rounds in 10 shards | **the verdict**, via `xproc-perf` |
 | `pnpm perf:xproc:gate --peak` | the workloads vs the fastest release on record, same design, the committed allowance as the floor | **the verdict** for the peak clause |
-| `pnpm perf:guard:grammars`, `pnpm perf:workloads`, `pnpm perf:workloads:peak` | the same cases, in one process, interleaved | advisory first look, `--report-only` |
+| `pnpm perf:guard:grammars`, `pnpm perf:workloads`, `pnpm perf:workloads:peak` | the same cases, in one process, interleaved, with `--no-compilation-cache` | **not in CI**: local diagnostics only, and their output says so |
 | `pnpm perf:guard`, `pnpm bench:macro-optimize` | as below | as below |
 
 The in-process gates are fast and good at saying WHERE a cost is. They put four
@@ -30,12 +30,15 @@ instances of a case in one heap, though, and V8's per-instance choices land on
 one side of a pair. On identical code that read as a +3.4% head-side bias on
 `expected/none` and an ~8% build-position effect on `json/document`, and it
 failed 8 runs in 20. They also turn V8's compilation cache off, which the rule
-forbids in a verdict. The cross-process gate has none of those problems. Its
+forbids in a measurement, so they do not run in CI: a number posted on a PR gets
+read as a verdict. The cross-process gate has none of those problems. Its
 design, its layout randomisation and its round count are in
 [perf-harness-interleaving.md](./perf-harness-interleaving.md#the-cross-process-gate--pnpm-perfxprocgate).
 
-All four of the gates below run on every code PR. The first three are
-self-contained in this repository. The macro gate also uses the pinned Jess commit
+Of the four tools below, `perf:guard` and the macro gate run on every code PR.
+Since #175 the grammar and workload A/B tools are local diagnostics, and the
+cross-process gate covers their cases in CI. The first three are self-contained in
+this repository. The macro gate also uses the pinned Jess commit
 named in `bench/jess/macro-optimize-config.json`; CI checks it out automatically.
 
 The last two are not redundant, and which one you reach for depends on what you

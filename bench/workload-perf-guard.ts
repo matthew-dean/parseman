@@ -185,6 +185,11 @@ console.log(
       : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,
 )
 
+console.log(
+  `${GATE}: DIAGNOSTIC RUN, NOT A VERDICT. In-process A/B with V8's --no-compilation-cache set at run time,`
+  + `\n  so it does not measure what users run. CI's perf verdict is \`pnpm perf:xproc:gate\` (docs/design/perf-gates.md).`,
+)
+
 const refWorkloads = await loadSide(refDir)
 const headWorkloads = await loadSide(headDir)
 
