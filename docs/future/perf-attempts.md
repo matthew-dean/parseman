@@ -310,6 +310,49 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   spans. With merges made free (a probe valid on accepted input only), `color: red;` and
   the keyword list stayed inside the A/A and the whole file moved −0.8%. Not built; the
   probe was a dist edit, no branch kept.
+- **Left-corner routing, first form: one shared walk, no gap routing.** Every level from a
+  node down to the first node a character reaches starts at the same position with the
+  same piece. So route on that character (gates, dispatching choices, lead masks, trivia
+  labels), call the deepest node once, and complete each enclosing level as its reducer
+  on the lone child. A level whose continuation can start runs a freshly linked copy of
+  itself with its left corner seeded, so nothing is read twice. Census for Less
+  `color: red;` (closure engine, `assemblyBudget` 0): the levels above `Value` cost 9.9k of
+  the declaration's 39.8k JIT instructions (25%) and ~100k of 332k `--jitless` (30%).
+  About 4.7k of the 9.9k is reducers, so the ceiling is ~13%. Trees identical on 11.4k
+  inputs × 4 variants, with planted defects caught. Less `color: red;` −11% JIT, but
+  every value followed by a space resumed at each level, and one runtime walker made the
+  call sites megamorphic: CSS +3.7% / +9.8%, SCSS +5.1% / +8.5% (JIT / `--jitless`),
+  space runs up to +17% `--jitless`. Measured against `main` @ `44c9d269`. Branch
+  `perf/left-corner-routing` @ `2844597c`, closure engine only, behind `PM_LC=1`.
+- **Left-corner routing, second form: per-route closures and gap-once decisions.** The
+  same routes, but each one is its own chain of closures, and wrappers that only route
+  add none. A continuation is decided on the token after the gap, read once. That covers
+  the `OP_GAPGATE` item, an item that opens with `optional(<regex>)`, and the trivia gap,
+  and the end of the read is handed to the term that reads the gap next. Literal
+  separators are routed too, and no route is installed whose top always resumes. Trees
+  identical on 11.5k inputs × 4 variants, and on Less run with `mathMode` `always` and
+  `parens`. A wrong reducer state was caught on 44 and 50 rows, a dropped lone child on
+  249–5241 rows per dialect, a skipped choice failure on 1 (Less) and 13 (SCSS), a skipped
+  repeat report on 47 (Less). The mirrored separator and gate writes never run on these
+  grammars, because the separator gate decides every list. The `optional`-gap write runs
+  2.8k times on CSS, but a later write always replaces it. Interleaved marginal
+  instructions against the same tree with the switch off (`release/0.59.0` @ `52326958`),
+  A/A null within ±1.2% (±2.3% on one `--jitless` file):
+  - Less `color: red;` −12.3% JIT / −16.3% `--jitless`; SCSS −9.0% / −10.4%; `.jess`
+    −7.0% / −12.9%; CSS −5.7% / −8.1%.
+  - Whole files, all faster in both modes: `benchmark.less` −4.7% / −9.6%,
+    `bootstrap-less-port` (90 files, 240 KB) −3.9% / −6.2%, `benchmark.css` −4.7% / −3.9%,
+    `gen-workload.scss` −2.9% / −2.5%, a 36 KB `.jess` workload −3.6% / −3.8%.
+  - It missed the bar of no case slower than its null. `font: 12px/1.5 a, b;` is +7.9% /
+    +5.3% on CSS and +5.5% / +5.6% on `.jess`, confirmed at 9 reps. CSS
+    `width: calc(1px + 2px * 3);` is +0.8% / +0.45%.
+  - The cause is structural, not noise. When a value continues at every level (a slash,
+    then a space, then a comma), every level resumes, so the route is the normal path
+    plus its own descent; the CSS base's levels have little lone work to save.
+  Rejected under the stop rule set for it. The next large piece is `Value`'s 17-arm choice
+  (~8.5k of `color: red;`), which is the across-arms case `factor-choice.ts` handles. Same
+  branch @ `b9bfdc8e`, with plants at `9a3826f6` and raw samples under
+  `scratchpad/left-corner/results/`.
 
 ## Parked
 
