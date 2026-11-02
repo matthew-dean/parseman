@@ -404,10 +404,47 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     three off, the switch still costs +0.8%. So what is left is a fixed cost per route
     (entry, the collector save and restore, the final publish) plus the driver every
     node call passes through, not the resume.
+  - Through `dispatch()` and pretested choices (@ `701cbf53`). A route can end in a
+    `dispatch()` whose arms re-read its token: the selector is the left corner, the
+    dispatch's own tables pick the arm, and the arm's node completes as a lone level, with
+    no `_routed` object. A route also passes a choice when every claiming arm but one is
+    pretested, cutting back at entry if a pretest matches. Less `color: red;` drops from
+    278.1k to 257.3k `--jitless`, about 21k of the 28k that `Value` and the dispatch cost.
+    That is −16.4% JIT / −22.3% `--jitless` against the base, and `border-radius: a / b;`
+    is −13.3% / −17.3%. Every whole file is faster in both modes (`benchmark.less`
+    −6.8% / −9.4%, `bootstrap-less-port` −2.0% / −9.1%). The open `font` item is
+    unchanged. CSS `calc(1px + 2px * 3)` is +0.7% `--jitless`, not yet attributed.
+  - Open question: can the dispatch's routing be derived, so authors needn't write
+    `dispatch()`? The route above still reads the hand-written dispatch's exact keys and
+    prefix and suffix matchers. A plain `choice()` would need them derived from the arms'
+    leading literals: read the identifier corner once, route on its text and on the next
+    captured token. Not built.
   The build-out derives the routes into table rows at encode time for every engine, on
-  `main` after 0.59.0. The next large piece is `Value`'s 17-arm choice (~8.5k of
-  `color: red;`), the across-arms case `factor-choice.ts` handles. Branch
-  `perf/left-corner-routing`, raw samples under `scratchpad/left-corner/results/`.
+  `main` after 0.59.0. Branch `perf/left-corner-routing`, raw samples under
+  `scratchpad/left-corner/results/`.
+- **Less declarations above the value (census, not built).** Marginal instructions per
+  declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
+  ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.
+  Breakdown in `--jitless`:
+  - Value, after the routes: ~86k (31%).
+  - The Declaration level: ~126k (46%). Of that, the declaration's frame and sequence,
+    four scope switches, three choices, three optionals, the colon and the value gap.
+    Two pieces are grammar shape: the `valueGap` field (6.3k, removing it as a probe) and
+    the head's interpolated-property and numeric-key arms (4.7k). The declaration always
+    has several children, so its frame stays; a route starting at the statement would
+    remove only the choice, gate and scope steps above the property token.
+  - The statement level: ~41k (15%). 33.5k of it is failed arms: before the declaration
+    arm, `FunctionStatement`'s dispatch reads the identifier and the guarded ruleset
+    pre-scans `/[-\w]+[ \t]*:[ \t\n\r\f]/` (moving the declaration arm first, as a probe).
+    Removing them takes the identifier as the statement's left corner, routed on the next
+    captured token: [jess#515](https://github.com/jesscss/jess/pull/515) grammar-side, or
+    the dispatch derivation above. The rest is the item's frame and terminator.
+  - Reducers (Jess grammar code): ~40k `--jitless` / ~5.9k JIT. `Declaration` is
+    2.5k / 21.5k, the identifier's keyword 1.2k / 3.3k, the five value-chain levels
+    0.3–0.7k JIT each. A framed node costs parseman ~2.5k JIT / ~19k `--jitless` around a
+    reducer that is nearly free (a keyword node over an identifier).
+  Census on `perf/left-corner-routing` @ `25597760`; probe edits were made only in a scratch
+  checkout of the grammar.
 - **Comment-sensitive selection
   ([#179](https://github.com/matthew-dean/parseman/issues/179)).** Comment-only edits to
   Jess's SCSS grammar moved the emitted function count from 61 to 55: the build measured
