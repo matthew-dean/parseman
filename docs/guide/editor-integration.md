@@ -13,7 +13,8 @@ There are three layers:
    You write it once, it compiles for speed, and it has no IDE surface at all.
 2. **Recovery and completions in the compiled parser** — always compiled in, so
    the compiled artifact an editor actually loads can recover past broken input
-   and answer completions on the fast path.
+   on the fast path. `completionsAt` probes a `compile()`d grammar on its fast path
+   too; a macro-built rule function is not accepted by it yet.
 3. **`parseman/language-service`** — an external, grammar-agnostic layer that
    turns the parser's raw signals into editor features like diagnostics and
    semantic completions, configured by whoever's consuming it.
@@ -22,8 +23,11 @@ There are three layers:
 
 Every compiled grammar can recover, whether it comes from the macro build or from
 `compile()`; there is nothing to turn on. A parse runs strict unless you pass
-`tolerant: true`, and a strict parse never runs a recovery piece: the tolerant
-pieces are a separate assembly, built only when a tolerant parse first asks for one.
+`tolerant: true`, and a strict parse never runs list recovery: the tolerant pieces
+are a separate assembly, built only when a tolerant parse first asks for one. An
+`expect()` in the grammar recovers in either mode: it yields a `ParseError` value in
+place of the missing token, so a successful strict parse of such a grammar does not
+by itself mean the input was valid.
 
 The `recovery` option on `compile()` and the macro plugin is a deprecated no-op and
 will be removed in the next minor release.
