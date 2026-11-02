@@ -403,6 +403,56 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     old-to-young pointers. It would change how the tree is built, with unknown effect on
     real grammars.
 
+- **0.59.0's pretenuring flips follow bundle layout, not parse work.** The required
+  cross-process gate on `504ddea1` (CI, Linux, Node 26, against v0.58.2) failed seven
+  cases:
+
+  | case | median Δ | mean Δ | head slower |
+  | --- | ---: | ---: | ---: |
+  | rollback/sparse | +7.3% | +11.6% | 89/100 |
+  | rollback/medium | +7.5% | +10.0% | 613/900 |
+  | expected/none | +12.4% | +18.5% | 92/100 |
+  | expected/narrow | −1.4% | +4.7% | 427/900 |
+  | less/stylesheet | +11.0% | +8.0% | 78/100 |
+  | less/mixins | +11.2% | +7.5% | 80/100 |
+  | graphql/document | +4.8% | +5.0% | 156/160 |
+
+  `rollback/none`, `rollback/dense`, `expected/wide`, `css/stylesheet` and
+  `json/document` passed. Every failure checked is V8's allocation-site pretenuring
+  decision:
+  - `graphql/document`: the 0.59.0 build pretenures in 8 of 8 processes (18–19
+    mark-compacts), v0.58.2 in none. With `--no-allocation-site-pretenuring`
+    (diagnostic), both run 48.6G–48.7G instructions at 0.49 ms.
+  - `less/mixins`: 2 of 8 pretenure, against none for v0.58.2.
+
+  Jess's `.jess` parser on Node 24 shows the same split. Bisected with Jess rebuilt
+  per commit (16 processes per side, `benchmark.css`, N 100 → 400; slow means at
+  least 290M marginal instructions):
+
+  | commit | slow processes |
+  | --- | ---: |
+  | `acb421e2` | 0/16 |
+  | `6183b237` | 2/16 |
+  | `18a8a077` | 1/16 |
+  | `c2f4fbf8` | 7/16 |
+  | `4e8b3cda` | 8/16 |
+  | `4348bded` | 11/16 |
+  | `5e27a457` | 10/16 |
+
+  - `c2f4fbf8` changes only the emitter, which `.jess` never runs: its artifact has
+    no precompiled functions, and `dist/run` is byte-identical. It adds about 700
+    bytes to `dist/index.js`, which the parser imports.
+  - Appending a never-called 970-byte function to the fast `18a8a077` build flips
+    `.jess` to 8 of 16 slow (median 290.4M, against 278.8M for 0.58.0).
+  - With pretenuring off, every build counts the same instructions.
+  - On Node 26, `.jess` is unimodal at 288M for 0.58.0, `18a8a077` and the padded
+    build alike.
+
+  So the pretenuring share follows heap layout and allocation timing set by the
+  bundle, and no per-parse change in 0.59.0 accounts for it. Trimming code only
+  re-rolls the outcome. The lever is the tree-construction redesign: tenure
+  Parseman's tree objects with a grammar's nodes, or decouple the two.
+
 - **`.jess` `ExpressionLogical` capture replay.** `and`/`or` in `.jess` are choice arms that
   reparse their left operand up to three times. Fixing it in the engine needs capture
   replay, for about 2% of the `.jess` parse. Reshape the grammar later instead.
