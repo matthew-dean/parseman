@@ -3,6 +3,19 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **`compile()` no longer reads `process` while emitting a scan.** Emitting an
+  open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO` without a
+  guard, so a `compile()` in a browser that reached one threw a `TypeError` or
+  `ReferenceError`. The toggle selected an opt-in `indexOf` variant that was never
+  claimed as a win and that nothing enabled; it is removed, and the char loop it fell
+  back to is unchanged. Test: `test/unit/scan-shape-lowering.test.ts`.
+- **Dead code removed.** The `token-dispatch.ts` id strategies left over from the source
+  lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
+  `export` on internal values that nothing outside their module reads. Tables and
+  artifacts are byte-identical.
+
 ## 0.59.0 — 2026-11-02
 
 - **Tree objects are built by constructors, so V8 cannot pretenure them.** V8 decides per
@@ -35,16 +48,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     whose `prototype` is `Object.prototype` (see `examples/css/css-node.js`), and copy the
     arrays they keep with a spread or `slice()` rather than an array literal.
 
-- **`compile()` no longer reads `process` while emitting a scan.** Emitting an
-  open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO` without a
-  guard, so a `compile()` in a browser that reached one threw a `TypeError` or
-  `ReferenceError`. The toggle selected an opt-in `indexOf` variant that was never
-  claimed as a win and that nothing enabled; it is removed, and the char loop it fell
-  back to is unchanged. Test: `test/unit/scan-shape-lowering.test.ts`.
-- **Dead code removed.** The `token-dispatch.ts` id strategies left over from the source
-  lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
-  `export` on internal values that nothing outside their module reads. Tables and
-  artifacts are byte-identical.
 - **Regex first sets read escapes that are not their letter.** The first-set analyzer read
   several escapes as the escaped letter: `\p{…}`/`\P{…}`, `\u{…}` under `u`, `\cJ`, the legacy
   octal `\012`, and `\k<name>`. The class and literal readers read `\012` as NUL followed by
