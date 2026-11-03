@@ -915,6 +915,46 @@ reachable, the gate says so and exits non-zero. "The gate did not run" must neve
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
 
+## The pretenuring check — `pnpm perf:pretenure`
+
+Every process must parse in the fast mode, whatever the bundle layout. V8 decides per
+object-literal allocation site whether to allocate straight into old space, from where
+scavenges fall during warm-up. When the objects a parse keeps come from literals,
+identical processes split into a fast mode and a slow one that runs dozens of
+mark-compacts, and appending dead code to the bundle re-rolls which is which (#224).
+Parseman builds its tree objects with constructors so that cannot happen
+(`src/cst/plain.d.ts`).
+
+`bench/pretenure-check.ts` builds `dist/` and appends 0, 970, 4,000 and 15,000 bytes of
+never-called code to `dist/index.js`. It then runs seven cases in fresh plain-`node`
+processes:
+- `css/stylesheet`, `expected/narrow` and `rollback/medium`, whose fixture builders copy what
+  they keep;
+- `css/cst`, a CST host (`cstBuildHost()` nodes over parseman's leaves and spans);
+- `nolines/doc` and `lines/doc`, builder-less default nodes without and with line tracking;
+- `spans/doc`, a builder that keeps the span parseman passes it.
+
+The check fails if any process runs more than `maxMarkCompacts` (3) mark-compacts
+(`bench/pretenure-check.json`). The fast mode runs 1–2 on the machine that set the threshold.
+Fast-mode counts depend on heap sizing, and a smaller machine may read 3–4. Every run prints
+a calibration line with the pad-0 counts per case: read it before trusting a failure. On `main` before #230 the same check
+read 49–69 on Node 26. It is not in CI: run it on Node 24 and Node 26 for any change to what
+a parse allocates, about 6 minutes each.
+
+Each worker checks every parse before it reports a count. The parse must succeed and reach
+the end of its input (trailing whitespace aside), and the first parse must build the expected
+root (`Stylesheet`, or `Doc` with 3,000 items). A parse that fails or stops early would
+measure a smaller workload and pass for the wrong reason, so the worker refuses to count it
+and the case fails. `--plant=truncated` proves it: every input gains a fragment its grammar
+cannot consume, and the density and doc cases fail. The CSS grammar is permissive and accepts
+the fragment.
+
+`--plant=<site>` turns one converted site class back into an object literal in the staged
+`dist/`, and the run must then FAIL. On Node 26 it does for `span`, `leaf`, `node`,
+`line-span` and `children`. `field` and `buffer` cannot make it fail, because no tree keeps a
+field capture or a capture buffer: they die with their node. Node 24 pretenures fewer sites,
+so `line-span` fails on Node 26 only; run the plants on Node 26.
+
 ## The peak clause — `pnpm perf:xproc:gate --peak`
 
 ### The blind spot every per-step gate has
