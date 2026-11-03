@@ -511,8 +511,8 @@ describe('publish.yml releases only a commit CI passed', () => {
     },
     inputs: {},
   })
-  const dispatch = (dry_run: boolean): object => ({
-    github: { event_name: 'workflow_dispatch', sha: tip, repository: 'matthew-dean/parseman', run_id: 7, event: { workflow_run: { head_repository: {} } } },
+  const dispatch = (dry_run: boolean, ref = 'refs/heads/main'): object => ({
+    github: { event_name: 'workflow_dispatch', ref, sha: tip, repository: 'matthew-dean/parseman', run_id: 7, event: { workflow_run: { head_repository: {} } } },
     inputs: { dry_run },
   })
 
@@ -539,6 +539,9 @@ describe('publish.yml releases only a commit CI passed', () => {
   it('gives a dry run its own group, and notes a skipped commit main moved past', () => {
     expect(Boolean(prepare(dispatch(true)))).toBe(true)
     expect(group(dispatch(true))).toBe('publish-ignored-7')
+    // A dispatch from another branch: the first step refuses it, and it must not queue first.
+    expect(group(dispatch(false, 'refs/heads/feature'))).toBe('publish-ignored-7')
+    expect(yml).toMatch(/if \[ "\$GITHUB_REF" != "refs\/heads\/main" \]; then/)
     expect(Boolean(notTip(ci({}, 'a'.repeat(40))))).toBe(true)
     for (const ctx of [ci(), ci({ conclusion: 'failure' }, 'a'.repeat(40)), ci({ event: 'pull_request' }, 'a'.repeat(40)), dispatch(false)]) {
       expect(Boolean(notTip(ctx))).toBe(false)

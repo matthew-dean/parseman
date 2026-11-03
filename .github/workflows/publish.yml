@@ -67,12 +67,13 @@ on:
 # GitHub keeps one pending run per group and applies the group before any job's `if:`,
 # so only a run that can release joins `publish`: a run that would skip (a pull
 # request's CI, a failed or cancelled CI, a commit that is not main's tip) or a dry run
-# would otherwise replace a pending release. They get a group of their own. The
-# condition is the `prepare` job's, plus "not a dry run".
+# would otherwise replace a pending release, as would a dispatch from another branch,
+# which the first step refuses. They get a group of their own. The condition is the
+# `prepare` job's, plus "on main" for a dispatch and "not a dry run".
 concurrency:
   group: >-
     ${{ (
-      (github.event_name == 'workflow_dispatch' && !inputs.dry_run) || (
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run) || (
         github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push' &&

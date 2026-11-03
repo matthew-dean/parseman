@@ -179,14 +179,16 @@ key it sees. Until the secret exists, the step is skipped and nothing else chang
 ahead of it. It reads npm and the tags only once it starts, and the earlier run does
 not release the group until npm serves its version. The second run then sees that
 release as `L`. GitHub keeps one pending run per group, so a third CI completion replaces
-the queued second. Only a run for `main`'s tip can queue there, so the replacing run's
-commit contains the replaced one's, and nothing goes unreleased.
+the queued second. Only a run for `main`'s tip can queue there (a CI completion on the
+tip, or a dispatch on `main`, which releases the tip), so the replacing run's commit
+contains the replaced one's, and nothing goes unreleased.
 
 The group is chosen before any job's `if:` is read. A run that cannot release (a pull
-request's CI, CI that failed or was cancelled, a commit that is not the tip) and a dry
-run would replace a pending release just by joining it. So the group is computed from
-the same condition as the `prepare` job, plus "not a dry run": those runs join `publish`,
-and every other run gets `publish-ignored-<run id>`, a group of its own.
+request's CI, CI that failed or was cancelled, a commit that is not the tip, a dispatch
+from a branch other than `main`) and a dry run would replace a pending release just by
+joining it. So the group is computed from the same condition as the `prepare` job, plus
+"on `main`" for a dispatch and "not a dry run": runs that can release join `publish`, and
+every other run gets `publish-ignored-<run id>`, a group of its own.
 
 ### Dry run
 
