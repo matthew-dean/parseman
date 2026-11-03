@@ -19,15 +19,27 @@ Two scripts carry it:
 not by the push. `main`'s CI takes one to two and a half hours under runner contention,
 longer than a publish could wait for it, and a run that waited held the `publish` group
 the whole time. The `prepare` job runs only when that CI run concluded `success`, ran for
-a `push`, on `main`, in this repository. A pull request's CI never publishes: its
-`workflow_run` event carries the PR's head branch, which a fork can name `main`, so the
-branch alone is not enough. A run that fails the check shows as skipped. Every job checks
-out the commit CI tested (`workflow_run.head_sha`), not `main`'s tip, which may have moved
-on. A re-run of CI that turns a failure green starts the publish too.
+a `push`, on `main`, in this repository, and the commit it tested is still `main`'s tip.
+A pull request's CI never publishes: its `workflow_run` event carries the PR's head
+branch, which a fork can name `main`, so the branch alone is not enough. A run that fails
+the check shows as skipped. Every job checks out the commit CI tested
+(`workflow_run.head_sha`). A re-run of CI that turns a failure green on the tip starts
+the publish too.
 
-CI runs finish out of order. When an older commit's CI completes after a newer commit has
-released, the older commit is inside that release's tag, and step 1 skips it. When it
-completes first, it releases first and the newer commit releases after it.
+**Only `main`'s tip is released.** npm's provenance records the run's `GITHUB_SHA`, which
+for `workflow_run` is `main`'s tip when CI completed, not the commit CI tested. So a run
+whose `head_sha` is not `GITHUB_SHA` releases nothing: its `not-tip` job logs `Release
+skipped`. That covers CI finishing out of order (an older commit's CI completing after
+another merge) and a CI re-run of an old commit. The newer tip's own CI completion
+releases the skipped commit with it. If that tip's CI fails, both wait for the fix, as
+any merge on a red `main` does.
+
+A record commit (below) is a push to `main` and runs CI like any merge, so it never
+strands one. If a merge lands while the previous release is being recorded, the record
+is rebuilt on top of it, and the merge's own run is no longer the tip. The record
+commit's run is: its tree carries the merge, so `releaseCommitOf` does not take it for
+the release's own commit, and its plan compares tarballs and releases the merge. A
+fast-forward record carries nothing new and its plan skips it.
 
 1. **Plan** (`node scripts/release.mjs plan`). Two kinds of commit publish nothing:
    the release commit the record step pushed to `main`, and a commit that some release
@@ -167,9 +179,14 @@ key it sees. Until the secret exists, the step is skipped and nothing else chang
 ahead of it. It reads npm and the tags only once it starts, and the earlier run does
 not release the group until npm serves its version. The second run then sees that
 release as `L`. GitHub keeps one pending run per group, so a third CI completion replaces
-the queued second. Runs queue in the order CI completes, not the order of the merges, so
-the replaced run can be the newer commit's. Its changes then ship with the next merge's
-release, or now with a dispatch (below), which releases `main`'s tip.
+the queued second. Only a run for `main`'s tip can queue there, so the replacing run's
+commit contains the replaced one's, and nothing goes unreleased.
+
+The group is chosen before any job's `if:` is read. A run that cannot release (a pull
+request's CI, CI that failed or was cancelled, a commit that is not the tip) and a dry
+run would replace a pending release just by joining it. So the group is computed from
+the same condition as the `prepare` job, plus "not a dry run": those runs join `publish`,
+and every other run gets `publish-ignored-<run id>`, a group of its own.
 
 ### Dry run
 

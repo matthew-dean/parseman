@@ -9,9 +9,14 @@ name: Publish
 # than any wait a publish could hold. A run goes ahead only when that CI run succeeded
 # and ran for a push to this repository's `main`; a pull request's CI never publishes,
 # whatever its branch is called. Every job checks out the commit CI tested
-# (`workflow_run.head_sha`), not main's tip. CI runs complete out of order, so an older
-# commit's can finish after a newer one has released; the plan then finds that commit
-# inside a release tag and skips it.
+# (`workflow_run.head_sha`).
+#
+# Only main's tip is released: the commit CI tested must be the run's GITHUB_SHA, which
+# for `workflow_run` is main's tip when CI completed. npm's provenance records
+# GITHUB_SHA, so releasing any other commit would attest the wrong source. A commit main
+# has moved past (CI finished after another merge, or an old commit's CI re-run) is
+# skipped with a notice; the tip's own CI completion releases it, and that release
+# contains it. A record commit (the record step) is a push to main and runs CI like any other.
 #
 # The version is chosen here (scripts/release.mjs plan): package.json's version when a
 # pull request declared one above the latest release, otherwise the next patch. A merge
@@ -59,8 +64,23 @@ on:
 
 # Two runs never race each other to the registry. A queued run waits for the one ahead
 # of it and only then reads npm and the tags, so it versions after that release.
+# GitHub keeps one pending run per group and applies the group before any job's `if:`,
+# so only a run that can release joins `publish`: a run that would skip (a pull
+# request's CI, a failed or cancelled CI, a commit that is not main's tip) or a dry run
+# would otherwise replace a pending release. They get a group of their own. The
+# condition is the `prepare` job's, plus "not a dry run".
 concurrency:
-  group: publish
+  group: >-
+    ${{ (
+      (github.event_name == 'workflow_dispatch' && !inputs.dry_run) || (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_sha == github.sha
+      )
+    ) && 'publish' || format('publish-ignored-{0}', github.run_id) }}
   cancel-in-progress: false
 
 permissions:
@@ -72,16 +92,32 @@ env:
   RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
+  not-tip:
+    # CI passed on a commit main has moved past. The tip's own CI completion releases it.
+    if: >-
+      github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_sha != github.sha
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Release only main's tip
+        run: echo "::notice title=Release skipped::CI passed on $RELEASE_SHA, but main's tip is now $GITHUB_SHA. npm's provenance records the tip, so the tip's own CI completion releases this commit with it."
+
   prepare:
     # CI's verdict, from the event: it passed, it ran for a push (a pull request's CI
     # reports its head branch, which a fork can name `main`), on `main`, in this
-    # repository. A run that fails this shows as skipped.
+    # repository, and on main's tip (the header). A run that fails this shows as skipped.
     if: >-
       github.event_name == 'workflow_dispatch' || (
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_branch == 'main' &&
-        github.event.workflow_run.head_repository.full_name == github.repository
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_sha == github.sha
       )
     runs-on: ubuntu-latest
     permissions:
@@ -391,8 +427,9 @@ jobs:
         # Pushed with the release deploy key, which main's rules let through; GITHUB_TOKEN
         # cannot be given that bypass on this repository. A fast-forward when main has not
         # moved, otherwise the stamp rebuilt on the new tip; never forced. That push runs
-        # CI, whose success runs this workflow again, and the plan skips its own release
-        # commit.
+        # CI, whose success runs this workflow again on the new tip. A fast-forward's plan
+        # skips its own release commit; a rebuilt one's tree carries the merges it was
+        # rebuilt on, so its plan compares tarballs and releases what they changed.
         # continue-on-error so a failure here still tags the published release; the last
         # step fails the job afterwards.
         continue-on-error: true

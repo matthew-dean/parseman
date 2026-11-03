@@ -1,5 +1,5 @@
 /**
- * `scripts/release.mjs` decides, on every push to `main`, whether parseman publishes and
+ * `scripts/release.mjs` decides, once CI passes on `main`, whether parseman publishes and
  * as which version, and writes the CHANGELOG the release carries. These are its pure
  * parts; `release-gate.test.ts` covers the pull-request gate that feeds it.
  */
@@ -486,16 +486,64 @@ describe('publish.yml releases only a commit CI passed', () => {
     return yml.slice(at, yml.indexOf('\n      - name:', at + 1))
   }
 
-  it('starts when CI completes on main, and goes ahead only on a push CI passed in this repository', () => {
+  // A GitHub expression as JS: the operators these guards use mean the same in both.
+  const expression = (text: string): ((ctx: object) => unknown) => {
+    const body = text.replace(/^\$\{\{|\}\}$/g, '').replace(/ == /g, ' === ').replace(/ != /g, ' !== ')
+    const fn = new Function('github', 'inputs', 'format', `return (${body})`)
+    const format = (f: string, ...a: unknown[]): string => f.replace(/\{(\d+)\}/g, (_, i: string) => String(a[+i]))
+    return (ctx: object) => fn((ctx as { github: object }).github, (ctx as { inputs: object }).inputs, format)
+  }
+  const folded = (key: string, from: number): string => {
+    const m = new RegExp(`\\n( +)${key}: >-\\n((?:\\1 {2}[^\\n]*\\n)+)`).exec(yml.slice(from))
+    expect(m).not.toBeNull()
+    return (m?.[2] ?? '').replace(/\s+/g, ' ').trim()
+  }
+  const job = (name: string): number => yml.indexOf(`\n  ${name}:\n`)
+  const group = expression(folded('group', yml.indexOf('\nconcurrency:\n')))
+  const prepare = expression(`\${{ ${folded('if', job('prepare'))} }}`)
+  const notTip = expression(`\${{ ${folded('if', job('not-tip'))} }}`)
+
+  const tip = 'b'.repeat(40)
+  const ci = (over: object = {}, sha = tip): object => ({
+    github: {
+      event_name: 'workflow_run', sha: tip, repository: 'matthew-dean/parseman', run_id: 7,
+      event: { workflow_run: { conclusion: 'success', event: 'push', head_branch: 'main', head_sha: sha, head_repository: { full_name: 'matthew-dean/parseman' }, ...over } },
+    },
+    inputs: {},
+  })
+  const dispatch = (dry_run: boolean): object => ({
+    github: { event_name: 'workflow_dispatch', sha: tip, repository: 'matthew-dean/parseman', run_id: 7, event: { workflow_run: { head_repository: {} } } },
+    inputs: { dry_run },
+  })
+
+  it('starts when CI completes on main', () => {
     expect(yml).toMatch(/\non:\n {2}workflow_run:\n {4}workflows: \[CI\]\n {4}types: \[completed\]\n {4}branches: \[main\]\n {2}workflow_dispatch:/)
     expect(yml).not.toMatch(/\n {2}push:/)
-    const prepare = yml.slice(yml.indexOf('\n  prepare:\n'), yml.indexOf('\n    runs-on:', yml.indexOf('\n  prepare:\n')))
-    for (const guard of [
-      "github.event.workflow_run.conclusion == 'success'",
-      "github.event.workflow_run.event == 'push'",
-      "github.event.workflow_run.head_branch == 'main'",
-      'github.event.workflow_run.head_repository.full_name == github.repository',
-    ]) expect(prepare).toContain(guard)
+  })
+
+  it.each([
+    ['CI passed on a push to main, on the tip', ci(), true],
+    ['a pull request from a fork whose branch is main', ci({ event: 'pull_request', head_repository: { full_name: 'someone/parseman' } }), false],
+    ['a pull request in this repository from a branch named main', ci({ event: 'pull_request' }), false],
+    ["a push to a fork's main", ci({ head_repository: { full_name: 'someone/parseman' } }), false],
+    ['CI failed', ci({ conclusion: 'failure' }), false],
+    ['CI cancelled', ci({ conclusion: 'cancelled' }), false],
+    ['CI on another branch', ci({ head_branch: 'dev' }), false],
+    ['CI passed on a commit main has moved past', ci({}, 'a'.repeat(40)), false],
+    ['a dispatch', dispatch(false), true],
+  ])('%s: prepare runs = %s, and only a run that can release joins `publish`', (_, ctx, releases) => {
+    expect(Boolean(prepare(ctx))).toBe(releases)
+    expect(group(ctx)).toBe(releases ? 'publish' : 'publish-ignored-7')
+  })
+
+  it('gives a dry run its own group, and notes a skipped commit main moved past', () => {
+    expect(Boolean(prepare(dispatch(true)))).toBe(true)
+    expect(group(dispatch(true))).toBe('publish-ignored-7')
+    expect(Boolean(notTip(ci({}, 'a'.repeat(40))))).toBe(true)
+    for (const ctx of [ci(), ci({ conclusion: 'failure' }, 'a'.repeat(40)), ci({ event: 'pull_request' }, 'a'.repeat(40)), dispatch(false)]) {
+      expect(Boolean(notTip(ctx))).toBe(false)
+    }
+    expect(yml.slice(job('not-tip'), job('prepare'))).toMatch(/::notice title=Release skipped::/)
   })
 
   it('checks out the commit CI tested in every job', () => {
@@ -505,8 +553,21 @@ describe('publish.yml releases only a commit CI passed', () => {
     expect(checkouts).toHaveLength(3)
   })
 
+  // Every `run:` value, inline or a block scalar of any style.
+  const scripts = (text: string): string[] => [...text.matchAll(/^( *)(?:- )?run:[ \t]*([|>][-+]?)?([^\n]*)\n((?:(?:\1 {2,}[^\n]*)?\n)*)/gm)]
+    .map((m) => (m[2] === undefined ? m[3] : m[4]) ?? '')
+  const interpolatesEvent = (text: string): boolean => scripts(text).some((s) => /\$\{\{(?:(?!\}\}).)*github\.event/s.test(s))
+
   it('interpolates no event field into a script', () => {
-    for (const m of yml.matchAll(/\n( +)run: \|\n((?:\1 {2}[^\n]*\n|\n)*)/g)) expect(m[2]).not.toMatch(/\$\{\{[^}]*github\.event/)
+    expect(scripts(yml).length).toBeGreaterThan(15)
+    expect(interpolatesEvent(yml)).toBe(false)
+    // The check itself: each of these would put an event field into a script.
+    const at = '\n      - name: Nothing to release\n'
+    for (const step of [
+      '      - run: echo ${{ github.event.workflow_run.head_branch }}\n',
+      "      - run: |-\n          echo ${{ format('{0}', github.event.workflow_run.head_branch) }}\n",
+      '      - run: >\n          echo hi\n          ${{ github.event.workflow_run.display_title }}\n',
+    ]) expect(interpolatesEvent(yml.replace(at, `\n${step}${at.slice(1)}`))).toBe(true)
   })
 
   it('reads CI\'s verdict once for a dispatch, before stamping', () => {

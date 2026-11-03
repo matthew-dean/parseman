@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Release on merge: what `.github/workflows/publish.yml` runs on every push to `main`.
+ * Release on merge: what `.github/workflows/publish.yml` runs once CI passes on `main`.
  * Design: `docs/design/release-gates.md` § Publishing.
  *
  *   node scripts/release.mjs plan              # prints release=true|false and version=X.Y.Z
@@ -395,8 +395,8 @@ const BOT = {
   GIT_COMMITTER_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com',
 }
 
-// maxBuffer: `git show <rev>:CHANGELOG.md` is several hundred KB and grows with every
-// release; execFileSync's 1 MB default would throw on it.
+// maxBuffer, pre-emptively: `git show <rev>:CHANGELOG.md` is several hundred KB and grows
+// with every release, toward execFileSync's 1 MB default.
 const run = (cmd, args, opts = {}) =>
   (execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 1 << 28, ...opts }) ?? '').trim()
 

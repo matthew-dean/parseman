@@ -210,7 +210,8 @@ if (existsSync(VERSION_TS_PATH)) {
  * to the merge.
  */
 function taggedChangelog(version) {
-  // maxBuffer: the CHANGELOG is several hundred KB; execFileSync's default is 1 MB.
+  // maxBuffer, pre-emptively: the CHANGELOG is several hundred KB and grows toward
+  // execFileSync's 1 MB default.
   const opts = { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }
   try {
     execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/tags/v${version}`], opts)
