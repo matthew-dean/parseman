@@ -145,9 +145,9 @@ export type TableProgram = {
    */
   readonly triviaSpecs?: readonly TriviaSpec[]
   /**
-   * 1 when this table was encoded with `TableSettings.recovery` — the sequences
-   * carry their inferred follow-set classes and the repetitions their item
-   * expected-set and separator sentinel class.
+   * Always 1: every table carries recovery operands — the sequences their inferred
+   * follow-set classes, the repetitions their item expected set and separator
+   * sentinel class. (`TableSettings.recovery` is a deprecated no-op.)
    *
    * TABLE DATA, read once when the driver/assembly is built. It selects the
    * recovery pieces; it is not a per-parse option, and a recovery table still
