@@ -480,6 +480,7 @@ describe('a runtime compile() drains its degradations as ONE aggregated block', 
   // bulk — `build-arity-unconfirmed` — is recorded at COMBINATOR CONSTRUCTION, before any
   // compile drain is open, so it escapes aggregation entirely. Worth fixing on its own:
   // a degradation recorded at construction escapes EVERY sink.
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('caps the detail lines and reports the real total', () => {
     process.env.PARSEMAN_DEGRADATION = 'warn'
     const seen: string[] = []
@@ -505,6 +506,7 @@ describe('a runtime compile() drains its degradations as ONE aggregated block', 
   // bulk — `build-arity-unconfirmed` — is recorded at COMBINATOR CONSTRUCTION, before any
   // compile drain is open, so it escapes aggregation entirely. Worth fixing on its own:
   // a degradation recorded at construction escapes EVERY sink.
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('`error` still fails the build — and now lists every finding, not just the first', () => {
     process.env.PARSEMAN_DEGRADATION = 'error'
     expect(() => compile(nearMisses(3, 'Err'), undefined))
