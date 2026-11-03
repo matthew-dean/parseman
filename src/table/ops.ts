@@ -70,13 +70,7 @@ export const OP_XFORM = 9
  * from the reducer's declared arity by the same analysis codegen runs, and
  * forced on under `hostMode: 'cst'`. The driver reads the bits and re-derives
  * nothing.
- *
- * TWO ENCODERS SHARE THIS OPCODE and they do NOT agree on its length. The layout
- * above is `encode.ts` / `exec.ts`. `encode-baseline.ts` / `exec-baseline.ts` emit
- * the FOUR-word form `NODE b c flags` with bits 2 and 3 only, and refuse
- * `collapse` / `unwrap` / `project` outright. Neither driver walks the stream by
- * instruction length, so the divergence is contained — but read the pair you are
- * in, not this comment alone. */
+ */
 export const OP_NODE = 10
 /** `RULE r` — `r` indexes `prog.rules`. */
 export const OP_RULE = 11
@@ -89,9 +83,6 @@ export const OP_NOT = 13
  * `['peek(<child tag>)']`, because `peek.ts:60` DISCARDS the body's expectation:
  * a lookahead's failure is "the guard did not hold", not a request for whatever
  * token the body happened to stop on.
- *
- * `encode-baseline.ts` / `exec-baseline.ts` emit and read the two-word form and
- * are internally consistent; read the pair you are in.
  */
 export const OP_PEEK = 14
 /** `LEAF f c` — `leaf()`: reduce, then record as a spanned leaf. */

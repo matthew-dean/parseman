@@ -1365,8 +1365,8 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       }
 
       case OP_EMPTY:
-        // `''`, not `null` — the zero-width match's value. The other three engines
-        // (exec.ts, exec-baseline.ts, assemble.ts) all return `''`; this one returned
+        // `''`, not `null` — the zero-width match's value. The other engines
+        // (exec.ts, assemble.ts) both return `''`; this one returned
         // `null`, so the SAME program yielded a different `value` depending only on
         // which engine ran. Unreached from the combinator API today — `OP_EMPTY` is
         // emitted only as `finish()` padding for an EMPTY rule map, which then has no
