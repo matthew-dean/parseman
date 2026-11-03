@@ -122,6 +122,8 @@ Why closures and not the `switch`: the `switch` was one basic block with ~30 mer
 
 **Shared helpers and the hot path.** Pure helpers that touch no assembly state are shared (`table/run-support.ts`, `table/trivia-gap.ts`, `table/scalar-terminal.ts`). Emitted code shares a helper only when it takes no piece as an argument (`emit-assembly.ts` header). Routing the mark/undo paths through shared helpers was measured 13–25% slower and reverted.
 
+**Tree objects are built by constructors.** Leaves, spans, default and CST-host nodes, field captures and CST capture buffers are `new` calls on the constructors in `src/cst/plain.js` (`plain.d.ts`), never object literals. V8 decides per literal allocation site whether to allocate straight into old space, and that choice flips between identical processes whenever the bundle layout changes; a `new` call has no such site. The constructors exist once per process: the build emits one shared `dist/cst/plain.js` that every tree-building entry imports, so one shape has one hidden class. The emitted engine receives them as its trailing factory parameters (`_SP`, `_LF`, `_ND`, `_FC`, `_BUF` in `EMITTED_PARAMS`). `perf:pretenure` (below) guards this.
+
 The reference driver keeps its own copies of protocol logic (line tracking, rollback, recovery sentinels) on purpose: a bug in a shared copy would be invisible to the identity sweep that compares it with the shipped engines.
 
 ## 6. Selection: which sites a macro build emits
@@ -174,7 +176,8 @@ Artifacts are stamped with the Parséman version (`src/version.ts`); nothing rea
 - **`perf:guard`** (pre-commit): two tiny CSS microbenchmarks, in µs.
 - **`perf:xproc:gate`** and **`--peak`** (CI, the verdict): every case of `bench/grammar-density/` (speculative-rollback density and expected-set width) and of `bench/workloads/` (Less, CSS, GraphQL, JSON), timed in fresh processes, one parser per process, against the previous release and against the fastest release on record. Configured in `bench/xproc-gate.json`.
 - **`perf:guard:grammars`**, **`perf:workloads`** (local only): the same cases A/B in one process. They say *where* a cost is; they do not give the verdict.
-- **`bench:macro-optimize`** (CI, advisory): Jess's CSS and Less grammars, macro-built in a pinned Jess checkout. It is the only CI check on a Jess grammar, and it covers neither SCSS nor `.jess`.
+- **`bench:macro-optimize`** (CI, advisory): Jess's CSS and Less grammars, macro-built in a pinned Jess checkout. It is the only CI *speed* check on a Jess grammar, and it covers neither SCSS nor `.jess`. (`size-gate` runs `size:guard:jess` over all four.)
+- **`perf:pretenure`** (local, about 6 minutes; run it on Node 24 and Node 26): pads `dist/index.js` with never-called code and counts each fresh process's mark-compacts. It fails if a tree object is built by an object literal again, which V8 may pretenure per process (`bench/pretenure-check.ts`; `--plant=<site>` shows it fail).
 - **Jess's own harness** (marginal instructions per parse with and without the JIT, on all four grammars) is described in the Jess repository's `docs/perf/BENCHMARKS.md`.
 
 **Which features each bench exercises.** Parséman's own workloads run through runtime `compile()`, which emits the *whole* grammar as generated code. Jess's grammars are macro builds, which emit only the selected sites and run the rest on closures. So a change to the closure engine, or to selection, can move Jess and not move Parséman's benches.
