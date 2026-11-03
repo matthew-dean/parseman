@@ -156,6 +156,7 @@ export const parser = compose([base, rules(g => ({ Top: g.Doc }))])`
   // SERIALIZABLE grammar composes normally (the sibling describe below covers the same
   // scanSkip threading through the IR path and passes), and the plugin now WARNS at the
   // exporting module rather than letting the consumer discover it a module away.
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('takes the full-piece fallback (not the IR path) — the precondition', () => {
     withModules(dir => {
       const out = compileBase(dir)
@@ -174,6 +175,7 @@ export const parser = compose([base, rules(g => ({ Top: g.Doc }))])`
   // SERIALIZABLE grammar composes normally (the sibling describe below covers the same
   // scanSkip threading through the IR path and passes), and the plugin now WARNS at the
   // exporting module rather than letting the consumer discover it a module away.
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('a downstream compose of the imported grammar still skips the opaque unit', () => {
     withModules(dir => {
       const baseOut = compileBase(dir)

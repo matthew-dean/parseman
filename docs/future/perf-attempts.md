@@ -192,6 +192,20 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   polymorphic reads. The build now emits `dist/cst/plain.js` once and every entry
   imports it; that SCSS row reads −0.3% on both. Investigation in
   [#224](https://github.com/matthew-dean/parseman/pull/224).
+- **The cost of never pretenuring: one synthetic case.** With Jess's AST nodes constructor-built
+  too (jess `perf/ast-ctor`), Jess's SCSS `gen-workload` reads +3.6% JIT on Node 26 (998.0M
+  → 1034.2M per parse; −0.3% on Node 24). It is a single file of about 1G instructions per
+  parse, and its tree survives several scavenges. Node 26 pretenured that tree in every
+  process, so it was never copied. Constructors cannot be pretenured, so the scavenger copies
+  it instead: scavenge time over 40 parses is 65 ms on main against 114 ms, with the same
+  scavenge count. Real SCSS is not slower. JIT marginal instructions on Node 26 / Node 24:
+  Bootstrap 5 (92 files) −2.1% / −0.2%, Foundation (106 files) −0.9% / −1.0%, the accepted
+  sass-spec fixtures (1,961 files) −1.6% / −1.7%. Mark-compacts are 1–2 per process in every
+  case, and scavenge time is within noise. Accepted: the synthetic case pays for copying
+  that consistent pretenuring avoided. The way to win it back is less short-lived
+  allocation, so a tree survives fewer scavenges. A literal site would bring the per-process
+  split back.
+
 - **Watched literal sites (not converted).** These are still object literals, and none splits
   a process today. A tree does not keep them, or they are rare:
   - field-map entries (`src/compiler/fields.ts` `buildFieldMap`);
