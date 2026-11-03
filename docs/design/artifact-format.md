@@ -9,7 +9,7 @@ its build-time assemblies (`a:`, `PrecompiledAssembly`), `LinkableTable` pieces
 ## The rule
 
 > **A grammar is compiled, and its pieces composed, by the SAME Parséman version.**
-> Parséman does not read a compiled artifact produced by a different version. The
+> Parséman is not meant to read a compiled artifact produced by a different version. The
 > artifact formats may therefore change **freely** between versions and **must not
 > carry back-compat shims, `Legacy*` shapes, or dual-format read paths** for an older
 > shape. If you find yourself adding a compatibility branch for an older format,
@@ -50,16 +50,30 @@ printed table can change shape freely.
 ## The shim that always looks necessary
 
 Changing a printed shape makes a `Legacy*` type and a second read branch feel like
-ordinary diligence: the new code "should still handle the old shape". It should not. No
-older-format artifact is fed to a newer Parséman, so that branch is unreachable by
-construction: dead defensive code that permanently doubles the format's surface. When a
-shape changes, change it outright.
+ordinary diligence: the new code "should still handle the old shape". It should not. A
+second read branch permanently doubles the format's surface. When a shape changes, change
+it outright, and say in the CHANGELOG which artifacts must be reprinted.
 
 The rule is about **time, not variety**. At any one version there is exactly one live
 shape per artifact kind, and no *older* shape is readable beside it. A different artifact
 **kind** (a table program and a sidecar, say) is not a compatibility shim; it carries its
 own stamp and obeys the same rule.
 
-Positional ABIs are the usual place a shim hides: the emitted-assembly factory takes its
-helpers in `EMITTED_PARAMS` order (`src/table/emit-assembly.ts`), and a parameter kept "for
-older precompiled factories" is exactly the dead branch this page forbids.
+## What a runtime does with another version's artifact today
+
+The rule is not enforced, so in practice a newer runtime does run an older artifact: a
+package's `parseman/table` resolves to whatever version the consumer installed. The one
+shape that meets this is the emitted-assembly factory, which takes its helpers in
+`EMITTED_PARAMS` order (`src/table/emit-assembly.ts`):
+
+- **Helpers are appended, never removed or reordered, within a minor.** A factory printed
+  by an earlier version declares a prefix of the list and ignores the trailing arguments,
+  so it still binds every helper it names. 0.59.0 relies on this for its constructor
+  helpers.
+- **A factory refuses an older runtime.** `FACTORY_ARITY_GUARD` (`src/table/emit.ts`)
+  throws, naming the printing version, when the runtime passes fewer helpers than the
+  factory was printed with.
+- **Removing or reordering a helper breaks every factory printed before it**, and a
+  factory printed before 0.59.0 has no guard, so it would bind the wrong helpers. Such a
+  change belongs in a minor and must also add a runtime-side check of the factory's
+  declared parameter count.

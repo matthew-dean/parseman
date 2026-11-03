@@ -1,0 +1,10 @@
+{
+  "_comment": "Configuration for `pnpm perf:pretenure` — see bench/pretenure-check.ts.",
+  "cases": { "css/stylesheet": 1500, "expected/narrow": 4000, "rollback/medium": 4000, "css/cst": 1500, "nolines/doc": 1500, "lines/doc": 1500, "spans/doc": 1500 },
+  "_cases": "Parses per process. The three gate cases that split before tree objects were constructor-built (#224, #230), whose fixture builders copy what they keep; and four whose trees keep parseman's own objects: a CST host (cstBuildHost nodes over parseman leaves and spans), builder-less default nodes without and with line tracking, and a builder that keeps the span parseman passes it.",
+  "pads": [0, 970, 4000, 15000],
+  "_pads": "Bytes of never-called code appended to dist/index.js. 970 bytes was enough to move Jess's .jess parser from 0 of 16 to 8 of 16 slow processes on Node 24.",
+  "processes": 4,
+  "maxMarkCompacts": 3,
+  "_maxMarkCompacts": "Per process. The fast mode runs 1-2 mark-compacts on these counts. A pretenured process ran 15-61, and a partly pretenured lines/doc process 5, so 3 leaves a step either side. Fast-mode counts depend on heap sizing: a smaller machine may read 3-4 in the fast mode. Read the calibration line the check prints at pad 0 before trusting a failure, and raise this per machine rather than in this file."
+}
