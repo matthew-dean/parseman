@@ -5,12 +5,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
-- **`compile()` no longer reads `process` while emitting a scan.** Emitting an
-  open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO` without a
-  guard, so a `compile()` in a browser that reached one threw a `TypeError` or
-  `ReferenceError`. The toggle selected an opt-in `indexOf` variant that was never
-  claimed as a win and that nothing enabled; it is removed, and the char loop it fell
-  back to is unchanged. Test: `test/unit/scan-shape-lowering.test.ts`.
+- **`compile()` and `compileLinkableTable()` no longer read `process` unguarded.**
+  Emitting an open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO`,
+  and the IR serializer's fallback read `process.env.PARSEMAN_IR_DEBUG`, both without a
+  guard, so a browser call that reached either threw a `TypeError` or `ReferenceError`.
+  The scan toggle selected an opt-in `indexOf` variant that was never claimed as a win
+  and that nothing enabled; it is removed, and the char loop it fell back to is
+  unchanged. The IR debug read is now guarded, as `PARSEMAN_DUPLICATION`'s is. Tests:
+  `test/unit/scan-shape-lowering.test.ts`, `test/unit/ir-serialize-no-process.test.ts`.
 - **Dead code removed.** The `token-dispatch.ts` id strategies left over from the source
   lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
   `export` on internal values that nothing outside their module reads. Tables and

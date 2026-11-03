@@ -4766,7 +4766,7 @@ export function selectedLexicalOutcome(
 }
 
 /** The id already assigned to this terminal, if it is one. */
-function terminalId(alphabet: Alphabet, p: Combinator<unknown>): number | undefined {
+export function terminalId(alphabet: Alphabet, p: Combinator<unknown>): number | undefined {
   const key = keyOf(p._def)
   return key === undefined ? undefined : alphabet.byKey.get(key)
 }
@@ -4777,7 +4777,7 @@ function terminalId(alphabet: Alphabet, p: Combinator<unknown>): number | undefi
  * nullable/zero-width prefix. Returns undefined when the lead is not a single
  * derived terminal, which is the signal to stay scannerless at that site.
  */
-function leadTerminal(
+export function leadTerminal(
   p: Combinator<unknown>,
   alphabet: Alphabet,
   resolve?: (name: string) => Combinator<unknown> | undefined,
