@@ -13,8 +13,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   closure engine no longer builds the per-assembly trivia-label map no factory read.
   - **An artifact printed by 0.59.0 or earlier does not run on this runtime.** Its
     factory takes its helpers by position, so it needs the parser rebuilt by this
-    version. A 0.59.0 artifact's factory refuses with its arity guard; one printed
-    before 0.59.0 has no guard and would bind the wrong helpers.
+    version.
+  - **The runtime refuses a printed factory whose helper list is not its own.** Before
+    calling one, it compares the factory's declared parameter count with the helpers it
+    passes, and throws "printed by an older or newer parseman" with both counts. The
+    factory's own guard only catches a runtime with fewer helpers, and one printed before
+    0.59.0 has none: it bound the wrong helpers and failed partway through a parse
+    (`_BUF is not a constructor`). Test: `test/unit/precompiled-factory-arity-runtime.test.ts`.
 
 ## 0.59.0 — 2026-11-02
 

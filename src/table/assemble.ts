@@ -73,6 +73,7 @@ import { skipDeferredTrivia, triviaLeadTable } from './trivia-gap.ts'
 import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
   advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
@@ -413,6 +414,23 @@ export type Assembly = {
  * ONE walk. Each site is lowered at most once and memoised by its code offset,
  * so a subtree shared by two parents is one piece with two references to it.
  */
+/**
+ * A printed factory takes its helpers BY POSITION (`EMITTED_PARAMS`), so one printed
+ * against a different helper list would bind the wrong function to a name and run
+ * wrong rather than fail. The factory's own guard (`FACTORY_ARITY_GUARD`, `emit.ts`)
+ * only catches a runtime that passes FEWER helpers, and a factory printed before
+ * 0.59.0 has no guard at all. So the runtime checks too: the declared parameter
+ * count must be exactly the list it passes.
+ */
+export function assertFactoryArity(factory: { readonly length: number }): void {
+  if (factory.length === EMITTED_PARAMS.length) return
+  throw new Error(
+    `parseman: this parser's printed assembly takes ${factory.length} helpers, but parseman ${PARSEMAN_VERSION} `
+    + `passes ${EMITTED_PARAMS.length}: it was printed by an older or newer parseman. Reprint the parser with `
+    + `parseman ${PARSEMAN_VERSION}, or run it on the parseman version that printed it.`,
+  )
+}
+
 export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Assembly {
   const { code, k, fns, cc, fx, disp, dsp, trivia, triviaLabelled } = t
   // The leaf swap is only legal when line tracking is off, and that is a property
@@ -4100,6 +4118,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ? prog.asm?.find(a => a.key === cfgKey(cfg))
       : undefined
     if (pre !== undefined) {
+      assertFactoryArity(pre.factory)
       const pools = rebuildPools(t.cc, t.fx, t.disp, pre.plan)
       emitted = pre.factory(
         EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia, triviaScan,

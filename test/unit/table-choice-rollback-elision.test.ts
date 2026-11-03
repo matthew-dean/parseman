@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { forwardingFactory } from '../helpers/forwarding-factory.ts'
 import {
   attempt, choice, expect as recover, field, label, literal, node, noTrivia, optional, regex, rules, run, sequence,
   type Combinator, word,
@@ -42,8 +43,8 @@ function precompiledCountingExpectedMerges(prog: TableProgram, counter: { n: num
   const compiled = new Function(
     ...EMITTED_PARAMS, 'COUNT', source,
   ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
-  const factory = ((...args: Parameters<PrecompiledAssembly['factory']>) =>
-    compiled(...args, counter)) as PrecompiledAssembly['factory']
+  const factory = forwardingFactory(((...args: Parameters<PrecompiledAssembly['factory']>) =>
+    compiled(...args, counter)) as PrecompiledAssembly['factory'])
   return tableRules(ownTableProgram({
     ...owned,
     asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
