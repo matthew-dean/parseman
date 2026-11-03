@@ -1,8 +1,17 @@
 name: Publish
 
-# Publishes `parseman` to npm on every push to `main`, through trusted publishing (OIDC):
-# no npm token exists in this repository or its secrets. See docs/design/release-gates.md
-# § Publishing, including the one-time trusted-publisher registration on npmjs.com.
+# Publishes `parseman` to npm for every commit on `main` that CI passes, through trusted
+# publishing (OIDC): no npm token exists in this repository or its secrets. See
+# docs/design/release-gates.md § Publishing, including the one-time trusted-publisher
+# registration on npmjs.com.
+#
+# Triggered by CI completing (`workflow_run`), not by the push: main's CI takes longer
+# than any wait a publish could hold. A run goes ahead only when that CI run succeeded
+# and ran for a push to this repository's `main`; a pull request's CI never publishes,
+# whatever its branch is called. Every job checks out the commit CI tested
+# (`workflow_run.head_sha`), not main's tip. CI runs complete out of order, so an older
+# commit's can finish after a newer one has released; the plan then finds that commit
+# inside a release tag and skips it.
 #
 # The version is chosen here (scripts/release.mjs plan): package.json's version when a
 # pull request declared one above the latest release, otherwise the next patch. A merge
@@ -32,11 +41,14 @@ name: Publish
 # the install or the tests could mint an npm publish credential for this package, or read
 # the deploy key that main's rules let through.
 #
-# Dispatch with `dry_run` to see the decision without publishing or tagging:
+# A dispatch releases main's tip, and only once CI has passed on it. Dispatch with
+# `dry_run` to see the decision without publishing or tagging:
 #
 #   gh workflow run publish.yml --ref main -f dry_run=true
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -54,13 +66,28 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The commit this run releases: the one CI passed, or the dispatched ref's tip. Used in
+  # `with:` and read from the environment in scripts, never interpolated into one.
+  RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
 jobs:
   prepare:
+    # CI's verdict, from the event: it passed, it ran for a push (a pull request's CI
+    # reports its head branch, which a fork can name `main`), on `main`, in this
+    # repository. A run that fails this shows as skipped.
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Reading CI's verdict on this commit.
-      checks: read
+      # Reading CI's verdict on a dispatched commit.
+      actions: read
     outputs:
       release: ${{ steps.plan.outputs.release }}
       version: ${{ steps.plan.outputs.version }}
@@ -70,6 +97,7 @@ jobs:
       sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
       - name: Refuse any ref but main
+        # A `workflow_run` run's ref is the default branch; a dispatch's is the one chosen.
         run: |
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
             echo "::error::publish runs only on main (ran on $GITHUB_REF)."
@@ -79,6 +107,7 @@ jobs:
       # Actions are pinned to commit SHAs: what this job packs is what gets published.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ env.RELEASE_SHA }}
           # Full history and tags: the plan reads the latest release from them, the
           # stamp reads the previous release's CHANGELOG.
           fetch-depth: 0
@@ -113,27 +142,25 @@ jobs:
           REASON: ${{ steps.plan.outputs.reason }}
         run: echo "::notice title=Release skipped::$REASON"
 
-      - name: Wait for CI to pass on this commit
-        # ci.yml's `test` job is the one required check: it needs the Node matrix and
-        # every perf, size and wasted-work gate. The pull request passed it, but against
-        # the base it was last tested on, and main does not require a branch to be up to
-        # date before it merges. Two pull requests that each passed can merge into a
-        # commit nothing has tested, and the preflight below runs the tests but none of
-        # those gates. So the release waits for CI's verdict on this exact commit.
-        if: steps.plan.outputs.release == 'true' && inputs.dry_run != true
-        timeout-minutes: 60
+      - name: CI passed on the dispatched commit
+        # ci.yml is the required check: its `test` job needs the Node matrix and every
+        # perf, size and wasted-work gate. The pull request passed it, but against the
+        # base it was last tested on, and main does not require a branch to be up to date
+        # before it merges. Two pull requests that each passed can merge into a commit
+        # nothing has tested, and the preflight below runs the tests but none of those
+        # gates. A `workflow_run` run has CI's verdict on this exact commit in its event
+        # (the job's `if`); a dispatch reads it once, here, and does not wait for it.
+        if: github.event_name == 'workflow_dispatch' && steps.plan.outputs.release == 'true' && inputs.dry_run != true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          while :; do
-            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=test&filter=latest" \
-              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | "\(.status // "missing") \(.conclusion // "")"') || state="unreadable (the checks API failed)"
-            case "$state" in
-              "completed success") echo "CI passed on $GITHUB_SHA."; break ;;
-              completed*) echo "::error::CI's \`test\` check concluded '${state#completed }' on $GITHUB_SHA; nothing is released. Fix main, or re-run CI and then this run."; exit 1 ;;
-              *) echo "CI's \`test\` check on $GITHUB_SHA: $state; waiting."; sleep 30 ;;
-            esac
-          done
+          state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RELEASE_SHA&event=push&branch=main&per_page=1" \
+            --jq '.workflow_runs[0] | "\(.status // "missing") \(.conclusion // "")"') || state="unreadable (the Actions API failed)"
+          case "$state" in
+            "completed success") echo "CI passed on $RELEASE_SHA." ;;
+            completed*) echo "::error::CI concluded '${state#completed }' on $RELEASE_SHA; nothing is released. Fix main, or re-run CI: its success starts a publish."; exit 1 ;;
+            *) echo "::error::CI on $RELEASE_SHA: $state. Nothing is released; CI's success starts a publish on its own."; exit 1 ;;
+          esac
 
       - name: Stamp the release
         id: stamp
@@ -148,7 +175,7 @@ jobs:
           commit=$(RELEASE_DATE="$date" GIT_AUTHOR_DATE="@$time +0000" GIT_COMMITTER_DATE="@$time +0000" \
             node scripts/release.mjs stamp "$VERSION")
           { echo "commit=$commit"; echo "date=$date"; echo "time=$time"; } >> "$GITHUB_OUTPUT"
-          echo "stamped $commit with RELEASE_DATE=$date and commit time @$time +0000"
+          echo "stamped $commit on $RELEASE_SHA with RELEASE_DATE=$date and commit time @$time +0000"
           git log -1 --stat --format='%H %s'
           # The plan built dist/ stamped with the LATEST release's version, and tests
           # that import the built package run before the preflight's own build. Rebuild
@@ -222,6 +249,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -293,6 +321,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
           # The tag step passes the token to its one push.
           persist-credentials: false
@@ -362,7 +391,8 @@ jobs:
         # Pushed with the release deploy key, which main's rules let through; GITHUB_TOKEN
         # cannot be given that bypass on this repository. A fast-forward when main has not
         # moved, otherwise the stamp rebuilt on the new tip; never forced. That push runs
-        # this workflow again, and the plan skips its own release commit.
+        # CI, whose success runs this workflow again, and the plan skips its own release
+        # commit.
         # continue-on-error so a failure here still tags the published release; the last
         # step fails the job afterwards.
         continue-on-error: true

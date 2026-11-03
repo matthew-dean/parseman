@@ -480,14 +480,44 @@ describe('publish.yml ships a tarball no test-time dependency touched', () => {
 describe('publish.yml releases only a commit CI passed', () => {
   const yml = readFileSync(join(dirname(new URL(import.meta.url).pathname), '../../.github/workflows/publish.yml'), 'utf8')
 
-  it('waits for the required `test` check on this exact commit before stamping', () => {
-    const wait = yml.indexOf('- name: Wait for CI to pass on this commit')
-    expect(wait).toBeGreaterThan(-1)
-    expect(wait).toBeLessThan(yml.indexOf('- name: Stamp the release'))
-    const step = yml.slice(wait, yml.indexOf('\n      - name:', wait + 1))
-    expect(step).toMatch(/commits\/\$GITHUB_SHA\/check-runs\?check_name=test&/)
-    expect(step).toMatch(/"completed success"\) .*break/)
+  const steps = (name: string): string => {
+    const at = yml.indexOf(`- name: ${name}`)
+    expect(at).toBeGreaterThan(-1)
+    return yml.slice(at, yml.indexOf('\n      - name:', at + 1))
+  }
+
+  it('starts when CI completes on main, and goes ahead only on a push CI passed in this repository', () => {
+    expect(yml).toMatch(/\non:\n {2}workflow_run:\n {4}workflows: \[CI\]\n {4}types: \[completed\]\n {4}branches: \[main\]\n {2}workflow_dispatch:/)
+    expect(yml).not.toMatch(/\n {2}push:/)
+    const prepare = yml.slice(yml.indexOf('\n  prepare:\n'), yml.indexOf('\n    runs-on:', yml.indexOf('\n  prepare:\n')))
+    for (const guard of [
+      "github.event.workflow_run.conclusion == 'success'",
+      "github.event.workflow_run.event == 'push'",
+      "github.event.workflow_run.head_branch == 'main'",
+      'github.event.workflow_run.head_repository.full_name == github.repository',
+    ]) expect(prepare).toContain(guard)
+  })
+
+  it('checks out the commit CI tested in every job', () => {
+    expect(yml).toMatch(/RELEASE_SHA: \$\{\{ github\.event_name == 'workflow_run' && github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/)
+    const checkouts = [...yml.matchAll(/uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n {8}with:\n {10}ref: \$\{\{ env\.RELEASE_SHA \}\}\n/g)]
+    expect(checkouts).toHaveLength([...yml.matchAll(/uses: actions\/checkout@/g)].length)
+    expect(checkouts).toHaveLength(3)
+  })
+
+  it('interpolates no event field into a script', () => {
+    for (const m of yml.matchAll(/\n( +)run: \|\n((?:\1 {2}[^\n]*\n|\n)*)/g)) expect(m[2]).not.toMatch(/\$\{\{[^}]*github\.event/)
+  })
+
+  it('reads CI\'s verdict once for a dispatch, before stamping', () => {
+    const step = steps('CI passed on the dispatched commit')
+    expect(yml.indexOf('- name: CI passed on the dispatched commit')).toBeLessThan(yml.indexOf('- name: Stamp the release'))
+    expect(step).toContain("if: github.event_name == 'workflow_dispatch'")
+    expect(step).toMatch(/actions\/workflows\/ci\.yml\/runs\?head_sha=\$RELEASE_SHA&event=push&branch=main/)
+    expect(step).toMatch(/"completed success"\) /)
     expect(step).toMatch(/completed\*\) .*exit 1/)
+    expect(step).toMatch(/\*\) .*exit 1/)
+    expect(step).not.toMatch(/sleep|while/)
   })
 })
 

@@ -395,8 +395,10 @@ const BOT = {
   GIT_COMMITTER_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com',
 }
 
+// maxBuffer: `git show <rev>:CHANGELOG.md` is several hundred KB and grows with every
+// release; execFileSync's 1 MB default would throw on it.
 const run = (cmd, args, opts = {}) =>
-  (execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...opts }) ?? '').trim()
+  (execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 1 << 28, ...opts }) ?? '').trim()
 
 /** The files that carry the version, and how each spells it. */
 const VERSION_SITES = [
@@ -527,7 +529,7 @@ const releaseChangelogs = (rev, root = ROOT) => {
 const releasedChangelog = (version) => {
   const below = version === undefined ? null : parseVersion(version)
   const t = releaseTags().find((x) => below === null || compareVersions(x.v, below) < 0)
-  return t === undefined ? { released: '', source: '' } : releaseChangelogs(t.tag)
+  return t === undefined ? { released: '', source: '' } : releaseChangelogs(`refs/tags/${t.tag}`)
 }
 
 const readPkg = () => JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
@@ -615,7 +617,7 @@ function plan() {
     own: releaseCommitOf(),
     superseded: supersedingRelease(),
     changelog,
-    released: (tag) => run('git', ['show', `${tag}:CHANGELOG.md`]),
+    released: (tag) => run('git', ['show', `refs/tags/${tag}:CHANGELOG.md`]),
     differences: (latest) => {
       // Stamped with the latest release's version so the version is not itself a
       // difference; restored afterwards so a local dry run leaves the checkout as it found it.

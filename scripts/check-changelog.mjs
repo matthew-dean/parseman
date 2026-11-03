@@ -210,14 +210,15 @@ if (existsSync(VERSION_TS_PATH)) {
  * to the merge.
  */
 function taggedChangelog(version) {
-  const opts = { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+  // maxBuffer: the CHANGELOG is several hundred KB; execFileSync's default is 1 MB.
+  const opts = { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }
   try {
     execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/tags/v${version}`], opts)
   } catch {
     return null
   }
   try {
-    return execFileSync('git', ['show', `v${version}:CHANGELOG.md`], opts)
+    return execFileSync('git', ['show', `refs/tags/v${version}:CHANGELOG.md`], opts)
   } catch (e) {
     fail(
       `the release tag v${version} exists, but its CHANGELOG.md cannot be read:\n` +
@@ -244,7 +245,7 @@ console.log(
 
 if (BASE === undefined) process.exit(0)
 
-const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim()
+const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28 }).trim()
 
 let baseSha
 try {
