@@ -16,7 +16,7 @@ on:
 
 # A new push to a pull request cancels that PR's run in progress: the perf gate alone
 # takes about 300 runner-minutes. Pushes to `main` never share a group, so none is ever
-# cancelled or skipped; each one is what a publish waits on.
+# cancelled or skipped; each one's success is what starts a publish.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref) || format('ci-push-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

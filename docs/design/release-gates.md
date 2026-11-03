@@ -1,7 +1,8 @@
 # Releases and the release gate
 
-Every merge to `main` publishes. `.github/workflows/publish.yml` runs on each push,
-chooses the version, and skips the publish when nothing the package ships changed.
+Every merge to `main` publishes. `.github/workflows/publish.yml` runs when CI passes on
+a push to `main`, chooses the version, and skips the publish when nothing the package
+ships changed.
 Pull requests file their CHANGELOG entry under `## Unreleased` and leave the version
 alone, unless they want a minor or a major.
 
@@ -10,14 +11,41 @@ Two scripts carry it:
 | script | where it runs | what it does |
 | --- | --- | --- |
 | `scripts/check-changelog.mjs` | CI job `release-gate` on every PR and push; `prepublishOnly` | requires the entry, keeps the three version sites in agreement |
-| `scripts/release.mjs` | `publish.yml`, on every push to `main` | chooses the version, decides the skip, stamps the release |
+| `scripts/release.mjs` | `publish.yml`, once CI passes on a push to `main` | chooses the version, decides the skip, stamps the release |
 
 ## How a merge publishes
 
+`publish.yml` is triggered by CI's run completing (`on: workflow_run`, `workflows: [CI]`),
+not by the push. `main`'s CI takes one to two and a half hours under runner contention,
+longer than a publish could wait for it, and a run that waited held the `publish` group
+the whole time. The `prepare` job runs only when that CI run concluded `success`, ran for
+a `push`, on `main`, in this repository, and the commit it tested is still `main`'s tip.
+A pull request's CI never publishes: its `workflow_run` event carries the PR's head
+branch, which a fork can name `main`, so the branch alone is not enough. A run that fails
+the check shows as skipped. Every job checks out the commit CI tested
+(`workflow_run.head_sha`). A re-run of CI that turns a failure green on the tip starts
+the publish too.
+
+**Only `main`'s tip is released.** npm's provenance records the run's `GITHUB_SHA`, which
+for `workflow_run` is `main`'s tip when CI completed, not the commit CI tested. So a run
+whose `head_sha` is not `GITHUB_SHA` releases nothing: its `not-tip` job logs `Release
+skipped`. That covers CI finishing out of order (an older commit's CI completing after
+another merge) and a CI re-run of an old commit. The newer tip's own CI completion
+releases the skipped commit with it. If that tip's CI fails, both wait for the fix, as
+any merge on a red `main` does.
+
+A record commit (below) is a push to `main` and runs CI like any merge, so it never
+strands one. If a merge lands while the previous release is being recorded, the record
+is rebuilt on top of it, and the merge's own run is no longer the tip. The record
+commit's run is: its tree carries the merge, so `releaseCommitOf` does not take it for
+the release's own commit, and its plan compares tarballs and releases the merge. A
+fast-forward record carries nothing new and its plan skips it.
+
 1. **Plan** (`node scripts/release.mjs plan`). Two kinds of commit publish nothing:
    the release commit the record step pushed to `main`, and a commit that some release
-   tag already contains. The second is a re-run of a commit `main` has moved past;
-   publishing it would ship older code under a newer number. Otherwise `V` is
+   tag already contains. The second is a re-run of a commit `main` has moved past, or
+   a commit whose CI finished after a newer one released; publishing it would ship older
+   code under a newer number. Otherwise `V` is
    `package.json`'s version on `main` and `L` is the highest stable version on npm or
    among the `v*` tags.
    - If `V > L`, a pull request declared `V`: publish `V`.
@@ -40,10 +68,10 @@ Two scripts carry it:
    `src/version.ts`, renames `## Unreleased` to `## X.Y.Z — <date>`, and commits that
    in the runner as `release: X.Y.Z`. A section the pull request already named for
    `X.Y.Z` takes the date and any Unreleased entries.
-4. **Guard and preflight.** CI's `test` check has passed on this exact commit (the run
-   waits for it), `check-changelog.mjs --publish` and `check-main-release-state.mjs` pass
+4. **Guard and preflight.** CI has passed on this exact commit (the trigger, above; a
+   dispatch reads CI's verdict once and stops if it is not a success), `check-changelog.mjs --publish` and `check-main-release-state.mjs` pass
    on the stamped tree, `X.Y.Z` is not on npm, the tag `vX.Y.Z` does not exist, and the
-   full preflight from `AGENTS.md` passes. The wait is there because `main` does not
+   full preflight from `AGENTS.md` passes. CI's verdict is required because `main` does not
    require a pull request to be up to date with it before merging: two pull requests
    that each passed CI can merge into a commit nothing has tested, and the preflight
    runs none of the perf, size or wasted-work gates that `test` requires.
@@ -150,8 +178,17 @@ key it sees. Until the secret exists, the step is skipped and nothing else chang
 `concurrency: publish` with `cancel-in-progress: false`. A queued run waits for the one
 ahead of it. It reads npm and the tags only once it starts, and the earlier run does
 not release the group until npm serves its version. The second run then sees that
-release as `L`. GitHub keeps one pending run per group, so a third quick merge replaces
-the queued second. Its commit contains the second's, so nothing goes unreleased.
+release as `L`. GitHub keeps one pending run per group, so a third CI completion replaces
+the queued second. Only a run for `main`'s tip can queue there (a CI completion on the
+tip, or a dispatch on `main`, which releases the tip), so the replacing run's commit
+contains the replaced one's, and nothing goes unreleased.
+
+The group is chosen before any job's `if:` is read. A run that cannot release (a pull
+request's CI, CI that failed or was cancelled, a commit that is not the tip, a dispatch
+from a branch other than `main`) and a dry run would replace a pending release just by
+joining it. So the group is computed from the same condition as the `prepare` job, plus
+"on `main`" for a dispatch and "not a dry run": runs that can release join `publish`, and
+every other run gets `publish-ignored-<run id>`, a group of its own.
 
 ### Dry run
 
@@ -160,7 +197,9 @@ gh workflow run publish.yml --ref main -f dry_run=true
 ```
 
 This runs the plan, stamp, guards and preflight against the real npm state, then stops
-before publishing and tagging. Locally, `node scripts/release.mjs plan` prints the same
+before publishing and tagging. Without `dry_run`, a dispatch releases `main`'s tip once
+CI has passed on it; it does not wait for a CI run still in progress, whose success starts
+a publish on its own. Locally, `node scripts/release.mjs plan` prints the same
 decision. It builds `dist/` and leaves tracked files as it found them.
 
 ### If a step fails
@@ -175,8 +214,8 @@ decision. It builds `dist/` and leaves tracked files as it found them.
   stamped commit from the run's commit and push the tag by hand:
 
   ```sh
-  sha=$(gh run view <run-id> --json headSha --jq .headSha)
-  # <date> and <time>: the line the `prepare` job's stamp step printed
+  # <sha>, <date> and <time>: the line the `prepare` job's stamp step printed
+  sha=<sha>
   git checkout --detach "$sha" && RELEASE_DATE=<date> GIT_AUTHOR_DATE="@<time> +0000" \
     GIT_COMMITTER_DATE="@<time> +0000" node scripts/release.mjs stamp X.Y.Z
   git push origin HEAD:refs/tags/vX.Y.Z
@@ -221,7 +260,7 @@ trusted publisher. Register it once, either way:
 
 Until it is registered, the publish step fails with a 404 ("could not be found or you do
 not have permission"). The registration names the workflow file, not the event, so
-moving from dispatch to push needs no change.
+moving from dispatch to push, and from push to `workflow_run`, needed no change.
 
 ## What the gate checks
 
