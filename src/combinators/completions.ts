@@ -3,8 +3,8 @@ import { REC } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
 
 /** Anything `completionsAt` can probe: an interpreter combinator OR a `compile()`d
- * grammar. A grammar compiled with `{ recovery: true }` records the probe on its fast
- * path, so completions work on the published compiled artifact — no interpreter needed. */
+ * grammar, which records the probe on its fast path. A macro-built rule function has
+ * neither `parse` nor `parseWithContext`, so it is not accepted. */
 type CompletionsTarget =
   | Combinator<unknown>
   | { parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<unknown> }
@@ -17,7 +17,7 @@ type CompletionsTarget =
  * highest-position failure seen, even when sepBy/many backtrack past the cursor.
  * Returns the expected tokens from that deepest failure.
  *
- * Works on the interpreter combinator OR a `compile(g, { recovery: true })` grammar
+ * Works on the interpreter combinator OR a `compile()`d grammar
  * (the probe is recorded on the compiled fast path). Returns an empty array when the
  * input up to `offset` parses completely with no failures at or before the cursor.
  *

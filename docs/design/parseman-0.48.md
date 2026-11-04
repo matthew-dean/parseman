@@ -1,6 +1,8 @@
-# Parseman 0.48 architecture and release specification
+# Tokenized PEG and lexical bodies (the 0.48 specification)
 
-- **Status:** frozen release architecture; remaining performance work tracked internally
+- **Status:** written as the 0.48 release specification; still the design record for the
+  token and lexical-body layer, and revised as that work lands. For how the code as a
+  whole fits together, start at `docs/design/internals.md`.
 - **Release branch:** `release/0.48.0`
 - **Primary performance architecture:** tokenized PEG over the canonical compact
   `TableProgram`

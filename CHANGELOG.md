@@ -5,6 +5,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **The `recovery` option is marked `@deprecated`.** It has had no effect since recovery
+  became part of every compiled table: `compile()`, `compileRuleMap()` and the macro
+  plugin accept it and ignore it. It is removed at the next minor release. Source
+  comments that cited the deleted `codegen.ts`, line numbers that no longer exist, or
+  said `exec.ts` ships, now name what they mean.
 - **An internals overview, `docs/design/internals.md`.** The README's "Developing"
   section now points at it: the pipeline, the engines, the table and wire format, macro
   selection and how performance is measured. Its opcode table is checked against
