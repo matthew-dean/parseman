@@ -47,7 +47,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   indices into one pool of tokens, instead of a list of strings. Raw table size drops
   8% to 20% on the real CSS, Less, SCSS and Jess grammars. Gzipped bundles barely
   change, since gzip already removed the repetition. A table printed by an earlier
-  version has to be printed again.
+  version has to be printed again, and now refuses to load with a message saying so
+  instead of a `TypeError`.
 - **The walker and the tables now agree on four more results, and three compositions
   a dialect grammar relies on are pinned across a package boundary.**
   - A `node()` over a rule reference delivers the `field()` below it on the walker. It

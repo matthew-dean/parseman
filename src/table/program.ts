@@ -6,6 +6,7 @@ import { leadRanges } from '../lead-ranges.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
 import { buildLexBodyRecognizer, type LexBodyRecognizer } from './lex-body.ts'
 import { buildLexProgramRunner, type LexProgramRunner } from './lex-program.ts'
 
@@ -353,6 +354,9 @@ export type CompactProgram = {
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   if ('code' in p) return p
+  // A table from before the token pool has no `es`. Refuse it here, at load, instead of
+  // failing on the first expected set read below.
+  if (p.es === undefined) throw new Error(`parseman: this parser was printed by an earlier parseman; reprint it with parseman ${PARSEMAN_VERSION}`)
   return ownTableProgram({
     code: p.c, k: p.k, cc: p.x, fx: p.e.map(set => set.map(i => p.es[i]!)), disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
