@@ -397,7 +397,7 @@ describe('direct-bound dispatch topology', () => {
 
     const emitted = emitAssemblySource(resolveTable(baseProg), baseProg, STRICT)
     const wrongRouteSource = emitted.source.replace(
-      'ctx._routed={value:key,span:{start:pos,end:selEnd}}',
+      'ctx._routed={value:key,span:new _SP(pos,selEnd)}',
       'ctx._routed=undefined',
     )
     expect(wrongRouteSource).not.toBe(emitted.source)

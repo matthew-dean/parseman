@@ -1,4 +1,5 @@
 import type { CharRange, FirstSet, Combinator, ParserDef } from '../types.ts'
+import { implicitLeadsDropped, leadRanges } from '../lead-ranges.ts'
 import { triviaThroughRef } from './trivia-boundary.ts'
 
 /**
@@ -109,8 +110,9 @@ export function union(a: FirstSet, b: FirstSet): FirstSet {
 export function intersects(a: FirstSet, b: FirstSet): boolean {
   if (a.kind === 'any' || b.kind === 'any') return true
   if (a.kind === 'empty' || b.kind === 'empty') return false
-  for (const ra of a.ranges) {
-    for (const rb of b.ranges) {
+  const bs = leadRanges(b.ranges)
+  for (const ra of leadRanges(a.ranges)) {
+    for (const rb of bs) {
       if (ra.lo <= rb.hi && rb.lo <= ra.hi) return true
     }
   }
@@ -134,6 +136,10 @@ export function startsFirstSet(combinator: Combinator<unknown>, input: string, p
   const code = input.codePointAt(pos)
   if (code === undefined) return false
   for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
+  // `rangesHaveLead`, inline: this is a hot path.
+  if (code <= 0xffff) return false
+  const high = 0xd800 + ((code - 0x10000) >> 10)
+  for (const r of fs.ranges) if (high >= r.lo && high <= r.hi) return true
   return false
 }
 
@@ -282,13 +288,16 @@ function narrowBy(acc: FirstSet | null, constraint: FirstSet): FirstSet | null {
   if (acc === null) return constraint
   if (acc.kind === 'any') return constraint
   if (acc.kind === 'empty' || constraint.kind === 'empty') return { kind: 'empty' }
+  // Each side admits astral leads through its high surrogates, so intersect them as
+  // read: `peek(/😀/)` (code units) and `literal('😀')` (a code point) overlap.
   const ranges: CharRange[] = []
-  for (const a of acc.ranges) for (const b of constraint.ranges) {
+  const bs = leadRanges(constraint.ranges)
+  for (const a of leadRanges(acc.ranges)) for (const b of bs) {
     const lo = Math.max(a.lo, b.lo)
     const hi = Math.min(a.hi, b.hi)
     if (lo <= hi) ranges.push({ lo, hi })
   }
-  return ranges.length === 0 ? { kind: 'empty' } : { kind: 'ranges', ranges }
+  return ranges.length === 0 ? { kind: 'empty' } : { kind: 'ranges', ranges: implicitLeadsDropped(ranges) }
 }
 
 /**
@@ -367,7 +376,7 @@ export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): First
  * would wrongly skip valid input — the compose path defers dispatch to fuse time.
  *
  * `consuming: false` reads a nullable regex as `any`, as first sets read before
- * 0.59.0. Recovery derives its resync sentinels so (`sequence.ts`
+ * 0.60.0. Recovery derives its resync sentinels so (`sequence.ts`
  * `followSentinels`, the table's follow and separator classes, with no trivia),
  * as do a construction-time sequence set and a table choice's classes. Only a
  * repeat item's, a gap's and a node's gate read a pad through its non-empty

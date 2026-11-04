@@ -1,6 +1,7 @@
 import type { Combinator, DispatchCase, DispatchMatcherCase, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { cstCaptureActive, pushCstLeaf } from '../cst/capture-buffer.ts'
 import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
+import { PlainLeaf } from '../cst/plain.js'
 
 export type DispatchWhen<T> = {
   readonly kind: 'when'
@@ -255,7 +256,7 @@ export function routed<T = string>(fallback?: Combinator<T>): Combinator<T> {
         return { ok: false, expected: ['routed()'], span: { start: pos, end: pos } }
       }
       if (cstCaptureActive(ctx)) {
-        pushCstLeaf(ctx, { _tag: 'leaf', value: item.value, span: item.span })
+        pushCstLeaf(ctx, new PlainLeaf(item.value, item.span))
       }
       return { ok: true, value: item.value as T, span: item.span }
     },

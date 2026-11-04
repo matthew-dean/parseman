@@ -30,12 +30,12 @@ describe('a gap gate moves no site in or out of a budgeted selection', () => {
     const table = resolveTable(artifact)
     const cfg = defaultAssemblyCfgs(artifact)[0]!
     const roots = assemblyExtraIps(artifact)
-    const neutral = emitAssemblySource(table, artifact, cfg, roots, true, undefined, true)
+    const neutral = emitAssemblySource(table, artifact, cfg, roots, true, undefined, false, true)
     const gated = emitAssemblySource(table, artifact, cfg, roots, true)
     // The gates are there, and they cost bytes the neutral pricing does not see.
     expect(gated.source).toMatch(/GAP\.row=/)
     expect(neutral.source).not.toMatch(/GAP\./)
-    const fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set(), true).source.length
+    const fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set(), false, true).source.length
     // Priced with the gates, the selection would move somewhere in this range:
     // which is why `compileRuleMap`'s `selectAssembly` prices the neutral one.
     let moved = 0

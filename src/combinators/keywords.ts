@@ -5,6 +5,7 @@ import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { directTerminalFailureExpected } from './expected.ts'
 import type { ScalarParser } from './scalar.ts'
+import { PlainLeaf, PlainSpan } from '../cst/plain.js'
 
 export type KeywordsOptions = {
   /** Match case-insensitively. */
@@ -164,8 +165,8 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
       const m = re.exec(input)
       if (m === null) return failAt(ctx, directTerminalFailureExpected(def), pos)
       const value = m[0]!
-      const span = { start: pos, end: pos + value.length }
-      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
+      const span = new PlainSpan(pos, pos + value.length)
+      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, span))
       return { ok: true, value, span }
     },
   }

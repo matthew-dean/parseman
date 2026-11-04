@@ -1,6 +1,6 @@
 {
   "name": "parseman",
-  "version": "0.59.0",
+  "version": "0.60.0",
   "packageManager": "pnpm@10.15.1",
   "engines": {
     "node": "^20.19.0 || >=22.13.0"
@@ -96,6 +96,7 @@
     "perf:guard:grammars": "node --import tsx/esm bench/grammar-perf-guard.ts",
     "perf:xproc": "node --import tsx/esm bench/xproc-ab.ts",
     "perf:xproc:gate": "node --import tsx/esm bench/xproc-gate.ts",
+    "perf:pretenure": "node --import tsx/esm bench/pretenure-check.ts",
     "prepare": "git config core.hooksPath scripts/git-hooks || true; node scripts/build.mjs",
     "prepublishOnly": "node scripts/check-changelog.mjs --publish",
     "check:changelog": "node scripts/check-changelog.mjs",

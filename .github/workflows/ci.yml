@@ -16,7 +16,7 @@ on:
 
 # A new push to a pull request cancels that PR's run in progress: the perf gate alone
 # takes about 300 runner-minutes. Pushes to `main` never share a group, so none is ever
-# cancelled or skipped; each one is what a publish waits on.
+# cancelled or skipped; each one's success is what starts a publish.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref) || format('ci-push-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -285,8 +285,37 @@ jobs:
   #
   # `target`: `release` is HEAD vs the previous release over every case; `peak` is the
   # workloads vs the fastest release on record, at the committed allowance.
-  xproc-shard:
+  # The reference is resolved ONCE per run, here, and passed to every shard and to the
+  # aggregate. Publish-on-merge tags a release whenever a PR merges, so re-resolving
+  # "the previous release" in each job gave shards and the aggregate different
+  # references whenever a merge landed mid-run. The gate checks the pinned sha is the
+  # previous release (or the one before it) and that every shard measured exactly it.
+  xproc-ref:
     needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release: ${{ steps.ref.outputs.release }}
+      peak: ${{ steps.peak.outputs.peak }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - id: ref
+        run: pnpm perf:xproc:gate --print-reference
+      - id: peak
+        run: pnpm perf:xproc:gate --peak --print-reference
+
+  xproc-shard:
+    needs: [changes, xproc-ref]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -309,7 +338,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Measure one shard
-        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --shard-out=xproc-${{ matrix.target }}-${{ matrix.shard }}.json
+        # The reference reaches the script through env, never by interpolating `${{ }}`
+        # into the command: a job output is data, and a shell must not parse it as code.
+        env:
+          XPROC_REFERENCE: ${{ needs.xproc-ref.outputs[matrix.target] }}
+          XPROC_TARGET: ${{ matrix.target }}
+          XPROC_SHARD: ${{ matrix.shard }}
+        run: pnpm perf:xproc:gate $([ "$XPROC_TARGET" = peak ] && echo --peak) --reference="$XPROC_REFERENCE" --shard-out="xproc-$XPROC_TARGET-$XPROC_SHARD.json"
       - uses: actions/upload-artifact@v4
         with:
           name: xproc-${{ matrix.target }}-${{ matrix.shard }}
@@ -317,7 +352,7 @@ jobs:
           retention-days: 7
 
   xproc-perf:
-    needs: [changes, xproc-shard]
+    needs: [changes, xproc-ref, xproc-shard]
     # `!cancelled()`, not `always()`: a superseded run skips the verdict instead of starting
     # it after its shards were cancelled. A shard that FAILS does not cancel the run, so
     # the verdict still runs then, finds the shard missing, and fails.
@@ -347,7 +382,10 @@ jobs:
           path: xproc-shards
           merge-multiple: true
       - name: Verdict over every shard
-        run: pnpm perf:xproc:gate ${{ matrix.target == 'peak' && '--peak' || '' }} --aggregate=xproc-shards --expect-shards=20
+        env:
+          XPROC_REFERENCE: ${{ needs.xproc-ref.outputs[matrix.target] }}
+          XPROC_TARGET: ${{ matrix.target }}
+        run: pnpm perf:xproc:gate $([ "$XPROC_TARGET" = peak ] && echo --peak) --reference="$XPROC_REFERENCE" --aggregate=xproc-shards --expect-shards=20
 
   macro-perf:
     needs: changes

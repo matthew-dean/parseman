@@ -172,6 +172,49 @@ and −7.5% `--jitless`, SCSS −1.8% and −2.9%, `.jess` +0.4% (inside spread)
 Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 `perf/loop-followups` and `perf/gap-handoff`. The CHANGELOG's 0.59.0 section is open.
 
+- **Constructor-built tree objects (Node 26 pretenuring flip).** V8 pretenures object
+  literals per allocation site, decided during warm-up from where scavenges fall, so
+  identical processes split into a fast and a slow mode and any bundle-layout change
+  re-rolls it. Leaves, spans, default nodes, field captures and capture buffers are now
+  built by `new` calls (`src/cst/plain.js`), which have no allocation site, and the bench
+  fixtures' node builders do the same. With dead code of 0–15,000 bytes appended to
+  `dist/index.js`, every process of the gate cases and of four runtime-kept trees (a CST
+  host, builder-less default nodes with and without line tracking, a builder that keeps
+  its span) ran in the fast mode on Node 24 and 26 (1–2 mark-compacts, against up to 61).
+  JIT marginal instructions against a slow-mode main: `css/stylesheet` −31% (Node 24) and
+  −34% (Node 26), `expected/narrow` −14% / −37%, `rollback/medium` −11% / −32%. Against
+  main's fast mode, `rollback/medium` on Node 26 reads about +4% (12.36M → 12.84M): a tree
+  that is never pretenured is copied by the scavenger. `--jitless` reads +1% to +5%: an
+  interpreter cannot see the mechanism.
+  The constructors must exist ONCE per process. A first build bundled a copy into each
+  entry, so a process that loads `parseman` and `parseman/table` (Jess) built every shape
+  under two maps; Jess's SCSS parse ran +3.1% (Node 24) and +6.7% (Node 26) from the
+  polymorphic reads. The build now emits `dist/cst/plain.js` once and every entry
+  imports it; that SCSS row reads −0.3% on both. Investigation in
+  [#224](https://github.com/matthew-dean/parseman/pull/224).
+- **The cost of never pretenuring: one synthetic case.** With Jess's AST nodes constructor-built
+  too (jess `perf/ast-ctor`), Jess's SCSS `gen-workload` reads +3.6% JIT on Node 26 (998.0M
+  → 1034.2M per parse; −0.3% on Node 24). It is a single file of about 1G instructions per
+  parse, and its tree survives several scavenges. Node 26 pretenured that tree in every
+  process, so it was never copied. Constructors cannot be pretenured, so the scavenger copies
+  it instead: scavenge time over 40 parses is 65 ms on main against 114 ms, with the same
+  scavenge count. Real SCSS is not slower. JIT marginal instructions on Node 26 / Node 24:
+  Bootstrap 5 (92 files) −2.1% / −0.2%, Foundation (106 files) −0.9% / −1.0%, the accepted
+  sass-spec fixtures (1,961 files) −1.6% / −1.7%. Mark-compacts are 1–2 per process in every
+  case, and scavenge time is within noise. Accepted: the synthetic case pays for copying
+  that consistent pretenuring avoided. The way to win it back is less short-lived
+  allocation, so a tree survives fewer scavenges. A literal site would bring the per-process
+  split back.
+
+- **Watched literal sites (not converted).** These are still object literals, and none splits
+  a process today. A tree does not keep them, or they are rare:
+  - field-map entries (`src/compiler/fields.ts` `buildFieldMap`);
+  - the interpreter's `annotateSpanFromLineContext`;
+  - parse-error objects;
+  - the public `annotateTreeSpans`.
+
+  `pnpm perf:pretenure` would show it if one began to.
+
 - **Nullable-regex first sets.** A `regex()` that may match empty still reports `any`, but
   also carries the first characters of its non-empty matches. A sequence led by an optional
   pad such as `ws* '*' ws*` gets a finite first set, so operator repeats get item classes
@@ -220,7 +263,37 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   `--jitless`, −13.9% JIT; maps −0.4%. Groups containing `/` and lists keep the old path.
   [jess#523](https://github.com/jesscss/jess/pull/523), merged.
 
+### Unreleased on `main`
+
+- **Trivia lead gate.** A trivia skip at a character no trivia can start returns `cur`
+  without the runtime scan, in both table engines (the closure engine per trivia slot,
+  the emitted assembly in its skips and sequence terms), and the term takes no trivia
+  marks there.
+  - Jess's shipped Less build, against `main`, JIT st (A/A inside 1%):
+    | Input | `main` | Gate | Change | lessc 4.9.1 |
+    | --- | --- | --- | --- | --- |
+    | `color: red;` | 37.9k | 36.1k | −4.5% | 6.8k |
+    | `.r { }` | 33.3k | 29.8k | −10.5% | 26.4k |
+    | `.a .b > .c { }` | 53.5k | 50.8k | −5.0% | 36.7k |
+    | keyword list | 26.3k | 25.7k | inside spread | — |
+    | whole file (`--jitless`) | 357.8M (2295M) | 344.0M (2094M) | −3.9% (−8.8%) | 153.9M (780M) |
+  - Other Jess grammars, whole file, JIT / `--jitless`: CSS −3.7% / −5.7%; SCSS −1.4%
+    (A/A spread 3%) / −6.6%; `.jess` −7.6% (±2.9%) / −11.5%. Cold start is inside the A/A
+    for all four.
+  - Identity: ASTs and CSTs identical on 461 Less files; `compare:less:builds --corpus`
+    byte-identical in all six modes; both checks go red with a narrowed lead table.
+  - The two other trivia parts did not land. Marks are already skipped wherever the gate
+    fires, and taking them only when a log is live changes nothing for Jess, which always
+    parses with a live root trivia log. Dropping the gap memo is rejected (below).
+  - Branch `perf/shipped-alloc-trivia`.
+
 ## Rejected (measured)
+
+- **Dropping the trivia gap memo.** Remove `skipDeferredTrivia`'s repeat-scan memo, on
+  top of the lead gate. Jess's Less build: `color: red;` 36.1k → 37.0k (A/A 36.4k), whole
+  file 348.1M → 343.3M (A/A 347.5M, spread 1.8%). The memo still answers repeats where
+  trivia does start, and no site was found where a label proves it cannot hit. Probe was
+  a dist edit; no branch kept.
 
 - **Shared emitted helpers for marks and undo.** Route every emitted rollback mark and
   scanned-term undo through shared helpers. It shrank whole-grammar emitted code 28–30%
@@ -359,22 +432,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   CSS and `.jess` sites are one-character gates that admit too much, which the two-character
   gate family addresses more cheaply. Census on `perf/less-gap`; not built.
 
-- **Constructor-built tree objects, against the Node 26 pretenuring flip.** On Node 26.13
-  the cross-process gate's `css/stylesheet`, `expected/narrow` and `rollback/medium` are
-  bimodal because V8 pretenures the sites that build a parse's tree (the reducer's node
-  literal and Parseman's leaf and span literals) in some processes and not in others. A
-  pretenured process runs 34–61 mark-compacts where the others run 0–2, and is 7–8% slower
-  (`css/stylesheet` 2.33 ms against 2.15 ms, with 108G instructions per process against 96G).
-  JIT tiers and deopts are the same in both modes. Building leaves, spans and the fixture
-  reducers' nodes with constructors put every process in the fast mode: 12 of 12, 8 of 8 and
-  8 of 8. The density cases read the same on Node 24, which rarely pretenures them. Leaves
-  alone, the part Parseman owns, did not: 11 of 12 `css/stylesheet` processes were still
-  pretenured, at 127G instructions against 108G. Reducers alone did not either. Jess's Less
-  parser does not flip on Node 26 (`benchmark.less` and bootstrap, 24 processes each, IQR
-  ≤2.1%). Parked because Parseman cannot fix this alone.
-  [#224](https://github.com/matthew-dean/parseman/pull/224).
-
-- **0.59.0 against 0.58.1 on Node 26: whole-family vs partial pretenuring.** The
+- **0.59.0 against 0.58.1 on Node 26: whole-family vs partial pretenuring.** (Measured on #212, then declared 0.59.0; the 0.59.0 that shipped is main's, without it, and #212 is the 0.60.0 line.) The
   cross-process gate read `expected/narrow` +12.3% and `rollback/medium` +4.7% (Node
   26.13, macOS) where the Node 26 self-check stayed within ±2.6%. Per process, with the
   gate's worker parameters and mark-compact counts (diagnostic flags only):
@@ -403,7 +461,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     old-to-young pointers. It would change how the tree is built, with unknown effect on
     real grammars.
 
-- **0.59.0's pretenuring flips follow bundle layout, not parse work.** The required
+- **0.59.0's pretenuring flips follow bundle layout, not parse work.** (Measured on #212, then declared 0.59.0; the 0.59.0 that shipped is main's, without it, and #212 is the 0.60.0 line.) The required
   cross-process gate on `504ddea1` (CI, Linux, Node 26, against v0.58.2) failed seven
   cases:
 

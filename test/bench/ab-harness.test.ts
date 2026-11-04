@@ -15,6 +15,7 @@ import {
   sameSource,
   pairedMedianRatio,
   previousRelease,
+  previousReleases,
   score,
   type Calibration,
   type Samples,
@@ -251,6 +252,19 @@ describe('the previous release is resolved from the v* tags', () => {
     const h = history()
     try {
       expect(previousRelease(h.dir, 'test')).toEqual({ tag: 'v0.1.1', sha: h.at('R') })
+    } finally {
+      rmSync(h.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('lists the newest previous releases in order, by the same rule', () => {
+    const h = history()
+    try {
+      const two = previousReleases(h.dir, 'test', 2)
+      expect(two.map(({ tag, sha }) => ({ tag, sha }))).toEqual([{ tag: 'v0.1.1', sha: h.at('R') }, { tag: 'v0.1.0', sha: h.at('A') }])
+      // Each carries its tag commit's committer time, which the mid-run check compares to HEAD's.
+      for (const r of two) expect(Number.isSafeInteger(r.date) && r.date > 0).toBe(true)
+      expect(previousReleases(h.dir, 'test', 5)).toHaveLength(2)
     } finally {
       rmSync(h.dir, { recursive: true, force: true })
     }

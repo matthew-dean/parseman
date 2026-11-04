@@ -424,7 +424,7 @@ export function getCoreLiteralValue(p: Combinator<unknown>): string | null {
 }
 
 /** Walk transform wrappers to find an inner regex's source/flags. */
-export function getCoreRegexDef(p: Combinator<unknown>): { source: string; flags: string } | null {
+function getCoreRegexDef(p: Combinator<unknown>): { source: string; flags: string } | null {
   const def = p._def
   if (def.tag === 'regex') return { source: def.source, flags: def.flags }
   if (def.tag === 'transform') return getCoreRegexDef(def.parser)
@@ -481,6 +481,10 @@ function inFirstSet(code: number, fs: FirstSet): boolean {
   if (fs.kind === 'any') return true
   if (fs.kind === 'empty') return false
   for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
+  // `rangesHaveLead`, inline: this is a hot path.
+  if (code <= 0xffff) return false
+  const high = 0xd800 + ((code - 0x10000) >> 10)
+  for (const r of fs.ranges) if (high >= r.lo && high <= r.hi) return true
   return false
 }
 

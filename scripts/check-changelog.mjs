@@ -77,7 +77,7 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import {
   parseVersion, compareVersions, headingVersion, pendingEntries, shippedPaths, UNRELEASED,
-  consumerFieldChanges,
+  consumerFieldChanges, staleEntries, staleDeclaration, sectionEntries, withoutEach,
 } from './release.mjs'
 
 const argv = process.argv.slice(2)
@@ -197,6 +197,45 @@ if (existsSync(VERSION_TS_PATH)) {
   }
 }
 
+// 4b. A version a release already shipped carries only what that release shipped. The
+// pull-request half of the publish plan's stop (`staleEntries` in release.mjs): a PR that
+// declared X, then saw another merge ship X, fails here when its CI next runs rather than
+// at publish. Needs the `vX.Y.Z` tag, which CI's `fetch-depth: 0` checkout brings; with no
+// tag there is nothing to compare.
+
+/**
+ * The CHANGELOG.md the release tag `v<version>` carries, or null when there is no such
+ * tag. A tag that exists but cannot supply one fails here: the publish plan reads the
+ * same file and stops on it, so treating the tag as absent would only move the failure
+ * to the merge.
+ */
+function taggedChangelog(version) {
+  // maxBuffer, pre-emptively: the CHANGELOG is several hundred KB and grows toward
+  // execFileSync's 1 MB default.
+  const opts = { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/tags/v${version}`], opts)
+  } catch {
+    return null
+  }
+  try {
+    return execFileSync('git', ['show', `refs/tags/v${version}:CHANGELOG.md`], opts)
+  } catch (e) {
+    fail(
+      `the release tag v${version} exists, but its CHANGELOG.md cannot be read:\n` +
+        `  ${String(e.stderr || e.message).trim()}\n` +
+        '  The publish plan reads that file to check a declared version against what the release\n' +
+        '  shipped, and would stop on it too. Point the tag at the release commit it names.',
+    )
+  }
+}
+
+{
+  const tagged = taggedChangelog(version)
+  const stale = tagged === null ? [] : staleEntries(changelog, version, tagged)
+  if (stale.length > 0) fail(staleDeclaration(version, stale))
+}
+
 console.log(
   unreleased
     ? `✓ CHANGELOG.md files pending changes under ${UNRELEASED}, above ${version}; package.json and src/version.ts agree.`
@@ -207,7 +246,7 @@ console.log(
 
 if (BASE === undefined) process.exit(0)
 
-const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim()
+const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28 }).trim()
 
 let baseSha
 try {
@@ -252,8 +291,8 @@ const baseChangelog = showAtBase('CHANGELOG.md') ?? ''
 // The entries this PR ADDS to the section being released. Diffed against the base's
 // pending entries, because `main`'s Unreleased can still hold entries an auto-patch
 // already shipped: "the section is non-empty" would pass a PR that wrote nothing.
-const basePending = new Set(pendingEntries(baseChangelog, baseVersion))
-const added = pendingEntries(changelog, baseVersion).filter((e) => !basePending.has(e))
+// By occurrence, so an entry worded like one already pending still counts as added.
+const added = withoutEach(pendingEntries(changelog, baseVersion), pendingEntries(baseChangelog, baseVersion))
 const sectionName = unreleased ? UNRELEASED : version
 
 
@@ -489,30 +528,42 @@ if (headPv !== null && basePv !== null && compareVersions(headPv, basePv) > 0) {
           `  (${steps.slice(1).join(' or ')}), or leave the version alone and file under "## ${UNRELEASED}".`,
       )
     }
-    // The release itself is a `sync` PR only when its section is the tag's, as `sync`
-    // copies it. Entries filed under it instead ship as the next patch, under a heading
-    // that names the release that already shipped, and replace that release's own section.
-    if (compareVersions(headPv, latest) === 0) {
-      const sectionOf = (text) => {
-        const lines = text.split('\n')
-        const at = lines.findIndex((l) => l.startsWith('## ') && headingVersion(l) === latest.raw)
-        if (at === -1) return null
-        const end = lines.findIndex((l, i) => i > at && l.startsWith('## '))
-        return lines.slice(at, end === -1 ? lines.length : end).join('\n').trimEnd()
+    // The release itself is a `sync` PR only when its section holds exactly what that
+    // release's own section shipped. The next stamp keeps main's section for a version
+    // main has, so a section that lost an entry would replace that release's own, and one
+    // that gained an entry — even one an earlier release shipped, which release integrity
+    // (4b) accepts — would list it under a release that did not ship it.
+    const tagged = compareVersions(headPv, latest) === 0 ? taggedChangelog(latest.raw) : null
+    if (tagged !== null) {
+      const theirs = sectionEntries(tagged, latest.raw) ?? []
+      const mine = sectionEntries(changelog, latest.raw) ?? []
+      // One for one, so an entry listed twice is an extra, not a match.
+      const unmatched = (a, b) => {
+        const left = [...b]
+        return a.filter((e) => {
+          const i = left.indexOf(e)
+          if (i === -1) return true
+          left.splice(i, 1)
+          return false
+        })
       }
-      let tagged = null
-      try {
-        tagged = execFileSync('git', ['show', `v${latest.raw}:CHANGELOG.md`], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-      } catch {
-        // No such tag or file: nothing to be a sync of.
-      }
-      const mine = sectionOf(changelog)
-      if (tagged === null || mine === null || mine !== sectionOf(tagged)) {
+      // `sync` copies only the release sections main lacks, so the section goes first.
+      const catchUp =
+        `  The next release would carry this section in place of v${version}'s own. Delete the\n` +
+        `  "## ${version}" section, then run \`node scripts/release.mjs sync\`: with no section for ${version},\n` +
+        '  it copies the released one whole.'
+      const lost = unmatched(theirs, mine)
+      const extra = unmatched(mine, theirs)
+      if (lost.length > 0) {
         fail(
-          `package.json declares ${version}, the latest release, but CHANGELOG.md's "## ${version}" section\n` +
-            `  is not v${version}'s. Only a sync (node scripts/release.mjs sync) sets the version to the latest\n` +
-            `  release. The publish would ship ${steps[0]}, with this PR's entries under "## ${version}" in place\n` +
-            `  of that release's own. File them under "## ${UNRELEASED}".`,
+          `package.json declares ${version}, the latest release, and CHANGELOG.md's "## ${version}" section lacks\n` +
+            `  ${lost.length} entr${lost.length === 1 ? 'y' : 'ies'} v${version} shipped, starting with:\n    ${lost[0].split('\n')[0]}\n${catchUp}`,
+        )
+      }
+      if (extra.length > 0) {
+        fail(
+          `package.json declares ${version}, the latest release, and CHANGELOG.md's "## ${version}" section has\n` +
+            `  ${extra.length} entr${extra.length === 1 ? 'y' : 'ies'} v${version}'s own section did not ship, starting with:\n    ${extra[0].split('\n')[0]}\n${catchUp}`,
         )
       }
     }

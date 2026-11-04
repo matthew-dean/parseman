@@ -19,6 +19,8 @@ import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
 import { linkRules, RULE_ORDER, RULES_RECIPE, type LinkOptions, type RulesRecipe } from '../combinators/parser.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, ParseContext, ParseResult } from '../types.ts'
 import type { Runnable } from '../functional/run.ts'
+import { PlainNode, PlainTaggedNode } from '../cst/plain.js'
+import { copySpan } from '../line-index.ts'
 
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
@@ -92,8 +94,8 @@ function buildCstNode(
   // Carry the grammar's `ctx.state` snapshot onto the node (null when unset) — the
   // CST contract includes `state` and incremental re-parse replays it on edit.
   return tags !== undefined && tags.length > 0
-    ? { _tag: 'node', type, tags, span: { ...span }, state: state ?? null, children: [...children] }
-    : { _tag: 'node', type, span: { ...span }, state: state ?? null, children: [...children] }
+    ? new PlainTaggedNode(type, tags, copySpan(span), state ?? null, [...children])
+    : new PlainNode(type, copySpan(span), state ?? null, [...children])
 }
 
 /**
@@ -186,7 +188,7 @@ export const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
 /** The carried pieces a build-compiled composed grammar holds, or `undefined`
  * when the value is not one. */
-export function composedPiecesOf(
+function composedPiecesOf(
   grammar: Record<string, unknown>,
 ): ReadonlyArray<LinkableTable | IRPiece> | undefined {
   const pieces = (grammar as unknown as Record<symbol, unknown>)[COMPOSED_PIECES]

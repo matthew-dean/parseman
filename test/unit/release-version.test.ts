@@ -1,5 +1,5 @@
 /**
- * `scripts/release.mjs` decides, on every push to `main`, whether parseman publishes and
+ * `scripts/release.mjs` decides, once CI passes on `main`, whether parseman publishes and
  * as which version, and writes the CHANGELOG the release carries. These are its pure
  * parts; `release-gate.test.ts` covers the pull-request gate that feeds it.
  */
@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
-  nextVersion, packageDifferences, shippedPaths, stampChangelog, pendingEntries, compareVersions, parseVersion,
+  withoutEach, nextVersion, packageDifferences, shippedPaths, stampChangelog, pendingEntries, compareVersions, parseVersion,
   consumerFieldChanges, supersedingRelease, recordCommit, record, releaseCommitOf, decide,
 } from '../../scripts/release.mjs'
 
@@ -154,9 +154,74 @@ describe('the CHANGELOG a release carries', () => {
     // that release's entry. The 0.58.2 release must not claim it.
     const tag0581 = `${PRE}\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
     const main = `${PRE}\n## Unreleased\n\n- first fix\n\n- second fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581 })).toBe(
+    const source = `${PRE}\n## Unreleased\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581, source })).toBe(
       `${PRE}\n## 0.58.2 — 2026-11-02\n\n- second fix\n\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
     )
+  })
+
+  it('removes a shipped entry once, so a later entry with the same words is still released', () => {
+    // 0.58.1 shipped "- Faster `compile()`." and main still lists it; a later PR filed an
+    // entry worded the same way. Only the shipped one leaves.
+    const tag0581 = `${PRE}\n## 0.58.1 — 2026-11-01\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const main = `${PRE}\n## Unreleased\n\n- Faster \`compile()\`.\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const source = `${PRE}\n## Unreleased\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.58.2', date, released: tag0581, source })).toBe(
+      `${PRE}\n## 0.58.2 — 2026-11-02\n\n- Faster \`compile()\`.\n\n## 0.58.1 — 2026-11-01\n\n- Faster \`compile()\`.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
+    )
+    expect(withoutEach(['a', 'b', 'a', 'c'], ['a', 'c', 'x'])).toEqual(['b', 'a'])
+  })
+
+  it('releases an entry a later PR re-lands with the same words', () => {
+    // 0.58.1 shipped "- Add foo."; PR B removed it and 0.58.2 shipped "- Revert foo.";
+    // PR C re-lands foo, and its entry comes back word for word. Only what 0.58.2 took off
+    // main (its source's Unreleased) is shipped: the re-landed line is new.
+    const tag0582 = `${PRE}\n## 0.58.2 — 2026-11-02\n\n- Revert foo.\n\n## 0.58.1 — 2026-11-01\n\n- Add foo.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const source = `${PRE}\n## Unreleased\n\n- Revert foo.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const main = `${PRE}\n## Unreleased\n\n- Add foo.\n\n- Revert foo.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.58.3', date: '2026-11-03', released: tag0582, source })).toBe(
+      `${PRE}\n## 0.58.3 — 2026-11-03\n\n- Add foo.\n\n## 0.58.2 — 2026-11-02\n\n- Revert foo.\n\n## 0.58.1 — 2026-11-01\n\n- Add foo.\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
+    )
+  })
+
+  it('lists an entry folded into a declared release once, under that release', () => {
+    // A docs-only merge filed U under Unreleased; a PR then declared 0.59.0 below it. The
+    // 0.59.0 stamp folded U in. main still has its own 0.59.0 section without U, and U
+    // still under Unreleased; a later PR adds Q.
+    const source = `${PRE}\n## Unreleased\n\n- U\n\n## 0.59.0 — 2026-11-02\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const tag0590 = `${PRE}\n## 0.59.0 — 2026-11-02\n\n- U\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const main = `${PRE}\n## Unreleased\n\n- U\n\n- Q\n\n## 0.59.0 — 2026-11-02\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.59.1', date: '2026-11-03', released: tag0590, source })).toBe(
+      `${PRE}\n## 0.59.1 — 2026-11-03\n\n- Q\n\n## 0.59.0 — 2026-11-02\n\n- U\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
+    )
+  })
+
+  it('takes the released copy of a declared section the stamp moved a shipped entry out of', () => {
+    // 0.58.1 auto-patched A. A PR declared 0.59.0 by renaming an Unreleased that still held
+    // A, and the 0.59.0 stamp left A under 0.58.1. main keeps its own 0.59.0 with A in it;
+    // the next release must not list A under both.
+    const tag0590 = `${PRE}\n## 0.59.0 — 2026-11-02\n\n- the minor\n\n## 0.58.1 — 2026-11-01\n\n- A\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const source = `${PRE}\n## 0.59.0 — 2026-11-02\n\n- A\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    const main = `${PRE}\n## Unreleased\n\n- Q\n\n## 0.59.0 — 2026-11-02\n\n- A\n\n- the minor\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.59.1', date: '2026-11-03', released: tag0590, source })).toBe(
+      `${PRE}\n## 0.59.1 — 2026-11-03\n\n- Q\n\n## 0.59.0 — 2026-11-02\n\n- the minor\n\n## 0.58.1 — 2026-11-01\n\n- A\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
+    )
+  })
+
+  it.each([
+    ['empty', '## 0.36.3 — 2026-07-26\n'],
+    ['missing an entry', '## 0.36.3 — 2026-07-26\n\n- fix three\n'],
+  ])('restores a released section a hand sync left %s', (_kind, mine) => {
+    const tag = `${PRE}\n## 0.36.3 — 2026-07-26\n\n- fix three\n\n- fix four\n\n## 0.36.0 — 2026-07-24\n\n- something\n`
+    const source = `${PRE}\n## Unreleased\n\n- fix three\n\n- fix four\n\n## 0.36.0 — 2026-07-24\n\n- something\n`
+    const main = `${PRE}\n## Unreleased\n\n- the new api\n\n${mine}\n## 0.36.0 — 2026-07-24\n\n- something\n`
+    expect(stampChangelog(main, { version: '0.36.4', date: '2026-07-27', released: tag, source })).toBe(
+      `${PRE}\n## 0.36.4 — 2026-07-27\n\n- the new api\n\n## 0.36.3 — 2026-07-26\n\n- fix three\n\n- fix four\n\n## 0.36.0 — 2026-07-24\n\n- something\n`,
+    )
+  })
+
+  it('refuses `released` without `source`', () => {
+    expect(() => stampChangelog(`${PRE}\n## 0.58.0 — 2026-10-31\n\n- shipped\n`, { version: '0.58.1', date, released: PRE })).toThrow(/needs `source`/)
   })
 
   it('dates a section the pull request declared, and folds Unreleased into it', () => {
@@ -168,7 +233,8 @@ describe('the CHANGELOG a release carries', () => {
   it('removes shipped entries from a declared section too', () => {
     const tag = `${PRE}\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
     const main = `${PRE}\n## 0.59.0 — 2026-11-01\n\n- first fix\n\n- new api\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(main, { version: '0.59.0', date, released: tag })).toBe(
+    const source = `${PRE}\n## Unreleased\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { version: '0.59.0', date, released: tag, source })).toBe(
       `${PRE}\n## 0.59.0 — 2026-11-02\n\n- new api\n\n## 0.58.1 — 2026-11-01\n\n- first fix\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`,
     )
   })
@@ -181,9 +247,11 @@ describe('the CHANGELOG a release carries', () => {
   it('sync catches main up and drops an emptied Unreleased', () => {
     const tag = `${PRE}\n## 0.58.2 — 2026-11-02\n\n- b\n\n## 0.58.1 — 2026-11-01\n\n- a\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
     const main = `${PRE}\n## Unreleased\n\n- a\n\n- b\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(main, { released: tag })).toBe(tag)
+    // 0.58.2 was stamped from a main that still held 0.58.1's "a" beside its own "b".
+    const source = `${PRE}\n## Unreleased\n\n- a\n\n- b\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
+    expect(stampChangelog(main, { released: tag, source })).toBe(tag)
     const pending = `${PRE}\n## Unreleased\n\n- a\n\n- c\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`
-    expect(stampChangelog(pending, { released: tag }))
+    expect(stampChangelog(pending, { released: tag, source }))
       .toBe(`${PRE}\n## Unreleased\n\n- c\n\n## 0.58.2 — 2026-11-02\n\n- b\n\n## 0.58.1 — 2026-11-01\n\n- a\n\n## 0.58.0 — 2026-10-31\n\n- shipped\n`)
     expect(stampChangelog(main, { released: '' })).toBe(main)
   })
@@ -412,14 +480,108 @@ describe('publish.yml ships a tarball no test-time dependency touched', () => {
 describe('publish.yml releases only a commit CI passed', () => {
   const yml = readFileSync(join(dirname(new URL(import.meta.url).pathname), '../../.github/workflows/publish.yml'), 'utf8')
 
-  it('waits for the required `test` check on this exact commit before stamping', () => {
-    const wait = yml.indexOf('- name: Wait for CI to pass on this commit')
-    expect(wait).toBeGreaterThan(-1)
-    expect(wait).toBeLessThan(yml.indexOf('- name: Stamp the release'))
-    const step = yml.slice(wait, yml.indexOf('\n      - name:', wait + 1))
-    expect(step).toMatch(/commits\/\$GITHUB_SHA\/check-runs\?check_name=test&/)
-    expect(step).toMatch(/"completed success"\) .*break/)
+  const steps = (name: string): string => {
+    const at = yml.indexOf(`- name: ${name}`)
+    expect(at).toBeGreaterThan(-1)
+    return yml.slice(at, yml.indexOf('\n      - name:', at + 1))
+  }
+
+  // A GitHub expression as JS: the operators these guards use mean the same in both.
+  const expression = (text: string): ((ctx: object) => unknown) => {
+    const body = text.replace(/^\$\{\{|\}\}$/g, '').replace(/ == /g, ' === ').replace(/ != /g, ' !== ')
+    const fn = new Function('github', 'inputs', 'format', `return (${body})`)
+    const format = (f: string, ...a: unknown[]): string => f.replace(/\{(\d+)\}/g, (_, i: string) => String(a[+i]))
+    return (ctx: object) => fn((ctx as { github: object }).github, (ctx as { inputs: object }).inputs, format)
+  }
+  const folded = (key: string, from: number): string => {
+    const m = new RegExp(`\\n( +)${key}: >-\\n((?:\\1 {2}[^\\n]*\\n)+)`).exec(yml.slice(from))
+    expect(m).not.toBeNull()
+    return (m?.[2] ?? '').replace(/\s+/g, ' ').trim()
+  }
+  const job = (name: string): number => yml.indexOf(`\n  ${name}:\n`)
+  const group = expression(folded('group', yml.indexOf('\nconcurrency:\n')))
+  const prepare = expression(`\${{ ${folded('if', job('prepare'))} }}`)
+  const notTip = expression(`\${{ ${folded('if', job('not-tip'))} }}`)
+
+  const tip = 'b'.repeat(40)
+  const ci = (over: object = {}, sha = tip): object => ({
+    github: {
+      event_name: 'workflow_run', sha: tip, repository: 'matthew-dean/parseman', run_id: 7,
+      event: { workflow_run: { conclusion: 'success', event: 'push', head_branch: 'main', head_sha: sha, head_repository: { full_name: 'matthew-dean/parseman' }, ...over } },
+    },
+    inputs: {},
+  })
+  const dispatch = (dry_run: boolean, ref = 'refs/heads/main'): object => ({
+    github: { event_name: 'workflow_dispatch', ref, sha: tip, repository: 'matthew-dean/parseman', run_id: 7, event: { workflow_run: { head_repository: {} } } },
+    inputs: { dry_run },
+  })
+
+  it('starts when CI completes on main', () => {
+    expect(yml).toMatch(/\non:\n {2}workflow_run:\n {4}workflows: \[CI\]\n {4}types: \[completed\]\n {4}branches: \[main\]\n {2}workflow_dispatch:/)
+    expect(yml).not.toMatch(/\n {2}push:/)
+  })
+
+  it.each([
+    ['CI passed on a push to main, on the tip', ci(), true],
+    ['a pull request from a fork whose branch is main', ci({ event: 'pull_request', head_repository: { full_name: 'someone/parseman' } }), false],
+    ['a pull request in this repository from a branch named main', ci({ event: 'pull_request' }), false],
+    ["a push to a fork's main", ci({ head_repository: { full_name: 'someone/parseman' } }), false],
+    ['CI failed', ci({ conclusion: 'failure' }), false],
+    ['CI cancelled', ci({ conclusion: 'cancelled' }), false],
+    ['CI on another branch', ci({ head_branch: 'dev' }), false],
+    ['CI passed on a commit main has moved past', ci({}, 'a'.repeat(40)), false],
+    ['a dispatch', dispatch(false), true],
+  ])('%s: prepare runs = %s, and only a run that can release joins `publish`', (_, ctx, releases) => {
+    expect(Boolean(prepare(ctx))).toBe(releases)
+    expect(group(ctx)).toBe(releases ? 'publish' : 'publish-ignored-7')
+  })
+
+  it('gives a dry run its own group, and notes a skipped commit main moved past', () => {
+    expect(Boolean(prepare(dispatch(true)))).toBe(true)
+    expect(group(dispatch(true))).toBe('publish-ignored-7')
+    // A dispatch from another branch: the first step refuses it, and it must not queue first.
+    expect(group(dispatch(false, 'refs/heads/feature'))).toBe('publish-ignored-7')
+    expect(yml).toMatch(/if \[ "\$GITHUB_REF" != "refs\/heads\/main" \]; then/)
+    expect(Boolean(notTip(ci({}, 'a'.repeat(40))))).toBe(true)
+    for (const ctx of [ci(), ci({ conclusion: 'failure' }, 'a'.repeat(40)), ci({ event: 'pull_request' }, 'a'.repeat(40)), dispatch(false)]) {
+      expect(Boolean(notTip(ctx))).toBe(false)
+    }
+    expect(yml.slice(job('not-tip'), job('prepare'))).toMatch(/::notice title=Release skipped::/)
+  })
+
+  it('checks out the commit CI tested in every job', () => {
+    expect(yml).toMatch(/RELEASE_SHA: \$\{\{ github\.event_name == 'workflow_run' && github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/)
+    const checkouts = [...yml.matchAll(/uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n {8}with:\n {10}ref: \$\{\{ env\.RELEASE_SHA \}\}\n/g)]
+    expect(checkouts).toHaveLength([...yml.matchAll(/uses: actions\/checkout@/g)].length)
+    expect(checkouts).toHaveLength(3)
+  })
+
+  // Every `run:` value, inline or a block scalar of any style.
+  const scripts = (text: string): string[] => [...text.matchAll(/^( *)(?:- )?run:[ \t]*([|>][-+]?)?([^\n]*)\n((?:(?:\1 {2,}[^\n]*)?\n)*)/gm)]
+    .map((m) => (m[2] === undefined ? m[3] : m[4]) ?? '')
+  const interpolatesEvent = (text: string): boolean => scripts(text).some((s) => /\$\{\{(?:(?!\}\}).)*github\.event/s.test(s))
+
+  it('interpolates no event field into a script', () => {
+    expect(scripts(yml).length).toBeGreaterThan(15)
+    expect(interpolatesEvent(yml)).toBe(false)
+    // The check itself: each of these would put an event field into a script.
+    const at = '\n      - name: Nothing to release\n'
+    for (const step of [
+      '      - run: echo ${{ github.event.workflow_run.head_branch }}\n',
+      "      - run: |-\n          echo ${{ format('{0}', github.event.workflow_run.head_branch) }}\n",
+      '      - run: >\n          echo hi\n          ${{ github.event.workflow_run.display_title }}\n',
+    ]) expect(interpolatesEvent(yml.replace(at, `\n${step}${at.slice(1)}`))).toBe(true)
+  })
+
+  it('reads CI\'s verdict once for a dispatch, before stamping', () => {
+    const step = steps('CI passed on the dispatched commit')
+    expect(yml.indexOf('- name: CI passed on the dispatched commit')).toBeLessThan(yml.indexOf('- name: Stamp the release'))
+    expect(step).toContain("if: github.event_name == 'workflow_dispatch'")
+    expect(step).toMatch(/actions\/workflows\/ci\.yml\/runs\?head_sha=\$RELEASE_SHA&event=push&branch=main/)
+    expect(step).toMatch(/"completed success"\) /)
     expect(step).toMatch(/completed\*\) .*exit 1/)
+    expect(step).toMatch(/\*\) .*exit 1/)
+    expect(step).not.toMatch(/sleep|while/)
   })
 })
 
@@ -465,11 +627,11 @@ describe('the plan decides from what it read', () => {
     expect(() => decide({ ...read, changelog: stale, differences: changed }))
       .toThrow(/declares 0\.2\.0, which v0\.2\.0 already released[\s\S]*1 entry that release did not ship[\s\S]*- the new api[\s\S]*delete the ## 0\.2\.0 heading, then run `node scripts\/release\.mjs sync`/)
     // `sync` alone leaves the stale section where it is, so the stop stands.
-    expect(stampChangelog(stale, { released: shipped020 })).toBe(stale)
+    expect(stampChangelog(stale, { released: shipped020, source: shipped020 })).toBe(stale)
     // The fix the message names: the entries move under Unreleased, the heading goes, and
     // `sync` files the 0.2.0 that shipped from its tag. The plan then releases the entry.
     const moved = '# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.1.0 — 2026-10-01\n\n- first\n'
-    const fixed = stampChangelog(moved, { released: shipped020 })
+    const fixed = stampChangelog(moved, { released: shipped020, source: shipped020 })
     expect(fixed).toBe('# Changelog\n\n## Unreleased\n\n- the new api\n\n## 0.2.0 — 2026-11-01\n\n- the minor\n\n## 0.1.0 — 2026-10-01\n\n- first\n')
     expect(decide({ ...read, changelog: fixed, differences: changed })).toMatchObject({ release: true, version: '0.2.1' })
   })

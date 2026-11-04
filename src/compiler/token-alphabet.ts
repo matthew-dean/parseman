@@ -49,7 +49,7 @@ export type TokenTerminal =
 export const TOK_EOF = 0
 export const TOK_UNKNOWN = 1
 export const TOK_WS = 2
-export const FIRST_TERMINAL_ID = 3
+const FIRST_TERMINAL_ID = 3
 
 export type Alphabet = {
   terminals: TokenTerminal[]
@@ -184,7 +184,7 @@ export type LexBodyCandidate =
   }
 
 /** Exact recognizer shape admitted by the first end-to-end Stage-C tranche. */
-export function optionalSuffixLexBody(ir: LexicalIr): OptionalSuffixLexBody | undefined {
+function optionalSuffixLexBody(ir: LexicalIr): OptionalSuffixLexBody | undefined {
   if (ir.kind !== 'sequence' || ir.parts.length !== 2) return undefined
   const [base, suffix] = ir.parts
   if (base?.kind !== 'regex' || suffix?.kind !== 'repeat'
@@ -201,7 +201,7 @@ export function optionalSuffixLexBody(ir: LexicalIr): OptionalSuffixLexBody | un
  * token-boundary + sequence + regex + optional + literal body. The TOKEN cost
  * is one selected body and one materialization boundary; neither candidate is
  * serialized until this decision returns. */
-export function selectOptionalSuffixLexBody(ir: LexicalIr): LexBodyCandidate {
+function selectOptionalSuffixLexBody(ir: LexicalIr): LexBodyCandidate {
   const body = optionalSuffixLexBody(ir)
   const character: LexBodyCandidate = { strategy: 'character', estimatedOps: 5 }
   if (body === undefined) return character
@@ -302,7 +302,7 @@ export function directOptionalSuffixTokenBody(
  * canonical sticky RegExp its authored parser and OP_RX lowering use. Literal
  * stays CHARACTER for now: case-insensitive literal() intentionally uses ASCII
  * folding, which is not JavaScript RegExp `/i` semantics for non-ASCII text. */
-export function directTerminalTokenBody(
+function directTerminalTokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableTerminalLexBody | undefined {
@@ -385,7 +385,7 @@ function directTerminalLexBody(
  * are load-bearing: at a matching lead all four arms really run in source
  * order, while an excluded lead contributes only the choice's static opener
  * set and no probe event. */
-export function directOrdered4TokenBody(
+function directOrdered4TokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableOrdered4LexBody | undefined {
@@ -425,7 +425,7 @@ function directOrdered4Body(
   }
 }
 
-export function directNot2TokenBody(
+function directNot2TokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableNot2LexBody | undefined {
@@ -539,7 +539,7 @@ function directFixedLexNode(
   }
 }
 
-export function directFixedTokenBody(
+function directFixedTokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableFixedLexBody | undefined {
@@ -550,7 +550,7 @@ export function directFixedTokenBody(
   return root === undefined ? undefined : { kind: 'fixed-tree', root }
 }
 
-export function directBalancedTokenBody(
+function directBalancedTokenBody(
   parser: Combinator<unknown>,
   resolve?: (name: string) => Combinator<unknown> | undefined,
 ): ExecutableBalancedLexBody | undefined {
@@ -1228,7 +1228,11 @@ export type LexicalCapabilityInventory = Pick<
   | 'capabilityComplete'
 >
 
-/** Numeric-only artifact projection; `TableProgram` aliases this contract. */
+/**
+ * Numeric-only artifact projection: the phase-B token plan that `serializeLexicalPlan`
+ * builds. Phase B is disabled, so no `TableProgram` carries it today
+ * (`test/unit/token-plan-wire.test.ts` pins the absence).
+ */
 export type NumericLexicalPlan = {
   readonly recognizerOffsets: readonly number[]
   readonly recognizerData: readonly number[]
@@ -1241,7 +1245,7 @@ export type NumericLexicalPlan = {
 }
 
 /** Lexical-family ids occupy their own published namespace. */
-export const FIRST_LEXICAL_FAMILY_ID = 3
+const FIRST_LEXICAL_FAMILY_ID = 3
 
 const foldAscii = (value: string): string => value.replace(/[A-Z]/g, c => c.toLowerCase())
 

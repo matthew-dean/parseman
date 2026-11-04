@@ -148,6 +148,9 @@ export const EMITTED_PARAMS = [
   // Appended for the pass-through collapse (`run-support.ts`); old factories
   // ignore it.
   'collapseEmpty',
+  // Appended for constructor-built tree objects (`cst/plain.d.ts`): a `new` call has
+  // no allocation site, so V8 cannot pretenure them. Old factories ignore them.
+  '_SP', '_LF', '_ND', '_FC', '_BUF',
   // Appended for the gap gate (`gap-gate.ts`); old factories ignore it.
   'GAP',
 ] as const
@@ -188,9 +191,9 @@ if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
 if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
 }
-function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,{_tag:'leaf',value,span:{start:s,end:e}})}
+function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,new _LF(value,new _SP(s,e)))}
 function _pushLeafBuf(ctx,value,s,e){
-const l={_tag:'leaf',value,span:{start:s,end:e}}
+const l=new _LF(value,new _SP(s,e))
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(l)
 else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
@@ -250,7 +253,7 @@ if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTrivi
 /** Printed only into assemblies that open a count-only raw buffer. */
 const NO_RAW_RUNTIME_PRELUDE = `
 function _pushLeafNoRawBuf(ctx,value,s,e){
-const l={_tag:'leaf',value,span:{start:s,end:e}}
+const l=new _LF(value,new _SP(s,e))
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(l)
 else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
@@ -422,7 +425,7 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, miss?: (c: string) => string): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
@@ -440,7 +443,14 @@ if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(EC.e>${t}s)cur=EC.e
 else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt)}`
-  if (l.tri !== TRI_UNKNOWN) return scanned
+  // A character no trivia of this slot can start opens the empty gap, which
+  // records nothing, so the term runs at `cur` with no marks around a scan.
+  if (l.tri !== TRI_UNKNOWN) return miss === undefined ? scanned : `const ${t}c=input.charCodeAt(cur)
+if(${miss(`${t}c`)}){
+${fast}
+}else{
+${scanned}
+}`
   return `if(ctx.trivia===undefined){
 ${fast}
 }else{
@@ -597,9 +607,16 @@ export function emitAssemblySource(
   staticBuild = false,
   select?: ReadonlySet<number>,
   /**
+   * Leave the `_errors` bit of a lexical program over a scan out of the side-sink
+   * census below. A budgeted selection is priced and chosen on this lowering, so
+   * the marks that bit adds move no site in or out of a budget; the artifact is
+   * then emitted with them.
+   */
+  scanSinkNeutral = false,
+  /**
    * Lower every gap gate (`gap-gate.ts`) as the item it wraps. A selection is
-   * priced and chosen on this lowering, so adding the gates moves no site in or
-   * out of a budget; the artifact is then emitted with them.
+   * ranked on this lowering, so adding the gates moves no site's place in the
+   * order; the fit is judged by the source that ships, gates included.
    */
   gapNeutral = false,
 ): EmitResult {
@@ -751,13 +768,15 @@ export function emitAssemblySource(
   // that otherwise matched byte for byte.
   //
   // Any future row whose child is not an offset in `code` belongs here for the
-  // same reason. `OP_LIVE` is the other such row, and it is unemittable.
+  // same reason. `OP_LIVE` is the other such row, and it is unemittable. An
+  // `OP_LEX_PROGRAM` over a scan (`t.lexPrograms[id].scan`, a whole `balanced()`
+  // lowered as one recognizer) runs that same interpreted scan, so it is one too.
   const sinkSites = reachable
   const sinkBits = new Map<number, number>()
   for (const ip of sinkSites) {
     const op = code[ip]
     sinkBits.set(ip,
-      op === OP_SCAN ? 3
+      op === OP_SCAN || (!scanSinkNeutral && op === OP_LEX_PROGRAM && t.lexPrograms[code[ip + 1]!]!.scan !== undefined) ? 3
         : (op === OP_FIELD ? 1 : 0)
           | (op === OP_EXPECT || (REC && (op === OP_REP || op === OP_REPV)) ? 2 : 0))
   }
@@ -992,6 +1011,19 @@ return 1
     return `if(${gateMissTest(child)}){${miss}}\n`
   }
 
+  /**
+   * The test that no trivia of slot `ki` can start at the code unit `c`: the
+   * slot's first characters, as code points, decide every code unit below the
+   * surrogates; a surrogate, or `NaN` past the end of input, is left to the scan.
+   * `undefined` where the first set is unbounded or too wide to print.
+   */
+  function triviaMiss(ki: number): ((c: string) => string) | undefined {
+    const leads = triviaLeadRanges(ki, t.trivia)
+    if (leads === undefined || leads.length > 16) return undefined
+    if (leads.length === 0) return c => `${c}<55296`
+    return c => `${c}<55296&&!(${leads.map(r => r.lo === r.hi ? `${c}===${r.lo}` : `(${c}>=${r.lo}&&${c}<=${r.hi})`).join('||')})`
+  }
+
   function skipFor(l: SiteLabel): string {
     if (l.tri < 0) return '_skipTrivia'
     const ki = l.tri
@@ -1009,11 +1041,16 @@ return 1
     if (!hasScan) {
       // No installed scanner: the labelled/`trackLines` path, which records
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
-      // buffer, so an in-node site skips the call that asks.
+      // buffer, so an in-node site skips the call that asks. A character no gap
+      // can start answers first, with no call (`triviaMiss`).
+      const miss = triviaMiss(ki)
+      const pre = miss === undefined ? '' : `const c=input.charCodeAt(cur)
+if(${miss('c')})return cur
+`
       skipDefs.push(l.buf
-        ? `function ${nm}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
+        ? `function ${nm}(input,cur,ctx){${pre === '' ? '' : `\n${pre}`}return skipDeferredTrivia(input,cur,ctx)}`
         : `function ${nm}(input,cur,ctx){
-if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
+${pre}if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)}`)
       return nm
     }
@@ -1462,7 +1499,7 @@ try{return ${child}(input,pos,ctx)}finally{ctx.state=saved}
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
-return ${fn}(v,{start:pos,end:EC.e})
+return ${fn}(v,new _SP(pos,EC.e))
 }`
       }
 
@@ -1492,7 +1529,7 @@ return v
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
 const f=ctx._fields
-if(f!==undefined)f.push({name:${name},value:v,span:{start:pos,end:EC.e}})
+if(f!==undefined)f.push(new _FC(${name},v,new _SP(pos,EC.e)))
 return v
 }`
         }
@@ -1528,7 +1565,7 @@ return v
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-const err={_tag:'parseError',span:${prog.lines === 1 ? 'spanLines(ctx,pos,pos)' : '{start:pos,end:pos}'},expected:${xf}}
+const err={_tag:'parseError',span:${prog.lines === 1 ? 'spanLines(ctx,pos,pos)' : 'new _SP(pos,pos)'},expected:${xf}}
 const es=ctx._errors
 if(es!==undefined)es.push(err)
 ${REC ? 'if(ctx._tolerant===true)captureError(ctx,err)\n' : ''}ctx._fc=false
@@ -1543,7 +1580,7 @@ return err
         // The SPAN is the routed item's own object, not a copy — `assemble.ts`
         // hands the same one to the leaf, and a fresh `{start,end}` here would
         // be a different tree for any consumer comparing by identity.
-        const push = `pushCstLeaf(ctx,{_tag:'leaf',value:it.value,span:it.span})`
+        const push = `pushCstLeaf(ctx,new _LF(it.value,it.span))`
         return `${head}
 const it=ctx._routed
 if(it===undefined||pos!==it.span.start){
@@ -1652,8 +1689,8 @@ ctx._triviaLog=sOtl
 }
 if(v===FAIL)return FAIL
 const e=EC.e
-const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
-if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:${capturesSource ? 'input.slice(pos,e)' : 'out'},span:{start:pos,end:e}})
+const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,new _SP(pos,e))`}
+if(wasCap)pushCstLeaf(ctx,new _LF(${capturesSource ? 'input.slice(pos,e)' : 'out'},new _SP(pos,e)))
 EC.e=e
 return out
 }`
@@ -1678,7 +1715,7 @@ ${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
 ${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
 const v=${pending ? 'tp?_pfTokValue:' : ''}input.slice(pos,e)
 ${pending ? 'if(tp){_pfTokBody=-1;_pfTokValue=undefined}' : ''}
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,new _LF(v,new _SP(pos,e)))
 EC.e=e
 return v
 }`
@@ -1718,7 +1755,7 @@ ctx._rootTriviaLog=sRtl
 }
 if(e<0)return FAIL
 const v=input.slice(pos,e)
-if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(wasCap)pushCstLeaf(ctx,new _LF(v,new _SP(pos,e)))
 EC.e=e
 return v
 }`
@@ -1726,7 +1763,7 @@ return v
 const e=${run}(input,pos,ctx)
 if(e<0)return FAIL
 const v=input.slice(pos,e)
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,new _LF(v,new _SP(pos,e)))
 EC.e=e
 return v
 }`
@@ -1868,7 +1905,7 @@ return v
         const close = (): string => REC ? `${parts.join('\n')}\n}finally{ctx._sync=${sy}}\n}` : `${parts.join('\n')}\n}`
         if (n === 1) {
           parts.push(fused
-            ? projection === 0 ? 'return v0' : `return ${fn}([v0],{start:pos,end:EC.e})`
+            ? projection === 0 ? 'return v0' : `return ${fn}([v0],new _SP(pos,EC.e))`
             : wantValues ? 'return [v0]' : 'return undefined')
           return close()
         }
@@ -1895,13 +1932,13 @@ return v
             const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
             parts.push(holdsGap(code, k, base, n, i, nullable)
               ? emitHoldTerm(callee, vn, tmp(), L, skipFor(L))
-              : emitTerm(callee, vn, tmp(), L, skipFor(L)))
+              : emitTerm(callee, vn, tmp(), L, skipFor(L), L.tri >= 0 ? triviaMiss(L.tri) : undefined))
           }
           names.push(vn)
         }
         parts.push('EC.e=cur')
         parts.push(fused
-          ? projection >= 0 ? `return ${names[projection]}` : `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
+          ? projection >= 0 ? `return ${names[projection]}` : `return ${fn}([${names.join(',')}],new _SP(pos,cur))`
           : wantValues ? `return [${names.join(',')}]` : 'return undefined')
         return close()
       }
@@ -2265,7 +2302,7 @@ return FAIL
         const routedCall = (target: string): string => `{const savedRouted=ctx._routed
 ${emitRollback(m1, L.buf, L.raw, sinks)}
 ${emitMark(m2, L.buf, L.raw, sinks, false)}
-ctx._routed={value:key,span:{start:pos,end:selEnd}}
+ctx._routed={value:key,span:new _SP(pos,selEnd)}
 try{v=${target}(input,pos,ctx)}finally{ctx._routed=savedRouted}
 break}`
         const plainCall = (target: string): string => `v=${target}(input,selEnd,ctx);break`
@@ -2601,8 +2638,8 @@ return out
 const end=${recognize}(input,pos)
 if(end<0){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 const value=${value}
-const leaf={_tag:'leaf',value,span:{start:pos,end}}
-const kids=[leaf],rawKids=[leaf],span={start:pos,end}
+const leaf=new _LF(value,new _SP(pos,end))
+const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)
 EC.e=end
 const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
 ${L.buf && L.raw === RAW_OMIT
@@ -2730,8 +2767,8 @@ ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
 ${collapseChildren
-    ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`
-    : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`}
+    ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,new _SP(pos,end),EMPTY_CH,EMPTY_TL,undefined)`
+    : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},new _SP(pos,end),EMPTY_CH,EMPTY_TL,undefined)`}
 ${publish}
 EC.e=end
 return nd
@@ -2761,26 +2798,26 @@ return nd
           const direct = `${build}(kids,fieldMap,span,rawKids,${captureWide ? 'tlog' : 'EMPTY_TL'},st)`
           value = hostCst ? `nd=_pfHost!==undefined?${hostCall}:${direct}` : `nd=${direct}`
         } else {
-          value = `nd=_pfHost!==undefined?_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,st,${tags}):{_tag:'node',type:${ty},span,state:st??null,children:kids}`
+          value = `nd=_pfHost!==undefined?_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,st,${tags}):new _ND(${ty},span,st??null,kids===EMPTY_CH?kids:[...kids])`
         }
         // HOST COLLAPSE applies wherever the node's VALUE comes from the host —
         // any node under a CST host, not only the builder-less ones.
         const collapsible = keepChildren && (hostCst || (build === undefined && proj < 0))
         const openCapture = omitsRaw
-          ? `const buf={noRaw:true,rawLen:0}
+          ? `const buf=new _BUF(undefined,true,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
           : keepChildren
-          ? `const buf={}
+          ? `const buf=new _BUF(undefined,undefined,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
-          : `const buf={rawOnly:true}
+          : `const buf=new _BUF(true,undefined,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
@@ -2823,7 +2860,7 @@ ctx._cstTriviaLog=sTl
 ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
-const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}
+const span=${tracked ? 'spanLines(ctx,pos,end)' : 'new _SP(pos,end)'}
 const st=${readsState ? 'ctx.state' : 'undefined'}
 let nd
 ${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]

@@ -312,7 +312,6 @@ const REGISTRY = [
       { defect: 'guard-set-derived', expect: 'moves' },
       { defect: 'routed-gate-unknown-trivia', expect: 'moves' },
       { defect: 'routed-fallback-one-scope', expect: 'moves' },
-      { defect: 'regex-letter-escape-literal', expect: 'moves' },
       { defect: 'choice-widened-exclusive', expect: 'moves' },
       { defect: 'sep-sentinel-no-trivia', expect: 'moves' },
       { defect: 'probe-gated-arm-exec', expect: 'moves' },
@@ -329,6 +328,51 @@ const REGISTRY = [
       { defect: 'list-resync-tag-exec', expect: 'moves' },
       { defect: 'list-resync-tag-closure', expect: 'moves' },
       { defect: 'list-resync-tag-emitted', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'trivia-lead-gate',
+    needs: 'repo',
+    file: 'test/unit/table-trivia-lead-gate.test.ts',
+    legs: 'generated inputs with spaces, comments and a lone slash before and inside every construct, labelled and unlabelled trivia, plain, root-trivia, line-tracking and CST-host runs, through closure and emitted tableRules vs execRules (which has no lead gate): whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-trivia-lead-gate.test.ts']),
+    plants: [
+      { defect: 'trivia-lead-closure-narrow', expect: 'moves' },
+      { defect: 'trivia-lead-emitted-narrow', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'regex-escape-first-sets',
+    needs: 'repo',
+    file: 'test/unit/regex-escape-first-set-engines.test.ts',
+    legs: 'trivia, choice arms, optional terms, peek-guarded sequences, gated collapses and tokens over regexes with octal, control, property, code-point and surrogate-pair escapes, astral literals, high-surrogate sets, v-mode classes and non-ASCII /i letters, through the interpreter, execRules, closure and emitted tableRules: whole RunResult digests across the table engines, value/span/unconsumed against the interpreter',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/regex-escape-first-set-engines.test.ts']),
+    plants: [
+      { defect: 'first-set-property-escape-as-letter', expect: 'moves' },
+      { defect: 'first-set-escaped-pair-split', expect: 'moves' },
+      { defect: 'lead-class-astral-plain', expect: 'moves' },
+      { defect: 'lead-first-set-astral-plain', expect: 'moves' },
+      { defect: 'lead-intersects-astral-plain', expect: 'moves' },
+      { defect: 'lead-trivia-collapse-astral-plain', expect: 'moves' },
+      { defect: 'scan-shape-v-as-code-units', expect: 'moves' },
+      { defect: 'first-set-narrow-raw', expect: 'moves' },
+      { defect: 'first-set-narrow-astral-explicit', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'regex-first-set-property',
+    needs: 'repo',
+    file: 'test/unit/regex-first-set-property.test.ts',
+    legs: 'regex() first sets of seeded generated patterns (escapes incl. surrogate pairs, classes, v-mode nesting and set operations, \\q{}, astral literals, groups, lookarounds, quantifiers) under i/u/v/s/m flag sets vs a sticky RegExp tried at code points on both sides of the set, each followed by the rest of a witness the pattern is built to match: a match outside the set is a failure, and too few matches inside it fail the floor; then the same at every node of generated sequence/choice/optional/peek/not/literal trees over those atoms, against the tree as one RegExp and against the interpreter',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/regex-first-set-property.test.ts']),
+    plants: [
+      { defect: 'first-set-v-class-flat', expect: 'moves' },
+      { defect: 'first-set-property-escape-as-letter', expect: 'moves' },
+      { defect: 'first-set-escaped-pair-split', expect: 'moves' },
+      { defect: 'first-set-narrow-raw', expect: 'moves' },
     ],
   },
   {
@@ -398,13 +442,16 @@ const REGISTRY = [
  * is the operator's own uncommitted work being confused with a plant, so the gate
  * declines rather than take the risk.
  */
+/** Every file a plant edits. Most are under `src/`; `macro-timing-exit-off` edits `bench/`. */
+const PLANTED_FILES = [...new Set(Object.values(DEFECTS).flatMap(d => d.edits.map(e => e.file)))]
+
 function assertCleanSrc() {
   let porcelain = ''
-  try { porcelain = execFileSync('git', ['status', '--porcelain', '--', 'src'], { cwd: REPO, encoding: 'utf8' }) }
+  try { porcelain = execFileSync('git', ['status', '--porcelain', '--', 'src', ...PLANTED_FILES], { cwd: REPO, encoding: 'utf8' }) }
   catch { return } // not a checkout: nothing to protect
   if (porcelain.trim() !== '') {
-    console.error('REFUSING TO RUN: `src/` has uncommitted changes.\n'
-      + 'This gate edits `src/` in place and restores it. It will not do that on top of\n'
+    console.error('REFUSING TO RUN: `src/` or a planted file has uncommitted changes.\n'
+      + 'This gate edits those files in place and restores them. It will not do that on top of\n'
       + 'work it did not write. Commit or set the changes aside, then re-run.\n' + porcelain)
     process.exit(2)
   }
@@ -442,7 +489,9 @@ function unplant() {
   planted = null
 }
 
-process.on('exit', unplant)
+// `--list` and every early exit leave through here too, so the scratch directory
+// goes with them.
+process.on('exit', () => { unplant(); rmSync(TMP, { recursive: true, force: true }) })
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { unplant(); process.exit(130) })
 
 /* ------------------------------------------------------------------ *

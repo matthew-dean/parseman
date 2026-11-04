@@ -204,3 +204,50 @@ export const OPERAND_FLAGS = ['--shard-out', '--aggregate', '--expect-shards'] a
 export function missingOperandFlags(argv: readonly string[]): string[] {
   return OPERAND_FLAGS.filter(flag => argv.some(a => a === flag || a === `${flag}=`))
 }
+
+/**
+ * Which reference a verdict-mode run may use, given the one CI resolved once for the
+ * run (`--reference`), the previous releases visible now (newest first, each with its
+ * tag commit's committer time), and HEAD's committer time.
+ *
+ * Publish-on-merge tags a release whenever a PR merges, so a tag can land while another
+ * PR's run is in flight (the first live failure: shards at v0.58.1, the aggregate at
+ * v0.58.2). So the reference is resolved once and passed to every job, and a job may
+ * find a newer release than the one it was handed. What is enforced:
+ *
+ * - the pin is a plain hex sha;
+ * - it is the newest previous release, OR the one before it ONLY when the newest one's
+ *   tag commit is newer than HEAD's commit, i.e. that release can only have been tagged
+ *   after this run's commit was made. Anything else is refused.
+ *
+ * That stops a run from measuring against an arbitrary older release. It does not make
+ * `ci.yml` tamper-proof: an edit there can still change what the jobs run, and remains a
+ * human-review boundary.
+ *
+ * Known false failure: if TWO releases are tagged during one run, the pin is the
+ * third-newest and is refused. Re-run the workflow.
+ */
+export function pinnedReferenceError(
+  pinned: string,
+  releases: ReadonlyArray<{ tag: string; sha: string; date: number }>,
+  headDate: number,
+): string | null {
+  // A plain hex sha only: `<sha>~5` would pass a prefix match while git resolved an ancestor.
+  if (!/^[0-9a-f]{7,40}$/.test(pinned)) return `--reference=${pinned} is not a commit sha`
+  const matches = (r: { sha: string }): boolean => r.sha.startsWith(pinned) || pinned.startsWith(r.sha)
+  const [newest, before] = releases
+  if (newest !== undefined && matches(newest)) return null
+  if (before !== undefined && matches(before)) {
+    if (newest!.date > headDate) return null
+    return `--reference=${pinned} is ${before.tag}, but ${newest!.tag} was tagged before this run's commit, so it was the previous release when the run started`
+  }
+  return `--reference=${pinned} is not the previous release (${releases.slice(0, 2).map(r => `${r.tag} ${r.sha}`).join(' or ') || 'none'})`
+}
+
+/**
+ * Flags `--print-reference` refuses: it prints the true previous release (or the
+ * committed peak), never one supplied on the command line.
+ */
+export function printReferenceArgErrors(argv: readonly string[]): string[] {
+  return ['--ref', '--reference', '--head-ref', '--self'].filter(flag => argv.some(a => a === flag || a.startsWith(`${flag}=`)))
+}
