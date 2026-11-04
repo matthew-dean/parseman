@@ -722,17 +722,25 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     `53cff042`: 0 diffs, four dialects, AST and CST. `example/css` emits 102 B less
     (10,507 → 10,405 B). A first cut also routed a level whose continuation no head can
     decide, when it resumes at the route's top: +560 B on `example/css`; that rule is kept.
-    JIT instructions against the branch before the change (five rotated reps, A/A null in
-    brackets; load 10–12 from other work, so rows within ±4% are noise): CSS `font: 1;`
-    −1.2% (0.0%), `font: 1/2;` −0.6% (−0.2%), `font: a, b;` −0.4% (+0.6%),
-    `font: 12px/1.5 a;` +0.1% (−0.7%), `font: 12px/1.5 a, b;` −0.2% (−0.4%),
-    `margin: 0 auto;` +0.5% (+1.1%), Less `color: red;` −5.1% (−3.1%), `.jess`
-    `margin: 0 auto;` +1.9% (+3.7%), `benchmark.less` +0.7% (+0.2%), bootstrap 0.0%
-    (−0.3%), `benchmark.css` −0.4% (+0.4%), `gen-workload.scss` +0.2% (−0.1%),
-    `jess-x8.jess` −0.5% (+0.1%). Neutral: a rule fix (one definition, two paths), not a
-    speed fix. In this run both legs read 6–10% above `main` on every row, against −4%
-    to +1% on an idle machine before; CI decides. Raw samples:
-    `scratchpad/left-corner/results/reuse-r4c.jsonl`.
+    Speed at `3eac9adb`, JIT marginal instructions, three rotated reps, against the branch before the
+    change (`8543b285`). An earlier run that read "neutral" was invalid: two of its legs ran
+    this branch's source through a symlinked harness. With `assemblyBudget` 0, every site on
+    the closure engine, so every route runs (A/A null ±2.5%): CSS `font: 1;` +25.9%,
+    `font: 1/2;` +13.5%, `font: a, b;` +14.3%, `font: 12px/1.5 a;` +6.6%,
+    `font: 12px/1.5 a, b;` +3.7%, Less `color: red;` +25.3%, `benchmark.less` +7.6%,
+    bootstrap +5.7%, `benchmark.css` +11.1%, `gen-workload.scss` +11.4%, `jess-x8.jess`
+    +8.6%; against `main` +1.0% to +10.7%. A `--jitless` bisect (diagnostic) splits the
+    cost about evenly between running the row's own seeded lowering and dropping the
+    route's own tail classes; the shared scope, key and failure pieces cost ~1–2%. With the
+    default budget (0.25), where the hottest sites are emitted code that does not route
+    (A/A null ±0.7%): +0.0% to +1.8% against the branch before, +0.3% to +3.1% against
+    `main` (bootstrap −0.1%). Kept for the rule fix (one definition, two paths); the routed
+    path's cost is open. CI macro gate on `3eac9adb`: `benchmark.less` −13.6% (A/A +2.0%),
+    `gen-workload.less` −14.7% (A/A −0.4%), `benchmark.css` +2.4% (A/A −1.4%), all within
+    the gate; the instruction counts above do not show the Less gain. The cross-process
+    release gate on the same commit fails one case against `v0.60.3` (`main` plus its
+    version bump): GraphQL `document` +1.9% median (sign-test p 7.5e-10, slower in 118 of
+    160 rounds); the other eleven cases are within ±1.3%.
   - **A lookahead under trivia the labels cannot name is decided when routes are derived.**
     A route that passed a sequence led by a lookahead, where the site's trivia was unknown
     at encode time, checked at every entry whether that trivia could start at the
