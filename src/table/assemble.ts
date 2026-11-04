@@ -1738,7 +1738,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   type Level = {
     kind: number
     ip: number
-    scopeTrivia: ParseContext['trivia']
     cap: boolean
     variant: number
     build: NodeBuilder | undefined
@@ -1779,11 +1778,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     table: (RouteRun | undefined)[] | undefined
     route: Route | undefined
     levels: readonly Level[]
-    cuts: RouteCut[]
     guards: { recs: ScalarRecognizer[]; cut: number; chain: Piece | undefined }[]
   }
-  /** A cut or guard's chain is built the first time it cuts. */
-  type RouteCut = { at: Level; scope: Level | undefined; cut: number; chain: Piece | undefined }
+  /** A guard's chain is built the first time it cuts. */
   /** Routes per character, `undefined` where none; `NO_ROUTE` from `runRoute` means "run the body". */
   type TopRoutes = (RouteRun | undefined)[]
   const NO_ROUTE: unknown = Symbol('no route')
@@ -1796,7 +1793,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const op = code[ip]!
     L = {
       kind: R.kind, ip,
-      scopeTrivia: undefined, cap: false,
+      cap: false,
       variant: R.variant, build: undefined, captureWide: false, wantFields: false, readsState: false,
       omitsRaw: false, collapse: false, readsRaw: false,
       leading: [],
@@ -1818,8 +1815,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         break
       }
       case K_SCOPE: {
-        const ki = code[ip + 1]!
-        L.scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
         L.cap = op === OP_SCOPE_CAP
         break
       }
@@ -1941,7 +1936,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   function pendingRun(top: number, table: (RouteRun | undefined)[], route: Route | undefined): RouteRun {
-    return { chain: DECIDED, d: -1, top, table, route, levels: [], cuts: [], guards: [] }
+    return { chain: DECIDED, d: -1, top, table, route, levels: [], guards: [] }
   }
 
   /**
@@ -1978,17 +1973,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       table: undefined,
       route,
       levels,
-      cuts: route.cuts.map(x => ({
-        at: levels[x.at]!,
-        scope: x.scope >= 0 ? levels[x.scope] : undefined,
-        cut: x.cut,
-        chain: undefined,
-      })),
       guards: route.guards.map(g => ({ recs: g.terminals.map(tm => scalarFor(tm)!), cut: g.cut, chain: undefined })),
     }
   }
 
-  /** The chain a cut or guard at depth `cut` runs instead: the route above it, down to that level's own piece. */
+  /** The chain a guard at depth `cut` runs instead: the route above it, down to that level's own piece. */
   function cutChain(levels: readonly Level[], cut: number): Piece {
     return chainFor(levels, cut, link(levels[cut]!.ip), false)
   }
@@ -2008,17 +1997,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined) return NO_ROUTE
     let d = R.d
     let chain = R.chain
-    const cuts = R.cuts
-    for (let x = 0; x < cuts.length; x++) {
-      const X = cuts[x]!
-      const T = X.scope !== undefined ? X.scope.scopeTrivia : ctx.trivia
-      if (T !== undefined && !cannotStartTrivia(input, pos, T)) {
-        if (X.cut <= 0) return NO_ROUTE
-        d = X.cut
-        chain = X.chain ??= cutChain(R.levels, X.cut)
-        break
-      }
-    }
     const guards = R.guards
     for (let x = 0; x < guards.length; x++) {
       const G = guards[x]!

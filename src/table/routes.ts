@@ -68,9 +68,8 @@ export type RouteLevel = {
   readonly arm: number
   /** `K_NODE`: the completion variant. */
   readonly variant: number
-  /** `K_SEQ`: its leading zero-width terms, and whether its trivia is only known at run time. */
+  /** `K_SEQ`: its leading zero-width terms. */
   readonly lc: number
-  readonly trivRuntime: boolean
   /** `K_REP`/`K_CHOICE`: a failure that can leave diagnostics to roll back. */
   readonly dirty: boolean
   /**
@@ -106,13 +105,6 @@ export type Route = {
   readonly levels: readonly RouteLevel[]
   readonly d: number
   readonly atom: RouteAtom
-  /**
-   * A sequence with a leading lookahead whose trivia only the run time knows:
-   * where that trivia may start at the character, the route is cut back to the
-   * candidate `cut` (0: no route), reading the trivia installed by the scope
-   * level `scope` (−1: the entry's).
-   */
-  readonly cuts: readonly { readonly at: number; readonly cut: number; readonly scope: number }[]
   /** A guarded choice: where any pretest terminal matches, the route is cut back to `cut`. */
   readonly guards: readonly { readonly terminals: readonly number[]; readonly cut: number }[]
 }
@@ -143,7 +135,7 @@ export type PackedRoutes = {
  * shares is stored once.
  *
  * - Per top: `[lo, hi, route, lo, hi, route, …]`, one route per run of characters.
- * - Routes: `[atom, d, ...levels(d), cuts, (at, cut, scope)…, (cut, terminals, ...terminal)…]`.
+ * - Routes: `[atom, d, ...levels(d), (cut, terminals, ...terminal)…]`.
  * - Levels: `[kind, ip, arm, variant, flags, lc, resumeTop]` (`LF_*` flags).
  * - Atoms: `[0, ip]` a site, `[1]` the routed token, or
  *   `[2, ip, arms, (route, ip, needsRouted, commits)…, hasOther, (other's four)?]`
@@ -156,7 +148,6 @@ type RoutePools = readonly [
   atoms: readonly (readonly number[])[],
 ]
 
-const LF_TRIV_RUNTIME = 2
 const LF_DIRTY = 8
 const LF_CANDIDATE = 16
 
@@ -168,7 +159,7 @@ const LF_CANDIDATE = 16
 export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
   const t = resolveTable(prog)
   const roots = [...Object.values(prog.rules), ...assemblyExtraIps(prog)]
-  const derive = deriver(t, computeSiteLabels(t.code, roots, false), failCleanAnalysis(t.code))
+  const derive = deriver(t, computeSiteLabels(t.code, roots, false), failCleanAnalysis(t.code), (prog.triviaSpecs?.length ?? 0) > 0)
   const P = { t: [] as number[][], r: [] as number[][], l: [] as number[][], a: [] as number[][] }
   const topIps: number[] = []
   const ids = new Map<object, number>()
@@ -183,7 +174,7 @@ export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
   }
   const levelId = (L: RouteLevel): number => intern(L, P.l, L => [
     L.kind, L.ip, L.arm, L.variant,
-    (L.trivRuntime ? LF_TRIV_RUNTIME : 0) | (L.dirty ? LF_DIRTY : 0) | (L.candidate ? LF_CANDIDATE : 0),
+    (L.dirty ? LF_DIRTY : 0) | (L.candidate ? LF_CANDIDATE : 0),
     L.lc, L.resumeTop,
   ])
   const arm = (A: DispatchArmRoute): number[] => [
@@ -196,7 +187,6 @@ export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
   function routeId(R: Route): number {
     return intern(R, P.r, R => [
       atomId(R.atom), R.d, ...R.levels.map(levelId),
-      R.cuts.length, ...R.cuts.flatMap(x => [x.at, x.cut, x.scope]),
       ...R.guards.flatMap(g => [g.cut, g.terminals.length, ...g.terminals]),
     ])
   }
@@ -240,7 +230,7 @@ export function routeTable(packed: PackedRoutes): RouteTable {
   const routes: (Route | undefined)[] = []
   const level = (i: number): RouteLevel => levels[i] ??= ((w: readonly number[]): RouteLevel => ({
     kind: w[0]!, ip: w[1]!, arm: w[2]!, variant: w[3]!,
-    trivRuntime: (w[4]! & LF_TRIV_RUNTIME) !== 0, dirty: (w[4]! & LF_DIRTY) !== 0,
+    dirty: (w[4]! & LF_DIRTY) !== 0,
     candidate: (w[4]! & LF_CANDIDATE) !== 0,
     lc: w[5]!, resumeTop: w[6]!,
   }))(P().l[i]!)
@@ -262,15 +252,13 @@ export function routeTable(packed: PackedRoutes): RouteTable {
     const w = P().r[i]!
     const d = w[1]!
     let o = 2 + d
-    const cuts: { at: number; cut: number; scope: number }[] = []
-    for (let n = w[o++]!; n > 0; n--, o += 3) cuts.push({ at: w[o]!, cut: w[o + 1]!, scope: w[o + 2]! })
     const guards: { terminals: number[]; cut: number }[] = []
     while (o < w.length) {
       const n = w[o + 1]!
       guards.push({ cut: w[o]!, terminals: w.slice(o + 2, o + 2 + n) })
       o += 2 + n
     }
-    R = { atom: atom(w[0]!), d, levels: w.slice(2, 2 + d).map(level), cuts, guards }
+    R = { atom: atom(w[0]!), d, levels: w.slice(2, 2 + d).map(level), guards }
     routes[i] = R
     return R
   }
@@ -313,7 +301,9 @@ export function nodeVariant(code: Int32Array, ip: number): number {
 }
 
 /** The derivation, over the analyses it shares between every site it is asked about. */
-function deriver(t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean): (top: number) => (Route | undefined)[] | undefined {
+function deriver(
+  t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean, ownTrivia: boolean,
+): (top: number) => (Route | undefined)[] | undefined {
   const { code, k, cc, disp, dsp, trivia } = t
   const NULLABLE = new Map<number, boolean>()
   const leadOf = leadMasks(code, k, cc)
@@ -322,12 +312,24 @@ function deriver(t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean): (top: 
     const r = triviaLeadRanges(labels.at(ip).tri, trivia)
     return r === undefined ? null : maskOfRanges(r)
   }
+  /** The characters any trivia may start with where the labels cannot name it; `null`: any. */
+  const ANY_TRIVIA = ((): LeadMask | null => {
+    if (!ownTrivia) return null
+    const m = maskOfRanges([])
+    for (let i = 0; i < trivia.length; i++) {
+      const r = triviaLeadRanges(i, trivia)
+      if (r === undefined) return null
+      const tm = maskOfRanges(r)
+      for (let c = 0; c < 129; c++) if (tm[c] === 1) m[c] = 1
+    }
+    return m
+  })()
 
   const level = (kind: number, ip: number, o: Partial<RouteLevel> = {}): RouteLevel => ({
-    kind, ip, arm: -1, variant: -1, lc: 0, trivRuntime: false, dirty: false, resumeTop: -1, candidate: false, ...o,
+    kind, ip, arm: -1, variant: -1, lc: 0, dirty: false, resumeTop: -1, candidate: false, ...o,
   })
 
-  const seqLevel = (ip: number, lc: number, trivRuntime: boolean): RouteLevel => level(K_SEQ, ip, { lc, trivRuntime })
+  const seqLevel = (ip: number, lc: number): RouteLevel => level(K_SEQ, ip, { lc })
   const repLevel = (ip: number): RouteLevel => level(K_REP, ip, { dirty: !CLEAN(code[ip + 1]!) })
 
   /** A term whose own head decides whether it starts, without the level's frame. */
@@ -458,7 +460,7 @@ function deriver(t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean): (top: 
   }
 
   /** Per sequence: where it can be a level, its leading-term count and the characters that block it. */
-  type SeqFacts = { lc: number; blocked: Uint8Array | null; trivRuntime: boolean } | null
+  type SeqFacts = { lc: number; blocked: Uint8Array | null } | null
   const seqMemo = new Map<string, SeqFacts>()
   function seqFacts(ip: number, armMode: boolean): SeqFacts {
     const mk = `${ip}.${armMode ? 1 : 0}`
@@ -488,9 +490,16 @@ function deriver(t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean): (top: 
           if (m === null) blocked = null
           else for (let c = 0; c < 128; c++) if (m[c] === 1) blocked[c] = 1
         }
-        const trivAt = triviaMaskAt(ip)
-        if (blocked !== null && lc > 0 && trivAt !== null) for (let c = 0; c < 128; c++) if (trivAt[c] === 1) blocked[c] = 1
-        out = { lc, blocked, trivRuntime: trivAt === null }
+        // The lookahead runs after any trivia in front of the corner, so a character
+        // that may start trivia here stops the route above this level. Where the
+        // labels cannot name that trivia, any of the table's may stand there, or a
+        // caller's when the table has none of its own (`RunCfg.inheritedTrivia`).
+        const trivAt = triviaMaskAt(ip) ?? ANY_TRIVIA
+        if (blocked !== null && lc > 0) {
+          if (trivAt === null) blocked = null
+          else for (let c = 0; c < 128; c++) if (trivAt[c] === 1) blocked[c] = 1
+        }
+        out = { lc, blocked }
       }
     }
     seqMemo.set(mk, out)
@@ -661,7 +670,7 @@ function deriver(t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean): (top: 
         const parts = split(chars, c => blocked[c]!)
         if (parts.has(1)) finish(parts.get(1)!, P, ip, -1, undefined)
         const at = ip
-        if (parts.has(0)) go(parts.get(0)!, code[ip + 2 + f.lc]!, enter(P, () => seqLevel(at, f.lc, f.trivRuntime), ip), depth + 1)
+        if (parts.has(0)) go(parts.get(0)!, code[ip + 2 + f.lc]!, enter(P, () => seqLevel(at, f.lc), ip), depth + 1)
         return
       }
       if (op === OP_REP || op === OP_REPV) {
@@ -708,21 +717,6 @@ function deriver(t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean): (top: 
     let below = false
     for (let i = 1; i < d; i++) if (levels[i]!.kind === K_NODE) { below = true; break }
     if (!below) return undefined
-    // A sequence with a leading lookahead runs its left corner after the trivia
-    // installed at run time; where the labels cannot name that trivia it is read
-    // at entry: the entry's, unless a scope above installs its own.
-    const cuts: { at: number; cut: number; scope: number }[] = []
-    for (let i = 0; i < d; i++) {
-      const L = levels[i]!
-      if (L.kind !== K_SEQ || !L.trivRuntime || L.lc === 0) continue
-      let cut = 0
-      let scope = -1
-      for (let j = i - 1; j >= 0; j--) {
-        if (levels[j]!.candidate && cut === 0) cut = j
-        if (levels[j]!.kind === K_SCOPE && scope < 0) scope = j
-      }
-      cuts.push({ at: i, cut, scope })
-    }
     const guards: { terminals: readonly number[]; cut: number }[] = []
     for (const g of P.guardAt) {
       if (g.at >= d) continue
@@ -734,11 +728,10 @@ function deriver(t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean): (top: 
     const atomOut: RouteAtom = atomHere ? atom! : { kind: 'site', ip: d === levels.length ? terminal : levels[d]!.ip }
     // Characters that take the same path share one route.
     const rkey = levels.slice(0, d).map(levelId).join(',') + '|' + atomKey(atomOut)
-      + '|' + cuts.map(x => `${x.at}.${x.cut}.${x.scope}`).join(',')
       + '|' + guards.map(g => `${g.cut}.${g.terminals.join('.')}`).join(',')
     const shared = routeMemo.get(rkey)
     if (shared !== undefined) return shared
-    const route: Route = { levels: levels.slice(0, d), d, atom: atomOut, cuts, guards }
+    const route: Route = { levels: levels.slice(0, d), d, atom: atomOut, guards }
     routeMemo.set(rkey, route)
     routeKeys.set(route, rkey)
     return route

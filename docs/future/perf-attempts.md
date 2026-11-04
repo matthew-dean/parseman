@@ -733,6 +733,20 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     speed fix. In this run both legs read 6–10% above `main` on every row, against −4%
     to +1% on an idle machine before; CI decides. Raw samples:
     `scratchpad/left-corner/results/reuse-r4c.jsonl`.
+  - **A lookahead under trivia the labels cannot name is decided when routes are derived.**
+    A route that passed a sequence led by a lookahead, where the site's trivia was unknown
+    at encode time, checked at every entry whether that trivia could start at the
+    character, and cut the route back if so. Over one sweep of each dialect the check ran
+    43,675 times on Less (44 of 111 routes carried it; CSS 12 of 30, `.jess` 9 of 31) and
+    never fired: callers skip trivia before the node. Now a character that may start any
+    of the table's trivia stops the route above that sequence. A table with no trivia of
+    its own is called only with its caller's (`RunCfg.inheritedTrivia`), so any character
+    may start it, and no route passes the lookahead. Identity against `main` @
+    `c5e35167`: 0 diffs, four dialects, AST and CST. Why Less's trivia is unknown there:
+    the site (under `VarFallbackItem`) is reached under ten trivia slots, ten distinct
+    objects with the same first set (whitespace and `/`). The labels compare slots by
+    identity, so ten equal slots meet as unknown; interning equal trivia, or labelling
+    the lead set instead of the slot, would make it known.
   - Rejected: the ascent as one loop instead of nested level pieces (identity clean). CSS
     `font: 1/2;` +48.9% cycles / +6.0% instructions `--jitless` (nested: +30.6% / −2.3%),
     `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts

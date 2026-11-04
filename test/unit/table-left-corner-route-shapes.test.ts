@@ -3,7 +3,9 @@
  * plain value ladder (`table-left-corner-routes.test.ts`):
  *
  * - comment trivia, so a `/` after a value may open a comment or the slash
- *   separator, and the route cuts back to the level's own piece there;
+ *   separator;
+ * - a lookahead-led sequence under trivia only the caller supplies, which no
+ *   route passes;
  * - a function-or-identifier `choice()` whose function arm is pretested by its
  *   opener, so a route through the identifier arm is guarded by that opener;
  * - an identifier-or-function `dispatch()` whose arms re-read the selector's
@@ -28,6 +30,7 @@ import { emitFoldedModule } from '../../src/table/emit.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { foldPrograms } from '../../src/table/program.ts'
 import { routeTable } from '../../src/table/routes.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { run } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { readers, seeded } from '../helpers/table-readers.ts'
@@ -44,11 +47,10 @@ const guarded = rules({ trivia }, (g: Record<string, Comb>) => ({
   List: node('List', sepBy(g.Space!, literal(','), { min: 1 }), one),
   Space: node('Space', sequence(g.Slash!, many(g.Slash!)), one),
   Slash: node('Slash', sepBy(g.Value!, literal('/'), { min: 1 }), one),
-  Value: node('Value', choice(g.Call!, g.Ident!, g.Dimension!), one),
+  Value: node('Value', choice(g.Call!, g.Ident!, regex(/[0-9]+(?:px|em|%)?/)), one),
   Call: node('Call', sequence(regex(/[a-z-]+\(/), optional(g.List!), literal(')')), one),
-  Ident: node('Ident', sequence(not(regex(/[a-z-]+\(/)), regex(/[a-z-]+/), many(g.Escape!)), one),
-  Escape: node('Escape', regex(/\\[^\n]/), one),
-  Dimension: node('Dimension', noTrivia(sequence(regex(/[0-9]+/), optional(choice(literal('%'), g.Ident!)))), one),
+  // Not a function's opener: the identifier arm carries no pretest of its own.
+  Ident: node('Ident', sequence(not(regex(/[a-z-]+\(/)), regex(/[a-z-]+/)), one),
 }))
 
 /** The same values, with the function/identifier split made by a `dispatch()` on the opener. */
@@ -98,8 +100,8 @@ function inputs(): string[] {
 }
 
 describe('left-corner route shapes', () => {
-  it('stores cuts where trivia can open, guards on a pretested arm, and dispatch atoms', () => {
-    const shapes = { cuts: 0, guards: 0, dispatch: 0 }
+  it('stores guards on a pretested arm, and dispatch atoms', () => {
+    const shapes = { guards: 0, dispatch: 0 }
     for (const grammar of [guarded, dispatched]) {
       const prog = encodeTable(grammar)
       const routes = routeTable(prog.routes!)
@@ -107,7 +109,6 @@ describe('left-corner route shapes', () => {
         if (!routes.hasTop(ip)) continue
         for (const R of routes.routesAt(ip) ?? []) {
           if (R === undefined) continue
-          shapes.cuts += R.cuts.length
           shapes.guards += R.guards.length
           if (R.atom.kind === 'dispatch') shapes.dispatch++
         }
@@ -115,6 +116,27 @@ describe('left-corner route shapes', () => {
     }
     expect(shapes.guards).toBeGreaterThan(0)
     expect(shapes.dispatch).toBeGreaterThan(0)
+  })
+
+  // A program with no trivia of its own, called with trivia: the lookahead runs
+  // before trivia only the caller knows, and the path's segment can start with
+  // the comment's `/`, so no route passes the lookahead.
+  it('routes no character past a lookahead under trivia a caller supplies', () => {
+    const t = regex(/(?:[ \t]+|\/\*[^*]*\*\/)+/)
+    const paths = rules((g: Record<string, Comb>) => ({
+      Doc: node('Doc', sequence(not(literal('!')), g.Path!, optional(g.Flag!)), one),
+      Path: node('Path', sequence(g.Segment!, many(g.Segment!)), one),
+      Segment: node('Segment', regex(/\/?[a-z.]+/), one),
+      Flag: node('Flag', literal('!'), one),
+    }))
+    const prog = encodeTable(paths, { hostMode: 'ast' })
+    const routed = tableRules({ ...prog, asm: [] }).Doc!
+    const reference = execRules(prog).Doc!
+    for (const input of ['/*c*/a/b', ' a/b !', '/a/b', 'a/b/*c*/!', '!a']) {
+      const got = routed(input, 0, { trivia: t, trackLines: false })
+      const want = reference(input, 0, { trivia: t, trackLines: false })
+      expect(digestValue(got), input).toBe(digestValue(want))
+    }
   })
 
   for (const [name, grammar] of [['guarded choice', guarded], ['dispatch', dispatched]] as const) {
