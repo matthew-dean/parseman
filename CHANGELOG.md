@@ -3,21 +3,6 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
-
-- **`compile()` and `compileLinkableTable()` no longer read `process` unguarded.**
-  Emitting an open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO`,
-  and the IR serializer's fallback read `process.env.PARSEMAN_IR_DEBUG`, both without a
-  guard, so a browser call that reached either threw a `TypeError` or `ReferenceError`.
-  The scan toggle selected an opt-in `indexOf` variant that was never claimed as a win
-  and that nothing enabled; it is removed, and the char loop it fell back to is
-  unchanged. The IR debug read is now guarded, as `PARSEMAN_DUPLICATION`'s is. Tests:
-  `test/unit/scan-shape-lowering.test.ts`, `test/unit/ir-serialize-no-process.test.ts`.
-- **Dead code removed.** The `token-dispatch.ts` id strategies left over from the source
-  lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
-  `export` on internal values that nothing outside their module reads. Tables and
-  artifacts are byte-identical.
-
 ## 0.60.0 — 2026-11-03
 
 - **A sequence led by an optional pad has its operator's first set.** A `regex()` that
@@ -161,6 +146,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   the list's start in every table reader, as the interpreter does (`repeat.ts`
   `failAt`). The tables reported what the failed item left, e.g. `")"` inside the group
   of `x:(1;` where the interpreter said what may start a value.
+
+- **`compile()` and `compileLinkableTable()` no longer read `process` unguarded.**
+  Emitting an open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO`,
+  and the IR serializer's fallback read `process.env.PARSEMAN_IR_DEBUG`, both without a
+  guard, so a browser call that reached either threw a `TypeError` or `ReferenceError`.
+  The scan toggle selected an opt-in `indexOf` variant that was never claimed as a win
+  and that nothing enabled; it is removed, and the char loop it fell back to is
+  unchanged. The IR debug read is now guarded, as `PARSEMAN_DUPLICATION`'s is. Tests:
+  `test/unit/scan-shape-lowering.test.ts`, `test/unit/ir-serialize-no-process.test.ts`.
+- **Dead code removed.** The `token-dispatch.ts` id strategies left over from the source
+  lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
+  `export` on internal values that nothing outside their module reads. Tables and
+  artifacts are byte-identical.
 
 ## 0.59.0 — 2026-11-02
 
