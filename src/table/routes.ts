@@ -685,6 +685,11 @@ function deriver(t: ResolvedTable, labels: SiteLabels, CLEAN: FailClean): (top: 
     }
     const d = best
     if (d === 0) return undefined
+    // A route that completes no node below its top skips too little to pay for
+    // its run: the top's own piece is cheaper.
+    let below = false
+    for (let i = 1; i < d; i++) if (levels[i]!.kind === K_NODE) { below = true; break }
+    if (!below) return undefined
     // A sequence with a leading lookahead runs its left corner after the trivia
     // installed at run time; where the labels cannot name that trivia it is read
     // at entry: the entry's, unless a scope above installs its own.

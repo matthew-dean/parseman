@@ -614,6 +614,28 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   Planned separately, and also not built yet: the build-out compiles the routes above
   into table rows at encode time, read by every engine, on `main` after 0.59.0. Branch `perf/left-corner-routing`, raw samples under
   `scratchpad/left-corner/results/`.
+- **Left-corner routes, step 2: the closure engine (in progress).** Routes are derived
+  over the resolved table's rows when the closure engine assembles (`routes.ts`), per linked
+  node site, and a node that tops no route keeps a piece with no route read. Identity: 0
+  diffs on all four dialects and all four variants (11.5k inputs each), and on Less with
+  `mathMode` `always` and `parens`. Against `main` @ `53cff042`, interleaved marginal
+  instructions, A/A null within ±0.7% except one ±2.0% row (`assemblyBudget` 0, so CSS is
+  measured unrouted-hybrid-free):
+  - First slice (@ `11434c15`), `--jitless` / JIT: Less `color: red;` −19.9% / −14.8%,
+    `rgb()` −18.3% / −10.2%; SCSS constructs −4% to −8.6% / −0.9% to −7.2%. Whole files:
+    `benchmark.less` −4.7% / −3.2%, bootstrap −7.8% / −0.2%, `benchmark.css` −4.6% /
+    +0.6%, `gen-workload.scss` −2.7% / −1.4%, `jess-x8.jess` −1.4% / −0.5%. Slower: CSS
+    `font: 12px/1.5 a, b;` +4.0% / +4.0%, `.jess` `font` +4.2% / +6.4%, Less
+    `a{div:hover{}}` +3.6% / +4.2%, `.jess` `border-radius: a / b;` +0.3% / +3.0%.
+  - Deriving every reached top at link instead of on first use: first parse of
+    `benchmark.less` 64→75 ms either way; routing tops lazily left the route read in 89 of
+    121 reached nodes that top nothing (`benchmark.less` −4.8% against −5.4% eager).
+  - Second slice: the gap read and its lead in one call, and no route that completes no node
+    below its top (`--jitless`, three runs): `benchmark.less` −9.8%, Less `color: red;`
+    −19.5%, `a{div:hover{}}` +0.5%. CSS and `.jess` `font` unchanged, +3.7% / +5.2%.
+  - Open: a value that resumes at every level (slash, then space, then comma) costs more
+    than its plain path though it calls 18 fewer pieces; `12px/1.5;`, `12px 1.5;` and
+    `a, b;` alone are each faster. Branch `perf/left-corner-routes`.
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
   ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.

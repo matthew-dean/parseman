@@ -2138,16 +2138,40 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     ctx._fx = acc ?? L.choiceFx
   }
 
-  /** The end of the trivia the next term would skip at `end`; −1 where it cannot be read purely. */
+  /**
+   * The end of the trivia the next term would skip at `end`, −1 where it cannot
+   * be read purely; `GAP_LEAD` is the code point there (−1 at the end of input).
+   * One call: every level that completes reads it.
+   */
   function routeGap(L: Level, input: string, end: number, ctx: ParseContext): number {
+    let c = end < input.length ? input.charCodeAt(end) : -1
+    if (c >= 0xd800 && c <= 0xdbff) c = lead(input, end)
     const T = ctx.trivia
-    if (T === undefined || !triviaMayStart(L, T, lead(input, end))) return end
-    const sc = SCAN
-    if (sc === null) return -1
-    const q = sc(input, end)
-    TM_S = sc; TM_AT = end; TM_IN = input; TM_END = q
-    return q
+    if (T !== undefined) {
+      if (T !== L.tObj) {
+        const fs = T._meta.firstSet
+        L.tObj = T
+        L.tMask = fs.kind === 'empty' ? new Uint8Array(129) : fs.kind === 'ranges' ? maskOfRanges(fs.ranges) : null
+      }
+      const m = L.tMask
+      if (m === null || (c >= 0 && m[c < 128 ? c : 128] === 1)) {
+        const sc = SCAN
+        if (sc === null) return -1
+        const q = sc(input, end)
+        TM_S = sc; TM_AT = end; TM_IN = input; TM_END = q
+        c = q < input.length ? input.charCodeAt(q) : -1
+        if (c >= 0xd800 && c <= 0xdbff) c = lead(input, q)
+        GAP_LEAD = c
+        return q
+      }
+    }
+    GAP_LEAD = c
+    return end
   }
+  /** `routeGap`'s lead. */
+  let GAP_LEAD = -1
+  /** `classHas`, with its ASCII test in line. */
+  const has = (cls: ResolvedClass, c: number): boolean => c >= 0 && c < 128 ? cls.ascii[c] === 1 : classHas(cls, c)
 
   function routeGapRead(re: RegExp, input: string, at: number): number {
     if (re === GM_RE && at === GM_AT && input === GM_IN) return GM_Q
@@ -2278,8 +2302,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (!known) return resume(L, input, pos, end, r, ctx)
             const q = routeGap(L, input, end, ctx)
             if (q < 0) return resume(L, input, pos, end, r, ctx)
-            const cq = lead(input, q)
-            if (sepGated ? classHas(sepCls!, cq) : q < input.length && classHas(itemCls!, cq)) return resume(L, input, pos, end, r, ctx)
+            const cq = GAP_LEAD
+            if (cq >= 0 && cq < 128 ? (sepGated ? sepCls! : itemCls!).ascii[cq] === 1 : has(sepGated ? sepCls! : itemCls!, cq)) return resume(L, input, pos, end, r, ctx)
           }
           EC.e = end
           return collect ? [r] : undefined
@@ -2297,17 +2321,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (!known) return resume(L, input, pos, end, r, ctx)
           const q = routeGap(L, input, end, ctx)
           if (q < 0) return resume(L, input, pos, end, r, ctx)
-          const cq = lead(input, q)
+          const cq = GAP_LEAD
           const vals: unknown[] | undefined = wantValues ? [r] : undefined
           for (let t = 0; t < nTails; t++) {
             const T = tails[t]!
             switch (T.kind) {
               case T_OPT_GATE:
-                if (classHas(T.cls!, cq)) return resume(L, input, pos, end, r, ctx)
+                if (has(T.cls!, cq)) return resume(L, input, pos, end, r, ctx)
                 vals?.push(null)
                 break
               case T_REP_CLASS:
-                if (classHas(T.cls!, cq)) return resume(L, input, pos, end, r, ctx)
+                if (has(T.cls!, cq)) return resume(L, input, pos, end, r, ctx)
                 vals?.push(T.collect ? [] : undefined)
                 break
               case T_REP_GAP: {
