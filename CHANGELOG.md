@@ -5,6 +5,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
+  around it, in the table engines.** The interpreter's lookaheads return a fresh
+  result, so commitment inside the probe never escapes. The reference driver, the
+  closure engine and the emitted assembly kept it on `ctx._fc` after the probe.
+  So the next ordinary failure in the same sequence read as committed, and an
+  ordered choice returned it without trying its next arm:
+  `choice(sequence(literal('x'), not(dispatch(regex(/[a-z]/), when('a',
+  sequence(literal('Q'))))), literal('a'), literal('z')), sequence(literal('x'),
+  literal('a'), literal('b')))` failed on `xab`. The lookahead now clears it. See
+  `test/unit/table-lookahead-contains-commitment.test.ts`.
 - **A choice, `optional()` or `attempt()` over a node that fails after scanning trivia
   restores the trivia logs in the emitted assembly.** A failed node drops its own
   capture frame, but the trivia its body recorded into the root trivia log (and the

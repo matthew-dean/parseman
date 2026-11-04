@@ -370,7 +370,7 @@ export type RunCfg = {
  * ordinary assemblies per table. Host trivia predicates use a host-identity
  * cache in addition to this key because their per-type answer is not one bit.
  *
- * Taken as six booleans rather than as a `RunCfg` because `AssemblyCache.forCtx`
+ * Taken as seven booleans rather than as a `RunCfg` because `AssemblyCache.forCtx`
  * runs once per entry invocation and must allocate nothing — it derives these bits
  * from the `ctx` and builds a `RunCfg` only on the miss. That constraint is why the
  * packing was written twice, 2500 lines apart in this file, and a bit added to one
@@ -2252,6 +2252,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          // A lookahead contains its child's commitment: `not.ts` and `peek.ts`
+          // return a fresh result, so a committed failure inside the probe never
+          // reaches the grammar around it.
+          ctx._fc = false
           if (PROBE && ctx._probe !== undefined) ctx._probe.best = probeBest ?? null
           if (v === FAIL) { EC.e = pos; return null }
           // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
@@ -2294,6 +2298,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          // A lookahead contains its child's commitment: `not.ts` and `peek.ts`
+          // return a fresh result, so a committed failure inside the probe never
+          // reaches the grammar around it.
+          ctx._fc = false
           if (PROBE && ctx._probe !== undefined) ctx._probe.best = probeBest ?? null
           // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
           if (v === FAIL) { ctx._fe = pos; ctx._fx = xf; return FAIL }
@@ -4301,7 +4309,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (prog.asm !== undefined) {
         throw new Unemittable(
           `option set ${cfgKey(cfg)} (hostCst=${cfg.hostCst} trackLines=${cfg.trackLines} `
-          + `tolerant=${cfg.tolerant} coverage=${cfg.coverage} probe=${cfg.probe}), which this build `
+          + `tolerant=${cfg.tolerant} coverage=${cfg.coverage} probe=${cfg.probe} `
+          + `inheritedTrivia=${cfg.inheritedTrivia === true}), which this build `
           + 'did not pre-compile. The Function constructor is NOT used for an artifact that carries '
           + 'assemblies — see `EmitOptions.assemblies` to add this option set to the build',
         )

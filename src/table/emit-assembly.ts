@@ -1820,6 +1820,7 @@ return FAIL
 ${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${emitMark(p, L.buf, L.raw, sinks)}
 ${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}const v=${child}(input,pos,ctx)
 ${emitRollback(p, L.buf, L.raw, sinks)}
+ctx._fc=false
 ${cfg.probe ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){EC.e=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
@@ -1845,6 +1846,7 @@ return null
 ${lookaheadMiss(code[ip + 1]!, `ctx._fe=pos;ctx._fx=${xf};return FAIL`)}${emitMark(p, L.buf, L.raw, sinks)}
 ${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}const v=${child}(input,pos,ctx)
 ${emitRollback(p, L.buf, L.raw, sinks)}
+ctx._fc=false
 ${cfg.probe ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 EC.e=pos
 return null
