@@ -15,7 +15,7 @@ import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, SCOPE_INHERIT, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV, OP_GAPGATE, OP_RGATE2, OP_STRICT,
@@ -2237,8 +2237,9 @@ class Encoder {
         this.activeTrivia = savedTrivia
         this.triviaKnown = savedKnown
         if (d.clearTrivia === true) return this.emit(op, -1, bodyIp, flags)
+        // No trivia named: `flags` is zero (`rootCapture: 'opaque'` requires one).
         if (d.triviaParser === undefined) {
-          return cap || flags !== 0 ? this.emit(op, -1, bodyIp, flags) : bodyIp
+          return cap ? this.emit(op, SCOPE_INHERIT, bodyIp, flags) : bodyIp
         }
         return this.emit(op, this.triviaSlot(d.triviaParser), bodyIp, flags)
       }

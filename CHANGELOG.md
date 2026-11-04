@@ -12,8 +12,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   and the rule ran with no trivia. Only the line-tracked variant parsed differently: a
   tail like `c !important` could not cross the space before `!`, and the parse stopped
   there with `ok: true`. A `parser()` scope that names no trivia now answers for what it
-  wraps, in the interpreter and the table alike. A rule whose body is such a scope, such
-  as `parser({ captureTrivia: true }, …)`, now gets its trivia back under `noTrivia()`.
+  wraps, at no cost in the gate's depth budget. Every reader of the gate takes the same
+  answer: `ref()` in the interpreter, `Encoder.scopedRef`, `readsScope`, `firstSetOf`,
+  `gapLead` and token lowering's `reinstallsRuleTrivia`.
+- **`parser({ captureTrivia: true }, …)` with no trivia of its own inherits the active
+  trivia in every table engine.** The table lowered it with the slot that means
+  `trivia: null`, so the reference driver, closure engine, emitted assembly and macro
+  builds cleared trivia for the region, where the interpreter inherited it, with or
+  without a `noTrivia()` around the reference. The form now has its own slot value,
+  `SCOPE_INHERIT`, and raises capture only. A grammar without this form lowers to the
+  same bytes.
 - **A `compose()` that references a rule no piece defines fails the build, naming
   the rule.** The macro fuse used to encode around the undefined slot, leave the
   runtime `compose()` in place and warn "ref() used before .define()", which read as

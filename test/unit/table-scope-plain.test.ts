@@ -4,9 +4,11 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, classifiedTrivia, literal, noTrivia, optional, parser, regex, rules, run, sequence,
+  attempt, choice, classifiedTrivia, literal, node, noTrivia, optional, parser, regex, rules, run, sequence,
   type Combinator,
 } from '../../src/index.ts'
+import { hasOwnTriviaBoundary } from '../../src/combinators/trivia-boundary.ts'
+import { run as interpreterRun } from '../../src/functional/run.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
@@ -22,6 +24,7 @@ import {
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 type Entry = Parameters<typeof run>[0]
+type RunOptions = Parameters<typeof run>[2]
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
 const SELECTED = { rootTrivia: { select: ['blockComment'] as const } }
 const DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -49,7 +52,7 @@ function engines(
   return {
     prog,
     entries: {
-      interpreter: grammar[entry]! as Entry,
+      run: grammar[entry]! as Entry,
       emitted: tableRules(prog)[entry]! as Entry,
       closure: tableRules({ ...prog, asm: [] })[entry]! as Entry,
       reference: execRules(prog)[entry]! as Entry,
@@ -59,12 +62,14 @@ function engines(
   }
 }
 
-function outcome(entry: Entry, input: string): unknown {
-  const result = run(entry, input, SELECTED)
+function outcome(entry: Entry, input: string, drive: typeof run = run, options: RunOptions = SELECTED): unknown {
+  const result = drive(entry, input, options)
   return {
     ok: result.ok,
     value: result.value,
-    span: result.span,
+    // Offsets only. A scope that asks for lines turns them on for a whole table,
+    // and for that scope alone in the interpreter.
+    span: result.span && { start: result.span.start, end: result.span.end },
     expected: result.ok ? undefined : result.expected,
     unconsumedFrom: result.unconsumedFrom,
     rootTrivia: result.rootTrivia === undefined ? undefined : {
@@ -80,10 +85,12 @@ function outcome(entry: Entry, input: string): unknown {
   }
 }
 
-function expectIdentity(entries: Record<string, Entry>, input: string): void {
-  const expected = outcome(entries.interpreter!, input)
+function expectIdentity(entries: Record<string, Entry>, input: string, options: RunOptions = SELECTED): void {
+  // `run` from the package root tables a grammar first, so only this driver walks
+  // the combinators. Every other leg answers to it.
+  const expected = outcome(entries.run!, input, interpreterRun, options)
   for (const [name, entry] of Object.entries(entries)) {
-    expect(outcome(entry, input), `${name}: ${JSON.stringify(input)}`).toEqual(expected)
+    expect(outcome(entry, input, run, options), `${name}: ${JSON.stringify(input)}`).toEqual(expected)
   }
 }
 
@@ -241,5 +248,79 @@ export const parser = compose([rules({ trivia: ws${trackLines ? ', trackLines: t
     expect(run(tracked.Root as Entry, 'x:a b').unconsumedFrom).toBeNull()
     expect(syntheticScopeTargets(engines(cleared, 'Root').prog)).toEqual(new Set())
     expectIdentity(engines(cleared, 'Root').entries, 'x:a b')
+  })
+
+  describe('a capture-only scope inherits its trivia', () => {
+    const cases = {
+      'under a noTrivia region': (g: Record<string, Combinator<unknown>>) => noTrivia(sequence(literal('x:'), g.Body!)),
+      'under the ambient trivia': (g: Record<string, Combinator<unknown>>) => sequence(literal('x:'), g.Body!),
+    }
+    const build = (root: (g: Record<string, Combinator<unknown>>) => Combinator<unknown>, trivia: Combinator<unknown>) =>
+      rules({ trivia }, (g: Record<string, Combinator<unknown>>) => ({
+        Body: parser({ captureTrivia: true }, sequence(literal('a'), literal('b'))),
+        Root: root(g),
+      })) as unknown as Record<string, Combinator<unknown>>
+
+    it.each(Object.keys(cases) as (keyof typeof cases)[])('%s', (name) => {
+      for (const [trivia, options] of [[regex(/[ ]+/), {}], [documentTrivia(), SELECTED]] as const) {
+        const { entries } = engines(build(cases[name], trivia), 'Root')
+        expectIdentity(entries, 'x:a b', options)
+        expect(outcome(entries.run!, 'x:a b', interpreterRun, options)).toMatchObject({ ok: true, unconsumedFrom: null })
+      }
+    })
+
+    it('and the macro build agrees', () => {
+      const out = transformMacro(`import { compose, literal, noTrivia, parser, regex, rules, sequence } from 'parseman' with { type: 'macro' }
+const ws = regex(/[ ]+/)
+export const parser_ = compose([rules({ trivia: ws }, g => ({
+  Body: parser({ captureTrivia: true }, sequence(literal('a'), literal('b'))),
+  Root: noTrivia(sequence(literal('x:'), g.Body)),
+  Ambient: sequence(literal('x:'), g.Body),
+}))])`, path.join(DIR, 'capture-only-scope.ts'), new Set(['parseman']))
+      expect(out?.warnings).toEqual([])
+      expect(out?.code).not.toMatch(/\bcompose\s*\(/)
+      const grammar = evalMacroModule<Record<string, Entry>>(out!.code, 'parser_')
+      expect(run(grammar.Root!, 'x:a b')).toMatchObject({ ok: true, unconsumedFrom: null })
+      expect(run(grammar.Ambient!, 'x:a b')).toMatchObject({ ok: true, unconsumedFrom: null })
+    })
+
+    it('a scope that clears still clears, with or without capture', () => {
+      for (const opts of [{ trivia: null }, { trivia: null, captureTrivia: true }]) {
+        const grammar = rules({ trivia: regex(/[ ]+/) }, () => ({
+          Root: parser(opts, sequence(literal('a'), literal('b'))),
+        })) as unknown as Record<string, Combinator<unknown>>
+        const { entries } = engines(grammar, 'Root')
+        expectIdentity(entries, 'a b', {})
+        expect(outcome(entries.run!, 'a b', interpreterRun, {})).toMatchObject({ ok: false })
+      }
+    })
+
+    it('a node under one logs the gap the scope inherited', () => {
+      const grammar = rules({ trivia: documentTrivia() }, () => ({
+        Root: parser({ captureTrivia: true }, node('N', sequence(literal('a'), literal('b')),
+          ((_c: unknown, _f: unknown, _s: unknown, _r: unknown, log: readonly number[]) => [...log]) as never)),
+      })) as unknown as Record<string, Combinator<unknown>>
+      const { entries } = engines(grammar, 'Root')
+      expectIdentity(entries, 'a /*x*/ b')
+      expect(interpreterRun(entries.run!, 'a /*x*/ b').value).not.toEqual([])
+    })
+  })
+
+  it('charges a line-tracked rule no depth for the scope line tracking wraps it in', () => {
+    const wrapped = (n: number) => {
+      let body: Combinator<unknown> = sequence(literal('a'), literal('b'))
+      for (let i = 0; i < n; i++) body = attempt(body)
+      return body
+    }
+    // The walk stops at twelve wrappers and answers yes, so a body past the budget
+    // cannot tell the two apart; a cleared scope at the bottom can.
+    const cleared = (n: number) => {
+      let body: Combinator<unknown> = noTrivia(literal('a'))
+      for (let i = 0; i < n; i++) body = attempt(body)
+      return body
+    }
+    expect(hasOwnTriviaBoundary(wrapped(11))).toBe(true)
+    expect(hasOwnTriviaBoundary(cleared(11))).toBe(false)
+    expect(hasOwnTriviaBoundary(parser({ trackLines: true }, cleared(11)))).toBe(false)
   })
 })

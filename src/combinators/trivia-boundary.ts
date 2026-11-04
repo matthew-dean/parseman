@@ -37,10 +37,12 @@ export function hasOwnTriviaBoundary(p: Combinator<unknown>, depth: number = MAX
     // Multi-term forms: the gaps BETWEEN terms are the ambient-trivia positions.
     case 'sequence': return d.parsers.length > 1
     case 'many': case 'oneOrMore': case 'sepBy': return true
-    // A scope that names or clears trivia keeps an outer install out of its body;
-    // any other inherits, so it is one more wrapper. Falls through.
+    // A scope that names or clears trivia keeps an outer install out of its body.
+    // Any other inherits, so it falls through at no cost in depth: line tracking
+    // wraps every rule in one, and must not change what this walk sees.
     case 'grammar':
       if (d.triviaParser || d.clearTrivia) return false
+      depth++
     // Transparent wrappers — they add no position, so ask what they wrap.
     case 'node': case 'transform': case 'leaf': case 'label': case 'field':
     case 'token': case 'attempt': case 'optional': case 'expect': case 'withCtx':
