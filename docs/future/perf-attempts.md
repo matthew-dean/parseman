@@ -689,6 +689,26 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     +10.0% (+5.1%), `.jess` `font` +6.1% (+2.8%). Instructions fall 0.2–0.9 points; cycles
     stay inside the run's noise. The bar is not met: whole files still run fewer instructions
     in more cycles.
+  - **CI says whole files do not regress (@ `bd2c4660`, [#245](https://github.com/matthew-dean/parseman/pull/245),
+    measurement only).** Macro gate, x64, the pinned Jess host, against the merge base: `benchmark.less`
+    −1.8%, `gen-workload.less` −2.4%, `benchmark.css` +1.4% (A/A −1.0%, +0.9%, −0.5%). The cross-process
+    gate against v0.60.2 passes every case at its 1% floor; the largest are `graphql/document` median
+    +1.0% (mean 0.0%), `rollback/none` +0.8%, `less/stylesheet` +0.6%. The laptop's file
+    regression was noise and front-end effects of this machine; what remains is the value that
+    resumes at several levels.
+  - **Where CSS `font: 12px/1.5 a, b;` loses (JIT, instructions).** Against `main`, each
+    continuation costs the same: a value with no resume saves ~2.6k instructions (`font: 1;`
+    −2.6k, `font: a;` −2.7k), and each resume after a separator gives back ~1.7k of it
+    (`font: 1/2;` −0.8k, `font: a, b;` −1.1k, `font: 12px/1.5 a;` +0.6k, three resumes +2.9k).
+    A resume after a gap gains instead (`font: a b;` −4.3k), because the route hands the gap's
+    end to the continuation. Counted per parse, the routed `/2` runs the same ordinary pieces
+    as `main` plus one (20 against 19), one more `rawEntry`, and the same allocations; no cuts
+    or guards fire, nested routes help (stopping them costs +4.9% to +8.1%), nothing deopts,
+    and `runRoute` is not inlined into the node pieces. Self time under the JIT puts the
+    route's own work in the node level, the repeat level, `resume`, `runRoute` and the gap
+    piece, with no single item over ~5% of the parse, and inlining moves the remainder
+    between neighbours run to run, so time profiling cannot attribute the last 1.7k. Not cut:
+    no measured item is large enough to show over the ±0.3% instruction null.
   - Rejected: the ascent as one loop instead of nested level pieces (identity clean). CSS
     `font: 1/2;` +48.9% cycles / +6.0% instructions `--jitless` (nested: +30.6% / −2.3%),
     `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts
