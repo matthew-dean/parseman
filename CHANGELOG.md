@@ -5,6 +5,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **An internals overview, `docs/design/internals.md`.** The README's "Developing"
+  section now points at it: the pipeline, the engines, the table and wire format, macro
+  selection and how performance is measured. Its opcode table is checked against
+  `src/table/ops.ts` by `test/unit/internals-doc.test.ts`.
 - **`compile()` and `compileLinkableTable()` no longer read `process` unguarded.**
   Emitting an open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO`,
   and the IR serializer's fallback read `process.env.PARSEMAN_IR_DEBUG`, both without a
