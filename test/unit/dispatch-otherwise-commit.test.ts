@@ -33,6 +33,7 @@ function readers(prog: TableProgram): ReadonlyArray<readonly [string, Record<str
     const out = emitAssemblySource(resolved, prog, cfg, [])
     return {
       key: cfgKey(cfg),
+      arity: EMITTED_PARAMS.length,
       // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
       factory: new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory'],
       plan: out.plan, reached: [...out.reached],

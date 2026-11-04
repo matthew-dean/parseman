@@ -6,7 +6,6 @@
  * handoff stays, and the parse is the closure engine's either way.
  */
 import { describe, expect, it } from 'vitest'
-import { forwardingFactory } from '../helpers/forwarding-factory.ts'
 import { choice, literal, many, noTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -45,12 +44,12 @@ function selective(prog: TableProgram, calls: { n: number }): TableProgram {
   const em = emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true, select)
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
   const inner = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
-  const factory = forwardingFactory(((...args: readonly unknown[]) => {
+  const factory = (((...args: readonly unknown[]) => {
     const asm = inner(...args)
     const scan = asm.scan!
     return { ...asm, scan: (s: unknown) => { calls.n++; return scan(s as never) } }
   }) as EmittedFactory)
-  return { ...prog, asm: [{ key: cfgKey(cfg), factory, plan: em.plan, reached: [...em.reached] }] }
+  return { ...prog, asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }] }
 }
 
 describe('scanner handoff into an emitted body', () => {

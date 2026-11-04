@@ -419,14 +419,19 @@ export type Assembly = {
  * against a different helper list would bind the wrong function to a name and run
  * wrong rather than fail. A factory printed by 0.59.x guards only against FEWER
  * helpers, and one printed before 0.59.0 has no guard at all. So the runtime checks
- * too: the declared parameter count must be exactly the list it passes. A factory this
- * version prints checks the same thing itself (`FACTORY_ARITY_GUARD`, `emit.ts`).
+ * too, before calling it: the assembly's printed `arity` must be exactly the list it
+ * passes. It reads that printed number, never `factory.length`, which a minifier that
+ * drops unused trailing parameters lowers on a valid artifact. An assembly printed
+ * before 0.60.0 carries no `arity` and is refused. A factory this version prints also
+ * checks the count it is called with (`FACTORY_ARITY_GUARD`, `emit.ts`).
  */
-export function assertFactoryArity(factory: { readonly length: number }): void {
-  if (factory.length === EMITTED_PARAMS.length) return
+export function assertFactoryArity(pre: { readonly arity?: number }): void {
+  if (pre.arity === EMITTED_PARAMS.length) return
+  const printed = pre.arity === undefined
+    ? 'carries no helper count, so it was printed before parseman 0.60.0'
+    : `takes ${pre.arity} helpers, but parseman ${PARSEMAN_VERSION} passes ${EMITTED_PARAMS.length}: it was printed by an older or newer parseman`
   throw new Error(
-    `parseman: this parser's printed assembly takes ${factory.length} helpers, but parseman ${PARSEMAN_VERSION} `
-    + `passes ${EMITTED_PARAMS.length}: it was printed by an older or newer parseman. Reprint the parser with `
+    `parseman: this parser's printed assembly ${printed}. Reprint the parser with `
     + `parseman ${PARSEMAN_VERSION}, or run it on the parseman version that printed it.`,
   )
 }
@@ -4241,7 +4246,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ? prog.asm?.find(a => a.key === cfgKey(cfg))
       : undefined
     if (pre !== undefined) {
-      assertFactoryArity(pre.factory)
+      assertFactoryArity(pre)
       const pools = rebuildPools(t.cc, t.fx, t.disp, pre.plan)
       emitted = pre.factory(
         EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia, triviaScan,

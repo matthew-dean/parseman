@@ -406,7 +406,7 @@ function probeEmitted(prog: TableProgram): Record<string, unknown> {
     const out = emitAssemblySource(resolved, prog, cfg, [])
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
     const factory = new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory']
-    return { key: cfgKey(cfg), factory, plan: out.plan, reached: [...out.reached] }
+    return { key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: out.plan, reached: [...out.reached] }
   })
   return tableRules({ ...prog, asm })
 }

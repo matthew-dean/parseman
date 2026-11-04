@@ -21,8 +21,8 @@ describe('printed assembly factory', () => {
     assemblies: defaultAssemblyCfgs(prog),
   })
 
-  it('opens with an arity check against the helpers it was printed with', () => {
-    expect(source).toContain(`factory:function(${EMITTED_PARAMS.join(',')}){if(arguments.length!==${EMITTED_PARAMS.length})throw new Error(`)
+  it('records its helper count, and opens with a check against the count it is called with', () => {
+    expect(source).toContain(`arity:${EMITTED_PARAMS.length},factory:function(${EMITTED_PARAMS.join(',')}){if(arguments.length!==${EMITTED_PARAMS.length})throw new Error(`)
   })
 
   const start = source.indexOf('factory:function(') + 'factory:'.length

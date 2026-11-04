@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { forwardingFactory } from '../helpers/forwarding-factory.ts'
 import {
   attempt, choice, dispatch, literal, matches, noTrivia, optional, peek, regex, rules, run, sequence,
   token, transform, when, type Combinator,
@@ -31,7 +30,7 @@ function precompiled(prog: TableProgram): TableProgram {
   const factory = new Function(
     ...EMITTED_PARAMS, `'use strict';\n${emitted.source}`,
   ) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
+  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
 function countedPrecompiled(
@@ -50,9 +49,9 @@ function countedPrecompiled(
   const compiled = new Function(
     ...EMITTED_PARAMS, 'COUNT_LEX', `'use strict';\n${source}`,
   ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
-  const factory = forwardingFactory(((...args: Parameters<PrecompiledAssembly['factory']>) =>
+  const factory = (((...args: Parameters<PrecompiledAssembly['factory']>) =>
     compiled(...args, counter)) as PrecompiledAssembly['factory'])
-  return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
+  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
 function engines(grammar: Combinator<unknown>): { entries: Record<string, Entry>; source: string } {

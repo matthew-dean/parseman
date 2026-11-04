@@ -230,6 +230,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly AssemblyCfg[]): strin
     const plan = em.plan
     out.push('{'
       + `key:${key},`
+      + `arity:${EMITTED_PARAMS.length},`
       + `factory:function(${EMITTED_PARAMS.join(',')}){${FACTORY_ARITY_GUARD}${em.source}\n},`
       + 'plan:{'
       + `classes:[${plan.classes.map(r => `[${r.join(',')}]`).join(',')}],`

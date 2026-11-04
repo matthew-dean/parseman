@@ -34,7 +34,7 @@ function precompile(prog: TableProgram): PrecompiledAssembly[] {
     // the module loader; the property under test is the plan/pool rebuild, not
     // how the function literal got made.
     const factory = new Function(...EMITTED_PARAMS, em.source) as PrecompiledAssembly['factory']
-    out.push({ key, factory, plan: em.plan, reached: [...em.reached] })
+    out.push({ key, arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] })
   }
   return out
 }

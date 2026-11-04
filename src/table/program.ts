@@ -17,10 +17,15 @@ import { buildLexProgramRunner, type LexProgramRunner } from './lex-program.ts'
  * `EMITTED_PARAMS` in order. `plan` rebuilds the three data pools the factory
  * expects (see `PoolPlan`), and `reached` is the emitter's site set, which
  * `Assembly.reached` publishes and `test/unit/table-assemble.test.ts`
- * asserts on.
+ * asserts on. `arity` is the number of helpers the factory was printed against
+ * (`EMITTED_PARAMS.length` of the printing parseman); the runtime compares it with
+ * its own list before calling the factory. It is printed data, not
+ * `factory.length`, which a minifier that drops unused trailing parameters lowers.
+ * An assembly printed before 0.60.0 has none.
  */
 export type PrecompiledAssembly = {
   readonly key: number
+  readonly arity?: number
   readonly factory: EmittedFactory
   readonly plan: PoolPlan
   readonly reached: readonly number[]

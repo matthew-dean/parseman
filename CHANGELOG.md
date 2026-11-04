@@ -156,12 +156,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   - **An artifact printed by 0.59.x or earlier does not run on this runtime.** Its
     factory takes its helpers by position, so it needs the parser rebuilt by this
     version.
-  - **The runtime refuses a printed factory whose helper list is not its own.** Before
-    calling one, it compares the factory's declared parameter count with the helpers it
-    passes, and throws "printed by an older or newer parseman" with both counts. A factory
-    printed by 0.59.x guards only against fewer helpers, and one printed before 0.59.0 has
-    no guard: it bound the wrong helpers and failed partway through a parse
-    (`_BUF is not a constructor`). Test: `test/unit/precompiled-factory-arity-runtime.test.ts`.
+  - **The runtime refuses a printed factory whose helper list is not its own.** Each
+    printed assembly record now carries `arity`, the number of helpers its factory was
+    printed against. Before calling the factory, the runtime compares it with the helpers it
+    passes, and throws "printed by an older or newer parseman" with both counts; a record
+    with no `arity` was printed before 0.60.0 and is refused the same way. It reads that
+    printed number, not the factory's `length`, which a minifier that drops unused trailing
+    parameters lowers on a valid artifact. A factory printed by 0.59.x guards only against
+    fewer helpers, and one printed before 0.59.0 has no guard: it bound the wrong helpers and
+    failed partway through a parse (`_BUF is not a constructor`). Test:
+    `test/unit/precompiled-factory-arity-runtime.test.ts`.
   - **A printed factory refuses a runtime that passes another number of helpers, fewer or
     more.** Its guard was `arguments.length < n`, so an artifact printed by this version
     loaded on a 0.59.x runtime, which passes 61 helpers, and threw `_SP is not a
@@ -182,6 +186,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     keeps with object literals can still flip between a fast and a slow mode per process
     on Node 26. Build kept nodes with a constructor whose `prototype` is
     `Object.prototype`, and copy the arrays they keep with a spread or `slice()`.
+
+## 0.59.3 — 2026-11-04
 
 - **The `recovery` option is marked `@deprecated`.** It has had no effect since recovery
   became part of every compiled table: `compile()`, `compileRuleMap()` and the macro

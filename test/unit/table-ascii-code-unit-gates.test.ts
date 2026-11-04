@@ -36,7 +36,7 @@ function installed(prog: TableProgram, staticBuild: boolean): Record<string, Tab
   const factory = new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory']
   return tableRules(ownTableProgram({
     ...owned,
-    asm: [{ key: 0, factory, plan: out.plan, reached: [...out.reached] }],
+    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: out.plan, reached: [...out.reached] }],
   }))
 }
 

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { forwardingFactory } from '../helpers/forwarding-factory.ts'
 import {
   cstBuildHost, literal, node, regex, rules, run, sequence,
 } from '../../src/index.ts'
@@ -78,12 +77,12 @@ function precompiled(
   const source = mutate(em.source)
   const compiled = new Function(...EMITTED_PARAMS, source) as PrecompiledAssembly['factory']
   let calls = 0
-  const factory = forwardingFactory(((...args: Parameters<PrecompiledAssembly['factory']>) => {
+  const factory = (((...args: Parameters<PrecompiledAssembly['factory']>) => {
     calls++
     return compiled(...args)
   }) as PrecompiledAssembly['factory'])
   return {
-    prog: { ...prog, asm: [{ key: 0, factory, plan: em.plan, reached: [...em.reached] }] },
+    prog: { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }] },
     calls: () => calls,
   }
 }
