@@ -652,6 +652,11 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     times as on `main`. The time lands on every bytecode handler and on the regexp
     interpreter (2.3× for the same calls); Instruments shows front-end and discarded work
     rising. Cause not found yet.
+  - Rejected: the ascent as one loop instead of nested level pieces (identity clean). CSS
+    `font: 1/2;` +48.9% cycles / +6.0% instructions `--jitless` (nested: +30.6% / −2.3%),
+    `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts
+    as properties, and the resume stall stays, so the nesting is not its cause. Building
+    every route when tops are armed instead of on first use: no change.
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
   ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.
