@@ -1702,10 +1702,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /** The corner a continuation resumes after: its end and its value. */
   let RESUME_END = -1
   let RESUME_VALUE: unknown
-  /** The frame a resumed continuation opened, and the route level of the node it belongs to. */
-  let FRAME_LVL = -1
-  let FRAME_BUF: CstCaptureBuf | undefined
-  let FRAME_KIDS: unknown[] | undefined
   /** The gap a resumed continuation's first term reads, handed over. */
   let RES_GAP_ROW = -1
   let RES_GAP_AT = -1
@@ -2139,16 +2135,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
     const sBuf = ctx._cstBuf, sCh = ctx._cstChildren, sLv = ctx._cstLeaves
     const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog, sF = ctx._fields
-    const sFL = FRAME_LVL, sFB = FRAME_BUF, sFK = FRAME_KIDS
     ctx._cstBuf = undefined
     ctx._cstChildren = undefined
     ctx._cstLeaves = undefined
     ctx._cstRawChildren = undefined
     ctx._cstTriviaLog = undefined
     ctx._fields = undefined
-    FRAME_LVL = -1
     const r = chain(input, pos, ctx)
-    FRAME_LVL = sFL; FRAME_BUF = sFB; FRAME_KIDS = sFK
     ctx._cstBuf = sBuf
     ctx._cstChildren = sCh
     ctx._cstLeaves = sLv
@@ -2284,22 +2277,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * into the same frame publishes nothing a second time.
    */
   function resume(L: Level, input: string, pos: number, end: number, rv: unknown, ctx: ParseContext): unknown {
-    if (FRAME_LVL !== L.resumeTop) {
+    // The run hid the caller's collectors, so one that is set is the frame an
+    // earlier level opened for this same node (`L.resumeTop`): none lies between.
+    if (ctx._cstBuf === undefined && ctx._cstChildren === undefined) {
       const H = L.resumeNode!
       const v = H.variant
       if (v === V_CHILDREN || v === V_CHILDREN_FIELDS || v === V_CHILDREN_COLLAPSE) {
         const kids: unknown[] = []
         ctx._cstChildren = kids
         ctx._cstLeaves = kids
-        FRAME_KIDS = kids
-        FRAME_BUF = undefined
       } else {
         const buf: CstCaptureBuf = v === V_GENERIC && H.omitsRaw ? new PlainBuf(undefined, true, 0) : new PlainBuf(undefined, undefined, 0)
         ctx._cstBuf = buf
-        FRAME_BUF = buf
-        FRAME_KIDS = undefined
       }
-      FRAME_LVL = L.resumeTop
       pushCstChild(ctx, PV, rawEntry(PV, input, pos, end))
     }
     RESUME_END = end
@@ -2509,13 +2499,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const r = next(input, pos, ctx)
           let fieldsArr: ParseContext['_fields']
           if (shieldFields) { fieldsArr = ctx._fields; ctx._fields = sF }
-          const opened = FRAME_LVL === i
-          let fb: CstCaptureBuf | undefined, fk: unknown[] | undefined
-          if (opened) {
-            fb = FRAME_BUF; fk = FRAME_KIDS
-            FRAME_LVL = -1
-            ctx._cstBuf = undefined; ctx._cstChildren = undefined; ctx._cstLeaves = undefined
-          }
+          // A collector set here is the frame a continuation below opened for this node.
+          const fb = ctx._cstBuf, fk = ctx._cstChildren
+          const opened = fb !== undefined || fk !== undefined
+          if (opened) { ctx._cstBuf = undefined; ctx._cstChildren = undefined; ctx._cstLeaves = undefined }
           if (r === FAIL) return FAIL
           if (innermost) PV = r
           const end = EC.e
