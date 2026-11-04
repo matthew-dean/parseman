@@ -332,7 +332,7 @@ function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOpt
     ...(prog.cov === undefined ? [] : [`cv:[${prog.cov.map(([id, kind]) => `[${jsString(id)},${kind}]`).join(',')}],`]),
     ...(prog.hostMode === undefined ? [] : [`h:${jsString(prog.hostMode)},`]),
     // An artifact with a selective assembly runs it, and routes only a closure engine reads.
-    ...(prog.routes === undefined || (opts.assemblies?.length ?? 0) > 0 ? [] : [`ro:${JSON.stringify(prog.routes)},`]),
+    ...(prog.routes === undefined || ((opts.assemblies?.length ?? 0) > 0 && !process.env.PM_RT_CL) ? [] : [`ro:${JSON.stringify(prog.routes)},`]),
     ...(prog.triviaSpecs === undefined ? [] : [`tv:[${prog.triviaSpecs.map(emitTriviaSpec).join(',')}],`]),
     ...(prog.scans === undefined ? [] : [`sc:[${prog.scans.map(emitScanSpec).join(',')}],`]),
     // Both halves or neither: `scanSkipOf` without `scanSkip` installs nothing,

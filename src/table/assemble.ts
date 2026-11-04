@@ -1959,7 +1959,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * none. Which sites are tops is decided here, when the site is linked.
    */
   function topRoutes(ip: number): TopRoutes | undefined {
-    if (ROUTES === undefined || HYBRID !== undefined || !ROUTES.hasTop(ip)) return undefined
+    if (ROUTES === undefined || (HYBRID !== undefined && !process.env.PM_RT_CL) || !ROUTES.hasTop(ip)) return undefined
     let table = TOPS.get(ip)
     if (table === undefined) {
       table = NO_RUNS.slice()

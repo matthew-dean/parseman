@@ -67,6 +67,8 @@ import {
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
+import { K_NODE, K_SEQ, routeTable, type Route } from './routes.ts'
+import { lowerRoute, ROUTE_RUNTIME_PRELUDE, routeContinuations, routeLowerable, type RouteEmitter } from './emit-routes.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows } from './gap-gate.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
@@ -674,7 +676,81 @@ export function emitAssemblySource(
   // less than reading the slot costs; only a gap matched by its RegExp takes the
   // slot (`gapRegexLowers`).
   const GAP_ROWS = gapNeutral ? new Set<number>() : new Set([...gapRows(code, roots)].filter(row => !gapRegexLowers(k[code[row + 1]!])))
-  const labels = computeSiteLabels(code, roots, hostCst)
+  // ROUTES, LOWERED (`emit-routes.ts`): decided before any site is lowered, since
+  // what a route calls changes how those sites are printed. A selective assembly
+  // only: its closure sites do not route, so a selected top has to. Priced without
+  // them (`gapNeutral`), and judged with them by the source that ships.
+  const ROUTES = select !== undefined && select.size > 0 && !gapNeutral && !hostCst && !cfg.tolerant && !cfg.probe && !cfg.trackLines && prog.routes !== undefined
+    ? routeTable(prog.routes)
+    : undefined
+  const topRoutePlan = new Map<number, readonly (Route | undefined)[]>()
+  const tailSeqs = new Map<number, number>()
+  const seededReps = new Set<number>()
+  const routeAtoms = new Set<number>()
+  let labels = computeSiteLabels(code, roots, hostCst)
+  if (ROUTES !== undefined) {
+    const planner: Pick<RouteEmitter, 'code' | 'triAt' | 'emitted'> = {
+      code, triAt: ip => labels.at(ip).tri, emitted: ip => select!.has(ip),
+    }
+    const seqs = new Set<number>()
+    const minKept = Number(process.env.PM_RT_MIN ?? 3)
+    for (const top of select!) {
+      if (code[top] !== OP_NODE) continue
+      const routes = ROUTES.routesAt(top)
+      if (routes === undefined) continue
+      const kept = routes.map(r => r !== undefined && routeLowerable(r, planner) && r.levels.slice(0, r.d).filter(L => L.kind >= K_NODE).length >= minKept ? r : undefined)
+      if (!kept.some(r => r !== undefined)) continue
+      topRoutePlan.set(top, kept)
+      for (const r of new Set(kept)) {
+        if (r === undefined) continue
+        routeContinuations(r, code, seqs, seededReps)
+        if (r.atom.kind === 'site') routeAtoms.add(r.atom.ip)
+        for (let i = 0; i < r.d; i++) if (r.levels[i]!.kind === K_SEQ && seqs.has(r.levels[i]!.ip)) tailSeqs.set(r.levels[i]!.ip, r.levels[i]!.lc + 1)
+      }
+    }
+    if (process.env.PM_RT_DBG) {
+      const allTops = [...reachableSites(code, roots)].filter(ip => code[ip] === OP_NODE && ROUTES.hasTop(ip))
+      const R: Record<string, number> = {}
+      const inc = (k: string): void => { R[k] = (R[k] ?? 0) + 1 }
+      for (const top of allTops) {
+        if (!select!.has(top)) { inc('top unselected'); continue }
+        for (const r of new Set(ROUTES.routesAt(top)!)) {
+          if (r === undefined) continue
+          inc('routes in selected tops')
+          if (r.guards.length) inc(' guards')
+          if (r.atom.kind !== 'site') inc(' dispatch')
+          const res = r.levels.slice(0, r.d).filter(L => (L.kind === 4 || L.kind === 5))
+          if (res.some(L => !select!.has(L.ip))) inc(' continuation unselected')
+          if (r.levels.slice(0, r.d).some(L => L.kind === 1 && !(code[L.ip] === OP_SCOPE_PLAIN || code[L.ip + 3] === 0))) inc(' eager scope')
+          if (routeLowerable(r, planner)) inc(' lowerable')
+        }
+      }
+      process.stderr.write(`tops ${allTops.length} selected sites ${select!.size} planned ${topRoutePlan.size} atoms ${routeAtoms.size} tails ${tailSeqs.size} reps ${seededReps.size} ${JSON.stringify(R)}\n`)
+      process.stderr.write(`selected tops: ${allTops.filter(t => select!.has(t)).join(' ')}\n`)
+    }
+    if (process.env.PM_RT_CL) {
+      topRoutePlan.clear(); tailSeqs.clear(); seededReps.clear(); routeAtoms.clear()
+      for (const ip of [...reachableSites(code, roots)]) {
+        if (code[ip] !== OP_NODE || !ROUTES.hasTop(ip)) continue
+        for (const r of new Set(ROUTES.routesAt(ip)!)) {
+          if (r === undefined) continue
+          const addAtom = (A: Route['atom']): void => {
+            if (A.kind === 'site') routeAtoms.add(A.ip)
+            if (A.kind === 'dispatch') { routeAtoms.add(code[A.ip + 1]!); for (const a of [...A.arms, ...(A.other === undefined ? [] : [A.other])]) { routeAtoms.add(a.ip); if (a.route !== undefined) { addAtom(a.route.atom); addLv(a.route) } } }
+          }
+          const addLv = (R: Route): void => {
+            for (let i = 0; i < R.levels.length; i++) {
+              const L = R.levels[i]!
+              routeAtoms.add(L.ip)
+              if (L.kind === K_SEQ) for (let t = 0; t < L.lc; t++) routeAtoms.add(code[L.ip + 2 + t]!)
+            }
+          }
+          addAtom(r.atom); addLv(r)
+        }
+      }
+    }
+    if (routeAtoms.size > 0) labels = computeSiteLabels(code, roots, hostCst, routeAtoms)
+  }
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
   // both the recognizer and the ordinary-terminal lowering.
@@ -1155,10 +1231,58 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // to the hoisted declaration rather than to a forwarding stub. This is the
     // whole of `assemble.ts`'s `inFlight` map and its one shared closure.
     byIp.set(target, fname)
-    const body = lower(target, fname)
+    const lowered = lower(target, fname)
+    const read = routeRead(target)
+    const body = read === '' ? lowered : lowered.replace(`function ${fname}(input,pos,ctx){`, `function ${fname}(input,pos,ctx){\n${read}`)
     siteBytes.set(target, body.length)
     bodies.push(body)
     return fname
+  }
+
+  /** A node site's own routes, read ahead of its body. Empty where it tops none. */
+  let routeCount = 0
+  function routeRead(top: number): string {
+    const routes = topRoutePlan.get(top)
+    if (routes === undefined) return ''
+    const L = labels.at(top)
+    const publish = (nd: string): string => L.buf && L.raw === RAW_OMIT
+      ? `_pushNodeNoRawBuf(ctx,${nd})`
+      : L.buf && L.raw === RAW_CAPTURE
+        ? `pushCstChild(ctx,${nd},rawEntry(${nd},input,pos,e))`
+        : `if(sB!==undefined||sC!==undefined)pushCstChild(ctx,${nd},sB!==undefined&&sB.noRaw===true?undefined:sB!==undefined||sR!==undefined?rawEntry(${nd},input,pos,e):undefined)`
+    const E: RouteEmitter = {
+      code, link, hoist, fnRef, kRef,
+      exclusive: ip => disp[code[ip + 1]!]!.exclusive,
+      triAt: ip => labels.at(ip).tri,
+      scannerOf: ki => swapLegal && !triviaLabelled[ki]! && t.triviaScan[ki] != null ? hoist('ts', `TRIVIASCAN[${ki}]`) : null,
+      triviaMiss,
+      emitted: ip => select === undefined || select.has(ip),
+    }
+    const names = new Map<Route, string>()
+    const runs: string[] = []
+    for (let c = 0; c < 128;) {
+      const r = routes[c]
+      let hi = c
+      while (hi + 1 < 128 && routes[hi + 1] === r) hi++
+      if (r !== undefined) {
+        let nm = names.get(r)
+        if (nm === undefined) {
+          nm = `_rr${routeCount++}`
+          names.set(r, nm)
+          const rtxt = lowerRoute(r, nm, E, publish)
+          if (process.env.PM_RT_DBG) process.stderr.write(`route ${nm} top ${top} bytes ${rtxt.length} d ${r.d} kept ${r.levels.slice(0, r.d).filter(L => L.kind >= K_NODE).length}\n`)
+          bodies.push(rtxt)
+        }
+        runs.push(`${c},${hi},${nm}`)
+      }
+      c = hi + 1
+    }
+    const table = hoist('rt', `_rtab([${runs.join(',')}])`)
+    return `const rc=input.charCodeAt(pos)
+if(rc<128){
+const rr=${table}[rc]
+if(rr!==undefined${LOGS ? '&&ctx._triviaLog===undefined&&ctx._rootTriviaLog===undefined' : ''})return rr(input,pos,ctx)
+}`
   }
 
   /**
@@ -1928,7 +2052,10 @@ return v
         }
         parts.push('let cur=EC.e')
         const names: string[] = ['v0']
+        const tailAt = tailSeqs.get(ip)
         for (let i = 1; i < n; i++) {
+          // A route enters here with the corner in hand: the row's own term blocks.
+          if (i === tailAt) parts.push(`return ${fname}t(input,cur,ctx${wantValues ? ',v0' : ''})`, '}', `function ${fname}t(input,cur,ctx${wantValues ? ',v0' : ''}){`)
           const vn = `v${i}`
           parts.push(`let ${vn}`)
           if (REC) parts.push(pub(i))
@@ -2580,10 +2707,10 @@ cur=rr.end
 continue
 }
 `
-        return `${head}
+        return `${seededReps.has(ip) ? `function ${fname}(input,pos,ctx,seed){` : head}
 const out=${collect ? '[]' : 'undefined'}
 ${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
-let count=0
+let count=${seededReps.has(ip) ? 'seed|0' : '0'}
 for(;;){
 ${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
 ${markBody}
@@ -2973,7 +3100,7 @@ function _px${ip}(input,pos,ctx){const o=_xScan(${scannerFor(ip)});const v=_xp${
   // are `function` declarations, so a body may call one that is textually below
   // it, but the `const _ts<N>` each one reads must be initialised before any
   // parse runs, not merely before the declaration is evaluated.
-  const source = `${RUNTIME_PRELUDE}${needsNoRawPrelude ? NO_RAW_RUNTIME_PRELUDE : ''}
+  const source = `${RUNTIME_PRELUDE}${needsNoRawPrelude ? NO_RAW_RUNTIME_PRELUDE : ''}${topRoutePlan.size > 0 ? ROUTE_RUNTIME_PRELUDE : ''}
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${choiceDefs.join('\n')}

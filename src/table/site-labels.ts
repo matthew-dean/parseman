@@ -284,11 +284,16 @@ export function computeSiteLabels(
   code: Int32Array,
   roots: Iterable<number>,
   hostCst: boolean,
+  /** Sites a route also calls with every collector hidden (`emit-routes.ts`). */
+  routeAtoms?: ReadonlySet<number>,
 ): SiteLabels {
   const labels = new Map<number, SiteLabel>()
   const work: number[] = []
 
-  const push = (ip: number, l: SiteLabel): void => {
+  const push = (ip: number, given: SiteLabel): void => {
+    const l = routeAtoms?.has(ip) === true && (given.buf || given.raw !== RAW_UNKNOWN || given.cap !== CAP_UNKNOWN)
+      ? { tri: given.tri, buf: false, raw: RAW_UNKNOWN, cap: CAP_UNKNOWN }
+      : given
     const cur = labels.get(ip)
     if (cur === undefined) {
       labels.set(ip, l)
