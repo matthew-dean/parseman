@@ -147,9 +147,11 @@ function matcherExpr(entry: DispatchMatcherCase): string {
 export function serializeRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Comb]>,
   scanSkip?: readonly Comb[] | null,
+  /** External names the factory read through `g`; any no rule body reaches is kept as `void g[name]`. */
+  accessed?: readonly string[],
 ): string | null {
   try {
-    return new Serializer(ruleMap, scanSkip ?? []).run()
+    return new Serializer(ruleMap, scanSkip ?? [], accessed ?? []).run()
   } catch (e) {
     if (e instanceof Unserializable) {
       // `compileLinkableTable()` reaches this at run time, so it runs in browsers too.
@@ -192,9 +194,13 @@ class Serializer {
   /** Whether any rule reads a `prior.X` hole, so the factory takes `(g, prior)`. */
   private usesPrior = false
 
-  constructor(ruleMap: ReadonlyArray<readonly [string, Comb]>, scanSkip: readonly Comb[] = []) {
+  private accessed: readonly string[]
+  private referenced = new Set<string>()
+
+  constructor(ruleMap: ReadonlyArray<readonly [string, Comb]>, scanSkip: readonly Comb[] = [], accessed: readonly string[] = []) {
     this.ruleMap = ruleMap
     this.scanSkip = scanSkip
+    this.accessed = accessed
     for (const [name, c] of ruleMap) {
       this.localRuleNames.set(c, name)
       this.ruleValues.add(this.body(c))
@@ -296,6 +302,11 @@ class Serializer {
     const body = this.ruleMap
       .map(([name, c]) => `  ${JSON.stringify(name)}: ${this.wrap(this.body(c), [])}`)
       .join(',\n')
+    // A name the factory read through `g` that no rule body reaches still creates
+    // its slot, so a composition that defines it nowhere refuses it.
+    for (const name of this.accessed) {
+      if (!this.referenced.has(name)) innerDecls.push(`void g[${JSON.stringify(name)}]`)
+    }
     // Shared consts go INSIDE the factory: they can reference `g[name]` rule refs,
     // and `g` only exists in the factory scope.
     const params = this.usesPrior ? '(g, prior)' : '(g)'
@@ -418,7 +429,7 @@ class Serializer {
         const prior = priorNameOf(c)
         if (prior !== undefined) return `prior[${JSON.stringify(prior)}]`
         const name = this.localRuleNames.get(c) ?? ruleNameOf(c)
-        if (name !== undefined) return `g[${JSON.stringify(name)}]`
+        if (name !== undefined) { this.referenced.add(name); return `g[${JSON.stringify(name)}]` }
         const target = lazyTarget(c)!
         // Innermost matching frame wins.
         for (let i = frames.length - 1; i >= 0; i--) {
