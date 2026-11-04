@@ -30,27 +30,14 @@ export default defineConfig({
         'src/types.ts',
         'src/index.ts',
         'src/cst/types.ts',
-        // Frozen ABLATION copies. bench/table-alloc-ablation.ts keeps the PREVIOUS driver and
-        // encoder alive in-process to measure one change against a same-path control
-        // -- isolating a driver change needs the encoder frozen too, since the change
-        // spans both. They are benchmark fixtures that must not drift, not shipped
-        // code: nothing imports them outside bench/, and covering them would mean
-        // testing a snapshot of code that already has its own tests at HEAD.
-        'src/table/exec-baseline.ts',
-        'src/table/encode-baseline.ts',
-        // DELIBERATELY UNREFERENCED, and that is the point -- nothing in src/
-        // imports them, so they execute on no code path a test could reach without
-        // first wiring them in. They are the build-out of the settled predictive
-        // token-cursor direction (design ledger G14), which under G19 must always
-        // have a builder. Deleting them because a coverage gate flagged 0% is the
-        // obvious reading and the wrong one; excluding them keeps the gate honest
-        // about the code that DOES ship. Remove these lines the moment either is
-        // imported by shipped code -- at that point coverage is a real requirement.
+        // DELIBERATELY UNREFERENCED: no shipped module imports it, so it runs on no
+        // code path a test could reach without first wiring it in. It is the
+        // dormant build-out of the predictive token-cursor direction (Jess design
+        // ledger G14, kept under G19). Remove this line the moment shipped code
+        // imports it: coverage is then a real requirement. `token-alphabet.ts`
+        // and `table/inspect.ts` were excluded on the same grounds once; both are
+        // imported by shipped code now, so both are covered.
         'src/compiler/token-scanner.ts',
-        'src/compiler/token-alphabet.ts',
-        // Reachability walker used only by bench/table-opcode-gaps.ts to report which
-        // constructs a grammar reaches. Not a runtime path.
-        'src/table/inspect.ts',
         // Vendored railroad-diagrams, kept verbatim. It used to ship as a source
         // string, which coverage never counted; as real code its builders that the
         // spec tooling never calls would count against parseman's own code.

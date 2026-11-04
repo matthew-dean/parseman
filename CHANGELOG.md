@@ -3,6 +3,77 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
+  around it, in the table engines.** The interpreter's lookaheads return a fresh
+  result, so commitment inside the probe never escapes. The reference driver, the
+  closure engine and the emitted assembly kept it on `ctx._fc` after the probe.
+  So the next ordinary failure in the same sequence read as committed, and an
+  ordered choice returned it without trying its next arm:
+  `choice(sequence(literal('x'), not(dispatch(regex(/[a-z]/), when('a',
+  sequence(literal('Q'))))), literal('a'), literal('z')), sequence(literal('x'),
+  literal('a'), literal('b')))` failed on `xab`. The lookahead now clears it. See
+  `test/unit/table-lookahead-contains-commitment.test.ts`.
+- **A choice, `optional()` or `attempt()` over a node that fails after scanning trivia
+  restores the trivia logs in the emitted assembly.** A failed node drops its own
+  capture frame, but the trivia its body recorded into the root trivia log (and the
+  full trivia log) is not part of that frame. The emitted engine skipped the rollback
+  mark for such a child, so the losing arm's comments stayed recorded and the arm that
+  then matched recorded them again: `run(entry, 'x/*c*/y', { rootTrivia: { select:
+  ['comment'] } })` returned the comment twice. The closure engine and the reference
+  driver were already right. Such a child now takes a mark of the two trivia logs
+  alone (its node frame already restores the rest). A choice takes that mark as it
+  enters the arm, so an arm its char gate skips costs nothing, and the logs are cut
+  back with `pop()`, not by assigning `length`. The same holds one choice further
+  out: a choice the table lowers as an exclusive dispatch, or whose arm can commit a
+  failure, does not restore the arm it ran, so an `optional()` or a choice arm over
+  such a choice, whose arm (a node or not) scans trivia and then fails, restores the
+  two logs too. A choice that restores each arm needs no mark around it. A program
+  with no trivia of its own takes none of these marks, unless a caller runs it with
+  trivia on `ctx.trivia`: that parse takes an assembly of its own that restores the
+  logs as the closure engine does. See
+  `test/unit/table-node-arm-trivia-rollback.test.ts`.
+- **A downstream build that cannot find a compiled grammar's carried pieces fails;
+  it no longer falls back to a runtime `compose()`.** A facade chunk
+  (`export { t as grammar } from './shared-HASH.js'`) or an `export *` entry with no
+  sidecar entry of its own used to warn "isn't a build-resolvable grammar; falling
+  back to runtime" and emit a runtime `compose()` of a compiled grammar, which throws
+  at import. The reader now follows the re-export to the module that declares the
+  grammar, and fails the build, naming the artifact, when no pieces are found there.
+- **A sidecar names the artifact it was written for.** It records `artifact`, a
+  SHA-256 digest of the chunk (less a trailing `sourceMappingURL` comment), and a
+  downstream build that finds a different artifact beside it fails instead of
+  composing the pieces of another build. A sidecar written by an earlier release has
+  no digest and is read as before. The digest is taken in a `generateBundle` hook of
+  order `post`, after Vite's own hook rewrites a chunk's dynamic `import()` through
+  its preload helper; taken earlier, every such Vite artifact read as stale.
+- **A bundled ancestor is written out, not as a package reference.** An ancestor
+  imported from another package was always recorded as `{ from, name }`, resolved
+  from the artifact's location. That holds only where the build keeps the package
+  external; one the build bundled is not imported by the artifact, and is missing or
+  a different version wherever it is composed. The sidecar now writes such an
+  ancestor's pieces in full, as it already did for a relative import.
+- **A sidecar carries only the pieces of the grammar its chunk exports.** When the
+  plugin could not trace an entry's export to the module that recorded it, it took
+  any one module of the bundle that recorded the same name, in this chunk or not. An
+  entry re-exporting a precompiled dependency's `grammar` beside another entry
+  declaring its own `grammar` got the other entry's pieces, and a downstream
+  `compose()` of it built the wrong grammar with no warning. A watch rebuild did the
+  same with a module that had left the graph. The trace now follows `export *` too,
+  stops at the declaring module (an export traced to a module that recorded nothing
+  gets no entry and keeps its inline pieces), and the name fallback is limited to
+  this chunk's own modules. A module re-transformed in a watch session drops what it
+  recorded before. Two entries that both `export *` from a module in a shared chunk
+  now each get its pieces, where before neither did, and an export reached through
+  two `export *` paths to the same declaration is one binding, not an ambiguity. See
+  `test/unit/carried-pieces-sidecar.test.ts`.
+- **The frozen ablation copies `src/table/exec-baseline.ts` and `encode-baseline.ts` are
+  removed**, with the `PM_TABLE_COUNT` row counters in the reference driver `exec.ts`,
+  which only the deleted experiment benches set. None of them is reachable from a
+  published entry point, so nothing a consumer imports changes. The experiment scripts
+  nothing ran go with them, and their write-ups move to `notes/history/`.
+
 ## 0.60.0 — 2026-11-03
 
 - **A sequence led by an optional pad has its operator's first set.** A `regex()` that

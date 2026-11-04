@@ -28,7 +28,7 @@ import type { ParseResult } from '../../src/types.ts'
  * which was the honest answer while there was nothing to count — but it made a
  * coverage-enabled macro build impossible under the table. These are the counters.
  *
- * COUNTERS ONLY, per the owner ruling in `notes/RELEASE-0.48-TARGET.md` §1:
+ * COUNTERS ONLY, per the owner ruling in `notes/history/RELEASE-0.48-TARGET.md` §1:
  * `_grammarTrace`'s six phases are ~40 fine-grained emission sites in the source
  * lowering and are 0.48 work. Nothing here asserts a trace event, and the last
  * case in this file pins that the gap is a KNOWN one rather than a silent one —

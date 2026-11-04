@@ -155,20 +155,10 @@ if (shelvedRegressionKeys.size > 0) {
   }
 }
 
-// ── Cross-artifact composed-dispatch guard (DETERMINISTIC, noise-free) ──────────
-// The example-grammar suite above is all MONOLITHIC — it never exercises the
-// cross-artifact `composeLeaf` first-set dispatch jess's parsers depend on (the
-// 0.32.0 fix). This check fuses a representative multi-artifact at-rule-cluster
-// grammar and asserts the at-rule arms still first-char-gate on `@` (a gating
-// regression flips it) — timing-independent, so it never false-positives on runner
-// noise. The median is reported for the nightly major-regression watch.
-// The cross-artifact first-char dispatch check is GONE with the source lowering that
-// made it necessary. It asserted that `fusedBody`'s `@FS:` placeholder substitution
-// still resolved a composed at-rule arm's first-set through the fuse — a property of
-// TEXTUAL fusion. Table composition merges rule maps and encodes once, so a composed
-// arm's first-set is computed by the same encoder that computes a monolithic one;
-// there is no separate fuse-time resolution left to regress.
-const composeRegressed = false
+// A cross-artifact `composeLeaf` first-set dispatch check lived here. It asserted a
+// property of TEXTUAL fusion (`fusedBody`'s `@FS:` placeholders) and went with the
+// source lowering: table composition merges rule maps and encodes once, so a composed
+// arm's first set comes from the same encoder as a monolithic one.
 
 // ── WHAT ACTUALLY BLOCKS, AND WHY IT IS NOT THIS FILE'S HEADLINE NUMBER ─────────
 //
@@ -205,7 +195,7 @@ if (regressions.length > 0) {
   console.error('\nIf this is an intentional perf change, re-baseline with `pnpm bench:baseline` and commit bench/parseman-baseline.json.')
 }
 
-if (interpreterRegressions.length > 0 || hardCompiledRegressions.length > 0 || composeRegressed) {
+if (interpreterRegressions.length > 0 || hardCompiledRegressions.length > 0) {
   if (interpreterRegressions.length > 0) {
     console.error(`\nperf-guard: BLOCKED — interpreter slid past the ${tolerance}% noise-aware tolerance:`)
     for (const m of interpreterRegressions) console.error(`  ${m}`)
