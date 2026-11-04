@@ -4,6 +4,7 @@ import type { Runnable } from '../functional/run.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
+import { collectAfterLink } from './link-scope.ts'
 import { parser as grammarParser } from './grammar.ts'
 import { collectGrammarReflection, NODE_TAG, NODE_TYPE, type GrammarWithReflection } from '../cst/reflection.ts'
 import { attachGrammarReflection } from '../cst/reflection-attach.ts'
@@ -289,6 +290,7 @@ export function linkRules(
   // before the rule's own parser is built — enabling forward references. A later
   // recipe's definition of a name WINS; the name keeps its first position.
   const winners = new Map<string, { parser: Combinator<unknown>; options: RulesOptions | undefined }>()
+  const afterLink: (() => void)[] = []
   // `prior.X`: the winner for X BEFORE the running recipe, read while that recipe's
   // factory runs (its own definitions join `winners` only after it returns). It is
   // the earlier definition itself, inlined into the new rule's graph, so it costs no
@@ -308,7 +310,7 @@ export function linkRules(
     },
   })
   for (const recipe of recipes) {
-    const definitions = recipe.factory(proxy, prior)
+    const definitions = collectAfterLink(afterLink, () => recipe.factory(proxy, prior))
     for (const key of Object.keys(definitions)) {
       winners.set(key, { parser: definitions[key]!, options: recipe.options })
     }
@@ -342,6 +344,8 @@ export function linkRules(
       cache[key] = parser
     }
   }
+
+  for (const settle of afterLink) settle()
 
   // Grammar-level stamps, per rule. Each touches only its own rule — a wrap
   // replaces that rule's entry, and references hold the placeholder — so one pass

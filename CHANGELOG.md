@@ -43,15 +43,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   now kept in the grammar's carried IR as `void g["X"]`, so the build refuses it where
   runtime `compose()` did and the build did not. See
   `test/unit/compose-dangling-reference.test.ts`.
+- **Printed tables store each expected token once.** An expected set is now a list of
+  indices into one pool of tokens, instead of a list of strings. Raw table size drops
+  12% to 20% on the real CSS, Less, SCSS and Jess grammars. Gzipped bundles barely
+  change, since gzip already removed the repetition.
 - **The walker and the tables now agree on four more results, and three compositions
   a dialect grammar relies on are pinned across a package boundary.**
   - A `node()` over a rule reference delivers the `field()` below it on the walker. It
     decided field capture while the reference was unresolved, so it dropped the field
-    that the tables delivered. Rule linking now settles it, with no cost per parse. A
-    node over a bare `ref()` defined later still drops it: see #256.
+    that the tables delivered. A node built in a `rules()` factory now decides again
+    once the references are defined, wherever it sits, with no cost per parse. A node
+    built outside a factory over a `ref()` defined later still drops it: see #256.
   - A `sepBy` that fails first names its item. The derived set had no case for it, so
-    the tables reported `"sepBy"` or `"lazy"` as the expected token. Printed tables
-    carry the longer sets: `examples/csv` grows from 786 to 839 bytes.
+    the tables reported `"sepBy"` or `"lazy"` as the expected token.
   - A `dispatch()` that commits inside a disjoint `choice()` fails where it failed on
     the walker, as the tables and the walker's ordered path do. It reported the
     choice's position.

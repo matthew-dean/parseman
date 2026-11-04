@@ -66,9 +66,6 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         if (def.otherwise) visit(def.otherwise, consumed)
         return
       case 'node':
-        // Every reference is defined by the time a linker runs this pass, so this is
-        // where a node over one learns whether it has fields.
-        def.settleFields?.()
         // builds from captured children, NOT the inner parser value.
       case 'not':
       case 'peek':
@@ -103,14 +100,6 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         visit(def.parser, consumed)
         visit(def.sentinel, false)
         return
-      case 'routed':
-      case 'lines':
-      case 'scanTo':
-        // No aggregate to elide here, but a node inside still has to be reached.
-        for (const p of def.tag === 'routed' ? [def.fallback]
-          : def.tag === 'lines' ? [def.prefix, def.body, def.first, def.lazy]
-          : [def.sentinel, ...def.skip, def.recoverAt, def.stopAt]) if (p) visit(p, true)
-        return
       case 'lazy':
         // An INNER ref boundary — a distinct rule, analyzed on its own root. Don't
         // descend (and never call thunk(): an external ref would throw). A ref at
@@ -118,7 +107,7 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         // resolved by resolveRoot() before the walk starts.
         return
       default:
-        // literal / regex / keywords / guard / unknown — no container child.
+        // literal / regex / keywords / guard / scanTo / unknown — no container child.
         return
     }
   }

@@ -328,7 +328,9 @@ export type CompactProgram = {
   readonly c: readonly number[]
   readonly k: readonly unknown[]
   readonly x: readonly string[]
-  readonly e: readonly (readonly string[])[]
+  /** Expected sets, as indices into `es`. */
+  readonly e: readonly (readonly number[])[]
+  readonly es: readonly string[]
   readonly d: readonly (readonly number[])[]
   readonly r: Readonly<Record<string, number>>
   readonly f: readonly unknown[]
@@ -352,7 +354,7 @@ export type CompactProgram = {
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   if ('code' in p) return p
   return ownTableProgram({
-    code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
+    code: p.c, k: p.k, cc: p.x, fx: p.e.map(set => set.map(i => p.es[i]!)), disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
     ...(p.lx === undefined ? {} : { lex: p.lx }),
     ...(p.lp === undefined ? {} : { lexPrograms: p.lp }),

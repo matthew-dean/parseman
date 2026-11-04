@@ -18,6 +18,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import * as P from '../../src/index.ts'
+import type { Combinator } from '../../src/types.ts'
 import { run as walk } from '../../src/functional/run.ts'
 import { evalMacroExports } from '../helpers/eval-macro-module.ts'
 import { macroComposed } from '../helpers/macro-package.ts'
@@ -244,47 +245,68 @@ export const less = compose([css, rules({ trivia: ws }, g => ({
 })
 
 describe('a node over a reference reads its field wherever the node sits', () => {
-  const reads = (_c: unknown, fields: P.FieldMap | undefined): unknown => {
-    const text = fields?.text
-    return Array.isArray(text) ? text : text?.value
+  // A node in a lookahead or a scan may not reach the value, so each reducer logs what it read.
+  const engine = (g: Record<string, P.Runnable>, entry: string, input: string, runner: typeof walk): string[] => {
+    log.length = 0
+    runner(g[entry]!, input)
+    return [...log]
   }
-  const both = (rule: P.Runnable, input: string): unknown => {
-    const r = walk(rule, input)
-    expect(P.run(rule, input).value).toEqual(r.value)
-    return r.value
+  const log: string[] = []
+  const reads = (_c: unknown, fields: P.FieldMap | undefined): null => {
+    log.push(Object.keys(fields ?? {}).join())
+    return null
+  }
+  const Text = P.field('text', P.regex(/[a-z]+/))
+  type G = Record<string, Combinator<unknown>>
+  const inner = (g: G): Combinator<unknown> => P.node('Inner', g.Text!, reads)
+
+  // Every placement of a node a walk over a rule's tree could miss.
+  const placements: Array<[string, (g: G) => Combinator<unknown>, string]> = [
+    ['directly in a rule', inner, 'hi'],
+    ['the body of lines()', g => P.lines(P.literal('> '), inner(g)), '> hi'],
+    ['the prefix of lines()', g => P.lines(inner(g), P.literal('!')), 'hi!'],
+    ['the first-line prefix of lines()', g => P.lines(P.literal('> '), P.literal('!'), { first: inner(g) }), 'hi!'],
+    ['the lazy test of lines()', g => P.lines(P.literal('> '), P.many(P.choice(P.literal('!'), P.literal('\n'))), { lazy: inner(g) }), '> !\nhi'],
+    ['the fallback of routed()', g => P.routed(inner(g)), 'hi'],
+    ['the sentinel of scanTo()', g => P.scanTo(inner(g)), '!!hi'],
+    ['a skip of scanTo()', g => P.scanTo(P.literal(';'), { skip: [inner(g)] }), 'hi;'],
+    ['the recoverAt of scanTo()', g => P.scanTo(P.literal(';'), { recoverAt: inner(g) }), '!hi;'],
+    ['the stopAt of scanTo()', g => P.scanTo(P.literal(';'), { stopAt: inner(g) }), '!hi'],
+    ['behind a ref local to the factory', g => {
+      const local = P.ref<unknown>()
+      local.define(inner(g))
+      return P.sequence(local, P.optional(P.literal(';')))
+    }, 'hi;'],
+    ['in a recursive ref local to the factory', g => {
+      const list = P.ref<unknown>()
+      list.define(P.node('Inner', P.sequence(g.Text!, P.optional(P.sequence(P.literal(','), list))), reads))
+      return P.sequence(list, P.optional(P.literal(';')))
+    }, 'hi,yo;'],
+  ]
+
+  for (const [where, build, input] of placements) {
+    it(where, () => {
+      const g = P.rules(g => ({ Entry: build(g as G), Text }))
+      const seen = engine(g, 'Entry', input, walk)
+      expect(seen.length).toBeGreaterThan(0)
+      expect(new Set(seen)).toEqual(new Set(['text']))
+      expect(engine(g, 'Entry', input, P.run)).toEqual(seen)
+    })
+
+    it(`${where}, when a later grammar defines the field`, () => {
+      const base = P.rules(g => ({ Entry: build(g as G), Text: P.regex(/[a-z]+/) }))
+      const g = P.compose([base, P.rules(() => ({ Text }))])
+      const seen = engine(g, 'Entry', input, walk)
+      expect(new Set(seen)).toEqual(new Set(['text']))
+      expect(engine(g, 'Entry', input, P.run)).toEqual(seen)
+    })
   }
 
-  it('directly in a rule', () => {
-    const g = P.rules(g => ({
-      Para: P.node('Para', g.Text, reads),
-      Text: P.field('text', P.regex(/[a-z]+/)),
-    }))
-    expect(both(g.Para, 'hi')).toBe('hi')
-  })
-
-  it('inside lines()', () => {
-    const g = P.rules(g => ({
-      Quote: P.lines(P.literal('> '), P.node('Para', g.Text, reads)),
-      Text: P.field('text', P.regex(/[a-z]+/)),
-    }))
-    expect(both(g.Quote, '> hi')).toBe('hi')
-  })
-
-  it('as the fallback of routed()', () => {
-    const g = P.rules(g => ({
-      Word: P.routed(P.node('Word', g.Text, reads)),
-      Text: P.field('text', P.regex(/[a-z]+/)),
-    }))
-    expect(both(g.Word, 'hi')).toBe('hi')
-  })
-
-  it('inside a scanTo() skip', () => {
-    let seen: unknown
-    const g = P.rules(g => ({
-      Scan: P.scanTo(P.literal(';'), { skip: [P.node('Str', g.Text, (c, f) => { seen = reads(c, f); return seen })] }),
-      Text: P.field('text', P.regex(/[a-z]+/)),
-    }))
-    walk(g.Scan, 'hi;')
-    expect(seen).toBe('hi')
+  it('in a rules() nested in a factory, reading the outer grammar', () => {
+    const g = P.rules(g => {
+      const nested = P.rules(() => ({ Inner: inner(g as G) }))
+      return { Entry: nested.Inner, Text }
+    })
+    expect(engine(g, 'Entry', 'hi', walk)).toEqual(['text'])
   })
 })
