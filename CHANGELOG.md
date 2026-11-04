@@ -12,8 +12,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   table so its terminals report what they read; on the interpreter it rebuilds the
   combinator graph with reporting terminals. The emitted engine runs the same
   rewritten table and is checked to report the same counts, but only in Parséman's
-  tests and benches, from a build-time module: `parseman/diagnostics` never turns
-  source into code. Nothing is
+  tests and benches, from a build-time module: `backtrackProbe` never turns source
+  into code. Nothing is
   added to an ordinary parse: there is no flag, no branch and no assembly key. Each
   measurement also runs the plain grammar and throws if the probed parse returned
   anything else. `rebuildCombinator` takes a third argument, `{ thaw, after }`, to

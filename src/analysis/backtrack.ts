@@ -119,7 +119,8 @@ export function backtrackProbe(grammar: Grammar, engine: BacktrackEngine = 'clos
  * For tests and benches, not `parseman/diagnostics`: the probe on the emitted
  * engine. `assemble` hands the rewritten program back with a pre-compiled
  * assembly for `probeCfg(program)`, built as a module the way a macro build ships
- * one. Nothing here turns a string into code.
+ * one. Nothing here turns a string into code, and a program with no assembly is
+ * refused, because the assembler would.
  */
 export async function backtrackProbeAssembled(
   grammar: Grammar,
@@ -129,6 +130,8 @@ export async function backtrackProbeAssembled(
   const prog = tableOf(grammar)
   const base = tableRules({ ...prog, asm: [] })
   const assembled = await assemble(probeProgram(prog, rec))
+  // A program with no inventory would make the assembler build the engine from source.
+  if (assembled.asm === undefined) throw new TypeError('backtrackProbeAssembled: `assemble` returned a program with no pre-compiled assembly')
   // Ask the assembler which engine it built, rather than assume the factory was taken.
   const refusal = new AssemblyCache(assembled).for(probeCfg(assembled)).emitRefusal
   if (refusal !== undefined) throw new Error(`backtrackProbeAssembled: the assembly was not used: ${refusal}`)

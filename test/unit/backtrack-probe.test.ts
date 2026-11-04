@@ -13,7 +13,7 @@ import { OP_ARMGATE, OP_NOT, OP_XFORM } from '../../src/table/ops.ts'
 const ENGINES = ['interpreter', 'closure', 'emitted'] as const
 
 function probeOn(grammar: Record<string, unknown>, engine: typeof ENGINES[number]): Promise<BacktrackProbe> | BacktrackProbe {
-  // The emitted engine comes from a build-time module: `parseman/diagnostics` never builds code.
+  // The emitted engine comes from a build-time module: `backtrackProbe` never builds code.
   return engine === 'emitted'
     ? backtrackProbeAssembled(grammar, p => withEmittedAssembly(p, probeCfg(p)))
     : backtrackProbe(grammar, engine)
@@ -110,6 +110,62 @@ describe('backtrackProbe', () => {
   it('refuses to report when asked for a rule the grammar lacks', () => {
     const g = rules(() => ({ Item: literal('a') }))
     expect(() => backtrackProbe(g, 'closure').measure('Nope', 'a')).toThrow(/no rule "Nope"/)
+  })
+})
+
+describe('code construction', () => {
+  // A constructor that throws would be caught and fall back to closures, so count calls.
+  function countingFunction(): { attempts: () => number; restore: () => void } {
+    const real = globalThis.Function
+    let attempts = 0
+    const count = (): void => { attempts++ }
+    globalThis.Function = new Proxy(real, {
+      construct(target, args) { count(); return Reflect.construct(target, args) as object },
+      apply(target, self, args) { count(); return Reflect.apply(target, self, args) as unknown },
+    })
+    return { attempts: () => attempts, restore: () => { globalThis.Function = real } }
+  }
+  const g = rules(() => ({
+    Item: sequence(not(literal('q')), peek(literal('f')), regex(/[a-z]+(?=;)/y), literal(';')),
+  }))
+
+  it.each(['closure', 'interpreter'] as const)('the published probe builds no code on %s', (engine) => {
+    const counter = countingFunction()
+    try {
+      expect(backtrackProbe(g, engine).measure('Item', 'foo;').counts.lookaheads).toBe(2)
+    } finally { counter.restore() }
+    expect(counter.attempts()).toBe(0)
+  })
+
+  it('a table program with no assembly inventory does not make it build any', () => {
+    const { asm: _asm, ...bare } = compileRuleMapRunnable([['Item', g.Item as Combinator<unknown>]], { refusals: [] })!.prog
+    const counter = countingFunction()
+    try {
+      expect(backtrackProbe(bare, 'closure').measure('Item', 'foo;').counts.lookaheads).toBe(2)
+    } finally { counter.restore() }
+    expect(counter.attempts()).toBe(0)
+  })
+
+  it('the emitted probe takes its engine from the imported module', async () => {
+    let counter: ReturnType<typeof countingFunction> | undefined
+    try {
+      const probe = await backtrackProbeAssembled(g, async (p) => {
+        const assembled = await withEmittedAssembly(p, probeCfg(p))
+        counter = countingFunction()
+        return assembled
+      })
+      expect(probe.engine).toEqual({ ran: 'emitted' })
+      expect(probe.measure('Item', 'foo;').counts.lookaheads).toBe(2)
+    } finally { counter?.restore() }
+    expect(counter?.attempts()).toBe(0)
+  })
+
+  it('the emitted probe refuses a program with no assembly', async () => {
+    const counter = countingFunction()
+    try {
+      await expect(backtrackProbeAssembled(g, async ({ asm: _asm, ...bare }) => bare)).rejects.toThrow(/no pre-compiled assembly/)
+    } finally { counter.restore() }
+    expect(counter.attempts()).toBe(0)
   })
 })
 
