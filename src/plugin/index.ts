@@ -2333,10 +2333,17 @@ function transformMacroImpl(
     // does — one encode, one `tableRules(…)` expression, no linker. `carried` is
     // unchanged either way: it is the re-lowerable IR list, not a lowering artifact,
     // so a downstream re-compose behaves identically whichever engine emitted here.
-    const merged = mergedCarriedRules(carried, {
-      trivia: composing,
-      ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
-    })
+    let merged: ReturnType<typeof mergedCarriedRules>
+    try {
+      merged = mergedCarriedRules(carried, {
+        trivia: composing,
+        ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
+      })
+    } catch (e) {
+      // Linking refuses the composition (a `prior.X` no earlier piece defines): a
+      // runtime `compose()` would refuse it the same way, so the build fails, here.
+      throw new Error(`${id}:${lineOf(init.start)} — ${(e as Error).message}`, { cause: e })
+    }
     if (merged !== null) {
       // Harvest the direct-builder import provenance carried on the merged graph so
       // the re-lower pass at the end of this transform re-emits those imports.

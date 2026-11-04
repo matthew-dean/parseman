@@ -48,6 +48,52 @@ whose graph references a rule the composition also defines: the interpreter woul
 its references resolve to the composition's rules. A borrowed rule that references nothing
 the composition defines is fine (`test/parity/interpreted-fuse-parity.test.ts`).
 
+### Re-reduce or extend an inherited rule: `prior`
+
+An override replaces a rule outright. To change only part of it, take the factory's
+second parameter, `prior`. `prior.X` is the definition of `X` that the grammars composed
+before this one gave it, with a top-level `node()` unwrapped to its body. Use it to build
+a different node from the same grammar, or to add an arm to an inherited choice, without
+copying the rule:
+
+```ts
+// [verify]
+import { choice, compose, node, regex, rules, run, type Combinator } from 'parseman'
+
+const base = rules(g => ({
+  Value: node('Value', choice(g.Num, g.Word), children => ({ base: children[0].value })),
+  Num:   regex(/[0-9]+/),
+  Word:  regex(/[a-z]+/),
+}))
+
+// The same grammar for Value, a different node.
+const reduced = rules((g, prior: { Value: Combinator<unknown> }) => ({
+  Value: node('Value', prior.Value, children => ({ dialect: children[0].value })),
+}))
+
+// Value's choice plus one arm.
+const extended = rules((g, prior: { Value: Combinator<unknown> }) => ({
+  Value: node('Value', choice(prior.Value, regex(/@[a-z]+/)), children => ({ dialect: children[0].value })),
+}))
+
+run(compose([base, reduced]).Value, '12').value
+// → { dialect: '12' }
+
+run(compose([base, extended]).Value, '@x').value
+// → { dialect: '@x' }
+```
+
+`prior.X`'s own `g.` references stay bound to the composition, so it reads every override,
+including ones this grammar makes. `prior.X` comes from the pieces composed before this
+one, never from this piece or a later one. A composition where no earlier piece defines
+`X` refuses `prior.X`, at runtime and in the build. The parameter answers any name;
+annotate it with the rules you read (`prior: { Value: Combinator<V> }`) for precise types.
+
+`prior.X` is the earlier definition itself, placed in the new rule. So it parses and
+encodes exactly as the rule written out by hand would, at no extra cost. A grammar
+built on its own, before anything is composed under it, ships `prior.X` in its carried
+pieces, and the composition that imports it fills it in (`test/unit/rules-prior.test.ts`).
+
 ## Assembling one grammar from parts of several
 
 To borrow a piece of another grammar — say a mixin rule from one dialect and a loop from

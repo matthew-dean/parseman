@@ -5,6 +5,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`rules((g, prior) => …)`: a composing grammar can re-reduce or extend an inherited
+  rule without copying it.** `prior.X` is the definition of `X` that the grammars
+  composed before this one gave it, with a top-level `node()` unwrapped to its body, and
+  its `g.` references stay bound to the composition. `X: node('X', prior.X, reduce)`
+  swaps only the reducer; `X: node('X', choice(prior.X, arm), reduce)` adds an arm.
+  The earlier definition is placed in the new rule, so it parses and encodes as the
+  rule written out by hand would (the encoded table is identical). A grammar built on
+  its own ships `prior.X` in its carried pieces, and a composition where no earlier
+  piece defines `X` refuses it, at runtime and in the build. The interpreter, the
+  reference driver, the closure engine, the printed assembly, `compile()` and the
+  macro's cross-module table build the same values. See `docs/guide/extending.md` and
+  `test/unit/rules-prior.test.ts`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the
