@@ -24,6 +24,7 @@ import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { toEBNF } from '../../src/spec/index.ts'
 import { evalMacroExports } from '../helpers/eval-macro-module.ts'
 import { macroComposed } from '../helpers/macro-package.ts'
 
@@ -168,6 +169,56 @@ describe('prior: what it reads and what it costs', () => {
     expect(() => transformMacro(`import { rules, node, regex, compose } from 'parseman' with { type: 'macro' }
 export const g = compose([rules(g => ({ Item: regex(/a/) })), rules((g, prior) => ({ List: node('List', prior.List) }))])`, '/pkg/x.ts', new Set(['parseman'])))
       .toThrow('/pkg/x.ts:2 — compose: prior.List is read, but no grammar composed before it defines "List"')
+  })
+
+  it('names prior.X on every engine when nothing fills it', () => {
+    const named = 'compose: prior.Missing is read, but no grammar composed before it defines "Missing"'
+    const unfilled = (): Record<string, Comb> => P.rules((_g, prior: { Missing: Comb }) => ({
+      Entry: P.sequence(prior.Missing, P.literal(';')),
+    }))
+    expect(() => P.parse(unfilled().Entry!, 'a;')).toThrow(named)
+    expect(() => P.run(unfilled().Entry!, 'a;')).toThrow(named)
+    expect(() => P.run(P.compile(unfilled()).Entry!, 'a;')).toThrow(named)
+    const prog = encodeTable(unfilled())
+    expect(() => P.run(execRules(prog).Entry!, 'a;')).toThrow(named)
+    expect(() => P.run(tableRules({ ...prog, asm: [] }).Entry!, 'a;')).toThrow(named)
+    const macro = evalMacroExports(`import { rules, literal, sequence } from 'parseman' with { type: 'macro' }
+export const dialect = rules((g, prior) => ({ Entry: sequence(prior.Missing, literal(';')) }))`, { ...P }).dialect as Record<string, P.Runnable>
+    expect(() => P.run(macro.Entry!, 'a;')).toThrow(named)
+  })
+
+  it('prints an unfilled prior.X by name in the spec', () => {
+    const unfilled = P.rules((_g, prior: { Missing: Comb }) => ({ Entry: P.sequence(prior.Missing, P.literal(';')) }))
+    expect(toEBNF(unfilled)).toContain('/* prior.Missing */')
+  })
+
+  it('types prior from the base grammar', () => {
+    const composed = P.compose([base, P.rules((_g, prior: P.PriorRules<typeof base>) => ({
+      List: P.node('List', prior.List, c => ({ count: c.length })),
+    }))])
+    expect(P.run(composed.List!, 'a,b').value).toEqual({ count: 2 })
+    // @ts-expect-error a rule the base does not define
+    const misspelled = (prior: P.PriorRules<typeof base>) => prior.Lisst
+    expect(misspelled).toBeTypeOf('function')
+  })
+
+  it('fills prior in a composeLeaf() build', () => {
+    const composed = macroComposed(`import { rules, node, regex, literal, oneOrMoreSep } from 'parseman' with { type: 'macro' }
+export const base = rules(g => ({
+  List: oneOrMoreSep(g.Item, literal(',')),
+  Item: regex(/[a-z]+/),
+}))`, `import { composeLeaf, rules, node } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+export const dialectLeaf = composeLeaf([base, rules((g, prior) => ({
+  List: node('List', prior.List, c => ({ count: c.length })),
+}))])`).dialectLeaf as Record<string, P.Runnable>
+    expect(P.run(composed.List!, 'a,b,c').value).toEqual({ count: 3 })
+  })
+
+  it('fails a composeLeaf() build on a prior.X nothing defines', () => {
+    expect(() => transformMacro(`import { rules, node, regex, composeLeaf } from 'parseman' with { type: 'macro' }
+export const g = composeLeaf([rules(g => ({ Item: regex(/a/) })), rules((g, prior) => ({ List: node('List', prior.List, c => c) }))])`, '/pkg/x.ts', new Set(['parseman'])))
+      .toThrow('/pkg/x.ts:2 — composeLeaf: prior.List is read, but no grammar composed before it defines "List"')
   })
 
   it('carries prior through the IR a built grammar ships', () => {

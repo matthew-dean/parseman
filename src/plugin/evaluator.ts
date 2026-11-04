@@ -16,7 +16,7 @@ import type {
 import type { Combinator } from '../types.ts'
 import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
-import { rules, type PriorRules, type RulesOptions } from '../combinators/parser.ts'
+import { rules, RULES_RECIPE, type PriorRules, type RulesOptions, type RulesRecipe } from '../combinators/parser.ts'
 import * as parseman from '../index.ts'
 import { confirmedBuildParamUnused } from '../compiler/build-arity.ts'
 import { directBuilderBindings } from './direct-builder-static.ts'
@@ -1620,8 +1620,12 @@ export function evaluateParserFactory(
    */
   const map = new Map<string, Combinator<unknown>>()
   for (const key of keys) map.set(key, built[key]!)
+  ruleMapRecipes.set(map, (built as unknown as Record<symbol, readonly RulesRecipe[]>)[RULES_RECIPE]!)
   return map
 }
+
+/** The recipe an evaluated rule map came from, for a composition that links it. */
+export const ruleMapRecipes = new WeakMap<ReadonlyMap<string, Combinator<unknown>>, readonly RulesRecipe[]>()
 
 /** A combinator slot created by ref() — has a callable `define`. */
 type DefinableRef = Combinator<unknown> & { define(p: Combinator<unknown>): void }

@@ -1,5 +1,7 @@
 import type { Combinator } from '../types.ts'
 import type { HostMode } from '../cst/host-mode.ts'
+import type { Runnable } from '../functional/run.ts'
+import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { parser as grammarParser } from './grammar.ts'
@@ -173,11 +175,34 @@ type RulesResult<T extends Record<string, Combinator<unknown>>> =
  *
  *   rules((g, prior) => ({ Value: node('Value', prior.Value, reduceValue) }))
  *
- * Its `g.X` references stay bound to the composition (open recursion). Annotate the
- * parameter with the rules you read (`prior: { Value: Combinator<V> }`) for precise
- * types. See `docs/guide/extending.md`.
+ * Its `g.X` references stay bound to the composition (open recursion). Name the base
+ * grammar so `prior.X` is typed and a misspelled rule fails to compile:
+ *
+ *   rules((g, prior: PriorRules<typeof css>) => ({ … }))
+ *
+ * A rule's value is `unknown` here, because unwrapping a `node()` changes it. Unnamed,
+ * the parameter answers any string. See `docs/guide/extending.md`.
  */
-export type PriorRules = { readonly [name: string]: Combinator<unknown> }
+export type PriorRules<Base = Record<string, Combinator<unknown>>> = {
+  readonly [K in keyof Base & string as Base[K] extends Combinator<unknown> | Runnable ? K : never]: Combinator<unknown>
+}
+
+const priorUnfilled = (key: string): Error =>
+  new Error(`compose: prior.${key} is read, but no grammar composed before it defines "${key}"`)
+
+/** The placeholder for a `prior.X` no earlier piece has defined yet. Composition
+ * replaces it; running it, or analysing what it leads to, reports the name. */
+function priorHole(key: string): Combinator<unknown> {
+  const unfilled = priorUnfilled(key)
+  const fail = (): never => { throw unfilled }
+  return {
+    _tag: 'lazy',
+    _meta: { firstSet: any(), canMatchNewline: true, isTrivia: false },
+    _def: { tag: 'lazy', thunk: fail },
+    parse: fail,
+    _priorOf: key,
+  } as Combinator<unknown>
+}
 
 export function rules<T extends Record<string, Combinator<unknown>>, P extends object = PriorRules>(factory: (self: any, prior: P) => T): RulesResult<T>
 export function rules<T extends Record<string, Combinator<unknown>>, P extends object = PriorRules>(options: RulesOptions, factory: (self: any, prior: P) => T): RulesResult<T>
@@ -269,13 +294,9 @@ export function linkRules(
       if (typeof key !== 'string') return undefined
       const earlier = winners.get(key)?.parser
       if (earlier !== undefined) return earlier._def.tag === 'node' ? earlier._def.parser : earlier
-      if (link !== undefined) throw new Error(`compose: prior.${key} is read, but no grammar composed before it defines "${key}"`)
+      if (link !== undefined) throw priorUnfilled(key)
       let hole = priorHoles.get(key)
-      if (hole === undefined) {
-        hole = ref()
-        ;(hole as unknown as { _priorOf?: string })._priorOf = key
-        priorHoles.set(key, hole)
-      }
+      if (hole === undefined) priorHoles.set(key, hole = priorHole(key))
       return hole
     },
   })

@@ -10,13 +10,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   composed before this one gave it, with a top-level `node()` unwrapped to its body, and
   its `g.` references stay bound to the composition. `X: node('X', prior.X, reduce)`
   swaps only the reducer; `X: node('X', choice(prior.X, arm), reduce)` adds an arm.
+  Dropping that `node()` drops the inherited node too.
   The earlier definition is placed in the new rule, so it parses and encodes as the
   rule written out by hand would (the encoded table is identical). A grammar built on
   its own ships `prior.X` in its carried pieces, and a composition where no earlier
-  piece defines `X` refuses it, at runtime and in the build. The interpreter, the
-  reference driver, the closure engine, the printed assembly, `compile()` and the
-  macro's cross-module table build the same values. See `docs/guide/extending.md` and
-  `test/unit/rules-prior.test.ts`.
+  piece defines `X` refuses it, at runtime and in the build. Annotating the parameter
+  as `PriorRules<typeof base>` types `prior.X` and rejects a misspelled rule. A `prior.X`
+  nothing fills throws a message naming it on every engine, and `toEBNF` prints it as
+  `/* prior.X */`. The interpreter, the reference driver, the closure engine, the printed
+  assembly, `compile()` and the macro's cross-module table build the same values.
+  See `docs/guide/extending.md` and `test/unit/rules-prior.test.ts`.
+- **A macro `composeLeaf()` now links its pieces as `compose()` and the runtime
+  `composeLeaf()` do**, instead of merging their rule maps by name. The leaf can read
+  `prior.X`, and first sets and expected sets see the composed grammar.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

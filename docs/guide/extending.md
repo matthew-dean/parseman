@@ -58,7 +58,7 @@ copying the rule:
 
 ```ts
 // [verify]
-import { choice, compose, node, regex, rules, run, type Combinator } from 'parseman'
+import { choice, compose, node, regex, rules, run, type PriorRules } from 'parseman'
 
 const base = rules(g => ({
   Value: node('Value', choice(g.Num, g.Word), children => ({ base: children[0].value })),
@@ -67,12 +67,12 @@ const base = rules(g => ({
 }))
 
 // The same grammar for Value, a different node.
-const reduced = rules((g, prior: { Value: Combinator<unknown> }) => ({
+const reduced = rules((g, prior: PriorRules<typeof base>) => ({
   Value: node('Value', prior.Value, children => ({ dialect: children[0].value })),
 }))
 
 // Value's choice plus one arm.
-const extended = rules((g, prior: { Value: Combinator<unknown> }) => ({
+const extended = rules((g, prior: PriorRules<typeof base>) => ({
   Value: node('Value', choice(prior.Value, regex(/@[a-z]+/)), children => ({ dialect: children[0].value })),
 }))
 
@@ -86,8 +86,17 @@ run(compose([base, extended]).Value, '@x').value
 `prior.X`'s own `g.` references stay bound to the composition, so it reads every override,
 including ones this grammar makes. `prior.X` comes from the pieces composed before this
 one, never from this piece or a later one. A composition where no earlier piece defines
-`X` refuses `prior.X`, at runtime and in the build. The parameter answers any name;
-annotate it with the rules you read (`prior: { Value: Combinator<V> }`) for precise types.
+`X` refuses `prior.X`, at runtime and in the build, and a grammar run before anything is
+composed under it throws the same message on every engine.
+
+Annotate the parameter with `PriorRules<typeof base>`, as above. `prior.X` is then typed,
+and a misspelled rule fails to compile. Without it the parameter answers any string, and
+under `noUncheckedIndexedAccess` each read is `Combinator<unknown> | undefined`.
+
+Keep the `node()` when you extend an inherited node. `prior.X` is the node's body, so
+`X: choice(prior.X, arm)` is a rule with no node: the inherited node and its reducer are
+gone from every path through `X`, and the children reach the enclosing node instead. Write
+`X: node('X', choice(prior.X, arm), reduce)`.
 
 `prior.X` is the earlier definition itself, placed in the new rule. So it parses and
 encodes exactly as the rule written out by hand would, at no extra cost. A grammar
