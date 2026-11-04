@@ -636,6 +636,22 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   - Open: a value that resumes at every level (slash, then space, then comma) costs more
     than its plain path though it calls 18 fewer pieces; `12px/1.5;`, `12px 1.5;` and
     `a, b;` alone are each faster. Branch `perf/left-corner-routes`.
+  - Third slice: routes stored in the program; levels the value passes through keep no piece
+    (a scope is installed only around the atom and around a continuation below it, a wrapper
+    adds none); one gap read per end, shared by the levels that complete there. Identity
+    against `main` @ `53cff042`: 0 diffs, four dialects, AST and CST. Instructions,
+    `--jitless`: CSS `font: 12px/1.5 a, b;` +3.7%, `.jess` +4.8% (from +3.9% / +5.8%).
+  - **Time disagrees with instructions on every value that resumes.** Marginal cycles,
+    `--jitless` / JIT: CSS `font: 12px/1.5 a, b;` +28.1% / +3.6%, `.jess` `font` +29.2% /
+    +9.1%, `.jess` `margin: 0 auto;` +21.6% / −6.4%, CSS `font: 1/2;` +31.6% / −2.4%. No
+    resume: CSS `font: 12px;` −11.5% / −12.6%, `.jess` `border-radius: 4px;` −5.4% / −5.9%,
+    `benchmark.less` −5.6% / −2.5%. `font: 1/2;` runs 2% fewer instructions and about 20k
+    more cycles per parse, the same for `1/2/3/4/5/6`, and only when a continuation resumes
+    below the route's top. Not a per-parse rebuild: route builders, closures and `RegExp`
+    objects are created once per assembly, and the same regex objects run the same number of
+    times as on `main`. The time lands on every bytecode handler and on the regexp
+    interpreter (2.3× for the same calls); Instruments shows front-end and discarded work
+    rising. Cause not found yet.
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
   ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.

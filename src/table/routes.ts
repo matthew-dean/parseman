@@ -1,5 +1,5 @@
 /**
- * LEFT-CORNER ROUTES — derived once per table, read by the engines.
+ * LEFT-CORNER ROUTES — derived when a table is encoded, stored in it, read by the engines.
  *
  * A construct nested under several levels (a value under its declaration, under
  * the declaration list, under the block) starts at every level at the same
@@ -18,10 +18,11 @@
  *
  * The derivation reads the rows and the analyses the encoder already lays down
  * (classes, dispatch tables, site labels, nullability, failure cleanliness), and
- * nothing else. It is a pure function of the table, memoised per resolved table,
- * so every engine reads the same routes. Routes exist only for a strict parse —
- * no recovery, probe, coverage, line tracking or CST host — and the engines
- * decline them under any of those.
+ * nothing else. It is a pure function of the table, run once by the encoder and
+ * stored (`packRoutes`), so every engine reads the same routes and loading a table
+ * derives nothing. Routes exist only for a strict parse — no recovery, probe,
+ * coverage, line tracking or CST host — and the engines decline them under any of
+ * those.
  *
  * Design and measurements: `docs/design/left-corner-routing.md`.
  */
@@ -31,14 +32,14 @@ import {
   OP_WITHCTX,
 } from './ops.ts'
 import {
-  assemblyExtraIps, classHas, encodeClassSpec, resolveClass,
-  type ResolvedClass, type ResolvedTable,
+  assemblyExtraIps, classHas, encodeClassSpec, resolveClass, resolveTable,
+  type ResolvedClass, type ResolvedTable, type TableProgram,
 } from './program.ts'
 import {
-  gatedPassCollapse, passCollapse, reachableSites, scopeIsIdentity, triviaLeadRanges, type SiteLabels,
+  computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scopeIsIdentity, triviaLeadRanges, type SiteLabels,
 } from './site-labels.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
-import type { FailClean } from './fail-clean.ts'
+import { failCleanAnalysis, type FailClean } from './fail-clean.ts'
 import { leadingTriviaFieldAt } from './field-spec.ts'
 import { largeChoiceLiteralPretest, leadingScalarTerminal, scalarTerminalNodeChild } from './scalar-terminal.ts'
 import { leadMasks, maskOfRanges, type LeadMask } from './lead-mask.ts'
@@ -158,38 +159,219 @@ export type Route = {
 }
 
 export type RouteTable = {
-  /**
-   * The routes a node site tops, per character (0–127), `undefined` where it
-   * tops none. Derived the first time a site asks, so an assembly pays only
-   * for the node sites it links.
-   */
+  /** Whether a node site tops any route. */
+  readonly hasTop: (top: number) => boolean
+  /** The routes a node site tops, per character (0–127), `undefined` where it tops none. */
   readonly routesAt: (top: number) => readonly (Route | undefined)[] | undefined
   /**
    * The regex rows an `optional` gap a route may read and hand over can sit at:
    * the `optional(<regex>)` that opens a repeat's item. Known before any route is
-   * derived, because the row's piece is chosen when it is linked.
+   * read, because the row's piece is chosen when it is linked.
    */
   readonly gapRows: ReadonlySet<number>
 }
 
 /**
- * The table's routes, for one assembly. Only a strict assembly with no host CST
- * and no line tracking routes, so a table has one in practice. `labels`
- * (computed with `hostCst` false) and `clean` are the assembly's own analyses of
- * the same code, so the derivation does not compute them again.
+ * The routes as a program stores them (`TableProgram.routes`): derived when the
+ * table is encoded, so loading it derives nothing. What an assembly needs when
+ * it links — which sites are tops, and which regex rows hand a gap over — is
+ * stored as numbers; the routes themselves are one JSON text (`RoutePools`),
+ * parsed the first time a route is built, so a table that is loaded and parsed
+ * once never reads them.
  */
-export function routeTable(t: ResolvedTable, labels: SiteLabels, clean: FailClean): RouteTable {
-  let derive: ((top: number) => (Route | undefined)[] | undefined) | undefined
-  const memo = new Map<number, (Route | undefined)[] | undefined>()
+export type PackedRoutes = {
+  /** `RouteTable.gapRows`. */
+  readonly g: readonly number[]
+  /** The tops, ascending; the `n`th top's routes are `RoutePools[0][n]`. */
+  readonly t: readonly number[]
+  /** `RoutePools`, as JSON. */
+  readonly d: string
+}
+
+/**
+ * Every pool is indexed from the records that use it; an object the derivation
+ * shares is stored once.
+ *
+ * - Per top: `[lo, hi, route, lo, hi, route, …]`, one route per run of characters.
+ * - Routes: `[atom, d, ...levels(d), cuts, (at, cut, scope)…, (cut, terminals, ...terminal)…]`.
+ * - Levels: `[kind, ip, arm, variant, flags, lc, resumeTop, ...tails]` (`LF_*` flags).
+ * - Tails: `[kind, ip, collect, cls, gapRow, follow, other, followMask, xf]` (−1 none).
+ * - Lead masks, as their members (128: any non-ASCII character).
+ * - Atoms: `[0, ip]` a site, `[1]` the routed token, or
+ *   `[2, ip, arms, (route, ip, needsRouted, commits)…, hasOther, (other's four)?]`
+ *   a dispatch (route −1: the arm runs whole).
+ */
+type RoutePools = readonly [
+  tops: readonly (readonly number[])[],
+  routes: readonly (readonly number[])[],
+  levels: readonly (readonly number[])[],
+  tails: readonly (readonly number[])[],
+  masks: readonly (readonly number[])[],
+  atoms: readonly (readonly number[])[],
+]
+
+const LF_KNOWN = 1
+const LF_TRIV_RUNTIME = 2
+const LF_SEP_GATED = 4
+const LF_DIRTY = 8
+const LF_CANDIDATE = 16
+
+/**
+ * Derive and pack a table's routes, at encode time. `undefined` where no node
+ * site tops a route. Only an AST table without line tracking stores them, since
+ * no other assembly reads them.
+ */
+export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
+  const t = resolveTable(prog)
+  const roots = [...Object.values(prog.rules), ...assemblyExtraIps(prog)]
+  const derive = deriver(t, computeSiteLabels(t.code, roots, false), failCleanAnalysis(t.code))
+  const P = { t: [] as number[][], r: [] as number[][], l: [] as number[][], x: [] as number[][], m: [] as number[][], a: [] as number[][] }
+  const topIps: number[] = []
+  const ids = new Map<object, number>()
+  const maskIds = new Map<string, number>()
+  const intern = <T extends object>(o: T, pool: number[][], enc: (o: T) => number[]): number => {
+    const hit = ids.get(o)
+    if (hit !== undefined) return hit
+    const i = pool.length
+    ids.set(o, i)
+    pool.push([])
+    pool[i] = enc(o)
+    return i
+  }
+  const mask = (m: LeadMask | undefined): number => {
+    if (m === undefined) return -1
+    const members: number[] = []
+    for (let c = 0; c < m.length; c++) if (m[c] === 1) members.push(c)
+    const key = members.join(',')
+    let i = maskIds.get(key)
+    if (i === undefined) { i = P.m.length; P.m.push(members); maskIds.set(key, i) }
+    return i
+  }
+  const tailId = (T: RouteTail): number => intern(T, P.x, T => [
+    T.kind, T.ip, T.collect ? 1 : 0, T.cls, T.gapRow, T.follow, T.other, mask(T.followMask), T.xf,
+  ])
+  const levelId = (L: RouteLevel): number => intern(L, P.l, L => [
+    L.kind, L.ip, L.arm, L.variant,
+    (L.known ? LF_KNOWN : 0) | (L.trivRuntime ? LF_TRIV_RUNTIME : 0) | (L.sepGated ? LF_SEP_GATED : 0)
+      | (L.dirty ? LF_DIRTY : 0) | (L.candidate ? LF_CANDIDATE : 0),
+    L.lc, L.resumeTop, ...L.tails.map(tailId),
+  ])
+  const arm = (A: DispatchArmRoute): number[] => [
+    A.route === undefined ? -1 : routeId(A.route), A.ip, A.needsRouted ? 1 : 0, A.commits ? 1 : 0,
+  ]
+  const atomId = (A: RouteAtom): number => intern(A, P.a, A =>
+    A.kind === 'site' ? [0, A.ip]
+      : A.kind === 'routed' ? [1]
+        : [2, A.ip, A.arms.length, ...A.arms.flatMap(arm), ...(A.other === undefined ? [0] : [1, ...arm(A.other)])])
+  function routeId(R: Route): number {
+    return intern(R, P.r, R => [
+      atomId(R.atom), R.d, ...R.levels.map(levelId),
+      R.cuts.length, ...R.cuts.flatMap(x => [x.at, x.cut, x.scope]),
+      ...R.guards.flatMap(g => [g.cut, g.terminals.length, ...g.terminals]),
+    ])
+  }
+  const tops = [...reachableSites(t.code, roots)].filter(ip => routeTopCandidate(t.code, ip)).sort((a, b) => a - b)
+  for (const top of tops) {
+    const routes = derive(top)
+    if (routes === undefined) continue
+    const row: number[] = []
+    for (let c = 0; c < 128;) {
+      const R = routes[c]
+      let hi = c
+      while (hi + 1 < 128 && routes[hi + 1] === R) hi++
+      if (R !== undefined) row.push(c, hi, routeId(R))
+      c = hi + 1
+    }
+    P.t.push(row)
+    topIps.push(top)
+  }
+  if (topIps.length === 0) return undefined
+  const pools: RoutePools = [P.t, P.r, P.l, P.x, P.m, P.a]
   return {
+    g: [...optionalGapRows(t.code, roots)].sort((a, b) => a - b),
+    t: topIps,
+    d: JSON.stringify(pools),
+  }
+}
+
+const NO_ROUTES: readonly (Route | undefined)[] = Array.from({ length: 128 })
+
+/** A table's stored routes, read lazily per top the first time a top runs. */
+export function routeTable(packed: PackedRoutes): RouteTable {
+  const at = new Map<number, number>()
+  for (let i = 0; i < packed.t.length; i++) at.set(packed.t[i]!, i)
+  let pools: { t: RoutePools[0]; r: RoutePools[1]; l: RoutePools[2]; x: RoutePools[3]; m: RoutePools[4]; a: RoutePools[5] } | undefined
+  const P = (): NonNullable<typeof pools> => {
+    if (pools !== undefined) return pools
+    const [t, r, l, x, m, a] = JSON.parse(packed.d) as RoutePools
+    return pools = { t, r, l, x, m, a }
+  }
+  const masks: (LeadMask | undefined)[] = []
+  const tails: (RouteTail | undefined)[] = []
+  const levels: (RouteLevel | undefined)[] = []
+  const atoms: (RouteAtom | undefined)[] = []
+  const routes: (Route | undefined)[] = []
+  const mask = (i: number): LeadMask | undefined => {
+    if (i < 0) return undefined
+    let m = masks[i]
+    if (m === undefined) { m = new Uint8Array(129); for (const c of P().m[i]!) m[c] = 1; masks[i] = m }
+    return m
+  }
+  const tail = (i: number): RouteTail => tails[i] ??= ((w: readonly number[]): RouteTail => ({
+    kind: w[0]!, ip: w[1]!, collect: w[2] === 1, cls: w[3]!, gapRow: w[4]!, follow: w[5]!, other: w[6]!,
+    followMask: mask(w[7]!), xf: w[8]!,
+  }))(P().x[i]!)
+  const level = (i: number): RouteLevel => levels[i] ??= ((w: readonly number[]): RouteLevel => ({
+    kind: w[0]!, ip: w[1]!, arm: w[2]!, variant: w[3]!,
+    known: (w[4]! & LF_KNOWN) !== 0, trivRuntime: (w[4]! & LF_TRIV_RUNTIME) !== 0,
+    sepGated: (w[4]! & LF_SEP_GATED) !== 0, dirty: (w[4]! & LF_DIRTY) !== 0,
+    candidate: (w[4]! & LF_CANDIDATE) !== 0,
+    lc: w[5]!, resumeTop: w[6]!, tails: w.slice(7).map(tail),
+  }))(P().l[i]!)
+  const arm = (w: readonly number[], o: number): DispatchArmRoute => ({
+    route: w[o]! < 0 ? undefined : route(w[o]!), ip: w[o + 1]!, needsRouted: w[o + 2] === 1, commits: w[o + 3] === 1,
+  })
+  const atom = (i: number): RouteAtom => atoms[i] ??= ((w: readonly number[]): RouteAtom => {
+    if (w[0] === 0) return { kind: 'site', ip: w[1]! }
+    if (w[0] === 1) return { kind: 'routed' }
+    const n = w[2]!
+    const arms: DispatchArmRoute[] = []
+    for (let j = 0; j < n; j++) arms.push(arm(w, 3 + 4 * j))
+    const o = 3 + 4 * n
+    return { kind: 'dispatch', ip: w[1]!, arms, other: w[o] === 1 ? arm(w, o + 1) : undefined }
+  })(P().a[i]!)
+  function route(i: number): Route {
+    let R = routes[i]
+    if (R !== undefined) return R
+    const w = P().r[i]!
+    const d = w[1]!
+    let o = 2 + d
+    const cuts: { at: number; cut: number; scope: number }[] = []
+    for (let n = w[o++]!; n > 0; n--, o += 3) cuts.push({ at: w[o]!, cut: w[o + 1]!, scope: w[o + 2]! })
+    const guards: { terminals: number[]; cut: number }[] = []
+    while (o < w.length) {
+      const n = w[o + 1]!
+      guards.push({ cut: w[o]!, terminals: w.slice(o + 2, o + 2 + n) })
+      o += 2 + n
+    }
+    R = { atom: atom(w[0]!), d, levels: w.slice(2, 2 + d).map(level), cuts, guards }
+    routes[i] = R
+    return R
+  }
+  return {
+    hasTop: top => at.has(top),
     routesAt: top => {
-      if (memo.has(top)) return memo.get(top)
-      derive ??= deriver(t, labels, clean)
-      const routes = derive(top)
-      memo.set(top, routes)
-      return routes
+      const i = at.get(top)
+      if (i === undefined) return undefined
+      const row = P().t[i]!
+      const out = NO_ROUTES.slice()
+      for (let j = 0; j < row.length; j += 3) {
+        const R = route(row[j + 2]!)
+        for (let c = row[j]!; c <= row[j + 1]!; c++) out[c] = R
+      }
+      return out
     },
-    gapRows: optionalGapRows(t.code, [...Object.values(t.prog.rules), ...assemblyExtraIps(t.prog)]),
+    gapRows: new Set(packed.g),
   }
 }
 

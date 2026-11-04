@@ -1,7 +1,7 @@
 # Left-corner routing: the step-2 design
 
-Status: partly built. The closure engine routes, from routes derived when it assembles
-(`src/table/routes.ts`; see [What is built](#what-is-built)). The reference and emitted
+Status: partly built. The closure engine routes, from routes the encoder stores in the
+program (`src/table/routes.ts`; see [What is built](#what-is-built)). The reference and emitted
 readers, the statement corner and the pre-scan deletions are not built yet. The prototype
 this is drawn from is the closure-engine study on branch `perf/left-corner-routing`,
 measured in [Performance attempts](../future/perf-attempts.md) ("Left-corner routing
@@ -119,16 +119,20 @@ anything is entered.
 
 ### What is built
 
-The closure engine only. Two things differ from the plan above.
+The closure engine reads routes; the reference and emitted readers do not yet.
 
-- **Routes are derived when the closure engine assembles, not stored as `prog.routes`.**
-  `routeTable()` runs the analysis over the resolved table's rows, so it is still one
-  definition over rows that every engine can call. A new `TableProgram` field would have to
-  be classified for every fold variant (`SHARED_FIELDS`, `FoldExhaustive`) and printed into
-  every artifact. Deriving instead costs load time, bounded by the node sites the assembly
-  links: a site's routes are derived when it is linked, and its chains are built the first
-  time a character reaches it. Only a strict assembly with no host CST, no line tracking
-  and no recovery routes.
+- **Routes are stored in the program (`prog.routes`).** The encoder derives them for an AST
+  table without line tracking and stores them; nothing is derived when a table is loaded.
+  What linking needs (the tops, and the regex rows that hand a gap over) is stored as
+  numbers; the routes themselves are one JSON text, parsed the first time a route is built.
+  A fold carries a variant's routes on its delta where they differ from the base's, because
+  they are read from the code the fold overwrites.
+- **A cold assembly's first parse is unrouted.** The tops are armed when the assembly's
+  first parse completes (a top linked later is armed when it is linked); a route's chain is
+  built the first time a character reaches it, and a continuation is lowered the first time
+  it resumes. Building chains and compiling their pieces costs more than a route saves
+  within one cold parse (`benchmark.less`: +3.5 ms on a 61 ms first parse when routes ran
+  from the start), so the first parse runs today's pieces.
 - **A node that tops no route keeps a piece with no route read.** Which sites are tops is
   decided when the site is linked, so the "no wrapper, no extra call" rule holds for every
   character at a non-top, and a character with no route at a top pays only the table read.

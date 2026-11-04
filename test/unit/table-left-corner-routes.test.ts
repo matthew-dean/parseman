@@ -12,13 +12,17 @@
  * and a mandatory gated term after a corner.
  */
 import { describe, expect, it } from 'vitest'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { emitFoldedModule } from '../../src/table/emit.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { choice, field, literal, many, node, noTrivia, optional, regex, rules, sepBy, sequence } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assemblyExtraIps, resolveTable } from '../../src/table/program.ts'
+import { foldPrograms, unfoldVariant } from '../../src/table/program.ts'
 import { routeTable } from '../../src/table/routes.ts'
-import { computeSiteLabels } from '../../src/table/site-labels.ts'
-import { failCleanAnalysis } from '../../src/table/fail-clean.ts'
 import { run } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { OP_NODE } from '../../src/table/ops.ts'
@@ -66,16 +70,52 @@ function inputs(): string[] {
 }
 
 describe('left-corner routes', () => {
-  it('derives routes for the value ladder, and none for a node with no level to skip', () => {
+  it('stores routes for the value ladder, and none for a node with no level to skip', () => {
     const prog = encodeTable(value)
-    const t = resolveTable(prog)
-    const roots = [...Object.values(prog.rules), ...assemblyExtraIps(prog)]
-    const routes = routeTable(t, computeSiteLabels(t.code, roots, false), failCleanAnalysis(t.code))
+    const routes = routeTable(prog.routes!)
     const nodes = [...reachableIps(prog)].filter(ip => prog.code[ip] === OP_NODE)
-    const tops = nodes.filter(ip => routes.routesAt(ip) !== undefined)
+    const tops = nodes.filter(ip => routes.hasTop(ip))
     expect(tops.length).toBeGreaterThan(0)
     expect(tops.length).toBeLessThan(nodes.length)
+    for (const ip of nodes) expect(routes.routesAt(ip) !== undefined).toBe(routes.hasTop(ip))
   })
+
+  it('stores routes only where an assembly reads them, and a fold keeps each variant\'s own', () => {
+    const ast = encodeTable(value)
+    const lines = encodeTable(value, { trackLines: true })
+    const cst = encodeTable(value, { hostMode: 'cst' })
+    expect(lines.routes).toBeUndefined()
+    expect(cst.routes).toBeUndefined()
+    for (const base of ['ast', 'lines', 'cst']) {
+      const folded = foldPrograms({ ast, lines, cst }, base)
+      expect(unfoldVariant(folded, 'ast').routes).toEqual(ast.routes)
+      expect(unfoldVariant(folded, 'lines').routes).toBeUndefined()
+      expect(unfoldVariant(folded, 'cst').routes).toBeUndefined()
+    }
+  })
+
+  it('round-trips through a printed folded module, and parses there as the reference does', async () => {
+    const progs = { ast: encodeTable(value), lines: encodeTable(value, { trackLines: true }) }
+    for (const base of ['ast', 'lines']) {
+      const folded = foldPrograms(progs, base)
+      const src = emitFoldedModule(folded, {
+        runtime: pathToFileURL(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src/table/fold.ts')).href,
+        fnSources: folded.base.fns.map(f => String(f)),
+        names: { ast: 'gAst', lines: 'gLines' },
+      })
+      // The routes print once, on the base where it is the AST variant, else on its delta.
+      expect(src.split(base === 'ast' ? 'ro:{' : 'o:{').length - 1).toBe(1)
+      const dir = mkdtempSync(path.join(tmpdir(), 'pm-routes-fold-'))
+      writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}')
+      writeFileSync(path.join(dir, 'grammar.ts'), src)
+      const mod = await import(/* @vite-ignore */ pathToFileURL(path.join(dir, 'grammar.ts')).href) as Record<string, Record<string, Comb>>
+      const reference = execRules(progs.ast).Decl!
+      // The first parse of an assembly runs unrouted; every later one routes.
+      for (const input of inputs().slice(0, 120)) {
+        expect(digestValue(run(mod.gAst!.Decl!, input)), `${base} ${JSON.stringify(input)}`).toBe(digestValue(run(reference, input)))
+      }
+    }
+  }, 60_000)
 
   it('parses and fails as the reference driver does in every reader', () => {
     const cases = inputs()

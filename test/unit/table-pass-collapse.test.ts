@@ -60,9 +60,15 @@ function ladder(parent: Parent, spaced = false): Record<string, Combinator<unkno
 
 const CFG = { hostCst: false, hostReadsChildren: true, trackLines: false, tolerant: false, coverage: false, probe: false }
 
-/** The collectors installed during one parse, and its value. */
-function framesOf(prog: TableProgram, input: string): { frames: number; value: unknown; emitted: boolean } {
+/** The collectors installed during one parse (after `warm` parses on the same assembly), and its value. */
+function framesOf(prog: TableProgram, input: string, warm = 0): { frames: number; value: unknown; emitted: boolean } {
   const linked = assemble(resolveTable(prog), prog, CFG)
+  for (let i = 0; i < warm; i++) {
+    const ctx = createParseContext()
+    linked.begin(ctx)
+    linked.pieces.Root!(input, 0, ctx)
+    linked.finish()
+  }
   const seen = new Set<unknown>()
   let frames = 0
   const ctx = new Proxy(createParseContext(), {
@@ -97,10 +103,11 @@ describe('pass-through collapse', () => {
       const r = framesOf(prog, 'a')
       expect(r.emitted).toBe(engine === 'emitted')
       expect(r.value).toEqual({ value: [{ word: { _tag: 'leaf', value: 'a', span: { start: 0, end: 1 } } }] })
-      // `Value`, `Sum`, `Unary` and `Word`: `Top` and `Atom` open none. The
-      // closure engine's left-corner route completes one of those levels on its
-      // lone child, so it opens one fewer (`routes.ts`).
-      expect(r.frames).toBe(engine === 'closure' ? 3 : 4)
+      // `Value`, `Sum`, `Unary` and `Word`: `Top` and `Atom` open none.
+      expect(r.frames).toBe(4)
+      // From the second parse, the closure engine's left-corner route completes
+      // one of those levels on its lone child, so it opens one fewer (`routes.ts`).
+      expect(framesOf(prog, 'a', 1).frames).toBe(engine === 'closure' ? 3 : 4)
     })
 
     it(`${engine}: a chain of collapses over one node each opens only the frames that build`, () => {

@@ -117,7 +117,7 @@ import { maskHas, maskOfRanges, type LeadMask } from './lead-mask.ts'
 import {
   K_CHOICE, K_NODE, K_REP, K_SCOPE, K_SEQ, K_WITHCTX, K_WRAP, T_OPT_GATE, T_REP_CLASS, T_REP_GAP, T_REP_OPTGAP,
   V_CHILDREN, V_CHILDREN_COLLAPSE, V_CHILDREN_FIELDS, V_COLLAPSE, V_GENERIC, V_PASS,
-  routeTable, routeTopCandidate, type DispatchArmRoute, type Route, type RouteAtom, type RouteLevel,
+  routeTable, type DispatchArmRoute, type Route, type RouteAtom, type RouteLevel,
 } from './routes.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
@@ -1665,7 +1665,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    from the corner's end. The top node owns the collector suppression: nothing
    below it publishes while the levels complete alone. */
   const ROUTES = !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines && !cfg.tolerant
-    ? routeTable(t, closureLabels, CLEAN)
+    && prog.routes !== undefined
+    ? routeTable(prog.routes)
     : undefined
   const ROUTED_TABLE = ROUTES !== undefined
   /** Regex rows a route reads an `optional` gap from and hands to (`gapRegexPiece`). */
@@ -1746,6 +1747,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     itemCls: ResolvedClass | undefined
     resumeTop: number
     resumeNode: Level | undefined
+    /** `captureTrivia` this level's continuation runs with: a capturing scope's, else its frame node's. */
+    resumeCapture: boolean
+    /** The scope this level runs under, installed only when it resumes; `undefined` where the live one is it. */
+    scopeAt: Level | undefined
     resumed: Piece | undefined
     exclusive: boolean
     choiceFx: string[]
@@ -1756,20 +1761,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
   /**
    * A route, ready to run. A top's table starts out holding one PENDING run
-   * (`d` −1) at every character: the first character that reaches it builds the
-   * top's chains and fills the table in place, so a top never run builds none,
-   * and a character with no route then finds `undefined`.
+   * (`d` −1) at every character; the first character that reaches it puts one
+   * pending run per route in its place, and the first character that reaches
+   * one of those builds that route's chain alone. A route never run builds
+   * nothing, and a character with no route then finds `undefined`.
    */
   type RouteRun = {
     chain: Piece
     d: number
-    /** Pending only: the site, and the table to fill. */
+    /** Pending only: the site, the table to fill, and the route (`undefined`: not yet split). */
     top: number
     table: (RouteRun | undefined)[] | undefined
+    route: Route | undefined
     levels: readonly Level[]
-    cuts: { at: Level; scope: Level | undefined; cut: number; chain: Piece | undefined }[]
+    cuts: RouteCut[]
     guards: { recs: ScalarRecognizer[]; cut: number; chain: Piece | undefined }[]
   }
+  /** A cut or guard's chain is built the first time it cuts. */
+  type RouteCut = { at: Level; scope: Level | undefined; cut: number; chain: Piece | undefined }
   /** Routes per character, `undefined` where none; `NO_ROUTE` from `runRoute` means "run the body". */
   type TopRoutes = (RouteRun | undefined)[]
   const NO_ROUTE: unknown = Symbol('no route')
@@ -1789,7 +1798,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       leading: [], wantValues: false, tails: [], known: R.known, trivRuntime: R.trivRuntime,
       collect: false, dirty: R.dirty, reportItem: false, itemFx: EMPTY_FX, maxOne: false,
       sepGated: R.sepGated, sepCls: undefined, itemCls: undefined,
-      resumeTop: R.resumeTop, resumeNode: undefined, resumed: undefined,
+      resumeTop: R.resumeTop, resumeNode: undefined, resumeCapture: false, scopeAt: undefined, resumed: undefined,
       exclusive: false, choiceFx: EMPTY_FX, prefixFx: [], suffixFx: [], tObj: undefined, tMask: null,
     }
     LEVELS.set(R, L)
@@ -1942,21 +1951,34 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return piece
   }
 
-  /** The runtime levels of a route, with each continuation's frame placed and its runner lowered. */
+  /** The runtime levels of a route, with each continuation's frame placed (its runner is lowered on first resume). */
   function levelsOf(route: Route): Level[] {
     const levels = route.levels.map(levelOf)
+    let S: Level | undefined
     for (let i = 0; i < route.d; i++) {
       const L = levels[i]!
-      if ((L.kind !== K_SEQ && L.kind !== K_REP) || L.resumeTop < 0 || L.resumed !== undefined) continue
-      L.resumeNode = levels[L.resumeTop]
-      L.resumed = lowerSeeded(L)
+      if (L.kind === K_SCOPE) { S = deferredScope(L) ? L : undefined; continue }
+      if (L.kind !== K_SEQ && L.kind !== K_REP) continue
+      L.scopeAt = S
+      if (L.resumeTop < 0 || L.resumeNode !== undefined) continue
+      const H = levels[L.resumeTop]!
+      L.resumeNode = H
+      let capScope = false
+      for (let j = L.resumeTop + 1; j < i; j++) if (levels[j]!.kind === K_SCOPE && levels[j]!.cap) capScope = true
+      L.resumeCapture = capScope || H.captureWide
     }
     return levels
   }
 
+  /**
+   * A scope level the route installs only where something runs under it: around
+   * the atom, and around a continuation below it. One that refuses unclassified
+   * root trivia acts on entry, so it keeps its piece.
+   */
+  const deferredScope = (L: Level): boolean => L.kind === K_SCOPE && L.rootFlags === 0
+
   /** The chain that runs `route` from its first level. */
-  function routeChain(route: Route): Piece {
-    const levels = levelsOf(route)
+  function routeChain(route: Route, levels: readonly Level[] = levelsOf(route)): Piece {
     const atom = route.atom
     const atomSetsPV = atom.kind !== 'site'
     const atomPiece = atom.kind === 'site' ? link(atom.ip) : atom.kind === 'routed' ? ROUTED_ATOM : dispatchPiece(atom)
@@ -1964,6 +1986,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   const TOPS = new Map<number, TopRoutes>()
+  /** A top's table before it is armed; each top's is a copy (`Array.from` reads every index of its source). */
+  const NO_RUNS: readonly (RouteRun | undefined)[] = Array.from({ length: 128 })
   /** The node site `lookaheadLedNode` is lowering below its own route read. */
   let UNROUTED = -1
   /**
@@ -1972,50 +1996,80 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * node that tops no route keeps a piece with no route read at all.
    */
   function topRoutes(ip: number): TopRoutes | undefined {
-    if (ROUTES === undefined || HYBRID !== undefined || ip === UNROUTED || !routeTopCandidate(code, ip)) return undefined
-    if (ROUTES.routesAt(ip) === undefined) return undefined
+    if (ROUTES === undefined || HYBRID !== undefined || ip === UNROUTED || !ROUTES.hasTop(ip)) return undefined
     let table = TOPS.get(ip)
     if (table === undefined) {
-      table = Array.from<RouteRun | undefined>({ length: 128 })
-      const pending: RouteRun = { chain: DECIDED, d: -1, top: ip, table, levels: [], cuts: [], guards: [] }
-      table.fill(pending)
+      table = NO_RUNS.slice()
+      if (ARMED) table.fill(pendingRun(ip, table, undefined))
       TOPS.set(ip, table)
     }
     return table
   }
 
-  /** Fill a pending table with the top's routes (see `RouteRun`). */
-  function fillRoutes(top: number, table: (RouteRun | undefined)[]): void {
-    const routes = ROUTES!.routesAt(top)
-    const runs = new Map<Route, RouteRun>()
-    for (let c = 0; c < 128; c++) {
-      const route = routes?.[c]
-      if (route === undefined) { table[c] = undefined; continue }
-      let run = runs.get(route)
-      if (run === undefined) {
-        const levels = levelsOf(route)
-        run = {
-          chain: routeChain(route),
-          d: route.d,
-          top: -1,
-          table: undefined,
-          levels,
-          cuts: route.cuts.map(x => ({
-            at: levels[x.at]!,
-            scope: x.scope >= 0 ? levels[x.scope] : undefined,
-            cut: x.cut,
-            chain: x.cut > 0 ? chainFor(levels, x.cut, link(levels[x.cut]!.ip), false) : undefined,
-          })),
-          guards: route.guards.map(g => ({
-            recs: g.terminals.map(tm => scalarFor(tm)!),
-            cut: g.cut,
-            chain: g.cut > 0 ? chainFor(levels, g.cut, link(levels[g.cut]!.ip), false) : undefined,
-          })),
-        }
-        runs.set(route, run)
+  /**
+   * Whether the tops read their routes yet. A cold assembly's first parse runs
+   * every top's own body: building a route's chain and compiling its pieces
+   * costs more than the route saves within one cold parse, so the tops are
+   * armed when the first parse completes, and a top linked later is armed when
+   * it is linked.
+   */
+  let ARMED = false
+  function armRoutes(): void {
+    ARMED = true
+    for (const [top, table] of TOPS) table.fill(pendingRun(top, table, undefined))
+  }
+
+  function pendingRun(top: number, table: (RouteRun | undefined)[], route: Route | undefined): RouteRun {
+    return { chain: DECIDED, d: -1, top, table, route, levels: [], cuts: [], guards: [] }
+  }
+
+  /**
+   * Resolve the pending run at `c` (see `RouteRun`): split the top's table into
+   * one pending run per route, then build the one route `c` takes.
+   */
+  function fillRoutes(R: RouteRun, c: number): RouteRun | undefined {
+    const table = R.table!
+    if (R.route === undefined) {
+      const routes = ROUTES!.routesAt(R.top)
+      const pending = new Map<Route, RouteRun>()
+      for (let x = 0; x < 128; x++) {
+        const route = routes?.[x]
+        if (route === undefined) { table[x] = undefined; continue }
+        let run = pending.get(route)
+        if (run === undefined) { run = pendingRun(R.top, table, route); pending.set(route, run) }
+        table[x] = run
       }
-      table[c] = run
+      const now = table[c]
+      if (now === undefined) return undefined
+      R = now
     }
+    const run = buildRun(R.route!)
+    for (let x = 0; x < 128; x++) if (table[x] === R) table[x] = run
+    return run
+  }
+
+  function buildRun(route: Route): RouteRun {
+    const levels = levelsOf(route)
+    return {
+      chain: routeChain(route, levels),
+      d: route.d,
+      top: -1,
+      table: undefined,
+      route,
+      levels,
+      cuts: route.cuts.map(x => ({
+        at: levels[x.at]!,
+        scope: x.scope >= 0 ? levels[x.scope] : undefined,
+        cut: x.cut,
+        chain: undefined,
+      })),
+      guards: route.guards.map(g => ({ recs: g.terminals.map(tm => scalarFor(tm)!), cut: g.cut, chain: undefined })),
+    }
+  }
+
+  /** The chain a cut or guard at depth `cut` runs instead: the route above it, down to that level's own piece. */
+  function cutChain(levels: readonly Level[], cut: number): Piece {
+    return chainFor(levels, cut, link(levels[cut]!.ip), false)
   }
 
   /**
@@ -2026,8 +2080,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    */
   function runRoute(R: RouteRun, c: number, input: string, pos: number, ctx: ParseContext): unknown {
     if (R.d < 0) {
-      fillRoutes(R.top, R.table!)
-      const now = R.table![c]
+      const now = fillRoutes(R, c)
       if (now === undefined) return NO_ROUTE
       R = now
     }
@@ -2038,7 +2091,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     for (let x = 0; x < cuts.length; x++) {
       const X = cuts[x]!
       const T = X.scope !== undefined ? X.scope.scopeTrivia : ctx.trivia
-      if (triviaMayStart(X.at, T, c)) { if (X.chain === undefined) return NO_ROUTE; d = X.cut; chain = X.chain; break }
+      if (triviaMayStart(X.at, T, c)) {
+        if (X.cut <= 0) return NO_ROUTE
+        d = X.cut
+        chain = X.chain ??= cutChain(R.levels, X.cut)
+        break
+      }
     }
     const guards = R.guards
     for (let x = 0; x < guards.length; x++) {
@@ -2047,26 +2105,31 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       const recs = G.recs
       for (let t = 0; t < recs.length; t++) {
         if (recs[t]!(input, pos) >= 0) {
-          if (G.chain === undefined) return NO_ROUTE
+          if (G.cut <= 0) return NO_ROUTE
           d = G.cut
-          chain = G.chain
+          chain = G.chain ??= cutChain(R.levels, G.cut)
           break
         }
       }
     }
     const sBuf = ctx._cstBuf, sCh = ctx._cstChildren, sLv = ctx._cstLeaves
-    const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
+    const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog, sF = ctx._fields
+    const sFL = FRAME_LVL, sFB = FRAME_BUF, sFK = FRAME_KIDS
     ctx._cstBuf = undefined
     ctx._cstChildren = undefined
     ctx._cstLeaves = undefined
     ctx._cstRawChildren = undefined
     ctx._cstTriviaLog = undefined
+    ctx._fields = undefined
+    FRAME_LVL = -1
     const r = chain(input, pos, ctx)
+    FRAME_LVL = sFL; FRAME_BUF = sFB; FRAME_KIDS = sFK
     ctx._cstBuf = sBuf
     ctx._cstChildren = sCh
     ctx._cstLeaves = sLv
     ctx._cstRawChildren = sRaw
     ctx._cstTriviaLog = sTl
+    ctx._fields = sF
     if (r === FAIL) return FAIL
     if (sBuf !== undefined || sCh !== undefined) pushCstChild(ctx, PV, rawEntry(PV, input, pos, EC.e))
     return r
@@ -2141,12 +2204,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /**
    * The end of the trivia the next term would skip at `end`, −1 where it cannot
    * be read purely; `GAP_LEAD` is the code point there (−1 at the end of input).
-   * One call: every level that completes reads it.
+   * Read once per end: every level of the ascent that completes there shares it.
    */
   function routeGap(L: Level, input: string, end: number, ctx: ParseContext): number {
+    const S = L.scopeAt
+    const T = S === undefined ? ctx.trivia : S.scopeTrivia, sc = S === undefined ? SCAN : S.scanFor
+    if (end === RG_END && T === RG_T && sc === RG_S && input === RG_IN) return RG_Q
+    RG_END = end; RG_T = T; RG_S = sc; RG_IN = input
     let c = end < input.length ? input.charCodeAt(end) : -1
     if (c >= 0xd800 && c <= 0xdbff) c = lead(input, end)
-    const T = ctx.trivia
     if (T !== undefined) {
       if (T !== L.tObj) {
         const fs = T._meta.firstSet
@@ -2155,19 +2221,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       const m = L.tMask
       if (m === null || (c >= 0 && m[c < 128 ? c : 128] === 1)) {
-        const sc = SCAN
-        if (sc === null) return -1
+        if (sc === null) return RG_Q = -1
         const q = sc(input, end)
         TM_S = sc; TM_AT = end; TM_IN = input; TM_END = q
         c = q < input.length ? input.charCodeAt(q) : -1
         if (c >= 0xd800 && c <= 0xdbff) c = lead(input, q)
         GAP_LEAD = c
-        return q
+        return RG_Q = q
       }
     }
     GAP_LEAD = c
-    return end
+    return RG_Q = end
   }
+  /** The last gap `routeGap` read: the levels of one ascent that end together share it. */
+  let RG_END = -1
+  let RG_T: ParseContext['trivia']
+  let RG_S: FastTriviaScanner | null = null
+  let RG_IN: string | undefined
+  let RG_Q = -1
   /** `routeGap`'s lead. */
   let GAP_LEAD = -1
   /** `classHas`, with its ASCII test in line. */
@@ -2211,7 +2282,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const gapped = RES_GAP_ROW >= 0
     if (gapped) { GAP.row = RES_GAP_ROW; GAP.at = RES_GAP_AT; GAP.end = RES_GAP_END; GAP.input = input }
     RES_GAP_ROW = -1
-    const r = L.resumed!(input, pos, ctx)
+    const run = L.resumed ??= lowerSeeded(L)
+    const sC = ctx.captureTrivia
+    ctx.captureTrivia = L.resumeCapture
+    const S = L.scopeAt
+    let r: unknown
+    if (S === undefined) r = run(input, pos, ctx)
+    else {
+      const sT = ctx.trivia, sL = ctx.triviaKindLabels, sS = SCAN, sLeadOf = LEAD_OF, sLead = LEAD_TABLE
+      SCAN = S.scanFor; LEAD_OF = S.scopeTrivia; LEAD_TABLE = S.leadTable
+      ctx.trivia = S.scopeTrivia; ctx.triviaKindLabels = S.scopeLabels
+      r = run(input, pos, ctx)
+      ctx.trivia = sT; ctx.triviaKindLabels = sL; SCAN = sS; LEAD_OF = sLeadOf; LEAD_TABLE = sLead
+    }
+    ctx.captureTrivia = sC
     if (gapped) GAP.at = -1
     return r
   }
@@ -2222,21 +2306,56 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * known closure, and wrappers that only route add none.
    */
   function chainFor(levels: readonly Level[], d: number, atom: Piece, atomSetsPV: boolean): Piece {
-    let next: Piece = atom
-    for (let i = d - 1; i >= 0; i--) next = levelPiece(levels[i]!, i, next, i === d - 1 && !atomSetsPV)
+    // The deepest level that keeps a piece publishes the atom's value.
+    let k = -1
+    if (!atomSetsPV) for (let i = d - 1; i >= 0; i--) if (keepsPiece(levels[i]!)) { k = i; break }
+    let S: Level | undefined
+    for (let i = d - 1; i >= 0; i--) if (levels[i]!.kind === K_SCOPE) { S = levels[i]!; break }
+    let next = atomUnder(atom, S !== undefined && deferredScope(S) ? S : undefined, !atomSetsPV && k < 0)
+    for (let i = d - 1; i >= 0; i--) {
+      let fieldsAbove = false
+      for (let j = 0; j < i; j++) if (levels[j]!.kind === K_NODE && levels[j]!.wantFields) fieldsAbove = true
+      next = levelPiece(levels[i]!, i, next, i === k, fieldsAbove)
+    }
     return next
   }
 
-  function levelPiece(L: Level, i: number, next: Piece, innermost: boolean): Piece {
+  /** A level the value passes through with nothing to do keeps no piece: a wrapper, or a deferred scope. */
+  const keepsPiece = (L: Level): boolean => L.kind !== K_WRAP && !deferredScope(L)
+
+  /** The atom, under the innermost scope above it when that scope is deferred; `setPV` where no level publishes it. */
+  function atomUnder(atom: Piece, S: Level | undefined, setPV: boolean): Piece {
+    if (S === undefined) {
+      if (!setPV) return atom
+      return (input, pos, ctx) => {
+        const r = atom(input, pos, ctx)
+        if (r !== FAIL) PV = r
+        return r
+      }
+    }
+    const scanFor = S.scanFor, tri = S.scopeTrivia, labels = S.scopeLabels, leadTable = S.leadTable
+    return (input, pos, ctx) => {
+      const sT = ctx.trivia, sL = ctx.triviaKindLabels, sS = SCAN, sLeadOf = LEAD_OF, sLead = LEAD_TABLE
+      SCAN = scanFor; LEAD_OF = tri; LEAD_TABLE = leadTable
+      ctx.trivia = tri; ctx.triviaKindLabels = labels
+      const r = atom(input, pos, ctx)
+      ctx.trivia = sT; ctx.triviaKindLabels = sL; SCAN = sS; LEAD_OF = sLeadOf; LEAD_TABLE = sLead
+      if (setPV && r !== FAIL) PV = r
+      return r
+    }
+  }
+
+  /**
+   * `fieldsAbove`: a node level above this one collects fields, so a node level
+   * that collects none hides them from what runs below it, as its piece does. The
+   * route run hides the caller's (`runRoute`).
+   */
+  function levelPiece(L: Level, i: number, next: Piece, innermost: boolean, fieldsAbove: boolean): Piece {
     switch (L.kind) {
       case K_WRAP:
-        if (!innermost) return next
-        return (input, pos, ctx) => {
-          const r = next(input, pos, ctx)
-          if (r !== FAIL) PV = r
-          return r
-        }
+        return next
       case K_SCOPE: {
+        if (deferredScope(L)) return next
         const scanFor = L.scanFor, tri = L.scopeTrivia, labels = L.scopeLabels, cap = L.cap, leadTable = L.leadTable
         const root1 = (L.rootFlags & 1) !== 0, root2 = (L.rootFlags & 2) !== 0
         return (input, pos, ctx) => {
@@ -2379,20 +2498,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const build = L.build!, variant = L.variant, captureWide = L.captureWide, wantFields = L.wantFields
         const readsState = L.readsState, omitsRaw = L.omitsRaw, collapse = L.collapse
         const kidsOnly = variant === V_CHILDREN || variant === V_CHILDREN_FIELDS || variant === V_CHILDREN_COLLAPSE
+        const ownFields = wantFields || variant === V_CHILDREN_FIELDS
+        const shieldFields = ownFields || fieldsAbove
+        // A level the value passes through keeps no frame state: the frame a
+        // continuation opens is the route run's one slot (`resume`), and the
+        // run hides the caller's collectors and fields once (`runRoute`).
         return (input, pos, ctx) => {
-          const sCap = ctx.captureTrivia, sF = ctx._fields
-          const sFL = FRAME_LVL, sFB = FRAME_BUF, sFK = FRAME_KIDS
-          FRAME_LVL = -1
-          ctx.captureTrivia = captureWide
-          ctx._fields = wantFields ? [] : undefined
+          let sF: ParseContext['_fields']
+          if (shieldFields) { sF = ctx._fields; ctx._fields = ownFields ? [] : undefined }
           const r = next(input, pos, ctx)
-          const fieldsArr = ctx._fields
+          let fieldsArr: ParseContext['_fields']
+          if (shieldFields) { fieldsArr = ctx._fields; ctx._fields = sF }
           const opened = FRAME_LVL === i
-          const fb = FRAME_BUF, fk = FRAME_KIDS
-          FRAME_LVL = sFL; FRAME_BUF = sFB; FRAME_KIDS = sFK
-          if (opened) { ctx._cstBuf = undefined; ctx._cstChildren = undefined; ctx._cstLeaves = undefined }
-          ctx.captureTrivia = sCap
-          ctx._fields = sF
+          let fb: CstCaptureBuf | undefined, fk: unknown[] | undefined
+          if (opened) {
+            fb = FRAME_BUF; fk = FRAME_KIDS
+            FRAME_LVL = -1
+            ctx._cstBuf = undefined; ctx._cstChildren = undefined; ctx._cstLeaves = undefined
+          }
           if (r === FAIL) return FAIL
           if (innermost) PV = r
           const end = EC.e
@@ -5340,7 +5463,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function finish(): void {
     if (depth <= 0) throw new Error('parseman table assembly frame underflow')
     depth--
-    if (depth === 0) return
+    if (depth === 0) {
+      if (!ARMED && ROUTES !== undefined) armRoutes()
+      return
+    }
     const prior = frames.pop()!
     SCAN = prior.scan
     HOST = prior.host
