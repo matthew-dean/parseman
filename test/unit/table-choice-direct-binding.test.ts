@@ -90,7 +90,7 @@ function precompiled(prog: TableProgram, mutate: (source: string) => string = so
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const source = mutate(emitted.source)
   const factory = new Function(...EMITTED_PARAMS, source) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
+  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
 function engines(grammar: Combinator<unknown>, prog = program(grammar)): Record<string, Entry> {
@@ -429,7 +429,7 @@ describe('direct-bound choice topology', () => {
     }
     const invalid = ownTableProgram({
       ...prog,
-      asm: [{ key: 0, factory: invalidFactory, plan: invalidPlan, reached: [...invalidEmitted.reached] }],
+      asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory: invalidFactory, plan: invalidPlan, reached: [...invalidEmitted.reached] }],
     })
     expect(() => projection(tableRules(invalid).Entry! as Entry, 'ax'))
       .toThrow(/invalid MASK plan source/)

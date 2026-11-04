@@ -16,6 +16,7 @@ import {
   trivia, parser, compile,
   type Combinator,
 } from '../../src/index.ts'
+import { CommentLine, SectionLine, EntryLine } from './line-node.js'
 
 // ---------------------------------------------------------------------------
 // Tokens
@@ -44,16 +45,16 @@ type Comment = { type: 'comment' }
 type Line = Entry | Section | Comment
 
 // Matches blank lines, whitespace-only lines, and comment lines
-const commentLine = transform(regex(/[ \t]*(?:#[^\n]*)?\n/), (): Comment => ({ type: 'comment' }))
+const commentLine = transform(regex(/[ \t]*(?:#[^\n]*)?\n/), (): Comment => new CommentLine())
 
 const sectionLine = transform(
   sequence(ws, literal('['), regex(/[^\]]+/), literal(']'), lineEnd),
-  ([, , name]): Section => ({ type: 'section', name: name.trim() })
+  ([, , name]): Section => new SectionLine(name.trim())
 )
 
 const entryLine = transform(
   sequence(key, literal('='), value, optional(lineEnd)),
-  ([k, , v]): Entry => ({ type: 'entry', key: k.trim(), value: typeof v === 'string' ? v.trim() : v })
+  ([k, , v]): Entry => new EntryLine(k.trim(), typeof v === 'string' ? v.trim() : v)
 )
 
 const line: Combinator<Line> = choice(commentLine, sectionLine, entryLine)

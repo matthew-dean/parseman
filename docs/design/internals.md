@@ -122,7 +122,7 @@ Why closures and not the `switch`: the `switch` was one basic block with ~30 mer
 
 **Shared helpers and the hot path.** Pure helpers that touch no assembly state are shared (`table/run-support.ts`, `table/trivia-gap.ts`, `table/scalar-terminal.ts`). Emitted code shares a helper only when it takes no piece as an argument (`emit-assembly.ts` header). Routing the mark/undo paths through shared helpers was measured 13–25% slower and reverted.
 
-**Tree objects are built by constructors.** Leaves, spans, default and CST-host nodes, field captures and CST capture buffers are `new` calls on the constructors in `src/cst/plain.js` (`plain.d.ts`), never object literals. V8 decides per literal allocation site whether to allocate straight into old space, and that choice flips between identical processes whenever the bundle layout changes; a `new` call has no such site. The constructors exist once per process: the build emits one shared `dist/cst/plain.js` that every tree-building entry imports, so one shape has one hidden class. The emitted engine receives them as its trailing factory parameters (`_SP`, `_LF`, `_ND`, `_FC`, `_BUF` in `EMITTED_PARAMS`). `perf:pretenure` (below) guards this.
+**Tree objects are built by constructors.** Leaves, spans, default and CST-host nodes, field captures and CST capture buffers are `new` calls on the constructors in `src/cst/plain.js` (`plain.d.ts`), never object literals. V8 decides per literal allocation site whether to allocate straight into old space, and that choice flips between identical processes whenever the bundle layout changes; a `new` call has no such site. The constructors exist once per process: the build emits one shared `dist/cst/plain.js` that every tree-building entry imports, so one shape has one hidden class. The emitted engine receives them as factory parameters (`_SP`, `_LF`, `_ND`, `_FC`, `_BUF` in `EMITTED_PARAMS`). `perf:pretenure` (below) guards this.
 
 The reference driver keeps its own copies of protocol logic (line tracking, rollback, recovery sentinels) on purpose: a bug in a shared copy would be invisible to the identity sweep that compares it with the shipped engines.
 
@@ -156,7 +156,7 @@ Recovery operands (follow-set classes, item expected sets) are in every table (`
 3. **Splice.** It replaces the declaration with the printed table and prepends `import { tableRules } from 'parseman/table'`.
 4. **Carry IR.** A composable piece also carries its combinator IR (`compiler/ir-serialize.ts`, re-evaluated by `plugin/ir-eval.ts`), so a downstream build can re-lower it. Under a Rollup-family bundler that IR goes into a `<chunk>.parseman.json` sidecar instead of the artifact; nothing at run time reads it.
 
-Artifacts are stamped with the Parséman version (`src/version.ts`); nothing reads the stamp back yet. A printed assembly factory does check the runtime that calls it: it throws, naming the version that printed it, when the runtime passes fewer helpers than it was printed with (`FACTORY_ARITY_GUARD` in `table/emit.ts`).
+Artifacts are stamped with the Parséman version (`src/version.ts`); nothing reads the stamp back yet. A printed assembly factory does check the runtime that calls it: it throws, naming the version that printed it, when the runtime passes any other number of helpers than it was printed with (`FACTORY_ARITY_GUARD` in `table/emit.ts`). The runtime checks the other way before calling one: each printed assembly record carries `arity`, the helper count its factory was printed against, and the runtime refuses a record whose `arity` is missing (printed before 0.60.0) or is not the number of helpers it passes (`assertFactoryArity` in `table/assemble.ts`). It reads the printed number, not `factory.length`, which a minifier lowers.
 
 ## 10. Gates that keep this honest
 
@@ -216,7 +216,7 @@ Operands follow the opcode in `code`. Full layouts and the reasons behind each a
 | 3 | `SEQ` | `n c1…cn f1…fn` | children in order; value is their tuple. `f` are recovery follow classes |
 | 4 | `SEQV` | as `SEQ` | `SEQ` whose value is unused: no tuple |
 | 5 | `CHOICE` | `d n fx c1…cn e1…en` | ordered choice; `d` a dispatch table or −1; `fx`/`e` expected sets |
-| 6 | `REP` | `c min max sep flags fx cls` | repeat or separated list; `cls` the item/separator class that gates continuation |
+| 6 | `REP` | `c min max sep flags fx cls [gate]` | repeat or separated list, 8 or 9 words; `cls` the item/separator class that gates continuation. `flags` `&8`: a 9th word, the separator gate class; `&16`: the item's derived set is empty |
 | 7 | `REPV` | as `REP` | `REP` whose value is unused |
 | 8 | `OPT` | `c` | child, or `null` |
 | 9 | `XFORM` | `f c` | `transform()`: call `fns[f](value, span)` |
@@ -256,5 +256,8 @@ Operands follow the opcode in `code`. Full layouts and the reasons behind each a
 | 43 | `LEX_PROGRAM` | `p` | composite lexical program |
 | 44 | `SOURCE_LEAF` | `f c` | `sourceLeaf()`: reduce, keep source text |
 | 45 | `RGATE` | `cls child fx` | routed arm gated on the character after the routed token |
+| 46 | `GAPGATE` | `c p cls other` | optional repeat item opening with a gap; transparent, read by its repeat |
+| 47 | `RGATE2` | `cls child fx first second` | `RGATE` that also tests the second character after the routed token |
+| 48 | `STRICT` | `strict tolerant` | one construct encoded for a strict parse and for recovery; an assembly resolves it to one child |
 
 Which engine handles which: `assemble.ts` and `exec.ts` handle all of them. `emit-assembly.ts` lowers all but `GUARD`, `GREEDY`, `REJECT`, `LIVE` and `COV`, and refuses those (the closure engine runs that assembly). It follows `RULE` as an alias of its child and inlines `ADJ` into its sequence.

@@ -305,6 +305,7 @@ describe('table assembler', () => {
           const emitted = emitAssemblySource(resolved, prog, cfg, [])
           return {
             key: cfgKey(cfg),
+            arity: EMITTED_PARAMS.length,
             // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
             factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
             plan: emitted.plan, reached: [...emitted.reached],
@@ -419,6 +420,7 @@ describe('table assembler', () => {
       const emitted = emitAssemblySource(resolved, prog, cfg, [])
       return {
         key: cfgKey(cfg),
+        arity: EMITTED_PARAMS.length,
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
         factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
         plan: emitted.plan,
@@ -694,6 +696,7 @@ describe('table assembler', () => {
       const emitted = emitAssemblySource(resolved, prog, cfg, scanRoots)
       return {
         key: cfgKey(cfg),
+        arity: EMITTED_PARAMS.length,
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
         factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
         plan: emitted.plan, reached: [...emitted.reached],
@@ -868,6 +871,7 @@ describe('table assembler', () => {
         const emitted = emitAssemblySource(resolved, prog, cfg, [])
         return {
           key: cfgKey(cfg),
+          arity: EMITTED_PARAMS.length,
           // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
           factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
           plan: emitted.plan,

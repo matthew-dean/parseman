@@ -60,6 +60,8 @@ if (density !== undefined) {
   // The workload's own parse reads its fixed input, so the plant compiles the same grammar
   // over a planted copy instead.
   input = planted(w.input)
+  // graphql/document keeps its own grammar's nodes: the root is the array of definitions.
+  if (id === 'graphql/document') expectType = 'OperationDefinition'
   if (plantTruncated) {
     const compiled = compile(Stylesheet)
     parse = () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
@@ -86,10 +88,11 @@ const complete = (r: unknown, first: boolean): void => {
     process.exit(3)
   }
   if (first) {
-    const root = res.value as { type?: unknown; children?: unknown } | undefined
+    const value: unknown = Array.isArray(res.value) ? res.value[0] : res.value
+    const root = value as { type?: unknown; kind?: unknown; children?: unknown } | undefined
     const children = Array.isArray(root?.children) ? root.children.length : undefined
-    if (root?.type !== expectType || (expectChildren !== undefined && children !== expectChildren)) {
-      console.error(`pretenure-worker: ${String(id)} built ${String(root?.type)} with ${String(children)} children, expected ${expectType}${expectChildren === undefined ? '' : ` with ${expectChildren}`}`)
+    if ((root?.type ?? root?.kind) !== expectType || (expectChildren !== undefined && children !== expectChildren)) {
+      console.error(`pretenure-worker: ${String(id)} built ${String(root?.type ?? root?.kind)} with ${String(children)} children, expected ${expectType}${expectChildren === undefined ? '' : ` with ${expectChildren}`}`)
       process.exit(3)
     }
   }

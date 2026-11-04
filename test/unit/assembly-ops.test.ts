@@ -29,7 +29,7 @@ const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: f
 function precompiled(prog: TableProgram): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
+  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
 /**
