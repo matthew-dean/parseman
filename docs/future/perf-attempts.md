@@ -669,8 +669,11 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     `font: 12px;` −1.2% / −12.2%, −0.2% / −11.8%; `benchmark.less` +1.2% / −3.6%, 0.0% /
     −0.7%; bootstrap +5.9% / +1.5%, −3.5% / −2.4%; `benchmark.css` +5.2% / +12.8%, −6.6% /
     +2.3%; `gen-workload.scss` +5.2% / +7.9%, +3.8% / +5.6%; `jess-x8.jess` +5.5% / +10.4%,
-    +4.7% / +3.5%. A net loss: about +4% `--jitless` across the board, and it gives up the
-    left-corner wins. Resume stays; the stall is to be profiled. Raw samples:
+    +4.7% / +3.5%. With the JIT on, which is the measure that decides (`--jitless` is
+    diagnostic only), it is roughly neutral: within the ±4–8% noise of that run on every row
+    but `benchmark.css` (−6.6%) and `border-radius` (+8.8%). A net loss: about +4%
+    `--jitless` across the board, and it gives up the left-corner wins. Resume stays; the
+    stall is to be profiled. Raw samples:
     `scratchpad/left-corner/results/cyc3-nr.jsonl`, prototype branch `proto/routes-no-resume`
     (local).
 - **Less declarations above the value (census, not built).** Marginal instructions per
