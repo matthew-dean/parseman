@@ -291,7 +291,6 @@ const REGISTRY = [
       { defect: 'rgate2-second-at-first-ascii', expect: 'moves' },
       { defect: 'rgate2-second-at-first-emitted', expect: 'moves' },
       { defect: 'rgate2-second-narrowed', expect: 'moves' },
-      { defect: 'rgate2-second-code-units', expect: 'moves' },
     ],
   },
   {

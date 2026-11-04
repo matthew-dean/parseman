@@ -506,19 +506,6 @@ export const DEFECTS = {
     }],
   },
 
-  'rgate2-second-code-units': {
-    why: 'encoder: the two-character routed gate\'s second set stays in code units',
-    edits: [{
-      file: 'src/table/encode.ts',
-      find: 'return astral.length === 0 ? s : union(s, { kind: \'ranges\', ranges: astral })',
-      replace: 'return s',
-    }, {
-      file: 'src/table/encode.ts',
-      find: '    const second = d.value.codePointAt(1)!\n',
-      replace: '    const second = d.value.charCodeAt(1)\n',
-    }],
-  },
-
   'gap-scan-wrong-offset': {
     why: 'closure engine: the gap gate scans the item\'s gap one character late',
     edits: [{ file: 'src/table/assemble.ts', find: '              gapRe.lastIndex = itemStart\n', replace: '              gapRe.lastIndex = itemStart + 1\n' }],

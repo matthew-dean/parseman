@@ -115,15 +115,20 @@ describe('a loop decides on the character in front of it', () => {
   })
 
   it('tests an operator item\'s class once, at the repeat', () => {
-    // The item `sequence(ProductOp, Unary)` leads with ProductOp's node gate, the
-    // class the repeat already tests: the item's own copy of the sequence row
-    // calls the node directly.
-    const prog = encodeTable(expr)
+    // The item `sequence(Op, Num)` leads with Op's node gate, the class the
+    // repeat already tests: the item's own copy of the sequence row calls the
+    // node directly. (A padded operator node has no gate: its body's set runs
+    // through the pad.)
+    const unpadded = rules({}, (g: Record<string, Comb>) => ({
+      Sum: sequence(regex(/[0-9]+/), many(sequence(g.Op!, regex(/[0-9]+/)))),
+      Op: node('Op', choice(literal('+'), literal('-'))),
+    })) as Record<string, Comb>
+    const prog = encodeTable({ Sum: unpadded.Sum! })
     const items = [...reachableIps(prog)]
       .filter(ip => (prog.code[ip] === OP_REP || prog.code[ip] === OP_REPV) && prog.code[ip + 2] === 0 && prog.code[ip + 7]! >= 0)
       .map(ip => [prog.code[prog.code[ip + 1]!] === OP_GAPGATE ? prog.code[prog.code[ip + 1]! + 1]! : prog.code[ip + 1]!, prog.code[ip + 7]!] as const)
       .filter(([item]) => prog.code[item] === OP_SEQ || prog.code[item] === OP_SEQV)
-    expect(items.length).toBeGreaterThanOrEqual(2)
+    expect(items.length).toBeGreaterThanOrEqual(1)
     for (const [item, cls] of items) {
       const first = prog.code[item + 2]!
       expect(prog.code[first] === OP_GATE && prog.code[first + 1] === cls, `item @${item}`).toBe(false)

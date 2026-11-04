@@ -123,8 +123,9 @@ type Emitted = { readonly ip: number }
  * literal of two or more characters, or a case-sensitive regex
  * (`regexFirstTwo`), through a label or a trivia scope. The first must be BMP
  * and not a surrogate, so the second starts at the next code unit. The gate
- * reads that second character as a code point (`lead`), so the second set is
- * one of code points.
+ * reads that second character as a code point (`lead`); a class holding a high
+ * surrogate admits the astral points it begins (`leadRanges`), so a code-unit
+ * second set reads them too.
  */
 function firstTwo(p: Combinator<unknown>): { first: FirstSet; second: FirstSet } | undefined {
   const d = p._def as ParserDef
@@ -135,22 +136,10 @@ function firstTwo(p: Combinator<unknown>): { first: FirstSet; second: FirstSet }
     two = { first: { kind: 'ranges', ranges: [{ lo: d.value.charCodeAt(0), hi: d.value.charCodeAt(0) }] }, second: { kind: 'ranges', ranges: [{ lo: second, hi: second }] } }
   } else if (d.tag === 'regex' && !d.flags.includes('i')) {
     const units = regexFirstTwo(d.source, d.flags)
-    if (units !== undefined) two = { first: units.first, second: asCodePoints(units.second) }
+    if (units !== undefined) two = units
   }
   if (two === undefined || two.first.kind !== 'ranges') return undefined
   return two.first.ranges.every(r => r.hi < 0xd800 || (r.lo > 0xdfff && r.hi <= 0xffff)) ? two : undefined
-}
-
-/** A code-unit set as `lead()` reads input: a high surrogate also opens its astral points. */
-function asCodePoints(s: FirstSet): FirstSet {
-  if (s.kind !== 'ranges') return s
-  const astral: { lo: number; hi: number }[] = []
-  for (const r of s.ranges) {
-    const lo = Math.max(r.lo, 0xd800)
-    const hi = Math.min(r.hi, 0xdbff)
-    if (lo <= hi) astral.push({ lo: 0x10000 + (lo - 0xd800) * 0x400, hi: 0x10000 + (hi - 0xd800) * 0x400 + 0x3ff })
-  }
-  return astral.length === 0 ? s : union(s, { kind: 'ranges', ranges: astral })
 }
 
 /** ASCII whitespace and the `/` a comment opens with: what a gap starts with. */
