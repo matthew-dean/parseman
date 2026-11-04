@@ -418,10 +418,10 @@ export type Assembly = {
 /**
  * A printed factory takes its helpers BY POSITION (`EMITTED_PARAMS`), so one printed
  * against a different helper list would bind the wrong function to a name and run
- * wrong rather than fail. The factory's own guard (`FACTORY_ARITY_GUARD`, `emit.ts`)
- * only catches a runtime that passes FEWER helpers, and a factory printed before
- * 0.59.0 has no guard at all. So the runtime checks too: the declared parameter
- * count must be exactly the list it passes.
+ * wrong rather than fail. A factory printed by 0.59.x guards only against FEWER
+ * helpers, and one printed before 0.59.0 has no guard at all. So the runtime checks
+ * too: the declared parameter count must be exactly the list it passes. A factory this
+ * version prints checks the same thing itself (`FACTORY_ARITY_GUARD`, `emit.ts`).
  */
 export function assertFactoryArity(factory: { readonly length: number }): void {
   if (factory.length === EMITTED_PARAMS.length) return

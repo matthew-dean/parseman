@@ -156,7 +156,7 @@ Recovery operands (follow-set classes, item expected sets) are in every table (`
 3. **Splice.** It replaces the declaration with the printed table and prepends `import { tableRules } from 'parseman/table'`.
 4. **Carry IR.** A composable piece also carries its combinator IR (`compiler/ir-serialize.ts`, re-evaluated by `plugin/ir-eval.ts`), so a downstream build can re-lower it. Under a Rollup-family bundler that IR goes into a `<chunk>.parseman.json` sidecar instead of the artifact; nothing at run time reads it.
 
-Artifacts are stamped with the Parséman version (`src/version.ts`); nothing reads the stamp back yet. A printed assembly factory does check the runtime that calls it: it throws, naming the version that printed it, when the runtime passes fewer helpers than it was printed with (`FACTORY_ARITY_GUARD` in `table/emit.ts`). The runtime checks the other way before calling one: it refuses a factory whose declared parameter count is not the number of helpers it passes (`assertFactoryArity` in `table/assemble.ts`).
+Artifacts are stamped with the Parséman version (`src/version.ts`); nothing reads the stamp back yet. A printed assembly factory does check the runtime that calls it: it throws, naming the version that printed it, when the runtime passes any other number of helpers than it was printed with (`FACTORY_ARITY_GUARD` in `table/emit.ts`). The runtime checks the other way before calling one: it refuses a factory whose declared parameter count is not the number of helpers it passes (`assertFactoryArity` in `table/assemble.ts`).
 
 ## 10. Gates that keep this honest
 
@@ -216,7 +216,7 @@ Operands follow the opcode in `code`. Full layouts and the reasons behind each a
 | 3 | `SEQ` | `n c1…cn f1…fn` | children in order; value is their tuple. `f` are recovery follow classes |
 | 4 | `SEQV` | as `SEQ` | `SEQ` whose value is unused: no tuple |
 | 5 | `CHOICE` | `d n fx c1…cn e1…en` | ordered choice; `d` a dispatch table or −1; `fx`/`e` expected sets |
-| 6 | `REP` | `c min max sep flags fx cls` | repeat or separated list; `cls` the item/separator class that gates continuation |
+| 6 | `REP` | `c min max sep flags fx cls [gate]` | repeat or separated list, 8 or 9 words; `cls` the item/separator class that gates continuation. `flags` `&8`: a 9th word, the separator gate class; `&16`: the item's derived set is empty |
 | 7 | `REPV` | as `REP` | `REP` whose value is unused |
 | 8 | `OPT` | `c` | child, or `null` |
 | 9 | `XFORM` | `f c` | `transform()`: call `fns[f](value, span)` |

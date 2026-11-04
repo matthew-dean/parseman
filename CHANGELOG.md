@@ -83,7 +83,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   down only where the encoder knows none runs there. A gap spelled as
   `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
   and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
-  - **An artifact printed by 0.59.0 or earlier must be reprinted.** The emitted engine
+  - **An artifact printed by 0.59.x or earlier must be reprinted.** The emitted engine
     receives the slot as a trailing factory parameter, `GAP`, and the factory's helper
     list loses four names (below); the runtime refuses a factory printed against another
     list.
@@ -153,15 +153,21 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   still bind by position, but an artifact is only ever run by the runtime that emitted
   it. Each emitted factory's parameter list is shorter by those four names, and the
   closure engine no longer builds the per-assembly trivia-label map no factory read.
-  - **An artifact printed by 0.59.0 or earlier does not run on this runtime.** Its
+  - **An artifact printed by 0.59.x or earlier does not run on this runtime.** Its
     factory takes its helpers by position, so it needs the parser rebuilt by this
     version.
   - **The runtime refuses a printed factory whose helper list is not its own.** Before
     calling one, it compares the factory's declared parameter count with the helpers it
-    passes, and throws "printed by an older or newer parseman" with both counts. The
-    factory's own guard only catches a runtime with fewer helpers, and one printed before
-    0.59.0 has none: it bound the wrong helpers and failed partway through a parse
+    passes, and throws "printed by an older or newer parseman" with both counts. A factory
+    printed by 0.59.x guards only against fewer helpers, and one printed before 0.59.0 has
+    no guard: it bound the wrong helpers and failed partway through a parse
     (`_BUF is not a constructor`). Test: `test/unit/precompiled-factory-arity-runtime.test.ts`.
+  - **A printed factory refuses a runtime that passes another number of helpers, fewer or
+    more.** Its guard was `arguments.length < n`, so an artifact printed by this version
+    loaded on a 0.59.x runtime, which passes 61 helpers, and threw `_SP is not a
+    constructor` mid-parse. It now throws "this parser was printed by parseman 0.60.0; run
+    it on parseman 0.60.0 or reprint it" when the assembly is built. Test:
+    `test/unit/printed-factory-arity.test.ts`.
 
 - **The GraphQL, expression-language and config examples build their nodes with
   constructors.** `examples/graphql` built every node it keeps with an object literal in a

@@ -38,11 +38,15 @@ export const OP_SEQV = 4
  */
 export const OP_CHOICE = 5
 /**
- * `REP c min max sep flags fx sepClass` — `sep` is a child offset or −1; `max`
- * −1 = ∞. `fx` is recovery metadata. The last class is the separator sentinel
- * for a separated list, otherwise the finite/non-nullable optional-item class
- * (or −1). `flags` bit 0 = trailing separator allowed, bit 1 =
- * `keepSeparators`, bit 2 = item expected reporting.
+ * `REP c min max sep flags fx sepClass [sepGate]` — EIGHT words, or NINE with
+ * flag bit 3. `sep` is a child offset or −1; `max` −1 = ∞. `fx` is the item's
+ * expected set. `sepClass` is the separator sentinel for a separated list,
+ * otherwise the finite/non-nullable optional-item class (or −1). `flags`: bit 0
+ * (`&1`) trailing separator allowed; bit 1 (`&2`) `keepSeparators`; bit 2 (`&4`)
+ * item expected reporting; bit 3 (`&8`) a ninth word at `ip + 8`, the class of
+ * characters the separator can start, so a strict list past its minimum ends
+ * where it cannot (`sepGate`); bit 4 (`&16`) the item's derived set is empty, so
+ * `fx` holds the item's tag for the minimum check and a resync error carries [].
  */
 export const OP_REP = 6
 /** `REPV …` — `REP` with `valueUnused`. */
