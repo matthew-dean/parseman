@@ -239,6 +239,18 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   - Local gate, `graphql/document` only, against v0.59.1, Node 26.13: before +4.8%
     (p 4.3e-7, 28/30 rounds slower); after +0.3% (p 0.21, 23/40), ok.
 
+  - `examples/lang`'s AST and `examples/toml-ish`'s lines were kept literal-built nodes
+    too, and `examples/css`'s `nilNode()` a literal; all three are constructor-built in
+    the same series. `examples/json` keeps none: its objects come from
+    `Object.fromEntries`, and its `[key, value]` pairs die inside the reducer.
+  - `pnpm perf:pretenure` runs `graphql/document` (1 mark-compact per process at every
+    pad, Node 26.13). A plant that turns every graphql node back into a literal in that
+    check's worker does NOT fail it: 1 mark-compact in every process at pads 0, 100, 500,
+    970, 2,000, 4,000, 8,000, 15,000 and 30,000, and at 1,500, 4,000 and 8,000 parses. The
+    same literals tenured in 12 of 12 processes under the cross-process gate's worker on
+    #243's bundle, and in 0 of 12 on v0.59.1's. The flip needs a layout that check does
+    not reach, so the plant would be blind and was not landed.
+
   A user grammar whose reducers build object literals can still flip the same way: the
   site is in the grammar, so no change in Parseman reaches it. The CHANGELOG's advice
   (build kept nodes with a constructor) is the remedy.

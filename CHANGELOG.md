@@ -168,6 +168,20 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     0.59.0 has none: it bound the wrong helpers and failed partway through a parse
     (`_BUF is not a constructor`). Test: `test/unit/precompiled-factory-arity-runtime.test.ts`.
 
+- **The GraphQL, expression-language and config examples build their nodes with
+  constructors.** `examples/graphql` built every node it keeps with an object literal in a
+  `transform()` reducer, and V8 pretenured those literal sites on Node 26: the
+  `graphql/document` perf case read +4.8% against 0.59.1 with 17–18 mark-compacts per
+  process against 1, while executing the same instructions. Its nodes, `examples/lang`'s
+  AST and `examples/toml-ish`'s lines are now `new` calls on a sibling `*-node.js`
+  (prototype `Object.prototype`), as `examples/css/css-node.js` is; each tree has the same
+  keys in the same order. `pnpm perf:pretenure` now runs `graphql/document` too.
+  - **For grammar authors.** This is not something Parseman can fix for you: the
+    allocation site is in your reducer. A grammar whose reducers build the nodes a parse
+    keeps with object literals can still flip between a fast and a slow mode per process
+    on Node 26. Build kept nodes with a constructor whose `prototype` is
+    `Object.prototype`, and copy the arrays they keep with a spread or `slice()`.
+
 ## 0.59.1 — 2026-11-04
 
 - **`compile()` and `compileLinkableTable()` no longer read `process` unguarded.**

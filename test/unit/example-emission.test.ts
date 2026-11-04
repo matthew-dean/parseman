@@ -70,6 +70,8 @@ const NOT_A_SHIPPED_GRAMMAR: Readonly<Record<string, string>> = {
   'css/stub-build.ts': 'CST node constructors used BY examples/css/parser.ts; exports no combinator',
   'css/css-node.d.ts': 'types for css-node.js, the node constructor stub-build.ts uses; exports no combinator',
   'graphql/graphql-node.d.ts': 'types for graphql-node.js, the node constructors parser.ts uses; exports no combinator',
+  'lang/lang-node.d.ts': 'types for lang-node.js, the node constructors parser.ts uses; exports no combinator',
+  'toml-ish/line-node.d.ts': 'types for line-node.js, the line constructors parser.ts uses; exports no combinator',
   'lang/ast.ts': 'AST type declarations and constructors; exports no combinator',
   'json/chevrotain-bench.ts': 'benchmark scaffolding — a Chevrotain comparison harness, not a published example',
   'spec-gen.ts': 'a script that prints EBNF and railroad diagrams; exports no combinator',
