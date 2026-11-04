@@ -5,6 +5,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
+  or gate that threw.** It used to swallow the throw, and when no file parsed it warned
+  and shipped the static ranking, so a build configured with a measured ranking could
+  silently ship a different one. On Jess's Less and SCSS grammars the gates read imported
+  helpers, which aren't in scope at build time, so a profile on those grammars now fails
+  instead of being ignored.
 - **A `compose()` that references a rule no piece defines fails the build, naming
   the rule.** The macro fuse used to encode around the undefined slot, leave the
   runtime `compose()` in place and warn "ref() used before .define()", which read as
