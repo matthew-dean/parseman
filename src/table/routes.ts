@@ -148,8 +148,10 @@ export type PackedRoutes = {
  *
  * - Per top: `[lo, hi, route, lo, hi, route, …]`, one route per run of characters.
  * - Routes: `[atom, d, ...levels(d), (cut, terminals, ...terminal)…]`.
- * - Levels: `[kind, ip, arm, variant, flags, lc, resumeTop, go, ...empties]` (`LF_*` flags; go −1: none).
- * - Lead masks, as their members (128: any non-ASCII character).
+ * - Levels: `[kind, ip, x, flags, lc, resumeTop, go, ...empties]`, where `x` is a
+ *   choice's arm or a node's variant, the flags are `LF_*`, and `go` −1 is none.
+ *   Trailing fields at their default (`LEVEL_DEFAULTS`) are not stored.
+ * - Lead masks, as runs of members `lo, hi, …` (128: any non-ASCII character).
  * - Atoms: `[0, ip]` a site, `[1]` the routed token, or
  *   `[2, ip, arms, (route, ip, needsRouted, commits)…, hasOther, (other's four)?]`
  *   a dispatch (route −1: the arm runs whole).
@@ -162,6 +164,7 @@ type RoutePools = readonly [
   atoms: readonly (readonly number[])[],
 ]
 
+const LEVEL_DEFAULTS = [-1, 0, 0, -1, -1] as const
 const LF_DIRTY = 8
 const LF_CANDIDATE = 16
 
@@ -189,18 +192,27 @@ export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
   }
   const mask = (m: LeadMask | undefined): number => {
     if (m === undefined) return -1
-    const members: number[] = []
-    for (let c = 0; c < m.length; c++) if (m[c] === 1) members.push(c)
-    const key = members.join(',')
+    const runs: number[] = []
+    for (let c = 0; c < m.length; c++) {
+      if (m[c] !== 1) continue
+      const lo = c
+      while (m[c + 1] === 1) c++
+      runs.push(lo, c)
+    }
+    const key = runs.join(',')
     let i = maskIds.get(key)
-    if (i === undefined) { i = P.m.length; P.m.push(members); maskIds.set(key, i) }
+    if (i === undefined) { i = P.m.length; P.m.push(runs); maskIds.set(key, i) }
     return i
   }
-  const levelId = (L: RouteLevel): number => intern(L, P.l, L => [
-    L.kind, L.ip, L.arm, L.variant,
-    (L.dirty ? LF_DIRTY : 0) | (L.candidate ? LF_CANDIDATE : 0),
-    L.lc, L.resumeTop, mask(L.go), ...L.empties,
-  ])
+  const levelId = (L: RouteLevel): number => intern(L, P.l, L => {
+    const w = [
+      L.kind, L.ip, L.kind === K_CHOICE ? L.arm : L.variant,
+      (L.dirty ? LF_DIRTY : 0) | (L.candidate ? LF_CANDIDATE : 0),
+      L.lc, L.resumeTop, mask(L.go), ...L.empties,
+    ]
+    while (w.length > 2 && w.length <= 7 && w[w.length - 1] === LEVEL_DEFAULTS[w.length - 3]) w.pop()
+    return w
+  })
   const arm = (A: DispatchArmRoute): number[] => [
     A.route === undefined ? -1 : routeId(A.route), A.ip, A.needsRouted ? 1 : 0, A.commits ? 1 : 0,
   ]
@@ -256,14 +268,20 @@ export function routeTable(packed: PackedRoutes): RouteTable {
   const mask = (i: number): LeadMask | undefined => {
     if (i < 0) return undefined
     let m = masks[i]
-    if (m === undefined) { m = new Uint8Array(129); for (const c of P().m[i]!) m[c] = 1; masks[i] = m }
+    if (m === undefined) {
+      m = new Uint8Array(129)
+      const runs = P().m[i]!
+      for (let r = 0; r < runs.length; r += 2) m.fill(1, runs[r]!, runs[r + 1]! + 1)
+      masks[i] = m
+    }
     return m
   }
   const level = (i: number): RouteLevel => levels[i] ??= ((w: readonly number[]): RouteLevel => ({
-    kind: w[0]!, ip: w[1]!, arm: w[2]!, variant: w[3]!,
-    dirty: (w[4]! & LF_DIRTY) !== 0,
-    candidate: (w[4]! & LF_CANDIDATE) !== 0,
-    lc: w[5]!, resumeTop: w[6]!, go: mask(w[7]!), empties: w.slice(8),
+    kind: w[0]!, ip: w[1]!,
+    arm: w[0] === K_CHOICE ? w[2] ?? -1 : -1, variant: w[0] === K_CHOICE ? -1 : w[2] ?? -1,
+    dirty: ((w[3] ?? 0) & LF_DIRTY) !== 0,
+    candidate: ((w[3] ?? 0) & LF_CANDIDATE) !== 0,
+    lc: w[4] ?? 0, resumeTop: w[5] ?? -1, go: mask(w[6] ?? -1), empties: w.slice(7),
   }))(P().l[i]!)
   const arm = (w: readonly number[], o: number): DispatchArmRoute => ({
     route: w[o]! < 0 ? undefined : route(w[o]!), ip: w[o + 1]!, needsRouted: w[o + 2] === 1, commits: w[o + 3] === 1,
