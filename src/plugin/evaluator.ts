@@ -16,7 +16,7 @@ import type {
 import type { Combinator } from '../types.ts'
 import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
-import { rules, type RulesOptions } from '../combinators/parser.ts'
+import { rules, RULES_RECIPE, type PriorRules, type RulesOptions, type RulesRecipe } from '../combinators/parser.ts'
 import * as parseman from '../index.ts'
 import { confirmedBuildParamUnused } from '../compiler/build-arity.ts'
 import { directBuilderBindings } from './direct-builder-static.ts'
@@ -1478,11 +1478,17 @@ export function evaluateParserFactory(
 
   const factory = factoryNode as unknown as ArrowFunctionExpression | OxcFunction
   const params = factory.params
-  if (params.length !== 1) return null
-  const param = params[0] as unknown as { type: string; name?: string }
+  if (params.length !== 1 && params.length !== 2) return null
   // FormalParameter is { decorators? } & BindingPattern — BindingIdentifier has type "Identifier"
-  const proxyName = param.type === 'Identifier' ? param.name ?? null : null
+  const paramName = (param: unknown): string | null => {
+    const p = param as { type: string; name?: string }
+    return p.type === 'Identifier' ? p.name ?? null : null
+  }
+  const proxyName = paramName(params[0])
   if (!proxyName) return null
+  // `(g, prior)`: the second parameter is the `prior` handle (`PriorRules`).
+  const priorName = params.length === 2 ? paramName(params[1]) : undefined
+  if (priorName === null) return null
 
   const body = factory.body
   if (!body) return null
@@ -1566,11 +1572,12 @@ export function evaluateParserFactory(
   const ABORT = Symbol('parseman: factory not statically evaluable')
   let built: Record<string, Combinator<unknown>>
   try {
-    built = rules(options ?? {}, (g: Record<string, Combinator<unknown>>) => {
+    built = rules(options ?? {}, (g: Record<string, Combinator<unknown>>, prior: PriorRules) => {
       // Outer ScopeEntry values carry their mfSrcs and are replayed by scopeGet()
       // when body statements or return expressions reference them.
       const localScope: XScope = scope instanceof ModuleScope ? scope.fork() : new Map(scope as XScope)
       localScope.set(proxyName, g)
+      if (priorName !== undefined) localScope.set(priorName, prior)
 
       // ── Phase 1: the factory's own body statements ────────────────────────
       if (!evalBodyStatements(statements, localScope, code, out)) throw ABORT
@@ -1613,8 +1620,23 @@ export function evaluateParserFactory(
    */
   const map = new Map<string, Combinator<unknown>>()
   for (const key of keys) map.set(key, built[key]!)
+  const declared = new Set(keys)
+  externalAccesses.set(map, Object.keys(built).filter(name => !declared.has(name)))
+  ruleMapRecipes.set(map, (built as unknown as Record<symbol, readonly RulesRecipe[]>)[RULES_RECIPE]!)
   return map
 }
+
+/** The recipe an evaluated rule map came from, for a composition that links it. */
+export const ruleMapRecipes = new WeakMap<ReadonlyMap<string, Combinator<unknown>>, readonly RulesRecipe[]>()
+
+/**
+ * Every EXTERNAL name an evaluated factory read through `g`, keyed by the map
+ * `evaluateParserFactory` returned. The map holds declared rules only, so a `g.X`
+ * read outside every rule body (`const unused = g.X`) leaves no trace in it; the
+ * IR serializer reads this to keep that access, so a composition refuses an `X`
+ * nobody defines exactly as runtime `compose()` does.
+ */
+export const externalAccesses = new WeakMap<ReadonlyMap<string, Combinator<unknown>>, readonly string[]>()
 
 /** A combinator slot created by ref() — has a callable `define`. */
 type DefinableRef = Combinator<unknown> & { define(p: Combinator<unknown>): void }

@@ -1,5 +1,7 @@
 import type { Combinator } from '../types.ts'
 import type { HostMode } from '../cst/host-mode.ts'
+import type { Runnable } from '../functional/run.ts'
+import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { parser as grammarParser } from './grammar.ts'
@@ -28,12 +30,20 @@ function isDefinableRef(v: unknown): v is DefinableRef {
     && typeof (v as { define?: unknown }).define === 'function'
 }
 
+/** The rule name a `prior.X` placeholder stands for (see `linkRules`), or `undefined`. */
+export function priorNameOf(r: Combinator<unknown>): string | undefined {
+  return (r as unknown as { _priorOf?: string })._priorOf
+}
+
 function ruleNameOf(r: Combinator<unknown>): string | undefined {
   return (r as unknown as { _ruleName?: string })._ruleName
 }
 
 function isNamedRuleRefForAnotherRule(r: Combinator<unknown>, key: string): boolean {
-  const name = r._def.tag === 'lazy' ? ruleNameOf(r) : undefined
+  if (r._def.tag !== 'lazy') return false
+  // A `prior.X` hole stands for an earlier piece's rule, never for this key.
+  if (priorNameOf(r) !== undefined) return true
+  const name = ruleNameOf(r)
   return name !== undefined && name !== key
 }
 
@@ -157,13 +167,51 @@ type RuleMapNodeTag<T extends Record<string, Combinator<unknown>>> = {
 type RulesResult<T extends Record<string, Combinator<unknown>>> =
   T & GrammarWithReflection<RuleMapNodeType<T>, RuleMapNodeTag<T>>
 
-export function rules<T extends Record<string, Combinator<unknown>>>(factory: (self: any) => T): RulesResult<T>
-export function rules<T extends Record<string, Combinator<unknown>>>(options: RulesOptions, factory: (self: any) => T): RulesResult<T>
-export function rules<T extends Record<string, Combinator<unknown>>>(
-  a: ((self: any) => T) | RulesOptions,
-  b?: (self: any) => T,
+/**
+ * The second parameter of a `rules((g, prior) => …)` factory. `prior.X` is the
+ * definition of `X` that the grammars composed BEFORE this one gave it, with a
+ * top-level `node()` unwrapped to its body, so a composing grammar can re-reduce,
+ * wrap or extend an inherited rule without re-spelling it:
+ *
+ *   rules((g, prior) => ({ Value: node('Value', prior.Value, reduceValue) }))
+ *
+ * Its `g.X` references stay bound to the composition (open recursion). Name the base
+ * grammar so `prior.X` is typed and a misspelled rule fails to compile:
+ *
+ *   rules((g, prior: PriorRules<typeof css>) => ({ … }))
+ *
+ * A rule's value is `unknown` here, because unwrapping a `node()` changes it. Unnamed,
+ * the parameter answers any string. See `docs/guide/extending.md`.
+ */
+export type PriorRules<Base = Record<string, Combinator<unknown>>> = {
+  readonly [K in keyof Base & string as Base[K] extends Combinator<unknown> | Runnable ? K : never]: Combinator<unknown>
+}
+
+const priorUnfilled = (key: string): Error =>
+  new Error(`compose: prior.${key} is read, but no grammar composed before it defines "${key}"`)
+
+/** The placeholder for a `prior.X` no earlier piece has defined yet. Composition
+ * replaces it; running it, or analysing what it leads to, reports the name. */
+function priorHole(key: string): Combinator<unknown> {
+  const unfilled = priorUnfilled(key)
+  const fail = (): never => { throw unfilled }
+  return {
+    _tag: 'lazy',
+    _meta: { firstSet: any(), canMatchNewline: true, isTrivia: false },
+    _def: { tag: 'lazy', thunk: fail },
+    parse: fail,
+    _priorOf: key,
+  } as Combinator<unknown>
+}
+
+export function rules<T extends Record<string, Combinator<unknown>>, P extends object = PriorRules>(factory: (self: any, prior: P) => T): RulesResult<T>
+export function rules<T extends Record<string, Combinator<unknown>>, P extends object = PriorRules>(options: RulesOptions, factory: (self: any, prior: P) => T): RulesResult<T>
+export function rules<T extends Record<string, Combinator<unknown>>, P extends object = PriorRules>(
+  a: ((self: any, prior: P) => T) | RulesOptions,
+  b?: (self: any, prior: P) => T,
 ): RulesResult<T> {
-  const factory = (typeof a === 'function' ? a : b) as (self: any) => T
+  // The proxy answers every name, so it satisfies whatever rules `P` names.
+  const factory = (typeof a === 'function' ? a : b) as unknown as RulesRecipe['factory']
   const options = (typeof a === 'function' ? b : a) as RulesOptions | undefined
   const recipe: RulesRecipe = { factory, options }
   const map = linkRules([recipe])
@@ -180,7 +228,7 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
  */
 export const RULES_RECIPE = Symbol.for('parseman.rulesRecipe')
 export type RulesRecipe = {
-  readonly factory: (self: Record<string, Combinator<unknown>>) => Record<string, Combinator<unknown>>
+  readonly factory: (self: Record<string, Combinator<unknown>>, prior: PriorRules) => Record<string, Combinator<unknown>>
   readonly options: RulesOptions | undefined
 }
 
@@ -234,8 +282,26 @@ export function linkRules(
   // before the rule's own parser is built — enabling forward references. A later
   // recipe's definition of a name WINS; the name keeps its first position.
   const winners = new Map<string, { parser: Combinator<unknown>; options: RulesOptions | undefined }>()
+  // `prior.X`: the winner for X BEFORE the running recipe, read while that recipe's
+  // factory runs (its own definitions join `winners` only after it returns). It is
+  // the earlier definition itself, inlined into the new rule's graph, so it costs no
+  // hop at parse time. A grammar not yet composed has no earlier piece: `prior.X` is
+  // then a placeholder the serializer writes back as `prior.X`, and a composition
+  // that still has no earlier X refuses it.
+  const priorHoles = new Map<string, Combinator<unknown>>()
+  const prior = new Proxy<PriorRules>({}, {
+    get(_target, key) {
+      if (typeof key !== 'string') return undefined
+      const earlier = winners.get(key)?.parser
+      if (earlier !== undefined) return earlier._def.tag === 'node' ? earlier._def.parser : earlier
+      if (link !== undefined) throw priorUnfilled(key)
+      let hole = priorHoles.get(key)
+      if (hole === undefined) priorHoles.set(key, hole = priorHole(key))
+      return hole
+    },
+  })
   for (const recipe of recipes) {
-    const definitions = recipe.factory(proxy)
+    const definitions = recipe.factory(proxy, prior)
     for (const key of Object.keys(definitions)) {
       winners.set(key, { parser: definitions[key]!, options: recipe.options })
     }

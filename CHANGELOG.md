@@ -5,6 +5,38 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`rules((g, prior) => …)`: a composing grammar can re-reduce or extend an inherited
+  rule without copying it.** `prior.X` is the definition of `X` that the grammars
+  composed before this one gave it, with a top-level `node()` unwrapped to its body, and
+  its `g.` references stay bound to the composition. `X: node('X', prior.X, reduce)`
+  swaps only the reducer; `X: node('X', choice(prior.X, arm), reduce)` adds an arm.
+  Dropping that `node()` drops the inherited node too.
+  The earlier definition is placed in the new rule, so it parses and encodes as the
+  rule written out by hand would (the encoded table is identical). A grammar built on
+  its own ships `prior.X` in its carried pieces, and a composition where no earlier
+  piece defines `X` refuses it, at runtime and in the build. Annotating the parameter
+  as `PriorRules<typeof base>` types `prior.X` and rejects a misspelled rule. A `prior.X`
+  nothing fills throws a message naming it on every engine, and `toEBNF` prints it as
+  `/* prior.X */`. The interpreter, the reference driver, the closure engine, the printed
+  assembly, `compile()` and the macro's cross-module table build the same values.
+  See `docs/guide/extending.md` and `test/unit/rules-prior.test.ts`.
+- **A macro `composeLeaf()` now links its pieces as `compose()` and the runtime
+  `composeLeaf()` do**, instead of merging their rule maps by name. The leaf can read
+  `prior.X`, and first sets and expected sets see the composed grammar.
+- **A `compose()` that references a rule no piece defines fails the build, naming
+  the rule.** The macro fuse used to encode around the undefined slot, leave the
+  runtime `compose()` in place and warn "ref() used before .define()", which read as
+  a parseman defect. The cause is the grammar: a `g.X` whose name no composed piece
+  returns, usually a base sub-expression that is a local const rather than a rule
+  key. The build now throws `<file>:<line> — compose: rule "VarFallback" references
+  missing rule "VarFunction"` (or, when no live rule reads the name, `rule(s) "X" are
+  referenced but defined by no composed grammar`): the words runtime `compose()`
+  already refused the grammar with, after the call site. `composeLeaf()` refuses the
+  same grammar the same way (`— composeLeaf: …`) instead of failing to fuse with the
+  old message. A `g.X` a factory reads outside every rule (`const unused = g.X`) is
+  now kept in the grammar's carried IR as `void g["X"]`, so the build refuses it where
+  runtime `compose()` did and the build did not. See
+  `test/unit/compose-dangling-reference.test.ts`.
 - **The walker and the tables now agree on four more results, and three compositions
   a dialect grammar relies on are pinned across a package boundary.**
   - A `node()` over a bare rule reference delivers the `field()` below it on the
