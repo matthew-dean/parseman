@@ -5,6 +5,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A closure-engine artifact skips the frames a value does not need.** A node site whose
+  first character decides the path to a left corner now parses that corner directly and
+  completes each level on the value in hand, entering a sequence's or repeat's own lowering
+  only where its next character can start it (`docs/design/left-corner-routing.md`). This
+  applies to artifacts without a selective assembly, and to AST tables without line tracking.
+  Results are identical. Calls per parse at `assemblyBudget` 0 fall 6% to 13% on whole
+  files; a site the character does not route pays one call. An artifact with routes grows by
+  their data (`example/css` 9,518 → 10,317 B). A selective artifact does not change.
+
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

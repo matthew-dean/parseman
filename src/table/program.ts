@@ -6,6 +6,7 @@ import { leadRanges } from '../lead-ranges.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
+import type { PackedRoutes } from './routes.ts'
 import { buildLexBodyRecognizer, type LexBodyRecognizer } from './lex-body.ts'
 import { buildLexProgramRunner, type LexProgramRunner } from './lex-program.ts'
 
@@ -189,6 +190,12 @@ export type TableProgram = {
    * hand-built `tableRules(program)` caller, never a compiler-created artifact.
    */
   readonly asm?: readonly PrecompiledAssembly[]
+  /**
+   * The left-corner routes (`routes.ts`), derived when the table is encoded so
+   * loading it derives nothing. Present on an AST table without line tracking
+   * whose node sites top any route; an engine that finds none does not route.
+   */
+  readonly routes?: PackedRoutes
 }
 
 /**
@@ -347,6 +354,8 @@ export type CompactProgram = {
   readonly cv?: readonly (readonly [string, 0 | 1 | 2 | 3])[]
   /** Pre-compiled assemblies — see `TableProgram.asm`. */
   readonly a?: readonly PrecompiledAssembly[]
+  /** Left-corner routes — see `TableProgram.routes`. */
+  readonly ro?: PackedRoutes
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
@@ -366,6 +375,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.rv === undefined ? {} : { rec: p.rv }),
     ...(p.cv === undefined ? {} : { cov: p.cv }),
     ...(p.a === undefined ? {} : { asm: p.a }),
+    ...(p.ro === undefined ? {} : { routes: p.ro }),
   })
 }
 
@@ -805,6 +815,11 @@ export type TableDelta = {
   readonly to: readonly number[]
   readonly lines?: 0 | 1
   readonly hostMode?: 'ast' | 'cst'
+  /**
+   * The variant's routes where they differ from the base's (`null`: it has none).
+   * Routes are read from the code a fold overwrites, so they follow the variant.
+   */
+  readonly routes?: PackedRoutes | null
 }
 
 /** A base table plus the row edits that turn it into each named variant. */
@@ -829,7 +844,9 @@ function ownFoldedProgram(
 /** The wire form a folded artifact prints — short keys, as `CompactProgram`. */
 export type CompactFolded = {
   readonly b: CompactProgram
-  readonly v: Readonly<Record<string, { a?: readonly number[]; t?: readonly number[]; l?: 0 | 1; h?: 'ast' | 'cst' }>>
+  readonly v: Readonly<Record<string, {
+    a?: readonly number[]; t?: readonly number[]; l?: 0 | 1; h?: 'ast' | 'cst'; o?: PackedRoutes | null
+  }>>
 }
 
 /**
@@ -872,7 +889,7 @@ const SHARED_FIELDS = [
  * refuses an input that already carries one rather than dropping it quietly.
  */
 type FoldDropped = 'asm'
-type FoldClassified = 'code' | 'fns' | 'lines' | 'hostMode' | FoldDropped | (typeof SHARED_FIELDS)[number]
+type FoldClassified = 'code' | 'fns' | 'lines' | 'hostMode' | 'routes' | FoldDropped | (typeof SHARED_FIELDS)[number]
 type AssertNever<T extends never> = T
 export type FoldExhaustive = AssertNever<Exclude<keyof TableProgram, FoldClassified>>
 
@@ -963,6 +980,7 @@ export function foldPrograms(
       at, to,
       ...(p.lines === undefined ? {} : { lines: p.lines }),
       ...(p.hostMode === undefined ? {} : { hostMode: p.hostMode }),
+      ...(JSON.stringify(p.routes) === JSON.stringify(base.routes) ? {} : { routes: p.routes ?? null }),
     }
   }
   return ownFoldedProgram(base, variants)
@@ -997,11 +1015,14 @@ export function unfoldVariant(folded: FoldedProgram, name: string): TableProgram
   const code = [...base.code]
   let ip = 0
   for (let i = 0; i < d.at.length; i++) { ip += d.at[i]!; code[ip] = d.to[i]! }
+  const { routes: baseRoutes, ...shared } = base
+  const routes = d.routes === undefined ? baseRoutes : d.routes ?? undefined
   const raw: TableProgram = {
-    ...base,
+    ...shared,
     code,
     ...(d.lines === undefined ? {} : { lines: d.lines }),
     ...(d.hostMode === undefined ? {} : { hostMode: d.hostMode }),
+    ...(routes === undefined ? {} : { routes }),
   }
   // Seeded from the BASE's resolved table: `cc`, `disp`, `dsp` and the rebuilt
   // trivia are identical by `foldPrograms`' own assertion, so N variants cost
@@ -1021,6 +1042,7 @@ export function expandCompactFolded(f: CompactFolded): FoldedProgram {
       at: d.a ?? [], to: d.t ?? [],
       ...(d.l === undefined ? {} : { lines: d.l }),
       ...(d.h === undefined ? {} : { hostMode: d.h }),
+      ...(d.o === undefined ? {} : { routes: d.o }),
     }
   }
   return ownFoldedProgram(expandCompact(f.b), variants)

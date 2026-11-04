@@ -113,6 +113,12 @@ import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows, newGapSlot } from './gap-gate.ts'
 import { failCleanAnalysis } from './fail-clean.ts'
+import { maskOfRanges, type LeadMask } from './lead-mask.ts'
+import {
+  E_LIST, E_NULL, K_CHOICE, K_NODE, K_REP, K_SCOPE, K_SEQ, K_WITHCTX, K_WRAP,
+  V_CHILDREN, V_CHILDREN_COLLAPSE, V_CHILDREN_FIELDS, V_COLLAPSE, V_GENERIC, V_PASS, V_PLAIN,
+  routeTable, type DispatchArmRoute, type Route, type RouteAtom, type RouteLevel,
+} from './routes.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
@@ -268,6 +274,8 @@ type SequenceTermBlock = (
   input: string, cur: number, ctx: ParseContext, values: unknown[] | undefined,
   inheritedSync?: Combinator<unknown>,
 ) => number
+/** A route continuation: a sequence's term blocks (the end, or −1), or a seeded repeat's piece (its value). */
+type Resumed = (input: string, cur: number, ctx: ParseContext, values: unknown[] | undefined) => unknown
 
 /**
  * The option set an assembly is specialised for.
@@ -1228,6 +1236,76 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   /** No fixed child array is permitted to survive into a choice piece. */
   const NEVER_PIECE: Piece = () => FAIL
+
+  // Arbitrary strict arities use a bounded scalar block chain. Fixed
+  // children are captured into prewritten four-term blocks at assembly;
+  // the parse path has no `kids[i]`, fixed-child loop, or opcode lookup.
+  const termBlock = (
+    step: (child: Piece, input: string, cur: number, ctx: ParseContext) => number,
+    count: number,
+    k0: Piece, k1: Piece, k2: Piece, k3: Piece,
+    next: SequenceTermBlock | undefined,
+  ): SequenceTermBlock => {
+    if (count === 1) return (input, cur, ctx, values) => {
+      cur = step(k0, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      return next === undefined ? cur : next(input, cur, ctx, values)
+    }
+    if (count === 2) return (input, cur, ctx, values) => {
+      cur = step(k0, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k1, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      return next === undefined ? cur : next(input, cur, ctx, values)
+    }
+    if (count === 3) return (input, cur, ctx, values) => {
+      cur = step(k0, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k1, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k2, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      return next === undefined ? cur : next(input, cur, ctx, values)
+    }
+    return (input, cur, ctx, values) => {
+      cur = step(k0, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k1, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k2, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k3, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      return next === undefined ? cur : next(input, cur, ctx, values)
+    }
+  }
+  /**
+   * The term blocks of the sequence whose `n` terms start at `base`, from term
+   * `start`: a sequence's own tail runs them from its second term, and a route's
+   * continuation from the term after its corner.
+   */
+  function termChain(
+    step: (child: Piece, input: string, cur: number, ctx: ParseContext) => number,
+    base: number, n: number, start: number,
+  ): SequenceTermBlock {
+    const count = Math.min(4, n - start)
+    const child = (offset: number): Piece => link(code[base + start + offset]!)
+    return termBlock(
+      step, count, child(0), count > 1 ? child(1) : NEVER_PIECE,
+      count > 2 ? child(2) : NEVER_PIECE, count > 3 ? child(3) : NEVER_PIECE,
+      start + count < n ? termChain(step, base, n, start + count) : undefined,
+    )
+  }
   const NEVER_CLASS: ResolvedClass = { ascii: new Uint8Array(128), hi: [] }
   const EMPTY_EXPECTED_PREFIX: ChoiceExpectedPrefix = (_target, _prev, acc) => acc
 
@@ -1529,7 +1607,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // holder first so a recursive child can still link back through this site.
     const piece = scopeIsIdentity(code, ip, closureLabels.at(ip))
       ? link(code[ip + 2]!)
-      : countedPiece(lookaheadLedNode(ip) ?? lower(ip), ip)
+      : countedPiece(routedPiece(ip, lookaheadLedNode(ip) ?? lower(ip)), ip)
 
     inFlight.delete(ip)
     holder.set(piece)
@@ -1578,6 +1656,983 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (recognize(input, pos) < 0) { ctx._fe = pos; ctx._fx = xf; return FAIL }
           return node(input, pos, ctx)
         }
+  }
+
+  /* ── LEFT-CORNER ROUTES (`routes.ts`) ─────────────────────────────────────
+
+   A route-top node's piece reads its route for the character at `pos` at entry;
+   a character with no route runs the node's ordinary body in the same piece.
+   A route is a chain of closures, one per level, each over the next level's: a
+   level that only routes (a gate already decided, a rule reference, an identity
+   scope) adds none. The deepest piece runs once; each level then completes on
+   its lone child, or, where its continuation can start, resumes: the frame it
+   skipped is opened in place with the value in hand, and the continuation runs
+   from the corner's end. The top node owns the collector suppression: nothing
+   below it publishes while the levels complete alone. */
+  const ROUTES = !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines && !cfg.tolerant
+    && prog.routes !== undefined
+    ? routeTable(prog.routes)
+    : undefined
+
+  /**
+   * Items a repeat being lowered already holds when its piece is entered: 1 for a
+   * route's continuation, whose first item is the corner, at the position after
+   * it; 0 otherwise. The count the loop starts from, never tested.
+   */
+  let REP_SEED = 0
+  /** The value of the last node a chain completed: the child its parent counts. */
+  let PV: unknown
+  /** The last trivia gap a route scanned to decide, handed to the scan that follows. */
+  let TM_S: FastTriviaScanner | null = null
+  let TM_AT = -1
+  let TM_IN: string | undefined
+  let TM_END = -1
+  /** The token a `dispatch()` routed into an arm route, read by `ROUTED_ATOM`. */
+  let RT_KEY = ''
+  let RT_END = -1
+
+  /** A route level as this engine runs it: the row's facts, read once. */
+  type Level = {
+    kind: number
+    ip: number
+    scanFor: FastTriviaScanner | null
+    leadTable: Uint8Array | null
+    scopeTrivia: ParseContext['trivia']
+    scopeLabels: ParseContext['triviaKindLabels']
+    cap: boolean
+    rootFlags: number
+    derive: ((s: unknown) => unknown) | undefined
+    extra: unknown
+    variant: number
+    build: NodeBuilder | undefined
+    captureWide: boolean
+    wantFields: boolean
+    readsState: boolean
+    omitsRaw: boolean
+    collapse: boolean
+    readsRaw: boolean
+    leading: Piece[]
+    wantValues: boolean
+    go: LeadMask | undefined
+    /** What a sequence holds when its continuation declines: the corner's slot and each term's empty value. */
+    declined: unknown[]
+    /** The indices of `declined` that take a fresh list. */
+    freshAt: number[]
+    collect: boolean
+    dirty: boolean
+    reportItem: boolean
+    itemFx: string[]
+    maxOne: boolean
+    resumeTop: number
+    resumeNode: Level | undefined
+    /** `captureTrivia` this level's continuation runs with: a capturing scope's, else its frame node's. */
+    resumeCapture: boolean
+    /** The scope this level runs under, installed only when it resumes; `undefined` where the live one is it. */
+    scopeAt: Level | undefined
+    /** The continuation: a sequence's term blocks from the term after the corner, or the repeat seeded with its first item. */
+    resumed: Resumed | undefined
+    exclusive: boolean
+    choiceFx: string[]
+    prefixFx: string[][]
+    suffixFx: string[][]
+    tObj: unknown
+    tMask: LeadMask | null
+  }
+  /**
+   * A route, ready to run. A top's table starts out holding one PENDING run
+   * (`d` −1) at every character; the first character that reaches it puts one
+   * pending run per route in its place, and the first character that reaches
+   * one of those builds that route's chain alone. A route never run builds
+   * nothing, and a character with no route then finds `undefined`.
+   */
+  type RouteRun = {
+    chain: Piece
+    d: number
+    /** Pending only: the site, the table to fill, and the route (`undefined`: not yet split). */
+    top: number
+    table: (RouteRun | undefined)[] | undefined
+    route: Route | undefined
+    levels: readonly Level[]
+    guards: { recs: ScalarRecognizer[]; cut: number; chain: Piece | undefined }[]
+  }
+  /** Routes per character, `undefined` where none; `NO_ROUTE` from `runRoute` means "run the body". */
+  type TopRoutes = (RouteRun | undefined)[]
+  const NO_ROUTE: unknown = Symbol('no route')
+
+  const LEVELS = new Map<RouteLevel, Level>()
+  function levelOf(R: RouteLevel): Level {
+    let L = LEVELS.get(R)
+    if (L !== undefined) return L
+    const ip = R.ip
+    const op = code[ip]!
+    L = {
+      kind: R.kind, ip,
+      scanFor: null, leadTable: null, scopeTrivia: undefined, scopeLabels: undefined, cap: false, rootFlags: 0,
+      derive: undefined, extra: undefined,
+      variant: R.variant, build: undefined, captureWide: false, wantFields: false, readsState: false,
+      omitsRaw: false, collapse: false, readsRaw: false,
+      leading: [], wantValues: false, go: R.go, declined: [undefined], freshAt: [],
+      collect: false, dirty: R.dirty, reportItem: false, itemFx: EMPTY_FX, maxOne: false,
+      resumeTop: R.resumeTop, resumeNode: undefined, resumeCapture: false, scopeAt: undefined, resumed: undefined,
+      exclusive: false, choiceFx: EMPTY_FX, prefixFx: [], suffixFx: [], tObj: undefined, tMask: null,
+    }
+    LEVELS.set(R, L)
+    switch (R.kind) {
+      case K_NODE: {
+        const flags = code[ip + 3]!
+        L.build = fns[code[ip + 1]!] as NodeBuilder
+        L.readsRaw = flags === 32
+        L.collapse = (flags & 32) !== 0
+        L.readsState = (flags & 8) !== 0
+        L.wantFields = (flags & 16) !== 0 || R.variant === V_CHILDREN_FIELDS
+        L.captureWide = R.variant === V_GENERIC && (flags & 4) !== 0
+        L.omitsRaw = (flags & 2) !== 0
+        break
+      }
+      case K_SCOPE: {
+        const ki = code[ip + 1]!
+        L.scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
+        L.scopeLabels = L.scopeTrivia?._meta.triviaKindLabels
+        L.scanFor = swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
+        L.leadTable = ki < 0 ? null : LEAD_TABLES[ki]!
+        L.cap = op === OP_SCOPE_CAP
+        L.rootFlags = op === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
+        break
+      }
+      case K_WITHCTX: {
+        const ki = code[ip + 1]!
+        if (ki < 0) L.derive = fns[~ki] as (s: unknown) => unknown
+        else L.extra = k[ki]
+        break
+      }
+      case K_CHOICE: {
+        const n = code[ip + 2]!
+        L.exclusive = disp[code[ip + 1]!]!.exclusive
+        L.choiceFx = fx[code[ip + 3]!] as string[]
+        for (let i = 0; i < n; i++) {
+          const e = fx[code[ip + 4 + n + i]!] as string[]
+          if (i < R.arm) L.prefixFx.push(e)
+          else if (i > R.arm) L.suffixFx.push(e)
+        }
+        break
+      }
+      case K_SEQ: {
+        L.wantValues = op === OP_SEQ
+        for (let i = 0; i < R.lc; i++) L.leading.push(link(code[ip + 2 + i]!))
+        for (const e of R.empties) {
+          if (e === E_LIST) L.freshAt.push(L.declined.length)
+          L.declined.push(e === E_NULL ? null : undefined)
+        }
+        break
+      }
+      case K_REP: {
+        const flags = code[ip + 5]!
+        const max = code[ip + 3]!
+        L.collect = op === OP_REP
+        L.reportItem = (flags & 4) !== 0
+        L.itemFx = L.reportItem ? fx[code[ip + 6]!] as string[] : EMPTY_FX
+        L.maxOne = max >= 0 && max <= 1
+        break
+      }
+    }
+    return L
+  }
+
+  /** `routed()` at the bottom of an arm route: the leaf the arm's node counts. */
+  const ROUTED_ATOM: Piece = (_input, pos) => {
+    const e = RT_END
+    PV = new PlainLeaf(RT_KEY, new PlainSpan(pos, e))
+    EC.e = e
+    return RT_KEY
+  }
+
+  const DISPATCH_PIECES = new Map<RouteAtom, Piece>()
+  /**
+   * A `dispatch()` at the bottom of a route: the selector is read once, its key
+   * picks the arm as the dispatch row does, and the arm runs as a route of its
+   * own down to the routed token.
+   */
+  function dispatchPiece(atom: Extract<RouteAtom, { kind: 'dispatch' }>): Piece {
+    const done = DISPATCH_PIECES.get(atom)
+    if (done !== undefined) return done
+    const ip = atom.ip
+    const spec = dsp[code[ip + 2]!]!
+    const selector = link(code[ip + 1]!)
+    type Arm = { piece: Piece; needsRouted: boolean; commits: boolean }
+    const armOf = (a: DispatchArmRoute): Arm => ({
+      piece: a.route === undefined ? link(a.ip) : routeChain(a.route),
+      needsRouted: a.needsRouted,
+      commits: a.commits,
+    })
+    const arms = atom.arms.map(armOf)
+    const other = atom.other === undefined ? undefined : armOf(atom.other)
+    const byKey = spec.byKey
+    const byFold = spec.byFold
+    const hasFold = byFold.size > 0
+    const match = spec.match
+    const preds = match.map(m => linkMatcher(m))
+    const classify = (key: string): number | undefined => {
+      const a = byKey.get(key) ?? (hasFold ? byFold.get(asciiFoldKey(key)) : undefined)
+      if (a !== undefined) return a
+      for (let i = 0; i < preds.length; i++) if (preds[i]!(key)) return match[i]![3]
+      return undefined
+    }
+    const expected = spec.expected as string[]
+    const piece: Piece = (input, pos, ctx) => {
+      const fl = ctx._fields?.length ?? 0
+      const el = ctx._errors?.length ?? 0
+      const selVal = selector(input, pos, ctx)
+      if (selVal === FAIL) return FAIL
+      const selEnd = EC.e
+      const key = selVal as string
+      const a = classify(key)
+      let A: Arm
+      if (a === undefined) {
+        if (other === undefined) { ctx._fe = selEnd; ctx._fx = expected; return FAIL }
+        A = other
+      } else A = arms[a]!
+      // The arm re-reads the selector's match: the selector's marks are undone.
+      if (ctx._fields !== undefined && ctx._fields.length > fl) ctx._fields.length = fl
+      if (ctx._errors !== undefined && ctx._errors.length > el) ctx._errors.length = el
+      let v: unknown
+      if (A.needsRouted) {
+        const saved = ctx._routed
+        ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+        try { v = A.piece(input, pos, ctx) } finally { ctx._routed = saved }
+      } else {
+        RT_KEY = key
+        RT_END = selEnd
+        v = A.piece(input, pos, ctx)
+      }
+      if (v === FAIL) {
+        if (ctx._fields !== undefined && ctx._fields.length > fl) ctx._fields.length = fl
+        if (ctx._errors !== undefined && ctx._errors.length > el) ctx._errors.length = el
+        if (A.commits) ctx._fc = true
+        return FAIL
+      }
+      PV = v
+      return [key, v]
+    }
+    DISPATCH_PIECES.set(atom, piece)
+    return piece
+  }
+
+  /** The runtime levels of a route, with each continuation's frame placed (its runner is lowered on first resume). */
+  function levelsOf(route: Route): Level[] {
+    const levels = route.levels.map(levelOf)
+    let S: Level | undefined
+    for (let i = 0; i < route.d; i++) {
+      const L = levels[i]!
+      if (L.kind === K_SCOPE) { S = deferredScope(L) ? L : undefined; continue }
+      if (L.kind !== K_SEQ && L.kind !== K_REP) continue
+      L.scopeAt = S
+      if (L.resumeTop < 0 || L.resumeNode !== undefined) continue
+      const H = levels[L.resumeTop]!
+      L.resumeNode = H
+      let capScope = false
+      for (let j = L.resumeTop + 1; j < i; j++) if (levels[j]!.kind === K_SCOPE && levels[j]!.cap) capScope = true
+      L.resumeCapture = capScope || H.captureWide
+    }
+    return levels
+  }
+
+  /**
+   * A scope level the route installs only where something runs under it: around
+   * the atom, and around a continuation below it. One that refuses unclassified
+   * root trivia acts on entry, so it keeps its piece.
+   */
+  const deferredScope = (L: Level): boolean => L.kind === K_SCOPE && L.rootFlags === 0
+
+  /** The chain that runs `route` from its first level. */
+  function routeChain(route: Route, levels: readonly Level[] = levelsOf(route)): Piece {
+    const atom = route.atom
+    const atomSetsPV = atom.kind !== 'site'
+    const atomPiece = atom.kind === 'site' ? link(atom.ip) : atom.kind === 'routed' ? ROUTED_ATOM : dispatchPiece(atom)
+    return chainFor(levels, route.d, atomPiece, atomSetsPV)
+  }
+
+  const TOPS = new Map<number, TopRoutes>()
+  /** A top's table before it is armed; each top's is a copy (`Array.from` reads every index of its source). */
+  const NO_RUNS: readonly (RouteRun | undefined)[] = Array.from({ length: 128 })
+  /**
+   * The routes a node site tops, per character, or `undefined` where it tops
+   * none. Which sites are tops is decided here, when the site is linked.
+   */
+  function topRoutes(ip: number): TopRoutes | undefined {
+    if (ROUTES === undefined || HYBRID !== undefined || !ROUTES.hasTop(ip)) return undefined
+    let table = TOPS.get(ip)
+    if (table === undefined) {
+      table = NO_RUNS.slice()
+      if (ARMED) table.fill(pendingRun(ip, table, undefined))
+      TOPS.set(ip, table)
+    }
+    return table
+  }
+
+  /**
+   * A site's piece. A node that tops routes reads them ahead of its own body; any
+   * other site is its body, with no test and no call for routes it does not have.
+   */
+  function routedPiece(ip: number, body: Piece): Piece {
+    const R = topRoutes(ip)
+    if (R === undefined) return body
+    const piece: Piece = (input, pos, ctx) => {
+      const c = input.charCodeAt(pos)
+      if (c < 128) {
+        const route = R[c]
+        if (route !== undefined) { const v = runRoute(route, c, input, pos, ctx); if (v !== NO_ROUTE) return v }
+      }
+      return body(input, pos, ctx)
+    }
+    TOP_PIECES.set(piece, { R, body })
+    return piece
+  }
+  /** A top site's piece, and what a piece standing directly above it needs to do its job instead. */
+  const TOP_PIECES = new Map<Piece, { R: TopRoutes; body: Piece }>()
+
+  /**
+   * Whether the tops read their routes yet. A cold assembly's first parse runs
+   * every top's own body: building a route's chain and compiling its pieces
+   * costs more than the route saves within one cold parse, so the tops are
+   * armed when the first parse completes, and a top linked later is armed when
+   * it is linked.
+   */
+  let ARMED = false
+  function armRoutes(): void {
+    ARMED = true
+    for (const [top, table] of TOPS) table.fill(pendingRun(top, table, undefined))
+  }
+
+  function pendingRun(top: number, table: (RouteRun | undefined)[], route: Route | undefined): RouteRun {
+    return { chain: DECIDED, d: -1, top, table, route, levels: [], guards: [] }
+  }
+
+  /**
+   * Resolve the pending run at `c` (see `RouteRun`): split the top's table into
+   * one pending run per route, then build the one route `c` takes.
+   */
+  function fillRoutes(R: RouteRun, c: number): RouteRun | undefined {
+    const table = R.table!
+    if (R.route === undefined) {
+      const routes = ROUTES!.routesAt(R.top)
+      const pending = new Map<Route, RouteRun>()
+      for (let x = 0; x < 128; x++) {
+        const route = routes?.[x]
+        if (route === undefined) { table[x] = undefined; continue }
+        let run = pending.get(route)
+        if (run === undefined) { run = pendingRun(R.top, table, route); pending.set(route, run) }
+        table[x] = run
+      }
+      const now = table[c]
+      if (now === undefined) return undefined
+      R = now
+    }
+    const run = buildRun(R.route!)
+    for (let x = 0; x < 128; x++) if (table[x] === R) table[x] = run
+    return run
+  }
+
+  function buildRun(route: Route): RouteRun {
+    const levels = levelsOf(route)
+    return {
+      chain: routeChain(route, levels),
+      d: route.d,
+      top: -1,
+      table: undefined,
+      route,
+      levels,
+      guards: route.guards.map(g => ({ recs: g.terminals.map(tm => scalarFor(tm)!), cut: g.cut, chain: undefined })),
+    }
+  }
+
+  /** The chain a cut or guard at depth `cut` runs instead: the route above it, down to that level's own piece. */
+  function cutChain(levels: readonly Level[], cut: number): Piece {
+    return chainFor(levels, cut, link(levels[cut]!.ip), false)
+  }
+
+  /**
+   * Run the route a top node's piece found for `c`. The top suppresses every
+   * collector below it while the levels complete alone, and publishes the one
+   * value they produce. `NO_ROUTE` where a cut or guard sends the character back
+   * to the node's own body.
+   */
+  function runRoute(R: RouteRun, c: number, input: string, pos: number, ctx: ParseContext): unknown {
+    if (R.d < 0) {
+      const now = fillRoutes(R, c)
+      if (now === undefined) return NO_ROUTE
+      R = now
+    }
+    if (ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined) return NO_ROUTE
+    let d = R.d
+    let chain = R.chain
+    const guards = R.guards
+    for (let x = 0; x < guards.length; x++) {
+      const G = guards[x]!
+      if (G.cut >= d) continue
+      const recs = G.recs
+      for (let t = 0; t < recs.length; t++) {
+        if (recs[t]!(input, pos) >= 0) {
+          if (G.cut <= 0) return NO_ROUTE
+          d = G.cut
+          chain = G.chain ??= cutChain(R.levels, G.cut)
+          break
+        }
+      }
+    }
+    const sBuf = ctx._cstBuf, sCh = ctx._cstChildren, sLv = ctx._cstLeaves
+    const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog, sF = ctx._fields
+    ctx._cstBuf = undefined
+    ctx._cstChildren = undefined
+    ctx._cstLeaves = undefined
+    ctx._cstRawChildren = undefined
+    ctx._cstTriviaLog = undefined
+    ctx._fields = undefined
+    const r = chain(input, pos, ctx)
+    ctx._cstBuf = sBuf
+    ctx._cstChildren = sCh
+    ctx._cstLeaves = sLv
+    ctx._cstRawChildren = sRaw
+    ctx._cstTriviaLog = sTl
+    ctx._fields = sF
+    if (r === FAIL) return FAIL
+    if (sBuf !== undefined || sCh !== undefined) pushCstChild(ctx, PV, rawEntry(PV, input, pos, EC.e))
+    return r
+  }
+
+  /**
+   * Level `L`'s continuation, entered with its left corner already parsed: a
+   * sequence's own term blocks from the term after the corner (`termChain`), or
+   * the repeat's own loop seeded with one item (`REP_SEED`). Nothing before the
+   * corner runs again.
+   */
+  function lowerSeeded(L: Level): Resumed {
+    const ip = L.ip
+    if (L.kind === K_REP) {
+      REP_SEED = 1
+      const piece = lower(ip)
+      REP_SEED = 0
+      return piece
+    }
+    return termChain(closureLabels.at(ip).buf ? nextTermBuffered : nextTerm, ip + 2, code[ip + 1]!, L.leading.length + 1)
+  }
+
+  /** The failure of a choice's one dispatched arm, as the choice piece reports it. */
+  function routeChoiceFail(L: Level, pos: number, ctx: ParseContext, errLen: number): void {
+    if (L.exclusive) {
+      if (committed(ctx)) return
+      const armFx = ctx._fx
+      ctx._fe = pos
+      if (armFx === undefined || armFx.length === 0) ctx._fx = L.choiceFx
+      return
+    }
+    let acc: string[] | undefined
+    for (const e of L.prefixFx) acc = accSet(e, acc)
+    const at = ctx._fe ?? pos
+    let best = pos
+    if (at > best) { best = at; acc = undefined }
+    if (at === best) acc = accSet(ctx._fx, acc)
+    if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return }
+    if (L.dirty && ctx._errors !== undefined && ctx._errors.length > errLen) ctx._errors.length = errLen
+    if (best === pos) for (const e of L.suffixFx) acc = accSet(e, acc)
+    ctx._fe = pos
+    ctx._fx = acc ?? L.choiceFx
+  }
+
+  /**
+   * The end of the trivia the next term would skip at `end`, −1 where it cannot
+   * be read purely; `GAP_LEAD` is the code point there (−1 at the end of input).
+   * Read once per end: every level of the ascent that completes there shares it.
+   */
+  function routeGap(L: Level, input: string, end: number, ctx: ParseContext): number {
+    const S = L.scopeAt
+    const T = S === undefined ? ctx.trivia : S.scopeTrivia, sc = S === undefined ? SCAN : S.scanFor
+    if (end === RG_END && T === RG_T && input === RG_IN && (sc === RG_S || sc === RG_H)) {
+      if (S === undefined && RG_H !== null) SCAN = RG_H
+      return RG_Q
+    }
+    RG_END = end; RG_T = T; RG_S = sc; RG_IN = input; RG_H = null
+    let c = end < input.length ? input.charCodeAt(end) : -1
+    if (c >= 0xd800 && c <= 0xdbff) c = lead(input, end)
+    if (T !== undefined) {
+      if (T !== L.tObj) {
+        const fs = T._meta.firstSet
+        L.tObj = T
+        L.tMask = fs.kind === 'empty' ? new Uint8Array(129) : fs.kind === 'ranges' ? maskOfRanges(fs.ranges) : null
+      }
+      const m = L.tMask
+      if (m === null || (c >= 0 && m[c < 128 ? c : 128] === 1)) {
+        if (sc === null) return RG_Q = -1
+        const q = sc(input, end)
+        // Reading a handoff put its scanner back in the slot.
+        const real = S === undefined ? SCAN! : sc
+        TM_S = real; TM_AT = end; TM_IN = input; TM_END = q
+        RG_S = real
+        if (S === undefined) SCAN = RG_H = handoffOf(real)
+        c = q < input.length ? input.charCodeAt(q) : -1
+        if (c >= 0xd800 && c <= 0xdbff) c = lead(input, q)
+        GAP_LEAD = c
+        return RG_Q = q
+      }
+    }
+    GAP_LEAD = c
+    return RG_Q = end
+  }
+  /** The last gap `routeGap` read: the levels of one ascent that end together share it. */
+  let RG_END = -1
+  let RG_T: ParseContext['trivia']
+  let RG_S: FastTriviaScanner | null = null
+  let RG_H: FastTriviaScanner | null = null
+  let RG_IN: string | undefined
+  let RG_Q = -1
+  /** `routeGap`'s lead. */
+  let GAP_LEAD = -1
+
+  /**
+   * A scanner standing in the `SCAN` slot for `real` until its next read: where a
+   * route has just scanned the gap, that read takes the end from here, and `real`
+   * goes back. The trivia path reads the slot as it always does.
+   */
+  const HANDOFFS = new Map<FastTriviaScanner, FastTriviaScanner>()
+  function handoffOf(real: FastTriviaScanner): FastTriviaScanner {
+    let h = HANDOFFS.get(real)
+    if (h === undefined) {
+      h = (input, cur) => {
+        SCAN = real
+        return cur === TM_AT && real === TM_S && input === TM_IN ? TM_END : real(input, cur)
+      }
+      HANDOFFS.set(real, h)
+    }
+    return h
+  }
+
+  /**
+   * A continuation that can start: open the frame of the node it belongs to,
+   * here, holding what the route already parsed, and run the level's own body
+   * from the corner. Nothing above it is entered again; a later level resuming
+   * into the same frame publishes nothing a second time.
+   */
+  function resume(L: Level, input: string, pos: number, end: number, ctx: ParseContext, vals: unknown[] | undefined): unknown {
+    // The run hid the caller's collectors, so one that is set is the frame an
+    // earlier level opened for this same node (`L.resumeTop`): none lies between.
+    if (ctx._cstBuf === undefined && ctx._cstChildren === undefined) {
+      const H = L.resumeNode!
+      const v = H.variant
+      if (v === V_CHILDREN || v === V_CHILDREN_FIELDS || v === V_CHILDREN_COLLAPSE) {
+        const kids: unknown[] = []
+        ctx._cstChildren = kids
+        ctx._cstLeaves = kids
+      } else {
+        const buf: CstCaptureBuf = v === V_GENERIC && H.omitsRaw ? new PlainBuf(undefined, true, 0) : new PlainBuf(undefined, undefined, 0)
+        ctx._cstBuf = buf
+      }
+      pushCstChild(ctx, PV, rawEntry(PV, input, pos, end))
+    }
+    const run = L.resumed ??= lowerSeeded(L)
+    const sC = ctx.captureTrivia
+    ctx.captureTrivia = L.resumeCapture
+    const S = L.scopeAt
+    let r: unknown
+    if (S === undefined) r = run(input, end, ctx, vals)
+    else {
+      const sT = ctx.trivia, sL = ctx.triviaKindLabels, sS = SCAN, sLeadOf = LEAD_OF, sLead = LEAD_TABLE
+      const sc = S.scanFor
+      SCAN = sc !== null && sc === TM_S && end === TM_AT && input === TM_IN ? handoffOf(sc) : sc
+      LEAD_OF = S.scopeTrivia; LEAD_TABLE = S.leadTable
+      ctx.trivia = S.scopeTrivia; ctx.triviaKindLabels = S.scopeLabels
+      r = run(input, end, ctx, vals)
+      ctx.trivia = sT; ctx.triviaKindLabels = sL; SCAN = sS; LEAD_OF = sLeadOf; LEAD_TABLE = sLead
+    }
+    ctx.captureTrivia = sC
+    return r
+  }
+
+  /**
+   * One level of a route, as its own closure over the next level's: the
+   * character decided which levels these are, so every call here is to one
+   * known closure, and wrappers that only route add none.
+   */
+  function chainFor(levels: readonly Level[], d: number, atom: Piece, atomSetsPV: boolean): Piece {
+    // The deepest level that keeps a piece of its own publishes the atom's value;
+    // a scope or `withCtx` level runs its row's piece, so under one the atom does.
+    let k = -1
+    if (!atomSetsPV) {
+      for (let i = d - 1; i >= 0; i--) {
+        const L = levels[i]!
+        if (!keepsPiece(L)) continue
+        if (L.kind !== K_SCOPE && L.kind !== K_WITHCTX) k = i
+        break
+      }
+    }
+    let S: Level | undefined
+    for (let i = d - 1; i >= 0; i--) if (levels[i]!.kind === K_SCOPE) { S = levels[i]!; break }
+    let next = atomUnder(atom, S !== undefined && deferredScope(S) ? S : undefined, !atomSetsPV && k < 0)
+    for (let i = d - 1; i >= 0; i--) {
+      let fieldsAbove = false
+      for (let j = 0; j < i; j++) if (levels[j]!.kind === K_NODE && levels[j]!.wantFields) fieldsAbove = true
+      next = levelPiece(levels[i]!, i, next, i === k, fieldsAbove)
+    }
+    return next
+  }
+
+  /** A level the value passes through with nothing to do keeps no piece: a wrapper, or a deferred scope. */
+  const keepsPiece = (L: Level): boolean => L.kind !== K_WRAP && !deferredScope(L)
+
+  /** The atom, under the innermost scope above it when that scope is deferred; `setPV` where no level publishes it. */
+  function atomUnder(atom: Piece, S: Level | undefined, setPV: boolean): Piece {
+    if (S === undefined) {
+      if (!setPV) return atom
+      return (input, pos, ctx) => {
+        const r = atom(input, pos, ctx)
+        if (r !== FAIL) PV = r
+        return r
+      }
+    }
+    const scanFor = S.scanFor, tri = S.scopeTrivia, labels = S.scopeLabels, leadTable = S.leadTable
+    return (input, pos, ctx) => {
+      const sT = ctx.trivia, sL = ctx.triviaKindLabels, sS = SCAN, sLeadOf = LEAD_OF, sLead = LEAD_TABLE
+      SCAN = scanFor; LEAD_OF = tri; LEAD_TABLE = leadTable
+      ctx.trivia = tri; ctx.triviaKindLabels = labels
+      const r = atom(input, pos, ctx)
+      ctx.trivia = sT; ctx.triviaKindLabels = sL; SCAN = sS; LEAD_OF = sLeadOf; LEAD_TABLE = sLead
+      if (setPV && r !== FAIL) PV = r
+      return r
+    }
+  }
+
+  /**
+   * `fieldsAbove`: a node level above this one collects fields, so a node level
+   * that collects none hides them from what runs below it, as its piece does. The
+   * route run hides the caller's (`runRoute`).
+   */
+  function levelPiece(L: Level, i: number, next: Piece, innermost: boolean, fieldsAbove: boolean): Piece {
+    switch (L.kind) {
+      case K_WRAP:
+        return next
+      case K_SCOPE:
+        return deferredScope(L) ? next : scopeRow(L.ip, next)
+      case K_WITHCTX:
+        return withCtxRow(L.ip, next)
+      case K_CHOICE:
+        return (input, pos, ctx) => {
+          const errLen = ctx._errors?.length ?? 0
+          ctx._fc = false
+          const r = next(input, pos, ctx)
+          if (r === FAIL) { routeChoiceFail(L, pos, ctx, errLen); return FAIL }
+          if (innermost) PV = r
+          return r
+        }
+      case K_REP: {
+        const dirty = L.dirty, report = L.reportItem, itemFx = L.itemFx, collect = L.collect
+        const failed = (pos: number, ctx: ParseContext, errLen: number): unknown => {
+          if (dirty && ctx._errors !== undefined && ctx._errors.length > errLen) ctx._errors.length = errLen
+          if (!committed(ctx) && report) { ctx._fe = pos; ctx._fx = itemFx }
+          return FAIL
+        }
+        // At most one item: the corner is it.
+        if (L.maxOne) return (input, pos, ctx) => {
+          const errLen = dirty ? ctx._errors?.length ?? 0 : 0
+          ctx._fc = false
+          const r = next(input, pos, ctx)
+          if (r === FAIL) return failed(pos, ctx, errLen)
+          if (innermost) PV = r
+          return collect ? [r] : undefined
+        }
+        // The repeat's own loop runs from its second item; the first is the corner.
+        const go = L.go
+        if (go === undefined) return (input, pos, ctx) => {
+          const errLen = dirty ? ctx._errors?.length ?? 0 : 0
+          ctx._fc = false
+          const r = next(input, pos, ctx)
+          if (r === FAIL) return failed(pos, ctx, errLen)
+          if (innermost) PV = r
+          const end = EC.e
+          if (end < input.length) {
+            const out = resume(L, input, pos, end, ctx, undefined)
+            if (out !== FAIL && collect) (out as unknown[]).unshift(r)
+            return out
+          }
+          EC.e = end
+          return collect ? [r] : undefined
+        }
+        return (input, pos, ctx) => {
+          const errLen = dirty ? ctx._errors?.length ?? 0 : 0
+          ctx._fc = false
+          const r = next(input, pos, ctx)
+          if (r === FAIL) return failed(pos, ctx, errLen)
+          if (innermost) PV = r
+          const end = EC.e
+          if (end < input.length) {
+            const q = routeGap(L, input, end, ctx)
+            const c = GAP_LEAD
+            if (q < 0 || (c >= 0 && go[c < 128 ? c : 128] === 1)) {
+              const out = resume(L, input, pos, end, ctx, undefined)
+              if (out !== FAIL && collect) (out as unknown[]).unshift(r)
+              return out
+            }
+          }
+          EC.e = end
+          return collect ? [r] : undefined
+        }
+      }
+      case K_SEQ: {
+        const leading = L.leading, nLead = leading.length
+        const go = L.go
+        // The corner is the sequence's last term: it completes alone. Elsewhere its
+        // own term blocks run from the term after the corner. A sequence that keeps
+        // its values and one that does not are separate pieces, as their rows are.
+        const last = nLead + 1 === code[L.ip + 1]!
+        if (L.wantValues) {
+          if (last) return (input, pos, ctx) => {
+            for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+            const r = next(input, pos, ctx)
+            if (r === FAIL) return r
+            if (innermost) PV = r
+            return [r]
+          }
+          if (go === undefined) return (input, pos, ctx) => {
+            for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+            const r = next(input, pos, ctx)
+            if (r === FAIL) return r
+            if (innermost) PV = r
+            const vals = [r]
+            const cur = resume(L, input, pos, EC.e, ctx, vals) as number
+            if (cur < 0) return FAIL
+            EC.e = cur
+            return vals
+          }
+          const declined = L.declined, freshAt = L.freshAt, nFresh = freshAt.length
+          return (input, pos, ctx) => {
+            for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+            const r = next(input, pos, ctx)
+            if (r === FAIL) return r
+            if (innermost) PV = r
+            const end = EC.e
+            const q = routeGap(L, input, end, ctx)
+            const c = GAP_LEAD
+            if (q < 0 || (c >= 0 && go[c < 128 ? c : 128] === 1)) {
+              const vals = [r]
+              const cur = resume(L, input, pos, end, ctx, vals) as number
+              if (cur < 0) return FAIL
+              EC.e = cur
+              return vals
+            }
+            EC.e = end
+            const vals = declined.slice()
+            vals[0] = r
+            for (let f = 0; f < nFresh; f++) vals[freshAt[f]!] = []
+            return vals
+          }
+        }
+        if (last) return (input, pos, ctx) => {
+          for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+          const r = next(input, pos, ctx)
+          if (r === FAIL) return r
+          if (innermost) PV = r
+          return undefined
+        }
+        if (go === undefined) return (input, pos, ctx) => {
+          for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+          const r = next(input, pos, ctx)
+          if (r === FAIL) return r
+          if (innermost) PV = r
+          const cur = resume(L, input, pos, EC.e, ctx, undefined) as number
+          if (cur < 0) return FAIL
+          EC.e = cur
+          return undefined
+        }
+        return (input, pos, ctx) => {
+          for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+          const r = next(input, pos, ctx)
+          if (r === FAIL) return r
+          if (innermost) PV = r
+          const end = EC.e
+          const q = routeGap(L, input, end, ctx)
+          const c = GAP_LEAD
+          if (q < 0 || (c >= 0 && go[c < 128 ? c : 128] === 1)) {
+            const cur = resume(L, input, pos, end, ctx, undefined) as number
+            if (cur < 0) return FAIL
+            EC.e = cur
+            return undefined
+          }
+          EC.e = end
+          return undefined
+        }
+      }
+      default: {
+        if (L.variant === V_PASS) {
+          const build = L.build!, readsRaw = L.readsRaw
+          return (input, pos, ctx) => {
+            const r = next(input, pos, ctx)
+            if (r === FAIL) return r
+            if (r !== undefined) { PV = r; return r }
+            const nd = collapseEmpty(ctx, build, input, pos, EC.e, readsRaw)
+            PV = nd
+            return nd
+          }
+        }
+        const build = L.build!, variant = L.variant, captureWide = L.captureWide, wantFields = L.wantFields
+        const readsState = L.readsState, omitsRaw = L.omitsRaw, collapse = L.collapse
+        const ownFields = wantFields || variant === V_CHILDREN_FIELDS
+        const shieldFields = ownFields || fieldsAbove
+        const readsRaw = variant === V_PLAIN || variant === V_COLLAPSE || (variant === V_GENERIC && !omitsRaw)
+        // A collapsing variant completes on its lone child as that child, so it builds no raw entry for it.
+        const lonePasses = variant === V_COLLAPSE || variant === V_CHILDREN_COLLAPSE || (variant === V_GENERIC && collapse)
+        // Only a generic node's builder reads the state; the other variants pass none.
+        const genericState = readsState && variant === V_GENERIC
+        // A level the value passes through keeps no frame state: the frame a
+        // continuation opens is the route run's one slot (`resume`), and the
+        // run hides the caller's collectors and fields once (`runRoute`).
+        return (input, pos, ctx) => {
+          let sF: ParseContext['_fields']
+          if (shieldFields) { sF = ctx._fields; ctx._fields = ownFields ? [] : undefined }
+          const r = next(input, pos, ctx)
+          let fieldsArr: ParseContext['_fields']
+          if (shieldFields) { fieldsArr = ctx._fields; ctx._fields = sF }
+          // A collector set here is the frame a continuation below opened for this node.
+          const fb = ctx._cstBuf, fk = ctx._cstChildren
+          const opened = fb !== undefined || fk !== undefined
+          if (opened) { ctx._cstBuf = undefined; ctx._cstChildren = undefined; ctx._cstLeaves = undefined }
+          if (r === FAIL) return FAIL
+          if (innermost) PV = r
+          const end = EC.e
+          const fields = ownFields ? buildFieldMap(fieldsArr) : undefined
+          const state = genericState ? ctx.state : undefined
+          let nd: unknown
+          if (!opened) {
+            // The lone child: the value in hand, completing as the node's piece would on it.
+            const pv = PV
+            const kids = pv === undefined ? EMPTY_CH : [pv]
+            nd = pv !== undefined && lonePasses ? pv : build(kids, fields, new PlainSpan(pos, end), readsRaw ? [rawEntry(pv, input, pos, end)] : EMPTY_CH, captureWide ? EMPTY_TLOG : EMPTY_TL, state)
+          } else if (fk !== undefined) {
+            // The frame a continuation opened: its children, as the node piece reads them.
+            const kids = capturedFlatChildren(fk)
+            nd = lonePasses && kids.length === 1 ? kids[0] : build(kids, fields, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, state)
+          } else {
+            const b = fb!
+            const kids = b.ch ?? (b.single !== undefined ? [b.single] : EMPTY_CH)
+            const rawKids = omitsRaw ? EMPTY_CH : b.raw ?? (b.rawSingle !== undefined ? [b.rawSingle] : EMPTY_CH)
+            nd = lonePasses && kids.length === 1 ? kids[0] : build(kids, fields, new PlainSpan(pos, end), rawKids, captureWide ? b.tl ?? EMPTY_TLOG : EMPTY_TL, state)
+          }
+          PV = nd
+          EC.e = end
+          return nd
+        }
+      }
+    }
+  }
+
+  /** A `withCtx` row's piece over `child`: the row's own, and a route level's over the rest of its route. */
+  function withCtxRow(ip: number, child: Piece): Piece {
+    // `extra` and the child are both bound HERE; the piece only swaps a field.
+    const ki = code[ip + 1]!
+    if (ki < 0) {
+      const derive = fns[~ki] as (s: unknown) => unknown
+      return (input, pos, ctx) => {
+        const saved = ctx.state
+        ctx.state = derive(saved)
+        try { return child(input, pos, ctx) }
+        finally { ctx.state = saved }
+      }
+    }
+    const extra = k[ki]
+    return (input, pos, ctx) => {
+      const saved = ctx.state
+      ctx.state = extra
+      try { return child(input, pos, ctx) }
+      finally { ctx.state = saved }
+    }
+  }
+
+  /** A scope row's piece over `child`: the row's own, and a route level's over the rest of its route. */
+  function scopeRow(ip: number, child: Piece): Piece {
+    const ki = code[ip + 1]!
+    const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
+    const scopeLabels = scopeTrivia?._meta.triviaKindLabels
+    // THE SWAP, RESOLVED AT ASSEMBLY. `exec.ts` computed
+    // `FAST && ki >= 0 && !triviaLabelled[ki]` on every scope entry; `FAST` is
+    // `!trackLines`, an option, and the other two are table data. All three are
+    // known here, so the scope piece holds the scanner it installs as a `const`.
+    const scanFor: FastTriviaScanner | null =
+      swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
+    // The scope installs its slot's lead table with its trivia, so the gate
+    // (`cannotStartTrivia`) never has to look the slot up.
+    const scopeLead = ki < 0 ? null : LEAD_TABLES[ki]!
+    // TWO PIECES, SELECTED HERE — not one piece that tests the opcode. Capture
+    // is fixed for the whole parse, so `code[ip] === OP_SCOPE_CAP` is an
+    // assembly-time fact and reading it per scope entry would be exactly the
+    // config test INV-6 forbids.
+    //
+    // Both RESTORE rather than clear: capture is an OR with the enclosing
+    // context (`grammar.ts:129`), so an inner scope must not switch an outer
+    // capture off.
+    const top = code[ip] === OP_SCOPE_CAP ? undefined : TOP_PIECES.get(child)
+    const scopePiece: Piece = top !== undefined
+      // A scope over a top reads the top's routes itself: the two pieces are one.
+      ? (input, pos, ctx) => {
+          const saved = ctx.trivia
+          const savedLabels = ctx.triviaKindLabels
+          const savedScan = SCAN
+          SCAN = scanFor
+          const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+          LEAD_OF = scopeTrivia
+          LEAD_TABLE = scopeLead
+          ctx.trivia = scopeTrivia
+          ctx.triviaKindLabels = scopeLabels
+          let v: unknown = NO_ROUTE
+          const c = input.charCodeAt(pos)
+          if (c < 128) {
+            const route = top.R[c]
+            if (route !== undefined) v = runRoute(route, c, input, pos, ctx)
+          }
+          if (v === NO_ROUTE) v = top.body(input, pos, ctx)
+          ctx.trivia = saved
+          ctx.triviaKindLabels = savedLabels
+          SCAN = savedScan
+          LEAD_OF = savedLeadOf
+          LEAD_TABLE = savedLead
+          return v
+        }
+      : code[ip] === OP_SCOPE_CAP
+      ? (input, pos, ctx) => {
+          const saved = ctx.trivia
+          const savedLabels = ctx.triviaKindLabels
+          const savedScan = SCAN
+          const savedCap = ctx.captureTrivia
+          SCAN = scanFor
+          const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+          LEAD_OF = scopeTrivia
+          LEAD_TABLE = scopeLead
+          ctx.trivia = scopeTrivia
+          ctx.triviaKindLabels = scopeLabels
+          ctx.captureTrivia = true
+          const v = child(input, pos, ctx)
+          ctx.captureTrivia = savedCap
+          ctx.trivia = saved
+          ctx.triviaKindLabels = savedLabels
+          SCAN = savedScan
+          LEAD_OF = savedLeadOf
+          LEAD_TABLE = savedLead
+          return v
+        }
+      : (input, pos, ctx) => {
+          const saved = ctx.trivia
+          const savedLabels = ctx.triviaKindLabels
+          const savedScan = SCAN
+          SCAN = scanFor
+          const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+          LEAD_OF = scopeTrivia
+          LEAD_TABLE = scopeLead
+          ctx.trivia = scopeTrivia
+          ctx.triviaKindLabels = scopeLabels
+          const v = child(input, pos, ctx)
+          ctx.trivia = saved
+          ctx.triviaKindLabels = savedLabels
+          SCAN = savedScan
+          LEAD_OF = savedLeadOf
+          LEAD_TABLE = savedLead
+          return v
+        }
+    return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
   }
 
   function lower(ip: number): Piece {
@@ -1728,8 +2783,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_RX: {
         const re = k[code[ip + 1]!] as RegExp
         const xf = fx[code[ip + 2]!] as string[]
-        if (GAP_ROWS.has(ip)) return gapRegexPiece(ip, re, xf, false)
         const shared = rawScalarSpecs.has(code[ip + 1]!) ? scalarFor(ip) : undefined
+        if (GAP_ROWS.has(ip)) return gapRegexPiece(ip, re, xf, false)
         if (shared !== undefined) {
           return (input, pos, ctx) => {
             const e = shared(input, pos)
@@ -1888,6 +2943,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // at all, which is two context loads per gate execution removed (css has
         // 13 `GATE` rows, less 22, json none).
         if (cfg.tolerant || cfg.probe) return child
+        // A gate over a top reads the top's routes itself: the two pieces are one.
+        const top = TOP_PIECES.get(child)
+        if (top !== undefined) {
+          const R = top.R, body = top.body
+          return (input, pos, ctx) => {
+            if (!classHas(cls, lead(input, pos))) {
+              ctx._fe = pos; ctx._fx = xf
+              return FAIL
+            }
+            const c = input.charCodeAt(pos)
+            if (c < 128) {
+              const route = R[c]
+              if (route !== undefined) { const v = runRoute(route, c, input, pos, ctx); if (v !== NO_ROUTE) return v }
+            }
+            return body(input, pos, ctx)
+          }
+        }
         return (input, pos, ctx) => {
           if (!classHas(cls, lead(input, pos))) {
             ctx._fe = pos; ctx._fx = xf
@@ -2083,94 +3155,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
-      case OP_WITHCTX: {
-        // `extra` and the child are both bound HERE; the piece only swaps a field.
-        const ki = code[ip + 1]!
-        const child = link(code[ip + 2]!)
-        if (ki < 0) {
-          const derive = fns[~ki] as (s: unknown) => unknown
-          return (input, pos, ctx) => {
-            const saved = ctx.state
-            ctx.state = derive(saved)
-            try { return child(input, pos, ctx) }
-            finally { ctx.state = saved }
-          }
-        }
-        const extra = k[ki]
-        return (input, pos, ctx) => {
-          const saved = ctx.state
-          ctx.state = extra
-          try { return child(input, pos, ctx) }
-          finally { ctx.state = saved }
-        }
-      }
+      case OP_WITHCTX:
+        return withCtxRow(ip, link(code[ip + 2]!))
 
       case OP_SCOPE:
       case OP_SCOPE_CAP:
-      case OP_SCOPE_PLAIN: {
-        const ki = code[ip + 1]!
-        const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
-        const scopeLabels = scopeTrivia?._meta.triviaKindLabels
-        // THE SWAP, RESOLVED AT ASSEMBLY. `exec.ts` computed
-        // `FAST && ki >= 0 && !triviaLabelled[ki]` on every scope entry; `FAST` is
-        // `!trackLines`, an option, and the other two are table data. All three are
-        // known here, so the scope piece holds the scanner it installs as a `const`.
-        const scanFor: FastTriviaScanner | null =
-          swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
-        // The scope installs its slot's lead table with its trivia, so the gate
-        // (`cannotStartTrivia`) never has to look the slot up.
-        const scopeLead = ki < 0 ? null : LEAD_TABLES[ki]!
-        const child = link(code[ip + 2]!)
-        // TWO PIECES, SELECTED HERE — not one piece that tests the opcode. Capture
-        // is fixed for the whole parse, so `code[ip] === OP_SCOPE_CAP` is an
-        // assembly-time fact and reading it per scope entry would be exactly the
-        // config test INV-6 forbids.
-        //
-        // Both RESTORE rather than clear: capture is an OR with the enclosing
-        // context (`grammar.ts:129`), so an inner scope must not switch an outer
-        // capture off.
-        const scopePiece: Piece = code[ip] === OP_SCOPE_CAP
-          ? (input, pos, ctx) => {
-              const saved = ctx.trivia
-              const savedLabels = ctx.triviaKindLabels
-              const savedScan = SCAN
-              const savedCap = ctx.captureTrivia
-              SCAN = scanFor
-              const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
-              LEAD_OF = scopeTrivia
-              LEAD_TABLE = scopeLead
-              ctx.trivia = scopeTrivia
-              ctx.triviaKindLabels = scopeLabels
-              ctx.captureTrivia = true
-              const v = child(input, pos, ctx)
-              ctx.captureTrivia = savedCap
-              ctx.trivia = saved
-              ctx.triviaKindLabels = savedLabels
-              SCAN = savedScan
-              LEAD_OF = savedLeadOf
-              LEAD_TABLE = savedLead
-              return v
-            }
-          : (input, pos, ctx) => {
-              const saved = ctx.trivia
-              const savedLabels = ctx.triviaKindLabels
-              const savedScan = SCAN
-              SCAN = scanFor
-              const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
-              LEAD_OF = scopeTrivia
-              LEAD_TABLE = scopeLead
-              ctx.trivia = scopeTrivia
-              ctx.triviaKindLabels = scopeLabels
-              const v = child(input, pos, ctx)
-              ctx.trivia = saved
-              ctx.triviaKindLabels = savedLabels
-              SCAN = savedScan
-              LEAD_OF = savedLeadOf
-              LEAD_TABLE = savedLead
-              return v
-            }
-        return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
-      }
+      case OP_SCOPE_PLAIN:
+        return scopeRow(ip, link(code[ip + 2]!))
 
       case OP_ROUTED: {
         const fb = code[ip + 1]!
@@ -2916,66 +3907,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
         }
 
-        // Arbitrary strict arities use a bounded scalar block chain. Fixed
-        // children are captured into prewritten four-term blocks at assembly;
-        // the parse path has no `kids[i]`, fixed-child loop, or opcode lookup.
-        const block = (
-          count: number,
-          k0: Piece, k1: Piece, k2: Piece, k3: Piece,
-          next: SequenceTermBlock | undefined,
-        ): SequenceTermBlock => {
-          if (count === 1) return (input, cur, ctx, values) => {
-            cur = step(k0, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            return next === undefined ? cur : next(input, cur, ctx, values)
-          }
-          if (count === 2) return (input, cur, ctx, values) => {
-            cur = step(k0, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k1, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            return next === undefined ? cur : next(input, cur, ctx, values)
-          }
-          if (count === 3) return (input, cur, ctx, values) => {
-            cur = step(k0, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k1, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k2, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            return next === undefined ? cur : next(input, cur, ctx, values)
-          }
-          return (input, cur, ctx, values) => {
-            cur = step(k0, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k1, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k2, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k3, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            return next === undefined ? cur : next(input, cur, ctx, values)
-          }
-        }
-        const bind = (start: number): SequenceTermBlock => {
-          const count = Math.min(4, n - start)
-          const child = (offset: number): Piece => link(code[base + start + offset]!)
-          return block(
-            count, child(0), count > 1 ? child(1) : NEVER_PIECE,
-            count > 2 ? child(2) : NEVER_PIECE, count > 3 ? child(3) : NEVER_PIECE,
-            start + count < n ? bind(start + count) : undefined,
-          )
-        }
+        const bind = (start: number): SequenceTermBlock => termChain(step, base, n, start)
         const first = linkFirst()
         const tail = bind(1)
         const runDirectTerms = (
@@ -3548,6 +4480,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_REP:
       case OP_REPV: {
+        // A route's continuation enters with its first item parsed (`REP_SEED`).
+        const seed = REP_SEED
+        REP_SEED = 0
         const child = link(code[ip + 1]!)
         const min = code[ip + 2]!
         const max = code[ip + 3]!
@@ -3729,7 +4664,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const gateItems = itemMayStart !== undefined && ctx._probe === undefined
           const gateSep = sepClass !== undefined && ctx._probe === undefined
           let cur = pos
-          let count = 0
+          let count = seed
           for (;;) {
             if (max >= 0 && count >= max) break
             // A separated list is bounded by its SEPARATOR, so it stops at EOF at
@@ -4477,7 +5412,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function finish(): void {
     if (depth <= 0) throw new Error('parseman table assembly frame underflow')
     depth--
-    if (depth === 0) return
+    if (depth === 0) {
+      if (!ARMED && ROUTES !== undefined) armRoutes()
+      return
+    }
     const prior = frames.pop()!
     SCAN = prior.scan
     HOST = prior.host

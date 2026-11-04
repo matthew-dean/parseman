@@ -1,9 +1,12 @@
 # Left-corner routing: the step-2 design
 
-Status: design, not built. The prototype it is drawn from is the closure-engine study on branch
-`perf/left-corner-routing`, measured in [Performance attempts](../future/perf-attempts.md)
-("Left-corner routing (accepted direction, prototype)" and "Less declarations above the
-value"). This document describes what step 2 builds from it.
+Status: partly built. The closure engine routes, from routes the encoder stores in the
+program (`src/table/routes.ts`; see [What is built](#what-is-built)). The reference and emitted
+readers, the statement corner and the pre-scan deletions are not built yet. The prototype
+this is drawn from is the closure-engine study on branch `perf/left-corner-routing`,
+measured in [Performance attempts](../future/perf-attempts.md) ("Left-corner routing
+(accepted direction, prototype)" and "Less declarations above the value"). This document
+describes what step 2 builds from it.
 
 ## What it does
 
@@ -59,30 +62,36 @@ they are. A program without routes runs as it does today.
   index, and its continuation descriptors;
 - a repeat of `min: 1`, carrying its separator or item descriptor.
 
-**A continuation descriptor** says how the piece that runs a tail term decides at its
-start. Each one points at an existing row or class:
+**A continuation decision** is one mask per sequence or repeat level: the characters its
+continuation can start with, after the gap, derived when routes are derived from the rows
+that run it:
 
 - `optional` behind a gate: the gate's class;
-- a repeat behind its item class (`OP_REP` ip+7);
-- a repeat whose item opens with an `OP_GAPGATE` gap: the gap row, the follow class, and
-  the other-arm class;
-- a repeat whose item opens with `optional(<regex>)` followed by a term with a finite lead:
-  the regex row, the follow mask, and that term's expected set;
-- a separator: its gate class where the repeat row gates it, otherwise its lead mask and its
-  expected set;
-- a gate that must match: its class and its expected set.
+- a repeat with an item class: that class (`OP_REP` ip+7);
+- a repeat whose item opens with an `OP_GAPGATE` gap and has no item class: the gap's lead,
+  the follow class and the other-arm class;
+- a repeat whose item opens with `optional(<regex>)` and has no item class: every character,
+  because its row reports the failure;
+- a separator: its gate class, where the repeat row gates it.
 
-A descriptor never states a fact its row does not. The route makes exactly the decision the
-row's piece would make on the same token, so the route cannot drift from the row it
-replaces.
+A character outside the mask completes the level with each term's empty value, also derived.
+A character inside it enters the row's own lowering, seeded with the corner, and the row
+makes the rest of the decision. Nothing is decided twice and nothing about a term's kind is
+read at parse time. The mask may hold more than the row can start with, but it must hold
+every character on which the row would act, a report included.
+
+Any other continuation (a separator the repeat does not gate, a gate that must match, a
+term with no decidable start) has no mask: the level always enters its row. A level that
+would always resume at the route's top drops the route for that character.
 
 **The atom** is a node site, a routed token (inside an arm of a `dispatch()`), or a
 `dispatch()`. A dispatch atom carries, for each arm, that arm's own route.
 
-**Cuts.** A route can be cut back to a shallower depth on the current position: where the
-labels cannot name the trivia before a leading lookahead, or where a guarded choice's
-pretest matches. The cut is a depth and the route to that depth. It is decided before
-anything is entered.
+**Cuts.** A route can be cut back to a shallower depth on the current position, where a
+guarded choice's pretest matches. The cut is a depth and the route to that depth. It is
+decided before anything is entered. Trivia the labels cannot name before a leading
+lookahead is decided when routes are derived: a character that may start any of the table's
+trivia stops the route above that sequence.
 
 ### How each engine reads it
 
@@ -92,10 +101,10 @@ anything is entered.
 - **Closure engine (`assemble.ts`).** Links each route into a chain of closures when it
   assembles. Each level is a closure over the next level's, and a level that only routes
   (a gate already decided, a rule reference, an identity scope) adds none. A route-top
-  node's piece tests its route map at entry. A character with no route runs the node's
-  ordinary body in the same piece, so it pays no extra call. The collector suppression
-  (descendants publish nothing while their parents complete alone) is owned by the top
-  node's piece, not by a per-call driver.
+  site's piece reads its route map and calls the node's ordinary body where a character has
+  no route; any other node site is its body, with no route read. The collector suppression
+  (descendants publish nothing while their parents complete alone) is owned by the route's
+  run, not by the node.
 - **Emitted engine (`emit-assembly.ts`).** For a selected site, emits the same chain as
   straight-line code from the same rows. Selection prices a route-top site as its route
   plus its fallback body.
@@ -110,6 +119,29 @@ anything is entered.
 
   `compose()` also stays the pure interpreter path with zero build cost (see
   [Runtime and size contract](runtime-and-size-contract.md)). The owner may override this.
+
+### What is built
+
+The closure engine reads routes; the reference and emitted readers do not yet.
+
+- **Routes are stored in the program (`prog.routes`).** The encoder derives them for an AST
+  table without line tracking and stores them; nothing is derived when a table is loaded.
+  What linking needs (the tops) is stored as numbers; the routes themselves are one JSON text, parsed the first time a route is built.
+  A fold carries a variant's routes on its delta where they differ from the base's, because
+  they are read from the code the fold overwrites. An artifact with a selective assembly
+  does not print them, because nothing in it reads them.
+- **A cold assembly's first parse is unrouted.** The tops are armed when the assembly's
+  first parse completes (a top linked later is armed when it is linked); a route's chain is
+  built the first time a character reaches it, and a continuation is lowered the first time
+  it resumes. Building chains and compiling their pieces costs more than a route saves
+  within one cold parse (`benchmark.less`: +3.5 ms on a 61 ms first parse when routes ran
+  from the start), so the first parse runs today's pieces.
+- **A node that tops no route keeps a piece with no route read.** Which sites are tops is
+  decided when the site is linked, so a non-top pays nothing. A character with no route at a
+  top pays the table read and one call to the node's body.
+
+An assembly with a precompiled emitted assembly (`HYBRID`) does not route yet, so CSS,
+built with `assemblyBudget` 1, is unrouted in production until the emitted reader lands.
 
 ## Lexical corner factoring (statement level)
 
@@ -172,17 +204,18 @@ for the same input.
 - **The prototype's driver and wrapper** (`PM_LC`, the per-route entry, the collector save
   and restore around every route call, and the debug and plant switches). The route rows
   and the per-engine readers replace them.
-- **Mirrored writes that cannot run, deleted with the proof in the commit.** On the
-  prototype's base:
-  - the separator-miss write never executes, because the separator gate decides every Jess
-    list;
-  - the gate-fail write never executes;
-  - the `optional`-gap write runs, but a later write always replaces it before anything
-    reads it.
-
-  This must be re-proved on step 2's base, because a narrower 0.59 changes the first fact
-  (see Dependencies). A write that can run stays and gets a targeted test that fails
-  without it.
+- **Mirrored writes.** Re-proved on step 2's base (a planted `throw` in each branch, all
+  four dialects, 11.5k inputs):
+  - the separator-miss branch never runs: every Jess list's separator is gated. It is
+    deleted, and an ungated separator now makes its level resume, so the separator's own
+    piece reports its failure. This is correct by construction on any grammar.
+  - the gate-fail branch runs on 32 Less inputs, always on a matching character; its miss
+    never runs. It is deleted the same way: a gate that must match makes its level resume.
+  - the `optional`-gap write runs (53 CSS inputs) and stays. Deleting it changes nothing on
+    any sweep or on the value-ladder test (`table-left-corner-routes.test.ts`), because the
+    write is a soft failure on a path that succeeds: every reader of the failure slots is a
+    choice's failure handler, and an arm that fails writes its own failure after it. It is
+    the same write the plain path's item makes, so it stays as the plain path's mirror.
 - **The grammar pre-scans, once the statement corner lands:** the guarded ruleset's
   `/[-\w]+[ \t]*:[ \t\n\r\f]/` and the interpolated head arm's `peek(/[^:;{}]*[@$]\{/)`.
   Removing either one changes no tree, error or position on the 1316 Less inputs. They
@@ -234,8 +267,8 @@ on Jess's dispatch sites.
 
 The design relies only on what the narrowed 0.59.0 keeps:
 
-- `OP_GAPGATE` and its gap slot, for the gap tail descriptor;
-- the repeat item class (`OP_REP` ip+7), for the repeat tail descriptor;
+- `OP_GAPGATE`, for the gap term's mask;
+- the repeat item class (`OP_REP` ip+7), for the repeat term's mask;
 - the operator gate;
 - `OP_RGATE2`'s two-character derivation, for the statement corner's lead sets.
 

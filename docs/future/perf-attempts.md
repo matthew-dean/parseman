@@ -614,6 +614,171 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   Planned separately, and also not built yet: the build-out compiles the routes above
   into table rows at encode time, read by every engine, on `main` after 0.59.0. Branch `perf/left-corner-routing`, raw samples under
   `scratchpad/left-corner/results/`.
+- **Left-corner routes, step 2: the closure engine (in progress).** Routes are derived
+  over the resolved table's rows when the closure engine assembles (`routes.ts`), per linked
+  node site, and a node that tops no route keeps a piece with no route read. Identity: 0
+  diffs on all four dialects and all four variants (11.5k inputs each), and on Less with
+  `mathMode` `always` and `parens`. Against `main` @ `53cff042`, interleaved marginal
+  instructions, A/A null within ±0.7% except one ±2.0% row (`assemblyBudget` 0, so CSS is
+  measured unrouted-hybrid-free):
+  - First slice (@ `11434c15`), `--jitless` / JIT: Less `color: red;` −19.9% / −14.8%,
+    `rgb()` −18.3% / −10.2%; SCSS constructs −4% to −8.6% / −0.9% to −7.2%. Whole files:
+    `benchmark.less` −4.7% / −3.2%, bootstrap −7.8% / −0.2%, `benchmark.css` −4.6% /
+    +0.6%, `gen-workload.scss` −2.7% / −1.4%, `jess-x8.jess` −1.4% / −0.5%. Slower: CSS
+    `font: 12px/1.5 a, b;` +4.0% / +4.0%, `.jess` `font` +4.2% / +6.4%, Less
+    `a{div:hover{}}` +3.6% / +4.2%, `.jess` `border-radius: a / b;` +0.3% / +3.0%.
+  - Deriving every reached top at link instead of on first use: first parse of
+    `benchmark.less` 64→75 ms either way; routing tops lazily left the route read in 89 of
+    121 reached nodes that top nothing (`benchmark.less` −4.8% against −5.4% eager).
+  - Second slice: the gap read and its lead in one call, and no route that completes no node
+    below its top (`--jitless`, three runs): `benchmark.less` −9.8%, Less `color: red;`
+    −19.5%, `a{div:hover{}}` +0.5%. CSS and `.jess` `font` unchanged, +3.7% / +5.2%.
+  - Open: a value that resumes at every level (slash, then space, then comma) costs more
+    than its plain path though it calls 18 fewer pieces; `12px/1.5;`, `12px 1.5;` and
+    `a, b;` alone are each faster. Branch `perf/left-corner-routes`.
+  - Third slice: routes stored in the program; levels the value passes through keep no piece
+    (a scope is installed only around the atom and around a continuation below it, a wrapper
+    adds none); one gap read per end, shared by the levels that complete there. Identity
+    against `main` @ `53cff042`: 0 diffs, four dialects, AST and CST. Instructions,
+    `--jitless`: CSS `font: 12px/1.5 a, b;` +3.7%, `.jess` +4.8% (from +3.9% / +5.8%).
+  - **Time disagrees with instructions on every value that resumes.** Marginal cycles,
+    `--jitless` / JIT: CSS `font: 12px/1.5 a, b;` +28.1% / +3.6%, `.jess` `font` +29.2% /
+    +9.1%, `.jess` `margin: 0 auto;` +21.6% / −6.4%, CSS `font: 1/2;` +31.6% / −2.4%. No
+    resume: CSS `font: 12px;` −11.5% / −12.6%, `.jess` `border-radius: 4px;` −5.4% / −5.9%,
+    `benchmark.less` −5.6% / −2.5%. `font: 1/2;` runs 2% fewer instructions and about 20k
+    more cycles per parse, the same for `1/2/3/4/5/6`, and only when a continuation resumes
+    below the route's top. Not a per-parse rebuild: route builders, closures and `RegExp`
+    objects are created once per assembly, and the same regex objects run the same number of
+    times as on `main`. The time lands on every bytecode handler and on the regexp
+    interpreter (2.3× for the same calls); Instruments shows front-end and discarded work
+    rising. Cause not found yet.
+  - **The `--jitless` stall is branch-predictor capacity, not the resume itself (diagnostic;
+    `--jitless` does not decide).** CPU Counters, CSS `font: 1/2;`: of the ~18.5k extra cycles,
+    ~11k are instruction delivery and ~7.4k discarded (mispredicted) work; the data side
+    (processing, L1D) falls. Allocation per parse is the same (scavenges 0.39 against 0.40 per
+    1k parses), page reclaims do not grow with N, the stall is the same at any starting stack
+    depth (0–24 extra frames), and there is no deopt storm. The time spreads to code routes do
+    not change, called as often as on `main` (`run`, `runOnce`, `invoke`, the reducers). The
+    unrouted parse already sits at the interpreter's predictor limit: 50 structurally
+    distinct small functions run after each parse cost 12.2k cycles alone and add 35.8k of
+    interference (200: 72.9k). A routed parse runs the route pieces as well as the ordinary
+    ones, and even `font: a;`, which never resumes, runs 20.5k fewer instructions for 0.9k
+    more cycles. With the JIT on the same probe adds −0.1k (50) and 0.9k (200) to
+    `font: 12px/1.5 a, b;`, and there that value's +7.5% cycles is mostly +5.3% instructions
+    (null 0.5% / 0.2%, load 4.6). Files with the JIT: `benchmark.less` +2.9% cycles on −4.0%
+    instructions, bootstrap −4.0% / −3.7%, `benchmark.css` +1.8% / −2.6%,
+    `gen-workload.scss` +4.2% / −2.2%, `jess-x8.jess` +4.7% / +0.2% (five reps, null
+    within ±2.3%, load 4.3–5.3).
+  - **The route levels share the ordinary pieces (@ `ce6b3fbf`).** Each node completion
+    variant has one definition, called by the node pieces and by a route's node level, and the
+    scope and `withCtx` rows build one piece for both paths. This is a rule fix (one definition,
+    two paths), not a speed fix: it was the likeliest cause of the IPC loss on whole files, and
+    it is not that cause. JIT, against `main` @ `53cff042`, five rotated reps, load 5–11 (null
+    within ±2.1% on files, up to ±6.3% on micro rows), before / after, cycles (instructions):
+    `benchmark.less` +3.2% / +1.4% (−3.8% / −2.7%), bootstrap +0.6% / +1.8% (−4.4% / −4.1%),
+    `benchmark.css` +5.8% / +2.5% (−1.4% / −1.3%), `gen-workload.scss` +4.2% / +3.1%
+    (−1.9% / −1.5%), `jess-x8.jess` +3.9% / +6.2% (+0.4% / +1.0%), CSS `font` +6.0% / +3.8%
+    (+5.4% / +5.5%). A first cut with one switching `nodeOf` cost +1–1.5 points of
+    instructions on files; per-variant functions brought that down to +0.3–1.1. Raw samples:
+    `scratchpad/left-corner/results/b3.jsonl`.
+  - **The route's open frame is read from the collectors it hid (@ `882cd769`).** Inside a
+    route the collectors start hidden and at most one frame is open, so `resume` and the node
+    level read it from `ctx` and the three frame variables and their save in `runRoute` go.
+    Same run: `benchmark.less` 0.0% (−3.6%), bootstrap +0.7% (−4.4%), `benchmark.css` +3.1%
+    (−2.0%), `gen-workload.scss` +5.1% (−1.7%), `jess-x8.jess` +2.0% (+0.7%), CSS `font`
+    +10.0% (+5.1%), `.jess` `font` +6.1% (+2.8%). Instructions fall 0.2–0.9 points; cycles
+    stay inside the run's noise. The bar is not met: whole files still run fewer instructions
+    in more cycles.
+  - **CI says whole files do not regress (@ `bd2c4660`, [#245](https://github.com/matthew-dean/parseman/pull/245),
+    measurement only).** Macro gate, x64, the pinned Jess host, against the merge base: `benchmark.less`
+    −1.8%, `gen-workload.less` −2.4%, `benchmark.css` +1.4% (A/A −1.0%, +0.9%, −0.5%). The cross-process
+    gate against v0.60.2 passes every case at its 1% floor; the largest are `graphql/document` median
+    +1.0% (mean 0.0%), `rollback/none` +0.8%, `less/stylesheet` +0.6%. The laptop's file
+    regression was noise and front-end effects of this machine; what remains is the value that
+    resumes at several levels.
+  - **Where CSS `font: 12px/1.5 a, b;` loses (JIT, instructions).** Against `main`, each
+    continuation costs the same: a value with no resume saves ~2.6k instructions (`font: 1;`
+    −2.6k, `font: a;` −2.7k), and each resume after a separator gives back ~1.7k of it
+    (`font: 1/2;` −0.8k, `font: a, b;` −1.1k, `font: 12px/1.5 a;` +0.6k, three resumes +2.9k).
+    A resume after a gap gains instead (`font: a b;` −4.3k), because the route hands the gap's
+    end to the continuation. Counted per parse, the routed `/2` runs the same ordinary pieces
+    as `main` plus one (20 against 19), one more `rawEntry`, and the same allocations; no cuts
+    or guards fire, nested routes help (stopping them costs +4.9% to +8.1%), nothing deopts,
+    and `runRoute` is not inlined into the node pieces. Self time under the JIT puts the
+    route's own work in the node level, the repeat level, `resume`, `runRoute` and the gap
+    piece, with no single item over ~5% of the parse, and inlining moves the remainder
+    between neighbours run to run, so time profiling cannot attribute the last 1.7k. Not cut:
+    no measured item is large enough to show over the ±0.3% instruction null.
+  - Rejected: a route that reuses the ordinary lowering through per-call heads (`3eac9adb`,
+    never merged). Each repeat and optional row exposed its head, and a route's continuation
+    was the row's own lowering, entered with the corner in hand. It removed the route's copies,
+    but it moved what they knew statically into the shared code: a `head()` call and tests on
+    every entry, and frames opened for continuations that then declined. Calls per parse rose
+    above `main` (`font: 1;` 238 against 210, `gen-workload.scss` 8.43M against 7.62M), and
+    instructions at `assemblyBudget` 0 rose +3.7% to +25.9% against `8543b285`. The CI
+    cross-process gate failed GraphQL `document` at +1.9%. Lesson: share the definition, and
+    keep what a site knows as data decided when the site is built.
+  - Rejected: a repeat level that asks the row's head before it resumes. Target: CSS
+    `font: 12px/1.5 a, b;` at or below `main`. It stayed +7.8% over `main` at
+    `assemblyBudget` 0: the decision is made once either way, so moving it saves nothing.
+  - **A route continues through the row's own pieces, decided by compile-time data.**
+    Replaces the attempt above (`perf/left-corner-routes-v2`). A sequence's continuation is
+    its own term blocks from the term after the corner. A repeat's is its own loop, lowered
+    with `count` starting at 1, with no test in the loop. Each level stores one mask of what
+    its continuation can start with; a character outside it completes the level, and a
+    character inside it enters the row, which decides the rest. The term-kind switch and the
+    route's gap reads are gone. A top node reads its routes in a piece of its own, so other
+    nodes keep `main`'s body, and `skipTrivia` and the repeat loop are `main`'s text again. A
+    level with no mask always resumes: dropping the masks altogether put `font: 1;` at 224
+    calls against `main`'s 210.
+    Calls per parse at `assemblyBudget` 0 (`main` → this): `font: 1;` 210 → 173, Less
+    `color: red;` 327 → 238, `benchmark.less` 2,244,583 → 1,947,177, bootstrap 2,368,876 →
+    2,097,765, `benchmark.css` 1,847,339 → 1,699,312, `gen-workload.scss` 7,618,527 →
+    7,070,924, `jess-x8.jess` 798,253 → 750,073; GraphQL and JSON unchanged. At the default
+    budget routes do not run (emitted sites do not route, and a selective artifact carries no
+    route data), so calls and shipped bytes equal `main`. Where every top declines (all
+    non-ASCII identifiers), the top's piece adds a call: 397,600 → 400,000 on CSS, 1,060,268 →
+    1,072,015 on Less. Route data costs a closure artifact: `example/css` 9,518 → 10,317 B,
+    `.jess` AST (no selective assembly) 392,568 → 419,915 B. Identity against `main` @
+    `c5e35167`: 0 diffs, four dialects, AST and CST, failure rows included.
+  - **A lookahead under trivia the labels cannot name is decided when routes are derived.**
+    A route that passed a sequence led by a lookahead, where the site's trivia was unknown
+    at encode time, checked at every entry whether that trivia could start at the
+    character, and cut the route back if so. Over one sweep of each dialect the check ran
+    43,675 times on Less (44 of 111 routes carried it; CSS 12 of 30, `.jess` 9 of 31) and
+    never fired: callers skip trivia before the node. Now a character that may start any
+    of the table's trivia stops the route above that sequence. A table with no trivia of
+    its own is called only with its caller's (`RunCfg.inheritedTrivia`), so any character
+    may start it, and no route passes the lookahead. Identity against `main` @
+    `c5e35167`: 0 diffs, four dialects, AST and CST. Why Less's trivia is unknown there:
+    the site (under `VarFallbackItem`) is reached under ten trivia slots, ten distinct
+    objects with the same first set (whitespace and `/`). The labels compare slots by
+    identity, so ten equal slots meet as unknown; interning equal trivia, or labelling
+    the lead set instead of the slot, would make it known.
+  - Rejected: the ascent as one loop instead of nested level pieces (identity clean). CSS
+    `font: 1/2;` +48.9% cycles / +6.0% instructions `--jitless` (nested: +30.6% / −2.3%),
+    `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts
+    as properties, and the resume stall stays, so the nesting is not its cause. Building
+    every route when tops are armed instead of on first use: no change.
+  - Rejected: routes that never resume. A route stops at the node whose frame the shallowest
+    level that can continue would open, and that node's plain piece parses the value (no route
+    when that node is the top). Identity clean; the lone-child collapse it no longer reaches
+    opens one more frame. Marginal cycles against `main`, `--jitless` / JIT, median of three
+    rotated reps, load average 6–9 (base's own spread ±2% `--jitless`, ±4–8% JIT; JIT rows
+    under ~5% are noise). Never-resume / keep-resume: CSS `font: 12px/1.5 a, b;` +3.9% /
+    +27.8% `--jitless`, −0.8% / +9.3% JIT; `.jess` `font` +2.1% / +28.3%, −0.8% / +9.9%;
+    `.jess` `margin: 0 auto;` +3.6% / +21.4%, −3.3% / −2.9%; CSS `font: 1/2;` +3.4% /
+    +35.1%, +3.4% / +0.7%; Less `color: red;` +5.8% / −24.0%, −6.7% / −18.2%; CSS
+    `font: 12px;` −1.2% / −12.2%, −0.2% / −11.8%; `benchmark.less` +1.2% / −3.6%, 0.0% /
+    −0.7%; bootstrap +5.9% / +1.5%, −3.5% / −2.4%; `benchmark.css` +5.2% / +12.8%, −6.6% /
+    +2.3%; `gen-workload.scss` +5.2% / +7.9%, +3.8% / +5.6%; `jess-x8.jess` +5.5% / +10.4%,
+    +4.7% / +3.5%. With the JIT on, which is the measure that decides (`--jitless` is
+    diagnostic only), it is roughly neutral: within the ±4–8% noise of that run on every row
+    but `benchmark.css` (−6.6%) and `border-radius` (+8.8%). A net loss: about +4%
+    `--jitless` across the board, and it gives up the left-corner wins. Resume stays; the
+    stall is to be profiled. Raw samples:
+    `scratchpad/left-corner/results/cyc3-nr.jsonl`, prototype branch `proto/routes-no-resume`
+    (local).
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
   ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.
