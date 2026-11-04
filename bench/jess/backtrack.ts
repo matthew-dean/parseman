@@ -9,18 +9,23 @@
  *   JESS_ROOT=<jess checkout> node --import ./bench/jess/register.mjs \
  *     bench/jess/backtrack.ts <css|less|scss|jess> [interpreter|closure|emitted ...]
  *
+ * `emitted` loads its assembly from a module this harness writes (`bench/emitted-assembly.ts`).
+ *
  * Prints one JSON line per engine: the totals, the files the probe measured, and the
  * files it could not (a parse that throws, or whose probed result differs from the
  * plain one — those are named, never dropped). `PM_BT_TOP=<n>` adds the n files with
  * the most rewinds.
  */
-import { backtrackProbe, type BacktrackEngine } from '../../src/analysis/backtrack.ts'
-import { zeroCounts, type BacktrackCounts } from '../../src/table/backtrack-probe.ts'
+import { backtrackProbe, backtrackProbeAssembled, type BacktrackProbe } from '../../src/analysis/backtrack.ts'
+import { probeCfg, zeroCounts, type BacktrackCounts } from '../../src/table/backtrack-probe.ts'
+import { withEmittedAssembly } from '../emitted-assembly.ts'
 import { assertParseman, corpus, corpusTotal, headSha, loadGrammar, JESS_ROOT, ENTRY, DIALECTS, type Dialect } from './grammars.ts'
 
 const dialect = process.argv[2] as Dialect
 if (!DIALECTS.includes(dialect)) throw new Error(`usage: backtrack.ts <${DIALECTS.join('|')}> [engine ...]`)
-const engines = (process.argv.length > 3 ? process.argv.slice(3) : ['closure']) as BacktrackEngine[]
+const ENGINES = ['interpreter', 'closure', 'emitted'] as const
+const engines = (process.argv.length > 3 ? process.argv.slice(3) : ['closure']) as Array<typeof ENGINES[number]>
+for (const e of engines) if (!ENGINES.includes(e)) throw new Error(`unknown engine ${e}; one of ${ENGINES.join(', ')}`)
 const top = Number(process.env.PM_BT_TOP ?? 0)
 
 const pm = await assertParseman()
@@ -28,7 +33,10 @@ const { rules } = await loadGrammar(dialect)
 const files = corpus(dialect)
 
 for (const engine of engines) {
-  const probe = backtrackProbe(rules, engine)
+  // The emitted engine comes from a build-time module, as a macro build ships it.
+  const probe: BacktrackProbe = engine === 'emitted'
+    ? await backtrackProbeAssembled(rules, p => withEmittedAssembly(p, probeCfg(p)))
+    : backtrackProbe(rules, engine)
   const total: BacktrackCounts = zeroCounts()
   const failed: Array<{ file: string; error: string }> = []
   const perFile: Array<{ file: string; rewinds: number; bytesReread: number }> = []

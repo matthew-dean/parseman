@@ -17,15 +17,15 @@ import { run, type RunOptions, type RunResult } from '../functional/run.ts'
 import { digestValue } from '../oracle/digest.ts'
 import { compileRuleMapRunnable } from '../table/compile-rule-map.ts'
 import { expandCompact, type CompactProgram, type TableProgram } from '../table/program.ts'
-import { tableRules } from '../table/assemble.ts'
+import { AssemblyCache, tableRules } from '../table/assemble.ts'
 import {
-  BacktrackRecorder, hasLookaround, probeProgram, probeRules, type BacktrackCounts,
+  BacktrackRecorder, hasLookaround, probeCfg, probeProgram, type BacktrackCounts,
 } from '../table/backtrack-probe.ts'
 import { rebuildCombinator } from './rebuild.ts'
 
 export type { BacktrackCounts } from '../table/backtrack-probe.ts'
 
-export type BacktrackEngine = 'interpreter' | 'closure' | 'emitted'
+export type BacktrackEngine = 'interpreter' | 'closure'
 
 export type BacktrackMeasurement = {
   readonly result: RunResult
@@ -33,8 +33,8 @@ export type BacktrackMeasurement = {
 }
 
 export type BacktrackProbe = {
-  /** The engine probed parses run on; `refusal` says why `emitted` fell back to closures. */
-  readonly engine: { readonly ran: BacktrackEngine; readonly refusal?: string }
+  /** The engine probed parses run on. */
+  readonly engine: { readonly ran: BacktrackEngine | 'emitted' }
   /**
    * Parse `input` from rule `entry`, plainly and probed, and count the probed parse.
    * Throws if the two parses differ in outcome, value or where they stopped.
@@ -70,63 +70,87 @@ function outcome(r: RunResult): string {
   return digestValue({ ok: r.ok, value: r.value, unconsumedFrom: r.unconsumedFrom })
 }
 
+type Grammar = Readonly<Record<string, unknown>> | TableProgram | CompactProgram
+
+function tableOf(grammar: Grammar): TableProgram {
+  if (isProgram(grammar)) return expandCompact(grammar)
+  const refusals: string[] = []
+  const compiled = compileRuleMapRunnable(ruleEntries(grammar), { refusals })
+  if (compiled === null) throw new Error(`backtrackProbe: this grammar could not be encoded to a table: ${refusals.join('; ')}`)
+  return compiled.prog
+}
+
 /**
  * Probe a grammar on one engine.
  *
  * `grammar` is a rule map of combinators (a `rules()` or `compose()` result), or a
- * table program for the two table engines. A rule map runs on the table engines
- * through `compileRuleMap`, the same lowering a macro build ships.
+ * table program for the closure engine. A rule map runs on the table through
+ * `compileRuleMapRunnable`, the lowering `compile()` uses.
+ *
+ * The emitted engine is not offered here: it needs code built from source, which
+ * at runtime only `compile()` may do (`docs/design/runtime-and-size-contract.md`,
+ * rule 1). Tests and benches reach it through `backtrackProbeAssembled` with a
+ * build-time module (`bench/emitted-assembly.ts`). It counts what the closure
+ * engine counts, because both run the same rewritten program.
  */
-export function backtrackProbe(
-  grammar: Readonly<Record<string, unknown>> | TableProgram | CompactProgram,
-  engine: BacktrackEngine = 'closure',
-): BacktrackProbe {
+export function backtrackProbe(grammar: Grammar, engine: BacktrackEngine = 'closure'): BacktrackProbe {
   const rec = new BacktrackRecorder()
-  let plain: (entry: string) => Runnable
-  let probed: (entry: string) => Runnable
-  let ran: BacktrackProbe['engine']
-
   if (engine === 'interpreter') {
     if (isProgram(grammar)) throw new TypeError('backtrackProbe: the interpreter runs a rule map of combinators, not a table program')
     const rules = Object.fromEntries(ruleEntries(grammar))
     const built = new Map<string, Combinator<unknown>>()
     const instrument = instrumentFor(rec)
-    plain = entry => ruleOf(rules, entry)
-    probed = (entry) => {
+    return probe(rec, 'interpreter', entry => ruleOf(rules, entry), (entry) => {
       let hit = built.get(entry)
       if (hit === undefined) {
         hit = rebuildCombinator(ruleOf(rules, entry), new Map(), { thaw: true, after: instrument }).root
         built.set(entry, hit)
       }
       return hit
-    }
-    ran = { ran: 'interpreter' }
+    })
   }
-  else {
-    let prog: TableProgram
-    if (isProgram(grammar)) prog = expandCompact(grammar)
-    else {
-      const refusals: string[] = []
-      const compiled = compileRuleMapRunnable(ruleEntries(grammar), { refusals })
-      if (compiled === null) throw new Error(`backtrackProbe: this grammar could not be encoded to a table: ${refusals.join('; ')}`)
-      prog = compiled.prog
-    }
-    const base = tableRules({ ...prog, asm: [] })
-    const { rules, engine: e } = probeRules(probeProgram(prog, rec), engine)
-    plain = entry => ruleOf(base, entry)
-    probed = entry => ruleOf(rules, entry)
-    ran = e.refusal === undefined ? { ran: e.ran } : { ran: e.ran, refusal: e.refusal }
-  }
+  const prog = tableOf(grammar)
+  const base = tableRules({ ...prog, asm: [] })
+  const rules = tableRules(probeProgram(prog, rec))
+  return probe(rec, 'closure', entry => ruleOf(base, entry), entry => ruleOf(rules, entry))
+}
 
+/**
+ * For tests and benches, not `parseman/diagnostics`: the probe on the emitted
+ * engine. `assemble` hands the rewritten program back with a pre-compiled
+ * assembly for `probeCfg(program)`, built as a module the way a macro build ships
+ * one. Nothing here turns a string into code.
+ */
+export async function backtrackProbeAssembled(
+  grammar: Grammar,
+  assemble: (probed: TableProgram) => Promise<TableProgram>,
+): Promise<BacktrackProbe> {
+  const rec = new BacktrackRecorder()
+  const prog = tableOf(grammar)
+  const base = tableRules({ ...prog, asm: [] })
+  const assembled = await assemble(probeProgram(prog, rec))
+  // Ask the assembler which engine it built, rather than assume the factory was taken.
+  const refusal = new AssemblyCache(assembled).for(probeCfg(assembled)).emitRefusal
+  if (refusal !== undefined) throw new Error(`backtrackProbeAssembled: the assembly was not used: ${refusal}`)
+  const rules = tableRules(assembled)
+  return probe(rec, 'emitted', entry => ruleOf(base, entry), entry => ruleOf(rules, entry))
+}
+
+function probe(
+  rec: BacktrackRecorder,
+  ran: BacktrackProbe['engine']['ran'],
+  plain: (entry: string) => Runnable,
+  probed: (entry: string) => Runnable,
+): BacktrackProbe {
   return {
-    engine: ran,
+    engine: { ran },
     measure(entry, input, options = {}) {
       const expected = run(plain(entry), input, options)
       rec.begin(input)
       const result = run(probed(entry), input, options)
       const counts = rec.end()
       if (outcome(result) !== outcome(expected)) {
-        throw new Error(`backtrackProbe: the probed ${ran.ran} parse of rule ${JSON.stringify(entry)} differs from the plain one; its counts would describe another parse`)
+        throw new Error(`backtrackProbe: the probed ${ran} parse of rule ${JSON.stringify(entry)} differs from the plain one; its counts would describe another parse`)
       }
       return { result, counts }
     },

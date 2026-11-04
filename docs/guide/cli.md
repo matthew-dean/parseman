@@ -225,9 +225,12 @@ const { counts } = backtrackProbe(g, 'closure').measure('Item', 'aby')
 // counts.rewinds === 1, counts.bytesReread === 2
 ```
 
-The second argument picks the engine: `'interpreter'`, `'closure'` or `'emitted'`
-(`probe.engine` says which one ran). The two table engines run the same program and
-report the same counts. The interpreter runs the combinator graph before the table's
-lowering, so where that lowering factors a shared prefix or folds a lookahead away,
-its counts are higher. The instrumented copy is separate from the grammar, so a parse
-that does not ask for the probe pays nothing for it.
+The second argument picks the engine, `'closure'` (the default) or `'interpreter'`;
+`probe.engine` says which one ran. The closure engine runs a rewritten copy of the
+grammar's table, the same lowering `compile()` uses. The emitted engine runs that same
+program and reports the same counts. It is not offered here, because building it means
+turning source into code, which at runtime only `compile()` may do. Parséman's own
+tests and benches check it from a build-time module. The interpreter runs the
+combinator graph before the table's lowering, so where that lowering factors a shared
+prefix or folds a lookahead away, its counts differ. The instrumented copy is separate
+from the grammar, so a parse that does not ask for the probe pays nothing for it.

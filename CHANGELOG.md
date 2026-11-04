@@ -8,9 +8,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **`backtrackProbe` in `parseman/diagnostics` counts backtracking.** Per parse it
   reports how often the position went backwards and how many bytes were read again,
   plus the lookahead `not()`/`peek()` and regex lookarounds did. It runs on the
-  interpreter, the closure engine or the emitted engine. On the two table engines it
-  rewrites a copy of the program so its terminals report what they read; on the
-  interpreter it rebuilds the combinator graph with reporting terminals. Nothing is
+  closure engine or the interpreter. On the closure engine it rewrites a copy of the
+  table so its terminals report what they read; on the interpreter it rebuilds the
+  combinator graph with reporting terminals. The emitted engine runs the same
+  rewritten table and is checked to report the same counts, but only in Parséman's
+  tests and benches, from a build-time module: `parseman/diagnostics` never turns
+  source into code. Nothing is
   added to an ordinary parse: there is no flag, no branch and no assembly key. Each
   measurement also runs the plain grammar and throws if the probed parse returned
   anything else. `rebuildCombinator` takes a third argument, `{ thaw, after }`, to

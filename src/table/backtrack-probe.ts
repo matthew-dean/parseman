@@ -4,7 +4,9 @@
  * "Parseman never backtracks" is checkable only if backtracking is counted. This
  * module counts it without touching either engine: it rewrites a COPY of a program
  * so that every terminal row reports what it consumed, and runs that copy on the
- * closure engine or the emitted engine. A program that is not rewritten carries no
+ * closure engine — or, in tests and benches, on the emitted engine from a
+ * build-time module (`bench/emitted-assembly.ts`); nothing here builds code from
+ * source. A program that is not rewritten carries no
  * probe row, so an ordinary parse pays nothing for this — no branch, no field, no
  * assembly key. That is the whole reason it is a program rewrite and not a `RunCfg`
  * bit: a bit would still be a second assembly every engine has to know about.
@@ -54,7 +56,7 @@ import { childSlotOffsets, childSlots } from './child-slots.ts'
 import {
   assemblyExtraIps, expandCompact, type CompactProgram, type SubtreeRef, type TableProgram,
 } from './program.ts'
-import { AssemblyCache, tableRules, type RunCfg } from './assemble.ts'
+import type { RunCfg } from './assemble.ts'
 
 export type BacktrackCounts = {
   rewinds: number
@@ -302,25 +304,7 @@ export function probeProgram(source: TableProgram | CompactProgram, rec: Backtra
   }
 }
 
-/** Which engine ran a probe, and why the emitted one did not when it did not. */
-export type ProbeEngine = { readonly ran: 'closure' | 'emitted'; readonly refusal?: string }
-
-/**
- * Rule maps for a probed program on one engine. `closure` is the program with an
- * empty assembly inventory. `emitted` is the program with no inventory at all,
- * which `assemble.ts` specialises exactly as `compile()` does
- * (`compileRuleMapRunnable` with `specialise`). That is runtime code construction
- * reached from `parseman/diagnostics`, not from `compile()`: whether rule 1 of
- * `docs/design/runtime-and-size-contract.md` admits it is an open owner question.
- */
-export function probeRules(prog: TableProgram, engine: 'closure' | 'emitted'): { rules: ReturnType<typeof tableRules>; engine: ProbeEngine } {
-  if (engine === 'closure') return { rules: tableRules(prog), engine: { ran: 'closure' } }
-  const { asm: _closureOnly, ...live } = prog
-  const cfg: RunCfg = {
-    hostCst: prog.hostMode === 'cst', trackLines: prog.lines === 1, tolerant: false, coverage: false, probe: false,
-  }
-  // Ask the assembler which engine it built, rather than assume.
-  const refusal = new AssemblyCache(live).for(cfg).emitRefusal
-  if (refusal !== undefined) return { rules: tableRules(prog), engine: { ran: 'closure', refusal } }
-  return { rules: tableRules(live), engine: { ran: 'emitted' } }
+/** The option set a probe runs a program under: a plain parse of its host mode. */
+export function probeCfg(prog: TableProgram): RunCfg {
+  return { hostCst: prog.hostMode === 'cst', trackLines: prog.lines === 1, tolerant: false, coverage: false, probe: false }
 }
