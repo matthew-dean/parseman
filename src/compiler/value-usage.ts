@@ -41,19 +41,20 @@ export function markUnusedValues(root: Combinator<unknown>): void {
       case 'many':
       case 'oneOrMore':
         mark(def, consumed)
-        visit(def.parser, consumed)
-        return
       case 'optional':
         // `optional` returns `inner | null` — no aggregate array/tuple to elide, so
         // it carries no valueUnused flag. Still descend so an inner many/sequence
         // under a node() is analyzed (it benefits even when its optional wrapper
         // doesn't).
-        visit(def.parser, consumed)
+      case 'label':
+      case 'trivia':
+      case 'attempt':
+      case 'withCtx':
+      case 'expect':
+        visit(def.parser, consumed) // single-child pass-through wrappers
         return
       case 'sequence':
         mark(def, consumed)
-        for (const p of def.parsers) visit(p, consumed)
-        return
       case 'choice':
         // value is the winning arm's value — propagate consumed to each arm.
         for (const p of def.parsers) visit(p, consumed)
@@ -65,15 +66,26 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         if (def.otherwise) visit(def.otherwise, consumed)
         return
       case 'node':
+        // Every reference is defined by the time a linker runs this pass, so this is
+        // where a node over one learns whether it has fields.
+        def.settleFields?.()
         // builds from captured children, NOT the inner parser value.
+      case 'not':
+      case 'peek':
+        // lookahead — value never observed
+      case 'token':
+        // token() returns the matched source slice, not the wrapped parser value.
+        // Its child still parses and captures one outer token leaf; inner aggregate
+        // values such as sequence tuples are unobserved and can be elided.
         visit(def.parser, false)
         return
       case 'transform':
         // the map fn reads the value → always consumed.
-        visit(def.parser, true)
-        return
       case 'field':
         // the field capture records the parsed value → always consumed.
+      case 'leaf':
+        // The reducer observes the complete inner value even when its own result
+        // is immediately captured by a node().
         visit(def.parser, true)
         return
       case 'sepBy':
@@ -83,10 +95,6 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         visit(def.parser, true)
         visit(def.separator, false)
         return
-      case 'not':
-      case 'peek':
-        visit(def.parser, false)    // lookahead — value never observed
-        return
       case 'grammar':
         visit(def.parser, consumed)
         if (def.triviaParser) visit(def.triviaParser, false)
@@ -95,23 +103,13 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         visit(def.parser, consumed)
         visit(def.sentinel, false)
         return
-      case 'token':
-        // token() returns the matched source slice, not the wrapped parser value.
-        // Its child still parses and captures one outer token leaf; inner aggregate
-        // values such as sequence tuples are unobserved and can be elided.
-        visit(def.parser, false)
-        return
-      case 'label':
-      case 'trivia':
-      case 'attempt':
-      case 'withCtx':
-      case 'expect':
-        visit(def.parser, consumed) // single-child pass-through wrappers
-        return
-      case 'leaf':
-        // The reducer observes the complete inner value even when its own result
-        // is immediately captured by a node().
-        visit(def.parser, true)
+      case 'routed':
+      case 'lines':
+      case 'scanTo':
+        // No aggregate to elide here, but a node inside still has to be reached.
+        for (const p of def.tag === 'routed' ? [def.fallback]
+          : def.tag === 'lines' ? [def.prefix, def.body, def.first, def.lazy]
+          : [def.sentinel, ...def.skip, def.recoverAt, def.stopAt]) if (p) visit(p, true)
         return
       case 'lazy':
         // An INNER ref boundary — a distinct rule, analyzed on its own root. Don't
@@ -120,7 +118,7 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         // resolved by resolveRoot() before the walk starts.
         return
       default:
-        // literal / regex / keywords / guard / scanTo / unknown — no container child.
+        // literal / regex / keywords / guard / unknown — no container child.
         return
     }
   }

@@ -242,3 +242,49 @@ export const less = compose([css, rules({ trivia: ws }, g => ({
     expect(shape(P.run(value, 'url(x'))).toEqual(shape(walked))
   })
 })
+
+describe('a node over a reference reads its field wherever the node sits', () => {
+  const reads = (_c: unknown, fields: P.FieldMap | undefined): unknown => {
+    const text = fields?.text
+    return Array.isArray(text) ? text : text?.value
+  }
+  const both = (rule: P.Runnable, input: string): unknown => {
+    const r = walk(rule, input)
+    expect(P.run(rule, input).value).toEqual(r.value)
+    return r.value
+  }
+
+  it('directly in a rule', () => {
+    const g = P.rules(g => ({
+      Para: P.node('Para', g.Text, reads),
+      Text: P.field('text', P.regex(/[a-z]+/)),
+    }))
+    expect(both(g.Para, 'hi')).toBe('hi')
+  })
+
+  it('inside lines()', () => {
+    const g = P.rules(g => ({
+      Quote: P.lines(P.literal('> '), P.node('Para', g.Text, reads)),
+      Text: P.field('text', P.regex(/[a-z]+/)),
+    }))
+    expect(both(g.Quote, '> hi')).toBe('hi')
+  })
+
+  it('as the fallback of routed()', () => {
+    const g = P.rules(g => ({
+      Word: P.routed(P.node('Word', g.Text, reads)),
+      Text: P.field('text', P.regex(/[a-z]+/)),
+    }))
+    expect(both(g.Word, 'hi')).toBe('hi')
+  })
+
+  it('inside a scanTo() skip', () => {
+    let seen: unknown
+    const g = P.rules(g => ({
+      Scan: P.scanTo(P.literal(';'), { skip: [P.node('Str', g.Text, (c, f) => { seen = reads(c, f); return seen })] }),
+      Text: P.field('text', P.regex(/[a-z]+/)),
+    }))
+    walk(g.Scan, 'hi;')
+    expect(seen).toBe('hi')
+  })
+})

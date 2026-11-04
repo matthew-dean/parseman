@@ -39,9 +39,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `test/unit/compose-dangling-reference.test.ts`.
 - **The walker and the tables now agree on four more results, and three compositions
   a dialect grammar relies on are pinned across a package boundary.**
-  - A `node()` over a bare rule reference delivers the `field()` below it on the
-    walker. It decided field capture while the reference was unresolved, so it dropped
-    the field that the tables delivered.
+  - A `node()` over a rule reference delivers the `field()` below it on the walker. It
+    decided field capture while the reference was unresolved, so it dropped the field
+    that the tables delivered. Rule linking now settles it, with no cost per parse. A
+    node over a bare `ref()` defined later still drops it: see #256.
   - A `sepBy` that fails first names its item. The derived set had no case for it, so
     the tables reported `"sepBy"` or `"lazy"` as the expected token. Printed tables
     carry the longer sets: `examples/csv` grows from 786 to 839 bytes.
@@ -50,6 +51,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     choice's position.
   - `run()` reports `expected` as a set. Arms that open with the same token reported
     it once per arm on some paths.
+
+  Failing input on `rules()` grammars can still list different `expected` sets on the
+  walker and the tables, at the same position: see #256.
 
   The pinned shapes: a dialect's own dispatch routes to a base rule that owns its
   opener through `routed()`; a base parent reads the dialect's override of a slot below

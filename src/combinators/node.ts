@@ -231,13 +231,17 @@ export function node<N>(
   // a log it never reads, at the price of the full capture frame on every match.
   const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : project === undefined)
   const readsState = build ? buildReadsState(def) : project === undefined
-  // Decided at the first parse, not here: inside a `rules()` factory a body that is a
-  // bare `g.X` (or reaches its field through one) is an unresolved reference while the
-  // node is built, so the walk would see no field and the node would drop it. The
-  // tables decide this from the linked graph; deciding it once the graph is linked
-  // makes the walker agree.
-  let hasOwnFields: boolean | undefined
+  const readsFields = build ? buildReadsFields(def) : project === undefined
+  let hasOwnFields = false
   let capturesFields = false
+  const settleFields = (): void => {
+    hasOwnFields = parserHasOwnFields(combinator)
+    capturesFields = hasOwnFields && readsFields
+  }
+  settleFields()
+  // Inside a `rules()` factory a body that reaches its field through `g.X` reads as
+  // having none, so the linker settles this again once the references are defined.
+  def.settleFields = settleFields
   // First-set fail-fast (mirrors emitNode's codegen guard): a node whose body can't
   // match empty and whose first set can't start here can only fail, so reject BEFORE
   // allocating the CST capture frame. Sound and output-neutral — the failing body
@@ -278,10 +282,6 @@ export function node<N>(
       const effTrivia = structural
         ? captureTrivia || trailingTrivia || hostCapturesThisType !== false
         : capturesTrivia || hostCst
-      if (hasOwnFields === undefined) {
-        hasOwnFields = parserHasOwnFields(combinator)
-        capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)
-      }
       const effFields = capturesFields || (hostCst && hasOwnFields)
       const saved = beginCstNodeCapture(ctx)
       const savedFields = ctx._fields
