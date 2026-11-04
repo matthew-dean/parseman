@@ -100,6 +100,13 @@ describe('backtrackProbe', () => {
     expect(r.counts.rewinds).toBe(0)
   })
 
+  it('refuses an option the emitted assembly does not serve', async () => {
+    const g = rules(() => ({ Item: literal('a') }))
+    const probe = await probeOn(g, 'emitted')
+    expect(probe.measure('Item', 'a', { state: {} }).result.ok).toBe(true)
+    expect(() => probe.measure('Item', 'a', { tolerant: true })).toThrow(/takes no tolerant/)
+  })
+
   it('refuses to report when asked for a rule the grammar lacks', () => {
     const g = rules(() => ({ Item: literal('a') }))
     expect(() => backtrackProbe(g, 'closure').measure('Nope', 'a')).toThrow(/no rule "Nope"/)

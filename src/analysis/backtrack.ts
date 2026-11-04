@@ -133,7 +133,18 @@ export async function backtrackProbeAssembled(
   const refusal = new AssemblyCache(assembled).for(probeCfg(assembled)).emitRefusal
   if (refusal !== undefined) throw new Error(`backtrackProbeAssembled: the assembly was not used: ${refusal}`)
   const rules = tableRules(assembled)
-  return probe(rec, 'emitted', entry => ruleOf(base, entry), entry => ruleOf(rules, entry))
+  const emitted = probe(rec, 'emitted', entry => ruleOf(base, entry), entry => ruleOf(rules, entry))
+  return {
+    engine: emitted.engine,
+    measure(entry, input, options = {}) {
+      // The assembly serves `probeCfg`'s option set alone. An option that selects
+      // another one (tolerant, completions, a build host…) would run closures under
+      // an `emitted` label, so only the parse state may be passed.
+      const other = Object.keys(options).filter(k => k !== 'state')
+      if (other.length > 0) throw new TypeError(`backtrackProbeAssembled: the emitted probe runs a plain parse; it takes no ${other.join(', ')}`)
+      return emitted.measure(entry, input, options)
+    },
+  }
 }
 
 function probe(
