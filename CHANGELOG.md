@@ -5,6 +5,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A `compose()` that references a rule no piece defines fails the build, naming
+  the rule.** The macro fuse used to encode around the undefined slot, leave the
+  runtime `compose()` in place and warn "ref() used before .define()", which read as
+  a parseman defect. The cause is the grammar: a `g.X` whose name no composed piece
+  returns, usually a base sub-expression that is a local const rather than a rule
+  key. The build now throws `compose(): rule "VarFallback" references missing rule
+  "VarFunction"` (or, when only a shadowed definition reads the name, `rule(s) "X"
+  are referenced but defined by no composed grammar`), the same words runtime
+  `compose()` already refused the grammar with. See
+  `test/unit/compose-dangling-reference.test.ts`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

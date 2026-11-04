@@ -37,7 +37,7 @@ import {
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
 import type { HostMode } from '../cst/host-mode.ts'
-import { COMPOSED_PIECES, type IRPiece } from '../compiler/linker.ts'
+import { COMPOSED_PIECES, danglingReference, type IRPiece } from '../compiler/linker.ts'
 import { serializeCombinator, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { evalCombinatorIR, evalRulesIR, INERT_BUILDER } from './ir-eval.ts'
 import { countSiteVisits } from '../table/assemble.ts'
@@ -2136,17 +2136,15 @@ function transformMacroImpl(
   const mergedCarriedRules = (
     items: CarriedItem[],
     link: LinkOptions,
-  ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean } | null => {
+  ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean; dangling: string | undefined } | null => {
     const carriedMaps = carriedRuleMaps(items)
     if (carriedMaps === null) return null
     const linked = linkRules(carriedMaps.pieces.flatMap(p => p.recipes), link)
     // A name some piece only REFERENCES and none defines stays an undefined slot in
-    // the namespace. It is not a rule, so it is not handed to the encoder as one.
-    const rules = Object.entries(linked).filter(([, rule]) => {
-      if (rule._def.tag !== 'lazy') return true
-      try { rule._def.thunk(); return true } catch { return false }
-    })
-    return { rules, trackLines: carriedMaps.trackLines }
+    // the namespace. Runtime `compose()` refuses that grammar at link, so the build
+    // refuses it too (the caller throws `dangling`) rather than encode around the hole.
+    const dangling = danglingReference(linked)
+    return { rules: Object.entries(linked), trackLines: carriedMaps.trackLines, dangling }
   }
 
   /**
@@ -2337,6 +2335,7 @@ function transformMacroImpl(
       trivia: composing,
       ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
     })
+    if (merged?.dangling !== undefined) throw new Error(`${id}:${lineOf(init.start)} — compose(): ${merged.dangling}`)
     if (merged !== null) {
       // Harvest the direct-builder import provenance carried on the merged graph so
       // the re-lower pass at the end of this transform re-emits those imports.
