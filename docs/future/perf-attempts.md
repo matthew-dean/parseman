@@ -709,6 +709,30 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     piece, with no single item over ~5% of the parse, and inlining moves the remainder
     between neighbours run to run, so time profiling cannot attribute the last 1.7k. Not cut:
     no measured item is large enough to show over the ±0.3% instruction null.
+  - **A route reuses the ordinary lowering instead of its own copies.** Each repeat and
+    optional row exposes its head, the decision it makes before consuming: for a repeat,
+    whether the token after the trivia starts a separator or the next item (the same
+    separator class, item class and gap gate the loop uses); for a gated optional, its
+    class. A route's continuation is the row's own lowering, entered with the first item
+    or the leading terms already parsed, and it opens the node's frame only when a head
+    says the row will consume. This replaces the route's tail classes and its gap and
+    trivia-mask readers, and its scope switch, dispatch keys and choice failure now call
+    the shared pieces. Route-only code: 1,440 → 1,094 non-comment lines (`routes.ts`
+    728 → 607; route functions in `assemble.ts` 712 → 487). Identity against `main` @
+    `53cff042`: 0 diffs, four dialects, AST and CST. `example/css` emits 102 B less
+    (10,507 → 10,405 B). A first cut also routed a level whose continuation no head can
+    decide, when it resumes at the route's top: +560 B on `example/css`; that rule is kept.
+    JIT instructions against the branch before the change (five rotated reps, A/A null in
+    brackets; load 10–12 from other work, so rows within ±4% are noise): CSS `font: 1;`
+    −1.2% (0.0%), `font: 1/2;` −0.6% (−0.2%), `font: a, b;` −0.4% (+0.6%),
+    `font: 12px/1.5 a;` +0.1% (−0.7%), `font: 12px/1.5 a, b;` −0.2% (−0.4%),
+    `margin: 0 auto;` +0.5% (+1.1%), Less `color: red;` −5.1% (−3.1%), `.jess`
+    `margin: 0 auto;` +1.9% (+3.7%), `benchmark.less` +0.7% (+0.2%), bootstrap 0.0%
+    (−0.3%), `benchmark.css` −0.4% (+0.4%), `gen-workload.scss` +0.2% (−0.1%),
+    `jess-x8.jess` −0.5% (+0.1%). Neutral: a rule fix (one definition, two paths), not a
+    speed fix. In this run both legs read 6–10% above `main` on every row, against −4%
+    to +1% on an idle machine before; CI decides. Raw samples:
+    `scratchpad/left-corner/results/reuse-r4c.jsonl`.
   - Rejected: the ascent as one loop instead of nested level pieces (identity clean). CSS
     `font: 1/2;` +48.9% cycles / +6.0% instructions `--jitless` (nested: +30.6% / −2.3%),
     `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts
