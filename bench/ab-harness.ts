@@ -43,7 +43,7 @@
  *   because they come from two separate module graphs.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, symlinkSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, realpathSync, symlinkSync, rmSync } from 'node:fs'
 import * as nodeModule from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -256,6 +256,32 @@ export function previousReleases(root: string, gate: string, count: number): Arr
     return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
   }
   return out
+}
+
+/**
+ * Refuse to compare legs that load parseman from the same place.
+ *
+ * `legs` maps each leg's label to the directory its parseman resolves from (its `src/`
+ * or its built `dist/`). Each is resolved with `realpath`, so a symlink, a `..` path or
+ * a link to another leg's tree is caught. Two legs with one real path are one build
+ * timed twice: a laptop A/B whose legs all symlinked to one source tree "passed" a
+ * change the cross-process gate then measured 10–25% slower.
+ *
+ * `selfCheck` is the one exception: an A/A run that says so in its banner and gates
+ * nothing. Its legs are the same build by design.
+ */
+export function assertIndependentLegs(gate: string, legs: Readonly<Record<string, string>>, selfCheck = false): void {
+  const seen = new Map<string, string>()
+  for (const [label, dir] of Object.entries(legs)) {
+    if (!existsSync(dir)) fail(gate, `leg ${label}: ${dir} does not exist.`)
+    const real = realpathSync(dir)
+    console.log(`  leg ${label.padEnd(10)} parseman from ${real}`)
+    const other = seen.get(real)
+    if (other !== undefined && !selfCheck) {
+      fail(gate, `legs ${other} and ${label} both resolve parseman from ${real}. Two legs need two independent builds; refusing to measure.`)
+    }
+    seen.set(real, label)
+  }
 }
 
 /** Bound for the cache-verification git calls — they are local metadata reads. */

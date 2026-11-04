@@ -115,8 +115,12 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * That is the case the check exists for. A DEBT entry naming the lane that owes
  * it is a promise, and this is what it looks like when the promise is kept: the
  * entry does not get to survive the fix.
+ *
+ * 15 -> 18. INV-13 (a function written twice in engine source, at any depth)
+ * landed with three findings INV-4 could not see: all nested, two inside one
+ * file. Entered as DEBT; each leaves when its pair is defined once.
  */
-export const ALLOW_COUNT = 15
+export const ALLOW_COUNT = 18
 
 /**
  * finding key -> { category, why, ref? }
@@ -241,4 +245,15 @@ export const ALLOW = new Map([
     { category: 'BY-DESIGN', why: 'historical — "salvaged from", naming the suite this one replaced' }],
   ['INV-10:test/unit/macro-grammar-coverage.test.ts:src/compiler/codegen.ts',
     { category: 'BY-DESIGN', why: 'historical — records why coverage was imported from the lowering' }],
+
+  /* ---- INV-13 x3: one function written twice in engine source --------
+   * The rule's backlog on arrival. Each pair is one piece defined twice; the fix
+   * is to define it once and capture it, which is engine work this gate's lane
+   * did not do. */
+  ['INV-13:src/combinators/trivia-skip.ts:needsTriviaRollback|src/table/assemble.ts:rollbackNeeded',
+    { category: 'DEBT', why: 'the closure assembler re-declares trivia-skip\'s rollback test instead of importing it', ref: 'docs/design/perf-gates.md' }],
+  ['INV-13:src/table/assemble.ts:bindRunners|src/table/assemble.ts:bindRunners',
+    { category: 'DEBT', why: 'two sequence lowerings each declare the same runner-block binder', ref: 'docs/design/perf-gates.md' }],
+  ['INV-13:src/table/assemble.ts:runAdjTerms|src/table/assemble.ts:runDirectTerms',
+    { category: 'DEBT', why: 'the adjacent and direct sequence lowerings each declare the same first-then-tail runner', ref: 'docs/design/perf-gates.md' }],
 ])

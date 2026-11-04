@@ -13,9 +13,10 @@
  *                call `shipped` for the variant first.
  *
  * `@jesscss/core` is not vendored: reducers use it at run time only. In a runnable
- * bundle it is a stub whose members build plain objects, so an AST parse — which
- * runs reducers — is not meaningful there; a CST parse through a CST host builds
- * nodes through the host and is.
+ * bundle it is a stub: every member, call and construction returns the stub, which
+ * iterates as empty, so an AST parse runs its reducers without building anything. An
+ * AST parse there is good for counting work, not for checking a tree; a CST parse
+ * through a CST host builds nodes through the host and is.
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -49,7 +50,7 @@ export const VARIANTS: Readonly<Record<string, string>> = {
 }
 
 const SRC = resolve(import.meta.dirname, '../../src')
-const CORE_STUB = 'const __core = new Proxy(function () {}, { get: (t, k) => k === "then" ? undefined : __core, apply: (t, self, args) => ({ args }), construct: (t, args) => ({ args }) });\n'
+const CORE_STUB = 'const __core = new Proxy(function () {}, { get: (t, k) => k === "then" ? undefined : k === Symbol.iterator ? function* () {} : k === Symbol.toPrimitive ? () => 0 : __core, apply: () => __core, construct: () => __core });\n'
 
 /** `import { a as b } from "@jesscss/core…"` → reads off the stub. */
 function stubCore(code: string): string {

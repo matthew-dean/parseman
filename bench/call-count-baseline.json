@@ -1,0 +1,66 @@
+{
+  "emitted/less/stylesheet": {
+    "calls": 776257,
+    "branches": 3931540
+  },
+  "emitted/less/mixins": {
+    "calls": 837629,
+    "branches": 4234919
+  },
+  "emitted/css/stylesheet": {
+    "calls": 434657,
+    "branches": 2356925
+  },
+  "emitted/graphql/document": {
+    "calls": 203741,
+    "branches": 1616611
+  },
+  "emitted/json/document": {
+    "calls": 166652,
+    "branches": 884709
+  },
+  "closure/less/stylesheet": {
+    "calls": 1129029,
+    "branches": 5692179
+  },
+  "closure/less/mixins": {
+    "calls": 1216449,
+    "branches": 6156813
+  },
+  "closure/css/stylesheet": {
+    "calls": 619361,
+    "branches": 3161178
+  },
+  "closure/graphql/document": {
+    "calls": 294347,
+    "branches": 1724325
+  },
+  "closure/json/document": {
+    "calls": 268887,
+    "branches": 1309587
+  },
+  "macro/css/ast/site.css": {
+    "calls": 176879,
+    "branches": 673958
+  },
+  "macro/css/cst/site.css": {
+    "calls": 216589,
+    "branches": 1108404
+  },
+  "macro/less/cst/site.css": {
+    "calls": 312475,
+    "branches": 1597701
+  },
+  "macro/less/cst/app.less": {
+    "calls": 284016,
+    "branches": 1446986
+  },
+  "macro/scss/cst/site.css": {
+    "calls": 341220,
+    "branches": 1802730
+  },
+  "macro/jess/cst/site.css": {
+    "calls": 261079,
+    "branches": 1346429
+  }
+}
