@@ -42,7 +42,7 @@ import { holdsGap, rowNullable } from './hold-gap.ts'
 import { failCleanAnalysis, type FailClean } from './fail-clean.ts'
 import { leadingTriviaFieldAt } from './field-spec.ts'
 import { largeChoiceLiteralPretest, leadingScalarTerminal, scalarTerminalNodeChild } from './scalar-terminal.ts'
-import { leadMasks, maskOfRanges, type LeadMask } from './lead-mask.ts'
+import { leadMasks, maskOfClass, maskOfRanges, type LeadMask } from './lead-mask.ts'
 
 export const K_WRAP = 0
 export const K_SCOPE = 1
@@ -61,38 +61,10 @@ export const V_CHILDREN_COLLAPSE = 4
 export const V_GENERIC = 5
 export const V_PASS = 6
 
-/** How a continuation term decides at its start. */
-export const T_OPT_GATE = 0
-export const T_REP_CLASS = 1
-export const T_REP_GAP = 2
-export const T_REP_OPTGAP = 3
-
-/**
- * One term after a left corner, as the piece that runs it decides at its start:
- * an `optional` behind a gate, a repeat behind its item class, a repeat whose item
- * opens with a gap (`OP_GAPGATE`: the gap's regex, the class after it, or the
- * class of an arm without it), or a repeat whose item opens with
- * `optional(<regex>)` and then a term with a finite lead. Any other term (a gate
- * that must match among them) leaves the level to resume and run it.
- */
-export type RouteTail = {
-  readonly kind: number
-  /** The term's row. */
-  readonly ip: number
-  /** A repeat that collects its items (`OP_REP`, not `OP_REPV`). */
-  readonly collect: boolean
-  /** The class the term opens with (gate, repeat item, or the item's own class); −1 where none. */
-  readonly cls: number
-  /** The regex row of the gap the item opens with; −1 where none. */
-  readonly gapRow: number
-  /** `T_REP_GAP`: the class after the gap, and the class of an arm without it (−1 none). */
-  readonly follow: number
-  readonly other: number
-  /** `T_REP_OPTGAP`: the lead of the term after the gap. */
-  readonly followMask: LeadMask | undefined
-  /** The expected set a term that cannot start reports (`fx` index); −1 where it reports none. */
-  readonly xf: number
-}
+/** What a continuation term yields when it does not start. */
+export const E_NULL = 0
+export const E_LIST = 1
+export const E_NONE = 2
 
 export type RouteLevel = {
   readonly kind: number
@@ -102,14 +74,14 @@ export type RouteLevel = {
   /** `K_NODE`: the completion variant. */
   readonly variant: number
   /**
-   * `K_SEQ`/`K_REP`: whether the continuation is decided on the next token
-   * (`false`: it always runs). `K_SEQ`: its leading zero-width terms.
+   * `K_SEQ`/`K_REP`: the characters the continuation can start with, after the
+   * gap; on any other it does not run. `undefined`: it always runs.
    */
-  known: boolean
+  go: LeadMask | undefined
+  /** `K_SEQ`: its leading zero-width terms. */
   readonly lc: number
-  readonly tails: readonly RouteTail[]
-  /** `K_REP`: the separator is gated by the repeat's own class. */
-  readonly sepGated: boolean
+  /** `K_SEQ`: what each term after the corner yields when `go` declines (`E_*`). */
+  readonly empties: readonly number[]
   /** `K_REP`/`K_CHOICE`: a failure that can leave diagnostics to roll back. */
   readonly dirty: boolean
   /**
@@ -154,25 +126,16 @@ export type RouteTable = {
   readonly hasTop: (top: number) => boolean
   /** The routes a node site tops, per character (0–127), `undefined` where it tops none. */
   readonly routesAt: (top: number) => readonly (Route | undefined)[] | undefined
-  /**
-   * The regex rows an `optional` gap a route may read and hand over can sit at:
-   * the `optional(<regex>)` that opens a repeat's item. Known before any route is
-   * read, because the row's piece is chosen when it is linked.
-   */
-  readonly gapRows: ReadonlySet<number>
 }
 
 /**
  * The routes as a program stores them (`TableProgram.routes`): derived when the
  * table is encoded, so loading it derives nothing. What an assembly needs when
- * it links — which sites are tops, and which regex rows hand a gap over — is
- * stored as numbers; the routes themselves are one JSON text (`RoutePools`),
+ * it links — which sites are tops — is stored as numbers; the routes themselves are one JSON text (`RoutePools`),
  * parsed the first time a route is built, so a table that is loaded and parsed
  * once never reads them.
  */
 export type PackedRoutes = {
-  /** `RouteTable.gapRows`. */
-  readonly g: readonly number[]
   /** The tops, ascending; the `n`th top's routes are `RoutePools[0][n]`. */
   readonly t: readonly number[]
   /** `RoutePools`, as JSON. */
@@ -185,8 +148,7 @@ export type PackedRoutes = {
  *
  * - Per top: `[lo, hi, route, lo, hi, route, …]`, one route per run of characters.
  * - Routes: `[atom, d, ...levels(d), (cut, terminals, ...terminal)…]`.
- * - Levels: `[kind, ip, arm, variant, flags, lc, resumeTop, ...tails]` (`LF_*` flags).
- * - Tails: `[kind, ip, collect, cls, gapRow, follow, other, followMask, xf]` (−1 none).
+ * - Levels: `[kind, ip, arm, variant, flags, lc, resumeTop, go, ...empties]` (`LF_*` flags; go −1: none).
  * - Lead masks, as their members (128: any non-ASCII character).
  * - Atoms: `[0, ip]` a site, `[1]` the routed token, or
  *   `[2, ip, arms, (route, ip, needsRouted, commits)…, hasOther, (other's four)?]`
@@ -196,13 +158,10 @@ type RoutePools = readonly [
   tops: readonly (readonly number[])[],
   routes: readonly (readonly number[])[],
   levels: readonly (readonly number[])[],
-  tails: readonly (readonly number[])[],
   masks: readonly (readonly number[])[],
   atoms: readonly (readonly number[])[],
 ]
 
-const LF_KNOWN = 1
-const LF_SEP_GATED = 4
 const LF_DIRTY = 8
 const LF_CANDIDATE = 16
 
@@ -215,7 +174,7 @@ export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
   const t = resolveTable(prog)
   const roots = [...Object.values(prog.rules), ...assemblyExtraIps(prog)]
   const derive = deriver(t, computeSiteLabels(t.code, roots, false), failCleanAnalysis(t.code), (prog.triviaSpecs?.length ?? 0) > 0)
-  const P = { t: [] as number[][], r: [] as number[][], l: [] as number[][], x: [] as number[][], m: [] as number[][], a: [] as number[][] }
+  const P = { t: [] as number[][], r: [] as number[][], l: [] as number[][], m: [] as number[][], a: [] as number[][] }
   const topIps: number[] = []
   const ids = new Map<object, number>()
   const maskIds = new Map<string, number>()
@@ -237,14 +196,10 @@ export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
     if (i === undefined) { i = P.m.length; P.m.push(members); maskIds.set(key, i) }
     return i
   }
-  const tailId = (T: RouteTail): number => intern(T, P.x, T => [
-    T.kind, T.ip, T.collect ? 1 : 0, T.cls, T.gapRow, T.follow, T.other, mask(T.followMask), T.xf,
-  ])
   const levelId = (L: RouteLevel): number => intern(L, P.l, L => [
     L.kind, L.ip, L.arm, L.variant,
-    (L.known ? LF_KNOWN : 0) | (L.sepGated ? LF_SEP_GATED : 0)
-      | (L.dirty ? LF_DIRTY : 0) | (L.candidate ? LF_CANDIDATE : 0),
-    L.lc, L.resumeTop, ...L.tails.map(tailId),
+    (L.dirty ? LF_DIRTY : 0) | (L.candidate ? LF_CANDIDATE : 0),
+    L.lc, L.resumeTop, mask(L.go), ...L.empties,
   ])
   const arm = (A: DispatchArmRoute): number[] => [
     A.route === undefined ? -1 : routeId(A.route), A.ip, A.needsRouted ? 1 : 0, A.commits ? 1 : 0,
@@ -275,9 +230,8 @@ export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
     topIps.push(top)
   }
   if (topIps.length === 0) return undefined
-  const pools: RoutePools = [P.t, P.r, P.l, P.x, P.m, P.a]
+  const pools: RoutePools = [P.t, P.r, P.l, P.m, P.a]
   return {
-    g: [...optionalGapRows(t.code, roots)].sort((a, b) => a - b),
     t: topIps,
     d: JSON.stringify(pools),
   }
@@ -289,14 +243,13 @@ const NO_ROUTES: readonly (Route | undefined)[] = Array.from({ length: 128 })
 export function routeTable(packed: PackedRoutes): RouteTable {
   const at = new Map<number, number>()
   for (let i = 0; i < packed.t.length; i++) at.set(packed.t[i]!, i)
-  let pools: { t: RoutePools[0]; r: RoutePools[1]; l: RoutePools[2]; x: RoutePools[3]; m: RoutePools[4]; a: RoutePools[5] } | undefined
+  let pools: { t: RoutePools[0]; r: RoutePools[1]; l: RoutePools[2]; m: RoutePools[3]; a: RoutePools[4] } | undefined
   const P = (): NonNullable<typeof pools> => {
     if (pools !== undefined) return pools
-    const [t, r, l, x, m, a] = JSON.parse(packed.d) as RoutePools
-    return pools = { t, r, l, x, m, a }
+    const [t, r, l, m, a] = JSON.parse(packed.d) as RoutePools
+    return pools = { t, r, l, m, a }
   }
   const masks: (LeadMask | undefined)[] = []
-  const tails: (RouteTail | undefined)[] = []
   const levels: (RouteLevel | undefined)[] = []
   const atoms: (RouteAtom | undefined)[] = []
   const routes: (Route | undefined)[] = []
@@ -306,16 +259,11 @@ export function routeTable(packed: PackedRoutes): RouteTable {
     if (m === undefined) { m = new Uint8Array(129); for (const c of P().m[i]!) m[c] = 1; masks[i] = m }
     return m
   }
-  const tail = (i: number): RouteTail => tails[i] ??= ((w: readonly number[]): RouteTail => ({
-    kind: w[0]!, ip: w[1]!, collect: w[2] === 1, cls: w[3]!, gapRow: w[4]!, follow: w[5]!, other: w[6]!,
-    followMask: mask(w[7]!), xf: w[8]!,
-  }))(P().x[i]!)
   const level = (i: number): RouteLevel => levels[i] ??= ((w: readonly number[]): RouteLevel => ({
     kind: w[0]!, ip: w[1]!, arm: w[2]!, variant: w[3]!,
-    known: (w[4]! & LF_KNOWN) !== 0,
-    sepGated: (w[4]! & LF_SEP_GATED) !== 0, dirty: (w[4]! & LF_DIRTY) !== 0,
+    dirty: (w[4]! & LF_DIRTY) !== 0,
     candidate: (w[4]! & LF_CANDIDATE) !== 0,
-    lc: w[5]!, resumeTop: w[6]!, tails: w.slice(7).map(tail),
+    lc: w[5]!, resumeTop: w[6]!, go: mask(w[7]!), empties: w.slice(8),
   }))(P().l[i]!)
   const arm = (w: readonly number[], o: number): DispatchArmRoute => ({
     route: w[o]! < 0 ? undefined : route(w[o]!), ip: w[o + 1]!, needsRouted: w[o + 2] === 1, commits: w[o + 3] === 1,
@@ -358,31 +306,12 @@ export function routeTable(packed: PackedRoutes): RouteTable {
       }
       return out
     },
-    gapRows: new Set(packed.g),
   }
 }
 
 /** A node site some character may route below: the ones `lower(OP_NODE)` completes as a level. */
 export function routeTopCandidate(code: Int32Array, ip: number): boolean {
   return nodeVariant(code, ip) !== -1
-}
-
-/** See `RouteTable.gapRows`: the rows, by structure alone. */
-function optionalGapRows(code: Int32Array, roots: readonly number[]): Set<number> {
-  const out = new Set<number>()
-  for (const ip of reachableSites(code, roots)) {
-    if ((code[ip] !== OP_REP && code[ip] !== OP_REPV) || code[ip + 4]! >= 0 || code[ip + 2]! !== 0) continue
-    let at = code[ip + 1]!
-    for (let guard = 0; guard < 8; guard++) {
-      const op = code[at]
-      if ((op === OP_SCOPE || op === OP_SCOPE_PLAIN) && code[at + 1]! < 0) { at = code[at + 2]!; continue }
-      if (op !== OP_SEQ && op !== OP_SEQV) break
-      const t0 = code[at + 2]!
-      if (code[at + 1]! >= 2 && code[t0] === OP_OPT && code[code[t0 + 1]!] === OP_RX) { out.add(code[t0 + 1]!); break }
-      at = t0
-    }
-  }
-  return out
 }
 
 /** The variant `lower(OP_NODE)` selects, −1 where a route does not descend, −2 a gated collapse. */
@@ -426,6 +355,7 @@ function deriver(
     }
     return m
   })()
+  const ANY_CHAR: LeadMask = new Uint8Array(129).fill(1)
   /** The class a strict parse gates `optional(child)` with: the child's own gate. */
   const gateClass = (child: number): number => code[child] === OP_GATE ? code[child + 1]! : -1
 
@@ -457,60 +387,67 @@ function deriver(
     return undefined
   }
 
-  const tail = (kind: number, ip: number, o: Partial<RouteTail> = {}): RouteTail => ({
-    kind, ip, collect: false, cls: -1, gapRow: -1, follow: -1, other: -1, followMask: undefined, xf: -1, ...o,
-  })
-
-  /** The tail term at `ip`, or `undefined` where its start cannot be decided here. */
-  function classifyTail(ip: number): RouteTail | undefined {
+  /**
+   * The term at `ip` as a route decides it: the characters it can start with, and
+   * what it yields when it does not. `undefined` where its start cannot be decided
+   * here. A mask may hold more than the term can start with: the term's own row
+   * decides those. It must hold every character the row would act on, a report
+   * included.
+   */
+  function termStart(ip: number): { lead: LeadMask; empty: number } | undefined {
     const op = code[ip]
-    if (op === OP_OPT && gateClass(code[ip + 1]!) >= 0) return tail(T_OPT_GATE, ip, { cls: gateClass(code[ip + 1]!) })
+    if (op === OP_OPT && gateClass(code[ip + 1]!) >= 0) return { lead: maskOfClass(cc[gateClass(code[ip + 1]!)]!), empty: E_NULL }
     if ((op === OP_REP || op === OP_REPV) && code[ip + 4]! < 0 && code[ip + 2]! === 0) {
       const item = code[ip + 1]!
       const itemCls = code[ip + 7]!
-      const collect = op === OP_REP
+      const empty = op === OP_REP ? E_LIST : E_NONE
+      if (itemCls >= 0) return { lead: maskOfClass(cc[itemCls]!), empty }
+      // An item behind a gap gate declines in silence.
       if (code[item] === OP_GAPGATE) {
-        return tail(T_REP_GAP, ip, { collect, cls: itemCls, gapRow: code[item + 2]!, follow: code[item + 3]!, other: code[item + 4]! })
+        const lead = leadOf(code[item + 2]!)
+        if (lead === null) return { lead: ANY_CHAR, empty }
+        const m = lead.slice()
+        for (const cls of [code[item + 3]!, code[item + 4]!]) {
+          if (cls < 0) continue
+          const cm = maskOfClass(cc[cls]!)
+          for (let c = 0; c < 129; c++) if (cm[c] === 1) m[c] = 1
+        }
+        return { lead: m, empty }
       }
-      const og = optGapOf(item)
-      if (og !== undefined) {
-        return tail(T_REP_OPTGAP, ip, { collect, cls: itemCls, gapRow: og.row, followMask: og.follow, xf: og.xf })
-      }
-      if (itemCls < 0) return undefined
-      return tail(T_REP_CLASS, ip, { collect, cls: itemCls })
+      // An item opening with an optional gap reports its failure from its row.
+      if (optGapOf(item) !== undefined) return { lead: ANY_CHAR, empty }
     }
     return undefined
   }
 
   const level = (kind: number, ip: number, o: Partial<RouteLevel> = {}): RouteLevel => ({
-    kind, ip, arm: -1, variant: -1, known: true, lc: 0, tails: [],
-    sepGated: false, dirty: false, resumeTop: -1, candidate: false, ...o,
+    kind, ip, arm: -1, variant: -1, go: undefined, lc: 0, empties: [],
+    dirty: false, resumeTop: -1, candidate: false, ...o,
   })
 
   function seqLevel(ip: number, lc: number): RouteLevel {
     const n = code[ip + 1]!
-    const tails: RouteTail[] = []
-    let known = true
+    const go = new Uint8Array(129)
+    const empties: number[] = []
     for (let i = lc + 1; i < n; i++) {
-      const T = classifyTail(code[ip + 2 + i]!)
-      if (T === undefined) { known = false; break }
-      tails.push(T)
+      const T = termStart(code[ip + 2 + i]!)
+      if (T === undefined) return level(K_SEQ, ip, { lc })
+      empties.push(T.empty)
+      for (let c = 0; c < 129; c++) if (T.lead[c] === 1) go[c] = 1
     }
-    return level(K_SEQ, ip, { lc, tails, known })
+    return level(K_SEQ, ip, { lc, empties, go })
   }
 
   function repLevel(ip: number): RouteLevel {
     const sepIp = code[ip + 4]!
-    let known = true
-    let sepGated = false
+    const cls = code[ip + 7]!
+    let go: LeadMask | undefined
     if (sepIp >= 0) {
       // A separator the repeat does not gate is entered, and its failure is
       // reported by the separator itself: the level always resumes there.
-      const sepClass = leadingTriviaFieldAt(code, k, sepIp) ? -1 : code[ip + 7]!
-      sepGated = sepClass >= 0 && !rowNullable(code, k, sepIp, NULLABLE)
-      if (!sepGated) known = false
-    } else if (code[ip + 7]! < 0) known = false
-    return level(K_REP, ip, { known, sepGated, dirty: !CLEAN(code[ip + 1]!) })
+      if (!leadingTriviaFieldAt(code, k, sepIp) && cls >= 0 && !rowNullable(code, k, sepIp, NULLABLE)) go = maskOfClass(cc[cls]!)
+    } else if (cls >= 0) go = maskOfClass(cc[cls]!)
+    return level(K_REP, ip, { go, dirty: !CLEAN(code[ip + 1]!) })
   }
 
   /** A piece whose value is the one node it publishes (a node behind wrappers or arms). */
@@ -864,14 +801,14 @@ function deriver(
       if ((L.kind !== K_SEQ && L.kind !== K_REP) || L.resumeTop !== -1) continue
       let h = i - 1
       while (h >= 0 && !(levels[h]!.kind === K_NODE && levels[h]!.variant !== V_PASS)) h--
-      if (h < 0) { L.known = false; L.resumeTop = -2; continue }
+      if (h < 0) { L.go = undefined; L.resumeTop = -2; continue }
       L.resumeTop = h
     }
     // A level that always resumes at the top makes the whole route the plain path
     // plus the walk: the top keeps its own piece for that character.
     for (let i = 0; i < best; i++) {
       const L = levels[i]!
-      if ((L.kind === K_SEQ || L.kind === K_REP) && !L.known && L.resumeTop <= 0) best = 0
+      if ((L.kind === K_SEQ || L.kind === K_REP) && L.go === undefined && L.resumeTop <= 0) best = 0
     }
     const d = best
     if (d === 0) return undefined
