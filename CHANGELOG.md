@@ -3,6 +3,14 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **The frozen ablation copies `src/table/exec-baseline.ts` and `encode-baseline.ts` are
+  removed**, with the `PM_TABLE_COUNT` row counters in the reference driver `exec.ts`,
+  which only the deleted experiment benches set. None of them is reachable from a
+  published entry point, so nothing a consumer imports changes. The experiment scripts
+  nothing ran go with them, and their write-ups move to `notes/history/`.
+
 ## 0.60.0 — 2026-11-03
 
 - **A sequence led by an optional pad has its operator's first set.** A `regex()` that

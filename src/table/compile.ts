@@ -90,7 +90,7 @@ export type TableCompileOptions = {
    *
    * COUNTERS ONLY — owner ruling. `_grammarTrace`'s six phases are emitted at
    * ~40 fine-grained sites by codegen and are deferred to 0.48
-   * (`notes/RELEASE-0.48-TARGET.md` §1). A table entry rejects a context carrying
+   * (`notes/history/RELEASE-0.48-TARGET.md` §1). A table entry rejects a context carrying
    * a trace sink before parsing: silently returning an empty trace would look
    * exactly like a real trace whose grammar sites were never visited. The
    * plugin's coverage path reads `_grammarCoverage` and the definitions stamp,

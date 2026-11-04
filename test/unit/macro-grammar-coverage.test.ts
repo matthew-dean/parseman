@@ -19,7 +19,7 @@ import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
  * THE TABLE LOWERING HAS NO TRACE PARITY. Codegen emits those six phases at
  * roughly 40 fine-grained sites; matching that is a project, and the owner ruled
  * it out of scope for 0.47 — coverage COUNTERS were deemed sufficient to ship.
- * See `notes/RELEASE-0.48-TARGET.md` §1.
+ * See `notes/history/RELEASE-0.48-TARGET.md` §1.
  *
  * SO: when codegen is deleted, this file goes with it unless the table has
  * gained trace parity by then. That is the decision point, and it is recorded
@@ -29,7 +29,7 @@ import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
  */
 
 /**
- * TRACE PHASES ARE DEFERRED TO 0.48 — owner ruling, notes/RELEASE-0.48-TARGET.md §1.
+ * TRACE PHASES ARE DEFERRED TO 0.48 — owner ruling, notes/history/RELEASE-0.48-TARGET.md §1.
  *
  * Coverage COUNTERS ship in 0.47; the six trace phases (attempt, selected, success,
  * failure, backtrack, rollback) do not. The source lowering emitted them at roughly 40
@@ -73,7 +73,7 @@ describe('macro grammar coverage emission', () => {
     expect(collector.snapshot()).toMatchObject({ ratio: 0.5, hits: ['choice:entry/arm:1'] })
   })
 
-  // DEFERRED to 0.48 by owner ruling — notes/RELEASE-0.48-TARGET.md section 1:
+  // DEFERRED to 0.48 by owner ruling — notes/history/RELEASE-0.48-TARGET.md section 1:
   // coverage COUNTERS ship in 0.47, the six trace phases do not. Codegen emitted
   // them at ~40 fine-grained sites; the table equivalent is a project, not a task.
   // Kept as todo because the capability is OWED, not withdrawn.

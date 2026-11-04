@@ -118,7 +118,7 @@ describe('attempt', () => {
   // coverage COUNTERS and no trace events at all, and the macro build now lowers
   // through the table, so the emitted module carries `tableRules`/`cv:[]` where
   // it used to carry `phase: 'rollback'`. Tracked in
-  // `notes/RELEASE-0.48-TARGET.md` §1 — roughly 40 fine-grained emission sites
+  // `notes/history/RELEASE-0.48-TARGET.md` §1 — roughly 40 fine-grained emission sites
   // need table equivalents, and the instrumented pieces must stay
   // assembly-SELECTED rather than testing a flag per node (INV-6).
   //
