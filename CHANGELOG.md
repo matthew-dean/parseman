@@ -8,7 +8,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **Mechanical guardrails for engine refactors, in CI and the local preflight.**
   Nothing in `src/` or the published package changes. `pnpm callcount:guard` counts the
   function calls and branch tests one parse executes, on the example workloads under
-  both engines and on jess's vendored grammars, and fails on any increase over the
+  both engines and on jess's vendored grammars, including the AST path jess ships with
+  real reducers over a vendored `@jesscss/core`, and fails on any increase over the
   previous release unless `bench/call-count-reasons.json` argues it. `pnpm dupfn:guard`
   fails on a new function printed twice in the emitted or printed output. INV-13 fails on
   a function written twice in engine source, at any depth. Every A/B harness that builds

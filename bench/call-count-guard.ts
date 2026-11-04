@@ -79,19 +79,14 @@ export type Rows = Record<string, Counts>
 export type Reasons = { against: string; rows: Record<string, string> }
 
 /**
- * The jess rows. Every dialect parses the CSS fixture through a CST host (closures,
- * routed arms); Less also parses the Less fixture. Only css's AST variant runs here:
- * an AST parse runs jess's reducers over a stub of `@jesscss/core`, and the Less, SCSS
- * and `.jess` reducers check the children they are given and refuse the stub. Their
- * emitted sites are timed by `macro-perf` against a real jess build, not counted here.
+ * The jess rows. The AST rows are the path jess ships: the variants its `parse` and
+ * `/positions` entries use, called with the options they pass, with reducers building
+ * real nodes through the vendored `@jesscss/core`, which is counted with them. The CST
+ * rows drive the same grammars through a CST host (closures, routed arms).
  */
-const JESS_CASES: ReadonlyArray<{ dialect: string; variant: 'ast' | 'cst'; fixture: string }> = [
-  { dialect: 'css', variant: 'ast', fixture: 'site.css' },
-  { dialect: 'css', variant: 'cst', fixture: 'site.css' },
-  { dialect: 'less', variant: 'cst', fixture: 'site.css' },
-  { dialect: 'less', variant: 'cst', fixture: 'app.less' },
-  { dialect: 'scss', variant: 'cst', fixture: 'site.css' },
-  { dialect: 'jess', variant: 'cst', fixture: 'site.css' },
+const JESS_CASES: ReadonlyArray<{ dialect: string; variant: string; fixture: string }> = [
+  ...['css', 'scss', 'jess'].flatMap(dialect => ['ast', 'ast/positions', 'cst'].map(variant => ({ dialect, variant, fixture: 'site.css' }))),
+  ...['ast', 'cst'].flatMap(variant => ['site.css', 'app.less'].map(fixture => ({ dialect: 'less', variant, fixture }))),
 ]
 
 function runWorker(args: WorkerArgs): Rows {
@@ -143,9 +138,10 @@ export async function measureSide(dir: string, out: string, only?: (row: string)
     const fixtures = path.join(dir, 'bench', 'workloads', 'fixtures')
     await withBuiltSnapshot(async snap => {
       for (const key of new Set(JESS_CASES.map(c => `${c.dialect}/${c.variant}`))) {
-        const [dialect, variant] = key.split('/') as [string, string]
+        const [dialect, ...rest] = key.split('/') as [string, ...string[]]
+        const variant = rest.join('/')
         const cases = JESS_CASES.filter(c => `${c.dialect}/${c.variant}` === key)
-          .map(c => ({ id: `macro/${key}/${c.fixture}`, input: path.join(fixtures, c.fixture), cst: variant === 'cst' }))
+          .map(c => ({ id: `macro/${key}/${c.fixture}`, dialect, input: path.join(fixtures, c.fixture), cst: variant === 'cst' }))
           .filter(c => want(c.id))
         if (cases.length === 0) continue
         await snap.shipped(dialect, variant)

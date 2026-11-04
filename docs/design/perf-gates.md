@@ -913,18 +913,18 @@ A refactor of the engines (`src/table/assemble.ts`, `src/table/emit-assembly.ts`
 
 An instrumentation build (`bench/engine-guards/instrument.ts`) adds a counter to every function entry and every branch test in a copy of each side's bundle, and to every `new Function` body as it is compiled. `src/` is not edited, so published code pays nothing. One parse is counted until two in a row agree. The counts are identical across processes and on Node 22, 24 and 26, so a single extra call per parse fails.
 
-It counts 16 rows: the five workloads under `emitted/` and under `closure/` (`Function` refusing, as under a CSP), and jess's vendored grammars under `macro/`. A row fails when HEAD counts more than the previous release, the reference `perf:xproc:gate` uses. `bench/call-count-baseline.json` must equal what HEAD counts, so a change in counts is a reviewed line in the diff. Bank a drop with `pnpm callcount:baseline`.
+It counts 23 rows: the five workloads under `emitted/` and under `closure/` (`Function` refusing, as under a CSP), and jess's vendored grammars under `macro/`. The `macro/*/ast` rows are the path jess ships: the variants its `parse` and `/positions` entries use, called with the options they pass, with reducers building real nodes through a vendored bundle of `@jesscss/core` (`fixtures/jess-grammars/core/core.js`). That bundle's calls and tests are counted too, and it only changes when the snapshot is refreshed. The `macro/less/ast/positions` rows are missing because [that grammar stops at `!important`](https://github.com/matthew-dean/parseman/issues/253); the gate refuses to count a parse that stops early. A row fails when HEAD counts more than the previous release, the reference `perf:xproc:gate` uses. `bench/call-count-baseline.json` must equal what HEAD counts, so a change in counts is a reviewed line in the diff. Bank a drop with `pnpm callcount:baseline`.
 
 An increase that is the price of a change needs `bench/call-count-reasons.json`: `{ "against": "<previous release tag>", "rows": { "<row> <metric>": "<why>" } }`. An entry only applies against the release it names, so it stops excusing anything once that change ships.
 
-Run on that refactor's two reuse commits against their parents, it fails both: `ce6b3fbf` (+1,527 calls on `macro/css/ast/site.css`) and `fb769bac` (up to +22,029 calls and +128,922 branch tests per parse on the closure rows; +1.1–2.1% on the `macro/` rows).
+Run on that refactor's two reuse commits against their parents, with `macro/css/ast` then the only AST row and its reducers stubbed, it fails both: `ce6b3fbf` (+1,527 calls on `macro/css/ast/site.css`) and `fb769bac` (up to +22,029 calls and +128,922 branch tests per parse on the closure rows; +1.1–2.1% on the `macro/` rows).
 
 **What `branches` catches:** a test added to a piece, including one that is always false and adds no call, which is the common form of bar 4. **What it cannot see:**
 
 - whether a test could have been decided at compile time. It sees more tests, not why. A test added for a correct reason fails too and needs a reason entry;
 - a new test that replaces an old one, or an increase cancelled by a drop elsewhere in the same row;
 - work that is not a call or a test: allocation, property reads, a call site turned megamorphic, a builtin such as `charCodeAt`. `?.` is not counted;
-- anything the fixtures do not reach. The AST variants of Less, SCSS and `.jess` run jess's reducers, which refuse a stubbed `@jesscss/core`, so their emitted sites are not counted here; `macro-perf` times them for CSS and Less against a real jess build.
+- anything the fixtures do not reach. `site.css` and `app.less` hold no SCSS-only or `.jess`-only syntax, so those dialects' own productions are not counted.
 
 **What `calls` cannot see:** what V8 does with a call. An inlined call costs nothing and still counts, and a call that blocks inlining costs far more than one. A count says the work moved; `xproc-perf` says what it cost.
 
@@ -936,7 +936,7 @@ It starts from a backlog: 21 duplicated functions in the emitted CSS and 56 in t
 
 ### INV-13
 
-See [the invariant gate](./invariant-gate.md). It is the structural half of bar 1, and it starts from three findings, entered as `DEBT`: `rollbackNeeded` and `needsTriviaRollback`, `bindRunners` twice, and `runAdjTerms` and `runDirectTerms`.
+See [the invariant gate](./invariant-gate.md). It is the structural half of bar 1, and it starts from three findings, entered as `DEBT`: `rollbackNeeded` and `needsTriviaRollback`, `bindRunners` twice, and `runAdjTerms` and `runDirectTerms`. [Issue #252](https://github.com/matthew-dean/parseman/issues/252) tracks removing them.
 
 ### Independent legs
 

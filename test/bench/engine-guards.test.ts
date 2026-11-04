@@ -86,6 +86,11 @@ describe('call-count gate', () => {
     expect(failures.filter(f => f.includes(' branches: '))).toHaveLength(10)
   }, 180_000)
 
+  it('keeps a baseline row for the AST path each dialect ships', () => {
+    const rows = Object.keys(JSON.parse(readFileSync(path.join(ROOT, 'bench/call-count-baseline.json'), 'utf8')) as Rows)
+    for (const d of ['css', 'less', 'scss', 'jess']) expect(rows).toContain(`macro/${d}/ast/site.css`)
+  })
+
   it('excuses an increase only for the reference its reason was written against', () => {
     const ref: Rows = { r: { calls: 10, branches: 5 } }
     const head: Rows = { r: { calls: 11, branches: 5 } }

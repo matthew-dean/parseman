@@ -11,14 +11,15 @@
  * Each case is parsed until two parses in a row count the same, so pieces built
  * lazily over the first parses are not charged to every parse. The parse must
  * succeed and consume its input: a count over a failed parse measures how early it
- * failed.
+ * failed. A jess AST parse passes the options jess's `parse` passes, and runs its
+ * reducers over the vendored `@jesscss/core`, so the count is of the path jess ships.
  */
 import { readFileSync } from 'node:fs'
 import { COUNTER, instrumentFunctionBody } from './instrument.ts'
 
 export type WorkerArgs =
   | { kind: 'workloads'; module: string; engine: 'emitted' | 'closure' }
-  | { kind: 'jess'; module: string; cases: Array<{ id: string; input: string; cst: boolean }> }
+  | { kind: 'jess'; module: string; cases: Array<{ id: string; dialect: string; input: string; cst: boolean }> }
 
 export type Counts = { calls: number; branches: number }
 
@@ -38,6 +39,27 @@ globalThis.Function = new Proxy(RealFunction, {
   apply: (_t, _self, fnArgs: unknown[]) => make(fnArgs),
 }) as FunctionConstructor
 
+/** Each dialect's `commentTriviaLabels`. */
+const COMMENT_LABELS: Record<string, string[]> = {
+  css: ['blockComment'], less: ['lineComment', 'blockComment'], scss: ['comment'], jess: ['comment'],
+}
+
+/** The state jess's `parse-with.ts` hands the grammar, fresh for each parse. */
+const parseState = (dialect: string, source: string): object => {
+  const document = { forgivenSelectorItems: [] }
+  if (dialect === 'less') {
+    return {
+      source,
+      mathMode: 'parens-division',
+      document: { ...document, functions: { ambient: true }, diagnostics: [] },
+      rejectBareVariable: (start: number): never => { throw new Error(`bare variable at ${start}`) },
+    }
+  }
+  if (dialect === 'scss') return { source, diagnostics: [], document }
+  if (dialect === 'jess') return { source, diagnostics: [], stars: [], document }
+  return { source, document }
+}
+
 type Case = { id: string; parse: () => unknown }
 const cases: Case[] = []
 const mod = await import(args.module) as Record<string, unknown>
@@ -51,19 +73,26 @@ if (args.kind === 'workloads') {
 } else {
   type Run = (entry: unknown, input: string, opts: object) => { ok: boolean; unconsumedFrom: number | null }
   const run = mod['run'] as Run
-  const entry = (mod['grammar'] as Record<string, unknown>)['Stylesheet']
+  const grammar = mod['grammar'] as Record<string, unknown>
+  const entry = grammar['Stylesheet']
   for (const c of args.cases) {
     const input = readFileSync(c.input, 'utf8')
-    const opts = c.cst ? { build: mod['cstBuildHost'] } : {}
-    cases.push({ id: c.id, parse: () => run(entry, input, opts) })
+    cases.push({
+      id: c.id,
+      parse: () => run(entry, input, c.cst
+        ? { build: mod['cstBuildHost'] }
+        : { trivia: grammar['whitespace'], state: parseState(c.dialect, input), rootTrivia: { select: COMMENT_LABELS[c.dialect] } }),
+    })
   }
 }
 
 function accepted(id: string, result: unknown): void {
   if (result === null || typeof result !== 'object') return
-  const r = result as { ok?: unknown; unconsumedFrom?: unknown }
+  const r = result as { ok?: unknown; unconsumedFrom?: unknown; errors?: unknown; value?: { type?: unknown } }
   if (r.ok === false) throw new Error(`${id}: the parse failed, so its count would measure where it stopped`)
   if (typeof r.unconsumedFrom === 'number') throw new Error(`${id}: the parse stopped at byte ${r.unconsumedFrom}`)
+  if (Array.isArray(r.errors) && r.errors.length > 0) throw new Error(`${id}: the parse recovered from ${r.errors.length} errors`)
+  if (id.startsWith('macro/') && r.value?.type !== 'Stylesheet') throw new Error(`${id}: the parse did not build a Stylesheet`)
 }
 
 const SETTLE_LIMIT = 20
