@@ -247,7 +247,7 @@ function fixedString(alt: string): string | undefined {
  * boundary (`word()` / `keywords()` and every hand-written copy of them), and a
  * `\b…\b`-anchored word.
  */
-export function fixedStringsOfRegex(source: string): string[] | undefined {
+function fixedStringsOfRegex(source: string): string[] | undefined {
   let src = source
   // `\b` anchors assert a boundary, exactly like the `(?![…])` guard.
   if (src.startsWith('\\b')) src = src.slice(2)

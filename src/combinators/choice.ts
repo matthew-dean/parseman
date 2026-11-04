@@ -424,7 +424,7 @@ export function getCoreLiteralValue(p: Combinator<unknown>): string | null {
 }
 
 /** Walk transform wrappers to find an inner regex's source/flags. */
-export function getCoreRegexDef(p: Combinator<unknown>): { source: string; flags: string } | null {
+function getCoreRegexDef(p: Combinator<unknown>): { source: string; flags: string } | null {
   const def = p._def
   if (def.tag === 'regex') return { source: def.source, flags: def.flags }
   if (def.tag === 'transform') return getCoreRegexDef(def.parser)

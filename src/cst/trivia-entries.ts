@@ -61,7 +61,7 @@ export type RootTriviaIndex = {
 const EMPTY_INDICES: readonly number[] = Object.freeze([])
 const EMPTY_GAPS: readonly RootTriviaGap[] = Object.freeze([])
 /** Number of packed fields in one selected-root trivia row. */
-export const SELECTED_ROOT_STRIDE = 5
+const SELECTED_ROOT_STRIDE = 5
 
 type RootTriviaMaps = {
   before: Map<number, number[]>

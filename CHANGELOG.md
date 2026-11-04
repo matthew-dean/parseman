@@ -9,6 +9,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   section now points at it: the pipeline, the engines, the table and wire format, macro
   selection and how performance is measured. Its opcode table is checked against
   `src/table/ops.ts` by `test/unit/internals-doc.test.ts`.
+- **`compile()` and `compileLinkableTable()` no longer read `process` unguarded.**
+  Emitting an open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO`,
+  and the IR serializer's fallback read `process.env.PARSEMAN_IR_DEBUG`, both without a
+  guard, so a browser call that reached either threw a `TypeError` or `ReferenceError`.
+  The scan toggle selected an opt-in `indexOf` variant that was never claimed as a win
+  and that nothing enabled; it is removed, and the char loop it fell back to is
+  unchanged. The IR debug read is now guarded, as `PARSEMAN_DUPLICATION`'s is. Tests:
+  `test/unit/scan-shape-lowering.test.ts`, `test/unit/ir-serialize-no-process.test.ts`.
+- **Dead code removed.** The `token-dispatch.ts` id strategies left over from the source
+  lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
+  `export` on internal values that nothing outside their module reads. Tables and
+  artifacts are byte-identical.
 
 ## 0.59.0 — 2026-11-02
 
