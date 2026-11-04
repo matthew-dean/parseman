@@ -196,12 +196,27 @@ class Encoder {
    * is not part of that frame. So a child the census above counts as clean can
    * still leave trivia rows when it reaches a node whose body can fail after a
    * trivia scan (`mayLeavePartialCapture`'s `throughNodes`). These are the arms
-   * and sites that need only the two logs restored. Whether the program installs
-   * any trivia is known only once every rule is encoded; one that does not takes
-   * none of them.
+   * and sites that need only the two logs restored. A program with no trivia of
+   * its own records rows only under trivia its caller supplies, so its emitted
+   * assembly takes these marks only for such a parse (`RunCfg.inheritedTrivia`).
    */
   private choiceLogRollbackMasks = new Map<number, number>()
   private failureLogRollbackSites = new Set<number>()
+  /**
+   * HOW EACH CHOICE WAS LOWERED, for the census above. A choice on the ordered
+   * path whose arms cannot commit a failure restores the logs after every arm
+   * it enters (its full mark, or its own two-log mark), so it leaves no rows.
+   * An exclusive dispatch runs its one arm with no mark, and an ordered choice
+   * returns a committed arm's failure before restoring, so either leaves what an
+   * arm leaves. A choice in neither set, or in both, is taken to leave rows. Both
+   * sets are complete only once every rule is encoded, so the trivia-log census
+   * runs then (`logCensus`).
+   */
+  private restoringChoices = new Set<Combinator<unknown>>()
+  private leakingChoices = new Set<Combinator<unknown>>()
+  private logCensus: (() => void)[] = []
+  private readonly restoresArms = (choice: Combinator<unknown>): boolean =>
+    this.restoringChoices.has(choice) && !this.leakingChoices.has(choice)
   /**
    * `reachesSideWriter`'s answers, shared by every `failureNeedsRollback` call
    * for the lifetime of this `Encoder`. Every entry is exact — it depends only on
@@ -828,7 +843,7 @@ class Encoder {
   private failureNeedsRollback(
     p: Combinator<unknown>,
     autoNot: readonly AutoNotCheck[] | null | undefined,
-    throughNodes: boolean,
+    throughNodes: false | ((choice: Combinator<unknown>) => boolean),
   ): boolean {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     const winner = refName === undefined ? undefined : this.winners?.[refName]
@@ -842,7 +857,9 @@ class Encoder {
   private censusTransaction(child: Combinator<unknown>, ip: number): void {
     if (this.failureNeedsRollback(child, undefined, false)) return
     this.failureRollbackCleanSites.add(ip)
-    if (this.failureNeedsRollback(child, undefined, true)) this.failureLogRollbackSites.add(ip)
+    this.logCensus.push(() => {
+      if (this.failureNeedsRollback(child, undefined, this.restoresArms)) this.failureLogRollbackSites.add(ip)
+    })
   }
 
   /**
@@ -1691,6 +1708,7 @@ class Encoder {
         }
         const dispIdx = this.disp.length
         this.disp.push(classes)
+        const exclusive = dispatchIsExclusive(classes, this.cc)
         // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. While the best
         // failure remains at the choice position, an arm declined by the driver's
         // char gate contributes the static opener set the interpreter would get by
@@ -1701,12 +1719,9 @@ class Encoder {
         // universal rollback because repeat recovery can publish an error from
         // inside any arm. Arity >31 falls back to -1 rather than truncating.
         let rollbackMask = kids.length > 31 ? -1 : 0
-        let logMask = 0
         if (rollbackMask === 0) {
           for (let i = 0; i < arms.length; i++) {
-            const src = order[i]!
-            if (this.failureNeedsRollback(arms[i]!, d.autoNot[src], false)) rollbackMask |= 1 << i
-            else if (this.failureNeedsRollback(arms[i]!, d.autoNot[src], true)) logMask |= 1 << i
+            if (this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], false)) rollbackMask |= 1 << i
           }
         }
         const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
@@ -1721,10 +1736,19 @@ class Encoder {
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
         this.choiceRollbackMasks.set(head, rollbackMask)
-        if (logMask !== 0) this.choiceLogRollbackMasks.set(head, logMask)
-        if (arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))) {
-          this.nonCommittingChoiceSites.add(head)
+        if (rollbackMask !== -1) {
+          const full = rollbackMask
+          this.logCensus.push(() => {
+            let logMask = 0
+            for (let i = 0; i < arms.length; i++) {
+              if ((full & (1 << i)) === 0 && this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], this.restoresArms)) logMask |= 1 << i
+            }
+            if (logMask !== 0) this.choiceLogRollbackMasks.set(head, logMask)
+          })
         }
+        const nonCommitting = arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))
+        if (nonCommitting) this.nonCommittingChoiceSites.add(head)
+        ;(!exclusive && nonCommitting ? this.restoringChoices : this.leakingChoices).add(p)
         return head
       }
       case 'many':
@@ -2316,6 +2340,7 @@ class Encoder {
   finish(): TableProgram {
     if (this.code.length === 0) this.emit(OP_EMPTY)
     this.collapseIndirection()
+    for (const census of this.logCensus) census()
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
@@ -2336,10 +2361,8 @@ class Encoder {
     }, undefined, {
       choiceRollbackMasks: this.choiceRollbackMasks,
       failureRollbackCleanSites: this.failureRollbackCleanSites,
-      ...(this.triviaIndex.size === 0 ? {} : {
-        choiceLogRollbackMasks: this.choiceLogRollbackMasks,
-        failureLogRollbackSites: this.failureLogRollbackSites,
-      }),
+      choiceLogRollbackMasks: this.choiceLogRollbackMasks,
+      failureLogRollbackSites: this.failureLogRollbackSites,
       nonCommittingChoiceSites: this.nonCommittingChoiceSites,
     })
   }

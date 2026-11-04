@@ -187,7 +187,8 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  * wrappers (transform/label/grammar/withCtx/expect) pass through to inner.
  */
 export function mayLeavePartialCapture(
-  p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true, throughNodes = false,
+  p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true,
+  throughNodes: boolean | ((choice: Combinator<unknown>) => boolean) = false,
 ): boolean {
   if (seen.has(p)) return false
   seen.add(p)
@@ -226,9 +227,13 @@ export function mayLeavePartialCapture(
     // choice the table lowers as an exclusive dispatch runs its one selected arm
     // with no mark of its own (`emit-assembly.ts`, `table.exclusive`), so the
     // rows that arm's trivia scans recorded stay when it fails. With
-    // `throughNodes` a choice leaves what one of its arms leaves.
+    // `throughNodes` a choice leaves what one of its arms leaves, unless
+    // `throughNodes` is the encoder's answer that this choice marks and restores
+    // each arm it enters.
     case 'choice':
-      return throughNodes && d.parsers.some(arm => mayLeavePartialCapture(arm, new Set(seen), triviaActive, true))
+      return throughNodes !== false
+        && !(typeof throughNodes === 'function' && throughNodes(p))
+        && d.parsers.some(arm => mayLeavePartialCapture(arm, new Set(seen), triviaActive, throughNodes))
     case 'dispatch':
       // These are independent graph predicates. Sharing one mutable `seen` set
       // between them made the first walk hide the arm from the second: an atomic

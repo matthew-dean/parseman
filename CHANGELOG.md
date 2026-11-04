@@ -13,11 +13,17 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   then matched recorded them again: `run(entry, 'x/*c*/y', { rootTrivia: { select:
   ['comment'] } })` returned the comment twice. The closure engine and the reference
   driver were already right. Such a child now takes a mark of the two trivia logs
-  alone (its node frame already restores the rest), and a program with no trivia
-  takes none. The same holds one choice further out: a choice the table lowers as an
-  exclusive dispatch runs its selected arm with no mark of its own, so an
-  `optional()` or a choice arm over such a choice, whose arm (a node or not) scans
-  trivia and then fails, restores the two logs too. See `test/unit/table-node-arm-trivia-rollback.test.ts`.
+  alone (its node frame already restores the rest). A choice takes that mark as it
+  enters the arm, so an arm its char gate skips costs nothing, and the logs are cut
+  back with `pop()`, not by assigning `length`. The same holds one choice further
+  out: a choice the table lowers as an exclusive dispatch, or whose arm can commit a
+  failure, does not restore the arm it ran, so an `optional()` or a choice arm over
+  such a choice, whose arm (a node or not) scans trivia and then fails, restores the
+  two logs too. A choice that restores each arm needs no mark around it. A program
+  with no trivia of its own takes none of these marks, unless a caller runs it with
+  trivia on `ctx.trivia`: that parse takes an assembly of its own that restores the
+  logs as the closure engine does. See
+  `test/unit/table-node-arm-trivia-rollback.test.ts`.
 - **The frozen ablation copies `src/table/exec-baseline.ts` and `encode-baseline.ts` are
   removed**, with the `PM_TABLE_COUNT` row counters in the reference driver `exec.ts`,
   which only the deleted experiment benches set. None of them is reachable from a

@@ -31,8 +31,8 @@ import { run } from '../../src/functional/run.ts'
 
 type Comb = Combinator<unknown>
 
-function emitted(prog: TableProgram): TableProgram {
-  return { ...prog, asm: defaultAssemblyCfgs(prog).map(cfg => {
+function emitted(prog: TableProgram, inheritedTrivia = false): TableProgram {
+  return { ...prog, asm: defaultAssemblyCfgs(prog).map(c => ({ ...c, inheritedTrivia })).map(cfg => {
     const em = emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true)
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
     const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
@@ -98,6 +98,46 @@ describe('a failed node arm leaves no trivia rows behind', () => {
           expect(got.value, `${engine} ${JSON.stringify(input)}`).toEqual(want.value)
         }
       }
+    })
+  }
+})
+
+/**
+ * A program with no trivia of its own records trivia rows only under trivia its
+ * caller supplies on `ctx.trivia`. That parse takes its own assembly
+ * (`RunCfg.inheritedTrivia`), which restores the logs as the closure engine
+ * does; every other parse of the program takes none of those marks.
+ */
+describe('a program with no trivia, called with trivia', () => {
+  const twoLogMark = /const (_t\d+_)lg=ctx\._triviaLog!==undefined\?ctx\._triviaLog\.length:0,\1rt=/
+  for (const [name, shape] of Object.entries(shapes)) {
+    it(`records what the closure engine records through ${name}`, () => {
+      const g = rules((g: Record<string, Comb>) => ({
+        Doc: shape(g),
+        Pair: node('Pair', sequence(literal('x'), literal('a')), children => ({ pair: children })),
+      })) as Record<string, Comb>
+      const prog = encodeTable(g, { hostMode: 'ast' })
+      const engines = {
+        closure: tableRules({ ...prog, asm: [] }).Doc!,
+        // No `asm`: the assembly is lowered at run time for the parse's option set.
+        emitted: tableRules(prog).Doc!,
+        printed: tableRules(emitted(prog, true)).Doc!,
+      }
+      for (const input of ['x/*c*/y', 'x /*c*/ y', 'x y']) {
+        const logs: Record<string, unknown> = {}
+        for (const [engine, entry] of Object.entries(engines)) {
+          const ctx = { trivia: t, trackLines: false, _triviaLog: [] as number[] }
+          const r = entry(input, 0, ctx)
+          logs[engine] = { ok: r.ok, triviaLog: ctx._triviaLog }
+        }
+        expect(logs.emitted, input).toEqual(logs.closure)
+        expect(logs.printed, input).toEqual(logs.closure)
+      }
+      const plain = defaultAssemblyCfgs(prog)[0]!
+      const source = (cfg: typeof plain) => emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true).source
+      expect(source(plain)).not.toMatch(twoLogMark)
+      // The shape with a full mark restores the logs from that mark instead.
+      expect(twoLogMark.test(source({ ...plain, inheritedTrivia: true }))).toBe(name !== 'choice() with a full mark')
     })
   }
 })

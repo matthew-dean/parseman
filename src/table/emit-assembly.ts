@@ -415,8 +415,8 @@ function emitLogMark(t: string): string {
   return `const ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0,${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0`
 }
 function emitLogRollback(t: string): string {
-  return `if(ctx._triviaLog!==undefined&&ctx._triviaLog.length!==${t}lg)ctx._triviaLog.length=${t}lg
-if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==${t}rt)ctx._rootTriviaLog.length=${t}rt`
+  return `{const g=ctx._triviaLog;if(g!==undefined)while(g.length>${t}lg)g.pop()}
+{const r=ctx._rootTriviaLog;if(r!==undefined)while(r.length>${t}rt)r.pop()}`
 }
 
 /**
@@ -610,6 +610,7 @@ export function emitAssemblySource(
     tolerant: boolean
     coverage: boolean
     probe: boolean
+    inheritedTrivia?: boolean
   },
   extraIps: readonly number[] = [],
   staticBuild = false,
@@ -631,6 +632,10 @@ export function emitAssemblySource(
   const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
   const hostCst = cfg.hostCst
+  // Trivia rows are recorded only by a program with trivia of its own, or under
+  // trivia a caller supplied (`RunCfg.inheritedTrivia`). Otherwise no site
+  // restores the trivia logs alone: nothing can have written them.
+  const LOGS = (prog.triviaSpecs?.length ?? 0) > 0 || cfg.inheritedTrivia === true
 
   /**
    * RECOVERY IS EMITTED, and the refusal this replaces was wrong in SCOPE.
@@ -1782,7 +1787,7 @@ return v
       case OP_ATTEMPT: {
         const child = link(code[ip + 1]!)
         const clean = !REC && failureRollbackClean(prog, ip)
-        const logs = clean && failureLogRollback(prog, ip)
+        const logs = clean && LOGS && failureLogRollback(prog, ip)
         const p = tmp()
         return `${head}
 ${clean ? logs ? emitLogMark(p) : '' : emitMark(p, L.buf, L.raw, sinks)}
@@ -1849,7 +1854,7 @@ return null
       case OP_OPT: {
         const child = link(code[ip + 1]!)
         const clean = !REC && failureRollbackClean(prog, ip)
-        const logs = clean && failureLogRollback(prog, ip)
+        const logs = clean && LOGS && failureLogRollback(prog, ip)
         const p = tmp()
         return `${head}
 ${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? logs ? emitLogMark(p) : '' : emitMark(p, L.buf, L.raw, sinks)}
@@ -2068,9 +2073,12 @@ return FAIL
           const rollbackMask = REC ? -1 : encodedRollbackMask
           const hasRollback = rollbackMask !== 0
           // Arms that leave only trivia-log rows: restored from the full mark when
-          // one is taken, else from a mark of the two logs.
-          const logMask = rollbackMask === -1 ? 0 : choiceLogRollbackMask(prog, ip)
-          const choiceMark = hasRollback ? emitMark(p, L.buf, L.raw, sinks) : logMask !== 0 ? emitLogMark(p) : ''
+          // one is taken, else from a mark of the two logs taken as that arm is
+          // entered. An earlier arm that failed was restored, so the lengths there
+          // are the choice's own, and an arm the char gate skips takes no mark.
+          const logMask = rollbackMask === -1 || !LOGS ? 0 : choiceLogRollbackMask(prog, ip)
+          const choiceMark = hasRollback ? emitMark(p, L.buf, L.raw, sinks) : ''
+          const armMark = (i: number): string => !hasRollback && (logMask & (1 << i)) !== 0 ? `${emitLogMark(p)}\n` : ''
           // An always-consuming leading scalar makes a failure at `pos`
           // statically exact: it is the arm's derived opener set, and the
           // choice's own `choiceFx` already concatenates every such set in
@@ -2141,7 +2149,7 @@ ctx._fc=false
 ${remember(i, 'at', pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('') + pretest.sequence.expected.at(-1))}}
 }`
               return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if(${gate}){
-ctx._fc=false
+${armMark(i)}ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
 {const at=ctx._fe??pos
@@ -2211,7 +2219,7 @@ if(at>best){best=at;acc=undefined}
 if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.sequence.expected.map((value, at) => `${decision}===${~at}?${value}:`).join('')}${pretest.sequence.expected.at(-1)},acc)}
 }`
             return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((bits&${1 << i})!==0${condition}){
-ctx._fc=false
+${armMark(i)}ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
 ${startFailureExact ? '' : `if(best===pos)acc=${catchName}(${i},prev,acc)
@@ -2251,7 +2259,7 @@ if(at>best){best=at;acc=undefined}
 if(at===best${startFailureExact ? '&&at>pos' : ''})acc=_accSet(${pretest.token.expected},acc)
 }${startFailureExact ? '' : `else if(best===pos)acc=_accSet(${expected[i]},acc)`}`
             return `${decision === '' ? '' : `let ${decision}=${pretest?.sequence === undefined ? -1 : 0}\n`}if((${gateRefs[i]}===null||classHas(${gateRefs[i]},c))${condition}){
-ctx._fc=false
+${armMark(i)}ctx._fc=false
 {const v=${arm}(input,pos,ctx)
 if(v!==FAIL)return v}
 {const at=ctx._fe??pos
