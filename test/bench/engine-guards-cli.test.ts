@@ -187,6 +187,13 @@ describe('the gates as commands', () => {
       expect(r.code).toBe(1)
     }, 180_000)
 
+    it.each([['a string', 'x'], ['an object', {}], ['a fraction', 1.5]])('exits non-zero when a baseline value is %s', (_label, value) => {
+      writeFileSync(DUP_BASELINE, JSON.stringify({ ...JSON.parse(cleanDups) as Record<string, number>, 'emitted/json': value }))
+      const r = dup()
+      expect(r.out).toContain('emitted/json: the baseline holds')
+      expect(r.code).toBe(1)
+    }, 180_000)
+
     it('exits non-zero when run through a symlinked path', () => {
       const rows = JSON.parse(cleanDups) as Record<string, number>
       rows['emitted/less']! -= 1

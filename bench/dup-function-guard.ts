@@ -125,6 +125,12 @@ export function dupFailures(baseline: Readonly<Record<string, number>>, rows: Re
   return failures
 }
 
+/** Every count must be an integer: against anything else `>` and `<` are false, and the row goes unchecked. */
+export function baselineValueFailures(baseline: Readonly<Record<string, unknown>>): string[] {
+  return Object.entries(baseline).filter(([, n]) => !Number.isInteger(n))
+    .map(([id, n]) => `${id}: the baseline holds ${JSON.stringify(n)}; a count must be an integer`)
+}
+
 /** The committed baseline may only fall from `base`, the baseline at the merge base. */
 export function baseRiseFailures(base: Readonly<Record<string, number>>, baseline: Readonly<Record<string, number>>): string[] {
   return Object.entries(baseline).flatMap(([id, n]) => {
@@ -163,9 +169,11 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
   // Read before the build, so a raised baseline fails without building anything.
   if (!UPDATE) {
     if (!existsSync(BASELINE_PATH)) fail(GATE, `${BASELINE_PATH} is missing; write it with pnpm dupfn:baseline.`)
+    const current = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Record<string, number>
+    const invalid = baselineValueFailures(current)
+    if (invalid.length > 0) fail(GATE, `FAILED\n  ${invalid.join('\n  ')}`)
     const base = baselineAtBase<Record<string, number>>(GATE, ROOT, 'bench/dup-function-baseline.json', argValue('--base'))
     if (base !== null) {
-      const current = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Record<string, number>
       const moved = [...vanishedRows(base.rows, current), ...baseRiseFailures(base.rows, current)]
       if (moved.length > 0) fail(GATE, `FAILED\n  ${moved.join('\n  ')}`)
     }
