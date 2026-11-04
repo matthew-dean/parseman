@@ -669,6 +669,26 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     instructions, bootstrap −4.0% / −3.7%, `benchmark.css` +1.8% / −2.6%,
     `gen-workload.scss` +4.2% / −2.2%, `jess-x8.jess` +4.7% / +0.2% (five reps, null
     within ±2.3%, load 4.3–5.3).
+  - **The route levels share the ordinary pieces (@ `ce6b3fbf`).** Each node completion
+    variant has one definition, called by the node pieces and by a route's node level, and the
+    scope and `withCtx` rows build one piece for both paths. This is a rule fix (one definition,
+    two paths), not a speed fix: it was the likeliest cause of the IPC loss on whole files, and
+    it is not that cause. JIT, against `main` @ `53cff042`, five rotated reps, load 5–11 (null
+    within ±2.1% on files, up to ±6.3% on micro rows), before / after, cycles (instructions):
+    `benchmark.less` +3.2% / +1.4% (−3.8% / −2.7%), bootstrap +0.6% / +1.8% (−4.4% / −4.1%),
+    `benchmark.css` +5.8% / +2.5% (−1.4% / −1.3%), `gen-workload.scss` +4.2% / +3.1%
+    (−1.9% / −1.5%), `jess-x8.jess` +3.9% / +6.2% (+0.4% / +1.0%), CSS `font` +6.0% / +3.8%
+    (+5.4% / +5.5%). A first cut with one switching `nodeOf` cost +1–1.5 points of
+    instructions on files; per-variant functions brought that down to +0.3–1.1. Raw samples:
+    `scratchpad/left-corner/results/b3.jsonl`.
+  - **The route's open frame is read from the collectors it hid (@ `882cd769`).** Inside a
+    route the collectors start hidden and at most one frame is open, so `resume` and the node
+    level read it from `ctx` and the three frame variables and their save in `runRoute` go.
+    Same run: `benchmark.less` 0.0% (−3.6%), bootstrap +0.7% (−4.4%), `benchmark.css` +3.1%
+    (−2.0%), `gen-workload.scss` +5.1% (−1.7%), `jess-x8.jess` +2.0% (+0.7%), CSS `font`
+    +10.0% (+5.1%), `.jess` `font` +6.1% (+2.8%). Instructions fall 0.2–0.9 points; cycles
+    stay inside the run's noise. The bar is not met: whole files still run fewer instructions
+    in more cycles.
   - Rejected: the ascent as one loop instead of nested level pieces (identity clean). CSS
     `font: 1/2;` +48.9% cycles / +6.0% instructions `--jitless` (nested: +30.6% / −2.3%),
     `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts
