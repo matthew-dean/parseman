@@ -212,6 +212,31 @@ export function git(args: string[], cwd: string, timeout?: number): string {
 }
 
 /**
+ * A committed baseline as it stood at `ref`, by default the merge base with
+ * `origin/main`, or `null` if that commit has no such file. CI needs `fetch-depth: 0`.
+ */
+export function baselineAtBase<T>(gate: string, root: string, file: string, ref: string | null): { sha: string; rows: T } | null {
+  let sha: string
+  try {
+    sha = git(['rev-parse', '--verify', `${ref ?? git(['merge-base', 'HEAD', 'origin/main'], root).trim()}^{commit}`], root).trim()
+  } catch (error) {
+    fail(gate, `could not find the commit to compare ${file} with; CI needs fetch-depth: 0.\n${String(error).slice(0, 300)}`)
+  }
+  if (git(['ls-tree', '--name-only', sha, file], root).trim() === '') return null
+  return { sha, rows: JSON.parse(git(['show', `${sha}:${file}`], root)) as T }
+}
+
+/**
+ * Rows at the merge base that a baseline no longer has. A gate counts what its own
+ * code lists, so dropping or renaming a row and rewriting the baseline would otherwise
+ * read as green. Adding a row is allowed.
+ */
+export function vanishedRows(base: Readonly<Record<string, unknown>>, baseline: Readonly<Record<string, unknown>>): string[] {
+  return Object.keys(base).filter(row => !(row in baseline)).sort()
+    .map(row => `${row}: in the baseline at the merge base but not in this one; removing or renaming a row needs an owner's bypass`)
+}
+
+/**
  * The previous release: the newest stable `v*` tag whose source HEAD already contains,
  * other than HEAD itself. It is the reference the per-release gates measure against.
  *

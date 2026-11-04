@@ -23,7 +23,9 @@
  * More fails. Fewer also fails until it is banked (`pnpm dupfn:baseline`), so the
  * headroom a fix creates is not budget for the next copy. An artifact's count may not
  * rise from the merge base with `origin/main` either, so a new copy cannot be written
- * into the baseline with it. There is no reason file: a rise needs an owner's bypass.
+ * into the baseline with it, and an artifact at the merge base may not leave the
+ * baseline, so a rename cannot hide a rise. There is no reason file: either needs an
+ * owner's bypass. Adding an artifact is allowed.
  * The function count is printed beside it and not gated: `size-gate` gates bytes.
  *
  *   pnpm dupfn:guard                 # against the merge base with origin/main
@@ -31,11 +33,10 @@
  *   pnpm dupfn:guard --only=<prefix> # only these artifacts, such as emitted/
  *   pnpm dupfn:baseline
  */
-import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { fail, summary } from './ab-harness.ts'
+import { baselineAtBase, fail, summary, vanishedRows } from './ab-harness.ts'
 import { duplicateCount, functionShapes, type FunctionShape } from '../scripts/function-shapes.mjs'
 
 const GATE = 'dup-function'
@@ -158,22 +159,15 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
   const UPDATE = process.argv.includes('--update')
   const ONLY = argValue('--only')
   if (UPDATE && ONLY !== null) fail(GATE, '--update rewrites every artifact; it cannot be combined with --only.')
-  const git = (args: string[]): string => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 
   // Read before the build, so a raised baseline fails without building anything.
   if (!UPDATE) {
     if (!existsSync(BASELINE_PATH)) fail(GATE, `${BASELINE_PATH} is missing; write it with pnpm dupfn:baseline.`)
-    const committed = 'bench/dup-function-baseline.json'
-    let base: string
-    try {
-      base = git(['rev-parse', '--verify', `${argValue('--base') ?? git(['merge-base', 'HEAD', 'origin/main'])}^{commit}`])
-    } catch (error) {
-      fail(GATE, `could not find the commit to compare the baseline with; CI needs fetch-depth: 0.\n${String(error).slice(0, 300)}`)
-    }
-    const present = git(['ls-tree', '--name-only', base, committed]) !== ''
-    if (present) {
-      const rises = baseRiseFailures(JSON.parse(git(['show', `${base}:${committed}`])) as Record<string, number>, JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Record<string, number>)
-      if (rises.length > 0) fail(GATE, `FAILED\n  ${rises.join('\n  ')}`)
+    const base = baselineAtBase<Record<string, number>>(GATE, ROOT, 'bench/dup-function-baseline.json', argValue('--base'))
+    if (base !== null) {
+      const current = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Record<string, number>
+      const moved = [...vanishedRows(base.rows, current), ...baseRiseFailures(base.rows, current)]
+      if (moved.length > 0) fail(GATE, `FAILED\n  ${moved.join('\n  ')}`)
     }
   }
 

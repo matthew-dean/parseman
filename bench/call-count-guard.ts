@@ -49,7 +49,10 @@
  * - **Committed baseline.** `bench/call-count-baseline.json` must equal what HEAD
  *   counts, so a change in counts is a reviewed line in the diff. Rewrite it with
  *   `pnpm callcount:baseline`. It can rise with no reason entry while HEAD is at or
- *   below the release, so giving back an unreleased win is seen only in review.
+ *   below the release, so giving back an unreleased win is seen only in review. A row
+ *   in the baseline at the merge base with `origin/main` may not leave it: both sides
+ *   count what this file lists, so a row cut here and from the baseline would otherwise
+ *   read as green. Adding a row is allowed.
  * - **Minimum work.** A run that counted no rows for a family fails, as does an empty
  *   input, so a gate that measures nothing cannot read as green.
  *
@@ -58,6 +61,7 @@
  *   pnpm callcount:guard --ref=<sha>       # another reference
  *   pnpm callcount:guard --head-ref=<sha>  # head from a commit, not the working tree
  *   pnpm callcount:guard --only=<prefix>   # only these rows, such as emitted/
+ *   pnpm callcount:guard --base=<ref>      # another commit's baseline for the row check
  *   pnpm callcount:baseline                # rewrite the baseline from the working tree
  */
 import { spawnSync } from 'node:child_process'
@@ -66,7 +70,7 @@ import { builtinModules } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
-import { assertIndependentLegs, fail, materialise, previousRelease, summary } from './ab-harness.ts'
+import { assertIndependentLegs, baselineAtBase, fail, materialise, previousRelease, summary, vanishedRows } from './ab-harness.ts'
 import { instrument } from './engine-guards/instrument.ts'
 import type { Counts, WorkerArgs } from './engine-guards/count-worker.ts'
 
@@ -259,6 +263,14 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
     writeFileSync(BASELINE_PATH, `${JSON.stringify(head, null, 2)}\n`)
     console.log(`${GATE}: wrote ${Object.keys(head).length} rows to ${path.relative(ROOT, BASELINE_PATH)}`)
     process.exit(0)
+  }
+
+  // Before anything builds. `--head-ref` measures a commit, not this baseline.
+  if (HEAD_REF === null) {
+    const base = baselineAtBase<Rows>(GATE, ROOT, 'bench/call-count-baseline.json', argValue('--base'))
+    const current = readJson<Rows>(BASELINE_PATH)
+    const gone = base === null || current === null ? [] : vanishedRows(base.rows, current)
+    if (gone.length > 0) fail(GATE, `FAILED\n  ${gone.join('\n  ')}`)
   }
 
   const REF_ARG = argValue('--ref')

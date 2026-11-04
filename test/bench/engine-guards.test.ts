@@ -15,6 +15,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 import { baselineFailures, callCountFailures, measureSide, minimumWorkFailures, type Reasons, type Rows } from '../../bench/call-count-guard.ts'
+import { vanishedRows } from '../../bench/ab-harness.ts'
 import { baseRiseFailures, dupFailures, measure, minimumWorkFailures as dupMinimumWorkFailures } from '../../bench/dup-function-guard.ts'
 import { COUNTER, instrument } from '../../bench/engine-guards/instrument.ts'
 import { children, duplicateCount, functionShapes, parseModule } from '../../scripts/function-shapes.mjs'
@@ -153,6 +154,11 @@ describe('duplicate-function gate', () => {
   it('FAILS a baseline raised from the merge base, and allows a drop or a new artifact', () => {
     expect(baseRiseFailures({ a: 1 }, { a: 2 })[0]).toContain('rose from 1 to 2')
     expect(baseRiseFailures({ a: 2 }, { a: 1, b: 9 })).toEqual([])
+  })
+
+  it('FAILS a row gone from the merge base, and allows a new one', () => {
+    expect(vanishedRows({ a: 1, b: 1 }, { a: 1, c: 1 })).toEqual([expect.stringContaining('b: in the baseline at the merge base')])
+    expect(vanishedRows({ a: 1 }, { a: 9, b: 1 })).toEqual([])
   })
 
   it('REFUSES a run that read nothing', () => {

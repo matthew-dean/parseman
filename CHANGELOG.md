@@ -13,7 +13,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `@jesscss/core`, and fails on any increase over the previous release unless
   `bench/call-count-reasons.json` argues it within a stated limit. `pnpm dupfn:guard`
   fails on a new function printed twice in the emitted or printed output, and on its
-  baseline rising from the merge base. INV-13 fails on a function written twice in engine
+  baseline rising from the merge base. Neither gate lets a row leave its baseline since
+  the merge base. INV-13 fails on a function written twice in engine
   source, at any depth. The pre-commit perf guard now also runs on edits under
   `src/table/`, which its path filter had left out. Every A/B harness that builds two
   legs now refuses to run when they load parseman from one directory, except a declared

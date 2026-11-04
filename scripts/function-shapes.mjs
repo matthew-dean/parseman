@@ -13,7 +13,7 @@
  * shape are one function written twice, whatever their locals are called.
  *
  * What a copy can change without being a different function is dropped too: type
- * annotations and casts, `const` against `let`, and whether it is a declaration, an
+ * annotations and casts, `var`, `let` or `const`, and whether it is a declaration, an
  * expression or an arrow. `this` is kept as written, so an arrow and a function that
  * read it stay apart only if the bodies differ.
  */

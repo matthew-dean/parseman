@@ -917,7 +917,7 @@ It counts 23 rows: the five workloads under `emitted/` and under `closure/` (`Fu
 
 An increase that is the price of a change needs `bench/call-count-reasons.json`: `{ "against": "<previous release tag>", "rows": { "<row> <metric>": { "why": "<why>", "limit": <most it may add per parse> } } }`. An entry must say why and state a limit, and an increase above the limit fails. An entry that excuses no increase fails, so it cannot wait for a later one. An entry only applies against the release it names, so it stops excusing anything once that change ships; a file left over from an earlier release prints a notice rather than failing, so a release does not turn every open PR red.
 
-A count only means something over a whole parse. Every parse counted must succeed and consume its input (`assertWorkloadFullyConsumed`), and a jess parse must also build a `Stylesheet` with no recovered error or diagnostic; anything else stops the gate rather than reading as fewer calls. An empty input fails, and so does a run that counted no rows for a family. Over these rows, `bench/call-count-baseline.json` can still rise with no reason entry while HEAD is at or below the release, so giving back an unreleased win is seen only in review.
+A count only means something over a whole parse. Every parse counted must succeed and consume its input (`assertWorkloadFullyConsumed`), and a jess parse must also build a `Stylesheet` with no recovered error or diagnostic; anything else stops the gate rather than reading as fewer calls. An empty input fails, and so does a run that counted no rows for a family. Over these rows, `bench/call-count-baseline.json` can still rise with no reason entry while HEAD is at or below the release, so giving back an unreleased win is seen only in review. A row in the baseline at the merge base with `origin/main` may not leave it: both sides count the rows the gate lists, so cutting one from the gate and the baseline would otherwise pass. Removing or renaming a row needs an owner's bypass; adding one is allowed.
 
 Run on that refactor's two reuse commits against their parents, with `macro/css/ast` then the only AST row and its reducers stubbed, it fails both: `ce6b3fbf` (+1,527 calls on `macro/css/ast/site.css`) and `fb769bac` (up to +22,029 calls and +128,922 branch tests per parse on the closure rows; +1.1–2.1% on the `macro/` rows).
 
@@ -934,15 +934,17 @@ Run on that refactor's two reuse commits against their parents, with `macro/css/
 
 **A trap in the reference build.** The reference side runs HEAD's copy of `bench/jess/real-grammars.ts` and `bench/workloads` over the release's `src/`. A PR that moves a module they name (such as `src/compiler/linker.ts` or `src/plugin/index.ts`) leaves the reference side unable to build. The gate fails, no reason entry can argue it, and it stays red until a release contains the new path. Keep a re-export at the old path until that release.
 
+**A race at release.** A PR with a reason entry against vN that merges after vN+1 publishes leaves that entry stale on `main`: it excuses nothing, the increase fails against vN+1, and publishing pauses until a follow-up updates `against`.
+
 ### Duplicate-function gate
 
 `bench/dup-function-guard.ts` normalises every function in 20 artifacts: the emitted code of the workload grammars and jess's macro-built bundles (`scripts/function-shapes.mjs`: comments, whitespace and the function's own binding names dropped; free names and property names kept). A shape that occurs n times is n−1 duplicates. `bench/dup-function-baseline.json` holds each artifact's count: more fails, and fewer fails until it is banked with `pnpm dupfn:baseline`. It runs in `size-gate` and prints the function count beside the duplicate count.
 
-In CI the committed baseline is also compared with the merge base with `origin/main`, and any artifact's count rising fails, so a new copy cannot be written into the baseline with it. There is no reason file. A rise that is right, such as a grammar snapshot refresh that brings in new reducers, needs an owner's bypass.
+In CI the committed baseline is also compared with the merge base with `origin/main`, and any artifact's count rising fails, so a new copy cannot be written into the baseline with it. There is no reason file. An artifact at the merge base may not leave the baseline either, so renaming a row cannot hide a rise. A rise that is right, such as a grammar snapshot refresh that brings in new reducers, and a real removal or rename both need an owner's bypass. Adding an artifact is allowed.
 
 The count is per artifact, so it can net out: when assembly selection shifts, sites that stop being printed can hide new copies elsewhere in the same artifact.
 
-It starts from a backlog: 21 duplicated functions in the emitted CSS and 56 in the emitted Less grammar, for example. It cannot see a copy that differs in one constant or a free name (which may be correct), a copy in another artifact, or a body under 60 characters. Those bundles also carry jess's own reducers, so a duplicate there can be the grammar author's.
+It starts from a backlog: 21 duplicated functions in the emitted CSS and 56 in the emitted Less grammar, for example. It cannot see a copy that differs in one constant or a free name (which may be correct), a copy in another artifact, or a body under 60 characters. It can over-report a pair that differs only in `var` against `let`, which share a shape. Those bundles also carry jess's own reducers, so a duplicate there can be the grammar author's.
 
 ### INV-13
 

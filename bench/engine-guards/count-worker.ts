@@ -106,7 +106,7 @@ if (cases.length === 0) throw new Error('nothing to count: no workloads or cases
 const SETTLE_LIMIT = 20
 const out: Record<string, Counts> = {}
 for (const c of cases) {
-  if (c.input.length === 0) throw new Error(`${c.id}: the input is empty, so its count would measure nothing`)
+  if (c.input.trim().length === 0) throw new Error(`${c.id}: the input is empty, so its count would measure nothing`)
   c.accept(c.parse())
   const counted = (): Counts => {
     k.c = 0

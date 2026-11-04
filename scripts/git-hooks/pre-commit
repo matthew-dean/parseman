@@ -35,11 +35,11 @@ if [ "$SKIP_PERF_GUARD" = "1" ]; then
 fi
 
 # Limit perf guard to commits that can actually affect compiled output: everything
-# bench/perf-guard.ts builds from. A list of engine directories here once left out
-# src/table/, the engine itself. test/bench/engine-guards-cli.test.ts checks this
-# pattern against what the guard imports.
+# bench/perf-guard.ts builds from, and the fixtures and baseline it reads at run time.
+# A list of engine directories here once left out src/table/, the engine itself.
+# test/bench/engine-guards-cli.test.ts checks this pattern against what the guard imports.
 CHANGED=$(git diff --cached --name-only)
-echo "$CHANGED" | grep -qE '^(src/|examples/|bench/(perf-guard|parseman-perf|fixtures|css-fixture)\.ts)' || exit 0
+echo "$CHANGED" | grep -qE '^(src/|examples/|fixtures/css/|bench/parseman-baseline\.json|bench/(perf-guard|parseman-perf|fixtures|css-fixture)\.ts)' || exit 0
 
 echo "[pre-commit] running parseman perf guard (css speed)…"
 node --import tsx/esm bench/perf-guard.ts
