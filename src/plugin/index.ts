@@ -170,8 +170,8 @@ export type ParsecraftPluginOptions = {
    */
   assemblyProfile?: AssemblyProfile
   /**
-   * Generated assembly bytes each module may spend, as a multiple of its own source
-   * length. **Default `0.25`.** `0` ships no assembly. The right number is
+   * Generated assembly bytes each module may spend, as a multiple of its own code,
+   * comments and whitespace aside. **Default `0.5`.** `0` ships no assembly. The right number is
    * per grammar: a larger one parses faster in steady state and costs import and
    * first-parse time, so measure both, and keep the artifact within 5× its source
    * (docs/design/runtime-and-size-contract.md, rules 4 and 6).
@@ -206,11 +206,26 @@ const PARSEMAN_MODULE = 'parseman'
 
 /**
  * The default `assemblyBudget`: generated assembly bytes a module may spend, as a
- * multiple of its own source length. A quarter of the source keeps every jess
- * grammar far under the 5x ceiling (contract rule 4); the 0.57.0 CHANGELOG has the
- * measured curve.
+ * multiple of its own code (`codeBytes`). Half keeps every jess grammar far under the
+ * 5x ceiling (contract rule 4). A grammar that wants a different trade passes its own.
  */
-const DEFAULT_ASSEMBLY_BUDGET = 0.25
+const DEFAULT_ASSEMBLY_BUDGET = 0.5
+
+/**
+ * A module's code in bytes, without its comments and whitespace. It is what a budget
+ * is a share of, so editing a comment or reflowing a line cannot move a site in or
+ * out of the assembly, and with it the module's size and parse speed.
+ */
+function codeBytes(code: string, comments: readonly { start: number; end: number }[], end = code.length): number {
+  let bytes = 0
+  let at = 0
+  for (const c of comments) {
+    if (c.start >= end) break
+    bytes += code.slice(at, c.start).replace(/\s+/g, '').length
+    at = c.end
+  }
+  return bytes + code.slice(at, end).replace(/\s+/g, '').length
+}
 
 /**
  * The REASON a lowering refused, appended to the warning that reports it.
@@ -764,6 +779,8 @@ export type TransformMacroResult = {
   map: ReturnType<MagicString['generateMap']>
   /** Diagnostics for macro-referencing shapes that fell back to the interpreter. */
   warnings: string[]
+  /** The sites the module's `assemblyBudget` bought, by program offset, in rank order. */
+  assemblySites: number[]
 }
 
 /**
@@ -1746,7 +1763,9 @@ function transformMacroImpl(
 
   // Stable, reproducible per-artifact namespace: hash of module id + a label
   // (binding name / arg position) — never a counter, so rebuilds are byte-stable
-  // and two artifacts never collide when fused.
+  // and two artifacts never collide when fused. A call is labelled by where it sits
+  // in the module's code (`codeBytes`), so a comment above it leaves the name alone.
+  const callLabel = (fn: string, start: number): string => `${fn}${codeBytes(code, result.comments, start)}`
   const nsFor = (label: string): string =>
     `_${createHash('sha1').update(`${id}#${label}`).digest('hex').slice(0, 8)}_`
 
@@ -2303,7 +2322,7 @@ function transformMacroImpl(
     const carried: CarriedItem[] = []       // re-lowerable; also SERIALIZED onto the value
     const importedFactories: string[] = []
     for (let i = 0; i < elements.length; i++) {
-      const r = argPieces(elements[i]!, `compose${init.start}_${i}`, composing)
+      const r = argPieces(elements[i]!, `${callLabel('compose', init.start)}_${i}`, composing)
       if (!r) {
         // A build-compiled argument cannot fall back: runtime `compose()` links live
         // `rules()` grammars only and would throw at import. Fail here instead.
@@ -2384,14 +2403,15 @@ function transformMacroImpl(
    * SELECTIVE ASSEMBLY, BUDGETED PER MODULE. A fused grammar's default AST/no-lines
    * table carries generated code for its hottest sites only (`select-hot.ts`); the
    * closure engine runs the rest. The site bodies of every fused grammar in this
-   * module together may not exceed `assemblyBudget` times the module's own source.
+   * module together may not exceed `assemblyBudget` times the module's own code (`codeBytes`).
    *
    * A module that declares a `composeLeaf` has named its terminal parser, so its
    * `compose()` results are composable PIECES: another build re-lowers them and
    * never parses through their table, so they spend nothing. Without a
    * `composeLeaf`, a `compose()` result is the module's parser.
    */
-  let assemblyBudget = Math.floor(code.length * assemblyBudgetShare)
+  let assemblyBudget = Math.floor(codeBytes(code, result.comments) * assemblyBudgetShare)
+  const assemblySites: number[] = []
   let leafDeclared: boolean | undefined
   const declaresLeaf = (): boolean => leafDeclared ??= (body as Statement[]).some(stmt => {
     const vd = unwrapVd(stmt)
@@ -2415,6 +2435,7 @@ function transformMacroImpl(
       warnings.push(`${id}:${lineOf(pos)} — ${label}: its precompiled assembly cannot emit ${refusal}; the artifact runs on the closure engine`)
     }
     assemblyBudget -= bytes
+    assemblySites.push(...sites)
     return sites
   }
   /** Measured site calls over the optional corpus, or `undefined` for the static
@@ -2475,7 +2496,7 @@ function transformMacroImpl(
     let localScanSkip: Combinator<unknown>[] | undefined
     const importedFactories: string[] = []
     if (isRulesCall(localArg)) {
-      const evaluated = evaluateRulesFactory(localArg, `composeLeaf${init.start}`)
+      const evaluated = evaluateRulesFactory(localArg, callLabel('composeLeaf', init.start))
       localRules = evaluated?.ruleMap ?? null
       localScanSkip = evaluated?.scanSkip
       if (evaluated?.importedFactory) importedFactories.push(evaluated.importedFactory)
@@ -2504,7 +2525,7 @@ function transformMacroImpl(
     const composing = composingTrivia(elements)
     const carried: CarriedItem[] = []
     for (let i = 0; i < elements.length - 1; i++) {
-      const r = argPieces(elements[i]!, `composeLeaf${init.start}_${i}`, composing)
+      const r = argPieces(elements[i]!, `${callLabel('composeLeaf', init.start)}_${i}`, composing)
       if (!r) {
         warn(init.start, `composeLeaf(): argument ${i} isn't a build-resolvable recognition grammar`)
         return null
@@ -2517,7 +2538,7 @@ function transformMacroImpl(
       // may place one beneath a direct node(). Re-lower their terminals with
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
-      const localNs = nsFor(`composeLeaf${init.start}`)
+      const localNs = nsFor(callLabel('composeLeaf', init.start))
       const localEntries = [...localRules] as Array<[string, Combinator<unknown>]>
 
       // TABLE FIRST — same merge as `compose()`, with the local leaf map appended LAST
@@ -3336,6 +3357,7 @@ function transformMacroImpl(
   }
 
   return {
+    assemblySites,
     code: ms.toString(),
     map: ms.generateMap({ hires: true }),
     warnings,

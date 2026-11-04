@@ -205,14 +205,22 @@ describe('a selective assembly parses exactly as the closure engine', () => {
       expect(spent).toBeLessThanOrEqual(budget)
       expect(picked.size).toBeGreaterThan(0)
     }
+    // A larger budget keeps every site: a big site it now admits does not crowd out
+    // the small ones a smaller budget took after it.
+    let last = new Set<number>()
+    for (let budget = total / 100; budget < total; budget += total / 100) {
+      const picked = selectHotSites(prog.code, entries, siteBytes, budget)
+      expect([...last].filter(ip => !picked.has(ip)), `budget ${budget}`).toEqual([])
+      last = picked
+    }
     // Deterministic: the same inputs select the same sites.
     expect([...selectHotSites(prog.code, entries, siteBytes, total / 2)])
       .toEqual([...selectHotSites(prog.code, entries, siteBytes, total / 2)])
   })
 })
 
-/** A module long enough (the budget is the module's own length) to pay for an assembly's prelude. */
-const PADDING = '// padding\n'.repeat(12000)
+/** A module with enough code (a budget is a share of it, comments aside) to pay for an assembly's prelude. */
+const PADDING = `export const padding = '${'x'.repeat(132_000)}'\n`
 const factoryBytes = (code: string): number[] =>
   [...code.matchAll(/factory:function\([^)]*\)\{([\s\S]*?)\n\},plan:/g)].map(m => m[1]!.length)
 
@@ -236,10 +244,8 @@ describe('the macro build ships a selective assembly within its module budget', 
   })
 
   it('never comes back empty from a budget that a smaller budget already filled', () => {
-    // The narrowing loop scales its target by ceiling/bytes. Near the ceiling a
-    // whole site is the step, so that ratio can stall a few bytes over it; the
-    // loop must still land on a fitting selection rather than give up and ship
-    // no assembly at all.
+    // Near the ceiling a whole site is the step, so a walk down the ranking must
+    // still land on a fitting selection rather than give up and ship no assembly.
     const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(/[0-9]*/))] as const)
     const compiled = compileRuleMap([
       ['Doc', many(choice(...words.map(([, w]) => w) as [Combinator<unknown>, ...Combinator<unknown>[]]))],
@@ -254,6 +260,22 @@ describe('the macro build ships a selective assembly within its module budget', 
       if (sites.size > 0) { filled = true; expect(bytes).toBeLessThanOrEqual(budget) }
     }
     expect(filled).toBe(true)
+  }, 60_000)
+
+  it('a larger budget keeps every site a smaller one selected', () => {
+    const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(i % 7 === 0 ? /[0-9]*(?:a|b|c|d|e|f)*/ : /[0-9]*/))] as const)
+    const compiled = compileRuleMap([
+      ['Doc', many(choice(...words.map(([, w]) => w) as [Combinator<unknown>, ...Combinator<unknown>[]]))],
+      ...words,
+    ])!
+    const full = compiled.selectAssembly(Infinity).bytes
+    let last = new Set<number>()
+    for (let share = 0.02; share < 1; share += 0.02) {
+      const { sites } = compiled.selectAssembly(Math.floor(full * share))
+      expect([...last].filter(ip => !sites.has(ip)), `share ${share}`).toEqual([])
+      last = new Set(sites)
+    }
+    expect(last.size).toBeGreaterThan(0)
   }, 60_000)
 
   it('a terminal composeLeaf carries generated code for some sites, the closure engine for the rest', () => {

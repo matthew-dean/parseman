@@ -5,6 +5,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`assemblyBudget` is now a share of a module's code, not counting comments or
+  whitespace, and a larger budget never loses a site.** The budget was a share of the
+  module's raw text, so a longer comment bought more generated code: on Jess's SCSS
+  grammar a doc comment moved the build from 61 functions to 56 and parsing about 1%
+  slower. Selection also shrank its target and retried when the source overshot, so
+  a few more bytes of budget could lose sites. It now takes a prefix of the ranking
+  and drops the last site until it fits. A comment edit no longer changes anything a
+  module ships: reducer sources in the carried IR lose their comments, and the namespace
+  of a `compose()` or `composeLeaf()` no longer depends on where it sits in the file.
+  The default is `0.5` on the new base. Comments are about 40% of Jess's grammars, so an
+  explicit budget needs raising to buy what it did: a grammar that passed `1` and is half
+  comments passes about `2.7`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

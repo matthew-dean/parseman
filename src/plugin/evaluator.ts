@@ -17,6 +17,7 @@ import type { Combinator } from '../types.ts'
 import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
 import { rules, type RulesOptions } from '../combinators/parser.ts'
+import { parseSync } from 'oxc-parser'
 import * as parseman from '../index.ts'
 import { confirmedBuildParamUnused } from '../compiler/build-arity.ts'
 import { directBuilderBindings } from './direct-builder-static.ts'
@@ -72,7 +73,7 @@ function stripTsFromSource(node: Node, code: string): string {
   walk(node)
   const start = (node as { start: number }).start
   const end = (node as { end: number }).end
-  if (cuts.length === 0) return code.slice(start, end)
+  if (cuts.length === 0) return stripComments(code.slice(start, end))
   cuts.sort((a, b) => a[0] - b[0])
   let out = ''
   let cur = start
@@ -81,7 +82,29 @@ function stripTsFromSource(node: Node, code: string): string {
     out += code.slice(cur, s)
     cur = e
   }
-  return out + code.slice(cur, end)
+  return stripComments(out + code.slice(cur, end))
+}
+
+/**
+ * A reducer's source without its comments, each taken with the whitespace before
+ * it, so the text is what it would be had the comment never been written. A
+ * reducer ships as a string in the carried IR, where a bundler cannot strip it, and
+ * a comment must not change what a module ships.
+ */
+function stripComments(text: string): string {
+  if (!text.includes('/*') && !text.includes('//')) return text
+  const wrapped = `(${text})`
+  let out = ''
+  let cur = 0
+  for (const c of parseSync('reducer.ts', wrapped).comments) {
+    const end = c.end - 1
+    const kept = text.slice(cur, c.start - 1).trimEnd()
+    out += kept
+    // A comment is whitespace to the language, and one spanning lines ends a line.
+    if (kept !== '' && !/\s/.test(text[end] ?? ' ')) out += c.value.includes('\n') ? '\n' : ' '
+    cur = end
+  }
+  return out + text.slice(cur)
 }
 
 /**

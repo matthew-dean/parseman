@@ -284,7 +284,7 @@ export const cssDiagnosticCstGrammar = composeLeaf([...pieces, rules({ trivia, h
 A module's terminal grammar — its `composeLeaf()`, or a `compose()` in a module that
 declares no `composeLeaf()` — gets a speed variant on its default AST/no-lines table:
 generated code for its hottest sites, within the plugin's `assemblyBudget`: a multiple of the
-module's own source length, `0.25` by default, `0` for none. The closure engine runs every
+module's own code, comments and whitespace aside, `0.5` by default, `0` for none. The closure engine runs every
 other site, and the two hand over at each boundary. The right budget is per grammar: a
 larger one parses faster in steady state and costs import and first-parse time, so measure
 both, and keep the artifact within 5× its source. The

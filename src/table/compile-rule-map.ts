@@ -372,29 +372,22 @@ export function compileRuleMap(
     // The estimate (prelude plus site bodies) leaves out what selected sites add
     // around their bodies — shared helpers and the `_px` wrappers of the closure
     // sites they call — and the supercompiler may grow the source by up to 5%. So
-    // the selection is judged by the source it actually emits, scaled for that 5%,
-    // and narrowed until that fits.
+    // the selection is judged by the source it actually emits, scaled for that 5%.
     const ceiling = budget / SUPERCOMPILE_GROWTH
     // A budget that cannot cover the prelude buys nothing, by design: no refusal.
     if (ceiling <= fixed) return none
-    // Narrowed until it fits, with no attempt limit: the target shrinks by at
-    // least 1% a round, so the selection either fits or empties. An empty one
-    // says why — a build that asked for an assembly and silently shipped none is
-    // a regression no test sees (the artifact still parses, on the closures).
-    let target = ceiling
-    for (;;) {
-      const sites = selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, target - fixed, profile)
-      if (sites.size === 0) {
-        return {
-          ...none,
-          refusal: `a site within its ${Math.floor(ceiling)} B selection ceiling (the prelude alone is ${fixed} B)`,
-        }
-      }
+    // Walked down the ranking, one site at a time, so a selection is always a
+    // prefix of the one order. The largest prefix that fits is the answer, and a
+    // larger budget only adds candidates, so it can never lose a site.
+    const ranked = [...selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, ceiling - fixed, profile)]
+    for (; ranked.length > 0; ranked.pop()) {
+      const sites = new Set(ranked)
       const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites, true).source.length
       if (bytes <= ceiling) return { sites, bytes: Math.ceil(bytes * SUPERCOMPILE_GROWTH) }
-      // Scale by the overshoot, and by at least 1%: near the ceiling a site is
-      // the unit, and the ratio alone can stall a few bytes over it.
-      target *= Math.min(ceiling / bytes, 0.99)
+    }
+    return {
+      ...none,
+      refusal: `a site within its ${Math.floor(ceiling)} B selection ceiling (the prelude alone is ${fixed} B)`,
     }
   }
 

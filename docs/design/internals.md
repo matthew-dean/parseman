@@ -130,10 +130,9 @@ The reference driver keeps its own copies of protocol logic (line tracking, roll
 
 Generated code is fast, but its bytes load in every process, so a macro build emits only a budget's worth.
 
-- **Budget** (`plugin/index.ts`, `DEFAULT_ASSEMBLY_BUDGET = 0.25`): assembly bytes per module may not exceed 0.25 × the module's source length (`assemblyBudget` option). Only the AST, no-line-tracking table carries an assembly; the other variants run on closures.
+- **Budget** (`plugin/index.ts`, `DEFAULT_ASSEMBLY_BUDGET = 0.5`): assembly bytes per module may not exceed 0.5 × the module's code, not counting comments or whitespace (`assemblyBudget` option). Only the AST, no-line-tracking table carries an assembly; the other variants run on closures.
 - **Ranking** (`table/select-hot.ts`). Every rule entry starts at weight 1; a repeat multiplies its body by `LOOP` (8); a choice or dispatch splits its weight across its arms. Weights propagate `ROUNDS` (60) times, with recursive cycles capped at `CAP`. Sites are then taken greedily by weight per emitted byte. With `assemblyProfile` (a corpus), measured site visits (`countSiteVisits` in `assemble.ts`) replace the estimate.
-- **Fitting** (`compile-rule-map.ts`, `selectAssembly`). The emitted source is measured for real and the target narrowed, by at least 1% a round, until it fits or the selection empties, allowing 5% for the supercompiler pass (`plugin/entry-supercompiler.ts`).
-- **Known instability:** near the budget line the choice comes down to emitted size, so comment-only grammar edits can move it ([#179](https://github.com/matthew-dean/parseman/issues/179)).
+- **Fitting** (`compile-rule-map.ts`, `selectAssembly`). A selection is always a prefix of the ranking: the sites are taken in rank order and stop at the first that does not fit, and the emitted source is then measured for real, allowing 5% for the supercompiler, dropping the last site until it fits. So a larger budget keeps every site a smaller one selected, and a comment cannot move a site in or out (`test/bench/assembly-selection-stability.test.ts`).
 
 ## 7. Trivia, CST capture, lines
 
