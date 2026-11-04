@@ -1,7 +1,7 @@
 /**
  * The compiled-artifact ↔ host contract, in ONE place.
  *
- * This lives on its own — rather than in `compiler/codegen.ts` where it started —
+ * This lives on its own — rather than in the source lowering where it started —
  * because the DRIVER has to enforce it too. `functional/run.ts` is the `parseman/run`
  * entry, whose whole purpose is to stay small (see `test/unit/run-entry-closure.test.ts`),
  * so it cannot import the compiler to reach an assertion. Neither can it carry its own

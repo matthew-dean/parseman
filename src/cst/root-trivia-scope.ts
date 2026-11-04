@@ -2,7 +2,7 @@
  * The ROOT-CAPTURE POLICY of one local trivia scope, in one place.
  *
  * Three engines install a `parser({ trivia })` scope — the interpreter
- * (`combinators/grammar.ts`), source lowering (`compiler/codegen.ts`) and the
+ * (`combinators/grammar.ts`), the source lowering (removed in 0.47.0) and the
  * table (`table/assemble.ts`, `table/exec.ts`) — and each of them has to answer
  * the same two questions about selected root trivia. The refusal below was a
  * string literal in two of them and ABSENT from the third, which is how a table

@@ -183,6 +183,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     on Node 26. Build kept nodes with a constructor whose `prototype` is
     `Object.prototype`, and copy the arrays they keep with a spread or `slice()`.
 
+- **The `recovery` option is marked `@deprecated`.** It has had no effect since recovery
+  became part of every compiled table: `compile()`, `compileRuleMap()` and the macro
+  plugin accept it and ignore it. It is removed at the next minor release. Source
+  comments that cited the deleted `codegen.ts`, line numbers that no longer exist, or
+  said `exec.ts` ships, now name what they mean.
+
 ## 0.59.2 — 2026-11-04
 
 - **An internals overview, `docs/design/internals.md`.** The README's "Developing"

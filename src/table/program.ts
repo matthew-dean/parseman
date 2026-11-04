@@ -29,10 +29,10 @@ export type PrecompiledAssembly = {
 /**
  * The emitted form of a grammar under the table lowering.
  *
- * This object is ALL a grammar contributes to a bundle. Every line of
- * recognition logic lives in `exec.ts`, which ships once in the runtime and is
- * shared by every grammar and every variant. A rule costs its row, not a
- * function.
+ * This object is ALL a grammar contributes to a bundle, apart from any
+ * build-time assemblies in `asm`. The recognition logic is the shared driver
+ * (`tableRules`, `assemble.ts`), which ships once in the runtime for every
+ * grammar and every variant. A rule costs its row, not a function.
  *
  * Serialized shape is deliberately JSON-ish (numbers, strings, and a pool of
  * author callbacks) so the emitter can print it as a literal.
@@ -145,9 +145,9 @@ export type TableProgram = {
    */
   readonly triviaSpecs?: readonly TriviaSpec[]
   /**
-   * 1 when this table was encoded with `TableSettings.recovery` — the sequences
-   * carry their inferred follow-set classes and the repetitions their item
-   * expected-set and separator sentinel class.
+   * Always 1: every table carries recovery operands — the sequences their inferred
+   * follow-set classes, the repetitions their item expected set and separator
+   * sentinel class. (`TableSettings.recovery` is a deprecated no-op.)
    *
    * TABLE DATA, read once when the driver/assembly is built. It selects the
    * recovery pieces; it is not a per-parse option, and a recovery table still

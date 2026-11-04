@@ -178,9 +178,13 @@ Registered today:
 | differential | legs | plants |
 |---|---|---|
 | `scan-shape-oracle` | emitted straight-line scan vs sticky `RegExp.exec`, per regex, per position | `scan-class-narrow` |
-| `table-lowering-identity` | interpreted vs `compose()` codegen vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
+| `table-lowering-identity` | interpreted vs the closures-only table (`tableRules` over the program with `asm: []`, not `compileRuleMap()`'s own output) vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
+| `macro-optimize-contract` | the macro timing gate's structured acceptance errors vs the process exit status required CI reads | `macro-timing-exit-off` |
 | `lex-selected-vs-character` | selected lexical bodies vs the CHARACTER lowering of the same grammar, in `execRules`, closure and emitted `tableRules`; whole results and completion probes | `lex-choice-exclusive-off`, `lex-repeat-min-short`, `lex-rule-trivia-glued` |
 | `routed-arm-gate` | routed choice arms behind `OP_RGATE` in `execRules`, closure and emitted `tableRules` vs the interpreted grammar | `rgate-miss-set-short` |
+| `trivia-lead-gate` | inputs with spaces, comments and a lone slash before and inside every construct, through closure and emitted `tableRules` vs `execRules` (which has no lead gate) | `trivia-lead-closure-narrow`, `trivia-lead-emitted-narrow` |
+| `regex-escape-first-sets` | regexes with octal, control, property, code-point and surrogate-pair escapes, astral literals and `v`-mode classes in trivia, choice arms, optional terms and tokens, through the interpreter, `execRules`, closure and emitted `tableRules` | `first-set-property-escape-as-letter`, `first-set-escaped-pair-split`, `lead-class-astral-plain`, `lead-first-set-astral-plain`, `lead-intersects-astral-plain`, `lead-trivia-collapse-astral-plain`, `scan-shape-v-as-code-units`, `first-set-narrow-raw`, `first-set-narrow-astral-explicit` |
+| `regex-first-set-property` | `regex()` first sets of seeded generated patterns, and of generated combinator trees over them, vs a sticky `RegExp` tried on both sides of the set | `first-set-v-class-flat`, `first-set-property-escape-as-letter`, `first-set-escaped-pair-split`, `first-set-narrow-raw` |
 | `jess-oracle` | interpreted fuse vs the `PM_MACRO` artifact (the shipped assembler) vs `execRules` (reference), one process per leg | `exec-node-span` |
 | `emit-identity-one` | `PM_TABLE_EMIT=1` emitted assembly vs `=0` closure walk | `emit-node-span` |
 | `consumed-sweep` | bytes consumed per file, one build, appended as JSONL | `interp-many-cap`; BLIND to `tolerant-rec-off` |
@@ -211,11 +215,11 @@ that is what the sweeps themselves are for. It times nothing.
 
 ### UNPROVEN is not passing
 
-Four of the nine registered differentials drive jess's grammars over jess's
+Four of the twelve registered differentials drive jess's grammars over jess's
 corpora, which live in an unpinned sibling checkout (`JESS_ROOT`) this repo does
 not vendor. Where that checkout is absent they are reported UNPROVEN on their own
 summary line — never as passing, and never silently omitted. CI runs the plain
-mode and proves the five self-contained ones; `--strict` makes an UNPROVEN entry a
+mode and proves the eight self-contained ones; `--strict` makes an UNPROVEN entry a
 failure and is what a release runs, on a box where the jess checkout exists.
 
 ## Adding a differential

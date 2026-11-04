@@ -314,7 +314,7 @@ function bareLeadingTermKey(term: Combinator<unknown>): string | null {
   //
   // A `lazy` ref lead — excluded for correctness, not for want of a key. The
   // once-only prescan runs with `ctx.capturing = false`, which suppresses capture
-  // only for code emitted HERE (emitLeafCapture, codegen.ts). A ref compiles to a
+  // only for code emitted HERE (the source lowering's emitLeafCapture). A ref compiles to a
   // call into a function body generated under its OWN ctx (emitLazy), so its
   // captures and trivia writes would happen during the prescan and then AGAIN in
   // each arm. Replaying a ref needs recorded-and-spliced capture state, not the

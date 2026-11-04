@@ -404,7 +404,7 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
  *
  * It belongs in THIS module for the reason stated at the top of it: both lowerings
  * must reach the same answer, and a stamp they disagree about is a driver that
- * accepts a host it should refuse. It previously lived in `compiler/codegen.ts`,
+ * accepts a host it should refuse. It previously lived in the source lowering,
  * which forced `table/compile-rule-map.ts` to import the engine the table replaced.
  *
  * The descent mirrors the source lowering's own `childrenOf` exactly — including a
