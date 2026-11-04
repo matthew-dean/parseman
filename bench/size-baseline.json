@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-11-02",
-  "gitRev": "1ee4452f",
+  "updatedAt": "2026-11-04",
+  "gitRev": "358bbac5",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -102,7 +102,7 @@
     },
     "probe/trivia-on": {
       "genBytes": 1698,
-      "gzipBytes": 813,
+      "gzipBytes": 812,
       "bytesRatio": 3.038,
       "locMultiplier": 3.333
     },
@@ -120,19 +120,19 @@
     },
     "probe/hostmode-cst": {
       "genBytes": 1911,
-      "gzipBytes": 881,
+      "gzipBytes": 882,
       "bytesRatio": 2.945,
       "locMultiplier": 2
     },
     "probe/variant": {
       "genBytes": 1654,
-      "gzipBytes": 825,
+      "gzipBytes": 826,
       "bytesRatio": 1.644,
       "locMultiplier": 1.267
     },
     "probe/variants-1": {
       "genBytes": 1314,
-      "gzipBytes": 727,
+      "gzipBytes": 726,
       "bytesRatio": 1.564,
       "locMultiplier": 2.067
     },

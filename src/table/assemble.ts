@@ -73,10 +73,11 @@ import { skipDeferredTrivia, triviaLeadTable } from './trivia-gap.ts'
 import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
-  scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
+  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
+  skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
@@ -414,6 +415,23 @@ export type Assembly = {
  * ONE walk. Each site is lowered at most once and memoised by its code offset,
  * so a subtree shared by two parents is one piece with two references to it.
  */
+/**
+ * A printed factory takes its helpers BY POSITION (`EMITTED_PARAMS`), so one printed
+ * against a different helper list would bind the wrong function to a name and run
+ * wrong rather than fail. The factory's own guard (`FACTORY_ARITY_GUARD`, `emit.ts`)
+ * only catches a runtime that passes FEWER helpers, and a factory printed before
+ * 0.59.0 has no guard at all. So the runtime checks too: the declared parameter
+ * count must be exactly the list it passes.
+ */
+export function assertFactoryArity(factory: { readonly length: number }): void {
+  if (factory.length === EMITTED_PARAMS.length) return
+  throw new Error(
+    `parseman: this parser's printed assembly takes ${factory.length} helpers, but parseman ${PARSEMAN_VERSION} `
+    + `passes ${EMITTED_PARAMS.length}: it was printed by an older or newer parseman. Reprint the parser with `
+    + `parseman ${PARSEMAN_VERSION}, or run it on the parseman version that printed it.`,
+  )
+}
+
 export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Assembly {
   const { code, k, fns, cc, fx, disp, dsp, trivia, triviaLabelled } = t
   // The leaf swap is only legal when line tracking is off, and that is a property
@@ -4224,19 +4242,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ? prog.asm?.find(a => a.key === cfgKey(cfg))
       : undefined
     if (pre !== undefined) {
+      assertFactoryArity(pre.factory)
       const pools = rebuildPools(t.cc, t.fx, t.disp, pre.plan)
       emitted = pre.factory(
-        EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia,
-        trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
+        EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia, triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
-        scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+        advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
         PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
@@ -4306,13 +4324,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         throw new Unemittable(`the Function constructor (${String(e)})`)
       }
       emitted = factory(
-        EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
-        trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
+        EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia, triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
-        scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+        advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         // THE SENTINEL POOL, dense over char-class indices so the emitted text can
         // index it the way it indexes `SCANS`. Built only for a recovery assembly
@@ -4321,7 +4338,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
         PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,

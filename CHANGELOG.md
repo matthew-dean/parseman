@@ -83,10 +83,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   down only where the encoder knows none runs there. A gap spelled as
   `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
   and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
-  - **Artifacts built by 0.60.0 need runtime ≥0.60.0.** The emitted engine receives the
-    slot as a new trailing factory parameter, `GAP`. An artifact printed by an earlier
-    version runs on this runtime (it ignores it); one printed by 0.60.0 refuses an older
-    runtime on its first parse, through the arity check 0.59.0 prints.
+  - **An artifact printed by 0.59.0 or earlier must be reprinted.** The emitted engine
+    receives the slot as a trailing factory parameter, `GAP`, and the factory's helper
+    list loses four names (below); the runtime refuses a factory printed against another
+    list.
 
 - A budgeted assembly selection RANKS sites with every gap gate lowered as its item, so
   adding the gates moves no site's place in the order. It fits and debits the source
@@ -159,6 +159,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
   `export` on internal values that nothing outside their module reads. Tables and
   artifacts are byte-identical.
+
+- **An emitted assembly factory takes four fewer parameters.** `TRIVIALABELS`,
+  `scanTrivia`, `commitTriviaScan` and `scanTriviaCompact` were declared by every factory
+  and read by no generated code; they were kept so factories from older runtimes would
+  still bind by position, but an artifact is only ever run by the runtime that emitted
+  it. Each emitted factory's parameter list is shorter by those four names, and the
+  closure engine no longer builds the per-assembly trivia-label map no factory read.
+  - **An artifact printed by 0.59.0 or earlier does not run on this runtime.** Its
+    factory takes its helpers by position, so it needs the parser rebuilt by this
+    version.
+  - **The runtime refuses a printed factory whose helper list is not its own.** Before
+    calling one, it compares the factory's declared parameter count with the helpers it
+    passes, and throws "printed by an older or newer parseman" with both counts. The
+    factory's own guard only catches a runtime with fewer helpers, and one printed before
+    0.59.0 has none: it bound the wrong helpers and failed partway through a parse
+    (`_BUF is not a constructor`). Test: `test/unit/precompiled-factory-arity-runtime.test.ts`.
 
 ## 0.59.0 — 2026-11-02
 
