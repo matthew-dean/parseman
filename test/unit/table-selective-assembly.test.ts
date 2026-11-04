@@ -21,7 +21,7 @@ import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
-import { selectHotSites } from '../../src/table/select-hot.ts'
+import { fitHotSites, selectHotSites } from '../../src/table/select-hot.ts'
 import { run } from '../../src/functional/run.ts'
 import { cssRules } from '../../examples/css/parser.ts'
 import { jsonRules, jsonWs } from '../../bench/table-grammars.ts'
@@ -261,6 +261,42 @@ describe('the macro build ships a selective assembly within its module budget', 
     }
     expect(filled).toBe(true)
   }, 60_000)
+
+  it('each budget\'s selection is a prefix of every larger budget\'s, when the estimate overshoots', () => {
+    // The real source is not the sum of the estimates: a site can pull in a shared
+    // helper, and can also remove the wrapper another site needed to call it.
+    const count = 80
+    const bytesOf = (ip: number): number => 40 + (ip * 2_654_435_761 >>> 0) % 400
+    const siteBytes = new Map(Array.from({ length: count }, (_, ip) => [ip, bytesOf(ip)]))
+    const calls = Array.from({ length: count }, (_, ip) => 1 + (ip * 40_503 >>> 0) % 997)
+    const fixed = 500
+    const sourceBytes = (sites: ReadonlySet<number>): number => {
+      let bytes = fixed
+      for (const ip of sites) {
+        bytes += bytesOf(ip) + (ip % 11 === 0 ? 1_500 : 0) + (sites.has(ip + 1) ? -30 : 60)
+      }
+      return bytes
+    }
+    const fitted = (ceiling: number): number[] =>
+      [...fitHotSites([], [], siteBytes, fixed, ceiling, sourceBytes, calls)?.sites ?? []]
+
+    const total = sourceBytes(new Set(siteBytes.keys()))
+    let last: number[] = []
+    let lastEstimated: number[] = []
+    let overshoots = 0
+    for (let ceiling = fixed; ceiling <= total; ceiling += 7) {
+      const sites = fitted(ceiling)
+      expect(sites.slice(0, last.length), `ceiling ${ceiling}`).toEqual(last)
+      expect(sourceBytes(new Set(sites)), `ceiling ${ceiling}`).toBeLessThanOrEqual(Math.max(ceiling, fixed))
+      const estimated = [...selectHotSites([], [], siteBytes, ceiling - fixed, calls)]
+      expect(estimated.slice(0, lastEstimated.length), `ceiling ${ceiling}`).toEqual(lastEstimated)
+      if (sites.length < estimated.length) overshoots++
+      last = sites
+      lastEstimated = estimated
+    }
+    expect(fitted(total).length).toBe(count)
+    expect(overshoots).toBeGreaterThan(100)
+  })
 
   it('a larger budget keeps every site a smaller one selected', () => {
     const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(i % 7 === 0 ? /[0-9]*(?:a|b|c|d|e|f)*/ : /[0-9]*/))] as const)

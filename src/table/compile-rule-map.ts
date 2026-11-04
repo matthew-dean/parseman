@@ -5,7 +5,7 @@ import { collectGrammarReflection, GRAMMAR_REFLECTION, type GrammarReflection } 
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { defaultAssemblyCfgs, emitTableExpression } from './emit.ts'
 import { emitAssemblySource, Unemittable } from './emit-assembly.ts'
-import { selectHotSites } from './select-hot.ts'
+import { fitHotSites } from './select-hot.ts'
 
 /** The most the entry supercompiler may grow an assembly (`entry-supercompiler.ts`, its 5% source cap). */
 const SUPERCOMPILE_GROWTH = 1.05
@@ -376,15 +376,9 @@ export function compileRuleMap(
     const ceiling = budget / SUPERCOMPILE_GROWTH
     // A budget that cannot cover the prelude buys nothing, by design: no refusal.
     if (ceiling <= fixed) return none
-    // Walked down the ranking, one site at a time, so a selection is always a
-    // prefix of the one order. The largest prefix that fits is the answer, and a
-    // larger budget only adds candidates, so it can never lose a site.
-    const ranked = [...selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, ceiling - fixed, profile)]
-    for (; ranked.length > 0; ranked.pop()) {
-      const sites = new Set(ranked)
-      const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites, true).source.length
-      if (bytes <= ceiling) return { sites, bytes: Math.ceil(bytes * SUPERCOMPILE_GROWTH) }
-    }
+    const fit = fitHotSites(artifact.code, Object.values(artifact.rules), siteBytes, fixed, ceiling,
+      sites => emitAssemblySource(table, artifact, cfg, roots, true, sites, true).source.length, profile)
+    if (fit !== undefined) return { sites: fit.sites, bytes: Math.ceil(fit.bytes * SUPERCOMPILE_GROWTH) }
     return {
       ...none,
       refusal: `a site within its ${Math.floor(ceiling)} B selection ceiling (the prelude alone is ${fixed} B)`,

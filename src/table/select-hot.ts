@@ -53,6 +53,33 @@ export function selectHotSites(
   return selected
 }
 
+/**
+ * The largest prefix of the ranking whose real source fits `ceiling`. `siteBytes`
+ * leaves out what sites add around their bodies, so the estimate can overshoot:
+ * each overshoot drops the last site and measures again. Walking down the one
+ * order is what keeps a selection a prefix of any larger budget's: that budget has
+ * every candidate this one has, so it can never settle on fewer. `undefined` when
+ * not even the first site fits.
+ */
+export function fitHotSites(
+  code: readonly number[],
+  entries: readonly number[],
+  siteBytes: ReadonlyMap<number, number>,
+  /** What any selection costs before its first site body. */
+  fixed: number,
+  ceiling: number,
+  sourceBytes: (sites: ReadonlySet<number>) => number,
+  profile?: ArrayLike<number>,
+): { readonly sites: ReadonlySet<number>; readonly bytes: number } | undefined {
+  const ranked = [...selectHotSites(code, entries, siteBytes, ceiling - fixed, profile)]
+  for (; ranked.length > 0; ranked.pop()) {
+    const sites = new Set(ranked)
+    const bytes = sourceBytes(sites)
+    if (bytes <= ceiling) return { sites, bytes }
+  }
+  return undefined
+}
+
 function staticWeights(code: readonly number[], entries: readonly number[]): Map<number, number> {
   let weight = new Map<number, number>()
   const kids: number[] = []
