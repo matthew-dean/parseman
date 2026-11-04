@@ -215,6 +215,31 @@ export const dialectLeaf = composeLeaf([base, rules((g, prior) => ({
     expect(P.run(composed.List!, 'a,b,c').value).toEqual({ count: 3 })
   })
 
+  it('accepts a pre-final composeLeaf() piece that reads prior', () => {
+    const leaf = transformMacro(`import { rules, node, choice, regex, composeLeaf } from 'parseman' with { type: 'macro' }
+const rec = rules(g => ({ V: choice(g.N, g.W), N: regex(/[0-9]+/), W: regex(/[a-z]+/) }))
+const d = rules((g, prior) => ({ V: choice(prior.V, regex(/@[a-z]+/)) }))
+export const lf = composeLeaf([rec, d, rules(g => ({ T: node('T', g.V, k => ({ v: k[0].value })) }))])`,
+    '/pkg/x.ts', new Set(['parseman']))
+    const { lf } = evalMacroExports(leaf!.code, { ...P }) as { lf: Record<string, P.Runnable> }
+    for (const [input, v] of [['1', '1'], ['a', 'a'], ['@a', '@a']]) {
+      expect(P.run(lf.T!, input!).value).toEqual({ v })
+    }
+    expect(P.run(lf.T!, '%').ok).toBe(false)
+  })
+
+  it('types prior from a composed base too', () => {
+    const inner = P.rules(() => ({ List: P.regex(/a/) }))
+    const base = P.compose([inner, P.rules(() => ({ Extra: P.regex(/b/) }))])
+    const composed = P.compose([base, P.rules((_g, prior: P.PriorRules<typeof base>) => ({
+      List: P.choice(prior.List, prior.Extra),
+    }))])
+    expect(P.run(composed.List, 'b').ok).toBe(true)
+    // @ts-expect-error a rule the composed base does not define
+    const misspelled = (prior: P.PriorRules<typeof base>) => prior.Nope
+    expect(misspelled).toBeTypeOf('function')
+  })
+
   it('fails a composeLeaf() build on a prior.X nothing defines', () => {
     expect(() => transformMacro(`import { rules, node, regex, composeLeaf } from 'parseman' with { type: 'macro' }
 export const g = composeLeaf([rules(g => ({ Item: regex(/a/) })), rules((g, prior) => ({ List: node('List', prior.List, c => c) }))])`, '/pkg/x.ts', new Set(['parseman'])))

@@ -16,7 +16,7 @@ import { borrowedRuleMessage, borrowedRuleReference } from './borrowed-rules.ts'
 import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
 import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
-import { linkRules, RULE_ORDER, RULES_RECIPE, type LinkOptions, type RulesRecipe } from '../combinators/parser.ts'
+import { linkRules, RULE_ORDER, RULES_RECIPE, type KnownRuleNames, type LinkOptions, type RulesRecipe } from '../combinators/parser.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, ParseContext, ParseResult } from '../types.ts'
 import type { Runnable } from '../functional/run.ts'
 import { PlainNode, PlainTaggedNode } from '../cst/plain.js'
@@ -342,7 +342,7 @@ function recipesOf(item: LinkableTable | Record<string, unknown>): readonly Rule
  * `rules({ trivia }, …)` map's own, or a runtime composition's composing trivia.
  * Outermost wins over every linked rule, inherited ones included; `parser` /
  * `noTrivia` still override locally. */
-function composingTriviaOf(items: Array<LinkableTable | Record<string, unknown>>): Combinator<unknown> | undefined {
+function composingTriviaOf(items: ReadonlyArray<LinkableTable | Record<string, unknown>>): Combinator<unknown> | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i] as Record<symbol, unknown>
     if (item[LINKED] !== undefined) {
@@ -359,7 +359,7 @@ function composingTriviaOf(items: Array<LinkableTable | Record<string, unknown>>
 
 /** The rule names a linked composition defines, in first-declaration order —
  * known WITHOUT linking, from each item's own declaration order. */
-function declaredNamesOf(items: Array<LinkableTable | Record<string, unknown>>): string[] {
+function declaredNamesOf(items: ReadonlyArray<LinkableTable | Record<string, unknown>>): string[] {
   const names = new Set<string>()
   for (const item of items) {
     const linked = (item as Record<symbol, unknown>)[LINKED] !== undefined
@@ -419,6 +419,16 @@ function linkComposition(
   return map
 }
 
+/** The rules each item spells out. An item that spells out none, such as a plain
+ * `Record<string, …>`, could hold anything, so the whole result stays open. */
+type ItemRuleNames<Item> = Item extends unknown
+  ? [KnownRuleNames<Item>] extends [never] ? string : KnownRuleNames<Item>
+  : never
+
+/** A composition's rules: every name its items spell out, plus lookup by any string. */
+export type ComposedRules<Items extends readonly unknown[]> =
+  Record<string, Runnable> & { [K in ItemRuleNames<Items[number]>]: Runnable }
+
 /**
  * Compose grammars into ONE parser map — the only public composition entry point.
  * `compose([base, ext, …])`: a later entry's rule WINS by name, and because every
@@ -435,23 +445,23 @@ function linkComposition(
  * costs a walk of the items' declared names. For speed, `compile()` a rule of it;
  * `compile()` specialises when the environment allows and falls back under CSP.
  */
-export function compose(
-  items: Array<LinkableTable | Record<string, unknown>>,
+export function compose<const Items extends ReadonlyArray<LinkableTable | Record<string, unknown>>>(
+  items: Items,
   /**
    * Host mode for the composed grammar, same meaning as `compile(g, { hostMode })`.
    * The interpreter routes by host at parse time; this records `'cst'` on every rule
    * so `run()` can refuse a mismatched host instead of building the wrong tree.
    */
   opts?: { hostMode?: HostMode },
-): Record<string, Runnable> {
+): ComposedRules<Items> {
   if (items.some(item => (item as Record<symbol, unknown>)[LEAF_COMPOSED] === true)) {
     throw new Error('compose: a composeLeaf() result is terminal and cannot be composed again')
   }
-  return linkedMap(items, opts, false)
+  return linkedMap(items, opts, false) as ComposedRules<Items>
 }
 
 function linkedMap(
-  items: Array<LinkableTable | Record<string, unknown>>,
+  items: ReadonlyArray<LinkableTable | Record<string, unknown>>,
   opts: { hostMode?: HostMode } | undefined,
   leaf: boolean,
 ): Record<string, Runnable> {
@@ -485,10 +495,10 @@ function linkedMap(
  * At runtime it is the same lazy link as `compose()`, marked terminal. The bench and
  * differential harnesses import un-macro'd grammar modules and run this path.
  */
-export function composeLeaf(
-  items: Array<LinkableTable | Record<string, unknown>>,
-): Record<string, Runnable> {
-  return linkedMap(items, undefined, true)
+export function composeLeaf<const Items extends ReadonlyArray<LinkableTable | Record<string, unknown>>>(
+  items: Items,
+): ComposedRules<Items> {
+  return linkedMap(items, undefined, true) as ComposedRules<Items>
 }
 
 /** Whether `map` is a runtime composition (a combinator map) rather than a

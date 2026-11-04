@@ -676,7 +676,9 @@ export function classifyRuleMap(
       let resolved: Combinator<unknown> | undefined
       try { resolved = def.thunk() } catch { resolved = undefined }
       if (resolved === undefined) {
-        if ((p as unknown as { _ruleName?: string })._ruleName) externalRefs.add(p)
+        // A `prior.X` placeholder is a hole too: the composition fills it by name.
+        const hole = p as unknown as { _ruleName?: string; _priorOf?: string }
+        if (hole._ruleName !== undefined || hole._priorOf !== undefined) externalRefs.add(p)
         return
       }
       scanExternal(resolved)

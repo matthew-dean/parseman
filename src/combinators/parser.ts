@@ -173,19 +173,26 @@ type RulesResult<T extends Record<string, Combinator<unknown>>> =
  * top-level `node()` unwrapped to its body, so a composing grammar can re-reduce,
  * wrap or extend an inherited rule without re-spelling it:
  *
- *   rules((g, prior) => ({ Value: node('Value', prior.Value, reduceValue) }))
+ *   rules((g, prior: PriorRules<typeof css>) => ({
+ *     Value: node('Value', prior.Value, reduceValue),
+ *   }))
  *
- * Its `g.X` references stay bound to the composition (open recursion). Name the base
- * grammar so `prior.X` is typed and a misspelled rule fails to compile:
+ * Naming the base grammar types `prior.X`, and a misspelled rule fails to compile.
  *
- *   rules((g, prior: PriorRules<typeof css>) => ({ … }))
- *
- * A rule's value is `unknown` here, because unwrapping a `node()` changes it. Unnamed,
- * the parameter answers any string. See `docs/guide/extending.md`.
+ * Its `g.X` references stay bound to the composition (open recursion). A rule's value
+ * is `unknown` here, because unwrapping a `node()` changes it. Unnamed, the parameter
+ * answers any string, which `noUncheckedIndexedAccess` reads as possibly undefined.
+ * See `docs/guide/extending.md`.
  */
-export type PriorRules<Base = Record<string, Combinator<unknown>>> = {
-  readonly [K in keyof Base & string as Base[K] extends Combinator<unknown> | Runnable ? K : never]: Combinator<unknown>
-}
+export type PriorRules<Base = Record<string, Combinator<unknown>>> =
+  [KnownRuleNames<Base>] extends [never]
+    ? { readonly [name: string]: Combinator<unknown> }
+    : { readonly [K in KnownRuleNames<Base>]: Combinator<unknown> }
+
+/** The rule names a grammar's type spells out: not its index signature, if it has one. */
+export type KnownRuleNames<Base> = keyof {
+  [K in keyof Base as string extends K ? never : number extends K ? never : Base[K] extends Combinator<unknown> | Runnable ? K : never]: unknown
+} & string
 
 const priorUnfilled = (key: string): Error =>
   new Error(`compose: prior.${key} is read, but no grammar composed before it defines "${key}"`)
