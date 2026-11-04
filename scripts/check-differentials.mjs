@@ -35,14 +35,14 @@
  *   node scripts/check-differentials.mjs --list     # print the registry, run nothing
  *   node scripts/check-differentials.mjs --only=id[,id]
  *
- * ENVIRONMENT. Four of the nine registered differentials drive JESS'S grammars
+ * ENVIRONMENT. Four of the twelve registered differentials drive JESS'S grammars
  * over JESS'S corpora, which live in a jess worktree (`JESS_ROOT`) that this repo
  * does not vendor. There is no default: a checkout nobody built (a mirror that
  * tracks `dev` while its packages' `lib/` stay at an older commit) makes every one
  * of them red before any plant. Unset, they are reported UNPROVEN — never as
  * passing. Set to a checkout whose `lib/` is older than its last source commit,
  * the gate refuses to run them and fails. `--strict` is
- * what a release runs; plain mode is what CI runs, and CI proves the three
+ * what a release runs; plain mode is what CI runs, and CI proves the eight
  * self-contained ones. An UNPROVEN entry is a differential whose teeth are
  * unknown in this environment, and the summary says so on its own line so it
  * cannot be read as a green.
@@ -130,7 +130,9 @@ function normalise(out) {
     // sweep "moves" under every plant and the gate reports universal teeth. This
     // was the second self-inflicted false positive found while writing it.
     .replace(/sweep-\d+\.jsonl/g, '<sink>')
-    .replace(/\bat \d{2}:\d{2}:\d{2}\b/g, 'at <time>')
+    // vitest prints `Start at  13:09:10` with TWO spaces: one space here let the
+    // clock leak through, so a blind plant read as caught whenever the second ticked.
+    .replace(/\bat\s+\d{2}:\d{2}:\d{2}\b/g, 'at <time>')
     .trim()
 }
 
@@ -178,11 +180,10 @@ const REGISTRY = [
     id: 'table-lowering-identity',
     needs: 'repo',
     file: 'test/unit/table-identity.test.ts (bench/table-lowering-identity.ts)',
-    legs: 'interpreted combinator graph vs compose() codegen vs tableRules (shipped) vs execRules (reference driver), digested per case',
+    legs: 'interpreted combinator graph vs the closures-only table (tableRules over the program with asm: []) vs tableRules (shipped) vs execRules (reference driver), digested per case',
     cleanExit: 0,
-    // The vitest test, not `bench/table-lowering-sweep.ts`: the sweep prints its
-    // mismatches and exits 0 whatever it finds, so it is a report, not a gate.
-    // This is the subset CI actually enforces.
+    // The vitest test, not the hand-run sweep it replaced: that printed its
+    // mismatches and exited 0 whatever it found, so it was a report, not a gate.
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-identity.test.ts']),
     plants: [
       { defect: 'emit-node-span', expect: 'moves' },
@@ -219,6 +220,158 @@ const REGISTRY = [
     cleanExit: 0,
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-routed-arm-gate.test.ts']),
     plants: [{ defect: 'rgate-miss-set-short', expect: 'moves' }],
+  },
+  {
+    id: 'loop-continuation',
+    needs: 'repo',
+    file: 'test/unit/table-loop-continuation.test.ts',
+    legs: 'generated padded-operator chains and separated lists (operators, prefix minus, groups, spacing, one-character defects) through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-loop-continuation.test.ts']),
+    plants: [
+      { defect: 'loop-sep-gate-before-trivia', expect: 'moves' },
+      { defect: 'loop-sep-gate-before-trivia-emitted', expect: 'moves' },
+      { defect: 'seq-pad-first-set-drops-rest', expect: 'moves' },
+      { defect: 'seplist-first-item-set-dropped', expect: 'moves' },
+      { defect: 'repeat-lead-gate-kept', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'dispatch-otherwise-commit',
+    needs: 'repo',
+    file: 'test/unit/dispatch-otherwise-commit.test.ts',
+    legs: 'a statement dispatch with a committing call case and an otherwise() fallback, committed and uncommitted, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/dispatch-otherwise-commit.test.ts']),
+    plants: [
+      { defect: 'otherwise-commit-bit-dropped', expect: 'moves' },
+      { defect: 'otherwise-commit-closure-routed', expect: 'moves' },
+      { defect: 'otherwise-commit-emitted', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'prefix-arm',
+    needs: 'repo',
+    file: 'test/unit/table-prefix-arm.test.ts',
+    legs: 'generated argument lists over choice(sequence(X, a), X) inside a node, plus a choice whose next arm is not a prefix, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input, and the shared term visit count',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-prefix-arm.test.ts']),
+    plants: [
+      { defect: 'prefix-arm-any-prefix', expect: 'moves' },
+      { defect: 'prefix-arm-off', expect: 'moves' },
+      { defect: 'prefix-arm-tolerant-factored', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'gap-gate',
+    needs: 'repo',
+    file: 'test/unit/table-gap-gate.test.ts',
+    legs: 'generated SCSS-shaped operator chains (padded operators, a sum arm led by another level\'s gap, comments and tabs in gaps, one-character defects) through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar (AST, CST host, tolerant) and vs execRules (line tracking): whole RunResult digests per input, and operator-node visit counts',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-gap-gate.test.ts']),
+    plants: [
+      { defect: 'gap-scan-wrong-offset', expect: 'moves' },
+      { defect: 'gap-scan-wrong-offset-emitted', expect: 'moves' },
+      { defect: 'gap-inline-scan-wrong-offset-emitted', expect: 'moves' },
+      { defect: 'gap-follow-narrowed', expect: 'moves' },
+      { defect: 'gap-slot-any-row', expect: 'moves' },
+      { defect: 'gap-slot-any-row-emitted', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'routed-arm-gate2',
+    needs: 'repo',
+    file: 'test/unit/table-routed-arm-gate2.test.ts',
+    legs: 'a name-once statement dispatch whose spaced-declaration arm is gated on a colon and the gap after it (OP_RGATE2), glued and spaced heads, through execRules (one-character gate), closure and precompiled emitted tableRules, vs the interpreted grammar: whole RunResult digests per input, and arm visit counts',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-routed-arm-gate2.test.ts']),
+    plants: [
+      { defect: 'rgate2-second-at-first', expect: 'moves' },
+      { defect: 'rgate2-second-at-first-ascii', expect: 'moves' },
+      { defect: 'rgate2-second-at-first-emitted', expect: 'moves' },
+      { defect: 'rgate2-second-narrowed', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'trivia-scope',
+    needs: 'repo',
+    file: 'test/unit/table-trivia-scope.test.ts',
+    legs: 'rule bodies with a gap gate, an optional-literal lead, a separator and a routed arm, run under a caller\'s comment trivia (encoded first as entries, and first reached from the caller) and as rules of a trivia map referenced from a cleared region, over generated inputs with comments in every gap, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar, strict and tolerant: whole RunResult digests and expected sets per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-trivia-scope.test.ts']),
+    plants: [
+      { defect: 'scope-memo-one-slot', expect: 'moves' },
+      { defect: 'ref-first-set-caller-trivia', expect: 'moves' },
+      { defect: 'gap-lead-caller-trivia', expect: 'moves' },
+      { defect: 'gap-gate-unknown-trivia', expect: 'moves' },
+      { defect: 'token-body-caller-scope', expect: 'moves' },
+      { defect: 'choice-classes-derived-when-disjoint', expect: 'moves' },
+      { defect: 'follow-class-live-trivia', expect: 'moves' },
+      { defect: 'guard-set-derived', expect: 'moves' },
+      { defect: 'routed-gate-unknown-trivia', expect: 'moves' },
+      { defect: 'routed-fallback-one-scope', expect: 'moves' },
+      { defect: 'choice-widened-exclusive', expect: 'moves' },
+      { defect: 'sep-sentinel-no-trivia', expect: 'moves' },
+      { defect: 'probe-gated-arm-exec', expect: 'moves' },
+      { defect: 'probe-gated-arm-closure', expect: 'moves' },
+      { defect: 'probe-gated-arm-emitted', expect: 'moves' },
+      { defect: 'lex-choice-probe-miss', expect: 'moves' },
+      { defect: 'lex-fixed-probe-miss', expect: 'moves' },
+      { defect: 'node-gate-narrowed', expect: 'moves' },
+      { defect: 'follow-sentinel-through-ref', expect: 'moves' },
+      { defect: 'probe-exclusive-miss-exec', expect: 'moves' },
+      { defect: 'probe-exclusive-miss-closure', expect: 'moves' },
+      { defect: 'probe-exclusive-miss-emitted', expect: 'moves' },
+      { defect: 'list-item-no-tag-fallback', expect: 'moves' },
+      { defect: 'list-resync-tag-exec', expect: 'moves' },
+      { defect: 'list-resync-tag-closure', expect: 'moves' },
+      { defect: 'list-resync-tag-emitted', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'trivia-lead-gate',
+    needs: 'repo',
+    file: 'test/unit/table-trivia-lead-gate.test.ts',
+    legs: 'generated inputs with spaces, comments and a lone slash before and inside every construct, labelled and unlabelled trivia, plain, root-trivia, line-tracking and CST-host runs, through closure and emitted tableRules vs execRules (which has no lead gate): whole RunResult digests per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-trivia-lead-gate.test.ts']),
+    plants: [
+      { defect: 'trivia-lead-closure-narrow', expect: 'moves' },
+      { defect: 'trivia-lead-emitted-narrow', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'regex-escape-first-sets',
+    needs: 'repo',
+    file: 'test/unit/regex-escape-first-set-engines.test.ts',
+    legs: 'trivia, choice arms, optional terms, peek-guarded sequences, gated collapses and tokens over regexes with octal, control, property, code-point and surrogate-pair escapes, astral literals, high-surrogate sets, v-mode classes and non-ASCII /i letters, through the interpreter, execRules, closure and emitted tableRules: whole RunResult digests across the table engines, value/span/unconsumed against the interpreter',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/regex-escape-first-set-engines.test.ts']),
+    plants: [
+      { defect: 'first-set-property-escape-as-letter', expect: 'moves' },
+      { defect: 'first-set-escaped-pair-split', expect: 'moves' },
+      { defect: 'lead-class-astral-plain', expect: 'moves' },
+      { defect: 'lead-first-set-astral-plain', expect: 'moves' },
+      { defect: 'lead-intersects-astral-plain', expect: 'moves' },
+      { defect: 'lead-trivia-collapse-astral-plain', expect: 'moves' },
+      { defect: 'scan-shape-v-as-code-units', expect: 'moves' },
+      { defect: 'first-set-narrow-raw', expect: 'moves' },
+      { defect: 'first-set-narrow-astral-explicit', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'regex-first-set-property',
+    needs: 'repo',
+    file: 'test/unit/regex-first-set-property.test.ts',
+    legs: 'regex() first sets of seeded generated patterns (escapes incl. surrogate pairs, classes, v-mode nesting and set operations, \\q{}, astral literals, groups, lookarounds, quantifiers) under i/u/v/s/m flag sets vs a sticky RegExp tried at code points on both sides of the set, each followed by the rest of a witness the pattern is built to match: a match outside the set is a failure, and too few matches inside it fail the floor; then the same at every node of generated sequence/choice/optional/peek/not/literal trees over those atoms, against the tree as one RegExp and against the interpreter',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/regex-first-set-property.test.ts']),
+    plants: [
+      { defect: 'first-set-v-class-flat', expect: 'moves' },
+      { defect: 'first-set-property-escape-as-letter', expect: 'moves' },
+      { defect: 'first-set-escaped-pair-split', expect: 'moves' },
+      { defect: 'first-set-narrow-raw', expect: 'moves' },
+    ],
   },
   {
     id: 'jess-oracle',
@@ -287,13 +440,16 @@ const REGISTRY = [
  * is the operator's own uncommitted work being confused with a plant, so the gate
  * declines rather than take the risk.
  */
+/** Every file a plant edits. Most are under `src/`; `macro-timing-exit-off` edits `bench/`. */
+const PLANTED_FILES = [...new Set(Object.values(DEFECTS).flatMap(d => d.edits.map(e => e.file)))]
+
 function assertCleanSrc() {
   let porcelain = ''
-  try { porcelain = execFileSync('git', ['status', '--porcelain', '--', 'src'], { cwd: REPO, encoding: 'utf8' }) }
+  try { porcelain = execFileSync('git', ['status', '--porcelain', '--', 'src', ...PLANTED_FILES], { cwd: REPO, encoding: 'utf8' }) }
   catch { return } // not a checkout: nothing to protect
   if (porcelain.trim() !== '') {
-    console.error('REFUSING TO RUN: `src/` has uncommitted changes.\n'
-      + 'This gate edits `src/` in place and restores it. It will not do that on top of\n'
+    console.error('REFUSING TO RUN: `src/` or a planted file has uncommitted changes.\n'
+      + 'This gate edits those files in place and restores them. It will not do that on top of\n'
       + 'work it did not write. Commit or set the changes aside, then re-run.\n' + porcelain)
     process.exit(2)
   }
@@ -310,7 +466,7 @@ function plant(id) {
     const before = readFileSync(p, 'utf8')
     const n = before.split(e.find).length - 1
     if (n !== 1) {
-      for (const s of saved) writeFileSync(s.path, s.text)
+      for (const s of [...saved].reverse()) writeFileSync(s.path, s.text)
       throw new Error(
         `plant '${id}': anchor occurs ${n} times in ${e.file}, expected exactly 1.\n`
         + 'The code moved out from under the plant. Re-derive it against the current source —\n'
@@ -325,11 +481,15 @@ function plant(id) {
 
 function unplant() {
   if (planted === null) return
-  for (const s of planted) writeFileSync(s.path, s.text)
+  // NEWEST FIRST: two edits to one file each saved the text before them, so
+  // restoring in order would end on the first edit's result.
+  for (const s of [...planted].reverse()) writeFileSync(s.path, s.text)
   planted = null
 }
 
-process.on('exit', unplant)
+// `--list` and every early exit leave through here too, so the scratch directory
+// goes with them.
+process.on('exit', () => { unplant(); rmSync(TMP, { recursive: true, force: true }) })
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { unplant(); process.exit(130) })
 
 /* ------------------------------------------------------------------ *

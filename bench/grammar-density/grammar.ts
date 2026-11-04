@@ -29,6 +29,7 @@ import {
   parser, trivia, rules,
   type Combinator,
 } from '../../src/index.ts'
+import { TreeNode } from './tree-node.js'
 
 export type DensityNode = {
   type: string
@@ -47,27 +48,18 @@ type DensityBuild = (
 ) => DensityNode
 
 /**
- * These reducers deliberately have no free bindings. The gate copies this
- * grammar to the pinned 0.46 source compiler as well as compiling it at HEAD;
- * both need to serialize and run the same node construction work before their
- * timings are comparable.
+ * The reducers' one free binding is `TreeNode`, from `tree-node.js` in this
+ * directory, which the gates copy with this file. Nodes are constructor-built, as a
+ * grammar should build the nodes it keeps (`src/cst/plain.d.ts`).
  */
-const stylesheetNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
-  type: 'Stylesheet', span: { start: span.start, end: span.end }, children: [...children],
-  rawCount: rawChildren.length, triviaLen: triviaLog.length,
-})
-const ruleNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
-  type: 'Rule', span: { start: span.start, end: span.end }, children: [...children],
-  rawCount: rawChildren.length, triviaLen: triviaLog.length,
-})
-const declarationNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
-  type: 'Declaration', span: { start: span.start, end: span.end }, children: [...children],
-  rawCount: rawChildren.length, triviaLen: triviaLog.length,
-})
-const dimensionNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) => ({
-  type: 'Dimension', span: { start: span.start, end: span.end }, children: [...children],
-  rawCount: rawChildren.length, triviaLen: triviaLog.length,
-})
+const stylesheetNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) =>
+  new TreeNode('Stylesheet', span.start, span.end, [...children], rawChildren.length, triviaLog.length)
+const ruleNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) =>
+  new TreeNode('Rule', span.start, span.end, [...children], rawChildren.length, triviaLog.length)
+const declarationNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) =>
+  new TreeNode('Declaration', span.start, span.end, [...children], rawChildren.length, triviaLog.length)
+const dimensionNode: DensityBuild = (children, _fields, span, rawChildren, triviaLog) =>
+  new TreeNode('Dimension', span.start, span.end, [...children], rawChildren.length, triviaLog.length)
 
 const ws = regex(/[ \t\n\r\f]+/)
 const comment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)

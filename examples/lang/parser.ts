@@ -20,6 +20,9 @@ import {
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
 import type { Expr, BinaryExpr } from './ast.ts'
+import { NumberNode, BoolNode, IdentNode, BinaryNode, UnaryNode, CallNode, IfNode } from './lang-node.js'
+// Re-exported so a printed copy of this grammar can bind the names its reducers call.
+export { NumberNode, BoolNode, IdentNode, BinaryNode, UnaryNode, CallNode, IfNode } from './lang-node.js'
 
 // ---------------------------------------------------------------------------
 // Atoms
@@ -29,22 +32,22 @@ const ws = trivia(regex(/\s*/))
 
 const number: Combinator<Expr> = transform(
   regex(/-?[0-9]+(?:\.[0-9]+)?/),
-  (s, span) => ({ type: 'number', value: parseFloat(s), span }) as Expr
+  (s, span): Expr => new NumberNode(parseFloat(s), span)
 )
 
 const boolTrue: Combinator<Expr> = transform(
   regex(/true(?!\w)/),
-  (_, span) => ({ type: 'bool', value: true, span }) as Expr
+  (_, span): Expr => new BoolNode(true, span)
 )
 
 const boolFalse: Combinator<Expr> = transform(
   regex(/false(?!\w)/),
-  (_, span) => ({ type: 'bool', value: false, span }) as Expr
+  (_, span): Expr => new BoolNode(false, span)
 )
 
 const ident: Combinator<Expr> = transform(
   regex(/[a-zA-Z_]\w*/),
-  (name, span) => ({ type: 'ident', name, span }) as Expr
+  (name, span): Expr => new IdentNode(name, span)
 )
 
 // ---------------------------------------------------------------------------
@@ -53,7 +56,7 @@ const ident: Combinator<Expr> = transform(
 
 // Build a left-associative binary operator chain:
 //   base (op base)* → nested BinaryExpr nodes
-function leftAssoc<Op extends string>(
+function leftAssoc<Op extends BinaryExpr['op']>(
   base: Combinator<Expr>,
   opParser: Combinator<Op>,
 ): Combinator<Expr> {
@@ -62,7 +65,7 @@ function leftAssoc<Op extends string>(
     ([left, rest], span) => {
       let node: Expr = left
       for (const [op, right] of rest) {
-        node = { type: 'binary', op, left: node, right, span } as Expr
+        node = new BinaryNode(op, node, right, span)
       }
       return node
     }
@@ -77,8 +80,7 @@ export const { expr } = rules<{ expr: Combinator<Expr> }>(g => {
       regex(/then(?!\w)/), g.expr as Combinator<Expr>,
       regex(/else(?!\w)/), g.expr as Combinator<Expr>,
     ),
-    ([, condition, , then, , else_], span) =>
-      ({ type: 'if', condition, then, else: else_, span }) as Expr
+    ([, condition, , then, , else_], span): Expr => new IfNode(condition, then, else_, span)
   )
 
   // call = atom ('(' args ')')?
@@ -103,7 +105,7 @@ export const { expr } = rules<{ expr: Combinator<Expr> }>(g => {
     ([callee, args], span) => {
       if (args === null) return callee
       if (callee.type !== 'ident') return callee  // only ident can be a callee
-      return { type: 'call', callee: callee.name, args, span } as Expr
+      return new CallNode(callee.name, args, span)
     }
   )
 
@@ -111,11 +113,11 @@ export const { expr } = rules<{ expr: Combinator<Expr> }>(g => {
   const unary: Combinator<Expr> = choice(
     transform(
       sequence(literal('-'), call),
-      ([, operand], span) => ({ type: 'unary', op: '-', operand, span }) as Expr,
+      ([, operand], span): Expr => new UnaryNode('-', operand, span),
     ),
     transform(
       sequence(literal('!'), call),
-      ([, operand], span) => ({ type: 'unary', op: '!', operand, span }) as Expr,
+      ([, operand], span): Expr => new UnaryNode('!', operand, span),
     ),
     call,
   )

@@ -15,10 +15,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **A sidecar names the artifact it was written for.** It records `artifact`, a
   SHA-256 digest of the chunk (less a trailing `sourceMappingURL` comment), and a
   downstream build that finds a different artifact beside it fails instead of
-  composing the pieces of another build. A sidecar written by 0.58.0 has no digest
-  and is read as before. The digest is taken in a `generateBundle` hook of order
-  `post`, after Vite's own hook rewrites a chunk's dynamic `import()` through its
-  preload helper; taken earlier, every such Vite artifact read as stale.
+  composing the pieces of another build. A sidecar written by an earlier release has
+  no digest and is read as before. The digest is taken in a `generateBundle` hook of
+  order `post`, after Vite's own hook rewrites a chunk's dynamic `import()` through
+  its preload helper; taken earlier, every such Vite artifact read as stale.
 - **A bundled ancestor is written out, not as a package reference.** An ancestor
   imported from another package was always recorded as `{ from, name }`, resolved
   from the artifact's location. That holds only where the build keeps the package
@@ -39,6 +39,337 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   now each get its pieces, where before neither did, and an export reached through
   two `export *` paths to the same declaration is one binding, not an ambiguity. See
   `test/unit/carried-pieces-sidecar.test.ts`.
+- **The frozen ablation copies `src/table/exec-baseline.ts` and `encode-baseline.ts` are
+  removed**, with the `PM_TABLE_COUNT` row counters in the reference driver `exec.ts`,
+  which only the deleted experiment benches set. None of them is reachable from a
+  published entry point, so nothing a consumer imports changes. The experiment scripts
+  nothing ran go with them, and their write-ups move to `notes/history/`.
+
+## 0.60.0 — 2026-11-03
+
+- **A sequence led by an optional pad has its operator's first set.** A `regex()` that
+  may match empty still reports `any` as its own first set, since it can match empty
+  anywhere, but it now also carries the first characters of its non-empty matches. A
+  sequence, which tracks nullability itself, unions those with the next term's, so
+  `sequence(regex(/[ \t]*/), regex(/[*%]/), regex(/[ \t]*/))` is `{ws, *, %}` instead
+  of `any`. A repeat of such an operator now has an item class: at a value end (`;`,
+  `)`, `,`) an operator chain `A (op A)*` stops on the character instead of opening
+  each level's operator to scan an empty pad and fail.
+  Jess's SCSS grammar writes its math operators this way: its generated workload parses
+  in 13.1% fewer marginal instructions per parse (JIT, against 0.58.0). Trees are
+  unchanged.
+
+  The narrowed set is read by two gates only, both in strict assemblies: a repeat
+  item's class and the gap gate below. Each applies it only where the interpreter
+  does not test that child's set itself: the interpreter's repeat, node and attempt
+  guard on the construction-time set they were built with (now recorded on the def
+  as `guarded`), and where they do, the table tests that same set. A node's gate is
+  not narrowed: its miss reports a static set, which matches what entering the node
+  reports only where the body's first set is finite without the pad (a `keywords()`
+  term reports `keyword`, a list its item set). Everything else reads first sets as
+  0.58.0 did (`firstSetOf`
+  with `consuming` false): a sequence's construction-time set, tolerant recovery's
+  resync sentinels (a follow sentinel reads no trivia, as the interpreter's
+  `followSentinels`; a list's separator sentinel reads the live trivia, as the
+  interpreter parses the separator there), optional and lookahead gates, an
+  attempt's gate, and a choice's classes. A choice the interpreter dispatches on its
+  arms' construction-time sets (`disjoint`) is classed on those same sets. Any other
+  choice tries its arms in order and merges their failures; where an arm's class
+  takes a reference's installed trivia and that makes the classes disjoint, the site
+  stays on the ordered path, so the arms beside it still report what they wanted.
+  Where the trivia that may follow a pad is not known (the body of an entry that
+  installs no trivia of its own, which runs under its caller's), no gate is narrowed
+  and no routed gate is laid down. `examples/graphql` and `examples/css` emit 6 B and
+  21 B more for the trivia-free follow classes.
+
+- **A separated list ends on a character its separator cannot start.** Past its
+  minimum, a `sepBy()` whose separator cannot match empty and is not itself one
+  terminal now tests the character after the gap against the separator's first set in
+  both table engines, and ends the list there without entering the separator. The
+  class is the list row's own (flag 8, `ip + 8`), not the recovery sentinel, and is
+  laid down only where entering the separator costs more than the test: a literal or
+  regex separator is one character test already, so its list is not tested at every
+  item. A `field(…, { leadingTrivia: true })` separator, a completions probe and
+  tolerant recovery keep entering it. `test/unit/table-loop-continuation.test.ts`
+  compares every table reader with the interpreter over generated operator chains and
+  lists, and is registered in `check:differentials`.
+
+- **`otherwise(p, { commit: false })`.** A `dispatch()` commits whenever a selected branch
+  fails. The option keeps that cut on the `when()` cases and lets the fallback fail
+  uncommitted, so a statement read once by its name, which no fallback arm reads, ends
+  the statement list instead of stopping the parse, while a broken call (a `when()`
+  case) still stops it. The interpreter, every table engine, the IR printer and the
+  macro evaluator carry it. Test: `test/unit/dispatch-otherwise-commit.test.ts`.
+
+- **An arm whose next sibling is its own prefix parses the prefix once.**
+  `choice(sequence(X, a), X)`, with the choice's value unused, is encoded with its first
+  arm as `sequence(X, optional(a))`, so an `X` with no `a` after it is not parsed again
+  by the next arm. A strict parse reports failures as before. Tolerant recovery and a
+  completions probe run the choice as written: inside the factored arm, `X`'s own
+  recovery would take `a`'s first set for all that may follow it. The table holds both
+  encodings under a new `OP_STRICT` row, which an assembly resolves to one of them.
+  Jess's SCSS mixin argument (`$name: v`, `v...`, `v`) is this shape. Test:
+  `test/unit/table-prefix-arm.test.ts`.
+
+- **An optional repeat reads its item's leading gap once.** An optional repeat item
+  that opens with a gap (a `regex()` that may match empty, or one that starts only with
+  whitespace or a comment's `/`) and then a term with a finite first set gets an
+  `OP_GAPGATE` row. The repeat scans the gap with the item's own regex, ends where the
+  character after it opens no such term (and the item's start opens no arm without
+  the gap), and otherwise enters the item. Where the emitted engine lowers the gap to
+  an inline scan, it scans it so and the row scans it again; otherwise the gap's end
+  goes in a slot, from which the regex row takes it instead of matching again. The
+  slot is a memo of one pure function, keyed by row, position and input. Not under
+  tolerant recovery or a completions probe; the reference driver runs the item as
+  written. The gate holds for no trivia between the gap and its term, so it is laid
+  down only where the encoder knows none runs there. A gap spelled as
+  `optional(<classified trivia>)`, as Jess's Less math operators are, is not a regex
+  and is left as it was. Test: `test/unit/table-gap-gate.test.ts`.
+  - **An artifact printed by 0.59.x or earlier must be reprinted.** The emitted engine
+    receives the slot as a trailing factory parameter, `GAP`, and the factory's helper
+    list loses four names (below); the runtime refuses a factory printed against another
+    list.
+
+- A budgeted assembly selection RANKS sites with every gap gate lowered as its item, so
+  adding the gates moves no site's place in the order. It fits and debits the source
+  it ships, gates included, so the budget bounds the artifact.
+  `emitAssemblySource` takes `gapNeutral` for the ranking. Test:
+  `test/unit/table-gap-gate-selection.test.ts`.
+
+- **A routed arm gate reads two characters where its next term says them.** Where the
+  term after a `routed()` token states its first two characters outright (a literal of
+  two or more characters, or a case-sensitive regex that opens with a character class
+  followed by another or by a positive lookahead over one, such as
+  `regex(/:(?=[ \t\n\r\f])/)`), and no gap before it can start with the first, the
+  encoder emits `OP_RGATE2`: where the character after the token is one of the first,
+  the next one must be one of the second, or the arm fails at the token's end with the
+  term's own set, as entering it would. Two reads, no scan; the second is a code point,
+  so an astral second character is in its set. Jess's Less
+  name-once statement (jess#515) no longer enters its spaced-declaration arm on a
+  glued head (`div:hover`, `color:red`). Test: `test/unit/table-routed-arm-gate2.test.ts`.
+
+- An optional repeat item no longer tests its lead gate twice: the repeat's own item
+  class covers it. And with no separator or gap in front of the item, the item class is
+  tested once per iteration, not twice.
+
+- Fixed: **gates and first sets see the trivia live where they run.** A rule body
+  reached under two trivia scopes is encoded under each, where its rows can depend on
+  the scope (a first set through a nullable term, a gap gate, a routed gate, a
+  reference that installs its rule's trivia), keyed by the trivia's first set. And a
+  first set, the gap walk and the encoding of a rule referenced from a cleared region
+  take the trivia that reference installs (`triviaThroughRef`, as `ref.ts` does) —
+  a choice arm, a gap gate's other arms and a routed gate's next term included —
+  and a `token()` body, which runs with trivia cleared, is encoded under none. That
+  widening is the encoder's: the interpreter's own first sets (its recovery follow
+  sentinels) read a reference as 0.58.0 did (#223). In
+  0.58.0 a routed arm in a rule with no trivia, run under a caller's comment trivia,
+  failed on `a/*c*/:b`, and a repeat in `noTrivia(…)` over a rule of a comment-trivia
+  map with an optional-literal lead stopped at the comment; the new gates had the same
+  blind spot. Test: `test/unit/table-trivia-scope.test.ts`, registered in
+  `check:differentials`.
+
+- Fixed: **a completions probe sees every arm of an ordered choice.** The table
+  engines skipped an arm whose class excluded the character, so its opener never
+  reached `completionsAt`: `choice('ab', 'ac', 'b')` completed `>a` with `"ab"`,
+  `"ac"` only, in every engine and `compile()`, where the interpreter, which enters
+  each arm, adds `"b"`. Under a probe the ordered path now enters every arm, in the
+  reference driver, the closure and emitted engines and a lexical choice, and a
+  lexical choice no arm's class admits records each arm's failure. A dispatch miss on
+  an exclusive choice runs every arm under a probe, as the interpreter's `choice()`
+  does. Parses without a probe are unchanged. Test:
+  `test/unit/table-trivia-scope.test.ts`.
+
+- Fixed: a `sepBy` of `min: 1` whose item's derived set is empty reports the item's
+  tag where the list ends under its minimum, as the interpreter's `failAt` does, in
+  every table engine; a resync error still carries the empty derived set. A list row
+  says which with flag bit 16. Test: `test/unit/table-trivia-scope.test.ts`.
+
+- Fixed: a `sepBy` of `min: 1` whose first item fails reports the item's derived set at
+  the list's start in every table reader, as the interpreter does (`repeat.ts`
+  `failAt`). The tables reported what the failed item left, e.g. `")"` inside the group
+  of `x:(1;` where the interpreter said what may start a value.
+
+- **An emitted assembly factory takes four fewer parameters.** `TRIVIALABELS`,
+  `scanTrivia`, `commitTriviaScan` and `scanTriviaCompact` were declared by every factory
+  and read by no generated code; they were kept so factories from older runtimes would
+  still bind by position, but an artifact is only ever run by the runtime that emitted
+  it. Each emitted factory's parameter list is shorter by those four names, and the
+  closure engine no longer builds the per-assembly trivia-label map no factory read.
+  - **An artifact printed by 0.59.x or earlier does not run on this runtime.** Its
+    factory takes its helpers by position, so it needs the parser rebuilt by this
+    version.
+  - **The runtime refuses a printed factory whose helper list is not its own.** Each
+    printed assembly record now carries `arity`, the number of helpers its factory was
+    printed against. Before calling the factory, the runtime compares it with the helpers it
+    passes, and throws "printed by an older or newer parseman" with both counts; a record
+    with no `arity` was printed before 0.60.0 and is refused the same way. It reads that
+    printed number, not the factory's `length`, which a minifier that drops unused trailing
+    parameters lowers on a valid artifact. A factory printed by 0.59.x guards only against
+    fewer helpers, and one printed before 0.59.0 has no guard: it bound the wrong helpers and
+    failed partway through a parse (`_BUF is not a constructor`). Test:
+    `test/unit/precompiled-factory-arity-runtime.test.ts`.
+  - **A printed factory refuses a runtime that passes another number of helpers, fewer or
+    more.** Its guard was `arguments.length < n`, so an artifact printed by this version
+    loaded on a 0.59.x runtime, which passes 61 helpers, and threw `_SP is not a
+    constructor` mid-parse. It now throws "this parser was printed by parseman 0.60.0; run
+    it on parseman 0.60.0 or reprint it" when the assembly is built. Test:
+    `test/unit/printed-factory-arity.test.ts`.
+
+- **The GraphQL, expression-language and config examples build their nodes with
+  constructors.** `examples/graphql` built every node it keeps with an object literal in a
+  `transform()` reducer, and V8 pretenured those literal sites on Node 26: the
+  `graphql/document` perf case read +4.8% against 0.59.1 with 17–18 mark-compacts per
+  process against 1, while executing the same instructions. Its nodes, `examples/lang`'s
+  AST and `examples/toml-ish`'s lines are now `new` calls on a sibling `*-node.js`
+  (prototype `Object.prototype`), as `examples/css/css-node.js` is; each tree has the same
+  keys in the same order. `pnpm perf:pretenure` now runs `graphql/document` too.
+  - **For grammar authors.** This is not something Parseman can fix for you: the
+    allocation site is in your reducer. A grammar whose reducers build the nodes a parse
+    keeps with object literals can still flip between a fast and a slow mode per process
+    on Node 26. Build kept nodes with a constructor whose `prototype` is
+    `Object.prototype`, and copy the arrays they keep with a spread or `slice()`.
+
+## 0.59.3 — 2026-11-04
+
+- **The `recovery` option is marked `@deprecated`.** It has had no effect since recovery
+  became part of every compiled table: `compile()`, `compileRuleMap()` and the macro
+  plugin accept it and ignore it. It is removed at the next minor release. Source
+  comments that cited the deleted `codegen.ts`, line numbers that no longer exist, or
+  said `exec.ts` ships, now name what they mean.
+
+## 0.59.2 — 2026-11-04
+
+- **An internals overview, `docs/design/internals.md`.** The README's "Developing"
+  section now points at it: the pipeline, the engines, the table and wire format, macro
+  selection and how performance is measured. Its opcode table is checked against
+  `src/table/ops.ts` by `test/unit/internals-doc.test.ts`.
+
+## 0.59.1 — 2026-11-04
+
+- **`compile()` and `compileLinkableTable()` no longer read `process` unguarded.**
+  Emitting an open-until-terminator or delimited scan read `process.env.PARSEMAN_SCANTO`,
+  and the IR serializer's fallback read `process.env.PARSEMAN_IR_DEBUG`, both without a
+  guard, so a browser call that reached either threw a `TypeError` or `ReferenceError`.
+  The scan toggle selected an opt-in `indexOf` variant that was never claimed as a win
+  and that nothing enabled; it is removed, and the char loop it fell back to is
+  unchanged. The IR debug read is now guarded, as `PARSEMAN_DUPLICATION`'s is. Tests:
+  `test/unit/scan-shape-lowering.test.ts`, `test/unit/ir-serialize-no-process.test.ts`.
+
+- **Dead code removed.** The `token-dispatch.ts` id strategies left over from the source
+  lowering deleted in 0.47.0, the table encoder's always-true `rec` branches, and
+  `export` on internal values that nothing outside their module reads. Tables and
+  artifacts are byte-identical.
+
+## 0.59.0 — 2026-11-02
+
+- **Tree objects are built by constructors, so V8 cannot pretenure them.** V8 decides per
+  object-literal allocation site whether to allocate straight into old space, from where
+  scavenges happen to fall during warm-up. Identical processes split into a fast and a slow
+  mode (on Node 26, 1 against up to 61 mark-compacts per run), and any change in bundle
+  layout re-rolls it.
+  - Leaves, spans (line-tracked spans too), default nodes, CST-host nodes, field captures and
+    CST capture buffers are now built by `new` calls (`src/cst/plain.js`), which have no
+    allocation site. A default node keeps a spread copy of its children rather than the
+    capture buffer's array literal. Their prototype is
+    `Object.prototype`: each is still a plain object with the same keys in the same order,
+    and every tree is byte-identical.
+  - The constructors exist once per process. The build emits `dist/cst/plain.js` and every
+    entry that builds trees imports it: a copy per bundle would give one shape two hidden
+    classes, and a process that loads `parseman` and `parseman/table` would read both.
+  - **Artifacts built by 0.59.0 need runtime ≥0.59.0.** The emitted engine receives the
+    constructors as five new trailing factory parameters. An artifact printed by an earlier
+    version runs on this runtime (it ignores them). An artifact printed by 0.59.0 refuses an
+    older runtime when its assembly is built, with "this parser was printed by parseman
+    0.59.0; upgrade the parseman runtime". A consumer that rebuilds its macro-compiled
+    parsers on 0.59.0 must depend on `parseman@^0.59.0`.
+  - **Speed.** Against a process in the slow mode, the gate cases parse in 11–37% fewer JIT
+    instructions (`css/stylesheet` −31% on Node 24, −34% on Node 26). Against main's fast
+    mode it is not uniformly a win. `rollback/medium` on Node 26 reads about +4% (12.36M →
+    12.84M per parse), and Jess's synthetic single-file SCSS workload +3.6%: a tree that is
+    never pretenured is copied by the scavenger. Real Jess SCSS projects read 0.2–2.1% fewer.
+  - **For grammar authors.** A reducer that builds the nodes a parse keeps with an object
+    literal is pretenured or not per process in the same way. Build them with a constructor
+    whose `prototype` is `Object.prototype` (see `examples/css/css-node.js`), and copy the
+    arrays they keep with a spread or `slice()` rather than an array literal.
+
+- **Regex first sets read escapes that are not their letter.** The first-set analyzer read
+  several escapes as the escaped letter: `\p{…}`/`\P{…}`, `\u{…}` under `u`, `\cJ`, the legacy
+  octal `\012`, and `\k<name>`. The class and literal readers read `\012` as NUL followed by
+  digits. Under `/i` without `u`, a non-ASCII letter's case twin (`é`/`É`, `σ`/`Σ`/`ς`) was
+  left out.
+  - Because a first set gates choice dispatch, optional terms and trivia skips, the table
+    engines could refuse input the regex matches. For example, `choice(regex(/\cJa/), …)`
+    failed on a newline.
+  - Each escape now maps to its character or widens to any character, and a case-folded set
+    that reaches 128 widens. The emitted scan lowering declines digit escapes.
+  - Test: `test/unit/regex-escape-first-set-engines.test.ts`, registered in
+    `check:differentials`.
+  - Under `u`/`v` a literal, a class member or an escaped surrogate pair (`\uD83D\uDE00`)
+    is read as one code point, so `/😀x/u` starts with U+1F600 rather than its high
+    surrogate. A `v`-mode nested class or set operation (`[[^a]]`, `[[a-c]--b]`, `\q{…}`)
+    widens instead of being read up to its first `]`.
+  - Every engine gates on the input's leading code point. Outside Unicode mode a first set
+    holds code units, so each lead test now reads an astral lead through its high
+    surrogate, and first-set intersection (choice disjointness, `peek()` constraints)
+    compares sets as read. Identifier classes such as `[\u0080-\uffff]` therefore admit
+    astral characters. Table sizes are unchanged.
+  - The emitted scan lowering declines `v` regexes, as it declines `u`.
+  - `test/unit/regex-first-set-property.test.ts` checks the property over seeded generated
+    patterns: no code point outside a regex's first set starts a match. Each probe is
+    followed by the rest of a witness the pattern is built to match. It checks the same
+    at every node of generated `sequence`/`choice`/`optional`/`peek`/`not`/`literal` trees
+    over those regexes. It is registered in `check:differentials`.
+- **A trivia skip at a character no trivia can start returns without scanning.** Both
+  table engines now test the character first. The closure engine reads a per-slot table
+  that its scopes install with their trivia; the emitted assembly prints the slot's first
+  characters into its skips. A sequence term at such a character runs with no trivia
+  marks around it. Such a gap is empty and records nothing in any sink, so trees, root
+  trivia and CSTs are unchanged. Jess's Less build parses `benchmark.less` in 3.9% fewer
+  instructions with the JIT and 8.8% fewer with `--jitless`. Test:
+  `test/unit/table-trivia-lead-gate.test.ts`, registered in `check:differentials`.
+- **The perf verdict is a cross-process gate under default V8: `pnpm perf:xproc:gate`,
+  configured in `bench/xproc-gate.json`.** Each case is timed in fresh processes,
+  one parser per process, from each side's own `dist/` build under plain `node`. A
+  case fails on either a median slowdown (sign test) or a mean slowdown (sign-flip
+  test). Each test needs a 1% floor and α 0.0005, with 100–900 rounds per case over 20
+  CI shards pinned to Node 26. The fat-tailed cases are sized from real planted
+  costs. On x64, no identical-code run failed (6 on earlier configurations, 1 on
+  this one). Planted costs that applied to every process, to one process in five,
+  and to every token were each caught. The in-process A/B tools (`perf:guard:grammars`, `perf:workloads`)
+  leave CI and stay as local diagnostics. The `PERF-PEAK-WAIVER` line is removed:
+  nothing in CI read it any more. See `docs/design/perf-gates.md` and
+  `docs/design/perf-harness-interleaving.md` (#175).
+
+- **The CLI no longer prints a `module.register()` deprecation warning on Node 26.**
+  `parseman diagnose`/`fix` install a hook that drops `with { type: 'macro' }` from
+  imports, through `module.register()`, which Node 26 deprecates (DEP0205) with a
+  warning on stderr ahead of the command's own output. The hook now goes through
+  `module.registerHooks()` where Node has it (22.15+, 23.5+) and keeps `register()`
+  on 20.x and earlier 22.x, which have nothing else.
+- **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
+  runs a compiled grammar and reports line/column positions imported them from the
+  main entry, which loads the combinators, the compiler and the analysis with them.
+  `src/line-index.ts` was already in the run entry's closure, so the entry's module
+  list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+- **A routed arm's first-character gate reports what its next term fails with.** A
+  choice arm led by `routed()` is gated on its next term's first character
+  (`OP_RGATE`, 0.58.0), and a miss reported `deriveExpected` of that term. For a
+  `keywords()` or `word()` term that lists each word, where the term itself, and the
+  interpreter, report `keyword`: `dispatch(regex(/[a-z]+/), otherwise(choice(
+  sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
+  in every table engine. A miss now reports the terminal's own failure set, and a
+  label's name. Which arms are gated is unchanged.
+- **A whole-token `balanced()` in a failed arm leaves no error in the emitted
+  assembly.** Such a group is lowered as one lexical program over its interpreted
+  scan, and the scan records a `parseError` for an unclosed group. The emitted
+  engine's side-sink census counted only `OP_SCAN` as an `_errors` writer, so a
+  choice arm or `optional()` that failed after an unclosed group restored the arm's
+  captures but not its error: `choice(sequence(balanced('(', ')'), literal('!')),
+  literal('('))` on `(x` succeeded through the second arm and still returned the
+  first arm's `")"` error. The closure engine and the reference driver were right.
+  A budgeted selection is priced without these marks, so they move no site in or
+  out of it. See `test/unit/table-lex-program-scan-errors.test.ts` and
+  `test/unit/table-scan-sink-selection.test.ts`.
 
 ## 0.58.0 — 2026-10-31
 

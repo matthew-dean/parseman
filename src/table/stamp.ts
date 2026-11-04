@@ -173,7 +173,7 @@ export function stampRuleMap(
         // `committed` IS PART OF THE FAILURE ENVELOPE, not a diagnostic extra.
         // The interpreter carries it on the result (`{ ok: false, …, committed: true }`)
         // and codegen re-derives it from the same bit this driver uses
-        // (`codegen.ts`: `...(_ctx._fc ? { committed: true } : {})`). The table
+        // (`...(_ctx._fc ? { committed: true } : {})`). The table
         // dropped it, so a table entry embedded as a CHILD of another parser — the
         // one place the field is read rather than merely reported — lost the cut.
         return committed(ctx)

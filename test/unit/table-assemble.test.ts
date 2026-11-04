@@ -305,6 +305,7 @@ describe('table assembler', () => {
           const emitted = emitAssemblySource(resolved, prog, cfg, [])
           return {
             key: cfgKey(cfg),
+            arity: EMITTED_PARAMS.length,
             // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
             factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
             plan: emitted.plan, reached: [...emitted.reached],
@@ -419,6 +420,7 @@ describe('table assembler', () => {
       const emitted = emitAssemblySource(resolved, prog, cfg, [])
       return {
         key: cfgKey(cfg),
+        arity: EMITTED_PARAMS.length,
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
         factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
         plan: emitted.plan,
@@ -694,6 +696,7 @@ describe('table assembler', () => {
       const emitted = emitAssemblySource(resolved, prog, cfg, scanRoots)
       return {
         key: cfgKey(cfg),
+        arity: EMITTED_PARAMS.length,
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
         factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
         plan: emitted.plan, reached: [...emitted.reached],
@@ -868,6 +871,7 @@ describe('table assembler', () => {
         const emitted = emitAssemblySource(resolved, prog, cfg, [])
         return {
           key: cfgKey(cfg),
+          arity: EMITTED_PARAMS.length,
           // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
           factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
           plan: emitted.plan,
@@ -1043,7 +1047,7 @@ describe('table assembler', () => {
    * BACKTRACKING OVER A `node()`, UNDER A CST HOST — the assembler's mark
    * protocol against `exec.ts`.
    *
-   * Every other assembler gate runs the AST path: `bench/jess/g5-identity.ts`
+   * Every other assembler gate runs the AST path: the one-off `g5-identity` bench
    * loads `(dialect, 'ast')`, and `bench/table-lowering-identity.ts` drives
    * `execRules` only. On that path `ctx._cstBuf` is `undefined` for the whole
    * parse, so the assembler's mark protocol is only ever exercised down its

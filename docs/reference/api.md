@@ -1,11 +1,5 @@
 # API reference
 
-::: danger Superseded in part
-Statements on this page about the `composeLeaf` precompiled assembly and runtime `compose()` are superseded by
-[the runtime and size contract](../design/runtime-and-size-contract.md), which is
-binding. See its "Superseded statements" list.
-:::
-
 Every value `parseman` exports, in one place. Types live separately in
 [Types](./types). Import anything you need from the package root:
 
@@ -1029,8 +1023,9 @@ run(block, '{a:1;$$;b:2}', { tolerant: true }) // list → [decl, ParseError, de
 Recovery is a *policy* the caller turns on, not a fact baked into the grammar. To override
 the inferred sync point for a rule, or add semantic completions/diagnostics, wrap the
 grammar in [`languageService`](../guide/editor-integration) — the config is keyed by rule
-name and the grammar file stays untouched. The compiled/macro fast path recovers too, when
-compiled with `{ recovery: true }`.
+name and the grammar file stays untouched. The compiled/macro fast path recovers too; recovery is
+always compiled in. The `recovery` compile option is a deprecated no-op, removed in the
+next minor release.
 
 ### `expect(combinator, label?)`
 
@@ -1110,11 +1105,7 @@ Map an offset in a `lines()` body's input to the offset in the run's own input.
 
 Zero-width success only when `predicate(ctx.state)` is true. The name matches the `gate:`
 field on a gated `choice` arm: the arm field SELECTS a branch, the combinator ASSERTS
-mid-sequence. `guard` is a deprecated alias (`guard === gate`).
-
-### `guard(predicate)` <Badge type="warning" text="deprecated" />
-
-Alias of `gate(predicate)` (documented just above). Prefer `gate()`.
+mid-sequence. It was called `guard()` before 0.45.0.
 
 ### `withCtx(extra, combinator)`
 
@@ -1257,9 +1248,8 @@ printable lines. Wiring is OPT-IN on all three lowering paths via the `duplicati
 Return the set of expected tokens at a cursor `offset` — the raw material for
 autocomplete. Probes the grammar at that position via a truncated parse.
 
-- `target` — an interpreter combinator **or** a `compile(g, { recovery: true })`
-  grammar. A recovery-compiled grammar records the furthest-failure probe on its
-  fast path, so completions work on the **published compiled artifact** — no
+- `target` — an interpreter combinator **or** a compiled grammar. A compiled
+  grammar records the furthest-failure probe on its fast path, so completions work on the **published compiled artifact** — no
   separate interpreter needed.
 - `options.tolerant` — when `true`, list recovery keeps parsing past a bad element
   before the cursor, so completions are returned even when a permissive top rule

@@ -31,7 +31,27 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // document trivia an unlabelled scanner.
 // Bumped +46B to 59,793B: a labelled trivia spec carries the slots the table
 // engines' root-selection fast path primes (`table/trivia-gap.ts`).
-const BASELINE_RAW_BYTES = 59_793
+// Bumped +796B to 60,589B: the regex first-set analyzer and the class and literal
+// readers decode `\u{…}`, `\cX`, `\p{…}`, `\k<…>` and legacy octal escapes instead
+// of reading them as letters, and `/i` widens a set that reaches 128 unless it
+// already holds every code unit from 128 up.
+// Bumped +1,334B to 61,923B: under `u`/`v` a literal, class member or escaped surrogate
+// pair is one code point, a `v`-mode nested class or set operation widens, and outside
+// Unicode mode a first set reads an astral lead through its high surrogate, in lead
+// tests and in intersections (`rangesHaveLead`, `leadRanges`, `implicitLeadsDropped`).
+// Bumped +367B to 62,290B: the interpreter's terminals build their CST leaves and spans
+// with the shared tree-object constructors (`src/cst/plain.js`), which V8 cannot pretenure.
+// Bumped +726B to 63,016B: the interpreter's default CST nodes, routed leaves, trivia field
+// captures and line-tracked spans are constructor-built too, and a default node keeps a
+// spread copy of its children.
+// Bumped +494B to 63,510B: a nullable `regex()` carries the first chars of its
+// non-empty matches, so a sequence led by an optional pad (`ws* '*' ws*`) has a
+// finite first set instead of `any`; `firstSetOf` reads a reference from a cleared
+// region under the trivia it installs (`triviaThroughRef`), and recovery reads first
+// sets without the nullable-pad refinement (`consuming: false`, which
+// `classifyFinalChoice` takes too); `node()`, `attempt()` and the repeats record
+// whether they guard their child (`guarded`), which the table's gates mirror.
+const BASELINE_RAW_BYTES = 63_510
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

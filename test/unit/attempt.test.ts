@@ -118,7 +118,7 @@ describe('attempt', () => {
   // coverage COUNTERS and no trace events at all, and the macro build now lowers
   // through the table, so the emitted module carries `tableRules`/`cv:[]` where
   // it used to carry `phase: 'rollback'`. Tracked in
-  // `notes/RELEASE-0.48-TARGET.md` §1 — roughly 40 fine-grained emission sites
+  // `notes/history/RELEASE-0.48-TARGET.md` §1 — roughly 40 fine-grained emission sites
   // need table equivalents, and the instrumented pieces must stay
   // assembly-SELECTED rather than testing a flag per node (INV-6).
   //
@@ -129,6 +129,7 @@ describe('attempt', () => {
   // deliberately: it was passing against `compiler/codegen.ts`, and restoring it
   // by pointing it back at an engine that is being deleted would park the gap
   // instead of recording it. Do not weaken it to make it pass.
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('the lowered artifact emits the interpreter\'s trace events, phase for phase', () => {
     const parser = rollbackGrammar()
     const interpreterTrace = createGrammarTraceSink({ capacity: 30 })

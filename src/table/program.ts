@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { classifiedTrivia, trivia as triviaOf } from '../combinators/map.ts'
 import { fastTriviaScanner, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import { regex } from '../combinators/regex.ts'
+import { leadRanges } from '../lead-ranges.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
@@ -16,10 +17,15 @@ import { buildLexProgramRunner, type LexProgramRunner } from './lex-program.ts'
  * `EMITTED_PARAMS` in order. `plan` rebuilds the three data pools the factory
  * expects (see `PoolPlan`), and `reached` is the emitter's site set, which
  * `Assembly.reached` publishes and `test/unit/table-assemble.test.ts`
- * asserts on.
+ * asserts on. `arity` is the number of helpers the factory was printed against
+ * (`EMITTED_PARAMS.length` of the printing parseman); the runtime compares it with
+ * its own list before calling the factory. It is printed data, not
+ * `factory.length`, which a minifier that drops unused trailing parameters lowers.
+ * An assembly printed before 0.60.0 has none.
  */
 export type PrecompiledAssembly = {
   readonly key: number
+  readonly arity?: number
   readonly factory: EmittedFactory
   readonly plan: PoolPlan
   readonly reached: readonly number[]
@@ -28,10 +34,10 @@ export type PrecompiledAssembly = {
 /**
  * The emitted form of a grammar under the table lowering.
  *
- * This object is ALL a grammar contributes to a bundle. Every line of
- * recognition logic lives in `exec.ts`, which ships once in the runtime and is
- * shared by every grammar and every variant. A rule costs its row, not a
- * function.
+ * This object is ALL a grammar contributes to a bundle, apart from any
+ * build-time assemblies in `asm`. The recognition logic is the shared driver
+ * (`tableRules`, `assemble.ts`), which ships once in the runtime for every
+ * grammar and every variant. A rule costs its row, not a function.
  *
  * Serialized shape is deliberately JSON-ish (numbers, strings, and a pool of
  * author callbacks) so the emitter can print it as a literal.
@@ -144,9 +150,9 @@ export type TableProgram = {
    */
   readonly triviaSpecs?: readonly TriviaSpec[]
   /**
-   * 1 when this table was encoded with `TableSettings.recovery` — the sequences
-   * carry their inferred follow-set classes and the repetitions their item
-   * expected-set and separator sentinel class.
+   * Always 1: every table carries recovery operands — the sequences their inferred
+   * follow-set classes, the repetitions their item expected set and separator
+   * sentinel class. (`TableSettings.recovery` is a deprecated no-op.)
    *
    * TABLE DATA, read once when the driver/assembly is built. It selects the
    * recovery pieces; it is not a per-parse option, and a recovery table still
@@ -212,7 +218,7 @@ export function covKindCode(kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'labe
   }
 }
 
-export function covKindName(code: 0 | 1 | 2 | 3): 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' {
+function covKindName(code: 0 | 1 | 2 | 3): 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' {
   switch (code) {
     case 0: return 'rule'
     case 1: return 'choice-arm'
@@ -432,7 +438,7 @@ export function validateDispatchSpec(
     return false
   }
   if (spec === undefined || !Number.isInteger(arity) || arity < 0
-    || (fallbackRouted !== 0 && fallbackRouted !== 1)
+    || !Number.isInteger(fallbackRouted) || fallbackRouted < 0 || fallbackRouted > 3
     || spec.routed.length !== arity
     || spec.routed.some(value => value !== 0 && value !== 1)
     || invalid(spec.byKey.values()) || invalid(spec.byFold.values())
@@ -642,7 +648,7 @@ export function decodeClassSpec(spec: string): Array<{ lo: number; hi: number }>
 export function resolveClass(spec: string): ResolvedClass {
   const ascii = new Uint8Array(128)
   const hi: number[] = []
-  for (const { lo, hi: up } of decodeClassSpec(spec)) {
+  for (const { lo, hi: up } of leadRanges(decodeClassSpec(spec))) {
     if (lo < 128) for (let c = lo; c <= Math.min(up, 127); c++) ascii[c] = 1
     if (up >= 128) hi.push(Math.max(lo, 128), up)
   }

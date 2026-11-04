@@ -11,7 +11,7 @@
     "version": "0.48.0",
     "allowancePct": 5,
 
-    "_what": "The committed broad-workload release baseline, and the bar `pnpm perf:workloads --peak` holds every later release to. This is the half of the release policy `referenceSha` structurally cannot enforce: a per-step gate passes forever while the curve bleeds down, because each individual step sits inside the noise floor. The standalone sweep at ~/parseman-perf-probe/ measured -5.1% accumulating exactly that way across 0.28.0 -> 0.34.0, with almost every step individually insignificant.",
+    "_what": "The committed broad-workload release baseline, and the bar `pnpm perf:xproc:gate --peak` holds every later release to. This is the half of the release policy `referenceSha` structurally cannot enforce: a per-step gate passes forever while the curve bleeds down, because each individual step sits inside the noise floor. The standalone sweep at ~/parseman-perf-probe/ measured -5.1% accumulating exactly that way across 0.28.0 -> 0.34.0, with almost every step individually insignificant.",
 
     "_absolute": "`sha` names a COMMIT, never a millisecond count, so the comparison is re-measured on whatever machine runs it and reads the same on a laptop and a CI runner. `allowancePct` is the drawdown TOLERATED, not a budget to spend: it is the measured noise floor of this harness (the per-release thresholds are 5% for the same reason and from the same self-check).",
 

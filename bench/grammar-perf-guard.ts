@@ -104,7 +104,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
   type Case, type Thresholds,
 } from './ab-harness.ts'
 
@@ -204,11 +204,18 @@ async function isolatedCases(dir: string): Promise<Case[]> {
 }
 
 const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
+// Identical code on both sides: measured and reported, never a verdict (see `identicalSourceNote`).
+const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF)
 const refDir = materialise(GATE, ROOT, REF, COPY)
 const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
 
 console.log(
   `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,
+)
+
+console.log(
+  `${GATE}: DIAGNOSTIC RUN, NOT A VERDICT. In-process A/B with V8's --no-compilation-cache set at run time,`
+  + `\n  so it does not measure what users run. CI's perf verdict is \`pnpm perf:xproc:gate\` (docs/design/perf-gates.md).`,
 )
 
 const ref = await loadSide(refDir)
@@ -293,7 +300,7 @@ for (const v of rows) {
 console.log(`\n  load average ${load0.toFixed(2)} → ${load1.toFixed(2)}`)
 summary(summaryTable(
   `${GATE}: HEAD vs ${REPORT_ONLY ? `merge base ${REF}` : REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`,
-  rows, calibration, !REPORT_ONLY && !SELF && !QUICK,
+  rows, calibration, !REPORT_ONLY && !SELF && !QUICK && !IDENTICAL,
 ))
 
 if (SELF) {
@@ -328,6 +335,11 @@ if (QUICK) {
 
 // Report-only runs (the merge-base arm below) never gate; the gate is the release.
 if (REPORT_ONLY) process.exit(0)
+if (IDENTICAL) {
+  const note = identicalSourceNote(GATE, REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`, rows.filter(v => v.failed).map(v => v.id))
+  summary(note)
+  process.exit(0)
+}
 if (MERGE_BASE !== null) reportAgainstMergeBase(GATE, ROOT, MERGE_BASE, REF, [])
 
 const failures = rows.filter(v => v.failed)

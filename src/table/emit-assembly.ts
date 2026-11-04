@@ -47,11 +47,11 @@
 import type { ParseContext } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
-  OP_ADJ, OP_ARMGATE, OP_RGATE, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
+  OP_ADJ, OP_ARMGATE, OP_RGATE, OP_RGATE2, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_STRICT,
 } from './ops.ts'
 import {
   choiceCannotCommit, choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
@@ -67,9 +67,15 @@ import {
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
-import { holdsGap } from './hold-gap.ts'
+import { holdsGap, rowNullable } from './hold-gap.ts'
+import { gapRows } from './gap-gate.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
+
+/** Does a gap's regex lower to an inline scan (`scanShapeFromRegex`)? */
+function gapRegexLowers(re: unknown): boolean {
+  return re instanceof RegExp && scanShapeFromRegex(re.source, re.flags) !== null
+}
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -109,12 +115,12 @@ export class Unemittable extends Error {
  * runs and is wrong, which no type in this file would catch.
  */
 export const EMITTED_PARAMS = [
-  'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
+  'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIASCAN',
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
   'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'rollbackScannedTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
   'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
-  'scanTrivia', 'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
+  'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
   'asciiFoldKey', 'ROUTED_FX',
   // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
   // char-class index — the emitted twin of `assemble.ts`'s `sentinelFor` memo,
@@ -124,24 +130,24 @@ export const EMITTED_PARAMS = [
   // engine and cannot drift.
   'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError',
   // Pure scalar terminal recognizers, indexed by the terminal's existing const
-  // operand. Appended for compatibility with older precompiled factories.
-  'RECOG',
-  // Appended so precompiled factories produced by earlier runtimes keep every
-  // positional helper binding. Older factories ignore this trailing argument.
-  'commitTriviaScan', 'scanTriviaCompact', 'LEX',
-  // Appended for old precompiled-factory ABI: old factories ignore it.
-  'adjacencyHolds',
-  // Appended for selected composite lexical programs; old factories ignore it.
+  // operand; selected lexical bodies; the adjacency test.
+  'RECOG', 'LEX', 'adjacencyHolds',
+  // Selected composite lexical programs.
   'LEXPROG',
-  // Appended for trivia-attributing fields (`field(…, { leadingTrivia })`);
-  // old factories ignore them.
+  // Trivia-attributing fields (`field(…, { leadingTrivia })`).
   'LEAD', 'triviaFieldCapture',
-  // Appended for the deferred-commit trivia skip (`trivia-gap.ts`); old
-  // factories ignore it.
+  // The deferred-commit trivia skip (`trivia-gap.ts`).
   'skipDeferredTrivia',
-  // Appended for the pass-through collapse (`run-support.ts`); old factories
-  // ignore it.
+  // The pass-through collapse (`run-support.ts`).
   'collapseEmpty',
+  // Constructor-built tree objects (`cst/plain.d.ts`): a `new` call has no
+  // allocation site, so V8 cannot pretenure them.
+  '_SP', '_LF', '_ND', '_FC', '_BUF',
+  // The gap gate's slot (`gap-gate.ts`).
+  'GAP',
+  // Artifacts are version-locked (docs/design/artifact-format.md): a factory is
+  // only ever called by the runtime that emitted it, so a name nothing emitted
+  // reads is removed rather than kept for an older factory's positions.
 ] as const
 
 /**
@@ -180,9 +186,9 @@ if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
 if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
 }
-function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,{_tag:'leaf',value,span:{start:s,end:e}})}
+function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,new _LF(value,new _SP(s,e)))}
 function _pushLeafBuf(ctx,value,s,e){
-const l={_tag:'leaf',value,span:{start:s,end:e}}
+const l=new _LF(value,new _SP(s,e))
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(l)
 else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
@@ -242,7 +248,7 @@ if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTrivi
 /** Printed only into assemblies that open a count-only raw buffer. */
 const NO_RAW_RUNTIME_PRELUDE = `
 function _pushLeafNoRawBuf(ctx,value,s,e){
-const l={_tag:'leaf',value,span:{start:s,end:e}}
+const l=new _LF(value,new _SP(s,e))
 const b=ctx._cstBuf
 if(b.ch!==undefined)b.ch.push(l)
 else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
@@ -414,7 +420,7 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, miss?: (c: string) => string): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
@@ -432,7 +438,14 @@ if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(EC.e>${t}s)cur=EC.e
 else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt)}`
-  if (l.tri !== TRI_UNKNOWN) return scanned
+  // A character no trivia of this slot can start opens the empty gap, which
+  // records nothing, so the term runs at `cur` with no marks around a scan.
+  if (l.tri !== TRI_UNKNOWN) return miss === undefined ? scanned : `const ${t}c=input.charCodeAt(cur)
+if(${miss(`${t}c`)}){
+${fast}
+}else{
+${scanned}
+}`
   return `if(ctx.trivia===undefined){
 ${fast}
 }else{
@@ -588,6 +601,19 @@ export function emitAssemblySource(
   extraIps: readonly number[] = [],
   staticBuild = false,
   select?: ReadonlySet<number>,
+  /**
+   * Leave the `_errors` bit of a lexical program over a scan out of the side-sink
+   * census below. A budgeted selection is priced and chosen on this lowering, so
+   * the marks that bit adds move no site in or out of a budget; the artifact is
+   * then emitted with them.
+   */
+  scanSinkNeutral = false,
+  /**
+   * Lower every gap gate (`gap-gate.ts`) as the item it wraps. A selection is
+   * ranked on this lowering, so adding the gates moves no site's place in the
+   * order; the fit is judged by the source that ships, gates included.
+   */
+  gapNeutral = false,
 ): EmitResult {
   const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
@@ -626,6 +652,10 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   const reachable = [...reachableSites(code, roots)]
+  // A gap whose regex lowers to an inline scan is scanned again by its row, for
+  // less than reading the slot costs; only a gap matched by its RegExp takes the
+  // slot (`gapRegexLowers`).
+  const GAP_ROWS = gapNeutral ? new Set<number>() : new Set([...gapRows(code, roots)].filter(row => !gapRegexLowers(k[code[row + 1]!])))
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -733,13 +763,15 @@ export function emitAssemblySource(
   // that otherwise matched byte for byte.
   //
   // Any future row whose child is not an offset in `code` belongs here for the
-  // same reason. `OP_LIVE` is the other such row, and it is unemittable.
+  // same reason. `OP_LIVE` is the other such row, and it is unemittable. An
+  // `OP_LEX_PROGRAM` over a scan (`t.lexPrograms[id].scan`, a whole `balanced()`
+  // lowered as one recognizer) runs that same interpreted scan, so it is one too.
   const sinkSites = reachable
   const sinkBits = new Map<number, number>()
   for (const ip of sinkSites) {
     const op = code[ip]
     sinkBits.set(ip,
-      op === OP_SCAN ? 3
+      op === OP_SCAN || (!scanSinkNeutral && op === OP_LEX_PROGRAM && t.lexPrograms[code[ip + 1]!]!.scan !== undefined) ? 3
         : (op === OP_FIELD ? 1 : 0)
           | (op === OP_EXPECT || (REC && (op === OP_REP || op === OP_REPV)) ? 2 : 0))
   }
@@ -788,7 +820,7 @@ export function emitAssemblySource(
   const armExpectedPlan: number[][] = []
   const maskPlan: number[] = []
 
-  /** `codegen.ts`'s hoisted pools, same spelling: `_k<N>` / `_fx<N>` / `_fn<N>`. */
+  /** Hoisted pools, in the source lowering's spelling: `_k<N>` / `_fx<N>` / `_fn<N>`. */
   function hoist(kind: string, expr: string): string {
     const hit = pool.get(expr)
     if (hit !== undefined) return hit
@@ -974,6 +1006,19 @@ return 1
     return `if(${gateMissTest(child)}){${miss}}\n`
   }
 
+  /**
+   * The test that no trivia of slot `ki` can start at the code unit `c`: the
+   * slot's first characters, as code points, decide every code unit below the
+   * surrogates; a surrogate, or `NaN` past the end of input, is left to the scan.
+   * `undefined` where the first set is unbounded or too wide to print.
+   */
+  function triviaMiss(ki: number): ((c: string) => string) | undefined {
+    const leads = triviaLeadRanges(ki, t.trivia)
+    if (leads === undefined || leads.length > 16) return undefined
+    if (leads.length === 0) return c => `${c}<55296`
+    return c => `${c}<55296&&!(${leads.map(r => r.lo === r.hi ? `${c}===${r.lo}` : `(${c}>=${r.lo}&&${c}<=${r.hi})`).join('||')})`
+  }
+
   function skipFor(l: SiteLabel): string {
     if (l.tri < 0) return '_skipTrivia'
     const ki = l.tri
@@ -991,11 +1036,16 @@ return 1
     if (!hasScan) {
       // No installed scanner: the labelled/`trackLines` path, which records
       // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
-      // buffer, so an in-node site skips the call that asks.
+      // buffer, so an in-node site skips the call that asks. A character no gap
+      // can start answers first, with no call (`triviaMiss`).
+      const miss = triviaMiss(ki)
+      const pre = miss === undefined ? '' : `const c=input.charCodeAt(cur)
+if(${miss('c')})return cur
+`
       skipDefs.push(l.buf
-        ? `function ${nm}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
+        ? `function ${nm}(input,cur,ctx){${pre === '' ? '' : `\n${pre}`}return skipDeferredTrivia(input,cur,ctx)}`
         : `function ${nm}(input,cur,ctx){
-if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
+${pre}if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)}`)
       return nm
     }
@@ -1135,7 +1185,8 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // `OP_GATE` under a probe or a tolerant recovery is a no-op that forwards to
     // its child, exactly as `assemble.ts:952` resolves it.
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
-    if (op === OP_RULE) return code[ip + 1]!
+    if (op === OP_RULE || op === OP_GAPGATE) return code[ip + 1]!
+    if (op === OP_STRICT) return code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
     // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
@@ -1154,6 +1205,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
   function lower(ip: number, fname: string): string {
     const op = code[ip]
     const head = `function ${fname}(input,pos,ctx){`
+    const outerHead = head
     const L = labels.at(ip)
     const sinks = sinksAt(ip)
     /**
@@ -1273,6 +1325,26 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       case OP_RX_TRACK: {
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_RX_TRACK
+        // A gap row takes the end a repeat already scanned (`gap-gate.ts`), and
+        // otherwise matches its sticky regex: one compact body, no second copy of
+        // the success path.
+        if (GAP_ROWS.has(ip)) {
+          const re = hoist('gx', `K[${code[ip + 1]!}]`)
+          return `${outerHead}
+let e
+if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end
+else{${re}.lastIndex=pos;e=${re}.test(input)?${re}.lastIndex:-1}
+if(e>=0){
+const v=input.slice(pos,e)
+${captureLeaf('v')}
+${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
+return v
+}
+ctx._fe=pos;ctx._fx=${xf}
+${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+}`
+        }
+        const head = outerHead
         if (!track && scalarSpecs.has(code[ip + 1]!)) {
           const recognize = recognizerRef(code[ip + 1]!)
           return `${head}
@@ -1328,8 +1400,8 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       }
 
       case OP_EMPTY:
-        // `''`, not `null` — the zero-width match's value. The other three engines
-        // (exec.ts, exec-baseline.ts, assemble.ts) all return `''`; this one returned
+        // `''`, not `null` — the zero-width match's value. The other engines
+        // (exec.ts, assemble.ts) both return `''`; this one returned
         // `null`, so the SAME program yielded a different `value` depending only on
         // which engine ran. Unreached from the combinator API today — `OP_EMPTY` is
         // emitted only as `finish()` padding for an EMPTY rule map, which then has no
@@ -1360,6 +1432,31 @@ return ${child}(input,pos,ctx)
         return `${head}
 const it=ctx._routed
 if(it!==undefined&&it.span.start===pos&&!classHas(${cls},lead(input,it.span.end))){ctx._fe=it.span.end;ctx._fx=${xf};return FAIL}
+return ${child}(input,pos,ctx)
+}`
+      }
+
+      case OP_RGATE2: {
+        const child = link(code[ip + 2]!)
+        if (cfg.tolerant || cfg.probe) return `${head}
+return ${child}(input,pos,ctx)
+}`
+        // ASCII-only classes (the usual case: `:` then whitespace) are read as
+        // code units against their ASCII tables, with no call.
+        const idxs = [code[ip + 1]!, code[ip + 4]!, code[ip + 5]!]
+        const ascii = idxs.every(i => isAsciiOnlyClass(t.cc[i]!))
+        const ref = (idx: number, tag: string): string => {
+          const ci = classes.push([t.cc[idx]!]) - 1
+          classPlan.push([idx])
+          return hoist(tag, `CLS[${ci}][0]`)
+        }
+        const [cls, first, second] = [ref(idxs[0]!, 'cl'), ref(idxs[1]!, 'c1'), ref(idxs[2]!, 'c2')]
+        const has = (c: string, at: string): string => ascii ? `${c}.ascii[${at}]===1` : `classHas(${c},${at})`
+        const xf = fxRef(code[ip + 3]!)
+        return `${head}
+const it=ctx._routed
+if(it!==undefined&&it.span.start===pos){const e=it.span.end;const c=${ascii ? 'input.charCodeAt(e)' : 'lead(input,e)'}
+if(!(${has(cls, 'c')})||(${has(first, 'c')}&&!(${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}))){ctx._fe=e;ctx._fx=${xf};return FAIL}}
 return ${child}(input,pos,ctx)
 }`
       }
@@ -1397,7 +1494,7 @@ try{return ${child}(input,pos,ctx)}finally{ctx.state=saved}
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
-return ${fn}(v,{start:pos,end:EC.e})
+return ${fn}(v,new _SP(pos,EC.e))
 }`
       }
 
@@ -1427,7 +1524,7 @@ return v
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
 const f=ctx._fields
-if(f!==undefined)f.push({name:${name},value:v,span:{start:pos,end:EC.e}})
+if(f!==undefined)f.push(new _FC(${name},v,new _SP(pos,EC.e)))
 return v
 }`
         }
@@ -1452,8 +1549,8 @@ return v
         const xf = fxRef(code[ip + 2]!)
         // TWO ARMS, mirroring `assemble.ts:1050`. A TOLERANT `expect()` EMBEDS
         // ITS ERROR IN THE TREE and not only in the flat `_errors` side-channel
-        // (`combinators/expect.ts:150`, codegen's `_ctx._rec.capture` at
-        // codegen.ts:4470) — so a tree walk finds every diagnostic and the node
+        // (`combinators/expect.ts:150`, the source lowering's
+        // `_ctx._rec.capture`) — so a tree walk finds every diagnostic and the node
         // survives incremental subtree reuse. `captureError` is the shared
         // function, called; the embedding is not restated here.
         //
@@ -1463,7 +1560,7 @@ return v
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-const err={_tag:'parseError',span:${prog.lines === 1 ? 'spanLines(ctx,pos,pos)' : '{start:pos,end:pos}'},expected:${xf}}
+const err={_tag:'parseError',span:${prog.lines === 1 ? 'spanLines(ctx,pos,pos)' : 'new _SP(pos,pos)'},expected:${xf}}
 const es=ctx._errors
 if(es!==undefined)es.push(err)
 ${REC ? 'if(ctx._tolerant===true)captureError(ctx,err)\n' : ''}ctx._fc=false
@@ -1478,7 +1575,7 @@ return err
         // The SPAN is the routed item's own object, not a copy — `assemble.ts`
         // hands the same one to the leaf, and a fresh `{start,end}` here would
         // be a different tree for any consumer comparing by identity.
-        const push = `pushCstLeaf(ctx,{_tag:'leaf',value:it.value,span:it.span})`
+        const push = `pushCstLeaf(ctx,new _LF(it.value,it.span))`
         return `${head}
 const it=ctx._routed
 if(it===undefined||pos!==it.span.start){
@@ -1587,8 +1684,8 @@ ctx._triviaLog=sOtl
 }
 if(v===FAIL)return FAIL
 const e=EC.e
-const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
-if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:${capturesSource ? 'input.slice(pos,e)' : 'out'},span:{start:pos,end:e}})
+const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,new _SP(pos,e))`}
+if(wasCap)pushCstLeaf(ctx,new _LF(${capturesSource ? 'input.slice(pos,e)' : 'out'},new _SP(pos,e)))
 EC.e=e
 return out
 }`
@@ -1613,7 +1710,7 @@ ${hasSuffix && (lineFlags & 2) !== 0 ? 'if(sm)_trackLines(ctx,input,e)' : ''}
 ${hasSuffix ? `if(!sm){ctx._fe=e;ctx._fx=${suffixExpected};if(ctx._probe!==undefined)failAt(ctx,${suffixExpected},e)}` : ''}
 const v=${pending ? 'tp?_pfTokValue:' : ''}input.slice(pos,e)
 ${pending ? 'if(tp){_pfTokBody=-1;_pfTokValue=undefined}' : ''}
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,new _LF(v,new _SP(pos,e)))
 EC.e=e
 return v
 }`
@@ -1653,7 +1750,7 @@ ctx._rootTriviaLog=sRtl
 }
 if(e<0)return FAIL
 const v=input.slice(pos,e)
-if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(wasCap)pushCstLeaf(ctx,new _LF(v,new _SP(pos,e)))
 EC.e=e
 return v
 }`
@@ -1661,7 +1758,7 @@ return v
 const e=${run}(input,pos,ctx)
 if(e<0)return FAIL
 const v=input.slice(pos,e)
-if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,{_tag:'leaf',value:v,span:{start:pos,end:e}})
+if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)pushCstLeaf(ctx,new _LF(v,new _SP(pos,e)))
 EC.e=e
 return v
 }`
@@ -1803,7 +1900,7 @@ return v
         const close = (): string => REC ? `${parts.join('\n')}\n}finally{ctx._sync=${sy}}\n}` : `${parts.join('\n')}\n}`
         if (n === 1) {
           parts.push(fused
-            ? projection === 0 ? 'return v0' : `return ${fn}([v0],{start:pos,end:EC.e})`
+            ? projection === 0 ? 'return v0' : `return ${fn}([v0],new _SP(pos,EC.e))`
             : wantValues ? 'return [v0]' : 'return undefined')
           return close()
         }
@@ -1830,13 +1927,13 @@ return v
             const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
             parts.push(holdsGap(code, k, base, n, i, nullable)
               ? emitHoldTerm(callee, vn, tmp(), L, skipFor(L))
-              : emitTerm(callee, vn, tmp(), L, skipFor(L)))
+              : emitTerm(callee, vn, tmp(), L, skipFor(L), L.tri >= 0 ? triviaMiss(L.tri) : undefined))
           }
           names.push(vn)
         }
         parts.push('EC.e=cur')
         parts.push(fused
-          ? projection >= 0 ? `return ${names[projection]}` : `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
+          ? projection >= 0 ? `return ${names[projection]}` : `return ${fn}([${names.join(',')}],new _SP(pos,cur))`
           : wantValues ? `return [${names.join(',')}]` : 'return undefined')
         return close()
       }
@@ -1877,7 +1974,30 @@ if(ctx._fc===true)return FAIL
 const af=ctx._fx
 if(af!==undefined&&af.length>0){ctx._fe=pos;return FAIL}
 }
-ctx._fe=pos;ctx._fx=${choiceFx}
+${cfg.probe ? `if(arm<0){${arms.map(a => `${a}(input,pos,ctx)`).join(';')}}
+` : ''}ctx._fe=pos;ctx._fx=${choiceFx}
+return FAIL
+}`
+        }
+
+        if (cfg.probe) {
+          // A probe assembly enters every arm in source order, as the
+          // interpreter's `firstMatch` does, so each opener reaches `failAt`.
+          const p = tmp()
+          return `${head}
+${emitMark(p, L.buf, L.raw, sinks)}
+let acc
+let best=pos
+${arms.map(arm => `{ctx._fc=false
+const v=${arm}(input,pos,ctx)
+if(v!==FAIL)return v
+const at=ctx._fe??pos
+if(at>best){best=at;acc=undefined}
+if(at===best)acc=_accSet(ctx._fx,acc)
+if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
+${emitRollback(p, L.buf, L.raw, sinks)}
+}`).join('\n')}
+ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL
 }`
         }
@@ -2157,7 +2277,8 @@ return FAIL
         const selector = link(code[ip + 1]!)
         const otherIp = code[ip + 3]!
         const other = otherIp >= 0 ? link(otherIp) : undefined
-        const otherRouted = code[ip + 4]! === 1
+        const otherRouted = (code[ip + 4]! & 1) === 1
+        const otherCommits = (code[ip + 4]! & 2) === 0
         const n = code[ip + 5]!
         validateDispatchSpec(spec, n, code[ip + 4]!)
         const armBase = ip + 6
@@ -2176,7 +2297,7 @@ return FAIL
         const routedCall = (target: string): string => `{const savedRouted=ctx._routed
 ${emitRollback(m1, L.buf, L.raw, sinks)}
 ${emitMark(m2, L.buf, L.raw, sinks, false)}
-ctx._routed={value:key,span:{start:pos,end:selEnd}}
+ctx._routed={value:key,span:new _SP(pos,selEnd)}
 try{v=${target}(input,pos,ctx)}finally{ctx._routed=savedRouted}
 break}`
         const plainCall = (target: string): string => `v=${target}(input,selEnd,ctx);break`
@@ -2221,7 +2342,7 @@ ${fallbackCase}
 }
 if(v===FAIL){
 ${emitRollback(m2, L.buf, L.raw, sinks)}
-ctx._fc=true
+${other !== undefined && !otherCommits ? 'if(arm!==undefined)' : ''}ctx._fc=true
 return FAIL
 }
 return [key,v]
@@ -2256,6 +2377,69 @@ return [key,v]
         const itemMiss = (at: string): string => itemAscii
           ? `${itemCls}.ascii[input.charCodeAt(${at})]!==1`
           : `!classHas(${itemCls},lead(input,${at}))`
+        // The separator's own first set (ip+7, `assemble.ts` `sepClass`).
+        let sepCls: string | undefined
+        let sepAscii = false
+        if (!REC && sepIp >= 0 && (code[ip + 5]! & 8) !== 0 && !leadingTriviaFieldAt(code, k, sepIp) && !rowNullable(code, k, sepIp, nullable)) {
+          const resolved = t.cc[code[ip + 8]!]!
+          const ci = classes.push([resolved]) - 1
+          classPlan.push([code[ip + 8]!])
+          sepCls = hoist('rs', `CLS[${ci}][0]`)
+          sepAscii = isAsciiOnlyClass(resolved)
+        }
+        // THE GAP GATE (`gap-gate.ts`, `assemble.ts`): the item's leading gap is
+        // read once here and handed to its regex row through the slot.
+        const gapIp = !gapNeutral && sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1
+        let gapCode = (_rb: string): string => ''
+        if (gapIp >= 0) {
+          const row = code[gapIp + 2]!
+          const rx = k[code[row + 1]!]
+          const shape = gapRegexLowers(rx) ? scanShapeFromRegex((rx as RegExp).source, (rx as RegExp).flags) : null
+          const cls = (idx: number): string => {
+            const resolved = t.cc[idx]!
+            const ci = classes.push([resolved]) - 1
+            classPlan.push([idx])
+            const ref = hoist('gc', `CLS[${ci}][0]`)
+            return isAsciiOnlyClass(resolved) ? `${ref}.ascii[input.charCodeAt(${'@'})]!==1` : `!classHas(${ref},lead(input,${'@'}))`
+          }
+          const follow = cls(code[gapIp + 3]!).replaceAll('@', 'gq')
+          const other = code[gapIp + 4]! >= 0 ? cls(code[gapIp + 4]!).replaceAll('@', 'itemStart') : 'true'
+          if (shape !== null) {
+            // Scanned inline, as the row scans it: no slot to fill or read.
+            let n = 0
+            const q = tmp()
+            const m = emitShapeMatch(shape, 'itemStart', (prefix = '_v') => `${q}${prefix}${n++}`, '')
+            gapCode = (rbCode: string): string => `let gapped=false
+if(ctx._probe===undefined){
+${m.setup.join('\n')}
+const gq=${m.ok}?${m.end}:-1
+if((gq<0||${follow})&&${other}){
+${rbCode}
+break
+}
+}
+`
+          } else {
+            const re = hoist('gr', `K[${code[row + 1]!}]`)
+            gapCode = (rbCode: string): string => `let gapped=false
+if(ctx._probe===undefined){
+${re}.lastIndex=itemStart
+const gq=${re}.test(input)?${re}.lastIndex:-1
+if((gq<0||${follow})&&${other}){
+${rbCode}
+break
+}
+if(gq>=0){
+GAP.row=${row};GAP.at=itemStart;GAP.end=gq;GAP.input=input
+gapped=true
+}
+}
+`
+          }
+        }
+        const sepMiss = (at: string): string => sepAscii
+          ? `${sepCls}.ascii[input.charCodeAt(${at})]!==1`
+          : `!classHas(${sepCls},lead(input,${at}))`
         const skipBeforeFirst = sepIp < 0 && min === 0
         const p = tmp()
         // `viaRepItem` is `sep === undefined && count >= min && (count > 0 ||
@@ -2350,7 +2534,7 @@ ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
         // is taken unconditionally by the closure engine (`assemble.ts:2067`), so
         // it is resolved separately from `itemFx` — reusing that one would hand
         // `EMPTY_FX` to every recovered error in a grammar that does not report.
-        const recFx = REC ? fxRef(code[ip + 6]!) : ''
+        const recFx = !REC ? '' : (flags & 16) !== 0 ? '[]' : fxRef(code[ip + 6]!)
         const sepSent = REC ? sentRef(code[ip + 7]!) : 'undefined'
         const recSent = sep === undefined
           ? my
@@ -2368,7 +2552,7 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
 ${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
@@ -2378,7 +2562,11 @@ let sepEnd=-1
 ${sep !== undefined ? `if(count>0){
 const lb=cstLeavesLen(ctx)
 let sp=cur
-${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}ctx._fc=false
+${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('sp')}){
+${rb}
+break
+}
+`}ctx._fc=false
 ${sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp) ? 'LEAD.at=cur\n' : ''}const sv=${sep}(input,sp,ctx)
 if(sv===FAIL){
 ${rb}
@@ -2393,13 +2581,13 @@ itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(inp
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${itemMiss('itemStart')}){
+${itemCls === undefined || (sep === undefined && hasTrivia === 'false') ? '' : `if(count>=${min}&&${p}gate&&${sep === undefined && hasTrivia === 'hasTrivia' ? 'hasTrivia&&' : ''}${itemMiss('itemStart')}){
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-`}ctx._fc=false
+`}${gapCode(rb)}ctx._fc=false
 const v=${child}(input,itemStart,ctx)
-if(v===FAIL){
+${gapIp >= 0 ? 'if(gapped)GAP.at=-1\n' : ''}if(v===FAIL){
 ${REC
   // THE ROLLBACK MOVES INSIDE THE ARMS. The strict loop rolls back
   // unconditionally before testing `_fc`, which is sound because every path out
@@ -2445,8 +2633,8 @@ return out
 const end=${recognize}(input,pos)
 if(end<0){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 const value=${value}
-const leaf={_tag:'leaf',value,span:{start:pos,end}}
-const kids=[leaf],rawKids=[leaf],span={start:pos,end}
+const leaf=new _LF(value,new _SP(pos,end))
+const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)
 EC.e=end
 const nd=${build}(kids,undefined,span,rawKids,EMPTY_TL,undefined)
 ${L.buf && L.raw === RAW_OMIT
@@ -2574,8 +2762,8 @@ ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
 ${collapseChildren
-    ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`
-    : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},{start:pos,end},EMPTY_CH,EMPTY_TL,undefined)`}
+    ? `const nd=captured.length===1?captured[0]:${build}(captured,undefined,new _SP(pos,end),EMPTY_CH,EMPTY_TL,undefined)`
+    : `const nd=${build}(captured,${fields ? 'fieldMap' : 'undefined'},new _SP(pos,end),EMPTY_CH,EMPTY_TL,undefined)`}
 ${publish}
 EC.e=end
 return nd
@@ -2605,26 +2793,26 @@ return nd
           const direct = `${build}(kids,fieldMap,span,rawKids,${captureWide ? 'tlog' : 'EMPTY_TL'},st)`
           value = hostCst ? `nd=_pfHost!==undefined?${hostCall}:${direct}` : `nd=${direct}`
         } else {
-          value = `nd=_pfHost!==undefined?_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,st,${tags}):{_tag:'node',type:${ty},span,state:st??null,children:kids}`
+          value = `nd=_pfHost!==undefined?_pfHost(${ty},hostKids,fieldMap,span,rawKids,tlog,st,${tags}):new _ND(${ty},span,st??null,kids===EMPTY_CH?kids:[...kids])`
         }
         // HOST COLLAPSE applies wherever the node's VALUE comes from the host —
         // any node under a CST host, not only the builder-less ones.
         const collapsible = keepChildren && (hostCst || (build === undefined && proj < 0))
         const openCapture = omitsRaw
-          ? `const buf={noRaw:true,rawLen:0}
+          ? `const buf=new _BUF(undefined,true,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
           : keepChildren
-          ? `const buf={}
+          ? `const buf=new _BUF(undefined,undefined,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined`
-          : `const buf={rawOnly:true}
+          : `const buf=new _BUF(true,undefined,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
@@ -2667,7 +2855,7 @@ ctx._cstTriviaLog=sTl
 ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
-const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}
+const span=${tracked ? 'spanLines(ctx,pos,end)' : 'new _SP(pos,end)'}
 const st=${readsState ? 'ctx.state' : 'undefined'}
 let nd
 ${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]
@@ -2697,7 +2885,7 @@ return nd
   const ruleEntries: string[] = []
   for (const [rname, entryIp] of Object.entries(prog.rules)) {
     if (!served(entryIp)) continue
-    // `_r_<Name>` — the composition surface, in `codegen.ts`'s own spelling and
+    // `_r_<Name>` — the composition surface, in the source lowering's spelling and
     // deliberately NOT namespaced, so a sibling calls it by name.
     const target = link(entryIp)
     const rn = `_r_${rname.replace(/[^A-Za-z0-9_$]/g, '_')}`

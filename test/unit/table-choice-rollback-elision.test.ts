@@ -29,7 +29,7 @@ function precompiled(prog: TableProgram): Entry {
   const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
   return tableRules(ownTableProgram({
     ...owned,
-    asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   })).Root! as Entry
 }
 
@@ -42,11 +42,11 @@ function precompiledCountingExpectedMerges(prog: TableProgram, counter: { n: num
   const compiled = new Function(
     ...EMITTED_PARAMS, 'COUNT', source,
   ) as (...args: unknown[]) => ReturnType<PrecompiledAssembly['factory']>
-  const factory = ((...args: Parameters<PrecompiledAssembly['factory']>) =>
-    compiled(...args, counter)) as PrecompiledAssembly['factory']
+  const factory = (((...args: Parameters<PrecompiledAssembly['factory']>) =>
+    compiled(...args, counter)) as PrecompiledAssembly['factory'])
   return tableRules(ownTableProgram({
     ...owned,
-    asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   })).Root! as Entry
 }
 

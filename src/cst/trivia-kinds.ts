@@ -60,7 +60,7 @@ function unwrapTrivia(p: Combinator<unknown>): Combinator<unknown> {
 }
 
 /** Strip `label()` wrapper; returns inner parser for matching. */
-export function peelLabel(p: Combinator<unknown>): { label: string; parser: Combinator<unknown> } | null {
+function peelLabel(p: Combinator<unknown>): { label: string; parser: Combinator<unknown> } | null {
   if (p._def.tag === 'label') return { label: p._def.label, parser: p._def.parser }
   return null
 }

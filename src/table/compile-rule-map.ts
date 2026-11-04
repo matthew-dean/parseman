@@ -19,7 +19,7 @@ import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplica
  * `compileRuleMap()` FOR THE TABLE LOWERING — the counterpart that did not exist.
  *
  * `compile` covered `compile()`, the SINGLE-ROOT entry point, which the
- * plugin uses only for standalone combinators (`plugin/index.ts:1693`, `:1870`).
+ * plugin uses only for standalone combinators.
  * The main path — every `rules()` grammar — goes through `compileRuleMap`, and
  * with no table counterpart there was nothing for the macro build to point at.
  * This is that function, and it is the EASY direction: `encodeTable` takes a
@@ -29,7 +29,7 @@ import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplica
  * ── THE CONTRACT IT MATCHES ──────────────────────────────────────────────────
  * `compileRuleMap` returns ONE `replacement` string: a self-contained expression
  * that the plugin splices over the whole `rules(factory)` call-expression
- * (`plugin/index.ts:1753`, and as an initialiser at `:1941`), evaluating ONCE to
+ * (`evaluateRulesFactory` in `plugin/index.ts`), evaluating ONCE to
  * the `{ name: fn, … }` map. `keys` is the entry list, for the caller to check
  * against the source's own keys. `hostMode` / `hostBranchElided` are what the
  * macro stamps the emitted map with. `reflection` is per-grammar CST node
@@ -59,6 +59,7 @@ export type TableRuleMapOptions = {
   readonly specialise?: boolean
   /** Grammar-level ambient scan-skip, as `rules({ scanSkip }, …)` declares it. */
   readonly scanSkip?: Combinator<unknown>[]
+  /** @deprecated Has no effect (see `TableSettings.recovery`). Removed in the next minor release. */
   readonly recovery?: boolean
   readonly hostMode?: HostMode
   readonly trackLines?: boolean
@@ -67,7 +68,7 @@ export type TableRuleMapOptions = {
    * `coverage: grammarCoverage` here for every `rules()` grammar — so this is what
    * makes `{ grammarCoverage: true }` a working build under the table lowering.
    *
-   * COUNTERS ONLY, per the owner ruling recorded in `notes/RELEASE-0.48-TARGET.md`
+   * COUNTERS ONLY, per the owner ruling recorded in `notes/history/RELEASE-0.48-TARGET.md`
    * §1; `_grammarTrace` parity is 0.48 work. The plugin's coverage path needs the
    * DEFINITIONS STAMP and the HITS, and both are here.
    */
@@ -264,7 +265,7 @@ function encodeForRun(
 ): { prog: TableProgram; fnSrcs: (string | null)[]; hostMode: HostMode; plan: ReturnType<typeof buildGrammarPlan> | undefined } | null {
   runDuplicationDiagnosticRules(ruleMap, opts.duplication)
   const encodeMap = withAmbient(ruleMap, opts)
-  // WINNERS ARE THE NON-`lazy` ENTRIES, exactly as `codegen.ts:5639` picks them.
+  // WINNERS ARE THE NON-`lazy` ENTRIES, exactly as the source lowering picked them.
   // A `rules()` map stores named lazy proxies beside resolved bodies, and the plan
   // uses the winner map to give a shared subtree ONE owner; filtering differently
   // here would mint `rule:` ids the source lowering does not, so a consumer
@@ -355,10 +356,15 @@ export function compileRuleMap(
     const roots = assemblyExtraIps(artifact)
     let siteBytes, fixed
     try {
-      siteBytes = emitAssemblySource(table, artifact, cfg, roots, true).siteBytes
+      // RANKED with every gap gate lowered as its item (`gapNeutral`), so the
+      // gates move no site's place in the order; the fit below is judged by the
+      // source that ships, gates included. Priced throughout without the
+      // `_errors` marks a lexical program over a scan adds (`scanSinkNeutral`),
+      // so they move no site in or out of the budget.
+      siteBytes = emitAssemblySource(table, artifact, cfg, roots, true, undefined, true, true).siteBytes
       // What any selective assembly costs before its first site body: the shared
       // prelude and the factory's tail. A budget that cannot cover it buys nothing.
-      fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set()).source.length
+      fixed = emitAssemblySource(table, artifact, cfg, roots, true, new Set(), true).source.length
     } catch (e) {
       if (e instanceof Unemittable) return { ...none, refusal: e.construct }
       throw e
@@ -384,7 +390,7 @@ export function compileRuleMap(
           refusal: `a site within its ${Math.floor(ceiling)} B selection ceiling (the prelude alone is ${fixed} B)`,
         }
       }
-      const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites).source.length
+      const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites, true).source.length
       if (bytes <= ceiling) return { sites, bytes: Math.ceil(bytes * SUPERCOMPILE_GROWTH) }
       // Scale by the overshoot, and by at least 1%: near the ceiling a site is
       // the unit, and the ratio alone can stall a few bytes over it.

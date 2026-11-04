@@ -172,6 +172,89 @@ and −7.5% `--jitless`, SCSS −1.8% and −2.9%, `.jess` +0.4% (inside spread)
 Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 `perf/loop-followups` and `perf/gap-handoff`. The CHANGELOG's 0.59.0 section is open.
 
+- **Constructor-built tree objects (Node 26 pretenuring flip).** V8 pretenures object
+  literals per allocation site, decided during warm-up from where scavenges fall, so
+  identical processes split into a fast and a slow mode and any bundle-layout change
+  re-rolls it. Leaves, spans, default nodes, field captures and capture buffers are now
+  built by `new` calls (`src/cst/plain.js`), which have no allocation site, and the bench
+  fixtures' node builders do the same. With dead code of 0–15,000 bytes appended to
+  `dist/index.js`, every process of the gate cases and of four runtime-kept trees (a CST
+  host, builder-less default nodes with and without line tracking, a builder that keeps
+  its span) ran in the fast mode on Node 24 and 26 (1–2 mark-compacts, against up to 61).
+  JIT marginal instructions against a slow-mode main: `css/stylesheet` −31% (Node 24) and
+  −34% (Node 26), `expected/narrow` −14% / −37%, `rollback/medium` −11% / −32%. Against
+  main's fast mode, `rollback/medium` on Node 26 reads about +4% (12.36M → 12.84M): a tree
+  that is never pretenured is copied by the scavenger. `--jitless` reads +1% to +5%: an
+  interpreter cannot see the mechanism.
+  The constructors must exist ONCE per process. A first build bundled a copy into each
+  entry, so a process that loads `parseman` and `parseman/table` (Jess) built every shape
+  under two maps; Jess's SCSS parse ran +3.1% (Node 24) and +6.7% (Node 26) from the
+  polymorphic reads. The build now emits `dist/cst/plain.js` once and every entry
+  imports it; that SCSS row reads −0.3% on both. Investigation in
+  [#224](https://github.com/matthew-dean/parseman/pull/224).
+- **The cost of never pretenuring: one synthetic case.** With Jess's AST nodes constructor-built
+  too (jess `perf/ast-ctor`), Jess's SCSS `gen-workload` reads +3.6% JIT on Node 26 (998.0M
+  → 1034.2M per parse; −0.3% on Node 24). It is a single file of about 1G instructions per
+  parse, and its tree survives several scavenges. Node 26 pretenured that tree in every
+  process, so it was never copied. Constructors cannot be pretenured, so the scavenger copies
+  it instead: scavenge time over 40 parses is 65 ms on main against 114 ms, with the same
+  scavenge count. Real SCSS is not slower. JIT marginal instructions on Node 26 / Node 24:
+  Bootstrap 5 (92 files) −2.1% / −0.2%, Foundation (106 files) −0.9% / −1.0%, the accepted
+  sass-spec fixtures (1,961 files) −1.6% / −1.7%. Mark-compacts are 1–2 per process in every
+  case, and scavenge time is within noise. Accepted: the synthetic case pays for copying
+  that consistent pretenuring avoided. The way to win it back is less short-lived
+  allocation, so a tree survives fewer scavenges. A literal site would bring the per-process
+  split back.
+
+- **Watched literal sites (not converted).** These are still object literals, and none splits
+  a process today. A tree does not keep them, or they are rare:
+  - field-map entries (`src/compiler/fields.ts` `buildFieldMap`);
+  - the interpreter's `annotateSpanFromLineContext`;
+  - parse-error objects;
+  - the public `annotateTreeSpans`.
+
+  `pnpm perf:pretenure` would show it if one began to.
+
+- **`graphql/document`'s nodes are constructor-built too (0.60.0 line).** The required
+  cross-process gate on #243 (CI, Node 26, against v0.59.1) failed one case:
+  `graphql/document` median +5.4% (p 4.7e-43), mean +5.6%, head slower in 157/160 rounds.
+  Every other case read within ±0.5%. It was the same flip as 0.59.0's, in the workload's
+  OWN nodes: `examples/graphql/parser.ts` built them with object literals in its
+  `transform()` reducers. Constructor-built tree objects covered Parseman's objects and
+  `examples/css`, but not this grammar. Measured per process on Node 26.13, macOS, with
+  12 processes per side and the gate's worker:
+  - Default runtime: the head pretenured in 12 of 12 processes (17–18 mark-compacts,
+    0.514 ms, 49.55G instructions). v0.59.1 pretenured in none (1 mark-compact, 0.501 ms,
+    47.20G).
+  - `--no-allocation-site-pretenuring` (diagnostic only): 0.491 ms / 47.59G against
+    0.486 ms / 47.69G. So the parse work is the same.
+  - `--trace-pretenuring`: the head tenures three adjacent allocation sites (found/created
+    264, 271 and 243, ratio 1.0); v0.59.1 tenures none. Building only the field node with a
+    constructor takes the head to 1 mark-compact in every process (0.489 ms against
+    0.492 ms for v0.59.1 on the same worker). Converting only its `?? []` defaults leaves
+    13 mark-compacts.
+  - Fix: every node the example keeps is a `new` call on `examples/graphql/graphql-node.js`
+    (prototype `Object.prototype`), as `examples/css/css-node.js`. With never-called code
+    appended to the head's `dist/index.js`, every process stays at 1 mark-compact.
+  - Local gate, `graphql/document` only, against v0.59.1, Node 26.13: before +4.8%
+    (p 4.3e-7, 28/30 rounds slower); after +0.3% (p 0.21, 23/40), ok.
+
+  - `examples/lang`'s AST and `examples/toml-ish`'s lines were kept literal-built nodes
+    too, and `examples/css`'s `nilNode()` a literal; all three are constructor-built in
+    the same series. `examples/json` keeps none: its objects come from
+    `Object.fromEntries`, and its `[key, value]` pairs die inside the reducer.
+  - `pnpm perf:pretenure` runs `graphql/document` (1 mark-compact per process at every
+    pad, Node 26.13). A plant that turns every graphql node back into a literal in that
+    check's worker does NOT fail it: 1 mark-compact in every process at pads 0, 100, 500,
+    970, 2,000, 4,000, 8,000, 15,000 and 30,000, and at 1,500, 4,000 and 8,000 parses. The
+    same literals tenured in 12 of 12 processes under the cross-process gate's worker on
+    #243's bundle, and in 0 of 12 on v0.59.1's. The flip needs a layout that check does
+    not reach, so the plant would be blind and was not landed.
+
+  A user grammar whose reducers build object literals can still flip the same way: the
+  site is in the grammar, so no change in Parseman reaches it. The CHANGELOG's advice
+  (build kept nodes with a constructor) is the remedy.
+
 - **Nullable-regex first sets.** A `regex()` that may match empty still reports `any`, but
   also carries the first characters of its non-empty matches. A sequence led by an optional
   pad such as `ws* '*' ws*` gets a finite first set, so operator repeats get item classes
@@ -220,7 +303,37 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   `--jitless`, −13.9% JIT; maps −0.4%. Groups containing `/` and lists keep the old path.
   [jess#523](https://github.com/jesscss/jess/pull/523), merged.
 
+### Unreleased on `main`
+
+- **Trivia lead gate.** A trivia skip at a character no trivia can start returns `cur`
+  without the runtime scan, in both table engines (the closure engine per trivia slot,
+  the emitted assembly in its skips and sequence terms), and the term takes no trivia
+  marks there.
+  - Jess's shipped Less build, against `main`, JIT st (A/A inside 1%):
+    | Input | `main` | Gate | Change | lessc 4.9.1 |
+    | --- | --- | --- | --- | --- |
+    | `color: red;` | 37.9k | 36.1k | −4.5% | 6.8k |
+    | `.r { }` | 33.3k | 29.8k | −10.5% | 26.4k |
+    | `.a .b > .c { }` | 53.5k | 50.8k | −5.0% | 36.7k |
+    | keyword list | 26.3k | 25.7k | inside spread | — |
+    | whole file (`--jitless`) | 357.8M (2295M) | 344.0M (2094M) | −3.9% (−8.8%) | 153.9M (780M) |
+  - Other Jess grammars, whole file, JIT / `--jitless`: CSS −3.7% / −5.7%; SCSS −1.4%
+    (A/A spread 3%) / −6.6%; `.jess` −7.6% (±2.9%) / −11.5%. Cold start is inside the A/A
+    for all four.
+  - Identity: ASTs and CSTs identical on 461 Less files; `compare:less:builds --corpus`
+    byte-identical in all six modes; both checks go red with a narrowed lead table.
+  - The two other trivia parts did not land. Marks are already skipped wherever the gate
+    fires, and taking them only when a log is live changes nothing for Jess, which always
+    parses with a live root trivia log. Dropping the gap memo is rejected (below).
+  - Branch `perf/shipped-alloc-trivia`.
+
 ## Rejected (measured)
+
+- **Dropping the trivia gap memo.** Remove `skipDeferredTrivia`'s repeat-scan memo, on
+  top of the lead gate. Jess's Less build: `color: red;` 36.1k → 37.0k (A/A 36.4k), whole
+  file 348.1M → 343.3M (A/A 347.5M, spread 1.8%). The memo still answers repeats where
+  trivia does start, and no site was found where a label proves it cannot hit. Probe was
+  a dist edit; no branch kept.
 
 - **Shared emitted helpers for marks and undo.** Route every emitted rollback mark and
   scanned-term undo through shared helpers. It shrank whole-grammar emitted code 28–30%
@@ -284,6 +397,69 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   whole file `--jitless` +0.3%. Running the composite gap under the leaf's sink save, clear
   and restore costs about what the skipped operator attempt cost. SCSS gains because its
   gap is one regex. `b4f684c5`, reverted by `fdea063f` on `perf/less-gap`.
+- **Direct values: node children as locals, not context collectors.** The emitted assembly
+  passes a node's children and raw entries to each piece as two arguments; a frame binds
+  fresh arrays and a leaf is a push. Trees identical on 461 Less files; the failing-input
+  differential (span, expected set, unconsumed offset) caught four planted defects. In a
+  selective assembly every crossing pays an adapter (Jess's shipped Less build: +9.4% JIT),
+  so it was limited to assemblies with no closure pieces, which leaves the shipped build
+  unchanged (`color: red;` 37.7k → 37.3k, A/A 37.3k). With every site emitted, `color: red;`
+  is 24.1k (base 24.5k) against 11.2k for the hand-written recognizer the plan was priced
+  on. Removing every remaining frame item (`_fields`, `captureTrivia`, trivia-log stores)
+  reached 22.1–22.6k, inlining small shared regions changed nothing, and a first-character
+  gate before the labelled trivia skip saved 0.6k. The earlier frame and push costs were
+  priced as additions to the hand-written code, not as shares of the generated code. A
+  profile of the generated code puts it, per declaration, at: calls between pieces ~5.8k
+  (53 functions, 13 inlined regions, against ~12); reducers ~4.7k (hand-written 3.7k);
+  labelled-trivia scanning ~3.4k (`skipDeferredTrivia`, its gap memo, `scanWithLabels`, six
+  log reads per sequence term); GC ~3.0k (hand-written 1.0k: expected-set arrays of failed
+  arms, `_routed` objects, capturing frames' arrays); pushes 1.1k, marks 0.7k, frames 0.45k.
+  Every-site artifact 4.68 MB (~17×). Rejected: still about 2× the hand-written code with
+  frames and pushes gone. Branch `perf/direct-values` @ `d5d98460`, unmerged.
+- **Allocation-free expected-set merges on failed arms.** On Jess's shipped Less build, a
+  declaration makes 3 expected-set merges in the closure engine, 2 of which copy an array
+  (18 strings), plus one routed-token object: about 300 B of the 5.4 KB a declaration
+  allocates (the hand-written recognizer: 2.2 KB). The extra allocation is frames and
+  spans. With merges made free (a probe valid on accepted input only), `color: red;` and
+  the keyword list stayed inside the A/A and the whole file moved −0.8%. Not built; the
+  probe was a dist edit, no branch kept.
+- **Left-corner routing, first form: one shared walk, no gap routing.** Every level from a
+  node down to the first node a character reaches starts at the same position with the
+  same piece. So route on that character (gates, dispatching choices, lead masks, trivia
+  labels), call the deepest node once, and complete each enclosing level as its reducer
+  on the lone child. A level whose continuation can start runs a freshly linked copy of
+  itself with its left corner seeded, so nothing is read twice. Census for Less
+  `color: red;` (closure engine, `assemblyBudget` 0): the levels above `Value` cost 9.9k of
+  the declaration's 39.8k JIT instructions (25%) and ~100k of 332k `--jitless` (30%).
+  About 4.7k of the 9.9k is reducers, so the ceiling is ~13%. Trees identical on 11.4k
+  inputs × 4 variants, with planted defects caught. Less `color: red;` −11% JIT, but
+  every value followed by a space resumed at each level, and one runtime walker made the
+  call sites megamorphic: CSS +3.7% / +9.8%, SCSS +5.1% / +8.5% (JIT / `--jitless`),
+  space runs up to +17% `--jitless`. Measured against `main` @ `44c9d269`. Branch
+  `perf/left-corner-routing` @ `2844597c`, closure engine only, behind `PM_LC=1`. The
+  second form, below under Queued, replaces it.
+- **Partitioned factoring of Less `Value`'s 17-arm choice.** This would generalize
+  `factor-choice.ts` to composite-`ref` corners and to factoring only the arms that share
+  a corner. Not built: the choice already routes to its arm in O(1). For every letter,
+  digit, `#`, `"`, `[`, `` ` `` and `+`, the first-character mask selects one arm, so `red`
+  goes straight to `IdentifierOrFunction`. Only `@ - . $ % ( ~ \` have two or three
+  candidates, and for `@` the existing literal pretests already rule out `@{` and `@@`
+  (0 visits). Site visits on the closure engine:
+
+  | File | `Value` entries | Failed arm entries |
+  | --- | --- | --- |
+  | `benchmark.less` | 5172 | 164 (3%) |
+  | `bootstrap-less-port` (90 files, 240 KB) | 4627 | 292 (6%) |
+
+  Most failures are `(`, where `QueryColonFeature` is tried before `Paren`, and `.`/`#`,
+  where `MixinReference` is tried before `Dimension`. At about 2k JIT instructions per
+  failed arm, that is 0.07–0.1% of a whole file, which is the ceiling for any
+  partitioning of these arms. What `Value` does cost is per entry: its frame, the choice,
+  and the `dispatch()` behind an identifier. On Less `red` that is 3.9k JIT / 28k
+  `--jitless` above a bare keyword node; on `@x`, 2.4k / 23k above the variable reference
+  node. That cost is the left-corner routing's to remove: through the choice, and through
+  the `dispatch()` (Queued, above). Census on `perf/left-corner-routing` @ `99ebc7e4`
+  (`scratchpad/left-corner/visits.ts`).
 
 ## Parked
 
@@ -296,12 +472,174 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   CSS and `.jess` sites are one-character gates that admit too much, which the two-character
   gate family addresses more cheaply. Census on `perf/less-gap`; not built.
 
+- **0.59.0 against 0.58.1 on Node 26: whole-family vs partial pretenuring.** (Measured on #212, then declared 0.59.0; the 0.59.0 that shipped is main's, without it, and #212 is the 0.60.0 line.) The
+  cross-process gate read `expected/narrow` +12.3% and `rollback/medium` +4.7% (Node
+  26.13, macOS) where the Node 26 self-check stayed within ±2.6%. Per process, with the
+  gate's worker parameters and mark-compact counts (diagnostic flags only):
+  - Pretenuring off (`--no-allocation-site-pretenuring`), both builds are identical:
+    0.54–0.56 ms, 31G instructions, about 238 scavenges. So the allocation volume is
+    unchanged, and so is the table: a build with a byte-identical `expected/narrow`
+    table behaves as 0.59.0.
+  - 0.58.1 pretenures in every process and tenures the whole tree family: 10–16 sites
+    per process (allocation-count fingerprints near 330, 1,000–1,450 and 210–290), at
+    0.58–0.70 ms with about 24 mark-compacts and 1.35 ms per scavenge.
+  - 0.59.0 pretenures in 2 of 12 to 9 of 16 processes, and then only six sites in
+    three pairs (fingerprints near 367, 520–527 and 1,539–2,445). The rest of the
+    family stays young. That leaves tenured parents pointing at young children:
+    1.56–1.59 ms per scavenge, 0.67–0.83 ms per parse. Processes that pretenure
+    nothing run 0.54–0.57 ms, faster than any 0.58.1 process.
+  - `--no-maglev-pretenure-store-values` changes neither build.
+  - Bisected by the share of slow processes and their cost: no commit carries it. The
+    per-parse closure code is nearly unchanged between the commits where it moves, and
+    a commit's slow-mode cost varies from run to run (0.62 ms, then 0.75 ms).
+  - No source lever: no new field, allocation or object in 0.59.0 causes it. Jess's
+    Less parser on Node 26 is unaffected and 0.9–1.6% faster than on 0.58.0
+    (`benchmark.less`, bootstrap, a small file; 12 processes each, 5–7 mark-compacts on
+    both sides).
+  - Candidate, not built: make Parseman's tree objects tenure together with a
+    grammar's nodes, or decouple the two, so a partial tenuring cannot leave
+    old-to-young pointers. It would change how the tree is built, with unknown effect on
+    real grammars.
+
+- **0.59.0's pretenuring flips follow bundle layout, not parse work.** (Measured on #212, then declared 0.59.0; the 0.59.0 that shipped is main's, without it, and #212 is the 0.60.0 line.) The required
+  cross-process gate on `504ddea1` (CI, Linux, Node 26, against v0.58.2) failed seven
+  cases:
+
+  | case | median Δ | mean Δ | head slower |
+  | --- | ---: | ---: | ---: |
+  | rollback/sparse | +7.3% | +11.6% | 89/100 |
+  | rollback/medium | +7.5% | +10.0% | 613/900 |
+  | expected/none | +12.4% | +18.5% | 92/100 |
+  | expected/narrow | −1.4% | +4.7% | 427/900 |
+  | less/stylesheet | +11.0% | +8.0% | 78/100 |
+  | less/mixins | +11.2% | +7.5% | 80/100 |
+  | graphql/document | +4.8% | +5.0% | 156/160 |
+
+  `rollback/none`, `rollback/dense`, `expected/wide`, `css/stylesheet` and
+  `json/document` passed. Every failure checked is V8's allocation-site pretenuring
+  decision:
+  - `graphql/document`: the 0.59.0 build pretenures in 8 of 8 processes (18–19
+    mark-compacts), v0.58.2 in none. With `--no-allocation-site-pretenuring`
+    (diagnostic), both run 48.6G–48.7G instructions at 0.49 ms.
+  - `less/mixins`: 2 of 8 pretenure, against none for v0.58.2.
+
+  Jess's `.jess` parser on Node 24 shows the same split. Bisected with Jess rebuilt
+  per commit (16 processes per side, `benchmark.css`, N 100 → 400; slow means at
+  least 290M marginal instructions):
+
+  | commit | slow processes |
+  | --- | ---: |
+  | `acb421e2` | 0/16 |
+  | `6183b237` | 2/16 |
+  | `18a8a077` | 1/16 |
+  | `c2f4fbf8` | 7/16 |
+  | `4e8b3cda` | 8/16 |
+  | `4348bded` | 11/16 |
+  | `5e27a457` | 10/16 |
+
+  - `c2f4fbf8` changes only the emitter, which `.jess` never runs: its artifact has
+    no precompiled functions, and `dist/run` is byte-identical. It adds about 700
+    bytes to `dist/index.js`, which the parser imports.
+  - Appending a never-called 970-byte function to the fast `18a8a077` build flips
+    `.jess` to 8 of 16 slow (median 290.4M, against 278.8M for 0.58.0).
+  - With pretenuring off, every build counts the same instructions.
+  - On Node 26, `.jess` is unimodal at 288M for 0.58.0, `18a8a077` and the padded
+    build alike.
+
+  So the pretenuring share follows heap layout and allocation timing set by the
+  bundle, and no per-parse change in 0.59.0 accounts for it. Trimming code only
+  re-rolls the outcome. The lever is the tree-construction redesign: tenure
+  Parseman's tree objects with a grammar's nodes, or decouple the two.
+
 - **`.jess` `ExpressionLogical` capture replay.** `and`/`or` in `.jess` are choice arms that
   reparse their left operand up to three times. Fixing it in the engine needs capture
   replay, for about 2% of the `.jess` parse. Reshape the grammar later instead.
 
 ## Queued and in progress
 
+- **Left-corner routing (accepted direction, prototype).** Every level from a node down
+  to the first node a character reaches starts at the same position with the same piece.
+  Each route is its own chain of closures, so wrappers that only route cost nothing. The
+  route calls the deepest node once and completes each enclosing level as its reducer on
+  the lone child. A continuation is routed on the next token: a captured token, or a
+  skipped one. Which one it is comes from the scope's trivia definition, never from the
+  character, so whitespace routes as a captured token in a `noTrivia` scope or as an
+  `optional(<regex>)` gap, and as skipped where the trivia skips it. A skipped gap, the
+  `OP_GAPGATE` gap and the `optional` gap are each read once, and the read's end is
+  handed to the term that reads it next. Literal separators are routed too, and no route
+  is installed whose top always resumes. Census for Less `color: red;` (closure engine,
+  `assemblyBudget` 0): the levels above `Value` are 9.9k of the declaration's 39.8k JIT
+  instructions (25%) and ~100k of 332k `--jitless` (30%); about 4.7k of the 9.9k is
+  reducers, so the ceiling is ~13%. Trees identical on 11.5k inputs × 4 variants, and on
+  Less with `mathMode` `always` and `parens`. Planted defects caught: a wrong reducer
+  state on 44 and 50 rows, a dropped lone child on 249–5241 rows per dialect, a skipped
+  choice failure on 1 (Less) and 13 (SCSS), a skipped repeat report on 47 (Less). The
+  mirrored separator and gate-failure writes never run on these grammars, because the
+  separator gate decides every list. The `optional`-gap write runs 2.8k times on CSS, but a
+  later write always replaces it. Interleaved marginal instructions against the same tree
+  with the switch off (`release/0.59.0` @ `52326958`), A/A null within ±1.2% (±2.3% on
+  one `--jitless` file):
+  - Less `color: red;` −12.3% JIT / −16.3% `--jitless`; SCSS −9.0% / −10.4%; `.jess`
+    −7.0% / −12.9%; CSS −5.7% / −8.1%.
+  - Whole files, all faster in both modes: `benchmark.less` −4.7% / −9.6%,
+    `bootstrap-less-port` (90 files, 240 KB) −3.9% / −6.2%, `benchmark.css` −4.7% / −3.9%,
+    `gen-workload.scss` −2.9% / −2.5%, a 36 KB `.jess` workload −3.6% / −3.8%.
+  - Open: a value that continues at every level loses. `font: 12px/1.5 a, b;` (a slash,
+    then a space, then a comma) is +7.9% / +5.3% on CSS and +5.5% / +5.6% on `.jess`.
+    Branch @ `b9bfdc8e`.
+  - Resume fix, first attempt (@ `6a5f776e`): a level that resumes opens only the frame it
+    skipped, with the value in hand, and runs from its left corner; it is no longer a
+    seeded copy of the level. That case is now +5.2% / +4.2% on CSS and +6.1% / +5.0% on
+    `.jess`. `grid-area: 1 / 2 / 3;` and `border-radius: a / b;` are faster in every
+    dialect in both modes, and every whole file stays faster.
+  - Turning off each of that case's three routes in turn removes about 1% each; with all
+    three off, the switch still costs +0.8%. So what is left is a fixed cost per route
+    (entry, the collector save and restore, the final publish) plus the driver every
+    node call passes through, not the resume.
+  - Through `dispatch()` and pretested choices (@ `701cbf53`). A route can end in a
+    `dispatch()` whose arms re-read its token: the selector is the left corner, the
+    dispatch's own tables pick the arm, and the arm's node completes as a lone level, with
+    no `_routed` object. A route also passes a choice when every claiming arm but one is
+    pretested, cutting back at entry if a pretest matches. Less `color: red;` drops from
+    278.1k to 257.3k `--jitless`, about 21k of the 28k that `Value` and the dispatch cost.
+    That is −16.4% JIT / −22.3% `--jitless` against the base, and `border-radius: a / b;`
+    is −13.3% / −17.3%. Every whole file is faster in both modes (`benchmark.less`
+    −6.8% / −9.4%, `bootstrap-less-port` −2.0% / −9.1%). The open `font` item is
+    unchanged. CSS `calc(1px + 2px * 3)` is +0.7% `--jitless`, not yet attributed.
+  - Open question, not built: can a `dispatch()` be derived from a plain `choice()`, so
+    authors needn't write one? The route above still reads the hand-written dispatch's
+    exact keys and prefix and suffix matchers. Deriving them would mean reading the
+    arms' shared identifier corner once and routing on its text and on the next captured
+    token, from the arms' leading literals.
+  Planned separately, and also not built yet: the build-out compiles the routes above
+  into table rows at encode time, read by every engine, on `main` after 0.59.0. Branch `perf/left-corner-routing`, raw samples under
+  `scratchpad/left-corner/results/`.
+- **Less declarations above the value (census, not built).** Marginal instructions per
+  declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
+  ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.
+  Breakdown in `--jitless`. The first three rows split the declaration and sum to ~92%
+  (the property token and a small remainder make up the rest). The reducer row overlaps
+  them: each reducer is also counted in the level it runs in.
+  - Value, after the routes: ~86k (31%).
+  - The Declaration level: ~126k (46%). Of that, the declaration's frame and sequence,
+    four scope switches, three choices, three optionals, the colon and the value gap.
+    Two pieces are grammar shape: the `valueGap` field (6.3k, removing it as a probe) and
+    the head's interpolated-property and numeric-key arms (4.7k). The declaration always
+    has several children, so its frame stays; a route starting at the statement would
+    remove only the choice, gate and scope steps above the property token.
+  - The statement level: ~41k (15%). 33.5k of it is failed arms: before the declaration
+    arm, `FunctionStatement`'s dispatch reads the identifier and the guarded ruleset
+    pre-scans `/[-\w]+[ \t]*:[ \t\n\r\f]/` (moving the declaration arm first, as a probe).
+    Removing them takes the identifier as the statement's left corner, routed on the next
+    captured token: [jess#515](https://github.com/jesscss/jess/pull/515) grammar-side, or
+    the dispatch derivation above. The rest is the item's frame and terminator.
+  - Reducers (Jess grammar code), counted inside the rows above. Each pair below is
+    `--jitless` / JIT. All reducers: ~40k / ~5.9k (14%). `Declaration`: 21.5k / 2.5k.
+    The identifier's keyword: 3.3k / 1.2k. The five value-chain levels: 1.6k–4.5k /
+    0.3k–0.7k each. A framed node costs parseman ~19k / ~2.5k around a reducer that is
+    nearly free (a keyword node over an identifier).
+  Census on `perf/left-corner-routing` @ `25597760`; probe edits were made only in a scratch
+  checkout of the grammar.
 - **Comment-sensitive selection
   ([#179](https://github.com/matthew-dean/parseman/issues/179)).** Comment-only edits to
   Jess's SCSS grammar moved the emitted function count from 61 to 55: the build measured

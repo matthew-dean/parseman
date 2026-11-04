@@ -4,8 +4,8 @@
  * This is ledger row G5 as stated: *"build the grammar reference at run start,
  * making the swaps on rules / sub-rules (leaves) at that point, then run with NO
  * logic branching for that option input"*. `exec.ts` builds the same table and
- * then interprets it: one `switch (code[ip])` over 29 opcodes, executed ONCE PER
- * ROW — 497,360 rows for `benchmark.less` (`bench/jess/g5-rows.ts`) — each
+ * then interprets it: one `switch (code[ip])` over every opcode (29 then), executed ONCE PER
+ * ROW — 497,360 rows for `benchmark.less` (measured with a one-off `g5-rows` bench, last at `4a5d0341`) — each
  * re-reading its opcode and re-decoding its operands from the `Int32Array`, and
  * re-testing the same per-parse options. That is the per-node branching the
  * design exists to remove.
@@ -20,13 +20,13 @@
  *
  * The numbers that make this obviously the right trade, measured not assumed:
  *
- *   2,241  distinct reachable sites in the less table (`bench/jess/g5-sites.ts`)
+ *   2,241  distinct reachable sites in the less table (`g5-sites`)
  * 497,360  rows executed for one parse of `benchmark.less`
  *
  * Pieces are GRAMMAR-sized; rows are INPUT-sized. Assembly allocates ~2.2k
  * closures once per process and removes a dispatch plus an operand decode from
  * ~497k executions — a 222x ratio. Assembly cost is paid once and is not the
- * metric; it is measured anyway (`bench/jess/g5-ms.ts`, `bench/jess/g5-profile.ts`).
+ * metric; it is measured anyway (`g5-ms`, `g5-profile`).
  *
  * ## Why this is not "just tuning the switch"
  *
@@ -69,28 +69,30 @@ import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserD
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA, LEAD, triviaFieldCapture } from '../combinators/field-trivia.ts'
-import { skipDeferredTrivia } from './trivia-gap.ts'
+import { skipDeferredTrivia, triviaLeadTable } from './trivia-gap.ts'
 import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
-  advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
-  scanTrivia, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
+  advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
+  skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
+import { PlainBuf, PlainField, PlainLeaf, PlainNode, PlainSpan } from '../cst/plain.js'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
-  OP_COV,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE,
+  OP_COV, OP_GAPGATE, OP_STRICT,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -109,13 +111,13 @@ import {
 } from './emit-assembly.ts'
 import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
+import { gapRows, newGapSlot } from './gap-gate.ts'
 import { failCleanAnalysis } from './fail-clean.ts'
 /**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
- * `failAt` (combinators/probe.ts) is called from exactly three places in the
- * interpreter — `literal.ts`, `regex.ts`, `keywords.ts` — and codegen emits its
- * mirror (`probeUpdate`) at the same leaf-fail sites. The table recorded
+ * `failAt` (combinators/probe.ts) is called at the interpreter's terminal fail
+ * sites — `literal.ts`, `regex.ts`, `keywords.ts`, `lines.ts`. The table recorded
  * NOTHING, so `completionsAt` on a table artifact saw only the top-level
  * failure: a swallowed item failure inside a `sepBy` (`'{'` at offset 1 in a
  * `{ decl; }` grammar) never reached the probe and the item's opener vanished
@@ -197,7 +199,6 @@ function linkMatcher(m: readonly [number, string, string, number]): (key: string
   }
 }
 
-type Leaf = { _tag: 'leaf'; value: string; span: { start: number; end: number } }
 
 /**
  * The `COV` slot's value when a parse installs no collector. ONE shared function
@@ -413,6 +414,28 @@ export type Assembly = {
  * ONE walk. Each site is lowered at most once and memoised by its code offset,
  * so a subtree shared by two parents is one piece with two references to it.
  */
+/**
+ * A printed factory takes its helpers BY POSITION (`EMITTED_PARAMS`), so one printed
+ * against a different helper list would bind the wrong function to a name and run
+ * wrong rather than fail. A factory printed by 0.59.x guards only against FEWER
+ * helpers, and one printed before 0.59.0 has no guard at all. So the runtime checks
+ * too, before calling it: the assembly's printed `arity` must be exactly the list it
+ * passes. It reads that printed number, never `factory.length`, which a minifier that
+ * drops unused trailing parameters lowers on a valid artifact. An assembly printed
+ * before 0.60.0 carries no `arity` and is refused. A factory this version prints also
+ * checks the count it is called with (`FACTORY_ARITY_GUARD`, `emit.ts`).
+ */
+export function assertFactoryArity(pre: { readonly arity?: number }): void {
+  if (pre.arity === EMITTED_PARAMS.length) return
+  const printed = pre.arity === undefined
+    ? 'carries no helper count, so it was printed before parseman 0.60.0'
+    : `takes ${pre.arity} helpers, but parseman ${PARSEMAN_VERSION} passes ${EMITTED_PARAMS.length}: it was printed by an older or newer parseman`
+  throw new Error(
+    `parseman: this parser's printed assembly ${printed}. Reprint the parser with `
+    + `parseman ${PARSEMAN_VERSION}, or run it on the parseman version that printed it.`,
+  )
+}
+
 export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Assembly {
   const { code, k, fns, cc, fx, disp, dsp, trivia, triviaLabelled } = t
   // The leaf swap is only legal when line tracking is off, and that is a property
@@ -438,7 +461,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * graph with no recovery in it anywhere.
    *
    * Dormancy is unchanged for the OTHER two engines: the source lowering
-   * (`codegen.ts:3153`) and the interpreter (`repeat.ts:163`) still gate on
+   * (removed in 0.47.0) and the interpreter (`repeat.ts:163`) still gate on
    * `ctx._tolerant` at runtime, and the recovery pieces below keep their own
    * `_tolerant === true` failure-path gates so `exec.ts` stays the identity
    * reference.
@@ -503,6 +526,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   const labelExtraIps = assemblyExtraIps(prog)
+  // The regex rows an optional repeat hands a scanned gap to (`gap-gate.ts`),
+  // and the one slot it hands it through, shared with the emitted pieces.
+  const GAP_ROWS = gapRows(code, [...Object.values(prog.rules), ...labelExtraIps])
+  const GAP = newGapSlot()
   const closureLabels = computeSiteLabels(
     code, [...Object.values(prog.rules), ...labelExtraIps], hostCst,
   )
@@ -542,7 +569,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const CLEAN = REC ? (): boolean => false : failCleanAnalysis(code)
 
   function pushLeaf(ctx: ParseContext, value: string, s: number, e: number): void {
-    const lf: Leaf = { _tag: 'leaf', value, span: { start: s, end: e } }
+    const lf = new PlainLeaf(value, new PlainSpan(s, e))
     pushCstLeaf(ctx, lf)
   }
 
@@ -592,7 +619,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const span = { start: pos, end }
+      const span = new PlainSpan(pos, end)
       const node = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, rawEntry(node, input, pos, end))
@@ -646,7 +673,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      const node = build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -684,7 +711,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = build(captured, fieldMap, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+      const node = build(captured, fieldMap, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -722,7 +749,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const span = { start: pos, end }
+      const span = new PlainSpan(pos, end)
       const node = kids.length === 1
         ? kids[0]
         : build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
@@ -764,12 +791,38 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       const end = EC.e
       const node = captured.length === 1
         ? captured[0]
-        : build(captured, undefined, { start: pos, end }, EMPTY_CH, EMPTY_TL, undefined)
+        : build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
       EC.e = end
       return node
+    }
+  }
+
+  /**
+   * A regex row a repeat may hand a scanned gap to (`gap-gate.ts`): the end comes
+   * from the slot when the slot is this row's, at this position, in this input,
+   * and from the regex otherwise. Everything after the end is the row's own.
+   */
+  function gapRegexPiece(row: number, re: RegExp, xf: string[], track: boolean): Piece {
+    return (input, pos, ctx) => {
+      let e: number
+      if (GAP.row === row && GAP.at === pos && GAP.input === input) e = GAP.end
+      else {
+        re.lastIndex = pos
+        e = re.test(input) ? re.lastIndex : -1
+      }
+      if (e >= 0) {
+        const v = input.slice(pos, e)
+        if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
+        if (track) trackLinesInto(ctx, input, e)
+        EC.e = e
+        return v
+      }
+      ctx._fe = pos; ctx._fx = xf
+      if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+      return FAIL
     }
   }
 
@@ -959,7 +1012,31 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return out
   }
 
+  /**
+   * NO TRIVIA CAN START AT `cur` — `triviaLeadTable` for the installed trivia. A
+   * gap there is empty: nothing to scan, nothing recorded, so nothing for a
+   * sequence term to mark. One table per trivia slot, built with the assembly;
+   * the installed trivia is matched to its slot only when it changes (a trivia
+   * the caller passed that is no slot gets its own table then).
+   */
+  const LEAD_TABLES = trivia.map(tp => tp === undefined ? null : triviaLeadTable(tp))
+  let LEAD_OF: Combinator<unknown> | undefined
+  let LEAD_TABLE: Uint8Array | null = null
+  function cannotStartTrivia(input: string, cur: number, triviaP: Combinator<unknown>): boolean {
+    if (triviaP !== LEAD_OF) {
+      LEAD_OF = triviaP
+      const slot = trivia.indexOf(triviaP)
+      LEAD_TABLE = slot >= 0 ? LEAD_TABLES[slot]! : triviaLeadTable(triviaP)
+    }
+    const table = LEAD_TABLE
+    if (table === null) return false
+    const c = input.charCodeAt(cur)
+    return c < 128 && table[c] === 0
+  }
+
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
+    const t = ctx.trivia
+    if (t !== undefined && cannotStartTrivia(input, cur, t)) return cur
     const s = SCAN
     if (s !== null
       && ctx._triviaLog === undefined
@@ -1041,7 +1118,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * into them.
    */
   function nextTerm(child: Piece, input: string, cur: number, ctx: ParseContext): number {
-    if (ctx.trivia === undefined) {
+    const t = ctx.trivia
+    if (t === undefined || cannotStartTrivia(input, cur, t)) {
       const v = child(input, cur, ctx)
       if (v === FAIL) return -1
       TERMV = v
@@ -1089,7 +1167,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   /** A non-first term at a site proven to run under an open node capture buffer. */
   function nextTermBuffered(child: Piece, input: string, cur: number, ctx: ParseContext): number {
-    if (ctx.trivia === undefined) {
+    const t = ctx.trivia
+    if (t === undefined || cannotStartTrivia(input, cur, t)) {
       const v = child(input, cur, ctx)
       if (v === FAIL) return -1
       TERMV = v
@@ -1328,7 +1407,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
   }
 
-  function dispatchBranch(child: Piece, usesRouted: boolean): DispatchBranch {
+  function dispatchBranch(child: Piece, usesRouted: boolean, commits = true): DispatchBranch {
     if (!usesRouted) {
       // The arm runs after the selector's match, so it marks where it starts.
       return (input, _pos, selEnd, key, ctx) => {
@@ -1343,7 +1422,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const v = child(input, selEnd, ctx)
         if (v === FAIL) {
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          ctx._fc = true
+          if (commits) ctx._fc = true
           return FAIL
         }
         return [key, v]
@@ -1354,7 +1433,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return (input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot) => {
       const savedRouted = ctx._routed
       if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-      ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+      ctx._routed = { value: key, span: new PlainSpan(pos, selEnd) }
       let v: unknown
       try {
         v = child(input, pos, ctx)
@@ -1363,7 +1442,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       if (v === FAIL) {
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        ctx._fc = true
+        if (commits) ctx._fc = true
         return FAIL
       }
       return [key, v]
@@ -1637,6 +1716,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_RX: {
         const re = k[code[ip + 1]!] as RegExp
         const xf = fx[code[ip + 2]!] as string[]
+        if (GAP_ROWS.has(ip)) return gapRegexPiece(ip, re, xf, false)
         const shared = rawScalarSpecs.has(code[ip + 1]!) ? scalarFor(ip) : undefined
         if (shared !== undefined) {
           return (input, pos, ctx) => {
@@ -1675,6 +1755,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_RX_TRACK: {
         const re = k[code[ip + 1]!] as RegExp
         const xf = fx[code[ip + 2]!] as string[]
+        if (GAP_ROWS.has(ip)) return gapRegexPiece(ip, re, xf, true)
         return (input, pos, ctx) => {
           re.lastIndex = pos
           if (re.test(input)) {
@@ -1852,6 +1933,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
+      // Transparent: only the repeat holding it reads its operands.
+      case OP_GAPGATE:
+        return link(code[ip + 1]!)
+
+      // One encoding per assembly: strict, or the construct as written.
+      case OP_STRICT:
+        return link(code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!)
+
       case OP_RULE:
         // Pure indirection in the tape; in the assembled graph the parent simply
         // holds the target's piece. The trampoline row disappears entirely — this
@@ -1886,10 +1975,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // table engines. Do not use the incoming ctx bit: a grammar scope can
         // declare tracking even when the outer run context begins untracked.
         const expectSpan = (ctx: ParseContext, pos: number) =>
-          prog.lines === 1 ? spanLines(ctx, pos, pos) : { start: pos, end: pos }
+          prog.lines === 1 ? spanLines(ctx, pos, pos) : new PlainSpan(pos, pos)
         // TOLERANT `expect()` EMBEDS ITS ERROR IN THE TREE, not only in the flat
-        // `_errors` side-channel (`combinators/expect.ts:150`, and codegen's
-        // `_ctx._rec.capture` at codegen.ts:4470) — so a tree walk finds every
+        // `_errors` side-channel (`combinators/expect.ts:150`, and the source
+        // lowering's `_ctx._rec.capture`) — so a tree walk finds every
         // diagnostic and the node survives incremental subtree reuse. The table
         // pushed to `_errors` and stopped, so a tolerant CST parse was missing the
         // `parseError` child the other two engines both produce.
@@ -1933,7 +2022,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           return (input, pos, ctx) => {
             const v = child(input, pos, ctx)
             if (v === FAIL) return FAIL
-            ctx._fields?.push({ name, value: v, span: { start: pos, end: EC.e } })
+            ctx._fields?.push(new PlainField(name, v, new PlainSpan(pos, EC.e)))
             return v
           }
         }
@@ -1958,7 +2047,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (input, pos, ctx) => {
           const v = child(input, pos, ctx)
           if (v === FAIL) return FAIL
-          return fn(v, { start: pos, end: EC.e })
+          return fn(v, new PlainSpan(pos, EC.e))
         }
       }
 
@@ -2016,6 +2105,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // known here, so the scope piece holds the scanner it installs as a `const`.
         const scanFor: FastTriviaScanner | null =
           swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
+        // The scope installs its slot's lead table with its trivia, so the gate
+        // (`cannotStartTrivia`) never has to look the slot up.
+        const scopeLead = ki < 0 ? null : LEAD_TABLES[ki]!
         const child = link(code[ip + 2]!)
         // TWO PIECES, SELECTED HERE — not one piece that tests the opcode. Capture
         // is fixed for the whole parse, so `code[ip] === OP_SCOPE_CAP` is an
@@ -2032,6 +2124,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const savedScan = SCAN
               const savedCap = ctx.captureTrivia
               SCAN = scanFor
+              const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+              LEAD_OF = scopeTrivia
+              LEAD_TABLE = scopeLead
               ctx.trivia = scopeTrivia
               ctx.triviaKindLabels = scopeLabels
               ctx.captureTrivia = true
@@ -2040,6 +2135,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               ctx.trivia = saved
               ctx.triviaKindLabels = savedLabels
               SCAN = savedScan
+              LEAD_OF = savedLeadOf
+              LEAD_TABLE = savedLead
               return v
             }
           : (input, pos, ctx) => {
@@ -2047,12 +2144,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const savedLabels = ctx.triviaKindLabels
               const savedScan = SCAN
               SCAN = scanFor
+              const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+              LEAD_OF = scopeTrivia
+              LEAD_TABLE = scopeLead
               ctx.trivia = scopeTrivia
               ctx.triviaKindLabels = scopeLabels
               const v = child(input, pos, ctx)
               ctx.trivia = saved
               ctx.triviaKindLabels = savedLabels
               SCAN = savedScan
+              LEAD_OF = savedLeadOf
+              LEAD_TABLE = savedLead
               return v
             }
         return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
@@ -2068,7 +2170,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._fe = pos; ctx._fx = ROUTED_FX
             return FAIL
           }
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: item.value, span: item.span })
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(item.value, item.span))
           EC.e = item.span.end
           return item.value
         }
@@ -2256,7 +2358,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (v === FAIL) return FAIL
           const end = EC.e
           const value = input.slice(pos, end)
-          if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, new PlainSpan(pos, end)))
           EC.e = end
           return value
         }
@@ -2291,7 +2393,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (ctx._probe !== undefined) failAt(ctx, suffixExpected, end)
           }
           const value = input.slice(pos, end)
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, new PlainSpan(pos, end)))
           EC.e = end
           return value
         }
@@ -2334,7 +2436,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             }
             if (end < 0) return FAIL
             const value = input.slice(pos, end)
-            if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+            if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(value, new PlainSpan(pos, end)))
             EC.e = end
             return value
           }
@@ -2343,7 +2445,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const end = run(input, pos, ctx)
           if (end < 0) return FAIL
           const value = input.slice(pos, end)
-          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, new PlainLeaf(value, new PlainSpan(pos, end)))
           EC.e = end
           return value
         }
@@ -2379,12 +2481,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           if (v === FAIL) return FAIL
           const end = EC.e
-          const out = fn(v, { start: pos, end })
-          if (wasCapturing) pushCstLeaf(ctx, {
-            _tag: 'leaf',
-            value: op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out,
-            span: { start: pos, end },
-          })
+          const out = fn(v, new PlainSpan(pos, end))
+          if (wasCapturing) pushCstLeaf(ctx, new PlainLeaf(op === OP_SOURCE_LEAF && hostCst ? input.slice(pos, end) : out, new PlainSpan(pos, end)))
           EC.e = end
           return out
         }
@@ -2501,7 +2599,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          *
          * The restore is `sequence()`'s `finally` (combinators/sequence.ts:105).
          * Codegen does not restore and compensates by having every list capture
-         * `_sync` at ENTRY (codegen.ts:3032); the table captures at entry too, so
+         * `_sync` at ENTRY; the table captures at entry too, so
          * this is unobservable either way — it is here because leaving a stale
          * sentinel published is the kind of state a later reader will trust.
          */
@@ -2566,7 +2664,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runSyncTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+              return projection >= 0 ? values[projection] : fn!(values, new PlainSpan(pos, cur))
             }
           }
           if (wantValues) {
@@ -2661,7 +2759,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const cur = runAdjTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
               EC.e = cur
-              return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+              return projection >= 0 ? values[projection] : fn!(values, new PlainSpan(pos, cur))
             }
           }
           if (wantValues) {
@@ -2704,7 +2802,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
               if (v === FAIL) return FAIL
-              return projection === 0 ? v : fn!([v], { start: pos, end: EC.e })
+              return projection === 0 ? v : fn!([v], new PlainSpan(pos, EC.e))
             }
           }
           if (wantValues) {
@@ -2732,7 +2830,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               EC.e = cur
               return projection === 0 ? v0
                 : projection === 1 ? TERMV
-                : fn!([v0, TERMV], { start: pos, end: cur })
+                : fn!([v0, TERMV], new PlainSpan(pos, cur))
             }
           }
           if (wantValues) {
@@ -2770,7 +2868,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return projection === 0 ? v0
                 : projection === 1 ? v1
                 : projection === 2 ? TERMV
-                : fn!([v0, v1, TERMV], { start: pos, end: cur })
+                : fn!([v0, v1, TERMV], new PlainSpan(pos, cur))
             }
           }
           if (wantValues) {
@@ -2875,7 +2973,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const cur = runDirectTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
             EC.e = cur
-            return projection >= 0 ? values[projection] : fn!(values, { start: pos, end: cur })
+            return projection >= 0 ? values[projection] : fn!(values, new PlainSpan(pos, cur))
           }
         }
         if (wantValues) {
@@ -2915,7 +3013,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // `arms[]` merely to rediscover the same two or three children at
           // every dispatch. The classifier remains table data; only its result
           // is turned into a direct captured call.
-          if (n === 2) {
+          if (n === 2 && !cfg.probe) {
             const a0 = link(code[base]!), a1 = link(code[base + 1]!)
             return (input, pos, ctx) => {
               const c = lead(input, pos)
@@ -2940,7 +3038,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
           }
-          if (n === 3) {
+          if (n === 3 && !cfg.probe) {
             const a0 = link(code[base]!), a1 = link(code[base + 1]!), a2 = link(code[base + 2]!)
             return (input, pos, ctx) => {
               const c = lead(input, pos)
@@ -2973,6 +3071,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             )
           }
           const selected = bindExclusive(0)
+          // Under a completions probe the interpreter runs every arm on a miss
+          // (`choice.ts`), so each opener reaches the probe.
+          const probeArms = cfg.probe ? Array.from({ length: n }, (_, i) => link(code[base + i]!)) : undefined
           // THERE ARE NO OPEN ARMS HERE, and the piece is written to say so. An
           // ungated arm is one whose class is −1, and `resolveDispatch` clears
           // `exclusive` for exactly those arms (program.ts) — so `table.open` is
@@ -3004,6 +3105,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // THE UNION IS REPORTED ONLY ON A DISPATCH MISS, where the interpreter's
             // `parsers.flatMap` over non-nullable, char-excluded arms yields exactly
             // each arm's own opener — this set, without running the arms.
+            if (arm < 0 && probeArms !== undefined) for (const a of probeArms) a(input, pos, ctx)
             ctx._fe = pos; ctx._fx = choiceFx
             return FAIL
           }
@@ -3011,8 +3113,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         // THE PER-ARM GATE. Arms in source order, each skipped when its own class
         // excludes the char at `pos`. `null` means nullable or unmappable, and
-        // those arms are always entered.
-        const armCls = table.armCls
+        // those arms are always entered. A probe assembly enters every arm, as
+        // the interpreter's `firstMatch` does, so each opener reaches `failAt`.
+        const armCls = cfg.probe ? table.armCls.map(() => null) : table.armCls
         if (n === 2 || n === 3) {
           const a0 = link(code[base]!), a1 = link(code[base + 1]!)
           const a2 = n === 3 ? link(code[base + 2]!) : undefined
@@ -3320,6 +3423,43 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
+      case OP_RGATE2: {
+        const cls = cc[code[ip + 1]!]!
+        const xf = fx[code[ip + 3]!] as string[]
+        const first = cc[code[ip + 4]!]!
+        const second = cc[code[ip + 5]!]!
+        const child = link(code[ip + 2]!)
+        if (cfg.tolerant || cfg.probe) return child
+        // ASCII-only classes are read as code units against their tables.
+        if (cls.hi.length === 0 && first.hi.length === 0 && second.hi.length === 0) {
+          const a0 = cls.ascii, a1 = first.ascii, a2 = second.ascii
+          return (input, pos, ctx) => {
+            const item = ctx._routed
+            if (item !== undefined && item.span.start === pos) {
+              const e = item.span.end
+              const c = input.charCodeAt(e)
+              if (a0[c] !== 1 || (a1[c] === 1 && a2[input.charCodeAt(e + 1)] !== 1)) {
+                ctx._fe = e; ctx._fx = xf
+                return FAIL
+              }
+            }
+            return child(input, pos, ctx)
+          }
+        }
+        return (input, pos, ctx) => {
+          const item = ctx._routed
+          if (item !== undefined && item.span.start === pos) {
+            const e = item.span.end
+            const c = lead(input, e)
+            if (!classHas(cls, c) || (classHas(first, c) && !classHas(second, lead(input, e + 1)))) {
+              ctx._fe = e; ctx._fx = xf
+              return FAIL
+            }
+          }
+          return child(input, pos, ctx)
+        }
+      }
+
       case OP_ARMGATE: {
         // Predicate, arm and expected set all bound HERE — the body reads no
         // opcode, decodes no operand and tests no setting.
@@ -3416,6 +3556,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // `many()` — the min-0, separator-less repeat — is the only shape that runs
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
+        // A separated list's ip+8 (flag bit 8) is its separator's first set where the encoder
+        // found the test cheaper than entering it (`Encoder.sepGate`). Where the
+        // separator cannot match empty and reads no pre-scan cursor, a lead
+        // outside it stops the list at the separator, exactly as the strict
+        // optional item stops at its own class above.
+        const sepClassIndex = sepIp >= 0 && !sepLeads && (flags & 8) !== 0 ? code[ip + 8]! : -1
+        const sepClass = !REC && sepClassIndex >= 0 && !rowNullable(code, k, sepIp, NULLABLE) ? cc[sepClassIndex]! : undefined
+        // THE GAP GATE (`gap-gate.ts`): read the item's leading gap once, here.
+        const gapIp = sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1
+        const gapRow = gapIp >= 0 ? code[gapIp + 2]! : -1
+        const gapRe = gapIp >= 0 ? k[code[gapRow + 1]!] as RegExp : undefined
+        const gapFollow = gapIp >= 0 ? cc[code[gapIp + 3]!]! : undefined
+        const gapOther = gapIp >= 0 && code[gapIp + 4]! >= 0 ? cc[code[gapIp + 4]!]! : undefined
         const skipBeforeFirst = sepIp < 0 && min === 0
         const itemClean = sepIp < 0 && CLEAN(code[ip + 1]!) && !rowNullable(code, k, code[ip + 1]!, NULLABLE)
 
@@ -3444,7 +3597,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          *    delimiter (`orSentinel`, repeat.ts:454).
          *  - `mySync` is captured at ENTRY. An element's own sequence publishes
          *    over `_sync` while it runs; the interpreter restores in a `finally`
-         *    and codegen saves at entry (codegen.ts:3032) — same value, both ways.
+         *    and the source lowering saved at entry — same value, both ways.
          *  - the separator-less path rolls the leading trivia back BEFORE
          *    recovering (repeat.ts's `repItem`), and the separated path does NOT:
          *    a consumed separator and the error after it both belong to the list
@@ -3452,6 +3605,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          */
         if (REC) {
           const itemFx = fx[code[ip + 6]!] as string[]
+          // A resync error carries the item's set as derived (bit 16: empty).
+          const recFx = (flags & 16) !== 0 ? EMPTY_FX : itemFx
           const sepSent = sentinelFor(code[ip + 7]!)
           return (input, pos, ctx) => {
             const out: unknown[] | undefined = collect ? [] : undefined
@@ -3512,7 +3667,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                   const rr = recoverScan(
                     input, itemStart, ctx,
                     sep === undefined ? mySync : orSentinel(sepSent ?? mySync, sepSent === undefined ? undefined : mySync),
-                    itemFx,
+                    recFx,
                   )
                   if (out !== undefined) out.push(rr.error)
                   captureError(ctx, rr.error)
@@ -3552,6 +3707,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // Keep the ordinary child path while one is active so this structural
           // fast stop cannot erase an item completion at the cursor.
           const gateItems = itemMayStart !== undefined && ctx._probe === undefined
+          const gateSep = sepClass !== undefined && ctx._probe === undefined
           let cur = pos
           let count = 0
           for (;;) {
@@ -3583,6 +3739,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const leavesBefore = cstLeavesLen(ctx)
               let sp = cur
               if (hasTrivia) sp = skipTrivia(input, sp, ctx)
+              if (count >= min && gateSep && !classHas(sepClass!, lead(input, sp))) {
+                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                break
+              }
               ctx._fc = false
               if (sepLeads) LEAD.at = cur
               const sv = sep(input, sp, ctx)
@@ -3602,13 +3762,33 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
-            if (count >= min && gateItems && !itemMayStart!(input, itemStart)) {
+            // Without a separator or trivia in front, the loop head already
+            // tested this same position.
+            if (count >= min && gateItems && (sep !== undefined || hasTrivia) && !itemMayStart!(input, itemStart)) {
               if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
+            let gapped = false
+            if (gapRe !== undefined && ctx._probe === undefined) {
+              gapRe.lastIndex = itemStart
+              const q = gapRe.test(input) ? gapRe.lastIndex : -1
+              // No arm with the gap can match where the gap fails, or where the
+              // character after it opens nothing; an arm without it needs its
+              // own lead at the item's start.
+              if ((q < 0 || !classHas(gapFollow!, lead(input, q)))
+                && (gapOther === undefined || !classHas(gapOther, lead(input, itemStart)))) {
+                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                break
+              }
+              if (q >= 0) {
+                GAP.row = gapRow; GAP.at = itemStart; GAP.end = q; GAP.input = input
+                gapped = true
+              }
+            }
             ctx._fc = false
             const v = child(input, itemStart, ctx)
+            if (gapped) GAP.at = -1
             if (v === FAIL) {
               if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (committed(ctx)) return FAIL
@@ -3641,7 +3821,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const selector = link(code[ip + 1]!)
         const otherIp = code[ip + 3]!
         const other = otherIp >= 0 ? link(otherIp) : undefined
-        const otherRouted = code[ip + 4]! === 1
+        const otherRouted = (code[ip + 4]! & 1) === 1
+        const otherCommits = (code[ip + 4]! & 2) === 0
         const n = code[ip + 5]!
         const armBase = ip + 6
         const byKey = spec.byKey
@@ -3688,7 +3869,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           )
         }
         const runArm = n === 0 ? undefined : bindArms(0)
-        const runOther = other === undefined ? undefined : dispatchBranch(other, otherRouted)
+        const runOther = other === undefined ? undefined : dispatchBranch(other, otherRouted, otherCommits)
 
         return (input, pos, ctx) => {
           const need = markCst(ctx)
@@ -3742,10 +3923,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
             const value = regexValue ? input.slice(pos, end) : spec as string
-            const leaf = { _tag: 'leaf', value, span: { start: pos, end } }
+            const leaf = new PlainLeaf(value, new PlainSpan(pos, end))
             const kids = [leaf]
             const rawKids = [leaf]
-            const span = { start: pos, end }
+            const span = new PlainSpan(pos, end)
             EC.e = end
             const nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
             if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
@@ -3858,8 +4039,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const sCap = ctx.captureTrivia
           const sBuf = ctx._cstBuf
           const buf: CstCaptureBuf = rawOnly
-            ? { rawOnly: true }
-            : omitsRaw ? { noRaw: true, rawLen: 0 } : {}
+            ? new PlainBuf(true, undefined, 0)
+            : omitsRaw ? new PlainBuf(undefined, true, 0) : new PlainBuf(undefined, undefined, 0)
           ctx._cstBuf = buf
           // `begin` sets this true and the caller immediately cleared it when the
           // node does not capture wide. Net: the flag IS `captureWide`, a const.
@@ -3868,7 +4049,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ctx._fields = wantFields ? [] : undefined
           // PER-NODE-TYPE TRIVIA-KIND MASK, scoped to the body and restored —
           // `node.ts:259-273`, and codegen's `_triviaCaptureMask` save/install/
-          // restore around the same scope (`codegen.ts:4130-4136`). The table
+          // restore around the same scope. The table
           // installed nothing, so a host that asked `Outer` for comments only got
           // every kind the scanner saw.
           const savedMask = structural ? ctx._triviaCaptureMask : undefined
@@ -3890,7 +4071,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ctx.captureTrivia = sCap
           if (v === FAIL) return FAIL
           const end = EC.e
-          const span = tracked ? spanLines(ctx, pos, end) : { start: pos, end }
+          const span = tracked ? spanLines(ctx, pos, end) : new PlainSpan(pos, end)
           const st = readsState ? ctx.state : undefined
 
           let nd: unknown
@@ -3923,7 +4104,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           } else if (host !== undefined) {
             nd = host(type, hostKids, fieldMap, span, rawKids, tlog, st, tags)
           } else {
-            nd = { _tag: 'node', type, span, state: st ?? null, children: kids }
+            nd = new PlainNode(type, span, st ?? null, kids === EMPTY_CH ? kids : [...kids])
           }
           // A ROOT NODE IS NOT A CHILD. `node()` pushes only when it was entered
           // from an enclosing collector — `saved.buf !== undefined || saved.ch !==
@@ -3964,7 +4145,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const at = fe === undefined || fe < 0 ? pos : fe
           return { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: { start: at, end: at } }
         }
-        return { ok: true, value: v, span: { start: pos, end: EC.e } }
+        return { ok: true, value: v, span: new PlainSpan(pos, EC.e) }
       },
     }
   }
@@ -4065,21 +4246,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ? prog.asm?.find(a => a.key === cfgKey(cfg))
       : undefined
     if (pre !== undefined) {
+      assertFactoryArity(pre)
       const pools = rebuildPools(t.cc, t.fx, t.disp, pre.plan)
       emitted = pre.factory(
-        EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia,
-        trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
+        EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia, triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
-        scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+        advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4116,7 +4298,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       // Two engines that can only be compared across two checkouts cannot be
       // compared at all: the bench harness's own guidance is that a
       // cross-worktree measurement carries a bias no repetition removes. Same
-      // spelling as `PM_TABLE_COUNT` (`bench/table-opcode-gaps.ts`).
+      // spelling as the removed `PM_TABLE_COUNT` counters.
       if (!EMIT_ENABLED) throw new Unemittable('PM_TABLE_EMIT=0 (measurement toggle)')
       const em = emitAssemblySource(t, prog, cfg, extraIps)
       /**
@@ -4146,13 +4328,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         throw new Unemittable(`the Function constructor (${String(e)})`)
       }
       emitted = factory(
-        EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
-        trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
+        EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia, triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
-        scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+        advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         // THE SENTINEL POOL, dense over char-class indices so the emitted text can
         // index it the way it indexes `SCANS`. Built only for a recovery assembly
@@ -4161,9 +4342,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // object rather than to two separately constructed ones.
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
-        scalarRecognizers, commitTriviaScan, scanTriviaCompact, t.lex, adjacencyHolds, t.lexPrograms,
+        scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
       )
       emitReached = em.reached
     } catch (e) {
@@ -4387,7 +4569,7 @@ export class AssemblyCache {
    * That is not a hole in G5, it is G5's own first clause: "quickly building the
    * grammar reference ON RUN START, making some swaps on rules or sub-rules, and
    * then the run actually runs with no logic branching for that option input"
-   * (`notes/TABLE-DRIVER.md`). This IS the run-start step. What the criterion
+   * (`notes/history/TABLE-DRIVER.md`). This IS the run-start step. What the criterion
    * forbids is the second sentence, and past this call there is no option read
    * anywhere — `scripts/check-invariants.mjs` INV-6 decides that mechanically.
    *

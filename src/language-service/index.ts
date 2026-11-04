@@ -6,7 +6,7 @@
  * name = node type, without ever modifying the grammar:
  *
  *   - `parse(src, { tolerant })` → CST + `ParseError[]` (recovers on the compiled
- *     fast path when `grammar` is a `compile(g, { recovery: true })` grammar).
+ *     fast path when `grammar` is a `compile()`d grammar).
  *   - `diagnostics(src)` → structural parse errors + your per-node-type lint rules.
  *   - `completionsAt(src, offset)` → the grammar's expected-token set at the cursor,
  *     mapped through your per-rule semantic completion handlers.

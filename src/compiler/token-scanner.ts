@@ -35,7 +35,7 @@
 import type { Alphabet } from './token-alphabet.ts'
 import { TOK_EOF, TOK_UNKNOWN, TOK_WS } from './token-alphabet.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
-import { packInts, sharedHelperDecl } from './token-dispatch.ts'
+import { packInts, unpackHelperDecl } from './token-dispatch.ts'
 import { foldCode, foldExpr } from './token-dispatch.ts'
 
 /**
@@ -46,7 +46,7 @@ import { foldCode, foldExpr } from './token-dispatch.ts'
  */
 function firstSetOfRegexSource(source: string, flags: string): Set<number> | null {
   let fs
-  try { fs = firstSetFromRegex(source).firstSet } catch { return null }
+  try { fs = firstSetFromRegex(source, flags).firstSet } catch { return null }
   if (fs.kind === 'any') return null
   const out = new Set<number>()
   if (fs.kind === 'empty') return out
@@ -58,6 +58,9 @@ function firstSetOfRegexSource(source: string, flags: string): Set<number> | nul
   // Under `/i` the analyzer's ranges may name only one case; admit both, since a
   // gate narrower than the real first set would skip a valid token.
   if (flags.includes('i')) {
+    // Unicode-mode folding, and any non-ASCII member, fold to characters this
+    // does not enumerate (`ſ`→`s`, `é`→`É`).
+    if (flags.includes('u') || flags.includes('v') || [...out].some(c => c >= 128)) return null
     for (const c of [...out]) {
       if (c >= 65 && c <= 90) out.add(c + 32)
       else if (c >= 97 && c <= 122) out.add(c - 32)
@@ -190,7 +193,7 @@ export function emitScanner(alphabet: Alphabet, ns: string): ScannerEmission {
   // two halves of one encoding still lived in two files. They agree today — the
   // point is that widening the encoding (which the `RangeError` tells you to do)
   // must not be able to change one half and miss the other.
-  decls.push(sharedHelperDecl('unpack', () => p('_tkUnpack')))
+  decls.push(unpackHelperDecl(p('_tkUnpack')))
   decls.push(`const ${p('_tkNext_')} = ${p('_tkUnpack')}(${packInts(NEXT)})`)
   decls.push(`const ${p('_tkStart')} = ${p('_tkUnpack')}(${packInts(START)})`)
   decls.push(`const ${p('_tkAccept')} = ${p('_tkUnpack')}(${packInts(ACCEPT)})`)

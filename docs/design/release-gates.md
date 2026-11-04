@@ -1,7 +1,8 @@
 # Releases and the release gate
 
-Every merge to `main` publishes. `.github/workflows/publish.yml` runs on each push,
-chooses the version, and skips the publish when nothing the package ships changed.
+Every merge to `main` publishes. `.github/workflows/publish.yml` runs when CI passes on
+a push to `main`, chooses the version, and skips the publish when nothing the package
+ships changed.
 Pull requests file their CHANGELOG entry under `## Unreleased` and leave the version
 alone, unless they want a minor or a major.
 
@@ -10,14 +11,41 @@ Two scripts carry it:
 | script | where it runs | what it does |
 | --- | --- | --- |
 | `scripts/check-changelog.mjs` | CI job `release-gate` on every PR and push; `prepublishOnly` | requires the entry, keeps the three version sites in agreement |
-| `scripts/release.mjs` | `publish.yml`, on every push to `main` | chooses the version, decides the skip, stamps the release |
+| `scripts/release.mjs` | `publish.yml`, once CI passes on a push to `main` | chooses the version, decides the skip, stamps the release |
 
 ## How a merge publishes
 
+`publish.yml` is triggered by CI's run completing (`on: workflow_run`, `workflows: [CI]`),
+not by the push. `main`'s CI takes one to two and a half hours under runner contention,
+longer than a publish could wait for it, and a run that waited held the `publish` group
+the whole time. The `prepare` job runs only when that CI run concluded `success`, ran for
+a `push`, on `main`, in this repository, and the commit it tested is still `main`'s tip.
+A pull request's CI never publishes: its `workflow_run` event carries the PR's head
+branch, which a fork can name `main`, so the branch alone is not enough. A run that fails
+the check shows as skipped. Every job checks out the commit CI tested
+(`workflow_run.head_sha`). A re-run of CI that turns a failure green on the tip starts
+the publish too.
+
+**Only `main`'s tip is released.** npm's provenance records the run's `GITHUB_SHA`, which
+for `workflow_run` is `main`'s tip when CI completed, not the commit CI tested. So a run
+whose `head_sha` is not `GITHUB_SHA` releases nothing: its `not-tip` job logs `Release
+skipped`. That covers CI finishing out of order (an older commit's CI completing after
+another merge) and a CI re-run of an old commit. The newer tip's own CI completion
+releases the skipped commit with it. If that tip's CI fails, both wait for the fix, as
+any merge on a red `main` does.
+
+A record commit (below) is a push to `main` and runs CI like any merge, so it never
+strands one. If a merge lands while the previous release is being recorded, the record
+is rebuilt on top of it, and the merge's own run is no longer the tip. The record
+commit's run is: its tree carries the merge, so `releaseCommitOf` does not take it for
+the release's own commit, and its plan compares tarballs and releases the merge. A
+fast-forward record carries nothing new and its plan skips it.
+
 1. **Plan** (`node scripts/release.mjs plan`). Two kinds of commit publish nothing:
    the release commit the record step pushed to `main`, and a commit that some release
-   tag already contains. The second is a re-run of a commit `main` has moved past;
-   publishing it would ship older code under a newer number. Otherwise `V` is
+   tag already contains. The second is a re-run of a commit `main` has moved past, or
+   a commit whose CI finished after a newer one released; publishing it would ship older
+   code under a newer number. Otherwise `V` is
    `package.json`'s version on `main` and `L` is the highest stable version on npm or
    among the `v*` tags.
    - If `V > L`, a pull request declared `V`: publish `V`.
@@ -40,12 +68,34 @@ Two scripts carry it:
    `src/version.ts`, renames `## Unreleased` to `## X.Y.Z — <date>`, and commits that
    in the runner as `release: X.Y.Z`. A section the pull request already named for
    `X.Y.Z` takes the date and any Unreleased entries.
-4. **Guard and preflight.** `check-changelog.mjs --publish` and
-   `check-main-release-state.mjs` pass on the stamped tree, `X.Y.Z` is not on npm,
-   the tag `vX.Y.Z` does not exist, and the full preflight from `AGENTS.md` passes.
-5. **Publish** with `npm publish --provenance`. With the `RELEASE_DEPLOY_KEY` secret,
-   **record** the release on `main` (below). Then **tag** the stamped commit `vX.Y.Z`
-   with a git push, and wait until npm serves the new version.
+4. **Guard and preflight.** CI has passed on this exact commit (the trigger, above; a
+   dispatch reads CI's verdict once and stops if it is not a success), `check-changelog.mjs --publish` and `check-main-release-state.mjs` pass
+   on the stamped tree, `X.Y.Z` is not on npm, the tag `vX.Y.Z` does not exist, and the
+   full preflight from `AGENTS.md` passes. CI's verdict is required because `main` does not
+   require a pull request to be up to date with it before merging: two pull requests
+   that each passed CI can merge into a commit nothing has tested, and the preflight
+   runs none of the perf, size or wasted-work gates that `test` requires.
+5. **Pack** the stamped tree with `npm pack`, and keep its sha256.
+6. **Build what ships**, in a second job: re-stamp the same commit (same date and commit
+   time, so the same sha, which the job checks), install with `--ignore-scripts`, run
+   `scripts/build.mjs` and `npm pack --ignore-scripts`. Its tarball must be step 5's,
+   byte for byte (the build is reproducible: the 0.58.0 tarball rebuilds to npm's sha).
+7. **Publish**, in a third job: decide the version again from `package.json`, npm and the
+   tags, re-stamp the same commit, check the tarball step 6 packed against the sha that
+   job output, and `npm publish` it with `--provenance --ignore-scripts`. With the
+   `RELEASE_DEPLOY_KEY` secret, **record** the release on `main` (below). Then **tag** the
+   stamped commit `vX.Y.Z` with a git push, and wait until npm serves the new version.
+
+Steps 1-5 run in the `prepare` job, which has a read-only token and nothing else. It
+installs every devDependency, runs three packages' install scripts, and runs the whole
+test suite, so its tarball is not the one that ships: any of that code could rewrite
+`dist/` before the pack, and provenance would attest the result. The `build` job's
+tarball ships; only the build toolchain runs there, and it must agree with `prepare`'s. Only the `publish` job holds the OIDC token (`id-token: write`), the
+`contents: write` token and the deploy key. It installs nothing but the pinned npm it
+publishes with, and runs git, that npm and the dependency-free `scripts/release.mjs`. Any step of a job with `id-token: write` can
+request an OIDC token, and a job's secrets sit in the runner's memory for the whole job,
+so in a single job any dependency could have minted a publish credential for `parseman`
+or read the deploy key.
 
 ### Where the released version is recorded
 
@@ -83,9 +133,15 @@ already shipped. Neither causes harm:
 - the version rule reads npm and the tags, so a trailing `package.json` still yields
   the next patch;
 - each stamp reads the previous tag's CHANGELOG, copies in the release sections `main`
-  lacks, and removes their entries from the section being released. Every tag's
-  CHANGELOG lists each change once, under the release that shipped it. An entry
-  reworded on `main` after it shipped no longer matches and is listed again.
+  lacks, and takes a released section's copy where it differs from `main`'s and every
+  entry in `main`'s shipped under some release (the stamp folded Unreleased entries in,
+  or left one an earlier auto-patch shipped under that release). It removes from the section being
+  released what the previous release took off `main`: the entries pending at the commit
+  that release was stamped from, by occurrence, less any `main` already files under that
+  release. Every tag's CHANGELOG lists each change once, under the release that shipped
+  it. An entry worded like an earlier one, including one a later PR re-lands word for
+  word, is still released. An entry reworded on `main` after it shipped is listed again.
+  The PR gate counts an added entry by occurrence too.
 
 To catch `main` up by hand, run `node scripts/release.mjs sync` in a pull request: it
 copies the released sections from the newest tag, drops their entries from Unreleased,
@@ -122,8 +178,17 @@ key it sees. Until the secret exists, the step is skipped and nothing else chang
 `concurrency: publish` with `cancel-in-progress: false`. A queued run waits for the one
 ahead of it. It reads npm and the tags only once it starts, and the earlier run does
 not release the group until npm serves its version. The second run then sees that
-release as `L`. GitHub keeps one pending run per group, so a third quick merge replaces
-the queued second. Its commit contains the second's, so nothing goes unreleased.
+release as `L`. GitHub keeps one pending run per group, so a third CI completion replaces
+the queued second. Only a run for `main`'s tip can queue there (a CI completion on the
+tip, or a dispatch on `main`, which releases the tip), so the replacing run's commit
+contains the replaced one's, and nothing goes unreleased.
+
+The group is chosen before any job's `if:` is read. A run that cannot release (a pull
+request's CI, CI that failed or was cancelled, a commit that is not the tip, a dispatch
+from a branch other than `main`) and a dry run would replace a pending release just by
+joining it. So the group is computed from the same condition as the `prepare` job, plus
+"on `main`" for a dispatch and "not a dry run": runs that can release join `publish`, and
+every other run gets `publish-ignored-<run id>`, a group of its own.
 
 ### Dry run
 
@@ -132,7 +197,9 @@ gh workflow run publish.yml --ref main -f dry_run=true
 ```
 
 This runs the plan, stamp, guards and preflight against the real npm state, then stops
-before publishing and tagging. Locally, `node scripts/release.mjs plan` prints the same
+before publishing and tagging. Without `dry_run`, a dispatch releases `main`'s tip once
+CI has passed on it; it does not wait for a CI run still in progress, whose success starts
+a publish on its own. Locally, `node scripts/release.mjs plan` prints the same
 decision. It builds `dist/` and leaves tracked files as it found them.
 
 ### If a step fails
@@ -140,15 +207,34 @@ decision. It builds `dist/` and leaves tracked files as it found them.
 - **Before publish.** Nothing is out. Fix the cause; the next merge, or a re-run, plans
   again.
 - **Publish succeeded, tag failed.** Do not re-run: the next plan would skip, because
-  npm now has the version. Recreate the stamped commit from the run's commit and push
-  the tag by hand:
+  npm now has the version. Until the tag exists, every run stops in the plan with
+  "parseman@X.Y.Z is on npm but has no vX.Y.Z tag". Releasing on top of it would read
+  the CHANGELOG of the tag before it and file X.Y.Z's entries under the next version, and
+  a re-run of a commit X.Y.Z contains would not be recognised as one. Recreate the
+  stamped commit from the run's commit and push the tag by hand:
 
   ```sh
-  sha=$(gh run view <run-id> --json headSha --jq .headSha)
-  git checkout --detach "$sha" && RELEASE_DATE=<date the run used> node scripts/release.mjs stamp X.Y.Z
+  # <sha>, <date> and <time>: the line the `prepare` job's stamp step printed
+  sha=<sha>
+  git checkout --detach "$sha" && RELEASE_DATE=<date> GIT_AUTHOR_DATE="@<time> +0000" \
+    GIT_COMMITTER_DATE="@<time> +0000" node scripts/release.mjs stamp X.Y.Z
   git push origin HEAD:refs/tags/vX.Y.Z
   ```
 
+  With the run's date and time the stamp is the published commit, sha for sha.
+
+- **A declared version shipped first by another merge.** The release gate checks a
+  declared version against the tags when the pull request runs, not when it merges. If
+  another merge ships that version in between, `main` ends up with the PR's entries
+  under a heading for a release that never contained them. The plan stops when
+  `package.json` names a tagged version and `CHANGELOG.md`'s section for it has an entry
+  that none of the tag's release sections has. A re-dated heading, Unreleased entries the
+  stamp folded in, or an entry it left under an earlier auto-patch don't count. Fix it in
+  a pull request: move the entries under `## Unreleased`, delete the stale heading, and
+  run `sync`, which files the release that shipped under that version from its tag. Or
+  rename the section to a version above the latest release and declare it. `sync` on its
+  own changes nothing here: `main` already has a section for that version, so it copies
+  nothing in.
 - **npm slow to serve the version.** The wait step times out after 10 minutes. The tag
   already exists, so the next run reads `L` from it. That run's skip comparison fails
   loudly until npm serves the tarball; re-run it then.
@@ -174,7 +260,7 @@ trusted publisher. Register it once, either way:
 
 Until it is registered, the publish step fails with a 404 ("could not be found or you do
 not have permission"). The registration names the workflow file, not the event, so
-moving from dispatch to push needs no change.
+moving from dispatch to push, and from push to `workflow_run`, needed no change.
 
 ## What the gate checks
 
@@ -182,7 +268,7 @@ moving from dispatch to push needs no change.
 
 | where | what it sees | what it asserts |
 | --- | --- | --- |
-| CI job `release-gate`, on a pull request | the diff against the PR base | A, B, D, D′ |
+| CI job `release-gate`, on a pull request | the diff against the PR base | A, B, D, E |
 | CI job `release-gate`, on a push to `main` | no base to diff | A only |
 | `prepublishOnly --publish` | the stamped tree | A and A′ |
 
@@ -248,14 +334,39 @@ The publish does not rely on this list. Its skip decision compares the built tar
 so a lockfile bump that changes `dist/` still publishes. This is the cheap,
 install-free approximation for pull requests.
 
-B also refuses a `package.json` version that goes down against the base.
+B also refuses a `package.json` version that goes down against the base (the
+`release-exempt` label waives this, for a revert). A version the PR raises is published
+the moment it merges, as `latest`, and npm never takes a number back, so B also requires
+it to be:
 
-### D. Peak record and D′. Peak-clause waiver — on every PR
+- stable, because the publish refuses a prerelease and would stop every release after it;
+- the next patch, minor or major of the latest release, or that release itself (a
+  `sync` PR), whose `## X.Y.Z` section must then hold every entry that release's own
+  section shipped and nothing else, not even an entry an earlier release shipped. A
+  re-dated heading is fine. A section that lost or gained an entry is not: the next stamp
+  keeps `main`'s section for a version `main` has, so it would replace that release's own.
+  A `vX.Y.Z` tag whose commit has no `CHANGELOG.md` fails the gate, as it would the
+  publish plan, rather than counting as no tag. The
+  latest release is the newest stable `v*` tag, or the base's version when that is
+  higher.
+
+A version between the base and the latest tag is refused because the publish would
+ignore it. It would ship the next patch, and leave the PR's entries under a heading that
+names an older release. No label waives these checks.
+
+### D. Peak record — on every PR
 
 Any edit to a perf gate's `peak` block is named in an entry the PR adds, with backward
-moves and widened allowances called out by name. A `PERF-PEAK-WAIVER` line lands a
-deliberate, measured drawdown without moving the peak. Both are specified in
-[perf-gates.md](./perf-gates.md) § "The peak clause".
+moves and widened allowances called out by name. See
+[perf-gates.md](./perf-gates.md) § "The peak clause". (A `PERF-PEAK-WAIVER` line used to
+let a drawdown past the in-process peak clause. That clause left CI in #175, and the
+waiver went with it.)
+
+### E. Perf verdict settings — on every PR
+
+Any edit to the cross-process gate's floor, α, sign-flip count or round counts in
+`bench/xproc-gate.json` is named in an entry the PR adds. Those numbers are the gate,
+and loosening one is how a gate gets weakened without anyone deciding to.
 
 ## Which bump
 
@@ -276,12 +387,7 @@ assertion inside this repo had to be updated for it. Observable, therefore minor
 The PR label. It exists for a **revert**, where the version may go down and the entry
 may be a removal, and for a **chained PR** whose entry lives in the PR underneath it.
 It is on the PR, visible next to the diff, which is the difference between a waiver
-and a bypass. It never waives A, D or D′.
-
-### `PERF-PEAK-WAIVER` — waives the peak clause's verdict only
-
-See [perf-gates.md](./perf-gates.md) § D. It is deliberately not an extension of
-`release-exempt`.
+and a bypass. It never waives A, D or E.
 
 ## History
 

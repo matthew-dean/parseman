@@ -68,6 +68,10 @@ const EXEC = pathToFileURL(path.resolve(ROOT, 'src/table/exec.ts')).href
  */
 const NOT_A_SHIPPED_GRAMMAR: Readonly<Record<string, string>> = {
   'css/stub-build.ts': 'CST node constructors used BY examples/css/parser.ts; exports no combinator',
+  'css/css-node.d.ts': 'types for css-node.js, the node constructor stub-build.ts uses; exports no combinator',
+  'graphql/graphql-node.d.ts': 'types for graphql-node.js, the node constructors parser.ts uses; exports no combinator',
+  'lang/lang-node.d.ts': 'types for lang-node.js, the node constructors parser.ts uses; exports no combinator',
+  'toml-ish/line-node.d.ts': 'types for line-node.js, the line constructors parser.ts uses; exports no combinator',
   'lang/ast.ts': 'AST type declarations and constructors; exports no combinator',
   'json/chevrotain-bench.ts': 'benchmark scaffolding — a Chevrotain comparison harness, not a published example',
   'spec-gen.ts': 'a script that prints EBNF and railroad diagrams; exports no combinator',
@@ -104,9 +108,16 @@ const INPUTS: Readonly<Record<string, { ok: readonly string[]; bad: readonly str
  * A builtin IS its global binding, so emitting the NAME is exact rather than
  * approximate. Anything else claiming `[native code]` has no faithful text and
  * is refused loudly instead of emitted broken.
+ *
+ * Vitest compiles an imported name to `(0,__vite_ssr_import_1__.mk)` or
+ * `__vite_ssr_import_1__.Field`; the author wrote `mk` and `Field`, which the
+ * preamble binds. The rewrite is undone here, so a reducer never reaches whichever
+ * module the printed file's own second import happens to be.
  */
 function reducerSource(fn: unknown): string {
   const src = String(fn)
+    .replace(/\(0,\s*__vite_ssr_import_\d+__\.([\w$]+)\)/g, '$1')
+    .replace(/__vite_ssr_import_\d+__\.([\w$]+)/g, '$1')
   if (!src.includes('[native code]')) return src
   const name = (fn as { name?: string }).name ?? ''
   if (name !== '' && (globalThis as unknown as Record<string, unknown>)[name] === fn) return name
@@ -153,7 +164,7 @@ function outcome(rule: unknown, input: string, dropExpected = false): string {
  */
 function preambleFor(modulePath: string, reserved: readonly string[]): Promise<string> {
   const dir = path.dirname(modulePath)
-  const siblings = readdirSync(dir).filter(f => f.endsWith('.ts')).map(f => path.join(dir, f))
+  const siblings = readdirSync(dir).filter(f => f.endsWith('.ts') && !f.endsWith('.d.ts')).map(f => path.join(dir, f))
   return (async () => {
     const imports: string[] = []
     const names = new Set<string>()
