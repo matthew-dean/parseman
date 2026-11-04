@@ -4,7 +4,7 @@
  * need the emitted engine on a program they made at runtime — `backtrackProbe`'s
  * rewritten copy — without a string-to-code step in `src/`.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -16,11 +16,15 @@ import { assemblyExtraIps, resolveTable, type TableProgram } from '../src/table/
 export async function withEmittedAssembly(prog: TableProgram, cfg: RunCfg): Promise<TableProgram> {
   const em = emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true)
   const dir = mkdtempSync(path.join(tmpdir(), 'pm-emitted-assembly-'))
-  const file = path.join(dir, 'assembly.mjs')
-  writeFileSync(file, `export default function(${EMITTED_PARAMS.join(',')}){${FACTORY_ARITY_GUARD}${em.source}\n}\n`)
-  const factory = (await import(/* @vite-ignore */ pathToFileURL(file).href) as { default: EmittedFactory }).default
-  return {
-    ...prog,
-    asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }],
+  try {
+    const file = path.join(dir, 'assembly.mjs')
+    writeFileSync(file, `export default function(${EMITTED_PARAMS.join(',')}){${FACTORY_ARITY_GUARD}${em.source}\n}\n`)
+    const factory = (await import(/* @vite-ignore */ pathToFileURL(file).href) as { default: EmittedFactory }).default
+    return {
+      ...prog,
+      asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }],
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  choice, literal, many, not, peek, regex, rules, scanTo, sequence, trivia,
+  choice, gate, literal, many, not, optional, peek, regex, rules, scanTo, sequence, transform, trivia,
 } from '../../src/index.ts'
 import { backtrackProbe, backtrackProbeAssembled, type BacktrackProbe } from '../../src/analysis/backtrack.ts'
 import { withEmittedAssembly } from '../../bench/emitted-assembly.ts'
@@ -111,6 +111,43 @@ describe('backtrackProbe', () => {
     const g = rules(() => ({ Item: literal('a') }))
     expect(() => backtrackProbe(g, 'closure').measure('Nope', 'a')).toThrow(/no rule "Nope"/)
   })
+
+  it('refuses an engine it does not have rather than running closures under that name', () => {
+    const g = rules(() => ({ Item: literal('a') }))
+    expect(() => backtrackProbe(g, 'emitted' as never)).toThrow(/no engine "emitted"/)
+  })
+
+  it.each(['closure', 'interpreter'] as const)('returns the plain parse\'s result on %s', (engine) => {
+    const made: object[] = []
+    const g = rules(() => ({
+      Item: transform(literal('a'), () => { const o = {}; made.push(o); return o }),
+    }))
+    const { result } = backtrackProbe(g, engine).measure('Item', 'a')
+    expect(made).toHaveLength(2)
+    expect(result.value).toBe(made[0])
+  })
+
+  describe('a grammar that writes state, which both parses share', () => {
+    const spend = (state: unknown): boolean => {
+      const s = state as { n?: number }
+      s.n = (s.n ?? 0) + 1
+      return s.n === 1
+    }
+
+    it.each(['closure', 'interpreter'] as const)('throws on %s when the probed parse comes out differently', (engine) => {
+      const g = rules(() => ({ Item: choice(sequence(gate(spend), literal('a')), literal('b')) }))
+      expect(() => backtrackProbe(g, engine).measure('Item', 'a', { state: {} })).toThrow(/differs from the plain one/)
+    })
+
+    it.each(['closure', 'interpreter'] as const)('undercounts on %s when it comes out the same', (engine) => {
+      const g = rules(() => ({
+        Item: sequence(optional(sequence(gate(spend), regex(/a+/), literal('!'))), regex(/a+/)),
+      }))
+      // Alone this parse rewinds once. The plain parse spent the gate, so the probed one skips the arm.
+      const { counts } = backtrackProbe(g, engine).measure('Item', 'aaa', { state: {} })
+      expect(counts.rewinds).toBe(0)
+    })
+  })
 })
 
 describe('code construction', () => {
@@ -158,6 +195,11 @@ describe('code construction', () => {
       expect(probe.measure('Item', 'foo;').counts.lookaheads).toBe(2)
     } finally { counter?.restore() }
     expect(counter?.attempts()).toBe(0)
+  })
+
+  it('the emitted probe refuses an assembly the assembler would not use', async () => {
+    // `probeProgram` leaves an empty inventory, so the assembler refuses to build from it.
+    await expect(backtrackProbeAssembled(g, async p => p)).rejects.toThrow(/the assembly was not used/)
   })
 
   it('the emitted probe refuses a program with no assembly', async () => {

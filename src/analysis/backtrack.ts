@@ -1,11 +1,15 @@
 /**
- * MEASURE BACKTRACKING — the check behind "Parséman never backtracks".
+ * MEASURE BACKTRACKING among the terminals a parse matched.
  *
  * `backtrackProbe(grammar, engine)` parses with an instrumented copy of the grammar
- * and reports, per parse, how often the position went backwards and how many bytes
- * were read again, plus the lookahead it did (`BacktrackCounts`,
- * `table/backtrack-probe.ts`). Each `measure` also runs the plain grammar and refuses
- * to report if the instrumented parse returned anything else.
+ * and reports, per parse, how often a matched terminal started behind the one before
+ * it and how many bytes matched twice, plus the lookahead it did (`BacktrackCounts`,
+ * `table/backtrack-probe.ts`). Each `measure` also runs the plain grammar, returns
+ * that result, and refuses to report if the instrumented parse returned anything else.
+ *
+ * Counts of zero do not show a parse wasted nothing. Failed reads, trivia re-scans,
+ * the choice predecide pretest and table `token()` bodies go uncounted; the list and
+ * an example are in `table/backtrack-probe.ts`.
  *
  * Three engines, one rule. `closure` and `emitted` run a rewritten copy of the
  * table (`probeProgram`); `interpreter` runs a rebuilt copy of the combinator graph
@@ -36,8 +40,14 @@ export type BacktrackProbe = {
   /** The engine probed parses run on. */
   readonly engine: { readonly ran: BacktrackEngine | 'emitted' }
   /**
-   * Parse `input` from rule `entry`, plainly and probed, and count the probed parse.
-   * Throws if the two parses differ in outcome, value or where they stopped.
+   * Parse `input` from rule `entry`, plainly and probed, count the probed parse and
+   * return the plain parse's result. Throws if the two parses differ in outcome, value
+   * or where they stopped.
+   *
+   * Both parses get the same `options.state`, the plain one first. A grammar that
+   * writes state (a `gate()` that mutates it, say) sees the first parse's writes in the
+   * second, so the measure either throws or counts a different parse, possibly with
+   * fewer rewinds. Measure such a grammar only if resetting its state makes no difference.
    */
   measure(entry: string, input: string, options?: RunOptions): BacktrackMeasurement
 }
@@ -109,6 +119,7 @@ export function backtrackProbe(grammar: Grammar, engine: BacktrackEngine = 'clos
       return hit
     })
   }
+  if (engine !== 'closure') throw new TypeError(`backtrackProbe: no engine ${JSON.stringify(engine)}; it runs 'closure' or 'interpreter'`)
   const prog = tableOf(grammar)
   const base = tableRules({ ...prog, asm: [] })
   const rules = tableRules(probeProgram(prog, rec))
@@ -159,11 +170,11 @@ function probe(
   return {
     engine: { ran },
     measure(entry, input, options = {}) {
-      const expected = run(plain(entry), input, options)
+      const result = run(plain(entry), input, options)
       rec.begin(input)
-      const result = run(probed(entry), input, options)
+      const probedResult = run(probed(entry), input, options)
       const counts = rec.end()
-      if (outcome(result) !== outcome(expected)) {
+      if (outcome(probedResult) !== outcome(result)) {
         throw new Error(`backtrackProbe: the probed ${ran} parse of rule ${JSON.stringify(entry)} differs from the plain one; its counts would describe another parse`)
       }
       return { result, counts }
