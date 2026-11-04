@@ -43,7 +43,7 @@
  *   because they come from two separate module graphs.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, realpathSync, symlinkSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, realpathSync, statSync, symlinkSync, rmSync } from 'node:fs'
 import * as nodeModule from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -262,9 +262,9 @@ export function previousReleases(root: string, gate: string, count: number): Arr
  * Refuse to compare legs that load parseman from the same place.
  *
  * `legs` maps each leg's label to the directory its parseman resolves from (its `src/`
- * or its built `dist/`). Each is resolved with `realpath`, so a symlink, a `..` path or
- * a link to another leg's tree is caught. Two legs with one real path are one build
- * timed twice: an A/B whose legs ran one source tree through a symlink read "neutral"
+ * or its built `dist/`). They are compared by device and inode, so a symlink, a `..`
+ * path, a case variant on a case-insensitive disk or a bind mount is caught. Two legs
+ * with one directory are one build timed twice: an A/B whose legs ran one source tree through a symlink read "neutral"
  * on a change that cost up to 25.9% on the routed path.
  *
  * `selfCheck` is the one exception: an A/A run that says so in its banner and gates
@@ -276,11 +276,13 @@ export function assertIndependentLegs(gate: string, legs: Readonly<Record<string
     if (!existsSync(dir)) fail(gate, `leg ${label}: ${dir} does not exist.`)
     const real = realpathSync(dir)
     console.log(`  leg ${label.padEnd(10)} parseman from ${real}`)
-    const other = seen.get(real)
+    const { dev, ino } = statSync(dir)
+    const id = `${dev}:${ino}`
+    const other = seen.get(id)
     if (other !== undefined && !selfCheck) {
       fail(gate, `legs ${other} and ${label} both resolve parseman from ${real}. Two legs need two independent builds; refusing to measure.`)
     }
-    seen.set(real, label)
+    seen.set(id, label)
   }
 }
 

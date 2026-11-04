@@ -450,8 +450,8 @@ jobs:
   #             not a differential against the parent commit. Gating each commit
   #             against its parent lets +2%/commit land forever.
   #
-  # No `fetch-depth: 0`: unlike the perf gates this one has no reference commit to
-  # build — the baseline is a committed file, so a shallow clone is sufficient.
+  # `fetch-depth: 0` is for the duplicate-function gate's merge base. Unlike the perf
+  # gates nothing here builds a reference commit: the baselines are committed files.
   # Fast (~1 min): it compiles grammars, it does not time anything, so it needs no
   # repeated measurement passes.
   size-gate:
@@ -462,6 +462,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The duplicate-function gate compares its baseline with the merge base.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

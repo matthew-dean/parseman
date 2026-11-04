@@ -104,10 +104,11 @@ describe('invariant gate', () => {
     expect(code).toBe(1)
   })
 
-  it('INV-13 gives two anonymous duplicate groups in one file separate allowlist keys', () => {
-    const { code, out } = runGate([`--root=${fixture('inv13-anon')}`, '--json'])
+  it('INV-13 keys each pair by shape, so one entry cannot excuse another pair of the same names', () => {
+    const { code, out } = runGate([`--root=${fixture('inv13-keys')}`, '--json'])
     const keys = (JSON.parse(out) as { live: { key: string }[] }).live.map(f => f.key)
-    expect(keys.filter(k => k.startsWith('INV-13:')).length).toBe(2)
+    expect(keys.filter(k => k.startsWith('INV-13:src/table/lower.ts:<anon>|'))).toHaveLength(2)
+    expect(keys.filter(k => k.startsWith('INV-13:src/table/lower.ts:read|'))).toHaveLength(2)
     expect(new Set(keys).size).toBe(keys.length)
     expect(code).toBe(1)
   })

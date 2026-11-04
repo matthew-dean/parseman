@@ -9,15 +9,15 @@
  * INV-13's planted fixture is in test/unit/invariant-gate.test.ts with the other rules.
  */
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
-import { baselineFailures, callCountFailures, measureSide, type Rows } from '../../bench/call-count-guard.ts'
-import { dupFailures, measure } from '../../bench/dup-function-guard.ts'
+import { baselineFailures, callCountFailures, measureSide, minimumWorkFailures, type Reasons, type Rows } from '../../bench/call-count-guard.ts'
+import { baseRiseFailures, dupFailures, measure, minimumWorkFailures as dupMinimumWorkFailures } from '../../bench/dup-function-guard.ts'
 import { COUNTER, instrument } from '../../bench/engine-guards/instrument.ts'
-import { duplicateCount, functionShapes } from '../../scripts/function-shapes.mjs'
+import { children, duplicateCount, functionShapes, parseModule } from '../../scripts/function-shapes.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const TMP = mkdtempSync(path.join(tmpdir(), 'pm-engine-guards-'))
@@ -91,13 +91,46 @@ describe('call-count gate', () => {
     for (const d of ['css', 'less', 'scss', 'jess']) expect(rows).toContain(`macro/${d}/ast/site.css`)
   })
 
-  it('excuses an increase only for the reference its reason was written against', () => {
+  it('REFUSES a workload that stops early, instead of reading it as fewer calls', async () => {
+    const dir = plantedSide('partial', 'bench/workloads/index.ts', 'const cssInput = scaleStyles(cssCorpus, 48)', "const cssInput = scaleStyles(cssCorpus, 48).replace('}', '}\\n}}}@@@ !!! not css\\n')")
+    await expect(measureSide(dir, path.join(TMP, 'partial-out'), row => row === 'emitted/')).rejects.toThrow(/css\/stylesheet: parse (FAILED|stopped|left)/)
+  }, 180_000)
+
+  describe('reason entries', () => {
     const ref: Rows = { r: { calls: 10, branches: 5 } }
-    const head: Rows = { r: { calls: 11, branches: 5 } }
-    const reasons = { against: 'v1.0.0', rows: { 'r calls': 'the price of a fix' } }
-    expect(callCountFailures(ref, head, reasons, 'v1.0.0')).toEqual([])
-    expect(callCountFailures(ref, head, reasons, 'v1.0.1')).toHaveLength(1)
-    expect(baselineFailures(head, ref)[0]).toContain('bank the win')
+    const head: Rows = { r: { calls: 13, branches: 5 } }
+    const against = (rows: Record<string, unknown>): Reasons => ({ against: 'v1.0.0', rows: rows as Reasons['rows'] })
+
+    it('excuses an increase within its limit, only for the reference it was written against', () => {
+      const reasons = against({ 'r calls': { why: 'the price of a fix', limit: 3 } })
+      expect(callCountFailures(ref, head, reasons, 'v1.0.0')).toEqual([])
+      expect(callCountFailures(ref, head, reasons, 'v1.0.1')).toHaveLength(1)
+      expect(baselineFailures(head, ref)[0]).toContain('bank the win')
+    })
+
+    it('FAILS an increase above the limit', () => {
+      const [failure] = callCountFailures(ref, head, against({ 'r calls': { why: 'the price of a fix', limit: 2 } }), 'v1.0.0')
+      expect(failure).toContain('above the limit of +2')
+    })
+
+    it('FAILS an entry with no reason, no limit or the old string form', () => {
+      expect(callCountFailures(ref, head, against({ 'r calls': { why: '  ', limit: 3 } }), 'v1.0.0')[0]).toContain('must say why')
+      expect(callCountFailures(ref, head, against({ 'r calls': { why: 'x', limit: 0 } }), 'v1.0.0')[0]).toContain('positive integer')
+      expect(callCountFailures(ref, head, against({ 'r calls': 'the price of a fix' }), 'v1.0.0').length).toBeGreaterThan(0)
+    })
+
+    it('FAILS an entry that excuses nothing', () => {
+      const unused = against({ 'r calls': { why: 'x', limit: 3 }, 'r branches': { why: 'x', limit: 3 }, 'gone calls': { why: 'x', limit: 3 } })
+      const failures = callCountFailures(ref, head, unused, 'v1.0.0')
+      expect(failures).toHaveLength(2)
+      expect(failures.every(f => f.endsWith('it excuses no increase; remove it'))).toBe(true)
+    })
+  })
+
+  it('REFUSES a run that counted nothing', () => {
+    expect(minimumWorkFailures({}, null)).toHaveLength(3)
+    expect(minimumWorkFailures({ 'emitted/a': { calls: 1, branches: 1 } }, 'emitted/')).toEqual([])
+    expect(minimumWorkFailures({ 'emitted/a': { calls: 0, branches: 1 } }, 'emitted/')[0]).toContain('counted no work')
   })
 })
 
@@ -116,6 +149,46 @@ describe('duplicate-function gate', () => {
     expect(dupFailures({ 'emitted/probe': 0 }, rows)[0]).toContain('1 duplicated functions, baseline 0')
     expect(dupFailures({ 'emitted/probe': 1 }, rows)).toEqual([])
   })
+
+  it('FAILS a baseline raised from the merge base, and allows a drop or a new artifact', () => {
+    expect(baseRiseFailures({ a: 1 }, { a: 2 })[0]).toContain('rose from 1 to 2')
+    expect(baseRiseFailures({ a: 2 }, { a: 1, b: 9 })).toEqual([])
+  })
+
+  it('REFUSES a run that read nothing', () => {
+    expect(dupMinimumWorkFailures({}, null)).toHaveLength(2)
+    expect(dupMinimumWorkFailures({ 'emitted/a': { functions: 0, duplicates: 0 } }, 'emitted/')[0]).toContain('no functions')
+  })
+
+  describe('one shape', () => {
+    const shape = (code: string): string => {
+      const shapes = functionShapes(code, 'probe.ts', 0)
+      if (shapes.length !== 1) throw new Error(`expected one function in: ${code}`)
+      return shapes[0]!.hash
+    }
+    const original = 'function f(a) { const n = a + limit; if (n > 2) return f(n); return n }'
+    it.each([
+      ['an arrow copy', 'const g = (b) => { const m = b + limit; if (m > 2) return g(m); return m }'],
+      ['a function expression', 'const g = function (b) { const m = b + limit; if (m > 2) return g(m); return m }'],
+      ['an added return type', 'function g(b): number { const m = b + limit; if (m > 2) return g(m); return m }'],
+      ['annotated parameters and locals', 'function g(b: number) { const m: number = b + limit; if (m > 2) return g(m); return m }'],
+      ['an `as` cast', 'function g(b) { const m = (b as number) + limit; if (m > 2) return g(m); return m }'],
+      ['a non-null assertion', 'function g(b) { const m = b! + limit; if (m > 2) return g(m); return m }'],
+      ['`let` for `const`', 'function g(b) { let m = b + limit; if (m > 2) return g(m); return m }'],
+    ])('treats %s as the same function', (_label, copy) => {
+      expect(shape(copy)).toBe(shape(original))
+    })
+    it('treats an expression-bodied arrow as its return statement', () => {
+      expect(shape('const g = (b) => b + limit')).toBe(shape('function f(a) { return a + limit }'))
+    })
+    it.each([
+      ['a different free name', 'function g(b) { const m = b + other; if (m > 2) return g(m); return m }'],
+      ['a different constant', 'function g(b) { const m = b + limit; if (m > 3) return g(m); return m }'],
+      ['a call to another function', 'function g(b) { const m = b + limit; if (m > 2) return f(m); return m }'],
+    ])('keeps %s apart', (_label, other) => {
+      expect(shape(other)).not.toBe(shape(original))
+    })
+  })
 })
 
 describe('independent legs', () => {
@@ -132,15 +205,67 @@ describe('independent legs', () => {
   mkdirSync(b, { recursive: true })
   symlinkSync(a, link, 'dir')
 
+  /** Whether a module can reach `materialise`, and whether it calls the check, read from its AST. */
+  const legsWiring = (code: string, file: string): { materialises: boolean; checks: boolean } => {
+    let materialises = false
+    let checks = false
+    type Node = ReturnType<typeof parseModule>
+    const fromHarness = (n: Node): boolean => {
+      const source = n['source'] as { value?: unknown } | null | undefined
+      return typeof source?.value === 'string' && source.value.endsWith('/ab-harness.ts')
+    }
+    const walk = (n: Node): void => {
+      if (n.type === 'ImportDeclaration' && fromHarness(n)) {
+        for (const s of n['specifiers'] as Node[]) {
+          const imported = s['imported'] as { name?: unknown } | undefined
+          if (s.type === 'ImportNamespaceSpecifier' || imported?.name === 'materialise') materialises = true
+        }
+      }
+      if (n.type === 'VariableDeclarator') {
+        // `const { a, b } = await import(...)` takes only what it names.
+        const id = n['id'] as Node
+        const init = n['init'] as Node | null
+        const awaited = init?.type === 'AwaitExpression' ? init['argument'] as Node : init
+        if (id.type === 'ObjectPattern' && awaited?.type === 'ImportExpression' && fromHarness(awaited)) {
+          const names = (id['properties'] as Node[]).map(p => (p['key'] as { name?: unknown } | undefined)?.name)
+          if (names.includes('materialise')) materialises = true
+          return
+        }
+      }
+      if (n.type === 'ImportExpression' && fromHarness(n)) materialises = true
+      if (n.type === 'CallExpression') {
+        const callee = n['callee'] as { name?: unknown; property?: { name?: unknown } }
+        if (callee.name === 'assertIndependentLegs' || callee.property?.name === 'assertIndependentLegs') checks = true
+      }
+      for (const c of children(n)) walk(c)
+    }
+    walk(parseModule(code, file))
+    return { materialises, checks }
+  }
+
+  it('reads a harness import in any form', () => {
+    expect(legsWiring("import {\n  fail,\n  materialise,\n} from './ab-harness.ts'", 'a.ts')).toEqual({ materialises: true, checks: false })
+    expect(legsWiring("import * as ab from './ab-harness.ts'\nab.assertIndependentLegs('g', {})", 'a.ts')).toEqual({ materialises: true, checks: true })
+    expect(legsWiring("const ab = await import('./ab-harness.ts')", 'a.ts').materialises).toBe(true)
+    expect(legsWiring("const { materialise } = await import('./ab-harness.ts')", 'a.ts').materialises).toBe(true)
+    expect(legsWiring("const { fail } = await import('./ab-harness.ts')", 'a.ts').materialises).toBe(false)
+    expect(legsWiring("// assertIndependentLegs(\nimport { fail } from './ab-harness.ts'", 'a.ts')).toEqual({ materialises: false, checks: false })
+  })
+
   it('is called by every harness that materialises a second side', () => {
     const benches = readdirSync(path.join(ROOT, 'bench'), { recursive: true, encoding: 'utf8' })
       .filter(f => f.endsWith('.ts') && f !== 'ab-harness.ts' && !f.startsWith('vendor') && !f.startsWith('node_modules'))
-    const harnesses = benches.filter(f => /\bmaterialise\b[^\n]*\bfrom '[^']*ab-harness\.ts'|^\s*(?:\w+, )*materialise, /m.test(readFileSync(path.join(ROOT, 'bench', f), 'utf8')))
-    expect(harnesses.sort()).toEqual([
-      'call-count-guard.ts', 'grammar-perf-guard.ts', 'jess/ab.ts', 'workload-perf-guard.ts', 'xproc-ab.ts', 'xproc-gate.ts',
-    ])
-    for (const f of harnesses) expect(readFileSync(path.join(ROOT, 'bench', f), 'utf8'), f).toContain('assertIndependentLegs(')
+    const wiring = new Map(benches.map(f => [f, legsWiring(readFileSync(path.join(ROOT, 'bench', f), 'utf8'), f)]))
+    const harnesses = benches.filter(f => wiring.get(f)!.materialises)
+    expect(harnesses.length).toBeGreaterThanOrEqual(6)
+    for (const f of harnesses) expect(wiring.get(f)!.checks, f).toBe(true)
   })
+
+  it.runIf(existsSync(TMP.toUpperCase()))('REFUSES a case variant of the same path', () => {
+    const r = run({ ref: a, head: a.toUpperCase() })
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('both resolve parseman from')
+  }, 30_000)
 
   it('runs on two real trees', () => {
     expect(run({ ref: a, head: b }).code).toBe(0)

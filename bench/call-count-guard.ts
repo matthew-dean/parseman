@@ -43,16 +43,21 @@
  * - **Previous release.** The same rows are counted on the previous release (the
  *   reference `perf:xproc:gate` uses), built from its own `src/` with this tree's
  *   grammars and fixtures. A row that counts more at HEAD fails, unless
- *   `bench/call-count-reasons.json` names that row and metric against that release.
+ *   `bench/call-count-reasons.json` argues that row and metric against that release
+ *   and the increase is within the limit the entry states. An entry that excuses
+ *   nothing fails too.
  * - **Committed baseline.** `bench/call-count-baseline.json` must equal what HEAD
- *   counts, so a change in counts is a reviewed line in the diff. A drop is banked
- *   with `pnpm callcount:baseline`; that is the only direction the baseline moves
- *   without a reason entry.
+ *   counts, so a change in counts is a reviewed line in the diff. Rewrite it with
+ *   `pnpm callcount:baseline`. It can rise with no reason entry while HEAD is at or
+ *   below the release, so giving back an unreleased win is seen only in review.
+ * - **Minimum work.** A run that counted no rows for a family fails, as does an empty
+ *   input, so a gate that measures nothing cannot read as green.
  *
  * Usage:
  *   pnpm callcount:guard                   # working tree vs the previous release
  *   pnpm callcount:guard --ref=<sha>       # another reference
  *   pnpm callcount:guard --head-ref=<sha>  # head from a commit, not the working tree
+ *   pnpm callcount:guard --only=<prefix>   # only these rows, such as emitted/
  *   pnpm callcount:baseline                # rewrite the baseline from the working tree
  */
 import { spawnSync } from 'node:child_process'
@@ -74,9 +79,12 @@ const WORKER = path.join(HERE, 'engine-guards', 'count-worker.ts')
 /** The grammars and inputs both sides run: this tree's, so only the compiler differs. */
 const COPY = ['bench/grammar-density', 'bench/workloads', 'examples', 'fixtures/jess-grammars', 'bench/jess/real-grammars.ts'] as const
 const METRICS = ['calls', 'branches'] as const
+const FAMILIES = ['emitted/', 'closure/', 'macro/'] as const
 
 export type Rows = Record<string, Counts>
-export type Reasons = { against: string; rows: Record<string, string> }
+/** One argued increase: why it is worth it, and the most it may add per parse. */
+export type Reason = { why: string; limit: number }
+export type Reasons = { against: string; rows: Record<string, Reason> }
 
 /**
  * The jess rows. The AST rows are the path jess ships: the variants its `parse` and
@@ -158,11 +166,17 @@ export async function measureSide(dir: string, out: string, only?: (row: string)
 /**
  * Every failure, named. Empty means green. `reasons` applies only when it was written
  * against this reference: once that release ships, the increase is in the reference
- * and the entry has nothing left to excuse.
+ * and the entry has nothing left to excuse. An entry that does apply must state why and
+ * a limit, and must excuse a real increase.
  */
 export function callCountFailures(ref: Rows, head: Rows, reasons: Reasons | null, refTag: string): string[] {
   const failures: string[] = []
-  const excused = reasons !== null && reasons.against === refTag ? reasons.rows : {}
+  const entries = reasons !== null && reasons.against === refTag ? reasons.rows : {}
+  const used = new Set<string>()
+  for (const [key, e] of Object.entries(entries)) {
+    if (typeof e?.why !== 'string' || e.why.trim() === '') failures.push(`reason for ${key}: "why" must say why`)
+    if (!Number.isInteger(e?.limit) || e.limit <= 0) failures.push(`reason for ${key}: "limit" must be the most it may add per parse, a positive integer`)
+  }
   const rows = [...new Set([...Object.keys(ref), ...Object.keys(head)])].sort()
   for (const row of rows) {
     const r = ref[row]
@@ -174,9 +188,32 @@ export function callCountFailures(ref: Rows, head: Rows, reasons: Reasons | null
     for (const m of METRICS) {
       if (h[m] <= r[m]) continue
       const key = `${row} ${m}`
-      if (excused[key] !== undefined) continue
-      failures.push(`${key}: ${r[m].toLocaleString('en-US')} at ${refTag} -> ${h[m].toLocaleString('en-US')} at HEAD (+${(h[m] - r[m]).toLocaleString('en-US')} per parse)`)
+      const added = h[m] - r[m]
+      const line = `${key}: ${r[m].toLocaleString('en-US')} at ${refTag} -> ${h[m].toLocaleString('en-US')} at HEAD (+${added.toLocaleString('en-US')} per parse)`
+      const entry = entries[key]
+      if (entry === undefined) {
+        failures.push(line)
+        continue
+      }
+      used.add(key)
+      if (added > entry?.limit) failures.push(`${line}, above the limit of +${entry.limit.toLocaleString('en-US')} its reason states`)
     }
+  }
+  for (const key of Object.keys(entries)) {
+    if (!used.has(key)) failures.push(`reason for ${key}: it excuses no increase; remove it`)
+  }
+  return failures
+}
+
+/** A gate that counted nothing has not passed. `prefix` is `--only`, when given. */
+export function minimumWorkFailures(head: Rows, prefix: string | null): string[] {
+  const failures: string[] = []
+  const families = prefix === null ? FAMILIES : [prefix]
+  for (const f of families) {
+    if (!Object.keys(head).some(row => row.startsWith(f))) failures.push(`${f}: no rows were counted`)
+  }
+  for (const [row, c] of Object.entries(head)) {
+    if (c.calls <= 0 || c.branches <= 0) failures.push(`${row}: counted no work`)
   }
   return failures
 }
@@ -208,12 +245,17 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
     process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
   const UPDATE = process.argv.includes('--update')
   const HEAD_REF = argValue('--head-ref')
+  const ONLY = argValue('--only')
+  const only = ONLY === null ? undefined : (row: string): boolean => row.startsWith(ONLY) || ONLY.startsWith(row)
   const CACHE = path.join(ROOT, '.cache', GATE)
 
   const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
   if (UPDATE) {
     if (HEAD_REF !== null) fail(GATE, '--update writes the working tree\'s counts; it cannot be combined with --head-ref.')
+    if (ONLY !== null) fail(GATE, '--update rewrites every row; it cannot be combined with --only.')
     const head = await measureSide(headDir, path.join(CACHE, 'head'))
+    const empty = minimumWorkFailures(head, null)
+    if (empty.length > 0) fail(GATE, `refusing to write this baseline:\n  ${empty.join('\n  ')}`)
     writeFileSync(BASELINE_PATH, `${JSON.stringify(head, null, 2)}\n`)
     console.log(`${GATE}: wrote ${Object.keys(head).length} rows to ${path.relative(ROOT, BASELINE_PATH)}`)
     process.exit(0)
@@ -228,13 +270,14 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
   let ref: Rows
   let head: Rows
   try {
-    ref = await measureSide(refDir, path.join(CACHE, 'ref'))
-    head = await measureSide(headDir, path.join(CACHE, 'head'))
+    ref = await measureSide(refDir, path.join(CACHE, 'ref'), only)
+    head = await measureSide(headDir, path.join(CACHE, 'head'), only)
   } catch (error) {
     fail(GATE, (error as Error).message)
   }
-  const baseline = readJson<Rows>(BASELINE_PATH)
-  if (baseline === null) fail(GATE, `${BASELINE_PATH} is missing; write it with pnpm callcount:baseline.`)
+  const fullBaseline = readJson<Rows>(BASELINE_PATH)
+  if (fullBaseline === null) fail(GATE, `${BASELINE_PATH} is missing; write it with pnpm callcount:baseline.`)
+  const baseline = only === undefined ? fullBaseline : Object.fromEntries(Object.entries(fullBaseline).filter(([row]) => only(row)))
   const reasons = readJson<Reasons>(REASONS_PATH)
   if (reasons !== null && reasons.against !== reference.tag && Object.keys(reasons.rows).length > 0) {
     console.log(`  ${path.relative(ROOT, REASONS_PATH)} was written against ${reasons.against}; the reference is now ${reference.tag}, so it excuses nothing. Empty its rows.`)
@@ -254,11 +297,12 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
   ].join('\n'))
 
   const failures = [
+    ...minimumWorkFailures(head, ONLY),
     ...callCountFailures(ref, head, reasons, reference.tag),
     ...(HEAD_REF === null ? baselineFailures(baseline, head) : []),
   ]
   if (failures.length > 0) {
-    fail(GATE, `FAILED\n  ${failures.join('\n  ')}\n\nAn increase that is the price of a change must be argued: set ${path.relative(ROOT, REASONS_PATH)} to { "against": "${reference.tag}", "rows": { "<row> <metric>": "<why>" } }, then rebaseline.`)
+    fail(GATE, `FAILED\n  ${failures.join('\n  ')}\n\nAn increase that is the price of a change must be argued: set ${path.relative(ROOT, REASONS_PATH)} to { "against": "${reference.tag}", "rows": { "<row> <metric>": { "why": "<why>", "limit": <most it may add per parse> } } }, then rebaseline.`)
   }
   console.log(`\n${GATE}: ok — ${Object.keys(head).length} rows, none above ${reference.tag}${HEAD_REF === null ? ', baseline exact' : ''}`)
 }

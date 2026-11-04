@@ -118,7 +118,8 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  *
  * 15 -> 18. INV-13 (a function written twice in engine source, at any depth)
  * landed with three findings INV-4 could not see: all nested, two inside one
- * file. Entered as DEBT; each leaves when its pair is defined once.
+ * file. Entered as DEBT; each leaves when its pair is defined once. The key carries
+ * the pair's shape hash, so editing either copy makes the entry stale.
  */
 export const ALLOW_COUNT = 18
 
@@ -250,10 +251,10 @@ export const ALLOW = new Map([
    * The rule's backlog on arrival. Each pair is one piece defined twice; the fix
    * is to define it once and capture it, which is engine work this gate's lane
    * did not do. */
-  ['INV-13:src/combinators/trivia-skip.ts:needsTriviaRollback|src/table/assemble.ts:rollbackNeeded',
+  ['INV-13:src/combinators/trivia-skip.ts:needsTriviaRollback|src/table/assemble.ts:rollbackNeeded#6402e771bc1910b5',
     { category: 'DEBT', why: 'the closure assembler re-declares trivia-skip\'s rollback test instead of importing it', ref: 'docs/design/perf-gates.md' }],
-  ['INV-13:src/table/assemble.ts:bindRunners|src/table/assemble.ts:bindRunners',
+  ['INV-13:src/table/assemble.ts:bindRunners|src/table/assemble.ts:bindRunners#158ebbaf2b43b421',
     { category: 'DEBT', why: 'two sequence lowerings each declare the same runner-block binder', ref: 'docs/design/perf-gates.md' }],
-  ['INV-13:src/table/assemble.ts:runAdjTerms|src/table/assemble.ts:runDirectTerms',
+  ['INV-13:src/table/assemble.ts:runAdjTerms|src/table/assemble.ts:runDirectTerms#b9ee4a0a2574a154',
     { category: 'DEBT', why: 'the adjacent and direct sequence lowerings each declare the same first-then-tail runner', ref: 'docs/design/perf-gates.md' }],
 ])

@@ -1320,24 +1320,25 @@ const MIN_DUP_CHARS = 160
 const INV13_MIN_CHARS = 120
 const INV13_DIRS = ['src/table/', 'src/cst/', 'src/combinators/', 'src/recovery/']
 {
-  /** @type {Map<string, { file: string, line: number, name: string, hash: string }[]>} */
+  /** @type {Map<string, { file: string, line: number, name: string }[]>} */
   const byShape = new Map()
   for (const [file, { code }] of parsed) {
     if (!INV13_DIRS.some((d) => file.startsWith(d)) || file === 'src/table/exec.ts') continue
     for (const s of functionShapes(code, file, INV13_MIN_CHARS)) {
       if (!byShape.has(s.hash)) byShape.set(s.hash, [])
-      byShape.get(s.hash).push({ file, line: s.line, name: s.name, hash: s.hash })
+      byShape.get(s.hash).push({ file, line: s.line, name: s.name })
     }
   }
-  for (const [, sites] of byShape) {
+  for (const [hash, sites] of byShape) {
     if (sites.length < 2) continue
     const where = sites.map((s) => `${s.file}:${s.line} \`${s.name}\``).join(' , ')
     const first = sites[0]
     report('INV-13', first.file, first.line,
       `one function written ${sites.length} times — ${where}. Define it once and call or capture that one`,
-      // Every anonymous site is named `<anon>`, so the name alone would let one
-      // allowlist entry excuse every anonymous group in a file. The shape tells them apart.
-      `INV-13:${sites.map((s) => `${s.file}:${s.name === '<anon>' ? s.hash : s.name}`).sort().join('|')}`)
+      // The shape is in the key: names alone would let one allowlist entry excuse a
+      // new pair with the same names, and every anonymous group in a file. Editing an
+      // allowlisted pair therefore makes its entry stale, which is a prompt to re-check it.
+      `INV-13:${sites.map((s) => `${s.file}:${s.name}`).sort().join('|')}#${hash}`)
   }
 }
 

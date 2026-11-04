@@ -7,10 +7,15 @@
  * for its AST walk. A `.mjs` because the invariant gate runs under bare `node`.
  *
  * A function's SHAPE is its AST with comments, whitespace and positions dropped, and
- * every name the function binds itself (parameters, declarations, catch parameters)
- * renamed in order of first appearance. Free names — the constants and helpers it
- * closes over — are kept, as are property names. Two functions with one shape are one
- * function written twice, whatever their locals are called.
+ * every name the function binds itself (parameters, declarations, catch parameters,
+ * its own name) renamed in order of first appearance. Free names — the constants and
+ * helpers it closes over — are kept, as are property names. Two functions with one
+ * shape are one function written twice, whatever their locals are called.
+ *
+ * What a copy can change without being a different function is dropped too: type
+ * annotations and casts, `const` against `let`, and whether it is a declaration, an
+ * expression or an arrow. `this` is kept as written, so an arrow and a function that
+ * read it stay apart only if the bodies differ.
  */
 import { createHash } from 'node:crypto'
 import { parseSync } from 'oxc-parser'
@@ -22,6 +27,10 @@ import { parseSync } from 'oxc-parser'
 export const isNode = (v) => typeof v === 'object' && v !== null && typeof /** @type {{ type?: unknown }} */ (v).type === 'string'
 
 const SKIP = new Set(['start', 'end', 'range', 'loc', 'raw'])
+/** Keys a copy can change without changing what the function does. */
+const TYPE_ONLY = new Set(['returnType', 'typeAnnotation', 'typeParameters', 'typeArguments', 'definite', 'declare'])
+/** An expression that only restates its operand. */
+const TRANSPARENT = new Set(['TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression', 'TSTypeAssertion', 'ParenthesizedExpression'])
 
 /** @param {AstNode} n @returns {AstNode[]} */
 export function children(n) {
@@ -73,8 +82,12 @@ function boundNames(fn) {
   return out
 }
 
-/** One function printed with its own bindings renamed. @param {AstNode} fn @returns {string} */
-function canonical(fn) {
+/**
+ * One function printed with its own bindings renamed. `self` is the name it can call
+ * itself by, so a self-recursive copy under another name has the same shape.
+ * @param {AstNode} fn @param {string | null} self @returns {string}
+ */
+function canonical(fn, self) {
   const bound = boundNames(fn)
   /** @type {Map<string, string>} */
   const renamed = new Map()
@@ -82,17 +95,35 @@ function canonical(fn) {
   const parts = []
   /** @param {AstNode} n @param {boolean} nameKept */
   const emit = (n, nameKept) => {
+    if (TRANSPARENT.has(n.type)) return emit(/** @type {AstNode} */ (n.expression), nameKept)
     if (n.type === 'Identifier' || n.type === 'PrivateIdentifier') {
       const name = /** @type {string} */ (n.name)
       if (!nameKept && bound.has(name)) {
         if (!renamed.has(name)) renamed.set(name, `$${renamed.size}`)
         parts.push(/** @type {string} */ (renamed.get(name)))
-      } else parts.push(name)
+      } else parts.push(!nameKept && name === self ? '$self' : name)
+      return
+    }
+    if (FUNCTION.has(n.type)) {
+      // One print for a declaration, an expression and an arrow. `x => y` is
+      // `function (x) { return y }`.
+      const body = /** @type {AstNode} */ (n.body)
+      const block = body.type === 'BlockStatement' || body.type === 'FunctionBody'
+        ? body
+        : { type: 'BlockStatement', start: 0, end: 0, body: [{ type: 'ReturnStatement', start: 0, end: 0, argument: body }] }
+      parts.push('Function(', n.async === true ? 'async,' : '', n.generator === true ? 'generator,' : '')
+      if (n !== fn && isNode(n.id)) emit(n.id, false)
+      parts.push('[')
+      for (const p of /** @type {AstNode[]} */ (n.params)) { emit(p, false); parts.push(',') }
+      parts.push(']')
+      emit(block, false)
+      parts.push(')')
       return
     }
     parts.push(n.type, '(')
     for (const k in n) {
-      if (SKIP.has(k) || k === 'type' || (n === fn && k === 'id')) continue
+      if (SKIP.has(k) || TYPE_ONLY.has(k) || k === 'type') continue
+      if (n.type === 'VariableDeclaration' && k === 'kind') continue
       const v = n[k]
       // A property NAME is not a binding, even when it is spelled like one.
       const keepName = (k === 'property' || k === 'key') && n.computed === false
@@ -141,15 +172,15 @@ export function functionShapes(code, filename, minChars = 60) {
   }
   /** @type {FunctionShape[]} */
   const out = []
-  /** @param {AstNode} n @param {string} name */
-  const walk = (n, name) => {
+  /** @param {AstNode} n @param {string} name @param {string | null} self */
+  const walk = (n, name, self) => {
     if (FUNCTION.has(n.type)) {
       const body = /** @type {AstNode} */ (n.body)
       const chars = code.slice(body.start, body.end).replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|\s+/g, '').length
       if (chars >= minChars) {
         const id = n.id
         out.push({
-          hash: createHash('sha256').update(canonical(n)).digest('hex').slice(0, 16),
+          hash: createHash('sha256').update(canonical(n, isNode(id) ? /** @type {string} */ (id.name) : self)).digest('hex').slice(0, 16),
           chars,
           name: isNode(id) ? /** @type {string} */ (id.name) : name,
           line: lineAt(n.start),
@@ -157,10 +188,13 @@ export function functionShapes(code, filename, minChars = 60) {
       }
     }
     const named = n.type === 'VariableDeclarator' ? n.id : n.type === 'Property' || n.type === 'MethodDefinition' ? n.key : null
-    const nextName = isNode(named) && named.type === 'Identifier' ? /** @type {string} */ (named.name) : '<anon>'
-    for (const c of children(n)) walk(c, nextName)
+    const declared = isNode(named) && named.type === 'Identifier' ? /** @type {string} */ (named.name) : null
+    // A cast around a function does not change what it is bound to.
+    const nextName = TRANSPARENT.has(n.type) ? name : declared ?? '<anon>'
+    const nextSelf = TRANSPARENT.has(n.type) ? self : n.type === 'VariableDeclarator' ? declared : null
+    for (const c of children(n)) walk(c, nextName, nextSelf)
   }
-  walk(program, '<anon>')
+  walk(program, '<anon>', null)
   return out
 }
 

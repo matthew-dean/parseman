@@ -21,12 +21,17 @@
  *
  * RATCHET: `bench/dup-function-baseline.json` holds each artifact's duplicate count.
  * More fails. Fewer also fails until it is banked (`pnpm dupfn:baseline`), so the
- * headroom a fix creates is not budget for the next copy. The function count is
- * printed beside it and not gated: `size-gate` gates bytes.
+ * headroom a fix creates is not budget for the next copy. An artifact's count may not
+ * rise from the merge base with `origin/main` either, so a new copy cannot be written
+ * into the baseline with it. There is no reason file: a rise needs an owner's bypass.
+ * The function count is printed beside it and not gated: `size-gate` gates bytes.
  *
- *   pnpm dupfn:guard
+ *   pnpm dupfn:guard                 # against the merge base with origin/main
+ *   pnpm dupfn:guard --base=<ref>    # against another commit's baseline
+ *   pnpm dupfn:guard --only=<prefix> # only these artifacts, such as emitted/
  *   pnpm dupfn:baseline
  */
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -41,8 +46,9 @@ export type Artifact = { id: string; code: string }
 export type Row = { functions: number; duplicates: number }
 
 /** The artifacts, built from the parseman whose root is `root`. */
-export async function collectArtifacts(root: string): Promise<Artifact[]> {
+export async function collectArtifacts(root: string, only?: string): Promise<Artifact[]> {
   const out: Artifact[] = []
+  const wants = (family: string): boolean => only === undefined || family.startsWith(only) || only.startsWith(family)
   const { buildWorkloads } = await import(path.join(root, 'bench', 'workloads', 'index.ts')) as {
     buildWorkloads: () => Array<{ id: string; make: () => { parse: () => unknown } }>
   }
@@ -73,6 +79,8 @@ export async function collectArtifacts(root: string): Promise<Artifact[]> {
     globalThis.Function = RealFunction
   }
 
+  if (!wants('macro/')) return out.filter(a => a.id.startsWith(only ?? ''))
+
   const { withBuiltSnapshot, DIALECTS, VARIANTS } = await import(path.join(root, 'bench', 'jess', 'real-grammars.ts')) as {
     DIALECTS: readonly string[]
     VARIANTS: Readonly<Record<string, string>>
@@ -86,7 +94,7 @@ export async function collectArtifacts(root: string): Promise<Artifact[]> {
       }
     }
   })
-  return out
+  return out.filter(a => a.id.startsWith(only ?? ''))
 }
 
 export function measure(artifacts: readonly Artifact[]): { rows: Record<string, Row>; shapes: Record<string, FunctionShape[]> } {
@@ -116,6 +124,23 @@ export function dupFailures(baseline: Readonly<Record<string, number>>, rows: Re
   return failures
 }
 
+/** The committed baseline may only fall from `base`, the baseline at the merge base. */
+export function baseRiseFailures(base: Readonly<Record<string, number>>, baseline: Readonly<Record<string, number>>): string[] {
+  return Object.entries(baseline).flatMap(([id, n]) => {
+    const was = base[id]
+    return was !== undefined && n > was ? [`${id}: the baseline rose from ${was} to ${n}; it only moves down`] : []
+  })
+}
+
+/** A gate that read nothing has not passed. `prefix` is `--only`, when given. */
+export function minimumWorkFailures(rows: Readonly<Record<string, Row>>, prefix: string | null): string[] {
+  const families = prefix === null ? ['emitted/', 'macro/'] : [prefix]
+  return [
+    ...families.filter(f => !Object.keys(rows).some(id => id.startsWith(f))).map(f => `${f}: no artifacts were read`),
+    ...Object.entries(rows).filter(([, r]) => r.functions === 0).map(([id]) => `${id}: no functions were read`),
+  ]
+}
+
 /** The largest repeated shapes in one artifact, for the failure message. */
 function worst(shapes: readonly FunctionShape[], n = 5): string[] {
   const groups = new Map<string, FunctionShape[]>()
@@ -128,21 +153,47 @@ function worst(shapes: readonly FunctionShape[], n = 5): string[] {
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const ROOT = path.resolve(HERE, '..')
+  const argValue = (flag: string): string | null =>
+    process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
+  const UPDATE = process.argv.includes('--update')
+  const ONLY = argValue('--only')
+  if (UPDATE && ONLY !== null) fail(GATE, '--update rewrites every artifact; it cannot be combined with --only.')
+  const git = (args: string[]): string => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+
+  // Read before the build, so a raised baseline fails without building anything.
+  if (!UPDATE) {
+    if (!existsSync(BASELINE_PATH)) fail(GATE, `${BASELINE_PATH} is missing; write it with pnpm dupfn:baseline.`)
+    const committed = 'bench/dup-function-baseline.json'
+    let base: string
+    try {
+      base = git(['rev-parse', '--verify', `${argValue('--base') ?? git(['merge-base', 'HEAD', 'origin/main'])}^{commit}`])
+    } catch (error) {
+      fail(GATE, `could not find the commit to compare the baseline with; CI needs fetch-depth: 0.\n${String(error).slice(0, 300)}`)
+    }
+    const present = git(['ls-tree', '--name-only', base, committed]) !== ''
+    if (present) {
+      const rises = baseRiseFailures(JSON.parse(git(['show', `${base}:${committed}`])) as Record<string, number>, JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Record<string, number>)
+      if (rises.length > 0) fail(GATE, `FAILED\n  ${rises.join('\n  ')}`)
+    }
+  }
+
   let artifacts: Artifact[]
   try {
-    artifacts = await collectArtifacts(ROOT)
+    artifacts = await collectArtifacts(ROOT, ONLY ?? undefined)
   } catch (error) {
     fail(GATE, (error as Error).message)
   }
   const { rows, shapes } = measure(artifacts)
-  if (process.argv.includes('--update')) {
+  const empty = minimumWorkFailures(rows, ONLY)
+  if (empty.length > 0) fail(GATE, `FAILED\n  ${empty.join('\n  ')}`)
+  if (UPDATE) {
     const counts = Object.fromEntries(Object.entries(rows).map(([id, r]) => [id, r.duplicates]))
     writeFileSync(BASELINE_PATH, `${JSON.stringify(counts, null, 2)}\n`)
     console.log(`${GATE}: wrote ${Object.keys(counts).length} artifacts to ${path.relative(ROOT, BASELINE_PATH)}`)
     process.exit(0)
   }
-  if (!existsSync(BASELINE_PATH)) fail(GATE, `${BASELINE_PATH} is missing; write it with pnpm dupfn:baseline.`)
-  const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Record<string, number>
+  const fullBaseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Record<string, number>
+  const baseline = ONLY === null ? fullBaseline : Object.fromEntries(Object.entries(fullBaseline).filter(([id]) => id.startsWith(ONLY)))
   summary([
     `#### ${GATE}: functions printed more than once`,
     '',

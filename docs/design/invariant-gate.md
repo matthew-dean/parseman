@@ -66,7 +66,7 @@ compile-time objects) is untouched.
 
 ### INV-13 — no parallel copy of a function in engine source
 
-Decides: two functions, at any nesting depth, under `src/table/`, `src/cst/`, `src/combinators/` or `src/recovery/`, with equal shapes and a body of at least 120 characters once whitespace and comments are gone. A shape is the function's AST with the names it binds itself renamed in order (`scripts/function-shapes.mjs`), so renaming the locals does not hide a copy. Free names and property names are kept.
+Decides: two functions, at any nesting depth, under `src/table/`, `src/cst/`, `src/combinators/` or `src/recovery/`, with equal shapes and a body of at least 120 characters once whitespace and comments are gone. A shape is the function's AST with the names it binds itself renamed in order (`scripts/function-shapes.mjs`), so renaming the locals does not hide a copy, and neither does calling itself by a new name. Types and casts, `const` against `let`, and writing it as a declaration, an expression or an arrow do not change a shape. Free names and property names are kept. A finding's key includes the shape's hash, so an allowlist entry excuses one pair only, and editing that pair makes the entry stale.
 
 INV-4 sees only top-level declarations in different files, byte for byte. The engines are one large function each, so a copy made inside one is nested, in the same file, and often retyped. `src/table/exec.ts` is excluded: the reference driver keeps its own copies on purpose.
 

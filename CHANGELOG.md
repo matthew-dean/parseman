@@ -6,16 +6,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 ## Unreleased
 
 - **Mechanical guardrails for engine refactors, in CI and the local preflight.**
-  Nothing in `src/` or the published package changes. `pnpm callcount:guard` counts the
-  function calls and branch tests one parse executes, on the example workloads under
-  both engines and on jess's vendored grammars, including the AST path jess ships with
-  real reducers over a vendored `@jesscss/core`, and fails on any increase over the
-  previous release unless `bench/call-count-reasons.json` argues it. `pnpm dupfn:guard`
-  fails on a new function printed twice in the emitted or printed output. INV-13 fails on
-  a function written twice in engine source, at any depth. Every A/B harness that builds
-  two legs now refuses to run when they resolve parseman to the same real path, except a
-  declared `--self` run. `bench/jess/fixture.ts` has no such check: it runs both engines
-  from one tree by design. See `docs/design/perf-gates.md`.
+  Nothing in `src/` changes; the published package differs only by four new scripts in
+  `package.json`. `pnpm callcount:guard` counts the function calls and branch tests one
+  parse executes, on the example workloads under both engines and on jess's vendored
+  grammars, including the AST path jess ships with real reducers over a vendored
+  `@jesscss/core`, and fails on any increase over the previous release unless
+  `bench/call-count-reasons.json` argues it within a stated limit. `pnpm dupfn:guard`
+  fails on a new function printed twice in the emitted or printed output, and on its
+  baseline rising from the merge base. INV-13 fails on a function written twice in engine
+  source, at any depth. The pre-commit perf guard now also runs on edits under
+  `src/table/`, which its path filter had left out. Every A/B harness that builds two
+  legs now refuses to run when they load parseman from one directory, except a declared
+  `--self` run. `bench/jess/fixture.ts` has no such check: it runs both engines from one
+  tree by design. See `docs/design/perf-gates.md`.
 
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
