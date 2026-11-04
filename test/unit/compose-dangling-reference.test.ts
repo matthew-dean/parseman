@@ -39,7 +39,7 @@ describe('compose: a reference no piece defines fails the build', () => {
       expect(base.warnings).toEqual([])
       fs.writeFileSync(path.join(dir, 'base.js'), base.code)
       expect(() => transformMacro(DIALECT, path.join(dir, 'down.ts'), new Set(['parseman'])))
-        .toThrow(/down\.ts:4 — compose\(\): rule "VarFallback" references missing rule "VarFunction"/)
+        .toThrow(/down\.ts:4 — compose: rule "VarFallback" references missing rule "VarFunction"/)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -54,7 +54,36 @@ export const parser = compose([
   rules(g => ({ Value: regex(/[a-z]+/) })),
 ])`
     expect(() => transformMacro(source, path.join(os.tmpdir(), 'dangling-shadowed.ts'), new Set(['parseman'])))
-      .toThrow(/compose\(\): rule\(s\) "Typo" are referenced but defined by no composed grammar/)
+      .toThrow(/dangling-shadowed\.ts:2 — compose: rule\(s\) "Typo" are referenced but defined by no composed grammar/)
+  })
+
+  it('names a missing rule a factory reads outside every rule (macro fuse)', () => {
+    // The carried IR keeps the dead read, so the composition sees the hole runtime
+    // `compose()` sees.
+    const source = `import { rules, literal, compose } from 'parseman' with { type: 'macro' }
+const base = rules(g => {
+  const unused = g.Missing
+  return { A: literal(';') }
+})
+export const parser = compose([base, rules(g => ({ B: g.A }))])`
+    expect(() => transformMacro(source, path.join(os.tmpdir(), 'dangling-dead.ts'), new Set(['parseman'])))
+      .toThrow(/dangling-dead\.ts:6 — compose: rule\(s\) "Missing" are referenced but defined by no composed grammar/)
+    const runtime = compose([
+      rules(g => {
+        void g.Missing
+        return { A: literal(';') }
+      }),
+      rules(g => ({ B: g.A })),
+    ])
+    expect(() => runtime.B).toThrow('compose: rule(s) "Missing" are referenced but defined by no composed grammar')
+  })
+
+  it('composeLeaf() names the missing rule and the rule that references it', () => {
+    const source = `import { rules, node, literal, sequence, composeLeaf } from 'parseman' with { type: 'macro' }
+const base = rules(g => ({ A: sequence(g.Missing, literal(';')) }))
+export const parser = composeLeaf([base, rules(g => ({ T: node('T', g.A, c => c.length) }))])`
+    expect(() => transformMacro(source, path.join(os.tmpdir(), 'dangling-leaf.ts'), new Set(['parseman'])))
+      .toThrow(/dangling-leaf\.ts:3 — composeLeaf: rule "A" references missing rule "Missing"/)
   })
 
   it('runtime compose() refuses the same grammar with the same words', () => {

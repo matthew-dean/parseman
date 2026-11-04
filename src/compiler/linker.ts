@@ -379,14 +379,19 @@ function declaredNamesOf(items: Array<LinkableTable | Record<string, unknown>>):
  * `compose()` and the macro's build-time fuse both refuse it with these words, naming
  * the rule that reaches the hole when one does.
  */
-export function danglingReference(map: Record<string, Combinator<unknown>>): string | undefined {
-  const missing: string[] = []
+export function danglingReference(
+  map: Record<string, Combinator<unknown>>,
+  /** Names read through `g` that `map` itself does not hold (a merge-by-name fuse drops them). */
+  accessed: Iterable<string> = [],
+): string | undefined {
+  const holes = new Set<string>()
   for (const [name, rule] of Object.entries(map)) {
     if (rule._def.tag !== 'lazy') continue
-    try { rule._def.thunk() } catch { missing.push(name) }
+    try { rule._def.thunk() } catch { holes.add(name) }
   }
-  if (missing.length === 0) return undefined
-  const holes = new Set(missing)
+  for (const name of accessed) if (!Object.hasOwn(map, name)) holes.add(name)
+  if (holes.size === 0) return undefined
+  const missing = [...holes]
   for (const [name, deps] of ruleDependencies(Object.entries(map).filter(([n]) => !holes.has(n)))) {
     for (const dep of deps) if (holes.has(dep)) return `rule "${name}" references missing rule "${dep}"`
   }
