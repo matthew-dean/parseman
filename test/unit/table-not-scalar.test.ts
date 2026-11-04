@@ -52,7 +52,7 @@ function expectAgreement(prog: TableProgram, interpreter: Combinator<unknown>, i
 function precompiled(prog: TableProgram, mutate: (source: string) => string = source => source): TableProgram {
   const em = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const compiled = new Function(...EMITTED_PARAMS, mutate(em.source)) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, factory: compiled, plan: em.plan, reached: [...em.reached] }] }
+  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory: compiled, plan: em.plan, reached: [...em.reached] }] }
 }
 
 describe('direct-terminal not() scalar consumer', () => {

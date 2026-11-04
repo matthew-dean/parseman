@@ -41,7 +41,7 @@ function installed(
   const factory = new Function(...EMITTED_PARAMS, source) as PrecompiledAssembly['factory']
   return tableRules({
     ...prog,
-    asm: [{ key, factory, plan, reached }],
+    asm: [{ key, arity: EMITTED_PARAMS.length, factory, plan, reached }],
   }).Entry! as Entry
 }
 

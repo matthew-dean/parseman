@@ -431,11 +431,16 @@ function dispatchArmValue(node: Expression, scope: XScope, code?: string, mfs?: 
   }
 
   if (callee.name === 'otherwise') {
-    const [parserArg] = node.arguments
-    if (!parserArg || parserArg.type === 'SpreadElement') return null
+    const [parserArg, optsArg] = node.arguments
+    if (!parserArg || parserArg.type === 'SpreadElement' || optsArg?.type === 'SpreadElement') return null
     const parserValue = anyValue(parserArg as Expression, scope, code, mfs)
     if (!isCombinator(parserValue)) return null
-    return parseman.otherwise(parserValue)
+    if (optsArg === undefined) return parseman.otherwise(parserValue)
+    const opts = anyValue(optsArg as Expression, scope, code, mfs)
+    if (typeof opts !== 'object' || opts === null) return null
+    const commit = (opts as { commit?: unknown }).commit
+    if (commit !== undefined && typeof commit !== 'boolean') return null
+    return parseman.otherwise(parserValue, commit === undefined ? {} : { commit })
   }
 
   if (callee.name === 'when') {

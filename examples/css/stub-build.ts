@@ -30,5 +30,5 @@ export function buildLazyTriviaMap(triviaLog: readonly number[], _input: string)
 }
 
 export function nilNode(): CssNode {
-  return { _tag: 'node', type: 'Nil', span: { start: 0, end: 0 }, children: [], rawCount: 0, localTriviaLen: 0 }
+  return new CssNodeObject('Nil', 0, 0, [], 0, 0)
 }

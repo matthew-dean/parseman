@@ -16,6 +16,15 @@ import {
   transform, trivia, parser, parse, rules, makeWord, keywords,
   type Combinator,
 } from '../../src/index.ts'
+import {
+  NamedType, ListType, NonNull, Variable, EnumValue, Argument, Directive, VariableDefinition,
+  Field, FragmentSpread, InlineFragment, OperationDefinition, FragmentDefinition,
+} from './graphql-node.js'
+// Re-exported so a printed copy of this grammar can bind the names its reducers call.
+export {
+  NamedType, ListType, NonNull, Variable, EnumValue, Argument, Directive, VariableDefinition,
+  Field, FragmentSpread, InlineFragment, OperationDefinition, FragmentDefinition,
+} from './graphql-node.js'
 
 // ---------------------------------------------------------------------------
 // Trivia — whitespace, commas, line comments (all insignificant per spec)
@@ -50,21 +59,21 @@ const nullValue = transform(kw('null'), () => null)
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type GQLType =
+export type GQLType =
   | { kind: 'NamedType'; name: string }
   | { kind: 'ListType'; type: GQLType }
   | { kind: 'NonNull'; type: GQLType }
 
 const { gqlType } = rules<{ gqlType: Combinator<GQLType> }>(g => {
-  const namedType = transform(name, n => ({ kind: 'NamedType' as const, name: n }))
+  const namedType = transform(name, n => new NamedType(n))
   const listType = transform(
     sequence(literal('['), g.gqlType as Combinator<GQLType>, literal(']')),
-    ([, t]) => ({ kind: 'ListType' as const, type: t }),
+    ([, t]) => new ListType(t),
   )
   return {
     gqlType: transform(
       sequence(choice(listType, namedType), optional(literal('!'))),
-      ([t, bang]) => bang ? { kind: 'NonNull' as const, type: t } : t,
+      ([t, bang]) => bang ? new NonNull(t) : t,
     ),
   }
 })
@@ -83,7 +92,7 @@ export type GQLValue = GQLScalar | GQLObject | GQLArray | GQLRecord
 const { gqlValue } = rules<{ gqlValue: Combinator<GQLValue> }>(g => {
   const variable = transform(
     sequence(literal('$'), name),
-    ([, n]) => ({ kind: 'Variable' as const, name: n }),
+    ([, n]) => new Variable(n),
   )
   const listVal = transform(
     sequence(literal('['), many(g.gqlValue as Combinator<GQLValue>), literal(']')),
@@ -97,7 +106,7 @@ const { gqlValue } = rules<{ gqlValue: Combinator<GQLValue> }>(g => {
     sequence(literal('{'), many(objectField), literal('}')),
     ([, fields]) => Object.fromEntries(fields),
   )
-  const enumVal = transform(name, n => ({ kind: 'EnumValue' as const, value: n }))
+  const enumVal = transform(name, n => new EnumValue(n))
   return {
     gqlValue: choice(
       variable, floatValue, intValue, stringValue,
@@ -111,12 +120,12 @@ const { gqlValue } = rules<{ gqlValue: Combinator<GQLValue> }>(g => {
 // ---------------------------------------------------------------------------
 // Arguments & Directives
 // ---------------------------------------------------------------------------
-type GQLArg       = { name: string; value: GQLValue }
-type GQLDirective = { name: string; arguments: GQLArg[] }
+export type GQLArg       = { name: string; value: GQLValue }
+export type GQLDirective = { name: string; arguments: GQLArg[] }
 
 const argument: Combinator<GQLArg> = transform(
   sequence(name, literal(':'), gqlValue),
-  ([n,, v]) => ({ name: n, value: v }),
+  ([n,, v]) => new Argument(n, v),
 )
 const arguments_ = transform(
   sequence(literal('('), oneOrMore(argument), literal(')')),
@@ -124,18 +133,18 @@ const arguments_ = transform(
 )
 const directive: Combinator<GQLDirective> = transform(
   sequence(literal('@'), name, optional(arguments_)),
-  ([, n, args]) => ({ name: n, arguments: args ?? [] }),
+  ([, n, args]) => new Directive(n, args ?? []),
 )
 const directives = oneOrMore(directive)
 
 // ---------------------------------------------------------------------------
 // Variable definitions
 // ---------------------------------------------------------------------------
-type GQLVarDef = { variable: string; type: GQLType; defaultValue: GQLValue | null }
+export type GQLVarDef = { variable: string; type: GQLType; defaultValue: GQLValue | null }
 
 const variableDefinition: Combinator<GQLVarDef> = transform(
   sequence(literal('$'), name, literal(':'), gqlType, optional(sequence(literal('='), gqlValue))),
-  ([, n,, t, def]) => ({ variable: n, type: t, defaultValue: def ? def[1] : null }),
+  ([, n,, t, def]) => new VariableDefinition(n, t, def ? def[1] : null),
 )
 const variableDefinitions = transform(
   sequence(literal('('), oneOrMore(variableDefinition), literal(')')),
@@ -166,15 +175,11 @@ const { selection, selectionSet } = rules<{
       optional(directives),
       optional(g.selectionSet as Combinator<GQLSelection[]>),
     ),
-    ([aliasValue, n, args, dirs, sel]) => ({
-      alias: aliasValue ?? null, name: n,
-      arguments: args ?? [], directives: dirs ?? [],
-      selectionSet: sel ?? null,
-    }),
+    ([aliasValue, n, args, dirs, sel]) => new Field(aliasValue ?? null, n, args ?? [], dirs ?? [], sel ?? null),
   )
   const fragmentSpread: Combinator<GQLFragmentSpread> = transform(
     sequence(literal('...'), regex(/[_A-Za-z][_0-9A-Za-z]*/), optional(directives)),
-    ([, n, dirs]) => ({ kind: 'FragmentSpread' as const, name: n, directives: dirs ?? [] }),
+    ([, n, dirs]) => new FragmentSpread(n, dirs ?? []),
   )
   const inlineFragment: Combinator<GQLInlineFragment> = transform(
     sequence(
@@ -183,12 +188,7 @@ const { selection, selectionSet } = rules<{
       optional(directives),
       g.selectionSet as Combinator<GQLSelection[]>,
     ),
-    ([, cond, dirs, sel]) => ({
-      kind: 'InlineFragment' as const,
-      typeCondition: cond ?? null,
-      directives: dirs ?? [],
-      selectionSet: sel,
-    }),
+    ([, cond, dirs, sel]) => new InlineFragment(cond ?? null, dirs ?? [], sel),
   )
   return {
     selection: choice(fragmentSpread, inlineFragment, field),
@@ -219,25 +219,16 @@ const operationType = keywords(
 ) as Combinator<GQLOperationType>
 
 const operationDefinition: Combinator<GQLOperationDef> = choice(
-  transform(selectionSet, sel => ({
-    kind: 'OperationDefinition' as const, operation: 'query' as const,
-    name: null, variables: [], directives: [], selectionSet: sel,
-  })),
+  transform(selectionSet, sel => new OperationDefinition('query', null, [], [], sel)),
   transform(
     sequence(operationType, optional(name), optional(variableDefinitions), optional(directives), selectionSet),
-    ([op, n, vars, dirs, sel]) => ({
-      kind: 'OperationDefinition' as const, operation: op,
-      name: n ?? null, variables: vars ?? [], directives: dirs ?? [], selectionSet: sel,
-    }),
+    ([op, n, vars, dirs, sel]) => new OperationDefinition(op, n ?? null, vars ?? [], dirs ?? [], sel),
   ),
 )
 
 const fragmentDefinition: Combinator<GQLFragmentDef> = transform(
   sequence(kw('fragment'), regex(/[_A-Za-z][_0-9A-Za-z]*/), kw('on'), name, optional(directives), selectionSet),
-  ([, n,, cond, dirs, sel]) => ({
-    kind: 'FragmentDefinition' as const, name: n, typeCondition: cond,
-    directives: dirs ?? [], selectionSet: sel,
-  }),
+  ([, n,, cond, dirs, sel]) => new FragmentDefinition(n, cond, dirs ?? [], sel),
 )
 
 const definition: Combinator<GQLDefinition> = choice(operationDefinition, fragmentDefinition)

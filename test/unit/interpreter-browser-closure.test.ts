@@ -44,7 +44,14 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +726B to 63,016B: the interpreter's default CST nodes, routed leaves, trivia field
 // captures and line-tracked spans are constructor-built too, and a default node keeps a
 // spread copy of its children.
-const BASELINE_RAW_BYTES = 63_016
+// Bumped +494B to 63,510B: a nullable `regex()` carries the first chars of its
+// non-empty matches, so a sequence led by an optional pad (`ws* '*' ws*`) has a
+// finite first set instead of `any`; `firstSetOf` reads a reference from a cleared
+// region under the trivia it installs (`triviaThroughRef`), and recovery reads first
+// sets without the nullable-pad refinement (`consuming: false`, which
+// `classifyFinalChoice` takes too); `node()`, `attempt()` and the repeats record
+// whether they guard their child (`guarded`), which the table's gates mirror.
+const BASELINE_RAW_BYTES = 63_510
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

@@ -1,7 +1,8 @@
 /**
- * A printed assembly factory refuses an older runtime: one that passes fewer helpers than
- * the factory was printed with. Without the check, a 0.59.0 artifact on a 0.58 runtime
- * fails partway through its first parse, on whichever new helper it reaches first.
+ * A printed assembly factory refuses a runtime that passes a different number of helpers
+ * than the factory was printed with, fewer or more. Helpers bind by position, so without
+ * the check a 0.60.0 artifact on a 0.59 runtime (61 helpers) loads and then fails partway
+ * through its first parse (`_SP is not a constructor`).
  */
 import { describe, expect, it } from 'vitest'
 import { literal, node, sequence } from '../../src/index.ts'
@@ -20,15 +21,20 @@ describe('printed assembly factory', () => {
     assemblies: defaultAssemblyCfgs(prog),
   })
 
-  it('opens with an arity check against the helpers it was printed with', () => {
-    expect(source).toContain(`factory:function(${EMITTED_PARAMS.join(',')}){if(arguments.length<${EMITTED_PARAMS.length})throw new Error(`)
+  it('records its helper count, and opens with a check against the count it is called with', () => {
+    expect(source).toContain(`arity:${EMITTED_PARAMS.length},factory:function(${EMITTED_PARAMS.join(',')}){if(arguments.length!==${EMITTED_PARAMS.length})throw new Error(`)
   })
 
-  it('throws a clear error when an older runtime passes fewer helpers', () => {
-    const start = source.indexOf('factory:function(') + 'factory:'.length
-    const text = source.slice(start, source.indexOf('\n},', start) + 2)
-    const factory = new Function(`return ${text}`)() as (...args: unknown[]) => unknown
-    expect(() => factory(...EMITTED_PARAMS.slice(0, -2).map(() => undefined)))
-      .toThrow(`parseman: this parser was printed by parseman ${PARSEMAN_VERSION}; upgrade the parseman runtime to at least that version`)
+  const start = source.indexOf('factory:function(') + 'factory:'.length
+  const text = source.slice(start, source.indexOf('\n},', start) + 2)
+  const factory = new Function(`return ${text}`)() as (...args: unknown[]) => unknown
+  const refusal = `parseman: this parser was printed by parseman ${PARSEMAN_VERSION}; run it on parseman ${PARSEMAN_VERSION} or reprint it`
+
+  it('throws a clear error when a runtime passes fewer helpers', () => {
+    expect(() => factory(...EMITTED_PARAMS.slice(0, -2).map(() => undefined))).toThrow(refusal)
+  })
+
+  it('throws a clear error when a runtime passes more helpers, as a 0.59 runtime does', () => {
+    expect(() => factory(...[...EMITTED_PARAMS, 'a', 'b', 'c'].map(() => undefined))).toThrow(refusal)
   })
 })

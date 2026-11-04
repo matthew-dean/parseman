@@ -38,11 +38,15 @@ export const OP_SEQV = 4
  */
 export const OP_CHOICE = 5
 /**
- * `REP c min max sep flags fx sepClass` — `sep` is a child offset or −1; `max`
- * −1 = ∞. `fx` is recovery metadata. The last class is the separator sentinel
- * for a separated list, otherwise the finite/non-nullable optional-item class
- * (or −1). `flags` bit 0 = trailing separator allowed, bit 1 =
- * `keepSeparators`, bit 2 = item expected reporting.
+ * `REP c min max sep flags fx sepClass [sepGate]` — EIGHT words, or NINE with
+ * flag bit 3. `sep` is a child offset or −1; `max` −1 = ∞. `fx` is the item's
+ * expected set. `sepClass` is the separator sentinel for a separated list,
+ * otherwise the finite/non-nullable optional-item class (or −1). `flags`: bit 0
+ * (`&1`) trailing separator allowed; bit 1 (`&2`) `keepSeparators`; bit 2 (`&4`)
+ * item expected reporting; bit 3 (`&8`) a ninth word at `ip + 8`, the class of
+ * characters the separator can start, so a strict list past its minimum ends
+ * where it cannot (`sepGate`); bit 4 (`&16`) the item's derived set is empty, so
+ * `fx` holds the item's tag for the minimum check and a resync error carries [].
  */
 export const OP_REP = 6
 /** `REPV …` — `REP` with `valueUnused`. */
@@ -487,10 +491,34 @@ export const OP_SOURCE_LEAF = 44
  */
 export const OP_RGATE = 45
 /**
+ * `GAPGATE c p cls other` — an optional repeat ITEM that opens with a gap: the
+ * pure regex row `p`, which may match empty, and then a term whose first set is
+ * the class `cls` (`other`: the class of any choice arm that does not open with
+ * `p`, or −1). `c` is the item. The row is TRANSPARENT wherever it runs: only
+ * the repeat that holds it reads its operands (`gap-gate.ts`).
+ */
+export const OP_GAPGATE = 46
+/**
+ * `RGATE2 cls child fx first second` — `OP_RGATE` with a SECOND character: where
+ * the character after the routed token is in `first`, the one after it must be
+ * in `second` too (the next term reads both, `regexFirstTwo`), or the arm fails
+ * there with `fx`, as entering it would.
+ */
+export const OP_RGATE2 = 47
+/**
+ * `STRICT strict tolerant` — one construct encoded two ways: `strict` for a
+ * strict parse, `tolerant` for tolerant recovery and a completions probe, which
+ * must see the construct as written (`factor-choice.ts` `factorPrefixArms`). An
+ * assembly resolves it to one child; it has no body of its own.
+ */
+export const OP_STRICT = 48
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
- * `other` is the `otherwise()` offset (or −1), `otherRouted` is 1 when the
+ * `other` is the `otherwise()` offset (or −1), `otherRouted` bit 1 (`&2`) is set
+ * when the fallback's failure is NOT committed (`otherwise(p, { commit: false })`)
+ * and bit 0 when the
  * fallback consumes the routed token, and `a1…an` are the arm offsets. Arm
  * `usesRouted` bits live in the `dsp` entry beside the key maps.
  *
@@ -520,4 +548,7 @@ export const OP_NAMES: Record<number, string> = {
   [OP_SCOPE_PLAIN]: 'SCOPE_PLAIN',
   [OP_LEX_BODY]: 'LEX_BODY',
   [OP_LEX_PROGRAM]: 'LEX_PROGRAM',
+  [OP_GAPGATE]: 'GAPGATE',
+  [OP_RGATE2]: 'RGATE2',
+  [OP_STRICT]: 'STRICT',
 }

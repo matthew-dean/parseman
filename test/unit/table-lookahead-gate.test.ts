@@ -25,7 +25,7 @@ function emitted(prog: TableProgram): TableProgram {
     const em = emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true)
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
     const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
-    return { key: cfgKey(cfg), factory, plan: em.plan, reached: [...em.reached] }
+    return { key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }
   }) }
 }
 

@@ -40,7 +40,7 @@ export function attempt<T>(parser: Combinator<T>, options?: AttemptOptions): Com
   const guardable = parser._meta.firstSet.kind !== 'any' && !matchesEmpty(parser)
   let failExpected: string[] | undefined
   return {
-    _tag: 'attempt', _meta: parser._meta, _def: contain ? { tag: 'attempt', parser, contain: true } : { tag: 'attempt', parser },
+    _tag: 'attempt', _meta: parser._meta, _def: { tag: 'attempt', parser, ...(contain ? { contain: true } : {}), ...(guardable ? { guarded: true } : {}) },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
       if (guardable && ctx._probe === undefined && !ctx._tolerant && !startsFirstSet(parser, input, pos)) {
         if (failExpected === undefined) {

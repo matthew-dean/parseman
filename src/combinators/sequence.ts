@@ -108,7 +108,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
       if (tolerant) {
         followSentinels ??= parsers.map((_, i) => firstSetSentinel(
           parsers.slice(i + 1).reduce<ReturnType<typeof firstSetOf>>(
-            (set, parser) => union(set, firstSetOf(parser)), { kind: 'empty' },
+            (set, parser) => union(set, firstSetOf(parser, new Set(), undefined, undefined, false)), { kind: 'empty' },
           ),
         ))
       }

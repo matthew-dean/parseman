@@ -309,7 +309,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
               arms.push(when(dispatchMatcher(entry), wrapArm(entry.parser, ids[armIndex++]), entry.caseInsensitive ? { caseInsensitive: true } : undefined))
             }
           }
-          if (def.otherwise) arms.push(otherwise(wrapArm(def.otherwise, ids[armIndex++])))
+          if (def.otherwise) arms.push(otherwise(wrapArm(def.otherwise, ids[armIndex++]), def.otherwiseCommit === false ? { commit: false } : undefined))
           const unsafeDispatch = dispatch as (selector: Combinator<string>, ...items: DispatchArm<unknown>[]) => Combinator<unknown>
           const base = unsafeDispatch(build(def.selector) as Combinator<string>, ...arms)
           return {

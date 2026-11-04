@@ -64,7 +64,7 @@ function precompiled(prog: TableProgram, mutate: (source: string) => string = so
   const factory = new Function(...EMITTED_PARAMS, mutate(emitted.source)) as PrecompiledAssembly['factory']
   return ownTableProgram({
     ...prog,
-    asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   })
 }
 

@@ -140,6 +140,8 @@ export type ExecutableLexNode =
     readonly parsers: readonly Combinator<unknown>[]
     /** Inside a no-trivia scope of the token, where the encoder's trivia is none. */
     readonly cleared: boolean
+    /** The authored choice's own `disjoint`, which decides how the encoder classifies its arms. */
+    readonly disjoint: boolean
     readonly armExpected: readonly (readonly string[])[]
     readonly expected: readonly string[]
   }
@@ -509,7 +511,7 @@ function directFixedLexNode(
       if (arms.some(arm => arm === undefined)) return undefined
       return {
         kind: 'choice', arms: arms as ExecutableLexNode[],
-        parsers: def.parsers, cleared,
+        parsers: def.parsers, cleared, disjoint: def.disjoint,
         armExpected: def.parsers.map(deriveExpected),
         expected: def.parsers.flatMap(deriveExpected),
       }

@@ -58,14 +58,14 @@ export type ParserDef =
   // force interpreter fallback). Absent under runtime compile() — the real gate
   // closures live in `gates`.
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; gateSrcs?: (string | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
-  | { tag: 'dispatch';  selector: Combinator<string>; cases: readonly DispatchCase[]; matchers?: readonly DispatchMatcherCase[] | undefined; otherwise?: Combinator<unknown> | undefined; otherwiseUsesRouted?: boolean | undefined }
-  | { tag: 'attempt';   parser: Combinator<unknown>; /** `attempt(p, { contain: true })`: a committed failure inside is reported uncommitted. */ contain?: true }
+  | { tag: 'dispatch';  selector: Combinator<string>; cases: readonly DispatchCase[]; matchers?: readonly DispatchMatcherCase[] | undefined; otherwise?: Combinator<unknown> | undefined; otherwiseUsesRouted?: boolean | undefined; otherwiseCommit?: false | undefined }
+  | { tag: 'attempt';   parser: Combinator<unknown>; /** `attempt(p, { contain: true })`: a committed failure inside is reported uncommitted. */ contain?: true; /** The interpreter tests the child's live `_meta.firstSet` before entering it: its set was finite when this was built. */ guarded?: true }
   // The TAG carries NULLABILITY (what every downstream switch keys on): `many` is
   // the nullable min-0 repeat, `oneOrMore` the non-nullable min>=1 one. `min`/`max`
   // carry the actual ITEM bounds (`many(x, { min: 3, max: 8 })` is a `oneOrMore`
   // def with `min: 3, max: 8`). `max` absent = unbounded.
-  | { tag: 'many';      parser: Combinator<unknown>; min: 0; max?: number; valueUnused?: boolean }
-  | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: number; max?: number; valueUnused?: boolean }
+  | { tag: 'many';      parser: Combinator<unknown>; min: 0; max?: number; valueUnused?: boolean; /** The interpreter tests the child's live `_meta.firstSet` before entering it: its set was finite when this was built. */ guarded?: true }
+  | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: number; max?: number; valueUnused?: boolean; /** The interpreter tests the child's live `_meta.firstSet` before entering it: its set was finite when this was built. */ guarded?: true }
   | { tag: 'optional';  parser: Combinator<unknown> }
   // `min`/`max` count ITEMS, not separators. `min: 0` (the default) is
   // `(item (sep item)*)?` — NULLABLE, matches the empty string. `min >= 1` is
@@ -92,7 +92,7 @@ export type ParserDef =
   // it requires, so it carries `parser`'s first-set and a leading `peek()` gates
   // its choice arm (see `isPositiveLookahead` / `sequenceFirstSet`).
   | { tag: 'peek';    parser: Combinator<unknown> }
-  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; /** The IDENTIFIER the type argument was written as at the `node()` call site, when it was a plain identifier rather than a literal — ANALYSIS ONLY, never emitted. Lets the inline-`mk` matcher recognise `node(t, …, (…) => mk(t, …))` from a factory, where the two `t`s are provably one binding. */ typeSrc?: string; /** Resolved source of a NAMED `buildSrc` — ANALYSIS ONLY, never emitted. See `buildAnalysisSrc`. */ buildSigSrc?: string; /** Macro analysis proved the fourth formal (`rawChildren`) unreferenced. Never inferred from an author-declared `buildArity`; carried through composed IR. */ buildRawUnused?: true; /** Declared positional arity of `build`: author-declared via `node(..., { buildArity })`, or resolved from the reducer's declaration. Wins over source inspection. */ buildArity?: number; /** Why arity could not be resolved, for the diagnostic. */ buildArityUnresolved?: string; buildStaticError?: readonly string[]; /** Import provenance for a direct builder's free names — each `{ local, source, imported }` lets a downstream compose() re-emit `import { imported as local } from source` so the inlined builder source can bind. Carried through the IR round-trip. */ buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }>; unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean; tags?: readonly string[] }
+  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; /** The IDENTIFIER the type argument was written as at the `node()` call site, when it was a plain identifier rather than a literal — ANALYSIS ONLY, never emitted. Lets the inline-`mk` matcher recognise `node(t, …, (…) => mk(t, …))` from a factory, where the two `t`s are provably one binding. */ typeSrc?: string; /** Resolved source of a NAMED `buildSrc` — ANALYSIS ONLY, never emitted. See `buildAnalysisSrc`. */ buildSigSrc?: string; /** Macro analysis proved the fourth formal (`rawChildren`) unreferenced. Never inferred from an author-declared `buildArity`; carried through composed IR. */ buildRawUnused?: true; /** Declared positional arity of `build`: author-declared via `node(..., { buildArity })`, or resolved from the reducer's declaration. Wins over source inspection. */ buildArity?: number; /** Why arity could not be resolved, for the diagnostic. */ buildArityUnresolved?: string; buildStaticError?: readonly string[]; /** Import provenance for a direct builder's free names — each `{ local, source, imported }` lets a downstream compose() re-emit `import { imported as local } from source` so the inlined builder source can bind. Carried through the IR round-trip. */ buildImports?: ReadonlyArray<{ local: string; source: string; imported: string }>; unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean; tags?: readonly string[]; /** The interpreter tests the child's live `_meta.firstSet` before entering it: its set was finite when this was built. */ guarded?: true }
   // `predSrc`/`extraSrc` (set by the macro evaluator): SOURCE TEXT of the guard
   // predicate / the withCtx `extra` value, so codegen inlines them into `_mf`
   // rather than pushing a `null` source. Absent under runtime compile() (the real
@@ -461,6 +461,13 @@ export type ParseError = {
 export type ParserMeta = {
   /** Character codes / ranges that can start this parser (for choice dispatch) */
   firstSet: FirstSet
+  /**
+   * Set only by `regex()` for a pattern that can match empty: the first chars
+   * of its NON-EMPTY matches. `firstSet` stays `any` for such a pattern, because
+   * it may match empty anywhere; a sequence, which tracks nullability itself,
+   * unions this set with the next term's instead (`sequenceSet`).
+   */
+  consumingFirstSet?: FirstSet
   /** Whether this parser can consume a newline character */
   canMatchNewline: boolean
   /** Whether this parser is marked as trivia (auto-skip) */

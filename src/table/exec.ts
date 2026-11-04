@@ -21,8 +21,8 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
-  OP_COV,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE,
+  OP_COV, OP_GAPGATE, OP_STRICT,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -375,6 +375,11 @@ function makeDriver(
   }
 
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
+    // A row that only hands on to one child at the same position (a gate that
+    // passes, a rule trampoline, `OP_STRICT`) continues here rather than
+    // recursing, so the reference driver's stack grows with the grammar's
+    // nesting, not with its gate rows.
+    rows: for (;;) {
     if (COUNT) { tableCounters.rows++; tableCounters.byOp[code[ip]!]!++ }
     switch (code[ip]) {
       case OP_LIT: {
@@ -492,7 +497,7 @@ function makeDriver(
           ctx._fe = pos; ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
-        return exec(code[ip + 2]!, input, pos, ctx)
+        ip = code[ip + 2]!; continue rows
       }
 
       case OP_LABEL: {
@@ -502,7 +507,7 @@ function makeDriver(
         return v
       }
       case OP_RULE:
-        return exec(code[ip + 1]!, input, pos, ctx)
+        ip = code[ip + 1]!; continue rows
 
       /**
        * A COUNTER ROW IS TRANSPARENT HERE, and that is the whole of its handling.
@@ -518,8 +523,14 @@ function makeDriver(
        * a second implementation of it here would be a second place for the phase
        * semantics (entry for a rule, success for an arm) to drift.
        */
+      // The reference runs a gap-gated item as written: the gate is the repeat's,
+      // in the shipped engines, and this driver is the leg it is compared with.
       case OP_COV:
-        return exec(code[ip + 1]!, input, pos, ctx)
+      case OP_GAPGATE:
+        ip = code[ip + 1]!; continue rows
+
+      case OP_STRICT:
+        ip = code[ctx._tolerant || ctx._probe !== undefined ? ip + 2 : ip + 1]!; continue rows
 
       case OP_LIVE: {
         // A HAND-WRITTEN COMBINATOR, run through its own `.parse` — mirrors
@@ -601,6 +612,7 @@ function makeDriver(
 
         let target: number
         let usesRouted: boolean
+        let commits = true
         if (arm === undefined) {
           const other = code[ip + 3]!
           if (other < 0) {
@@ -610,7 +622,8 @@ function makeDriver(
             return FAIL
           }
           target = other
-          usesRouted = code[ip + 4]! === 1
+          usesRouted = (code[ip + 4]! & 1) === 1
+          commits = (code[ip + 4]! & 2) === 0
         } else {
           target = code[armBase + arm]!
           usesRouted = spec.routed[arm] === 1
@@ -637,8 +650,8 @@ function makeDriver(
           rollbackTrivia(ctx, mark)
           // The interpreter marks a failed dispatch branch COMMITTED: the
           // selector already matched, so an enclosing choice must not treat this
-          // as "try the next arm".
-          ctx._fc = true
+          // as "try the next arm". An uncommitted fallback keeps its own flag.
+          if (commits) ctx._fc = true
           return FAIL
         }
         // The end cell already holds the branch's end — dispatch's span runs from `pos`
@@ -1029,6 +1042,12 @@ function makeDriver(
           // its `g.X` arms were unresolved refs (choice.ts:35 — the same staleness
           // `encode.ts` recomputes around), so they firstMatch all seven arms where
           // this driver dispatches to one. The arm sets differ, not the rule.
+          //
+          // Under a completions probe the interpreter runs every arm on a miss
+          // (`choice.ts`), so each opener reaches the probe; so does this.
+          if (arm < 0 && ctx._probe !== undefined) {
+            for (let i = 0; i < code[ip + 2]!; i++) exec(code[base + i]!, input, pos, ctx)
+          }
           return failChoice()
         }
         // THE PER-ARM GATE. Arms in source order, each skipped when its own
@@ -1063,7 +1082,9 @@ function makeDriver(
         const armFx = base + n
         for (let i = 0; i < n; i++) {
           const cls = armCls[i]
-          if (cls !== undefined && cls !== null && !classHas(cls, c)) {
+          // Under a completion probe every arm is entered, as the interpreter's
+          // `firstMatch` enters it: its opener then reaches the probe (`failAt`).
+          if (ctx._probe === undefined && cls !== undefined && cls !== null && !classHas(cls, c)) {
             if (COUNT) tableCounters.armGateSkips++
             // THE GATED ARM STILL REPORTS. The interpreter has no char gate: it
             // enters the arm, the arm's opener fails, and its static set is what
@@ -1119,14 +1140,17 @@ function makeDriver(
         return sup
       }
 
-      case OP_RGATE: {
+      // The reference tests the first character only: the second is the shipped
+      // engines' (`OP_RGATE2`), and this driver is the leg they are compared with.
+      case OP_RGATE:
+      case OP_RGATE2: {
         const item = ctx._routed
         if (item !== undefined && item.span.start === pos && ctx._probe === undefined && !ctx._tolerant
           && !classHas(cc[code[ip + 1]!]!, lead(input, item.span.end))) {
           ctx._fe = item.span.end; ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
-        return exec(code[ip + 2]!, input, pos, ctx)
+        ip = code[ip + 2]!; continue rows
       }
 
       case OP_ARMGATE: {
@@ -1141,7 +1165,7 @@ function makeDriver(
           ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
-        return exec(code[ip + 2]!, input, pos, ctx)
+        ip = code[ip + 2]!; continue rows
       }
 
       case OP_REJECT: {
@@ -1225,7 +1249,7 @@ function makeDriver(
         // own sync. The item's expected set is at ip + 6 and the separator's
         // sentinel class at ip + 7, both laid down only for a recovery table.
         const mySync = REC ? ctx._sync : undefined
-        const recFx = REC ? fx[code[ip + 6]!] as string[] : undefined
+        const recFx = !REC ? undefined : (code[ip + 5]! & 16) !== 0 ? [] : fx[code[ip + 6]!] as string[]
         const sepSent = REC ? sentinelFor(code[ip + 7]!) : undefined
         const itemClassIndex = sep < 0 ? code[ip + 7]! : -1
         const itemClass = REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined
@@ -1643,6 +1667,7 @@ function makeDriver(
 
       default:
         throw new Error(`table driver: unknown opcode ${String(code[ip])} at ${ip}`)
+    }
     }
   }
 

@@ -154,11 +154,11 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
-  const def: { tag: 'many'; parser: Combinator<unknown>; min: 0; max?: number; valueUnused?: boolean } =
-    { tag: 'many', parser: combinator as Combinator<unknown>, min: 0, ...(max === Infinity ? {} : { max }) }
-  let expected: string[] | undefined
   // A non-nullable body can be first-set-gated per loop iteration (see repItem).
   const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
+  const def: { tag: 'many'; parser: Combinator<unknown>; min: 0; max?: number; valueUnused?: boolean; guarded?: true } =
+    { tag: 'many', parser: combinator as Combinator<unknown>, min: 0, ...(max === Infinity ? {} : { max }), ...(guardable ? { guarded: true } : {}) }
+  let expected: string[] | undefined
   const scalarChild = scalarOf(combinator)
   const parseScalar = (input: string, pos: number, ctx: ParseContext): number =>
     repeatScalarTail(combinator, scalarChild, input, pos, ctx, guardable, def.valueUnused ? undefined : [], max)
@@ -229,11 +229,11 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
-  const def: { tag: 'oneOrMore'; parser: Combinator<unknown>; min: number; max?: number; valueUnused?: boolean } =
-    { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min, ...(max === Infinity ? {} : { max }) }
-  let expected: string[] | undefined
   // A non-nullable body can be first-set-gated per loop iteration (see repItem).
   const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
+  const def: { tag: 'oneOrMore'; parser: Combinator<unknown>; min: number; max?: number; valueUnused?: boolean; guarded?: true } =
+    { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min, ...(max === Infinity ? {} : { max }), ...(guardable ? { guarded: true } : {}) }
+  let expected: string[] | undefined
   const scalarChild = scalarOf(combinator)
   const parseScalar = (input: string, pos: number, ctx: ParseContext): number => {
     let cur = scalarChild(input, pos, ctx)
