@@ -372,24 +372,40 @@ function declaredNamesOf(items: Array<LinkableTable | Record<string, unknown>>):
   return [...names]
 }
 
+/**
+ * The reason a linked map is incomplete, or `undefined` when every `g.X` some piece
+ * reads is defined by some piece. A linked namespace holds every name a factory
+ * merely ACCESSED, so a name nobody defines is a slot that stays undefined. Runtime
+ * `compose()` and the macro's build-time fuse both refuse it with these words, naming
+ * the rule that reaches the hole when one does.
+ */
+export function danglingReference(
+  map: Record<string, Combinator<unknown>>,
+  /** Names read through `g` that `map` itself does not hold (a merge-by-name fuse drops them). */
+  accessed: Iterable<string> = [],
+): string | undefined {
+  const holes = new Set<string>()
+  for (const [name, rule] of Object.entries(map)) {
+    if (rule._def.tag !== 'lazy') continue
+    try { rule._def.thunk() } catch { holes.add(name) }
+  }
+  for (const name of accessed) if (!Object.hasOwn(map, name)) holes.add(name)
+  if (holes.size === 0) return undefined
+  const missing = [...holes]
+  for (const [name, deps] of ruleDependencies(Object.entries(map).filter(([n]) => !holes.has(n)))) {
+    for (const dep of deps) if (holes.has(dep)) return `rule "${name}" references missing rule "${dep}"`
+  }
+  return `rule(s) ${missing.map(n => `"${n}"`).join(', ')} are referenced but defined by no composed grammar`
+}
+
 /** Link recipes into one interpreter map, refusing a name nobody defines. */
 function linkComposition(
   recipes: readonly RulesRecipe[],
   link: LinkOptions,
 ): Record<string, Combinator<unknown>> {
   const map = linkRules(recipes, link)
-  const missing: string[] = []
-  for (const [name, rule] of Object.entries(map)) {
-    if (rule._def.tag !== 'lazy') continue
-    try { rule._def.thunk() } catch { missing.push(name) }
-  }
-  if (missing.length > 0) {
-    const holes = new Set(missing)
-    for (const [name, deps] of ruleDependencies(Object.entries(map).filter(([n]) => !holes.has(n)))) {
-      for (const dep of deps) if (holes.has(dep)) throw new Error(`compose: rule "${name}" references missing rule "${dep}"`)
-    }
-    throw new Error(`compose: rule(s) ${missing.map(n => `"${n}"`).join(', ')} are referenced but defined by no composed grammar`)
-  }
+  const dangling = danglingReference(map)
+  if (dangling !== undefined) throw new Error(`compose: ${dangling}`)
   // A borrowed rule object keeps its own grammar's bindings here but would be rebound
   // by name in `compile()` of this composition: refuse it rather than let the two
   // engines accept different input.
