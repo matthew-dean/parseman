@@ -116,7 +116,7 @@ import { failCleanAnalysis } from './fail-clean.ts'
 import { maskHas, maskOfRanges, type LeadMask } from './lead-mask.ts'
 import {
   K_CHOICE, K_NODE, K_REP, K_SCOPE, K_SEQ, K_WITHCTX, K_WRAP, T_OPT_GATE, T_REP_CLASS, T_REP_GAP, T_REP_OPTGAP,
-  V_CHILDREN, V_CHILDREN_COLLAPSE, V_CHILDREN_FIELDS, V_COLLAPSE, V_GENERIC, V_PASS,
+  V_CHILDREN, V_CHILDREN_COLLAPSE, V_CHILDREN_FIELDS, V_COLLAPSE, V_GENERIC, V_PASS, V_PLAIN,
   routeTable, type DispatchArmRoute, type Route, type RouteAtom, type RouteLevel,
 } from './routes.ts'
 /**
@@ -632,8 +632,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const span = new PlainSpan(pos, end)
-      const node = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
+      const node = plainNode(build, kids, rawKids, pos, end)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, rawEntry(node, input, pos, end))
       }
@@ -652,6 +651,37 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     let first = 1
     while (first < children.length && children[first] === undefined) first++
     return first === children.length ? EMPTY_CH : children.slice(first)
+  }
+
+  /**
+   * A node's value from what its frame collected: the one definition of each
+   * completion variant (`routes.ts` `nodeVariant`). A node piece calls its own
+   * variant's; a route's node level calls `nodeOf`, whether a continuation opened
+   * its frame or it completes on its lone child. `kids` is flat. A generic node's
+   * caller has already applied the node's own flags to `raw`, `fields`, `tl` and
+   * `state`.
+   */
+  const plainNode = (build: NodeBuilder, kids: readonly unknown[], raw: readonly unknown[], pos: number, end: number): unknown =>
+    build(kids, undefined, new PlainSpan(pos, end), raw, EMPTY_TL, undefined)
+  const childrenNode = (build: NodeBuilder, kids: readonly unknown[], fields: FieldMap | undefined, pos: number, end: number): unknown =>
+    build(kids, fields, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
+  const collapseNode = (build: NodeBuilder, kids: readonly unknown[], raw: readonly unknown[], pos: number, end: number): unknown =>
+    kids.length === 1 ? kids[0] : plainNode(build, kids, raw, pos, end)
+  const childrenCollapseNode = (build: NodeBuilder, kids: readonly unknown[], pos: number, end: number): unknown =>
+    kids.length === 1 ? kids[0] : childrenNode(build, kids, undefined, pos, end)
+  function nodeOf(
+    variant: number, collapse: boolean, build: NodeBuilder, kids: readonly unknown[], raw: readonly unknown[],
+    fields: FieldMap | undefined, tl: readonly number[], state: unknown, pos: number, end: number,
+  ): unknown {
+    switch (variant) {
+      case V_GENERIC:
+        return collapse && kids.length === 1 ? kids[0] : build(kids, fields, new PlainSpan(pos, end), raw, tl, state)
+      case V_CHILDREN:
+      case V_CHILDREN_FIELDS: return childrenNode(build, kids, fields, pos, end)
+      case V_CHILDREN_COLLAPSE: return childrenCollapseNode(build, kids, pos, end)
+      case V_COLLAPSE: return collapseNode(build, kids, raw, pos, end)
+      default: return plainNode(build, kids, raw, pos, end)
+    }
   }
 
   /** Direct reducer whose declared arity proves `rawChildren` is unobservable.
@@ -693,7 +723,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
+      const node = childrenNode(build, captured, undefined, pos, end)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -738,7 +768,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = build(captured, fieldMap, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
+      const node = childrenNode(build, captured, fieldMap, pos, end)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -783,10 +813,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const span = new PlainSpan(pos, end)
-      const node = kids.length === 1
-        ? kids[0]
-        : build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
+      const node = collapseNode(build, kids, rawKids, pos, end)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, rawEntry(node, input, pos, end))
       }
@@ -830,9 +857,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = captured.length === 1
-        ? captured[0]
-        : build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
+      const node = childrenCollapseNode(build, captured, pos, end)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -2306,9 +2331,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * known closure, and wrappers that only route add none.
    */
   function chainFor(levels: readonly Level[], d: number, atom: Piece, atomSetsPV: boolean): Piece {
-    // The deepest level that keeps a piece publishes the atom's value.
+    // The deepest level that keeps a piece of its own publishes the atom's value;
+    // a scope or `withCtx` level runs its row's piece, so under one the atom does.
     let k = -1
-    if (!atomSetsPV) for (let i = d - 1; i >= 0; i--) if (keepsPiece(levels[i]!)) { k = i; break }
+    if (!atomSetsPV) {
+      for (let i = d - 1; i >= 0; i--) {
+        const L = levels[i]!
+        if (!keepsPiece(L)) continue
+        if (L.kind !== K_SCOPE && L.kind !== K_WITHCTX) k = i
+        break
+      }
+    }
     let S: Level | undefined
     for (let i = d - 1; i >= 0; i--) if (levels[i]!.kind === K_SCOPE) { S = levels[i]!; break }
     let next = atomUnder(atom, S !== undefined && deferredScope(S) ? S : undefined, !atomSetsPV && k < 0)
@@ -2354,45 +2387,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     switch (L.kind) {
       case K_WRAP:
         return next
-      case K_SCOPE: {
-        if (deferredScope(L)) return next
-        const scanFor = L.scanFor, tri = L.scopeTrivia, labels = L.scopeLabels, cap = L.cap, leadTable = L.leadTable
-        const root1 = (L.rootFlags & 1) !== 0, root2 = (L.rootFlags & 2) !== 0
-        return (input, pos, ctx) => {
-          const sT = ctx.trivia, sL = ctx.triviaKindLabels, sS = SCAN, sC = ctx.captureTrivia
-          const sR = ctx._rootTriviaCapture
-          const sLeadOf = LEAD_OF, sLead = LEAD_TABLE
-          SCAN = scanFor
-          LEAD_OF = tri
-          LEAD_TABLE = leadTable
-          ctx.trivia = tri
-          ctx.triviaKindLabels = labels
-          if (cap) ctx.captureTrivia = true
-          if (root1) ctx._rootTriviaCapture = false
-          if (root2) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
-          const r = next(input, pos, ctx)
-          if (root1) ctx._rootTriviaCapture = sR
-          if (cap) ctx.captureTrivia = sC
-          ctx.trivia = sT
-          ctx.triviaKindLabels = sL
-          SCAN = sS
-          LEAD_OF = sLeadOf
-          LEAD_TABLE = sLead
-          if (innermost && r !== FAIL) PV = r
-          return r
-        }
-      }
-      case K_WITHCTX: {
-        const derive = L.derive, extra = L.extra
-        return (input, pos, ctx) => {
-          const saved = ctx.state
-          ctx.state = derive !== undefined ? derive(saved) : extra
-          const r = next(input, pos, ctx)
-          ctx.state = saved
-          if (innermost && r !== FAIL) PV = r
-          return r
-        }
-      }
+      case K_SCOPE:
+        return deferredScope(L) ? next : scopeRow(L.ip, next)
+      case K_WITHCTX:
+        return withCtxRow(L.ip, next)
       case K_CHOICE:
         return (input, pos, ctx) => {
           const errLen = ctx._errors?.length ?? 0
@@ -2497,9 +2495,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
         const build = L.build!, variant = L.variant, captureWide = L.captureWide, wantFields = L.wantFields
         const readsState = L.readsState, omitsRaw = L.omitsRaw, collapse = L.collapse
-        const kidsOnly = variant === V_CHILDREN || variant === V_CHILDREN_FIELDS || variant === V_CHILDREN_COLLAPSE
         const ownFields = wantFields || variant === V_CHILDREN_FIELDS
         const shieldFields = ownFields || fieldsAbove
+        const readsRaw = variant === V_PLAIN || variant === V_COLLAPSE || (variant === V_GENERIC && !omitsRaw)
+        // A collapsing variant completes on its lone child as that child, so it builds no raw entry for it.
+        const lonePasses = variant === V_COLLAPSE || variant === V_CHILDREN_COLLAPSE || (variant === V_GENERIC && collapse)
         // A level the value passes through keeps no frame state: the frame a
         // continuation opens is the route run's one slot (`resume`), and the
         // run hides the caller's collectors and fields once (`runRoute`).
@@ -2519,45 +2519,116 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (r === FAIL) return FAIL
           if (innermost) PV = r
           const end = EC.e
-          const span = new PlainSpan(pos, end)
+          const fields = ownFields ? buildFieldMap(fieldsArr) : undefined
+          const state = readsState ? ctx.state : undefined
           let nd: unknown
-          if (opened) {
+          if (!opened) {
+            // The lone child: the value in hand, completing as the node's piece would on it.
+            const pv = PV
+            const kids = pv === undefined ? EMPTY_CH : [pv]
+            nd = pv !== undefined && lonePasses ? pv : nodeOf(variant, collapse, build, kids, readsRaw ? [rawEntry(pv, input, pos, end)] : EMPTY_CH, fields, captureWide ? EMPTY_TLOG : EMPTY_TL, state, pos, end)
+          } else if (fk !== undefined) {
             // The frame a continuation opened: its children, as the node piece reads them.
-            if (fk !== undefined) {
-              const captured = capturedFlatChildren(fk)
-              if (variant === V_CHILDREN_COLLAPSE && captured.length === 1) nd = captured[0]
-              else nd = build(captured, variant === V_CHILDREN_FIELDS ? buildFieldMap(fieldsArr) : undefined, span, EMPTY_CH, EMPTY_TL, undefined)
-            } else {
-              const b = fb!
-              const kids = b.ch ?? (b.single !== undefined ? [b.single] : EMPTY_CH)
-              const rawKids = b.raw ?? (b.rawSingle !== undefined ? [b.rawSingle] : EMPTY_CH)
-              if (variant === V_GENERIC) {
-                const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(fieldsArr) : undefined
-                if (collapse && kids.length === 1) nd = kids[0]
-                else nd = build(kids, fieldMap, span, omitsRaw ? EMPTY_CH : rawKids, captureWide ? b.tl ?? EMPTY_TLOG : EMPTY_TL, readsState ? ctx.state : undefined)
-              } else if (variant === V_COLLAPSE && kids.length === 1) nd = kids[0]
-              else nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
-            }
-            PV = nd
-            EC.e = end
-            return nd
+            nd = nodeOf(variant, collapse, build, capturedFlatChildren(fk), EMPTY_CH, fields, EMPTY_TL, state, pos, end)
+          } else {
+            const b = fb!
+            const kids = b.ch ?? (b.single !== undefined ? [b.single] : EMPTY_CH)
+            const rawKids = omitsRaw ? EMPTY_CH : b.raw ?? (b.rawSingle !== undefined ? [b.rawSingle] : EMPTY_CH)
+            nd = nodeOf(variant, collapse, build, kids, rawKids, fields, captureWide ? b.tl ?? EMPTY_TLOG : EMPTY_TL, state, pos, end)
           }
-          const pv = PV
-          const kids = pv === undefined ? EMPTY_CH : [pv]
-          if (kidsOnly) {
-            if (variant === V_CHILDREN_COLLAPSE && kids.length === 1) nd = pv
-            else nd = build(variant === V_CHILDREN_COLLAPSE ? EMPTY_CH : kids, variant === V_CHILDREN_FIELDS ? buildFieldMap(fieldsArr) : undefined, span, EMPTY_CH, EMPTY_TL, undefined)
-          } else if (variant === V_GENERIC) {
-            if (collapse && kids.length === 1) nd = pv
-            else nd = build(kids, wantFields ? buildFieldMap(fieldsArr) : undefined, span, omitsRaw ? EMPTY_CH : [rawEntry(pv, input, pos, end)], captureWide ? EMPTY_TLOG : EMPTY_TL, readsState ? ctx.state : undefined)
-          } else if (variant === V_COLLAPSE && kids.length === 1) nd = pv
-          else nd = build(kids, undefined, span, [rawEntry(pv, input, pos, end)], EMPTY_TL, undefined)
           PV = nd
           EC.e = end
           return nd
         }
       }
     }
+  }
+
+  /** A `withCtx` row's piece over `child`: the row's own, and a route level's over the rest of its route. */
+  function withCtxRow(ip: number, child: Piece): Piece {
+    // `extra` and the child are both bound HERE; the piece only swaps a field.
+    const ki = code[ip + 1]!
+    if (ki < 0) {
+      const derive = fns[~ki] as (s: unknown) => unknown
+      return (input, pos, ctx) => {
+        const saved = ctx.state
+        ctx.state = derive(saved)
+        try { return child(input, pos, ctx) }
+        finally { ctx.state = saved }
+      }
+    }
+    const extra = k[ki]
+    return (input, pos, ctx) => {
+      const saved = ctx.state
+      ctx.state = extra
+      try { return child(input, pos, ctx) }
+      finally { ctx.state = saved }
+    }
+  }
+
+  /** A scope row's piece over `child`: the row's own, and a route level's over the rest of its route. */
+  function scopeRow(ip: number, child: Piece): Piece {
+    const ki = code[ip + 1]!
+    const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
+    const scopeLabels = scopeTrivia?._meta.triviaKindLabels
+    // THE SWAP, RESOLVED AT ASSEMBLY. `exec.ts` computed
+    // `FAST && ki >= 0 && !triviaLabelled[ki]` on every scope entry; `FAST` is
+    // `!trackLines`, an option, and the other two are table data. All three are
+    // known here, so the scope piece holds the scanner it installs as a `const`.
+    const scanFor: FastTriviaScanner | null =
+      swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
+    // The scope installs its slot's lead table with its trivia, so the gate
+    // (`cannotStartTrivia`) never has to look the slot up.
+    const scopeLead = ki < 0 ? null : LEAD_TABLES[ki]!
+    // TWO PIECES, SELECTED HERE — not one piece that tests the opcode. Capture
+    // is fixed for the whole parse, so `code[ip] === OP_SCOPE_CAP` is an
+    // assembly-time fact and reading it per scope entry would be exactly the
+    // config test INV-6 forbids.
+    //
+    // Both RESTORE rather than clear: capture is an OR with the enclosing
+    // context (`grammar.ts:129`), so an inner scope must not switch an outer
+    // capture off.
+    const scopePiece: Piece = code[ip] === OP_SCOPE_CAP
+      ? (input, pos, ctx) => {
+          const saved = ctx.trivia
+          const savedLabels = ctx.triviaKindLabels
+          const savedScan = SCAN
+          const savedCap = ctx.captureTrivia
+          SCAN = scanFor
+          const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+          LEAD_OF = scopeTrivia
+          LEAD_TABLE = scopeLead
+          ctx.trivia = scopeTrivia
+          ctx.triviaKindLabels = scopeLabels
+          ctx.captureTrivia = true
+          const v = child(input, pos, ctx)
+          ctx.captureTrivia = savedCap
+          ctx.trivia = saved
+          ctx.triviaKindLabels = savedLabels
+          SCAN = savedScan
+          LEAD_OF = savedLeadOf
+          LEAD_TABLE = savedLead
+          return v
+        }
+      : (input, pos, ctx) => {
+          const saved = ctx.trivia
+          const savedLabels = ctx.triviaKindLabels
+          const savedScan = SCAN
+          SCAN = scanFor
+          const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+          LEAD_OF = scopeTrivia
+          LEAD_TABLE = scopeLead
+          ctx.trivia = scopeTrivia
+          ctx.triviaKindLabels = scopeLabels
+          const v = child(input, pos, ctx)
+          ctx.trivia = saved
+          ctx.triviaKindLabels = savedLabels
+          SCAN = savedScan
+          LEAD_OF = savedLeadOf
+          LEAD_TABLE = savedLead
+          return v
+        }
+    return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
   }
 
   function lower(ip: number): Piece {
@@ -3064,94 +3135,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
-      case OP_WITHCTX: {
-        // `extra` and the child are both bound HERE; the piece only swaps a field.
-        const ki = code[ip + 1]!
-        const child = link(code[ip + 2]!)
-        if (ki < 0) {
-          const derive = fns[~ki] as (s: unknown) => unknown
-          return (input, pos, ctx) => {
-            const saved = ctx.state
-            ctx.state = derive(saved)
-            try { return child(input, pos, ctx) }
-            finally { ctx.state = saved }
-          }
-        }
-        const extra = k[ki]
-        return (input, pos, ctx) => {
-          const saved = ctx.state
-          ctx.state = extra
-          try { return child(input, pos, ctx) }
-          finally { ctx.state = saved }
-        }
-      }
+      case OP_WITHCTX:
+        return withCtxRow(ip, link(code[ip + 2]!))
 
       case OP_SCOPE:
       case OP_SCOPE_CAP:
-      case OP_SCOPE_PLAIN: {
-        const ki = code[ip + 1]!
-        const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
-        const scopeLabels = scopeTrivia?._meta.triviaKindLabels
-        // THE SWAP, RESOLVED AT ASSEMBLY. `exec.ts` computed
-        // `FAST && ki >= 0 && !triviaLabelled[ki]` on every scope entry; `FAST` is
-        // `!trackLines`, an option, and the other two are table data. All three are
-        // known here, so the scope piece holds the scanner it installs as a `const`.
-        const scanFor: FastTriviaScanner | null =
-          swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
-        // The scope installs its slot's lead table with its trivia, so the gate
-        // (`cannotStartTrivia`) never has to look the slot up.
-        const scopeLead = ki < 0 ? null : LEAD_TABLES[ki]!
-        const child = link(code[ip + 2]!)
-        // TWO PIECES, SELECTED HERE — not one piece that tests the opcode. Capture
-        // is fixed for the whole parse, so `code[ip] === OP_SCOPE_CAP` is an
-        // assembly-time fact and reading it per scope entry would be exactly the
-        // config test INV-6 forbids.
-        //
-        // Both RESTORE rather than clear: capture is an OR with the enclosing
-        // context (`grammar.ts:129`), so an inner scope must not switch an outer
-        // capture off.
-        const scopePiece: Piece = code[ip] === OP_SCOPE_CAP
-          ? (input, pos, ctx) => {
-              const saved = ctx.trivia
-              const savedLabels = ctx.triviaKindLabels
-              const savedScan = SCAN
-              const savedCap = ctx.captureTrivia
-              SCAN = scanFor
-              const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
-              LEAD_OF = scopeTrivia
-              LEAD_TABLE = scopeLead
-              ctx.trivia = scopeTrivia
-              ctx.triviaKindLabels = scopeLabels
-              ctx.captureTrivia = true
-              const v = child(input, pos, ctx)
-              ctx.captureTrivia = savedCap
-              ctx.trivia = saved
-              ctx.triviaKindLabels = savedLabels
-              SCAN = savedScan
-              LEAD_OF = savedLeadOf
-              LEAD_TABLE = savedLead
-              return v
-            }
-          : (input, pos, ctx) => {
-              const saved = ctx.trivia
-              const savedLabels = ctx.triviaKindLabels
-              const savedScan = SCAN
-              SCAN = scanFor
-              const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
-              LEAD_OF = scopeTrivia
-              LEAD_TABLE = scopeLead
-              ctx.trivia = scopeTrivia
-              ctx.triviaKindLabels = scopeLabels
-              const v = child(input, pos, ctx)
-              ctx.trivia = saved
-              ctx.triviaKindLabels = savedLabels
-              SCAN = savedScan
-              LEAD_OF = savedLeadOf
-              LEAD_TABLE = savedLead
-              return v
-            }
-        return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
-      }
+      case OP_SCOPE_PLAIN:
+        return scopeRow(ip, link(code[ip + 2]!))
 
       case OP_ROUTED: {
         const fb = code[ip + 1]!
