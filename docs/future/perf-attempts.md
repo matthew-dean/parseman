@@ -192,6 +192,20 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   polymorphic reads. The build now emits `dist/cst/plain.js` once and every entry
   imports it; that SCSS row reads −0.3% on both. Investigation in
   [#224](https://github.com/matthew-dean/parseman/pull/224).
+- **The cost of never pretenuring: one synthetic case.** With Jess's AST nodes constructor-built
+  too (jess `perf/ast-ctor`), Jess's SCSS `gen-workload` reads +3.6% JIT on Node 26 (998.0M
+  → 1034.2M per parse; −0.3% on Node 24). It is a single file of about 1G instructions per
+  parse, and its tree survives several scavenges. Node 26 pretenured that tree in every
+  process, so it was never copied. Constructors cannot be pretenured, so the scavenger copies
+  it instead: scavenge time over 40 parses is 65 ms on main against 114 ms, with the same
+  scavenge count. Real SCSS is not slower. JIT marginal instructions on Node 26 / Node 24:
+  Bootstrap 5 (92 files) −2.1% / −0.2%, Foundation (106 files) −0.9% / −1.0%, the accepted
+  sass-spec fixtures (1,961 files) −1.6% / −1.7%. Mark-compacts are 1–2 per process in every
+  case, and scavenge time is within noise. Accepted: the synthetic case pays for copying
+  that consistent pretenuring avoided. The way to win it back is less short-lived
+  allocation, so a tree survives fewer scavenges. A literal site would bring the per-process
+  split back.
+
 - **Watched literal sites (not converted).** These are still object literals, and none splits
   a process today. A tree does not keep them, or they are rare:
   - field-map entries (`src/compiler/fields.ts` `buildFieldMap`);
@@ -200,6 +214,46 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   - the public `annotateTreeSpans`.
 
   `pnpm perf:pretenure` would show it if one began to.
+
+- **`graphql/document`'s nodes are constructor-built too (0.60.0 line).** The required
+  cross-process gate on #243 (CI, Node 26, against v0.59.1) failed one case:
+  `graphql/document` median +5.4% (p 4.7e-43), mean +5.6%, head slower in 157/160 rounds.
+  Every other case read within ±0.5%. It was the same flip as 0.59.0's, in the workload's
+  OWN nodes: `examples/graphql/parser.ts` built them with object literals in its
+  `transform()` reducers. Constructor-built tree objects covered Parseman's objects and
+  `examples/css`, but not this grammar. Measured per process on Node 26.13, macOS, with
+  12 processes per side and the gate's worker:
+  - Default runtime: the head pretenured in 12 of 12 processes (17–18 mark-compacts,
+    0.514 ms, 49.55G instructions). v0.59.1 pretenured in none (1 mark-compact, 0.501 ms,
+    47.20G).
+  - `--no-allocation-site-pretenuring` (diagnostic only): 0.491 ms / 47.59G against
+    0.486 ms / 47.69G. So the parse work is the same.
+  - `--trace-pretenuring`: the head tenures three adjacent allocation sites (found/created
+    264, 271 and 243, ratio 1.0); v0.59.1 tenures none. Building only the field node with a
+    constructor takes the head to 1 mark-compact in every process (0.489 ms against
+    0.492 ms for v0.59.1 on the same worker). Converting only its `?? []` defaults leaves
+    13 mark-compacts.
+  - Fix: every node the example keeps is a `new` call on `examples/graphql/graphql-node.js`
+    (prototype `Object.prototype`), as `examples/css/css-node.js`. With never-called code
+    appended to the head's `dist/index.js`, every process stays at 1 mark-compact.
+  - Local gate, `graphql/document` only, against v0.59.1, Node 26.13: before +4.8%
+    (p 4.3e-7, 28/30 rounds slower); after +0.3% (p 0.21, 23/40), ok.
+
+  - `examples/lang`'s AST and `examples/toml-ish`'s lines were kept literal-built nodes
+    too, and `examples/css`'s `nilNode()` a literal; all three are constructor-built in
+    the same series. `examples/json` keeps none: its objects come from
+    `Object.fromEntries`, and its `[key, value]` pairs die inside the reducer.
+  - `pnpm perf:pretenure` runs `graphql/document` (1 mark-compact per process at every
+    pad, Node 26.13). A plant that turns every graphql node back into a literal in that
+    check's worker does NOT fail it: 1 mark-compact in every process at pads 0, 100, 500,
+    970, 2,000, 4,000, 8,000, 15,000 and 30,000, and at 1,500, 4,000 and 8,000 parses. The
+    same literals tenured in 12 of 12 processes under the cross-process gate's worker on
+    #243's bundle, and in 0 of 12 on v0.59.1's. The flip needs a layout that check does
+    not reach, so the plant would be blind and was not landed.
+
+  A user grammar whose reducers build object literals can still flip the same way: the
+  site is in the grammar, so no change in Parseman reaches it. The CHANGELOG's advice
+  (build kept nodes with a constructor) is the remedy.
 
 - **Nullable-regex first sets.** A `regex()` that may match empty still reports `any`, but
   also carries the first characters of its non-empty matches. A sequence led by an optional
@@ -417,6 +471,85 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   through node, scope and sequence in both engines is a large build for that. The largest
   CSS and `.jess` sites are one-character gates that admit too much, which the two-character
   gate family addresses more cheaply. Census on `perf/less-gap`; not built.
+
+- **0.59.0 against 0.58.1 on Node 26: whole-family vs partial pretenuring.** (Measured on #212, then declared 0.59.0; the 0.59.0 that shipped is main's, without it, and #212 is the 0.60.0 line.) The
+  cross-process gate read `expected/narrow` +12.3% and `rollback/medium` +4.7% (Node
+  26.13, macOS) where the Node 26 self-check stayed within ±2.6%. Per process, with the
+  gate's worker parameters and mark-compact counts (diagnostic flags only):
+  - Pretenuring off (`--no-allocation-site-pretenuring`), both builds are identical:
+    0.54–0.56 ms, 31G instructions, about 238 scavenges. So the allocation volume is
+    unchanged, and so is the table: a build with a byte-identical `expected/narrow`
+    table behaves as 0.59.0.
+  - 0.58.1 pretenures in every process and tenures the whole tree family: 10–16 sites
+    per process (allocation-count fingerprints near 330, 1,000–1,450 and 210–290), at
+    0.58–0.70 ms with about 24 mark-compacts and 1.35 ms per scavenge.
+  - 0.59.0 pretenures in 2 of 12 to 9 of 16 processes, and then only six sites in
+    three pairs (fingerprints near 367, 520–527 and 1,539–2,445). The rest of the
+    family stays young. That leaves tenured parents pointing at young children:
+    1.56–1.59 ms per scavenge, 0.67–0.83 ms per parse. Processes that pretenure
+    nothing run 0.54–0.57 ms, faster than any 0.58.1 process.
+  - `--no-maglev-pretenure-store-values` changes neither build.
+  - Bisected by the share of slow processes and their cost: no commit carries it. The
+    per-parse closure code is nearly unchanged between the commits where it moves, and
+    a commit's slow-mode cost varies from run to run (0.62 ms, then 0.75 ms).
+  - No source lever: no new field, allocation or object in 0.59.0 causes it. Jess's
+    Less parser on Node 26 is unaffected and 0.9–1.6% faster than on 0.58.0
+    (`benchmark.less`, bootstrap, a small file; 12 processes each, 5–7 mark-compacts on
+    both sides).
+  - Candidate, not built: make Parseman's tree objects tenure together with a
+    grammar's nodes, or decouple the two, so a partial tenuring cannot leave
+    old-to-young pointers. It would change how the tree is built, with unknown effect on
+    real grammars.
+
+- **0.59.0's pretenuring flips follow bundle layout, not parse work.** (Measured on #212, then declared 0.59.0; the 0.59.0 that shipped is main's, without it, and #212 is the 0.60.0 line.) The required
+  cross-process gate on `504ddea1` (CI, Linux, Node 26, against v0.58.2) failed seven
+  cases:
+
+  | case | median Δ | mean Δ | head slower |
+  | --- | ---: | ---: | ---: |
+  | rollback/sparse | +7.3% | +11.6% | 89/100 |
+  | rollback/medium | +7.5% | +10.0% | 613/900 |
+  | expected/none | +12.4% | +18.5% | 92/100 |
+  | expected/narrow | −1.4% | +4.7% | 427/900 |
+  | less/stylesheet | +11.0% | +8.0% | 78/100 |
+  | less/mixins | +11.2% | +7.5% | 80/100 |
+  | graphql/document | +4.8% | +5.0% | 156/160 |
+
+  `rollback/none`, `rollback/dense`, `expected/wide`, `css/stylesheet` and
+  `json/document` passed. Every failure checked is V8's allocation-site pretenuring
+  decision:
+  - `graphql/document`: the 0.59.0 build pretenures in 8 of 8 processes (18–19
+    mark-compacts), v0.58.2 in none. With `--no-allocation-site-pretenuring`
+    (diagnostic), both run 48.6G–48.7G instructions at 0.49 ms.
+  - `less/mixins`: 2 of 8 pretenure, against none for v0.58.2.
+
+  Jess's `.jess` parser on Node 24 shows the same split. Bisected with Jess rebuilt
+  per commit (16 processes per side, `benchmark.css`, N 100 → 400; slow means at
+  least 290M marginal instructions):
+
+  | commit | slow processes |
+  | --- | ---: |
+  | `acb421e2` | 0/16 |
+  | `6183b237` | 2/16 |
+  | `18a8a077` | 1/16 |
+  | `c2f4fbf8` | 7/16 |
+  | `4e8b3cda` | 8/16 |
+  | `4348bded` | 11/16 |
+  | `5e27a457` | 10/16 |
+
+  - `c2f4fbf8` changes only the emitter, which `.jess` never runs: its artifact has
+    no precompiled functions, and `dist/run` is byte-identical. It adds about 700
+    bytes to `dist/index.js`, which the parser imports.
+  - Appending a never-called 970-byte function to the fast `18a8a077` build flips
+    `.jess` to 8 of 16 slow (median 290.4M, against 278.8M for 0.58.0).
+  - With pretenuring off, every build counts the same instructions.
+  - On Node 26, `.jess` is unimodal at 288M for 0.58.0, `18a8a077` and the padded
+    build alike.
+
+  So the pretenuring share follows heap layout and allocation timing set by the
+  bundle, and no per-parse change in 0.59.0 accounts for it. Trimming code only
+  re-rolls the outcome. The lever is the tree-construction redesign: tenure
+  Parseman's tree objects with a grammar's nodes, or decouple the two.
 
 - **`.jess` `ExpressionLogical` capture replay.** `and`/`or` in `.jess` are choice arms that
   reparse their left operand up to three times. Fixing it in the engine needs capture

@@ -77,6 +77,7 @@ describe('macro grammar coverage emission', () => {
   // coverage COUNTERS ship in 0.47, the six trace phases do not. Codegen emitted
   // them at ~40 fine-grained sites; the table equivalent is a project, not a task.
   // Kept as todo because the capability is OWED, not withdrawn.
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('emits compiled coverage and trace hooks for selected dispatch arms', () => {
     const parser = dispatch(
       regex(/@[A-Za-z-]+/),
@@ -108,6 +109,7 @@ describe('macro grammar coverage emission', () => {
     ])
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('emits compiled dispatch trace hooks for matcher, otherwise, and failure routes', () => {
     const parser = dispatch(
       regex(/(?:@[A-Za-z-]+|[A-Za-z-]+\()/),
@@ -251,6 +253,7 @@ const grammar = rules(g => ({
     expect(hits).toEqual(['rule:Entry', 'rule:Word', 'label:Entry/choice:0/lazy:0', 'choice:Entry/arm:0'])
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('emits a selected-arm trace event only in coverage mode', () => {
     const compiled = compile(choice(literal('a'), literal('b')), undefined, { coverage: true })
     const events: unknown[] = []
@@ -259,6 +262,7 @@ const grammar = rules(g => ({
     expect(compile(choice(literal('a'), literal('b'))).source).not.toContain('_grammarTrace')
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('emits ordered rule, label, and selected-choice lifecycle events', () => {
     const grammar = rules(g => ({ Entry: choice(g.Word, literal('x')), Word: label('word', literal('w')) }))
     const compiled = compile(grammar.Entry, undefined, { coverage: true })
@@ -276,6 +280,7 @@ const grammar = rules(g => ({
     ])
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('keeps selected IDs stable for disjoint, greedy, and longest strategies', () => {
     const cases = [
       [choice(literal('a'), literal('b')), 'b', 'choice:entry/arm:1'],
@@ -292,6 +297,7 @@ const grammar = rules(g => ({
     }
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('does not emit an attempt for a gated-off arm', () => {
     const gated: GatedArm = { combinator: literal('a'), gate: () => false }
     const events: Array<{ id: string; phase: string }> = []
@@ -303,6 +309,7 @@ const grammar = rules(g => ({
     expect(events).toContainEqual(expect.objectContaining({ id: 'choice:entry/arm:1', phase: 'selected' }))
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('uses the local choice cursor and end in selected trace events', () => {
     const parser = sequence(literal('x'), choice(literal('a'), literal('b')))
     const events: Array<{ id: string; phase: string; offset: number; end?: number }> = []
@@ -313,6 +320,7 @@ const grammar = rules(g => ({
     expect(events).toContainEqual({ id: 'choice:entry/sequence:1/arm:1', phase: 'selected', offset: 1, end: 2 })
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('matches the interpreter first-match arm lifecycle, including deep failure offsets', () => {
     const parser = choice(sequence(literal('a'), literal('!')), literal('a'))
     const interpreterTrace = createGrammarTraceSink({ capacity: 20 })
@@ -325,6 +333,7 @@ const grammar = rules(g => ({
     expect(macroEvents).toEqual(interpreterTrace.snapshot().events)
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('matches disjoint, greedy, longest, and auto-not choice schedules', () => {
     const cases = [
       [choice(literal('a'), literal('b')), 'b'],
@@ -344,6 +353,7 @@ const grammar = rules(g => ({
     }
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('closes a greedy-classify regex-arm attempt when the super-regex misses', () => {
     const parser = choice(regex('[a-z]+'), literal('if'))
     const interpreterTrace = createGrammarTraceSink({ capacity: 20 })
@@ -357,6 +367,7 @@ const grammar = rules(g => ({
     expect(macroEvents).toEqual(interpreterTrace.snapshot().events)
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('instruments rules-map macro output while preserving its ordinary output', () => {
     const grammar = rules(g => ({ Entry: sequence(literal('('), g.Word, literal(')')), Word: literal('a') }))
     const ordinary = compileRuleMap(Object.entries(grammar))!
@@ -395,6 +406,7 @@ const grammar = rules(g => ({
     const macroCovered = transformMacro(source, 'coverage-rules.ts', new Set(['parseman']), false, false, true)!
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('matches interpreter trace for a recursive rules-map auto-not parse', () => {
     const grammar = rules(g => ({
       Entry: choice(sequence(literal('('), g.Entry, literal(')')), g.Word),
@@ -417,6 +429,7 @@ const grammar = rules(g => ({
     expect(macroEvents).toEqual(interpreterTrace.snapshot().events)
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('emits a named-rule failure before a top-level macro failure returns', () => {
     const grammar = rules(() => ({ Entry: literal('a') }))
     const events: Array<{ id: string; phase: string }> = []
@@ -427,6 +440,7 @@ const grammar = rules(g => ({
     expect(events.map(event => `${event.id}/${event.phase}`)).toEqual(['rule:Entry/enter', 'rule:Entry/failure'])
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('orders nested named-rule failures without duplicating the inner rule', () => {
     const grammar = rules(g => ({ Entry: sequence(literal('('), g.Word, literal(')')), Word: literal('a') }))
     const events: Array<{ id: string; phase: string }> = []
@@ -442,6 +456,7 @@ const grammar = rules(g => ({
     ])
   })
 
+  // Owed; tracked in https://github.com/matthew-dean/parseman/issues/192.
   it.todo('matches interpreter rule-failure lifecycle for nested `(b)`', () => {
     const grammar = rules(g => ({ Entry: sequence(literal('('), g.Word, literal(')')), Word: literal('a') }))
     const interpreterTrace = createGrammarTraceSink({ capacity: 20 })

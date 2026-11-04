@@ -47,11 +47,11 @@
 import type { ParseContext } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
-  OP_ADJ, OP_ARMGATE, OP_RGATE, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
+  OP_ADJ, OP_ARMGATE, OP_RGATE, OP_RGATE2, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_STRICT,
 } from './ops.ts'
 import {
   choiceCannotCommit, choiceRollbackMask, failureRollbackClean, validateDispatchSpec,
@@ -67,9 +67,15 @@ import {
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
-import { holdsGap } from './hold-gap.ts'
+import { holdsGap, rowNullable } from './hold-gap.ts'
+import { gapRows } from './gap-gate.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
 import { FIELD_LEADING_TRIVIA, FIELD_TRAILING_TRIVIA } from '../combinators/field-trivia.ts'
+
+/** Does a gap's regex lower to an inline scan (`scanShapeFromRegex`)? */
+function gapRegexLowers(re: unknown): boolean {
+  return re instanceof RegExp && scanShapeFromRegex(re.source, re.flags) !== null
+}
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -109,12 +115,12 @@ export class Unemittable extends Error {
  * runs and is wrong, which no type in this file would catch.
  */
 export const EMITTED_PARAMS = [
-  'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
+  'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIASCAN',
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
   'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'rollbackScannedTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
   'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
-  'scanTrivia', 'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
+  'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
   'asciiFoldKey', 'ROUTED_FX',
   // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
   // char-class index — the emitted twin of `assemble.ts`'s `sentinelFor` memo,
@@ -124,27 +130,24 @@ export const EMITTED_PARAMS = [
   // engine and cannot drift.
   'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError',
   // Pure scalar terminal recognizers, indexed by the terminal's existing const
-  // operand. Appended for compatibility with older precompiled factories.
-  'RECOG',
-  // Appended so precompiled factories produced by earlier runtimes keep every
-  // positional helper binding. Older factories ignore this trailing argument.
-  'commitTriviaScan', 'scanTriviaCompact', 'LEX',
-  // Appended for old precompiled-factory ABI: old factories ignore it.
-  'adjacencyHolds',
-  // Appended for selected composite lexical programs; old factories ignore it.
+  // operand; selected lexical bodies; the adjacency test.
+  'RECOG', 'LEX', 'adjacencyHolds',
+  // Selected composite lexical programs.
   'LEXPROG',
-  // Appended for trivia-attributing fields (`field(…, { leadingTrivia })`);
-  // old factories ignore them.
+  // Trivia-attributing fields (`field(…, { leadingTrivia })`).
   'LEAD', 'triviaFieldCapture',
-  // Appended for the deferred-commit trivia skip (`trivia-gap.ts`); old
-  // factories ignore it.
+  // The deferred-commit trivia skip (`trivia-gap.ts`).
   'skipDeferredTrivia',
-  // Appended for the pass-through collapse (`run-support.ts`); old factories
-  // ignore it.
+  // The pass-through collapse (`run-support.ts`).
   'collapseEmpty',
-  // Appended for constructor-built tree objects (`cst/plain.d.ts`): a `new` call has
-  // no allocation site, so V8 cannot pretenure them. Old factories ignore them.
+  // Constructor-built tree objects (`cst/plain.d.ts`): a `new` call has no
+  // allocation site, so V8 cannot pretenure them.
   '_SP', '_LF', '_ND', '_FC', '_BUF',
+  // The gap gate's slot (`gap-gate.ts`).
+  'GAP',
+  // Artifacts are version-locked (docs/design/artifact-format.md): a factory is
+  // only ever called by the runtime that emitted it, so a name nothing emitted
+  // reads is removed rather than kept for an older factory's positions.
 ] as const
 
 /**
@@ -605,6 +608,12 @@ export function emitAssemblySource(
    * then emitted with them.
    */
   scanSinkNeutral = false,
+  /**
+   * Lower every gap gate (`gap-gate.ts`) as the item it wraps. A selection is
+   * ranked on this lowering, so adding the gates moves no site's place in the
+   * order; the fit is judged by the source that ships, gates included.
+   */
+  gapNeutral = false,
 ): EmitResult {
   const { code, k, fx, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
@@ -643,6 +652,10 @@ export function emitAssemblySource(
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
   const reachable = [...reachableSites(code, roots)]
+  // A gap whose regex lowers to an inline scan is scanned again by its row, for
+  // less than reading the slot costs; only a gap matched by its RegExp takes the
+  // slot (`gapRegexLowers`).
+  const GAP_ROWS = gapNeutral ? new Set<number>() : new Set([...gapRows(code, roots)].filter(row => !gapRegexLowers(k[code[row + 1]!])))
   const labels = computeSiteLabels(code, roots, hostCst)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
@@ -1172,7 +1185,8 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // `OP_GATE` under a probe or a tolerant recovery is a no-op that forwards to
     // its child, exactly as `assemble.ts:952` resolves it.
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
-    if (op === OP_RULE) return code[ip + 1]!
+    if (op === OP_RULE || op === OP_GAPGATE) return code[ip + 1]!
+    if (op === OP_STRICT) return code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
     // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
@@ -1191,6 +1205,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
   function lower(ip: number, fname: string): string {
     const op = code[ip]
     const head = `function ${fname}(input,pos,ctx){`
+    const outerHead = head
     const L = labels.at(ip)
     const sinks = sinksAt(ip)
     /**
@@ -1310,6 +1325,26 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       case OP_RX_TRACK: {
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_RX_TRACK
+        // A gap row takes the end a repeat already scanned (`gap-gate.ts`), and
+        // otherwise matches its sticky regex: one compact body, no second copy of
+        // the success path.
+        if (GAP_ROWS.has(ip)) {
+          const re = hoist('gx', `K[${code[ip + 1]!}]`)
+          return `${outerHead}
+let e
+if(GAP.row===${ip}&&GAP.at===pos&&GAP.input===input)e=GAP.end
+else{${re}.lastIndex=pos;e=${re}.test(input)?${re}.lastIndex:-1}
+if(e>=0){
+const v=input.slice(pos,e)
+${captureLeaf('v')}
+${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
+return v
+}
+ctx._fe=pos;ctx._fx=${xf}
+${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+}`
+        }
+        const head = outerHead
         if (!track && scalarSpecs.has(code[ip + 1]!)) {
           const recognize = recognizerRef(code[ip + 1]!)
           return `${head}
@@ -1365,8 +1400,8 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       }
 
       case OP_EMPTY:
-        // `''`, not `null` — the zero-width match's value. The other three engines
-        // (exec.ts, exec-baseline.ts, assemble.ts) all return `''`; this one returned
+        // `''`, not `null` — the zero-width match's value. The other engines
+        // (exec.ts, assemble.ts) both return `''`; this one returned
         // `null`, so the SAME program yielded a different `value` depending only on
         // which engine ran. Unreached from the combinator API today — `OP_EMPTY` is
         // emitted only as `finish()` padding for an EMPTY rule map, which then has no
@@ -1397,6 +1432,31 @@ return ${child}(input,pos,ctx)
         return `${head}
 const it=ctx._routed
 if(it!==undefined&&it.span.start===pos&&!classHas(${cls},lead(input,it.span.end))){ctx._fe=it.span.end;ctx._fx=${xf};return FAIL}
+return ${child}(input,pos,ctx)
+}`
+      }
+
+      case OP_RGATE2: {
+        const child = link(code[ip + 2]!)
+        if (cfg.tolerant || cfg.probe) return `${head}
+return ${child}(input,pos,ctx)
+}`
+        // ASCII-only classes (the usual case: `:` then whitespace) are read as
+        // code units against their ASCII tables, with no call.
+        const idxs = [code[ip + 1]!, code[ip + 4]!, code[ip + 5]!]
+        const ascii = idxs.every(i => isAsciiOnlyClass(t.cc[i]!))
+        const ref = (idx: number, tag: string): string => {
+          const ci = classes.push([t.cc[idx]!]) - 1
+          classPlan.push([idx])
+          return hoist(tag, `CLS[${ci}][0]`)
+        }
+        const [cls, first, second] = [ref(idxs[0]!, 'cl'), ref(idxs[1]!, 'c1'), ref(idxs[2]!, 'c2')]
+        const has = (c: string, at: string): string => ascii ? `${c}.ascii[${at}]===1` : `classHas(${c},${at})`
+        const xf = fxRef(code[ip + 3]!)
+        return `${head}
+const it=ctx._routed
+if(it!==undefined&&it.span.start===pos){const e=it.span.end;const c=${ascii ? 'input.charCodeAt(e)' : 'lead(input,e)'}
+if(!(${has(cls, 'c')})||(${has(first, 'c')}&&!(${has(second, ascii ? 'input.charCodeAt(e+1)' : 'lead(input,e+1)')}))){ctx._fe=e;ctx._fx=${xf};return FAIL}}
 return ${child}(input,pos,ctx)
 }`
       }
@@ -1914,7 +1974,30 @@ if(ctx._fc===true)return FAIL
 const af=ctx._fx
 if(af!==undefined&&af.length>0){ctx._fe=pos;return FAIL}
 }
-ctx._fe=pos;ctx._fx=${choiceFx}
+${cfg.probe ? `if(arm<0){${arms.map(a => `${a}(input,pos,ctx)`).join(';')}}
+` : ''}ctx._fe=pos;ctx._fx=${choiceFx}
+return FAIL
+}`
+        }
+
+        if (cfg.probe) {
+          // A probe assembly enters every arm in source order, as the
+          // interpreter's `firstMatch` does, so each opener reaches `failAt`.
+          const p = tmp()
+          return `${head}
+${emitMark(p, L.buf, L.raw, sinks)}
+let acc
+let best=pos
+${arms.map(arm => `{ctx._fc=false
+const v=${arm}(input,pos,ctx)
+if(v!==FAIL)return v
+const at=ctx._fe??pos
+if(at>best){best=at;acc=undefined}
+if(at===best)acc=_accSet(ctx._fx,acc)
+if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
+${emitRollback(p, L.buf, L.raw, sinks)}
+}`).join('\n')}
+ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL
 }`
         }
@@ -2194,7 +2277,8 @@ return FAIL
         const selector = link(code[ip + 1]!)
         const otherIp = code[ip + 3]!
         const other = otherIp >= 0 ? link(otherIp) : undefined
-        const otherRouted = code[ip + 4]! === 1
+        const otherRouted = (code[ip + 4]! & 1) === 1
+        const otherCommits = (code[ip + 4]! & 2) === 0
         const n = code[ip + 5]!
         validateDispatchSpec(spec, n, code[ip + 4]!)
         const armBase = ip + 6
@@ -2258,7 +2342,7 @@ ${fallbackCase}
 }
 if(v===FAIL){
 ${emitRollback(m2, L.buf, L.raw, sinks)}
-ctx._fc=true
+${other !== undefined && !otherCommits ? 'if(arm!==undefined)' : ''}ctx._fc=true
 return FAIL
 }
 return [key,v]
@@ -2293,6 +2377,69 @@ return [key,v]
         const itemMiss = (at: string): string => itemAscii
           ? `${itemCls}.ascii[input.charCodeAt(${at})]!==1`
           : `!classHas(${itemCls},lead(input,${at}))`
+        // The separator's own first set (ip+7, `assemble.ts` `sepClass`).
+        let sepCls: string | undefined
+        let sepAscii = false
+        if (!REC && sepIp >= 0 && (code[ip + 5]! & 8) !== 0 && !leadingTriviaFieldAt(code, k, sepIp) && !rowNullable(code, k, sepIp, nullable)) {
+          const resolved = t.cc[code[ip + 8]!]!
+          const ci = classes.push([resolved]) - 1
+          classPlan.push([code[ip + 8]!])
+          sepCls = hoist('rs', `CLS[${ci}][0]`)
+          sepAscii = isAsciiOnlyClass(resolved)
+        }
+        // THE GAP GATE (`gap-gate.ts`, `assemble.ts`): the item's leading gap is
+        // read once here and handed to its regex row through the slot.
+        const gapIp = !gapNeutral && sepIp < 0 && min === 0 && !REC && code[code[ip + 1]!] === OP_GAPGATE ? code[ip + 1]! : -1
+        let gapCode = (_rb: string): string => ''
+        if (gapIp >= 0) {
+          const row = code[gapIp + 2]!
+          const rx = k[code[row + 1]!]
+          const shape = gapRegexLowers(rx) ? scanShapeFromRegex((rx as RegExp).source, (rx as RegExp).flags) : null
+          const cls = (idx: number): string => {
+            const resolved = t.cc[idx]!
+            const ci = classes.push([resolved]) - 1
+            classPlan.push([idx])
+            const ref = hoist('gc', `CLS[${ci}][0]`)
+            return isAsciiOnlyClass(resolved) ? `${ref}.ascii[input.charCodeAt(${'@'})]!==1` : `!classHas(${ref},lead(input,${'@'}))`
+          }
+          const follow = cls(code[gapIp + 3]!).replaceAll('@', 'gq')
+          const other = code[gapIp + 4]! >= 0 ? cls(code[gapIp + 4]!).replaceAll('@', 'itemStart') : 'true'
+          if (shape !== null) {
+            // Scanned inline, as the row scans it: no slot to fill or read.
+            let n = 0
+            const q = tmp()
+            const m = emitShapeMatch(shape, 'itemStart', (prefix = '_v') => `${q}${prefix}${n++}`, '')
+            gapCode = (rbCode: string): string => `let gapped=false
+if(ctx._probe===undefined){
+${m.setup.join('\n')}
+const gq=${m.ok}?${m.end}:-1
+if((gq<0||${follow})&&${other}){
+${rbCode}
+break
+}
+}
+`
+          } else {
+            const re = hoist('gr', `K[${code[row + 1]!}]`)
+            gapCode = (rbCode: string): string => `let gapped=false
+if(ctx._probe===undefined){
+${re}.lastIndex=itemStart
+const gq=${re}.test(input)?${re}.lastIndex:-1
+if((gq<0||${follow})&&${other}){
+${rbCode}
+break
+}
+if(gq>=0){
+GAP.row=${row};GAP.at=itemStart;GAP.end=gq;GAP.input=input
+gapped=true
+}
+}
+`
+          }
+        }
+        const sepMiss = (at: string): string => sepAscii
+          ? `${sepCls}.ascii[input.charCodeAt(${at})]!==1`
+          : `!classHas(${sepCls},lead(input,${at}))`
         const skipBeforeFirst = sepIp < 0 && min === 0
         const p = tmp()
         // `viaRepItem` is `sep === undefined && count >= min && (count > 0 ||
@@ -2387,7 +2534,7 @@ ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
         // is taken unconditionally by the closure engine (`assemble.ts:2067`), so
         // it is resolved separately from `itemFx` — reusing that one would hand
         // `EMPTY_FX` to every recovered error in a grammar that does not report.
-        const recFx = REC ? fxRef(code[ip + 6]!) : ''
+        const recFx = !REC ? '' : (flags & 16) !== 0 ? '[]' : fxRef(code[ip + 6]!)
         const sepSent = REC ? sentRef(code[ip + 7]!) : 'undefined'
         const recSent = sep === undefined
           ? my
@@ -2405,7 +2552,7 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
 ${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
@@ -2415,7 +2562,11 @@ let sepEnd=-1
 ${sep !== undefined ? `if(count>0){
 const lb=cstLeavesLen(ctx)
 let sp=cur
-${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}ctx._fc=false
+${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}${sepCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${sepMiss('sp')}){
+${rb}
+break
+}
+`}ctx._fc=false
 ${sepIp >= 0 && leadingTriviaFieldAt(code, k, sepIp) ? 'LEAD.at=cur\n' : ''}const sv=${sep}(input,sp,ctx)
 if(sv===FAIL){
 ${rb}
@@ -2430,13 +2581,13 @@ itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(inp
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-${itemCls === undefined ? '' : `if(count>=${min}&&${p}gate&&${itemMiss('itemStart')}){
+${itemCls === undefined || (sep === undefined && hasTrivia === 'false') ? '' : `if(count>=${min}&&${p}gate&&${sep === undefined && hasTrivia === 'hasTrivia' ? 'hasTrivia&&' : ''}${itemMiss('itemStart')}){
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-`}ctx._fc=false
+`}${gapCode(rb)}ctx._fc=false
 const v=${child}(input,itemStart,ctx)
-if(v===FAIL){
+${gapIp >= 0 ? 'if(gapped)GAP.at=-1\n' : ''}if(v===FAIL){
 ${REC
   // THE ROLLBACK MOVES INSIDE THE ARMS. The strict loop rolls back
   // unconditionally before testing `_fc`, which is sound because every path out

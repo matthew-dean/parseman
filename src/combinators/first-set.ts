@@ -1,5 +1,6 @@
 import type { CharRange, FirstSet, Combinator, ParserDef } from '../types.ts'
 import { implicitLeadsDropped, leadRanges } from '../lead-ranges.ts'
+import { triviaThroughRef } from './trivia-boundary.ts'
 
 /**
  * Resolve a NAMED cross-artifact rule reference (`g.Foo`) whose own thunk does not
@@ -27,6 +28,13 @@ export function classifyFinalChoice(
   arms: readonly Combinator<unknown>[],
   resolve?: RefResolver,
   activeTrivia?: Combinator<unknown> | null,
+  consuming = true,
+  /**
+   * Read each arm's construction-time `_meta.firstSet`, the set a disjoint
+   * interpreter `choice()` dispatches on (`choice.ts`), instead of deriving it:
+   * the table then lets in exactly the arms the interpreter lets in.
+   */
+  constructionSets = false,
 ): FinalChoiceClassification {
   const firstSets: FirstSet[] = []
   const nullable: boolean[] = []
@@ -38,7 +46,7 @@ export function classifyFinalChoice(
   for (const arm of arms) {
     const empty = matchesEmpty(arm, new Set(), resolve)
     nullable.push(empty)
-    firstSets.push(empty ? { kind: 'any' } : firstSetOf(arm, new Set(), resolve, activeTrivia))
+    firstSets.push(empty ? { kind: 'any' } : constructionSets ? arm._meta.firstSet : firstSetOf(arm, new Set(), resolve, activeTrivia, consuming))
     if (empty) exclusive = false
   }
   if (exclusive) {
@@ -73,7 +81,7 @@ export function classifyFinalChoice(
  * does not. `undefined` → no winner; fall back to the thunk. Monolithic: the winner IS
  * the thunk's target, a no-op. A winner that recurses back to `p` (recursive or
  * self-alias rule) is caught by the shared `seen` guard → `any`, a sound over-approx. */
-function winnerForRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
+export function winnerForRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
   if (resolve === undefined) return undefined
   const name = (p as unknown as { _ruleName?: string })._ruleName
   const w = name === undefined ? undefined : resolve(name)
@@ -316,6 +324,7 @@ function sequenceSet(
   fs: (p: Combinator<unknown>) => FirstSet,
   empties: (p: Combinator<unknown>) => boolean,
   trivia?: Combinator<unknown> | null,
+  consuming = true,
 ): FirstSet {
   const afterBoundary = (i: number): FirstSet => {
     const rest = at(i)
@@ -334,13 +343,23 @@ function sequenceSet(
     }
     const first = fs(p)
     if (!empties(p) || i + 1 === parsers.length) return first
-    return union(first, afterBoundary(i + 1))
+    // A nullable regex reports `any` as its own set (it may match empty
+    // anywhere); here the empty match is the union with the rest, so only its
+    // non-empty matches' first chars are its own contribution.
+    return union((consuming ? p._meta.consumingFirstSet : undefined) ?? first, afterBoundary(i + 1))
   }
   return at(0)
 }
 
+/**
+ * A sequence's construction-time first set, which the interpreter's `choice()`
+ * dispatches on. Trivia is unknown here, and a choice may run where leading
+ * trivia has not been skipped, so a nullable regex stands as `any` (`consuming`
+ * false): read through its non-empty matches, `choice(sequence(pad, '*'), 'x')`
+ * would not enter the pad arm at a comment before `*`.
+ */
 export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
-  return sequenceSet(parsers, p => p._meta.firstSet, matchesEmpty)
+  return sequenceSet(parsers, p => p._meta.firstSet, matchesEmpty, undefined, false)
 }
 
 /**
@@ -356,6 +375,17 @@ export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): First
  * referenced rule can be replaced with a WIDER first-set, so a baked deep set
  * would wrongly skip valid input — the compose path defers dispatch to fuse time.
  *
+ * `consuming: false` reads a nullable regex as `any`, as first sets read before
+ * 0.60.0. Recovery derives its resync sentinels so (`sequence.ts`
+ * `followSentinels`, the table's follow and separator classes, with no trivia),
+ * as do a construction-time sequence set and a table choice's classes. Only a
+ * repeat item's, a gap's and a node's gate read a pad through its non-empty
+ * matches.
+ *
+ * `activeTrivia` is the live trivia, `null` for a scope known to have none (where
+ * a reference installs its rule's trivia, `triviaThroughRef`), and `undefined`
+ * where it is not known.
+ *
  * `resolve` binds NAMED cross-artifact holes (`g.Foo`) against a fused winner map —
  * see `RefResolver`. Diagnostic-only today: it is what lets the gating analysis ask
  * the question at the site where the hole actually HAS an answer.
@@ -365,6 +395,7 @@ export function firstSetOf(
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
   activeTrivia?: Combinator<unknown> | null,
+  consuming = true,
 ): FirstSet {
   // `seen` is the current recursion path, not a global visited set. A completed
   // shared child must be analysed again for a sibling; only a back-edge on this
@@ -372,7 +403,7 @@ export function firstSetOf(
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
   try {
-    return firstSetBody(p, seen, resolve, activeTrivia)
+    return firstSetBody(p, seen, resolve, activeTrivia, consuming)
   } finally {
     seen.delete(p)
   }
@@ -383,8 +414,9 @@ function firstSetBody(
   seen: Set<Combinator<unknown>>,
   resolve: RefResolver | undefined,
   activeTrivia: Combinator<unknown> | null | undefined,
+  consuming: boolean,
 ): FirstSet {
-  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve, activeTrivia)
+  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve, activeTrivia, consuming)
   const empties = (c: Combinator<unknown>): boolean => matchesEmpty(c, new Set(), resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
@@ -393,10 +425,19 @@ function firstSetBody(
     case 'keywords':  return p._meta.firstSet  // terminals: no refs, cached set is exact
     case 'dispatch':  return fs(d.selector)
     case 'lazy': {
-      const w = winnerForRef(p, resolve)
-      if (w !== undefined) return fs(w)
-      try { return fs(d.thunk()) }
-      catch { return any() }
+      let target = winnerForRef(p, resolve)
+      if (target === undefined) {
+        try { target = d.thunk() }
+        catch { return any() }
+      }
+      // Under a scope KNOWN to have no trivia (`null`), the target runs under the
+      // trivia the reference installs for it (`triviaThroughRef`). `undefined`
+      // says nothing about the scope, and the target is read as it stands. Only
+      // the table encoder (which always passes `resolve`) reads through the
+      // install; the interpreter's own callers (`sequence.ts` follow sentinels)
+      // read a reference as 0.58.0 did (#223).
+      const through = activeTrivia === null && resolve !== undefined
+      return firstSetOf(target, seen, resolve, through ? triviaThroughRef(p, target, null) : activeTrivia, consuming)
     }
     case 'choice': {
       let out: FirstSet = empty()
@@ -414,7 +455,7 @@ function firstSetBody(
       // Recurse at every term boundary because a lookahead after another
       // zero-width term runs after trivia has advanced, not at the sequence's
       // original cursor.
-      return sequenceSet(d.parsers, fs, empties, activeTrivia)
+      return sequenceSet(d.parsers, fs, empties, activeTrivia, consuming)
     }
     case 'peek': {
       // Deep-resolve the body: a `ref()` reads `any()` at CONSTRUCTION, so the
@@ -428,7 +469,6 @@ function firstSetBody(
     case 'transform':
     case 'label':
     case 'trivia':
-    case 'token':
     case 'leaf':
     case 'node':
     case 'sepBy':
@@ -437,11 +477,14 @@ function firstSetBody(
     // the inner's construction-time set, which reads `any` when the inner opens
     // with a rule reference — resolve through it like any other wrapper.
     case 'attempt':   return fs(d.parser)
+    // A token runs its body with trivia cleared (`token.ts`).
+    case 'token':     return firstSetOf(d.parser, seen, resolve, activeTrivia === undefined ? undefined : null, consuming)
     case 'grammar':   return firstSetOf(
       d.parser,
       seen,
       resolve,
       d.clearTrivia ? null : (d.triviaParser ?? activeTrivia),
+      consuming,
     )
     // A run starts with its first line's prefix; a nullable prefix starts with anything.
     case 'lines': {

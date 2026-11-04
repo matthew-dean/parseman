@@ -18,9 +18,9 @@
  * them.
  */
 
-/** `LIT k` — `k` indexes a string in the const pool. */
+/** `LIT k fx` — `k` indexes a string in the const pool; `fx` the expected set on failure. */
 export const OP_LIT = 1
-/** `RX k` — `k` indexes a STICKY `RegExp` in the const pool. */
+/** `RX k fx` — `k` indexes a STICKY `RegExp` in the const pool; `fx` as `LIT`. */
 export const OP_RX = 2
 /** `SEQ n c1 … cn` — n child offsets; value is the array of their values. */
 export const OP_SEQ = 3
@@ -38,11 +38,15 @@ export const OP_SEQV = 4
  */
 export const OP_CHOICE = 5
 /**
- * `REP c min max sep flags fx sepClass` — `sep` is a child offset or −1; `max`
- * −1 = ∞. `fx` is recovery metadata. The last class is the separator sentinel
- * for a separated list, otherwise the finite/non-nullable optional-item class
- * (or −1). `flags` bit 0 = trailing separator allowed, bit 1 =
- * `keepSeparators`, bit 2 = item expected reporting.
+ * `REP c min max sep flags fx sepClass [sepGate]` — EIGHT words, or NINE with
+ * flag bit 3. `sep` is a child offset or −1; `max` −1 = ∞. `fx` is the item's
+ * expected set. `sepClass` is the separator sentinel for a separated list,
+ * otherwise the finite/non-nullable optional-item class (or −1). `flags`: bit 0
+ * (`&1`) trailing separator allowed; bit 1 (`&2`) `keepSeparators`; bit 2 (`&4`)
+ * item expected reporting; bit 3 (`&8`) a ninth word at `ip + 8`, the class of
+ * characters the separator can start, so a strict list past its minimum ends
+ * where it cannot (`sepGate`); bit 4 (`&16`) the item's derived set is empty, so
+ * `fx` holds the item's tag for the minimum check and a resync error carries [].
  */
 export const OP_REP = 6
 /** `REPV …` — `REP` with `valueUnused`. */
@@ -70,28 +74,19 @@ export const OP_XFORM = 9
  * from the reducer's declared arity by the same analysis codegen runs, and
  * forced on under `hostMode: 'cst'`. The driver reads the bits and re-derives
  * nothing.
- *
- * TWO ENCODERS SHARE THIS OPCODE and they do NOT agree on its length. The layout
- * above is `encode.ts` / `exec.ts`. `encode-baseline.ts` / `exec-baseline.ts` emit
- * the FOUR-word form `NODE b c flags` with bits 2 and 3 only, and refuse
- * `collapse` / `unwrap` / `project` outright. Neither driver walks the stream by
- * instruction length, so the divergence is contained — but read the pair you are
- * in, not this comment alone. */
+ */
 export const OP_NODE = 10
 /** `RULE r` — `r` indexes `prog.rules`. */
 export const OP_RULE = 11
-/** `GATE cc c` — first-char gate: `cc` indexes a char class; then run `c`. */
+/** `GATE cc c fx` — first-char gate: `cc` indexes a char class; then run `c`. `fx` is the set reported when the gate rejects. */
 export const OP_GATE = 12
-/** `NOT c` — zero-width negative lookahead. */
+/** `NOT c fx` — zero-width negative lookahead; `fx` is the assertion's own set, as `PEEK`. */
 export const OP_NOT = 13
 /**
  * `PEEK c fx` — zero-width positive lookahead. `fx` is the ASSERTION's own set,
  * `['peek(<child tag>)']`, because `peek.ts:60` DISCARDS the body's expectation:
  * a lookahead's failure is "the guard did not hold", not a request for whatever
  * token the body happened to stop on.
- *
- * `encode-baseline.ts` / `exec-baseline.ts` emit and read the two-word form and
- * are internally consistent; read the pair you are in.
  */
 export const OP_PEEK = 14
 /** `LEAF f c` — `leaf()`: reduce, then record as a spanned leaf. */
@@ -201,10 +196,10 @@ export const OP_LIT_CI_TRACK = 28
  */
 export const OP_TOKEN = 29
 /**
- * `SCOPE_CAP k c` — a `parser({ trivia, captureTrivia: true })` scope. Identical
+ * `SCOPE_CAP k c policy` — a `parser({ trivia, captureTrivia: true })` scope. Identical
  * operands to `SCOPE`; it additionally sets `ctx.captureTrivia` for the child.
  *
- * A SEPARATE OPCODE rather than a third operand on `SCOPE`, for two reasons.
+ * A SEPARATE OPCODE rather than another operand on `SCOPE`, for two reasons.
  * Widening an instruction means every walker that knows its shape has to learn
  * the new one, and there is no central arity table here to change in one place.
  * And the driver should SELECT this piece, not test a flag inside the scope
@@ -487,10 +482,34 @@ export const OP_SOURCE_LEAF = 44
  */
 export const OP_RGATE = 45
 /**
+ * `GAPGATE c p cls other` — an optional repeat ITEM that opens with a gap: the
+ * pure regex row `p`, which may match empty, and then a term whose first set is
+ * the class `cls` (`other`: the class of any choice arm that does not open with
+ * `p`, or −1). `c` is the item. The row is TRANSPARENT wherever it runs: only
+ * the repeat that holds it reads its operands (`gap-gate.ts`).
+ */
+export const OP_GAPGATE = 46
+/**
+ * `RGATE2 cls child fx first second` — `OP_RGATE` with a SECOND character: where
+ * the character after the routed token is in `first`, the one after it must be
+ * in `second` too (the next term reads both, `regexFirstTwo`), or the arm fails
+ * there with `fx`, as entering it would.
+ */
+export const OP_RGATE2 = 47
+/**
+ * `STRICT strict tolerant` — one construct encoded two ways: `strict` for a
+ * strict parse, `tolerant` for tolerant recovery and a completions probe, which
+ * must see the construct as written (`factor-choice.ts` `factorPrefixArms`). An
+ * assembly resolves it to one child; it has no body of its own.
+ */
+export const OP_STRICT = 48
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
- * `other` is the `otherwise()` offset (or −1), `otherRouted` is 1 when the
+ * `other` is the `otherwise()` offset (or −1), `otherRouted` bit 1 (`&2`) is set
+ * when the fallback's failure is NOT committed (`otherwise(p, { commit: false })`)
+ * and bit 0 when the
  * fallback consumes the routed token, and `a1…an` are the arm offsets. Arm
  * `usesRouted` bits live in the `dsp` entry beside the key maps.
  *
@@ -520,4 +539,7 @@ export const OP_NAMES: Record<number, string> = {
   [OP_SCOPE_PLAIN]: 'SCOPE_PLAIN',
   [OP_LEX_BODY]: 'LEX_BODY',
   [OP_LEX_PROGRAM]: 'LEX_PROGRAM',
+  [OP_GAPGATE]: 'GAPGATE',
+  [OP_RGATE2]: 'RGATE2',
+  [OP_STRICT]: 'STRICT',
 }
