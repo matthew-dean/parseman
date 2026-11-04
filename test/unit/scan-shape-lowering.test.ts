@@ -15,7 +15,7 @@
  * grammar over its own 50–65 KB corpus — is `bench/scan-shape-oracle.ts`. This
  * file is its CI-sized twin, plus the recognition pins.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { emitShapeMatch, scanShapeFromRegex, SPACE_RANGES, parseScanShape } from '../../src/table/scan-shapes.ts'
 
 /** Compile a shape's emitted match: `end` on a match, −1 on none. */
@@ -165,4 +165,21 @@ describe('scanShapeFromRegex — the emitted scan is the regex, position for pos
       agreesEverywhere(source, flags, CORPUS)
     })
   }
+})
+
+describe('scan-shape emission runs without a `process` global', () => {
+  // `compile()` emits assemblies at run time, so this code runs in browsers. An
+  // env toggle once read `process.env` here unguarded and threw there.
+  it.each([
+    ['#[^\\n]*', 'until'],
+    ['/\\*(?:[^*]|\\*(?!/))*\\*/', 'delimited'],
+  ])('/%s/ (%s)', (source, kind) => {
+    expect(scanShapeFromRegex(source, '')?.kind).toBe(kind)
+    vi.stubGlobal('process', undefined)
+    try {
+      expect(probeOf(source, '')).not.toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

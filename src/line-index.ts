@@ -1,4 +1,5 @@
 import type { Span } from './types.ts'
+import { PlainLineSpan, PlainSpan } from './cst/plain.js'
 
 /**
  * Precomputed index of newline positions for O(log n) offset->line/col lookup.
@@ -96,6 +97,42 @@ export function annotateSpan(span: Span, index: LineIndex): Span {
     endLine: e.line,
     endColumn: e.col,
   }
+}
+
+const SPAN_KEYS = ['start', 'end', 'startLine', 'startColumn', 'endLine', 'endColumn'] as const
+
+/**
+ * A copy of a span, exactly as given: the same keys in the same order. The two shapes
+ * parseman builds itself, `{ start, end }` and the six-key line span, are rebuilt by their
+ * constructors (`src/cst/plain.d.ts`); any other shape a caller passes (an extra key, a
+ * different order, a partial line span) is spread, as before.
+ */
+export function copySpan(span: Span): Span {
+  // `for…in` walks the keys in order without allocating a key list.
+  let n = 0
+  for (const key in span) {
+    if (key !== SPAN_KEYS[n]) return { ...span }
+    n++
+  }
+  if (n === 2) return new PlainSpan(span.start, span.end)
+  if (n === 6 && span.startLine !== undefined && span.startColumn !== undefined && span.endLine !== undefined && span.endColumn !== undefined) {
+    return new PlainLineSpan(span.start, span.end, span.startLine, span.startColumn, span.endLine, span.endColumn)
+  }
+  return { ...span }
+}
+
+/**
+ * `annotateSpanFromLineContext` for a span parseman built itself (`{ start, end }` only),
+ * returning a constructor-built line span (`src/cst/plain.d.ts`). The public form keeps
+ * any extra keys a caller's span carries, so it spreads.
+ */
+export function lineSpanFromContext(span: Span, ctx: LineTrackingContext): Span {
+  if (!ctx.trackLines) return span
+  const index = ctx._lineIndex ?? (ctx._lineStarts ? { lineStarts: ctx._lineStarts } : undefined)
+  if (!index) return span
+  const s = offsetToLineCol(index, span.start)
+  const e = offsetToLineCol(index, span.end)
+  return new PlainLineSpan(span.start, span.end, s.line, s.col, e.line, e.col)
 }
 
 export function annotateSpanFromLineContext(

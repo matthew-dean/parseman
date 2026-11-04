@@ -707,7 +707,7 @@ them is a prediction about this design.
 §8.1 says where the bytes are. This says **what they are protecting**, which is the
 question that decides whether a token cursor deletes them or merely renames them.
 
-`bench/size/rollback-attribution.ts` attributes every mark and every guarded restore
+`bench/size/rollback-attribution.ts` (last at `4a5d0341`) attributes every mark and every guarded restore
 in a built artifact to the `codegen.ts` site that emitted it. Attribution is by
 **mark-variable prefix**: `v(ctx, prefix)` gives each emission site a unique prefix,
 so the mapping is exact rather than pattern-guessed. Run against the shipped
@@ -916,8 +916,9 @@ decision-point measurement predicts an end-to-end one.
 Token-keyed dispatch is **implemented and shipped as the default**, landed on
 `release/0.46.0` as **`caa3d14`** (`feat(codegen): token-keyed dispatch via a data
 trie`) and **`e8612eb`** (`fix(dispatch): fold ASCII letters only, and pick the id
-strategy by measurement`). Strategies are selectable via the **`PARSEMAN_DISPATCH`**
-environment variable.
+strategy by measurement`). Strategies were selectable via a `PARSEMAN_DISPATCH`
+environment variable; the strategies and the variable were removed with the source
+lowering, and last existed at `4a5d0341`.
 
 **Methodology** (this matters — see §16.4): measured on the **shipped artifact**, trees
 **diffed equal** against a toggled baseline, **medians of 31 interleaved rounds in one
@@ -1117,7 +1118,7 @@ Method: the shipped artifact is rewritten so **every** `charCodeAt`, `codePointA
 rewritten artifact is **gated on producing a tree identical to the shipped one**
 before a single count is reported (§16.3). The recorded work is then **replayed on
 its own**, in the same process as the real parse. Instruments and reproduction:
-`scratchpad/token-cursor/`.
+`notes/history/scratchpad/token-cursor/`.
 
 #### The census — exact counts, no sampling
 
@@ -1534,7 +1535,7 @@ bytes and parse time on the hot benchmarks (which should be unaffected by
 construction — verify that).
 
 *Historical status correction.* A reference-bytecode table prototype was measured
-and is written up in `notes/TABLE-DRIVER.md`. The table/assembly direction now
+and is written up in `notes/history/TABLE-DRIVER.md`. The table/assembly direction now
 ships as the closure-based TableProgram assembler; the old bytecode prototype is
 not the shipping driver. Its own benches measured **113 B/rule marginal against
 source codegen's 4,932 B (43.7×)** and **~2.65× source codegen's parse time** after

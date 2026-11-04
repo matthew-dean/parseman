@@ -9,6 +9,8 @@
  * amount of trivia — a reference side that quietly stopped capturing would
  * otherwise look fast for the wrong reason.
  */
+import { TreeNode } from '../grammar-density/tree-node.js'
+
 export type WorkloadNode = {
   type: string
   span: { start: number; end: number }
@@ -24,11 +26,5 @@ export function mk(
   span: { start: number; end: number },
   triviaLog: readonly number[],
 ): WorkloadNode {
-  return {
-    type,
-    span: { start: span.start, end: span.end },
-    children: [...children],
-    rawCount: rawChildren.length,
-    triviaLen: triviaLog.length,
-  }
+  return new TreeNode(type, span.start, span.end, [...children], rawChildren.length, triviaLog.length)
 }

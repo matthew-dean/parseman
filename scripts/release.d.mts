@@ -46,6 +46,8 @@ export declare function decide(input: {
 }): Decision
 
 export declare function sectionEntries(changelog: string, version: string): string[] | null
+export declare function staleEntries(changelog: string, version: string, tagged: string): string[]
+export declare function staleDeclaration(version: string, stale: readonly string[]): string
 
 export declare const NON_CONSUMER_FIELDS: readonly string[]
 export declare const CONSUMER_LIFECYCLE_SCRIPTS: readonly string[]
@@ -56,10 +58,11 @@ export declare function shippedPaths(pkg: Record<string, unknown>, paths: readon
 export declare const UNRELEASED: 'Unreleased'
 export declare function headingVersion(heading: string): string | null
 export declare function entries(lines: readonly string[]): string[]
+export declare function withoutEach<T>(list: readonly T[], remove: readonly T[]): T[]
 export declare function pendingEntries(changelog: string, published: string | null): string[]
 export declare function stampChangelog(
   changelog: string,
-  options: { version?: string; date?: string; released?: string },
+  options: { version?: string; date?: string; released?: string; source?: string },
 ): string
 export declare function applyVersion(root: string, version: string): void
 export declare function supersedingRelease(root?: string): string | null

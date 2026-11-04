@@ -77,12 +77,12 @@ function precompiled(
   const source = mutate(em.source)
   const compiled = new Function(...EMITTED_PARAMS, source) as PrecompiledAssembly['factory']
   let calls = 0
-  const factory = ((...args: Parameters<PrecompiledAssembly['factory']>) => {
+  const factory = (((...args: Parameters<PrecompiledAssembly['factory']>) => {
     calls++
     return compiled(...args)
-  }) as PrecompiledAssembly['factory']
+  }) as PrecompiledAssembly['factory'])
   return {
-    prog: { ...prog, asm: [{ key: 0, factory, plan: em.plan, reached: [...em.reached] }] },
+    prog: { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }] },
     calls: () => calls,
   }
 }
@@ -91,7 +91,7 @@ function expectSpecial(prog: TableProgram): void {
   const ip = nodeIp(prog)
   expect(scalarTerminalNodeChild(prog.code, ip)).toBe(prog.code[ip + 2])
   const source = emitAssemblySource(resolveTable(prog), prog, STRICT, [], true).source
-  expect(source).toContain('const kids=[leaf],rawKids=[leaf],span={start:pos,end}')
+  expect(source).toContain('const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)')
   expect(source).toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
   expect(emitAssemblySource(resolveTable(prog), prog, STRICT).source)
     .not.toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
@@ -154,7 +154,7 @@ describe('direct terminal-node scalar materialization', () => {
       { ...STRICT, trackLines: true },
     ]) {
       const source = emitAssemblySource(resolveTable(eligible), eligible, cfg).source
-      expect(source).not.toContain('const kids=[leaf],rawKids=[leaf],span={start:pos,end}')
+      expect(source).not.toContain('const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)')
     }
 
     // Coverage emission is deliberately refused, so its cfg-dependent bypass
@@ -252,8 +252,8 @@ describe('direct terminal-node scalar materialization', () => {
     const prog = program(original)
     const planted = precompiled(prog, source => {
       const bad = source.replace(
-        'const kids=[leaf],rawKids=[leaf],span={start:pos,end}',
-        'const kids=[leaf],rawKids=[],span={start:pos,end}',
+        'const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)',
+        'const kids=[leaf],rawKids=[],span=new _SP(pos,end)',
       )
       expect(bad).not.toBe(source)
       return bad

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
-import { execRulesBaseline } from '../../src/table/exec-baseline.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { defaultAssemblyCfgs, emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram, reachableOps } from '../../src/table/inspect.ts'
@@ -376,8 +375,8 @@ describe('table driver — contract with the table itself', () => {
    * ...and it succeeds at zero width in EVERY engine, with the same value.
    *
    * The test above ran `execRules` only, and that is precisely how the divergence
-   * survived: `emit-assembly.ts` returned `null` for OP_EMPTY where `exec.ts`,
-   * `exec-baseline.ts` and `assemble.ts` all returned `''`. The three-way identity
+   * survived: `emit-assembly.ts` returned `null` for OP_EMPTY where `exec.ts` and
+   * `assemble.ts` both returned `''`. The three-way identity
    * sweep compares engines on grammars built from the combinator API, and no
    * combinator lowers to OP_EMPTY — the opcode is emitted only as `finish()` padding
    * when the rule map is EMPTY (encode.ts), and an empty rule map gives the emitter
@@ -387,20 +386,19 @@ describe('table driver — contract with the table itself', () => {
    * producer, and no roots. An `epsilon()` combinator, or an optimizer collapsing a
    * zero-width construct, makes the divergence live with no build-time signal. This
    * test removes the dependence on that accident — it reaches the row as DATA, which
-   * is the stated contract of this whole describe block, and pins all four engines
-   * to one answer.
+   * is the stated contract of this whole describe block, and pins the engines to
+   * one answer.
    */
-  it('OP_EMPTY yields the SAME value in all four engines', () => {
+  it('OP_EMPTY yields the SAME value in every engine', () => {
     const p = prog([OP_EMPTY], { Doc: 0 })
     const engines: Array<[string, Record<string, TableRule>]> = [
       ['exec', execRules(p)],
-      ['exec-baseline', execRulesBaseline(p)],
       ['assembled', tableRules(p)],
     ]
     for (const [name, rulesOf] of engines) {
       const r = run(rulesOf.Doc! as never, 'abc')
       expect(r.ok, name).toBe(true)
-      // `null` here is the emitted engine disagreeing with the other three.
+      // `null` here is the emitted engine disagreeing with the others.
       expect(r.value, name).toBe('')
       expect(r.span, name).toEqual({ start: 0, end: 0 })
     }
@@ -482,7 +480,7 @@ describe('table driver — dispatch fallback ownership', () => {
  *
  * `OP_NAMES` is written by hand beside 30 `OP_*` constants, and `opHistogram`
  * is the only thing that reads it — so a missing entry surfaces as `undefined`
- * in a diagnostic (`bench/table-opcode-gaps.ts:74`) or as `op29` from
+ * in a diagnostic (the one-off `table-opcode-gaps` bench) or as `op29` from
  * `inspect.ts:81`, never as a failure. `OP_TOKEN` was missing exactly that way.
  *
  * Asserted over the MODULE's exports rather than a written-out list, so a new

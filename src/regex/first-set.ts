@@ -32,7 +32,7 @@ import { shorthandRanges, parseClassRanges, readUnicodeEscape } from './classes.
 type Node =
   | { t: 'char'; set: FirstSet; nl: boolean } // matches exactly one char from `set`
   | { t: 'any' }                              // unknown 1-char-ish construct: could start with anything
-  | { t: 'empty' }                            // zero-width: anchors, lookaround, word boundary
+  | { t: 'empty'; look?: Node }               // zero-width: anchors, lookaround, word boundary (`look`: a positive lookahead's body)
   | { t: 'seq'; parts: Node[] }
   | { t: 'alt'; arms: Node[] }
   | { t: 'rep'; node: Node; min: number }     // quantified; min 0 ⇒ nullable
@@ -142,10 +142,11 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
     i++ // consume '('
     // Group prefixes: (?:…) (?=…) (?!…) (?<=…) (?<!…) (?<name>…)
     let lookaround = false
+    let lookahead = false
     if (src[i] === '?') {
       const c1 = src[i + 1]
       if (c1 === ':') i += 2
-      else if (c1 === '=' || c1 === '!') { i += 2; lookaround = true }
+      else if (c1 === '=' || c1 === '!') { lookahead = c1 === '='; i += 2; lookaround = true }
       else if (c1 === '<') {
         const c2 = src[i + 2]
         if (c2 === '=' || c2 === '!') { i += 3; lookaround = true } // lookbehind
@@ -159,7 +160,10 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
     const inner = parseAlt()
     if (src[i] !== ')') throw BAIL
     i++ // consume ')'
-    return lookaround ? EMPTY : inner // lookaround is zero-width
+    // Lookaround is zero-width. A positive LOOKAHEAD keeps its body for
+    // `regexFirstTwo`; every other walker reads it as `EMPTY`.
+    if (lookaround) return lookahead ? { t: 'empty', look: inner } : EMPTY
+    return inner
   }
 
   const parseClass = (): Node => {
@@ -349,6 +353,17 @@ export function regexCanMatchEmpty(source: string): boolean {
 }
 
 /**
+ * The first chars of a NON-EMPTY match of `source`, nullable or not: the set
+ * `firstSetFromRegex` reports for a pattern that must consume, without its
+ * widening of a nullable one to `any()`. Only a caller that accounts for the
+ * empty match itself may use it (`sequenceSet`). `any()` when unparseable.
+ * `flags` reads atoms as `firstSetFromRegex` does.
+ */
+export function consumingFirstSetFromRegex(source: string, flags = ''): FirstSet {
+  try { return firstSet(parseRegex(source, flags.includes('u') || flags.includes('v'), flags.includes('v'))) } catch { return any() }
+}
+
+/**
  * `flags` decides how atoms read: under `u`/`v` each is one code point, else one
  * code unit, so a non-`u` set holds a high surrogate where an astral character
  * can start a match (`rangesHaveLead` reads an astral lead through it). Case
@@ -369,3 +384,22 @@ export function firstSetFromRegex(source: string, flags = ''): { firstSet: First
   return { firstSet: firstSet(ast), canMatchNewline: canConsumeNewline(ast) }
 }
 
+/**
+ * The first TWO characters every match of `source` begins with, where the
+ * pattern says them outright: a one-character class and then another, or a
+ * positive lookahead over one (`:(?=[ \t])`). `undefined` otherwise. Every
+ * match that starts with a character of `first` has a second character, and it
+ * is in `second`. `flags` reads atoms as `firstSetFromRegex` does.
+ */
+export function regexFirstTwo(source: string, flags = ''): { first: FirstSet; second: FirstSet } | undefined {
+  let ast: Node
+  try { ast = parseRegex(source, flags.includes('u') || flags.includes('v'), flags.includes('v')) } catch { return undefined }
+  const parts = ast.t === 'seq' ? ast.parts : [ast]
+  const a = parts[0]
+  const b = parts[1]
+  if (a === undefined || a.t !== 'char' || a.set.kind !== 'ranges' || b === undefined) return undefined
+  const second = b.t === 'char'
+    ? b.set
+    : b.t === 'empty' && b.look !== undefined && !nullable(b.look) ? firstSet(b.look) : undefined
+  return second !== undefined && second.kind === 'ranges' ? { first: a.set, second } : undefined
+}

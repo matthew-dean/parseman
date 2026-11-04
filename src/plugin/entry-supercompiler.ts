@@ -1,5 +1,6 @@
 /**
- * Experimental build-time Entry/SCC supercompiler for static table assemblies.
+ * Build-time Entry/SCC supercompiler for the selective assemblies a macro build
+ * emits (it runs on every macro build that selects sites).
  *
  * The table emitter remains the sole semantic backend.  This pass parses that
  * backend's ordinary JavaScript and joins uniquely-owned piece functions with
@@ -12,6 +13,7 @@ import { OP_ATTEMPT, OP_NODE, OP_NODE_TRACK, OP_REPV, OP_SCAN } from '../table/o
 import { emitAssemblySource, type EmitResult } from '../table/emit-assembly.ts'
 import { defaultAssemblyCfgs } from '../table/emit.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../table/program.ts'
+import { FACTORY_ARITY_GUARD } from '../table/emit.ts'
 
 type Ast = { type: string; start?: number; end?: number; [key: string]: unknown }
 
@@ -271,8 +273,8 @@ export function supercompileRuleMapReplacement(
   if (typeof body.start !== 'number' || typeof body.end !== 'number') return replacement
   const start = body.start - prefix.length + 1
   const end = body.end - prefix.length - 1
-  if (replacement.slice(start, end) !== canonical.source + '\n') return replacement
-  const transformed = replacement.slice(0, start) + candidate.source + '\n' + replacement.slice(end)
+  if (replacement.slice(start, end) !== FACTORY_ARITY_GUARD + canonical.source + '\n') return replacement
+  const transformed = replacement.slice(0, start) + FACTORY_ARITY_GUARD + candidate.source + '\n' + replacement.slice(end)
   const checked = parseSync('parseman-entry-supercompile-replacement-result.js', prefix + transformed)
   return checked.errors.length === 0 ? transformed : replacement
 }

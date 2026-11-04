@@ -47,7 +47,7 @@ Three words that sound alike but play different roles:
 | `peek(c)` | **Positive** lookahead — succeeds (consuming nothing) when `c` matches, carrying its first-set. |
 | `node(c, build?, opts?)` / `node(type, c, build?, opts?)` | CST/AST rule: captures terminals + trivia. `opts.tags` declares visitor categories; inside `rules()`, the node type is inferred from the rule key. See [CST / AST nodes](./ast). |
 | `ref<T>()` | Low-level forward-declaration slot (prefer `rules()`). |
-| `gate(predicate)` | Zero-width ASSERT: succeeds only when `predicate(ctx.state)` is true. See [Context](./context). (`guard()` is a deprecated alias.) |
+| `gate(predicate)` | Zero-width ASSERT: succeeds only when `predicate(ctx.state)` is true. See [Context](./context). |
 | `withCtx(extra, c)` | Set the user context to `extra` — or, given a function, derive it from the outer context — for the duration of `c`. |
 | `expect(c, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Skips ambient trivia + `scanSkip` opaque units by default. |

@@ -91,11 +91,10 @@ const USE_ALLOW = !rootArg || process.argv.includes('--assert-allowlist')
  * different a year later.
  *
  *   BY-DESIGN  is a finished argument. The code is staying in this shape. The
- *              entry leaves only if the design changes — `src/table/
- *              exec-baseline.ts` is unimported BECAUSE it is a frozen control,
- *              and reference code deliberately retired from the product path
- *              while the measurement harness still reaches it is the same
- *              shape.
+ *              entry leaves only if the design changes — e.g. reference code
+ *              deliberately retired from the product path (`src/table/exec.ts`,
+ *              unimported by `src/` because it is the oracle the shipped engines
+ *              are compared with).
  *   DEBT       is an unfinished obligation. Something is owed, and the `ref`
  *              names who owes it.
  *

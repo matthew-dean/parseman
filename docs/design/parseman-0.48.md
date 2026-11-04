@@ -1,13 +1,15 @@
-# Parseman 0.48 architecture and release specification
+# Tokenized PEG and lexical bodies (the 0.48 specification)
 
-- **Status:** frozen release architecture; remaining performance work tracked internally
+- **Status:** written as the 0.48 release specification; still the design record for the
+  token and lexical-body layer, and revised as that work lands. For how the code as a
+  whole fits together, start at `docs/design/internals.md`.
 - **Release branch:** `release/0.48.0`
 - **Primary performance architecture:** tokenized PEG over the canonical compact
   `TableProgram`
 **Detailed evidence registers:**
 [`derived-tokenization.md`](./derived-tokenization.md),
-[`RELEASE-0.48-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/RELEASE-0.48-TARGET.md), and
-[`TABLE-PERF-EXPERIMENTS-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/notes/TABLE-PERF-EXPERIMENTS-0.48.md).
+[`RELEASE-0.48-TARGET.md`](https://github.com/matthew-dean/parseman/blob/main/notes/history/RELEASE-0.48-TARGET.md), and
+[`TABLE-PERF-EXPERIMENTS-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/notes/history/TABLE-PERF-EXPERIMENTS-0.48.md).
 The remaining performance work is tracked internally.
 
 This is the canonical, frozen 0.48 design. The linked documents retain the full
@@ -864,7 +866,7 @@ landing.
 ## 12. Authority and maintenance
 
 This file is frozen with the 0.48 release. Record its individual measurements and dispositions in
-[`TABLE-PERF-EXPERIMENTS-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/notes/TABLE-PERF-EXPERIMENTS-0.48.md). Preserve
+[`TABLE-PERF-EXPERIMENTS-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/notes/history/TABLE-PERF-EXPERIMENTS-0.48.md). Preserve
 long-form historical evidence in [`derived-tokenization.md`](./derived-tokenization.md)
 instead of copying its full experiment register here.
 

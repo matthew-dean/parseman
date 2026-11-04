@@ -60,7 +60,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { materialise, previousRelease, previousReleases, git, fail, sign, sameSource, summary } from './ab-harness.ts'
-import { aggregateSeed, caseVerdict, mergeShards, missingOperandFlags, nodeMajor, pinnedReferenceError, verdictModeArgErrors, type Shard, type VerdictSettings } from './xproc-stats.ts'
+import { aggregateSeed, caseVerdict, mergeShards, missingOperandFlags, nodeMajor, pinnedReferenceError, printReferenceArgErrors, verdictModeArgErrors, type Shard, type VerdictSettings } from './xproc-stats.ts'
 
 const GATE = 'xproc-gate'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -129,8 +129,15 @@ const SETTINGS: VerdictSettings = {
  */
 const PINNED = argValue('--reference')
 const VERDICT_MODE = SHARD_OUT !== null || AGGREGATE !== null
+const PRINT_REFERENCE = process.argv.includes('--print-reference')
+if (PRINT_REFERENCE) {
+  // It prints the TRUE previous release (or the committed peak), never one handed to it.
+  const refused = printReferenceArgErrors(process.argv.slice(2))
+  if (refused.length > 0) fail(GATE, `--print-reference resolves the reference itself; it refuses ${refused.join(', ')}.`)
+  if (VERDICT_MODE) fail(GATE, '--print-reference cannot be combined with --shard-out or --aggregate.')
+}
 if (VERDICT_MODE && PINNED === null) fail(GATE, '--shard-out and --aggregate need --reference=<sha>, resolved once per run (pnpm perf:xproc:gate --print-reference).')
-if (!VERDICT_MODE && PINNED !== null && !process.argv.includes('--print-reference')) fail(GATE, '--reference is for --shard-out and --aggregate; use --ref for a local run.')
+if (!VERDICT_MODE && PINNED !== null) fail(GATE, '--reference is for --shard-out and --aggregate; use --ref for a local run.')
 const REFERENCE = PEAK
   ? { tag: `peak ${PEAK_CONFIG.version}`, sha: PEAK_CONFIG.sha }
   : PINNED !== null ? pinnedRelease(PINNED)
@@ -141,7 +148,8 @@ if (PEAK && PINNED !== null && PINNED !== PEAK_CONFIG.sha) {
 
 function pinnedRelease(pinned: string): { tag: string; sha: string } {
   const releases = previousReleases(ROOT, GATE, 2)
-  const error = pinnedReferenceError(pinned, releases)
+  const headDate = Number(git(['log', '-1', '--format=%ct', 'HEAD'], ROOT).trim())
+  const error = pinnedReferenceError(pinned, releases, headDate)
   if (error !== null) fail(GATE, error)
   const hit = releases.find(r => r.sha.startsWith(pinned) || pinned.startsWith(r.sha))!
   if (hit !== releases[0]) console.log(`  ${releases[0]!.tag} was tagged during this run; this run measures against ${hit.tag}, the reference it started with.`)
@@ -150,7 +158,7 @@ function pinnedRelease(pinned: string): { tag: string; sha: string } {
 }
 
 /** `--print-reference`: resolve the reference once and hand it to the rest of the run. */
-if (process.argv.includes('--print-reference')) {
+if (PRINT_REFERENCE) {
   console.log(REFERENCE.sha)
   const out = process.env['GITHUB_OUTPUT']
   if (out !== undefined && out !== '') appendFileSync(out, `${PEAK ? 'peak' : 'release'}=${REFERENCE.sha}\n`)

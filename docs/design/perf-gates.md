@@ -169,9 +169,8 @@ A/B against a **pinned reference commit of this repo**, both sides loaded and
 Self-calibrating by construction: nothing machine-specific is stored, so it reads
 the same on a laptop and on a shared CI runner. That matters more than it sounds
 — comparing separate *processes* on this hardware produced 9.4 ms and 26 ms for
-the same case in consecutive launches, and it is the reason the older nightly
-proposal (`docs/design/perf-nightly.workflow.yml`) had to keep its timing
-tolerance at 40%. An interleaved A/B has no cross-machine term at all.
+the same case in consecutive launches, and it is the reason an older nightly-workflow
+proposal (never adopted) had to keep its timing tolerance at 40%. An interleaved A/B has no cross-machine term at all.
 
 The reference side is a `git worktree` at the pinned sha with this repo's
 `node_modules` symlinked in — nothing needs a per-sha dependency tree, because
@@ -467,31 +466,9 @@ exactly the band it exists to watch.**
   regression in trivia scanning, first-set dispatch, node construction or the
   interpreter can move every case in BOTH sweeps together — the gate will report
   that, but neither spread will explain it, because nothing is being held
-  constant against it. `perf:guard`'s deterministic `composeLeaf` dispatch
-  assertion still carries first-set-dispatch coverage.
-
-  **That assertion inspects EMITTED SOURCE, and it fails GREEN if there is none.**
-  `dispatchEmitted` is a regex over the string `fusedBody([...]).body` returns
-  (`bench/composeleaf-firstset.ts`) — it asks whether the fused *text* contains a
-  first-char comparison. That is exactly why it is trustworthy today (no timing
-  noise), and exactly what makes it fragile: it is a property of one lowering's
-  output, not of the parser's behaviour. Against any lowering that does not emit a
-  JavaScript body for the fuse to match — a table read by a shared driver, say —
-  the regex finds nothing. The failure mode is the dangerous direction: a lowering
-  with no emitted source and a lowering that genuinely lost dispatch are
-  **indistinguishable** to this check, and the first one is not a regression. Note
-  which way the current code lands before trusting either verdict.
-
-  `grammar-refactor-gates.md` is the standing rule here — four of that oracle's six
-  paranoid properties fail **green**, and "a gate that fails green is worse than no
-  gate, because it is used as evidence." This assertion is quoted as *the* reliable
-  signal that makes the nightly workflow worth running
-  (`docs/design/perf-nightly.workflow.yml`), which is precisely the status that
-  makes a vacuous green expensive. **Recorded as a hazard, not a fix:** nothing about
-  the assertion's behaviour is changed here, and it is correct as written for the
-  lowering it was built against. If a second lowering ever reaches this path, the
-  check needs a liveness precondition — assert that a body was produced *at all*
-  before asserting what is in it — rather than a widened regex.
+  constant against it. No gate covers first-set dispatch on its own: the
+  `composeLeaf` dispatch assertion `perf:guard` once carried asserted a property of
+  textual fusion and went with the source lowering (`bench/perf-guard.ts`).
 
   The history here is the argument for reading this bullet literally rather than
   as boilerplate: the gate shipped with one axis and a regression rode the other
@@ -914,6 +891,46 @@ A missing reference is a **hard failure**, never a skip: CI checks out with
 reachable, the gate says so and exits non-zero. "The gate did not run" must never render as green —
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
+
+## The pretenuring check — `pnpm perf:pretenure`
+
+Every process must parse in the fast mode, whatever the bundle layout. V8 decides per
+object-literal allocation site whether to allocate straight into old space, from where
+scavenges fall during warm-up. When the objects a parse keeps come from literals,
+identical processes split into a fast mode and a slow one that runs dozens of
+mark-compacts, and appending dead code to the bundle re-rolls which is which (#224).
+Parseman builds its tree objects with constructors so that cannot happen
+(`src/cst/plain.d.ts`).
+
+`bench/pretenure-check.ts` builds `dist/` and appends 0, 970, 4,000 and 15,000 bytes of
+never-called code to `dist/index.js`. It then runs seven cases in fresh plain-`node`
+processes:
+- `css/stylesheet`, `expected/narrow` and `rollback/medium`, whose fixture builders copy what
+  they keep;
+- `css/cst`, a CST host (`cstBuildHost()` nodes over parseman's leaves and spans);
+- `nolines/doc` and `lines/doc`, builder-less default nodes without and with line tracking;
+- `spans/doc`, a builder that keeps the span parseman passes it.
+
+The check fails if any process runs more than `maxMarkCompacts` (3) mark-compacts
+(`bench/pretenure-check.json`). The fast mode runs 1–2 on the machine that set the threshold.
+Fast-mode counts depend on heap sizing, and a smaller machine may read 3–4. Every run prints
+a calibration line with the pad-0 counts per case: read it before trusting a failure. On `main` before #230 the same check
+read 49–69 on Node 26. It is not in CI: run it on Node 24 and Node 26 for any change to what
+a parse allocates, about 6 minutes each.
+
+Each worker checks every parse before it reports a count. The parse must succeed and reach
+the end of its input (trailing whitespace aside), and the first parse must build the expected
+root (`Stylesheet`, or `Doc` with 3,000 items). A parse that fails or stops early would
+measure a smaller workload and pass for the wrong reason, so the worker refuses to count it
+and the case fails. `--plant=truncated` proves it: every input gains a fragment its grammar
+cannot consume, and the density and doc cases fail. The CSS grammar is permissive and accepts
+the fragment.
+
+`--plant=<site>` turns one converted site class back into an object literal in the staged
+`dist/`, and the run must then FAIL. On Node 26 it does for `span`, `leaf`, `node`,
+`line-span` and `children`. `field` and `buffer` cannot make it fail, because no tree keeps a
+field capture or a capture buffer: they die with their node. Node 24 pretenures fewer sites,
+so `line-span` fails on Node 26 only; run the plants on Node 26.
 
 ## The peak clause — `pnpm perf:xproc:gate --peak`
 

@@ -152,7 +152,8 @@ export function serializeRuleMap(
     return new Serializer(ruleMap, scanSkip ?? []).run()
   } catch (e) {
     if (e instanceof Unserializable) {
-      if (process.env.PARSEMAN_IR_DEBUG) console.error(`[ir] fallback: ${(e as Error).message}`)
+      // `compileLinkableTable()` reaches this at run time, so it runs in browsers too.
+      if (typeof process !== 'undefined' && process.env?.PARSEMAN_IR_DEBUG) console.error(`[ir] fallback: ${(e as Error).message}`)
       return null
     }
     throw e
@@ -460,7 +461,7 @@ class Serializer {
             arms.push(`when(${matcherExpr(entry)}, ${kid(entry.parser)}${entry.caseInsensitive ? ', { caseInsensitive: true }' : ''})`)
           }
         }
-        if (def.otherwise) arms.push(`otherwise(${kid(def.otherwise)})`)
+        if (def.otherwise) arms.push(`otherwise(${kid(def.otherwise)}${def.otherwiseCommit === false ? ', { commit: false }' : ''})`)
         return `dispatch(${kid(def.selector)}${arms.length === 0 ? '' : `, ${arms.join(', ')}`})`
       }
       case 'many':      return `many(${kid(def.parser)}${repeatOpts(def.min, def.max)})`

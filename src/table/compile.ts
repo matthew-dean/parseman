@@ -79,8 +79,8 @@ export type TableCompileOptions = {
   readonly hostMode?: HostMode
   readonly trackLines?: boolean
   /**
-   * ACCEPTED AND IGNORED — recovery is ALWAYS lowered (see `TableSettings.recovery`).
-   * Kept so this stays a drop-in for `compile(g, …, { recovery: true })`.
+   * @deprecated ACCEPTED AND IGNORED — recovery is ALWAYS lowered (see
+   * `TableSettings.recovery`). Removed in the next minor release.
    */
   readonly recovery?: boolean
   /**
@@ -90,7 +90,7 @@ export type TableCompileOptions = {
    *
    * COUNTERS ONLY — owner ruling. `_grammarTrace`'s six phases are emitted at
    * ~40 fine-grained sites by codegen and are deferred to 0.48
-   * (`notes/RELEASE-0.48-TARGET.md` §1). A table entry rejects a context carrying
+   * (`notes/history/RELEASE-0.48-TARGET.md` §1). A table entry rejects a context carrying
    * a trace sink before parsing: silently returning an empty trace would look
    * exactly like a real trace whose grammar sites were never visited. The
    * plugin's coverage path reads `_grammarCoverage` and the definitions stamp,
@@ -178,7 +178,7 @@ function compileRoot<T>(
 ): CompiledParser<T> {
   // Argument order mirrors `compile(combinator, mapFnSources?, opts?)` so this is
   // a drop-in, not a second API with a different shape.
-  // THE SAME WALK CODEGEN USES FOR A SINGLE ROOT (`codegen.ts:5377`): no winner
+  // THE SAME WALK THE SOURCE LOWERING USED FOR A SINGLE ROOT: no winner
   // map, so the paths are rooted at `entry` and the ids are the ones a caller
   // switching lowerings already has. Building it differently here would produce a
   // set that is internally consistent and lines up with nothing.

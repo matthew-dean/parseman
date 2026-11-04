@@ -64,7 +64,7 @@ function precompiled(prog: TableProgram, mutate: (source: string) => string = so
   const factory = new Function(...EMITTED_PARAMS, mutate(emitted.source)) as PrecompiledAssembly['factory']
   return ownTableProgram({
     ...prog,
-    asm: [{ key: 0, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   })
 }
 
@@ -397,7 +397,7 @@ describe('direct-bound dispatch topology', () => {
 
     const emitted = emitAssemblySource(resolveTable(baseProg), baseProg, STRICT)
     const wrongRouteSource = emitted.source.replace(
-      'ctx._routed={value:key,span:{start:pos,end:selEnd}}',
+      'ctx._routed={value:key,span:new _SP(pos,selEnd)}',
       'ctx._routed=undefined',
     )
     expect(wrongRouteSource).not.toBe(emitted.source)

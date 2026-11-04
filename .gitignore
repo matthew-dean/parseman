@@ -5,6 +5,8 @@ dist/
 # Declaration files belong in dist/ (see tsconfig.build.json). Any *.d.ts under
 # src/ is an accidental tsc emit — ignore so it can never be committed again.
 src/**/*.d.ts
+# Hand-written: types the plain-JavaScript tree-object constructors (src/cst/plain.js).
+!src/cst/plain.d.ts
 src/**/*.d.ts.map
 *.tsbuildinfo
 .claude/worktrees/
@@ -15,8 +17,5 @@ coverage/
 # Reference worktrees materialised by `pnpm perf:guard:grammars`.
 .cache/
 
-# token-cursor scratch: copied shipping artifacts and recorded traces are inputs,
-# not sources. The instruments are committed; the 13 MB grammars are not.
-scratchpad/token-cursor/rig*/grammar.*.js
-scratchpad/token-cursor/rig*/trace.*
-scratchpad/token-cursor/rig*/node_modules
+# A 61 MB local record (see notes/results/README.md); last committed at 4a5d0341.
+notes/results/parse-consumed.jsonl

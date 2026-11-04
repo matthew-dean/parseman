@@ -24,7 +24,7 @@ import {
   OP_ATTEMPT, OP_CHOICE, OP_COV, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE, OP_GUARD, OP_LABEL,
   OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK,
   OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX, OP_RX_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ,
-  OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM,
+  OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM, OP_GAPGATE,
 } from './ops.ts'
 
 export type FailClean = (ip: number) => boolean
@@ -35,7 +35,7 @@ export type FailClean = (ip: number) => boolean
  */
 function passChild(code: ArrayLike<number>, ip: number): number {
   switch (code[ip]) {
-    case OP_RULE: case OP_LABEL: case OP_COV: case OP_TOKEN:
+    case OP_RULE: case OP_LABEL: case OP_COV: case OP_TOKEN: case OP_GAPGATE:
       return code[ip + 1]!
     case OP_GATE: case OP_NODE: case OP_NODE_TRACK: case OP_XFORM: case OP_FIELD: case OP_SCOPE:
     case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_LEAF: case OP_SOURCE_LEAF:
