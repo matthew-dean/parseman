@@ -355,26 +355,38 @@ export type RunCfg = {
    * literal bodies to buy nothing measurable.
    */
   readonly probe: boolean
+  /**
+   * A caller supplied `ctx.trivia` to a program with no trivia of its own. Such
+   * a program records trivia rows only then, so only this assembly restores the
+   * trivia logs a failed alternative recorded (`choiceLogRollbackMask`,
+   * `failureLogRollback`); every other parse of it takes none of those marks. A
+   * program with trivia of its own always restores them and never sets this.
+   * Fixed for the parse: a program with no trivia never installs any.
+   */
+  readonly inheritedTrivia?: boolean
 }
 
-/** THE bit packing for an assembly cache key. Six bits, so at most sixty-four
+/** THE bit packing for an assembly cache key. Seven bits, so at most 128
  * ordinary assemblies per table. Host trivia predicates use a host-identity
  * cache in addition to this key because their per-type answer is not one bit.
  *
- * Taken as six booleans rather than as a `RunCfg` because `AssemblyCache.forCtx`
+ * Taken as seven booleans rather than as a `RunCfg` because `AssemblyCache.forCtx`
  * runs once per entry invocation and must allocate nothing — it derives these bits
  * from the `ctx` and builds a `RunCfg` only on the miss. That constraint is why the
  * packing was written twice, 2500 lines apart in this file, and a bit added to one
  * copy but not the other is a cache COLLISION: a parse served the wrong assembly.
  * Splitting the packing from the object read satisfies both callers from one place. */
-function cfgKeyOf(hostCst: boolean, trackLines: boolean, tolerant: boolean, coverage: boolean, probe: boolean, hostReadsChildren = true): number {
+function cfgKeyOf(
+  hostCst: boolean, trackLines: boolean, tolerant: boolean, coverage: boolean, probe: boolean,
+  hostReadsChildren = true, inheritedTrivia = false,
+): number {
   return (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0)
-    | (coverage ? 8 : 0) | (probe ? 16 : 0) | (hostReadsChildren ? 0 : 32)
+    | (coverage ? 8 : 0) | (probe ? 16 : 0) | (hostReadsChildren ? 0 : 32) | (inheritedTrivia ? 64 : 0)
 }
 
 /** The cfg key an assembly is cached under. */
 export function cfgKey(c: RunCfg): number {
-  return cfgKeyOf(c.hostCst, c.trackLines, c.tolerant, c.coverage, c.probe, c.hostReadsChildren)
+  return cfgKeyOf(c.hostCst, c.trackLines, c.tolerant, c.coverage, c.probe, c.hostReadsChildren, c.inheritedTrivia)
 }
 
 export type Assembly = {
@@ -2240,6 +2252,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          // A lookahead contains its child's commitment: `not.ts` and `peek.ts`
+          // return a fresh result, so a committed failure inside the probe never
+          // reaches the grammar around it.
+          ctx._fc = false
           if (PROBE && ctx._probe !== undefined) ctx._probe.best = probeBest ?? null
           if (v === FAIL) { EC.e = pos; return null }
           // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
@@ -2282,6 +2298,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          // A lookahead contains its child's commitment: `not.ts` and `peek.ts`
+          // return a fresh result, so a committed failure inside the probe never
+          // reaches the grammar around it.
+          ctx._fc = false
           if (PROBE && ctx._probe !== undefined) ctx._probe.best = probeBest ?? null
           // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
           if (v === FAIL) { ctx._fe = pos; ctx._fx = xf; return FAIL }
@@ -4289,7 +4309,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (prog.asm !== undefined) {
         throw new Unemittable(
           `option set ${cfgKey(cfg)} (hostCst=${cfg.hostCst} trackLines=${cfg.trackLines} `
-          + `tolerant=${cfg.tolerant} coverage=${cfg.coverage} probe=${cfg.probe}), which this build `
+          + `tolerant=${cfg.tolerant} coverage=${cfg.coverage} probe=${cfg.probe} `
+          + `inheritedTrivia=${cfg.inheritedTrivia === true}), which this build `
           + 'did not pre-compile. The Function constructor is NOT used for an artifact that carries '
           + 'assemblies — see `EmitOptions.assemblies` to add this option set to the build',
         )
@@ -4518,7 +4539,9 @@ export function countSiteVisits(
 export class AssemblyCache {
   private readonly t: ResolvedTable
   private readonly prog: TableProgram
-  private readonly byCfg: Array<Assembly | undefined> = Array.from({ length: 64 })
+  private readonly byCfg: Array<Assembly | undefined> = Array.from({ length: 128 })
+  /** Whether this program installs no trivia of its own (`RunCfg.inheritedTrivia`). */
+  private readonly noOwnTrivia: boolean
   /**
    * Monomorphic predicate inline cache. An assembly depends on the predicate
    * FUNCTION and the scalar cfg key, not on the host object that carries it, so
@@ -4532,6 +4555,7 @@ export class AssemblyCache {
   constructor(prog: TableProgram, resolved: ResolvedTable = resolveTable(prog)) {
     this.prog = prog
     this.t = resolved
+    this.noOwnTrivia = prog.triviaSpecs === undefined || prog.triviaSpecs.length === 0
   }
 
   for(cfg: RunCfg): Assembly {
@@ -4599,7 +4623,8 @@ export class AssemblyCache {
     const tolerant = ctx._tolerant === true
     const coverage = ctx._grammarCoverage !== undefined
     const probe = ctx._probe !== undefined
-    const key = cfgKeyOf(hostCst, trackLines, tolerant, coverage, probe, hostReadsChildren)
+    const inheritedTrivia = this.noOwnTrivia && ctx.trivia !== undefined
+    const key = cfgKeyOf(hostCst, trackLines, tolerant, coverage, probe, hostReadsChildren, inheritedTrivia)
     let cache = this.byCfg
     if (hostCaptureTrivia !== undefined) {
       // The predicate is host configuration, not parse state. Specialising each
@@ -4610,7 +4635,7 @@ export class AssemblyCache {
         cache = this.hostAssemblies!
       }
       else {
-        cache = Array.from({ length: 64 })
+        cache = Array.from({ length: 128 })
         this.hostPredicate = hostCaptureTrivia
         this.hostAssemblies = cache
       }
@@ -4619,7 +4644,7 @@ export class AssemblyCache {
     if (hit !== undefined) return hit
     const made = assemble(this.t, this.prog, {
       hostCst, hostReadsChildren, hostCaptureTrivia,
-      trackLines, tolerant, coverage, probe,
+      trackLines, tolerant, coverage, probe, inheritedTrivia,
     })
     cache[key] = made
     return made

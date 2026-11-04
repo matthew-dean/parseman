@@ -1558,8 +1558,10 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        // A lookahead contains its child's commitment (`not.ts` returns a fresh
+        // result): a generic child's committed failure is cleared here.
+        ctx._fc = savedFc
         if (scalarChild) {
-          ctx._fc = savedFc
           ctx._fe = savedFe
           ctx._fx = savedFx
         }
@@ -1588,7 +1590,8 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        if (scalarChild) ctx._fc = savedFc
+        // A lookahead contains its child's commitment, as under `not()`.
+        ctx._fc = savedFc
         if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
         // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
         if (v === FAIL) { ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]; return FAIL }
