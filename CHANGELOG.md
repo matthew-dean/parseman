@@ -5,6 +5,17 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`backtrackProbe` in `parseman/diagnostics` counts backtracking.** Per parse it
+  reports how often the position went backwards and how many bytes were read again,
+  plus the lookahead `not()`/`peek()` and regex lookarounds did. It runs on the
+  interpreter, the closure engine or the emitted engine. On the two table engines it
+  rewrites a copy of the program so its terminals report what they read; on the
+  interpreter it rebuilds the combinator graph with reporting terminals. Nothing is
+  added to an ordinary parse: there is no flag, no branch and no assembly key. Each
+  measurement also runs the plain grammar and throws if the probed parse returned
+  anything else. `rebuildCombinator` takes a third argument, `{ thaw, after }`, to
+  rebuild `dispatch`, gated choices, `withCtx` and `routed` and to wrap each rebuilt
+  node. See `test/unit/backtrack-probe.test.ts`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

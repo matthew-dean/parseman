@@ -202,3 +202,32 @@ import { proposeFixes, renderFixReport } from 'parseman/diagnostics'
 const report = proposeFixes(Document, { corpus })
 if (report.verified.length > 0) console.log(renderFixReport(report))
 ```
+
+### Measuring backtracking
+
+`backtrackProbe` parses with an instrumented copy of a grammar and counts the work a
+parse did twice: how often the position went backwards (`rewinds`), how many bytes were
+read again (`bytesReread`), and the lookahead `not()`/`peek()` and regex lookarounds did.
+Each measurement also runs the plain grammar and throws if the instrumented parse
+returned anything else, so the counts always describe the real parse.
+
+```ts
+import { rules, choice, sequence, literal, regex } from 'parseman'
+import { backtrackProbe } from 'parseman/diagnostics'
+
+const g = rules(() => ({
+  Item: choice(
+    sequence(regex(/[ab]+/), literal('x')),
+    sequence(regex(/[a-z]/), regex(/[a-z]/), literal('y')),
+  ),
+}))
+const { counts } = backtrackProbe(g, 'closure').measure('Item', 'aby')
+// counts.rewinds === 1, counts.bytesReread === 2
+```
+
+The second argument picks the engine: `'interpreter'`, `'closure'` or `'emitted'`
+(`probe.engine` says which one ran). The two table engines run the same program and
+report the same counts. The interpreter runs the combinator graph before the table's
+lowering, so where that lowering factors a shared prefix or folds a lookahead away,
+its counts are higher. The instrumented copy is separate from the grammar, so a parse
+that does not ask for the probe pays nothing for it.
