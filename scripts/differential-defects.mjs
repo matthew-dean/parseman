@@ -200,8 +200,8 @@ export const DEFECTS = {
     why: 'closure engine: a separated list tests its separator class before the trivia in front of it',
     edits: [{
       file: 'src/table/assemble.ts',
-      find: '              if (count >= min && gateSep && !classHas(sepClass!, lead(input, sp))) {\n',
-      replace: '              if (count >= min && gateSep && !classHas(sepClass!, lead(input, cur))) {\n',
+      find: '!classHas(sepClass, lead(input, sp)) ? -1 : sp\n',
+      replace: '!classHas(sepClass, lead(input, cur)) ? -1 : sp\n',
     }],
   },
 
