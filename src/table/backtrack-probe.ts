@@ -47,15 +47,14 @@
  * what the plain one returns; `backtrackProbe` checks that on every input.
  */
 import {
-  OP_ARMGATE, OP_COV, OP_GREEDY, OP_GUARD, OP_LEX_BODY, OP_LEX_PROGRAM, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK,
-  OP_LIT_TRACK, OP_LIVE, OP_NOT, OP_PEEK, OP_REJECT, OP_RX, OP_RX_TRACK, OP_SCAN, OP_XFORM,
+  OP_ARMGATE, OP_GREEDY, OP_LEX_BODY, OP_LEX_PROGRAM, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK,
+  OP_LIT_TRACK, OP_LIVE, OP_NOT, OP_PEEK, OP_RX, OP_RX_TRACK, OP_SCAN, OP_XFORM,
 } from './ops.ts'
 import { childSlotOffsets, childSlots } from './child-slots.ts'
 import {
-  assemblyExtraIps, expandCompact, resolveTable, type CompactProgram, type SubtreeRef, type TableProgram,
+  assemblyExtraIps, expandCompact, type CompactProgram, type SubtreeRef, type TableProgram,
 } from './program.ts'
-import { AssemblyCache, cfgKey, tableRules, type RunCfg } from './assemble.ts'
-import { EMITTED_PARAMS, Unemittable, emitAssemblySource, type EmittedFactory } from './emit-assembly.ts'
+import { AssemblyCache, tableRules, type RunCfg } from './assemble.ts'
 
 export type BacktrackCounts = {
   rewinds: number
@@ -306,45 +305,19 @@ export function probeProgram(source: TableProgram | CompactProgram, rec: Backtra
 /** Which engine ran a probe, and why the emitted one did not when it did not. */
 export type ProbeEngine = { readonly ran: 'closure' | 'emitted'; readonly refusal?: string }
 
-const UNEMITTABLE = new Set([OP_GUARD, OP_GREEDY, OP_REJECT, OP_LIVE, OP_COV])
-
 /**
  * Rule maps for a probed program on one engine. `closure` is the program with an
- * empty assembly inventory. `emitted` prints every site the emitter lowers into
- * one selective assembly, the way a macro build ships its selected sites, so the
- * few it refuses run as closures and everything else runs emitted.
+ * empty assembly inventory. `emitted` is the program with no inventory at all,
+ * which `assemble.ts` compiles itself — the one place a parse may construct code.
  */
 export function probeRules(prog: TableProgram, engine: 'closure' | 'emitted'): { rules: ReturnType<typeof tableRules>; engine: ProbeEngine } {
   if (engine === 'closure') return { rules: tableRules(prog), engine: { ran: 'closure' } }
+  const { asm: _closureOnly, ...live } = prog
   const cfg: RunCfg = {
     hostCst: prog.hostMode === 'cst', trackLines: prog.lines === 1, tolerant: false, coverage: false, probe: false,
   }
-  const extraIps = assemblyExtraIps(prog)
-  const select = new Set<number>()
-  const stack = [...Object.values(prog.rules), ...extraIps]
-  const kids: number[] = []
-  while (stack.length > 0) {
-    const ip = stack.pop()!
-    if (select.has(ip)) continue
-    select.add(ip)
-    kids.length = 0
-    childSlots(prog.code, ip, kids)
-    for (const c of kids) stack.push(c)
-  }
-  for (const ip of select) if (UNEMITTABLE.has(prog.code[ip]!)) select.delete(ip)
-  try {
-    const em = emitAssemblySource(resolveTable(prog), prog, cfg, extraIps, false, select)
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-    const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
-    const withAsm: TableProgram = {
-      ...prog, asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }],
-    }
-    // Ask the assembler which engine it built, rather than assume the factory was taken.
-    const refusal = new AssemblyCache(withAsm).for(cfg).emitRefusal
-    if (refusal !== undefined) return { rules: tableRules(prog), engine: { ran: 'closure', refusal } }
-    return { rules: tableRules(withAsm), engine: { ran: 'emitted' } }
-  } catch (e) {
-    if (!(e instanceof Unemittable)) throw e
-    return { rules: tableRules(prog), engine: { ran: 'closure', refusal: e.construct } }
-  }
+  // Ask the assembler which engine it built, rather than assume.
+  const refusal = new AssemblyCache(live).for(cfg).emitRefusal
+  if (refusal !== undefined) return { rules: tableRules(prog), engine: { ran: 'closure', refusal } }
+  return { rules: tableRules(live), engine: { ran: 'emitted' } }
 }
