@@ -508,7 +508,7 @@ export const DEFECTS = {
 
   'gap-scan-wrong-offset': {
     why: 'closure engine: the gap gate scans the item\'s gap one character late',
-    edits: [{ file: 'src/table/assemble.ts', find: '              gapRe.lastIndex = itemStart\n', replace: '              gapRe.lastIndex = itemStart + 1\n' }],
+    edits: [{ file: 'src/table/assemble.ts', find: 'else { gapRe.lastIndex = itemStart; q =', replace: 'else { gapRe.lastIndex = itemStart + 1; q =' }],
   },
 
   'gap-scan-wrong-offset-emitted': {
