@@ -5,6 +5,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **Mechanical guardrails for engine refactors, in CI and the local preflight.**
+  Nothing in `src/` or the published package changes. `pnpm callcount:guard` counts the
+  function calls and branch tests one parse executes, on the example workloads under
+  both engines and on jess's vendored grammars, and fails on any increase over the
+  previous release unless `bench/call-count-reasons.json` argues it. `pnpm dupfn:guard`
+  fails on a new function printed twice in the emitted or printed output. INV-13 fails on
+  a function written twice in engine source, at any depth. Every A/B harness now refuses
+  to run when two legs resolve parseman to the same real path. See
+  `docs/design/perf-gates.md`.
+
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

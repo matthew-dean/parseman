@@ -9,7 +9,7 @@
  * INV-13's planted fixture is in test/unit/invariant-gate.test.ts with the other rules.
  */
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -126,6 +126,16 @@ describe('independent legs', () => {
   mkdirSync(a, { recursive: true })
   mkdirSync(b, { recursive: true })
   symlinkSync(a, link, 'dir')
+
+  it('is called by every harness that materialises a second side', () => {
+    const benches = readdirSync(path.join(ROOT, 'bench'), { recursive: true, encoding: 'utf8' })
+      .filter(f => f.endsWith('.ts') && f !== 'ab-harness.ts' && !f.startsWith('vendor') && !f.startsWith('node_modules'))
+    const harnesses = benches.filter(f => /\bmaterialise\b[^\n]*\bfrom '[^']*ab-harness\.ts'|^\s*(?:\w+, )*materialise, /m.test(readFileSync(path.join(ROOT, 'bench', f), 'utf8')))
+    expect(harnesses.sort()).toEqual([
+      'call-count-guard.ts', 'grammar-perf-guard.ts', 'jess/ab.ts', 'workload-perf-guard.ts', 'xproc-ab.ts', 'xproc-gate.ts',
+    ])
+    for (const f of harnesses) expect(readFileSync(path.join(ROOT, 'bench', f), 'utf8'), f).toContain('assertIndependentLegs(')
+  })
 
   it('runs on two real trees', () => {
     expect(run({ ref: a, head: b }).code).toBe(0)

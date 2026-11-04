@@ -8,8 +8,8 @@
  *   4. nothing known at compile time becomes a parse-time check.
  *
  * Both used to be visible only as time. A "reuse" refactor of the left-corner routes
- * moved decisions into the pieces and added calls on the routed path; it read 10–25%
- * slower in the cross-process gate and nowhere else. A count sees the same change
+ * moved decisions into the pieces and added calls on the routed path, which then ran
+ * up to 25.9% more instructions on the closure engine. A count sees the same change
  * with no noise: the same code over the same input executes the same calls on an idle
  * laptop and on a loaded runner.
  *

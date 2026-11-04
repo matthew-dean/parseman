@@ -104,7 +104,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
+  assertIndependentLegs, materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
   type Case, type Thresholds,
 } from './ab-harness.ts'
 
@@ -208,6 +208,7 @@ const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
 const IDENTICAL = !SELF && sameSource(ROOT, REF, HEAD_REF)
 const refDir = materialise(GATE, ROOT, REF, COPY)
 const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
+assertIndependentLegs(GATE, { reference: path.join(refDir, 'src'), head: path.join(headDir, 'src') }, SELF)
 
 console.log(
   `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REFERENCE.tag === REF ? REF : `${REFERENCE.tag} (${REF})`}`}`,

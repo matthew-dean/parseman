@@ -264,8 +264,8 @@ export function previousReleases(root: string, gate: string, count: number): Arr
  * `legs` maps each leg's label to the directory its parseman resolves from (its `src/`
  * or its built `dist/`). Each is resolved with `realpath`, so a symlink, a `..` path or
  * a link to another leg's tree is caught. Two legs with one real path are one build
- * timed twice: a laptop A/B whose legs all symlinked to one source tree "passed" a
- * change the cross-process gate then measured 10–25% slower.
+ * timed twice: an A/B whose legs ran one source tree through a symlink read "neutral"
+ * on a change that cost up to 25.9% on the routed path.
  *
  * `selfCheck` is the one exception: an A/A run that says so in its banner and gates
  * nothing. Its legs are the same build by design.
