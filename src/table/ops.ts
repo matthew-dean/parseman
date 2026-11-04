@@ -18,9 +18,9 @@
  * them.
  */
 
-/** `LIT k` — `k` indexes a string in the const pool. */
+/** `LIT k fx` — `k` indexes a string in the const pool; `fx` the expected set on failure. */
 export const OP_LIT = 1
-/** `RX k` — `k` indexes a STICKY `RegExp` in the const pool. */
+/** `RX k fx` — `k` indexes a STICKY `RegExp` in the const pool; `fx` as `LIT`. */
 export const OP_RX = 2
 /** `SEQ n c1 … cn` — n child offsets; value is the array of their values. */
 export const OP_SEQ = 3
@@ -74,9 +74,9 @@ export const OP_XFORM = 9
 export const OP_NODE = 10
 /** `RULE r` — `r` indexes `prog.rules`. */
 export const OP_RULE = 11
-/** `GATE cc c` — first-char gate: `cc` indexes a char class; then run `c`. */
+/** `GATE cc c fx` — first-char gate: `cc` indexes a char class; then run `c`. `fx` is the set reported when the gate rejects. */
 export const OP_GATE = 12
-/** `NOT c` — zero-width negative lookahead. */
+/** `NOT c fx` — zero-width negative lookahead; `fx` is the assertion's own set, as `PEEK`. */
 export const OP_NOT = 13
 /**
  * `PEEK c fx` — zero-width positive lookahead. `fx` is the ASSERTION's own set,
@@ -192,10 +192,10 @@ export const OP_LIT_CI_TRACK = 28
  */
 export const OP_TOKEN = 29
 /**
- * `SCOPE_CAP k c` — a `parser({ trivia, captureTrivia: true })` scope. Identical
+ * `SCOPE_CAP k c policy` — a `parser({ trivia, captureTrivia: true })` scope. Identical
  * operands to `SCOPE`; it additionally sets `ctx.captureTrivia` for the child.
  *
- * A SEPARATE OPCODE rather than a third operand on `SCOPE`, for two reasons.
+ * A SEPARATE OPCODE rather than another operand on `SCOPE`, for two reasons.
  * Widening an instruction means every walker that knows its shape has to learn
  * the new one, and there is no central arity table here to change in one place.
  * And the driver should SELECT this piece, not test a flag inside the scope

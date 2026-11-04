@@ -26,8 +26,10 @@ import { copySpan } from '../line-index.ts'
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
  * form (RULE_ABI_PLAN §4). A package exports `linkable(rules(g => …))`; consumers
  * import that artifact and `compose([...])` it — **no source of the base grammar is
- * ever read**. Under the macro this is precompiled to static pieces; in the
- * interpreter it compiles here at load (like `compile()`).
+ * ever read**. Under the macro this is precompiled to static pieces, and only a
+ * build-time `compose()` can link it. In the interpreter it compiles here at load
+ * (like `compile()`) and keeps the map's `RULES_RECIPE`, which is what a runtime
+ * `compose()` links; an artifact without one is refused there (`recipesOf`).
  *
  * `ns` is a per-artifact namespace; omit it to auto-assign a process-unique one
  * (fine at runtime — the macro supplies a stable module-derived ns instead).
@@ -188,7 +190,7 @@ export const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
 /** The carried pieces a build-compiled composed grammar holds, or `undefined`
  * when the value is not one. */
-export function composedPiecesOf(
+function composedPiecesOf(
   grammar: Record<string, unknown>,
 ): ReadonlyArray<LinkableTable | IRPiece> | undefined {
   const pieces = (grammar as unknown as Record<symbol, unknown>)[COMPOSED_PIECES]

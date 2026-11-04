@@ -516,18 +516,10 @@ class Encoder {
   /** TOKEN bodies are an all-program decision. A complete occurrence inside an
    * otherwise incomplete final graph stays on CHARACTER with every sibling. */
   readonly selectLexicalBodies: boolean
-  /**
-   * Decides the extra operands laid down below. ALWAYS TRUE — see
-   * `TableSettings.recovery`. Kept as a field rather than folded away because it
-   * is what every emit site reads, and the emit sites are where the shape of the
-   * row is stated.
-   */
-  readonly rec: boolean
   constructor(settings: TableSettings, selectLexicalBodies: boolean) {
     this.settings = settings
     this.track = settings.trackLines === true
     this.selectLexicalBodies = selectLexicalBodies
-    this.rec = true
     this.plan = settings.coverage
     this.cov = settings.coverage === undefined
       ? undefined
@@ -1146,16 +1138,12 @@ class Encoder {
       }
       case 'sequence': {
         const kids = d.parsers.map(c => this.node(c).ip)
-        // A RECOVERY table appends one follow-set class per term AFTER the child
-        // slots. Appending keeps every existing read (`ip + 2 + i`) and the
-        // `collapseIndirection` slot map exactly as they were, so a strict table
-        // is word-for-word the table it always was.
-        const head = this.emitHead(d.valueUnused ? OP_SEQV : OP_SEQ, 1 + kids.length + (this.rec ? kids.length : 0))
+        // One follow-set class per term (recovery's resync sentinel) follows the
+        // child slots, so every child read stays `ip + 2 + i`.
+        const head = this.emitHead(d.valueUnused ? OP_SEQV : OP_SEQ, 1 + 2 * kids.length)
         this.code[head + 1] = kids.length
         for (let i = 0; i < kids.length; i++) this.code[head + 2 + i] = kids[i]!
-        if (this.rec) {
-          for (let i = 0; i < kids.length; i++) this.code[head + 2 + kids.length + i] = this.followClass(d.parsers, i)
-        }
+        for (let i = 0; i < kids.length; i++) this.code[head + 2 + kids.length + i] = this.followClass(d.parsers, i)
         return head
       }
       case 'choice': {
@@ -1368,14 +1356,10 @@ class Encoder {
           : this.charClass(firstSetOf(d.parser, new Set(), rr, this.activeTrivia))
         const op = d.valueUnused ? OP_REPV : OP_REP
         const min = d.tag === 'many' ? 0 : d.min
-        // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
-        // class (−1: there is no separator). Both are only laid down for a
-        // recovery table, where the resync error's payload has to be the ITEM's
-        // set — `deriveExpected(combinator)` in repeat.ts:170, and
-        // `deriveExpectedArr([def.parser])` in codegen's emitMany.
-        return this.rec
-          ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), itemClass)
-          : this.emit(op, child, min, d.max ?? -1, -1, 0)
+        // ip + 6 is the ITEM's expected set and ip + 7 the item's sentinel class:
+        // the resync error's payload is the ITEM's set (`deriveExpected` in
+        // `combinators/repeat.ts`).
+        return this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), itemClass)
       }
       case 'sepBy': {
         const child = this.node(d.parser).ip
@@ -1392,20 +1376,15 @@ class Encoder {
         // it means the FIRST item failed, and that failure already set the
         // item's own set. So no committed grammar grows by a word.
         const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 2 ? 4 : 0)
-        // A RECOVERY table always carries ip + 6 (the ITEM's expected set, which
+        // Every list row carries ip + 6 (the ITEM's expected set, which
         // the resync error reports) and ip + 7 (the SEPARATOR's sentinel class, so
         // a tolerant list resyncs to its own separator OR the enclosing
         // delimiter — `orSentinel(separator, term)` in repeat.ts:454 and
         // `_rec.or(sepSent, mySync)` in codegen's emitSepBy).
-        if (this.rec) {
-          return this.emit(
-            OP_REP, child, d.min, d.max ?? -1, sep, flags,
-            this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia)),
-          )
-        }
-        return d.min >= 2
-          ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags, this.expected(deriveExpected(d.parser)))
-          : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
+        return this.emit(
+          OP_REP, child, d.min, d.max ?? -1, sep, flags,
+          this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia)),
+        )
       }
       case 'optional': {
         const head = this.emit(OP_OPT, this.lookaheadGate(d.parser, this.node(d.parser).ip))
@@ -1423,7 +1402,7 @@ class Encoder {
         const inner = d.parser._def as ParserDef
         if (inner.tag === 'sequence' && !this.memo.has(d.parser) && !this.pending.has(d.parser)) {
           const kids = inner.parsers.map(c => this.node(c).ip)
-          const head = this.emitHead(OP_SEQX, 2 + kids.length + (this.rec ? kids.length : 0))
+          const head = this.emitHead(OP_SEQX, 2 + 2 * kids.length)
           const projection = directArrayProjection(d.fn, d.fnSrc, kids.length)
           // A negative operand describes an already-parsed child (`~index`),
           // while every function-pool index remains non-negative.  The row is
@@ -1434,9 +1413,7 @@ class Encoder {
             : ~projection
           this.code[head + 2] = kids.length
           for (let i = 0; i < kids.length; i++) this.code[head + 3 + i] = kids[i]!
-          if (this.rec) {
-            for (let i = 0; i < kids.length; i++) this.code[head + 3 + kids.length + i] = this.followClass(inner.parsers, i)
-          }
+          for (let i = 0; i < kids.length; i++) this.code[head + 3 + kids.length + i] = this.followClass(inner.parsers, i)
           return head
         }
         const child = this.node(d.parser).ip
@@ -1937,7 +1914,7 @@ class Encoder {
       ...(this.settings.hostMode === undefined ? {} : { hostMode: this.settings.hostMode }),
       ...(this.runtimeOnly.size === 0 ? {} : { runtimeOnly: [...this.runtimeOnly].sort() }),
       ...(this.triviaSpecs.length === 0 ? {} : { triviaSpecs: this.triviaSpecs }),
-      ...(this.rec ? { rec: 1 as const } : {}),
+      rec: 1,
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
     }, undefined, {

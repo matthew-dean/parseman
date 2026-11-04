@@ -916,8 +916,9 @@ decision-point measurement predicts an end-to-end one.
 Token-keyed dispatch is **implemented and shipped as the default**, landed on
 `release/0.46.0` as **`caa3d14`** (`feat(codegen): token-keyed dispatch via a data
 trie`) and **`e8612eb`** (`fix(dispatch): fold ASCII letters only, and pick the id
-strategy by measurement`). Strategies are selectable via the **`PARSEMAN_DISPATCH`**
-environment variable.
+strategy by measurement`). Strategies were selectable via a `PARSEMAN_DISPATCH`
+environment variable; the strategies and the variable were removed with the source
+lowering, and last existed at `4a5d0341`.
 
 **Methodology** (this matters — see §16.4): measured on the **shipped artifact**, trees
 **diffed equal** against a toggled baseline, **medians of 31 interleaved rounds in one
