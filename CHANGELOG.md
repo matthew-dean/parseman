@@ -17,6 +17,20 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   The default is `0.5` on the new base. Comments are about 40% of Jess's grammars, so an
   explicit budget needs raising to buy what it did: a grammar that passed `1` and is half
   comments passes about `2.7`.
+- **A `compose()` that references a rule no piece defines fails the build, naming
+  the rule.** The macro fuse used to encode around the undefined slot, leave the
+  runtime `compose()` in place and warn "ref() used before .define()", which read as
+  a parseman defect. The cause is the grammar: a `g.X` whose name no composed piece
+  returns, usually a base sub-expression that is a local const rather than a rule
+  key. The build now throws `<file>:<line> — compose: rule "VarFallback" references
+  missing rule "VarFunction"` (or, when no live rule reads the name, `rule(s) "X" are
+  referenced but defined by no composed grammar`): the words runtime `compose()`
+  already refused the grammar with, after the call site. `composeLeaf()` refuses the
+  same grammar the same way (`— composeLeaf: …`) instead of failing to fuse with the
+  old message. A `g.X` a factory reads outside every rule (`const unused = g.X`) is
+  now kept in the grammar's carried IR as `void g["X"]`, so the build refuses it where
+  runtime `compose()` did and the build did not. See
+  `test/unit/compose-dangling-reference.test.ts`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

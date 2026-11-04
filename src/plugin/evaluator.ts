@@ -1636,8 +1636,19 @@ export function evaluateParserFactory(
    */
   const map = new Map<string, Combinator<unknown>>()
   for (const key of keys) map.set(key, built[key]!)
+  const declared = new Set(keys)
+  externalAccesses.set(map, Object.keys(built).filter(name => !declared.has(name)))
   return map
 }
+
+/**
+ * Every EXTERNAL name an evaluated factory read through `g`, keyed by the map
+ * `evaluateParserFactory` returned. The map holds declared rules only, so a `g.X`
+ * read outside every rule body (`const unused = g.X`) leaves no trace in it; the
+ * IR serializer reads this to keep that access, so a composition refuses an `X`
+ * nobody defines exactly as runtime `compose()` does.
+ */
+export const externalAccesses = new WeakMap<ReadonlyMap<string, Combinator<unknown>>, readonly string[]>()
 
 /** A combinator slot created by ref() — has a callable `define`. */
 type DefinableRef = Combinator<unknown> & { define(p: Combinator<unknown>): void }

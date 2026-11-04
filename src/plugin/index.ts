@@ -24,7 +24,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, externalAccesses, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
 import { compileRuleMap, type CompiledRuleMapTable } from '../table/compile-rule-map.ts'
@@ -37,7 +37,7 @@ import {
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
 import type { HostMode } from '../cst/host-mode.ts'
-import { COMPOSED_PIECES, type IRPiece } from '../compiler/linker.ts'
+import { COMPOSED_PIECES, danglingReference, type IRPiece } from '../compiler/linker.ts'
 import { serializeCombinator, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { evalCombinatorIR, evalRulesIR, INERT_BUILDER } from './ir-eval.ts'
 import { countSiteVisits } from '../table/assemble.ts'
@@ -235,6 +235,15 @@ function codeBytes(code: string, comments: readonly { start: number; end: number
  * ~79 ms against ~14 ms on `benchmark.less`. "Couldn't be inlined" alone does not
  * tell an author which construct to change; the compiler knows, so it says.
  */
+/** A build failure the lowering must not soften into a warning and a fallback. */
+class LinkRefusal extends Error {}
+
+/** Whether a rule-map entry has a definition (a `g.X` merely read does not). */
+function isResolved(rule: Combinator<unknown>): boolean {
+  if (rule._def.tag !== 'lazy') return true
+  try { rule._def.thunk(); return true } catch { return false }
+}
+
 function reasonSuffix(runtimeOnly: readonly string[] | undefined): string {
   return runtimeOnly === undefined || runtimeOnly.length === 0
     ? ''
@@ -2155,17 +2164,15 @@ function transformMacroImpl(
   const mergedCarriedRules = (
     items: CarriedItem[],
     link: LinkOptions,
-  ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean } | null => {
+  ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean; dangling: string | undefined } | null => {
     const carriedMaps = carriedRuleMaps(items)
     if (carriedMaps === null) return null
     const linked = linkRules(carriedMaps.pieces.flatMap(p => p.recipes), link)
     // A name some piece only REFERENCES and none defines stays an undefined slot in
-    // the namespace. It is not a rule, so it is not handed to the encoder as one.
-    const rules = Object.entries(linked).filter(([, rule]) => {
-      if (rule._def.tag !== 'lazy') return true
-      try { rule._def.thunk(); return true } catch { return false }
-    })
-    return { rules, trackLines: carriedMaps.trackLines }
+    // the namespace. Runtime `compose()` refuses that grammar at link, so the build
+    // refuses it too (the caller throws `dangling`) rather than encode around the hole.
+    const dangling = danglingReference(linked)
+    return { rules: Object.entries(linked), trackLines: carriedMaps.trackLines, dangling }
   }
 
   /**
@@ -2202,7 +2209,7 @@ function transformMacroImpl(
     // `rules({ scanSkip }, …)` options, which stamps `_meta.grammarScanSkip` when the IR
     // is re-lowered (materializePiece → compileLinkable picks it up), and survives to a
     // downstream re-compose. The full-pieces fallback bakes it via the compile option.
-    const ir = serializeRuleMap(entries as never, scanSkip)
+    const ir = serializeRuleMap(entries as never, scanSkip, rm instanceof Map ? externalAccesses.get(rm) : undefined)
     if (ir) return { carried: [{ ns, ir, ...(trackLines ? { trackLines: true as const } : {}) }] }
     // NO FULL-PIECES FALLBACK. It used to bake the grammar to lowered source when the IR
     // would not serialize; with one lowering there is nothing to bake to, and IR is not
@@ -2356,6 +2363,7 @@ function transformMacroImpl(
       trivia: composing,
       ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
     })
+    if (merged?.dangling !== undefined) throw new Error(`${id}:${lineOf(init.start)} — compose: ${merged.dangling}`)
     if (merged !== null) {
       // Harvest the direct-builder import provenance carried on the merged graph so
       // the re-lower pass at the end of this transform re-emits those imports.
@@ -2580,6 +2588,15 @@ function transformMacroImpl(
           }
         }
         const leafMerged = mergeRuleMaps([...carriedMaps.pieces.map(p => p.rules), localEntries])
+        // The same refusal as `compose()`, over a merge by name: a name some piece only
+        // reads (an unresolved entry of a carried map, or a local factory's external
+        // access) that no piece defines.
+        const accessed = [
+          ...carriedMaps.pieces.flatMap(p => p.rules).filter(([, rule]) => !isResolved(rule)).map(([name]) => name),
+          ...(localRules instanceof Map ? externalAccesses.get(localRules) ?? [] : []),
+        ]
+        const dangling = danglingReference(Object.fromEntries(leafMerged), accessed)
+        if (dangling !== undefined) throw new LinkRefusal(`${id}:${lineOf(init.start)} — composeLeaf: ${dangling}`)
         // Composing-wins governs the leaf fuse too. The local entries are NOT freshly
         // evaluated (they come from this module's own `rules()` factory), so they are
         // excluded from the override — their declared trivia IS the composing candidate,
@@ -2616,6 +2633,7 @@ function transformMacroImpl(
       warn(init.start, 'composeLeaf(): a recognition piece has no re-lowerable IR')
       return null
     } catch (e) {
+      if (e instanceof LinkRefusal) throw e
       warn(init.start, `composeLeaf(): ${(e as Error).message}`)
       return null
     }
@@ -2817,7 +2835,7 @@ function transformMacroImpl(
             // lowering there is no such artifact, and a grammar that cannot serialize
             // simply is not carried: an absent carried list makes the downstream compose
             // say so, where a frozen one did not.
-            const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
+            const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip, externalAccesses.get(compiledRules.ruleMap))
             if (ir) carriedMetadata = [{ ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) }]
             // NOT SILENT. An export with no carried IR cannot be composed downstream at
             // all — the consumer's `compose()` will fall back to runtime and say so, but
