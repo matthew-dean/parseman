@@ -152,7 +152,8 @@ export function serializeRuleMap(
     return new Serializer(ruleMap, scanSkip ?? []).run()
   } catch (e) {
     if (e instanceof Unserializable) {
-      if (process.env.PARSEMAN_IR_DEBUG) console.error(`[ir] fallback: ${(e as Error).message}`)
+      // `compileLinkableTable()` reaches this at run time, so it runs in browsers too.
+      if (typeof process !== 'undefined' && process.env?.PARSEMAN_IR_DEBUG) console.error(`[ir] fallback: ${(e as Error).message}`)
       return null
     }
     throw e

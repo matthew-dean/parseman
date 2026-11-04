@@ -6,7 +6,8 @@ build enforces most of them: `compile()` emits a gating WARNING by default when 
 break a rule below. Read the warning; it names the arm and the fix.
 
 Full docs: `docs/guide/first-char-gating.md`, `docs/guide/combinators.md`,
-`docs/guide/context.md`.
+`docs/guide/context.md`. How the code inside fits together (pipeline, engines, table
+format, selection, gates) is `docs/design/internals.md`; read it before changing `src/`.
 
 ## Binding contract: runtime code generation, `compose()`, size, load time
 
