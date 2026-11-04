@@ -1,7 +1,7 @@
 /**
  * BACKTRACKING IN JESS'S FOUR GRAMMARS, per dialect and engine, over each dialect's
- * fixture corpus (`grammars.ts` `corpus`). The baseline a grammar change must not
- * raise and the removal work drives to zero.
+ * fixture corpus (`grammars.ts` `corpus`). Counts only the rewinds among matched
+ * terminals, so zero here would not mean zero wasted work (`src/table/backtrack-probe.ts`).
  *
  * One process per dialect: the grammars' fuse mutates shared recognition pieces in
  * place, so only one dialect may be realised per process.

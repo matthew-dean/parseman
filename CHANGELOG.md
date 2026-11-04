@@ -5,9 +5,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
-- **`backtrackProbe` in `parseman/diagnostics` counts backtracking.** Per parse it
-  reports how often the position went backwards and how many bytes were read again,
-  plus the lookahead `not()`/`peek()` and regex lookarounds did. It runs on the
+- **`backtrackProbe` in `parseman/diagnostics` counts rewinds among matched terminals.**
+  Per parse it reports how often one started behind the one before it and how many of
+  its bytes had already matched, plus the lookahead `not()`/`peek()` and regex lookarounds
+  did. Counts of zero do not mean the parse wasted no work: failed terminal reads, trivia
+  re-scans, the choice predecide pretest and table `token()` bodies are not counted, and
+  `regexLookaroundBytes` reads 0 for `/a(?!bbbb)/` and for every failed run. It runs on the
   closure engine or the interpreter. On the closure engine it rewrites a copy of the
   table so its terminals report what they read; on the interpreter it rebuilds the
   combinator graph with reporting terminals. The emitted engine runs the same
@@ -15,8 +18,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   tests and benches, from a build-time module: `backtrackProbe` never turns source
   into code. Nothing is
   added to an ordinary parse: there is no flag, no branch and no assembly key. Each
-  measurement also runs the plain grammar and throws if the probed parse returned
-  anything else. `rebuildCombinator` takes a third argument, `{ thaw, after }`, to
+  measurement also runs the plain grammar, returns that result, and throws if the probed
+  parse returned anything else; both parses share `state`, so a grammar that writes state
+  can throw or undercount. `rebuildCombinator` takes a third argument, `{ thaw, after }`, to
   rebuild `dispatch`, gated choices, `withCtx` and `routed` and to wrap each rebuilt
   node. See `test/unit/backtrack-probe.test.ts`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar

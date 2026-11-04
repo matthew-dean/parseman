@@ -1,34 +1,50 @@
 /**
  * THE BACKTRACKING PROBE, for the two table engines.
  *
- * "Parseman never backtracks" is checkable only if backtracking is counted. This
- * module counts it without touching either engine: it rewrites a COPY of a program
- * so that every terminal row reports what it consumed, and runs that copy on the
- * closure engine — or, in tests and benches, on the emitted engine from a
- * build-time module (`bench/emitted-assembly.ts`); nothing here builds code from
- * source. A program that is not rewritten carries no
- * probe row, so an ordinary parse pays nothing for this — no branch, no field, no
+ * This module counts the rewinds visible among the terminals a parse matched, without
+ * touching either engine: it rewrites a COPY of a program so that every terminal row
+ * reports what it consumed, and runs that copy on the closure engine — or, in tests
+ * and benches, on the emitted engine from a build-time module
+ * (`bench/emitted-assembly.ts`); nothing here builds code from source. A program that
+ * is not rewritten carries no probe row, so an ordinary parse pays nothing for this — no branch, no field, no
  * assembly key. That is the whole reason it is a program rewrite and not a `RunCfg`
  * bit: a bit would still be a second assembly every engine has to know about.
  *
  * WHAT IS COUNTED, per parse (`BacktrackCounts`):
  *
- *   - rewinds: a terminal consumed input starting BELOW the end of the previous
- *     consumed terminal — the parse went backwards, because a failed arm, an
+ *   - rewinds: a terminal matched starting BELOW the end of the previous matched
+ *     terminal — the parse went backwards, because a failed arm, an
  *     `attempt()`, an `optional()` or a choice restored the position;
  *   - bytesReread: of those terminals' bytes, the ones below the furthest byte
- *     already consumed;
+ *     a matched terminal already reached;
  *   - lookaheads / lookaheadBytes: `not()`/`peek()` evaluations, and the bytes
  *     terminals matched inside them;
  *   - regexLookarounds / regexLookaroundBytes: runs of a regex terminal whose
- *     pattern holds a lookaround, and how far past its match a successful one
- *     depended on the input.
+ *     pattern holds a lookaround, and, for a run that matched, the fewest bytes past
+ *     its match that the same match still needs when the input is cut short. That is
+ *     a lower bound on what it read: `/a(?!bbbb)/` on `abbbc` reads past its match to
+ *     decide and counts 0, and every failed run counts 0.
  *
  * A terminal is a row that reads input itself: `LIT`, `RX`, `LIT_CI`, `LEX_BODY`,
- * `LEX_PROGRAM`, `SCAN`, `LIVE` and their line-tracking twins. Trivia between
- * terms is not a terminal and is not counted, and neither is the work inside one
- * terminal: a lexical body or a scan is one read. A `token()` is the terminals it
- * holds. `routed()` reads nothing: the `dispatch()` selector consumed the token.
+ * `LEX_PROGRAM`, `SCAN`, `LIVE` and their line-tracking twins. Trivia between terms
+ * is not a terminal, and a lexical body or a scan is one read. `routed()` reads
+ * nothing: the `dispatch()` selector consumed the token.
+ *
+ * WHAT A ZERO DOES NOT MEAN. Zero rewinds says no matched terminal started behind the
+ * one before it. It does not say the parse wasted no work. Not counted:
+ *
+ *   - failed terminal reads. Only a match reports. On 2,000 `a`s,
+ *     `many(choice(regex(/[a-z]+;/), regex(/[a-z]/)))` scans about 2M characters in
+ *     regexes that fail, and every count is 0 on both engines;
+ *   - trivia re-scans: the same gap skipped again after a position is restored;
+ *   - the choice predecide pretest, which reads an arm's leading terminal before the
+ *     arm runs;
+ *   - table `token()` bodies. A `token()` the table lowers to one `LEX_BODY` or
+ *     `LEX_PROGRAM` row is one read, and its retries are hidden inside that row. On the
+ *     same input, `many(token(choice(sequence(regex(/[a-z]+/), literal(';')),
+ *     regex(/[a-z]/))))` reports 2,000 rewinds on the interpreter and 0 on the table,
+ *     which does the same retries. A `token()` that does not lower still reports its
+ *     terminals.
  *
  * HOW, row by row. A terminal `T` in a parent's slot becomes `XFORM(report, T)`,
  * which hands the recorder `T`'s span and returns `T`'s value unchanged. A
@@ -46,7 +62,7 @@
  * left as it was, so the scan reports once, as the terminal it is.
  *
  * Every row there is one both engines already run. A rewritten parse must return
- * what the plain one returns; `backtrackProbe` checks that on every input.
+ * what the plain one returns; `backtrackProbe` checks that on every parse it measures.
  */
 import {
   OP_ARMGATE, OP_GREEDY, OP_LEX_BODY, OP_LEX_PROGRAM, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK,
