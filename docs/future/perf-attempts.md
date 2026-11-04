@@ -657,6 +657,22 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts
     as properties, and the resume stall stays, so the nesting is not its cause. Building
     every route when tops are armed instead of on first use: no change.
+  - Rejected: routes that never resume. A route stops at the node whose frame the shallowest
+    level that can continue would open, and that node's plain piece parses the value (no route
+    when that node is the top). Identity clean; the lone-child collapse it no longer reaches
+    opens one more frame. Marginal cycles against `main`, `--jitless` / JIT, median of three
+    rotated reps, load average 6–9 (base's own spread ±2% `--jitless`, ±4–8% JIT; JIT rows
+    under ~5% are noise). Never-resume / keep-resume: CSS `font: 12px/1.5 a, b;` +3.9% /
+    +27.8% `--jitless`, −0.8% / +9.3% JIT; `.jess` `font` +2.1% / +28.3%, −0.8% / +9.9%;
+    `.jess` `margin: 0 auto;` +3.6% / +21.4%, −3.3% / −2.9%; CSS `font: 1/2;` +3.4% /
+    +35.1%, +3.4% / +0.7%; Less `color: red;` +5.8% / −24.0%, −6.7% / −18.2%; CSS
+    `font: 12px;` −1.2% / −12.2%, −0.2% / −11.8%; `benchmark.less` +1.2% / −3.6%, 0.0% /
+    −0.7%; bootstrap +5.9% / +1.5%, −3.5% / −2.4%; `benchmark.css` +5.2% / +12.8%, −6.6% /
+    +2.3%; `gen-workload.scss` +5.2% / +7.9%, +3.8% / +5.6%; `jess-x8.jess` +5.5% / +10.4%,
+    +4.7% / +3.5%. A net loss: about +4% `--jitless` across the board, and it gives up the
+    left-corner wins. Resume stays; the stall is to be profiled. Raw samples:
+    `scratchpad/left-corner/results/cyc3-nr.jsonl`, prototype branch `proto/routes-no-resume`
+    (local).
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
   ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.
