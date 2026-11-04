@@ -1,6 +1,6 @@
 {
   "updatedAt": "2026-11-04",
-  "gitRev": "d5abd6ef",
+  "gitRev": "aaa2a333",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -23,9 +23,9 @@
       "locMultiplier": 0.05
     },
     "example/css": {
-      "genBytes": 10317,
-      "gzipBytes": 2962,
-      "bytesRatio": 1.058,
+      "genBytes": 10302,
+      "gzipBytes": 2961,
+      "bytesRatio": 1.057,
       "locMultiplier": 0.079
     },
     "example/lang": {

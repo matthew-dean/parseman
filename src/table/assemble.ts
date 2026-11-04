@@ -1976,7 +1976,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function routedPiece(ip: number, body: Piece): Piece {
     const R = topRoutes(ip)
     if (R === undefined) return body
-    return (input, pos, ctx) => {
+    const piece: Piece = (input, pos, ctx) => {
       const c = input.charCodeAt(pos)
       if (c < 128) {
         const route = R[c]
@@ -1984,7 +1984,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       return body(input, pos, ctx)
     }
+    TOP_PIECES.set(piece, { R, body })
+    return piece
   }
+  /** A top site's piece, and what a piece standing directly above it needs to do its job instead. */
+  const TOP_PIECES = new Map<Piece, { R: TopRoutes; body: Piece }>()
 
   /**
    * Whether the tops read their routes yet. A cold assembly's first parse runs
@@ -2372,29 +2376,70 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       case K_SEQ: {
         const leading = L.leading, nLead = leading.length
-        const wantValues = L.wantValues
-        // The corner is the sequence's last term: it completes alone.
-        if (nLead + 1 === code[L.ip + 1]!) return (input, pos, ctx) => {
+        const go = L.go
+        // The corner is the sequence's last term: it completes alone. Elsewhere its
+        // own term blocks run from the term after the corner. A sequence that keeps
+        // its values and one that does not are separate pieces, as their rows are.
+        const last = nLead + 1 === code[L.ip + 1]!
+        if (L.wantValues) {
+          if (last) return (input, pos, ctx) => {
+            for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+            const r = next(input, pos, ctx)
+            if (r === FAIL) return r
+            if (innermost) PV = r
+            return [r]
+          }
+          if (go === undefined) return (input, pos, ctx) => {
+            for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+            const r = next(input, pos, ctx)
+            if (r === FAIL) return r
+            if (innermost) PV = r
+            const vals = [r]
+            const cur = resume(L, input, pos, EC.e, ctx, vals) as number
+            if (cur < 0) return FAIL
+            EC.e = cur
+            return vals
+          }
+          const declined = L.declined, freshAt = L.freshAt, nFresh = freshAt.length
+          return (input, pos, ctx) => {
+            for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+            const r = next(input, pos, ctx)
+            if (r === FAIL) return r
+            if (innermost) PV = r
+            const end = EC.e
+            const q = routeGap(L, input, end, ctx)
+            const c = GAP_LEAD
+            if (q < 0 || (c >= 0 && go[c < 128 ? c : 128] === 1)) {
+              const vals = [r]
+              const cur = resume(L, input, pos, end, ctx, vals) as number
+              if (cur < 0) return FAIL
+              EC.e = cur
+              return vals
+            }
+            EC.e = end
+            const vals = declined.slice()
+            vals[0] = r
+            for (let f = 0; f < nFresh; f++) vals[freshAt[f]!] = []
+            return vals
+          }
+        }
+        if (last) return (input, pos, ctx) => {
           for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
           const r = next(input, pos, ctx)
           if (r === FAIL) return r
           if (innermost) PV = r
-          return wantValues ? [r] : undefined
+          return undefined
         }
-        // The sequence's own term blocks run from the term after the corner.
-        const go = L.go
         if (go === undefined) return (input, pos, ctx) => {
           for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
           const r = next(input, pos, ctx)
           if (r === FAIL) return r
           if (innermost) PV = r
-          const vals = wantValues ? [r] : undefined
-          const cur = resume(L, input, pos, EC.e, ctx, vals) as number
+          const cur = resume(L, input, pos, EC.e, ctx, undefined) as number
           if (cur < 0) return FAIL
           EC.e = cur
-          return vals
+          return undefined
         }
-        const declined = L.declined, freshAt = L.freshAt, nFresh = freshAt.length
         return (input, pos, ctx) => {
           for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
           const r = next(input, pos, ctx)
@@ -2404,18 +2449,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const q = routeGap(L, input, end, ctx)
           const c = GAP_LEAD
           if (q < 0 || (c >= 0 && go[c < 128 ? c : 128] === 1)) {
-            const vals = wantValues ? [r] : undefined
-            const cur = resume(L, input, pos, end, ctx, vals) as number
+            const cur = resume(L, input, pos, end, ctx, undefined) as number
             if (cur < 0) return FAIL
             EC.e = cur
-            return vals
+            return undefined
           }
           EC.e = end
-          if (!wantValues) return undefined
-          const vals = declined.slice()
-          vals[0] = r
-          for (let f = 0; f < nFresh; f++) vals[freshAt[f]!] = []
-          return vals
+          return undefined
         }
       }
       default: {
@@ -2525,7 +2565,34 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // Both RESTORE rather than clear: capture is an OR with the enclosing
     // context (`grammar.ts:129`), so an inner scope must not switch an outer
     // capture off.
-    const scopePiece: Piece = code[ip] === OP_SCOPE_CAP
+    const top = code[ip] === OP_SCOPE_CAP ? undefined : TOP_PIECES.get(child)
+    const scopePiece: Piece = top !== undefined
+      // A scope over a top reads the top's routes itself: the two pieces are one.
+      ? (input, pos, ctx) => {
+          const saved = ctx.trivia
+          const savedLabels = ctx.triviaKindLabels
+          const savedScan = SCAN
+          SCAN = scanFor
+          const savedLeadOf = LEAD_OF, savedLead = LEAD_TABLE
+          LEAD_OF = scopeTrivia
+          LEAD_TABLE = scopeLead
+          ctx.trivia = scopeTrivia
+          ctx.triviaKindLabels = scopeLabels
+          let v: unknown = NO_ROUTE
+          const c = input.charCodeAt(pos)
+          if (c < 128) {
+            const route = top.R[c]
+            if (route !== undefined) v = runRoute(route, c, input, pos, ctx)
+          }
+          if (v === NO_ROUTE) v = top.body(input, pos, ctx)
+          ctx.trivia = saved
+          ctx.triviaKindLabels = savedLabels
+          SCAN = savedScan
+          LEAD_OF = savedLeadOf
+          LEAD_TABLE = savedLead
+          return v
+        }
+      : code[ip] === OP_SCOPE_CAP
       ? (input, pos, ctx) => {
           const saved = ctx.trivia
           const savedLabels = ctx.triviaKindLabels
@@ -2876,6 +2943,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // at all, which is two context loads per gate execution removed (css has
         // 13 `GATE` rows, less 22, json none).
         if (cfg.tolerant || cfg.probe) return child
+        // A gate over a top reads the top's routes itself: the two pieces are one.
+        const top = TOP_PIECES.get(child)
+        if (top !== undefined) {
+          const R = top.R, body = top.body
+          return (input, pos, ctx) => {
+            if (!classHas(cls, lead(input, pos))) {
+              ctx._fe = pos; ctx._fx = xf
+              return FAIL
+            }
+            const c = input.charCodeAt(pos)
+            if (c < 128) {
+              const route = R[c]
+              if (route !== undefined) { const v = runRoute(route, c, input, pos, ctx); if (v !== NO_ROUTE) return v }
+            }
+            return body(input, pos, ctx)
+          }
+        }
         return (input, pos, ctx) => {
           if (!classHas(cls, lead(input, pos))) {
             ctx._fe = pos; ctx._fx = xf

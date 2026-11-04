@@ -166,7 +166,6 @@ type RoutePools = readonly [
 
 const LEVEL_DEFAULTS = [-1, 0, 0, -1, -1] as const
 const LF_DIRTY = 8
-const LF_CANDIDATE = 16
 
 /**
  * Derive and pack a table's routes, at encode time. `undefined` where no node
@@ -207,7 +206,7 @@ export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
   const levelId = (L: RouteLevel): number => intern(L, P.l, L => {
     const w = [
       L.kind, L.ip, L.kind === K_CHOICE ? L.arm : L.variant,
-      (L.dirty ? LF_DIRTY : 0) | (L.candidate ? LF_CANDIDATE : 0),
+      L.dirty ? LF_DIRTY : 0,
       L.lc, L.resumeTop, mask(L.go), ...L.empties,
     ]
     while (w.length > 2 && w.length <= 7 && w[w.length - 1] === LEVEL_DEFAULTS[w.length - 3]) w.pop()
@@ -280,7 +279,7 @@ export function routeTable(packed: PackedRoutes): RouteTable {
     kind: w[0]!, ip: w[1]!,
     arm: w[0] === K_CHOICE ? w[2] ?? -1 : -1, variant: w[0] === K_CHOICE ? -1 : w[2] ?? -1,
     dirty: ((w[3] ?? 0) & LF_DIRTY) !== 0,
-    candidate: ((w[3] ?? 0) & LF_CANDIDATE) !== 0,
+    candidate: false,
     lc: w[4] ?? 0, resumeTop: w[5] ?? -1, go: mask(w[6] ?? -1), empties: w.slice(7),
   }))(P().l[i]!)
   const arm = (w: readonly number[], o: number): DispatchArmRoute => ({
