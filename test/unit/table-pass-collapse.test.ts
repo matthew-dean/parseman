@@ -97,8 +97,10 @@ describe('pass-through collapse', () => {
       const r = framesOf(prog, 'a')
       expect(r.emitted).toBe(engine === 'emitted')
       expect(r.value).toEqual({ value: [{ word: { _tag: 'leaf', value: 'a', span: { start: 0, end: 1 } } }] })
-      // `Value`, `Sum`, `Unary` and `Word`: `Top` and `Atom` open none.
-      expect(r.frames).toBe(4)
+      // `Value`, `Sum`, `Unary` and `Word`: `Top` and `Atom` open none. The
+      // closure engine's left-corner route completes one of those levels on its
+      // lone child, so it opens one fewer (`routes.ts`).
+      expect(r.frames).toBe(engine === 'closure' ? 3 : 4)
     })
 
     it(`${engine}: a chain of collapses over one node each opens only the frames that build`, () => {
