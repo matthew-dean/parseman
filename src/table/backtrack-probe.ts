@@ -308,7 +308,10 @@ export type ProbeEngine = { readonly ran: 'closure' | 'emitted'; readonly refusa
 /**
  * Rule maps for a probed program on one engine. `closure` is the program with an
  * empty assembly inventory. `emitted` is the program with no inventory at all,
- * which `assemble.ts` compiles itself — the one place a parse may construct code.
+ * which `assemble.ts` specialises exactly as `compile()` does
+ * (`compileRuleMapRunnable` with `specialise`). That is runtime code construction
+ * reached from `parseman/diagnostics`, not from `compile()`: whether rule 1 of
+ * `docs/design/runtime-and-size-contract.md` admits it is an open owner question.
  */
 export function probeRules(prog: TableProgram, engine: 'closure' | 'emitted'): { rules: ReturnType<typeof tableRules>; engine: ProbeEngine } {
   if (engine === 'closure') return { rules: tableRules(prog), engine: { ran: 'closure' } }
