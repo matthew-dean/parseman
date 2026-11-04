@@ -202,9 +202,9 @@ the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks#
 
 How the code fits together (the pipeline, the engines, the table format, macro builds
 and how performance is measured) is in
-[`docs/design/internals.md`](./docs/design/internals.md). Start there before reading
+[`docs/design/internals.md`](https://github.com/matthew-dean/parseman/blob/main/docs/design/internals.md). Start there before reading
 `src/`. The token and lexical-body specification is
-[`docs/design/parseman-0.48.md`](./docs/design/parseman-0.48.md).
+[`docs/design/parseman-0.48.md`](https://github.com/matthew-dean/parseman/blob/main/docs/design/parseman-0.48.md).
 
 ## License
 

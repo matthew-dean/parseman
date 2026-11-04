@@ -174,7 +174,7 @@ Artifacts are stamped with the Parséman version (`src/version.ts`); nothing rea
 [Performance gates](./perf-gates.md) is the method of record. In short:
 
 - **`perf:guard`** (pre-commit): two tiny CSS microbenchmarks, in µs.
-- **`perf:xproc:gate`** and **`--peak`** (CI, the verdict): every case of `bench/grammar-density/` (speculative-rollback density and expected-set width) and of `bench/workloads/` (Less, CSS, GraphQL, JSON), timed in fresh processes, one parser per process, against the previous release and against the fastest release on record. Configured in `bench/xproc-gate.json`.
+- **`perf:xproc:gate`** (CI, the verdict): every case of `bench/grammar-density/` (speculative-rollback density and expected-set width) and of `bench/workloads/` (Less, CSS, GraphQL, JSON), timed in fresh processes, one parser per process, against the previous release. **`--peak`** (CI, alongside it) runs only the workloads, against the fastest release on record (`peak` in `bench/workloads/config.json`). Both are configured in `bench/xproc-gate.json`.
 - **`perf:guard:grammars`**, **`perf:workloads`** (local only): the same cases A/B in one process. They say *where* a cost is; they do not give the verdict.
 - **`bench:macro-optimize`** (CI, advisory): Jess's CSS and Less grammars, macro-built in a pinned Jess checkout. It is the only CI *speed* check on a Jess grammar, and it covers neither SCSS nor `.jess`. (`size-gate` runs `size:guard:jess` over all four.)
 - **`perf:pretenure`** (local, about 6 minutes; run it on Node 24 and Node 26): pads `dist/index.js` with never-called code and counts each fresh process's mark-compacts. It fails if a tree object is built by an object literal again, which V8 may pretenure per process (`bench/pretenure-check.ts`; `--plant=<site>` shows it fail).
@@ -211,8 +211,8 @@ Operands follow the opcode in `code`. Full layouts and the reasons behind each a
 
 | # | opcode | operands | meaning |
 |---|---|---|---|
-| 1 | `LIT` | `k` | match the constant string `k` |
-| 2 | `RX` | `k` | match the sticky regex `k` |
+| 1 | `LIT` | `k fx` | match the constant string `k`; `fx` the expected set on failure |
+| 2 | `RX` | `k fx` | match the sticky regex `k` |
 | 3 | `SEQ` | `n c1…cn f1…fn` | children in order; value is their tuple. `f` are recovery follow classes |
 | 4 | `SEQV` | as `SEQ` | `SEQ` whose value is unused: no tuple |
 | 5 | `CHOICE` | `d n fx c1…cn e1…en` | ordered choice; `d` a dispatch table or −1; `fx`/`e` expected sets |
@@ -222,8 +222,8 @@ Operands follow the opcode in `code`. Full layouts and the reasons behind each a
 | 9 | `XFORM` | `f c` | `transform()`: call `fns[f](value, span)` |
 | 10 | `NODE` | `b c flags proj type tags` | `node()`: open a frame, run `c`, build |
 | 11 | `RULE` | `r` | call rule `r` |
-| 12 | `GATE` | `cc c` | first-character gate, then `c` |
-| 13 | `NOT` | `c` | negative lookahead |
+| 12 | `GATE` | `cc c fx` | first-character gate, then `c` |
+| 13 | `NOT` | `c fx` | negative lookahead |
 | 14 | `PEEK` | `c fx` | positive lookahead |
 | 15 | `LEAF` | `f c` | `leaf()`: reduce, record one spanned leaf |
 | 16 | `EMPTY` | | match the empty string |
@@ -240,7 +240,7 @@ Operands follow the opcode in `code`. Full layouts and the reasons behind each a
 | 27 | `LIT_CI` | `k fx` | case-insensitive literal |
 | 28 | `LIT_CI_TRACK` | `k fx` | line-tracking twin |
 | 29 | `TOKEN` | `c` | `token()`: no trivia inside, one leaf for the match |
-| 30 | `SCOPE_CAP` | `k c` | trivia scope that also captures trivia |
+| 30 | `SCOPE_CAP` | `k c policy` | `SCOPE` that also captures trivia |
 | 31 | `WITHCTX` | `k c` | `withCtx()`: save/replace/restore `ctx.state` |
 | 32 | `GUARD` | `f e` | `gate(predicate)`, zero-width |
 | 33 | `ADJ` | `neg kinds fx` | `adjacent()` / `notAdjacent()` boundary test |
