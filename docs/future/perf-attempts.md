@@ -652,6 +652,23 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     times as on `main`. The time lands on every bytecode handler and on the regexp
     interpreter (2.3× for the same calls); Instruments shows front-end and discarded work
     rising. Cause not found yet.
+  - **The `--jitless` stall is branch-predictor capacity, not the resume itself (diagnostic;
+    `--jitless` does not decide).** CPU Counters, CSS `font: 1/2;`: of the ~18.5k extra cycles,
+    ~11k are instruction delivery and ~7.4k discarded (mispredicted) work; the data side
+    (processing, L1D) falls. Allocation per parse is the same (scavenges 0.39 against 0.40 per
+    1k parses), page reclaims do not grow with N, the stall is the same at any starting stack
+    depth (0–24 extra frames), and there is no deopt storm. The time spreads to code routes do
+    not change, called as often as on `main` (`run`, `runOnce`, `invoke`, the reducers). The
+    unrouted parse already sits at the interpreter's predictor limit: 50 structurally
+    distinct small functions run after each parse cost 12.2k cycles alone and add 35.8k of
+    interference (200: 72.9k). A routed parse runs the route pieces as well as the ordinary
+    ones, and even `font: a;`, which never resumes, runs 20.5k fewer instructions for 0.9k
+    more cycles. With the JIT on the same probe adds −0.1k (50) and 0.9k (200) to
+    `font: 12px/1.5 a, b;`, and there that value's +7.5% cycles is mostly +5.3% instructions
+    (null 0.5% / 0.2%, load 4.6). Files with the JIT: `benchmark.less` +2.9% cycles on −4.0%
+    instructions, bootstrap −4.0% / −3.7%, `benchmark.css` +1.8% / −2.6%,
+    `gen-workload.scss` +4.2% / −2.2%, `jess-x8.jess` +4.7% / +0.2% (five reps, null
+    within ±2.3%, load 4.3–5.3).
   - Rejected: the ascent as one loop instead of nested level pieces (identity clean). CSS
     `font: 1/2;` +48.9% cycles / +6.0% instructions `--jitless` (nested: +30.6% / −2.3%),
     `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts
