@@ -7,6 +7,7 @@ import {
   attempt, choice, classifiedTrivia, literal, noTrivia, optional, parser, regex, rules, run, sequence,
   type Combinator,
 } from '../../src/index.ts'
+import { transformMacro } from '../../src/plugin/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
@@ -18,6 +19,7 @@ import { OP_RX, OP_SCOPE, OP_SCOPE_PLAIN } from '../../src/table/ops.ts'
 import {
   foldPrograms, ownTableProgram, resolveTable, type PrecompiledAssembly, type TableProgram,
 } from '../../src/table/program.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 type Entry = Parameters<typeof run>[0]
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
@@ -200,5 +202,44 @@ describe('artifact-neutral synthetic trivia scopes', () => {
     const { prog, entries } = engines(grammar, 'Root')
     expect(syntheticScopeTargets(prog)).toEqual(new Set(['MathUnary', 'MixinReference']))
     expectIdentity(entries, 'a:- /*kept*/ . /*mix*/ m')
+  })
+
+  /*
+   * `rules({ trackLines: true })` wraps every rule in `parser({ trackLines: true },
+   * …)`, and a compose() build resolves a reference to that wrapper. It names no
+   * trivia, so the rule still has its boundary: `Value`'s tail has to cross the
+   * space before `!` however the reference got there. The line-tracked table
+   * dropped the scope row and stopped at the `!`.
+   */
+  it.each([false, true])('a rule under noTrivia keeps its trivia in a compose() with trackLines: %s', (trackLines) => {
+    const out = transformMacro(`import { compose, literal, noTrivia, optional, regex, rules, sequence } from 'parseman' with { type: 'macro' }
+const ws = regex(/[ \\t\\n]+/)
+export const parser = compose([rules({ trivia: ws${trackLines ? ', trackLines: true' : ''} }, g => ({
+  Value: sequence(literal('c'), optional(sequence(literal('!'), literal('important')))),
+  Declaration: noTrivia(sequence(literal('b:'), regex(/ */), g.Value)),
+}))])`, path.join(DIR, 'tracked-scope-plain.ts'), new Set(['parseman']))
+    expect(out?.warnings).toEqual([])
+    expect(out?.code).not.toMatch(/\bcompose\s*\(/)
+    const grammar = evalMacroModule<Record<string, Entry>>(out!.code, 'parser')
+    expect(run(grammar.Declaration!, 'b: c !important').unconsumedFrom).toBeNull()
+  })
+
+  it('asks what a rule scope that names no trivia wraps, and stops at one that does', () => {
+    const live = documentTrivia()
+    const outer = (g: Record<string, Combinator<unknown>>) => noTrivia(sequence(literal('x:'), g.Body!))
+    const pair = () => sequence(literal('a'), literal('b'))
+    const tracked = rules({ trivia: live }, (g: Record<string, Combinator<unknown>>) => ({
+      Body: parser({ trackLines: true }, pair()),
+      Root: outer(g),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const cleared = rules({ trivia: live }, (g: Record<string, Combinator<unknown>>) => ({
+      Body: noTrivia(pair()),
+      Root: outer(g),
+    })) as unknown as Record<string, Combinator<unknown>>
+    expect(syntheticScopeTargets(engines(tracked, 'Root').prog)).toEqual(new Set(['Body']))
+    expectIdentity(engines(tracked, 'Root').entries, 'x:a b')
+    expect(run(tracked.Root as Entry, 'x:a b').unconsumedFrom).toBeNull()
+    expect(syntheticScopeTargets(engines(cleared, 'Root').prog)).toEqual(new Set())
+    expectIdentity(engines(cleared, 'Root').entries, 'x:a b')
   })
 })

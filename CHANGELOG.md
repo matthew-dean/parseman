@@ -5,6 +5,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A rule referenced from a `noTrivia()` region keeps its own trivia in a line-tracked
+  `compose()` build.** `rules({ trackLines: true })` wraps every rule in
+  `parser({ trackLines: true }, …)`. `hasOwnTriviaBoundary` read any `parser()` scope as
+  declaring its own trivia, so the table dropped the scope row a cleared region needs
+  and the rule ran with no trivia. Only the line-tracked variant parsed differently: a
+  tail like `c !important` could not cross the space before `!`, and the parse stopped
+  there with `ok: true`. A `parser()` scope that names no trivia now answers for what it
+  wraps, in the interpreter and the table alike. A rule whose body is such a scope, such
+  as `parser({ captureTrivia: true }, …)`, now gets its trivia back under `noTrivia()`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the
