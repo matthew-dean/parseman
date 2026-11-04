@@ -215,6 +215,34 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
   `pnpm perf:pretenure` would show it if one began to.
 
+- **`graphql/document`'s nodes are constructor-built too (0.60.0 line).** The required
+  cross-process gate on #243 (CI, Node 26, against v0.59.1) failed one case:
+  `graphql/document` median +5.4% (p 4.7e-43), mean +5.6%, head slower in 157/160 rounds.
+  Every other case read within ±0.5%. It was the same flip as 0.59.0's, in the workload's
+  OWN nodes: `examples/graphql/parser.ts` built them with object literals in its
+  `transform()` reducers. Constructor-built tree objects covered Parseman's objects and
+  `examples/css`, but not this grammar. Measured per process on Node 26.13, macOS, with
+  12 processes per side and the gate's worker:
+  - Default runtime: the head pretenured in 12 of 12 processes (17–18 mark-compacts,
+    0.514 ms, 49.55G instructions). v0.59.1 pretenured in none (1 mark-compact, 0.501 ms,
+    47.20G).
+  - `--no-allocation-site-pretenuring` (diagnostic only): 0.491 ms / 47.59G against
+    0.486 ms / 47.69G. So the parse work is the same.
+  - `--trace-pretenuring`: the head tenures three adjacent allocation sites (found/created
+    264, 271 and 243, ratio 1.0); v0.59.1 tenures none. Building only the field node with a
+    constructor takes the head to 1 mark-compact in every process (0.489 ms against
+    0.492 ms for v0.59.1 on the same worker). Converting only its `?? []` defaults leaves
+    13 mark-compacts.
+  - Fix: every node the example keeps is a `new` call on `examples/graphql/graphql-node.js`
+    (prototype `Object.prototype`), as `examples/css/css-node.js`. With never-called code
+    appended to the head's `dist/index.js`, every process stays at 1 mark-compact.
+  - Local gate, `graphql/document` only, against v0.59.1, Node 26.13: before +4.8%
+    (p 4.3e-7, 28/30 rounds slower); after +0.3% (p 0.21, 23/40), ok.
+
+  A user grammar whose reducers build object literals can still flip the same way: the
+  site is in the grammar, so no change in Parseman reaches it. The CHANGELOG's advice
+  (build kept nodes with a constructor) is the remedy.
+
 - **Nullable-regex first sets.** A `regex()` that may match empty still reports `any`, but
   also carries the first characters of its non-empty matches. A sequence led by an optional
   pad such as `ws* '*' ws*` gets a finite first set, so operator repeats get item classes
