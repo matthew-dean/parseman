@@ -274,6 +274,8 @@ type SequenceTermBlock = (
   input: string, cur: number, ctx: ParseContext, values: unknown[] | undefined,
   inheritedSync?: Combinator<unknown>,
 ) => number
+/** A route continuation: a sequence's term blocks (the end, or −1), or a seeded repeat's piece (its value). */
+type Resumed = (input: string, cur: number, ctx: ParseContext, values: unknown[] | undefined) => unknown
 
 /**
  * The option set an assembly is specialised for.
@@ -644,7 +646,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = plainNode(build, kids, rawKids, pos, end)
+      const span = new PlainSpan(pos, end)
+      const node = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, rawEntry(node, input, pos, end))
       }
@@ -663,37 +666,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     let first = 1
     while (first < children.length && children[first] === undefined) first++
     return first === children.length ? EMPTY_CH : children.slice(first)
-  }
-
-  /**
-   * A node's value from what its frame collected: the one definition of each
-   * completion variant (`routes.ts` `nodeVariant`). A node piece calls its own
-   * variant's; a route's node level calls `nodeOf`, whether a continuation opened
-   * its frame or it completes on its lone child. `kids` is flat. A generic node's
-   * caller has already applied the node's own flags to `raw`, `fields`, `tl` and
-   * `state`.
-   */
-  const plainNode = (build: NodeBuilder, kids: readonly unknown[], raw: readonly unknown[], pos: number, end: number): unknown =>
-    build(kids, undefined, new PlainSpan(pos, end), raw, EMPTY_TL, undefined)
-  const childrenNode = (build: NodeBuilder, kids: readonly unknown[], fields: FieldMap | undefined, pos: number, end: number): unknown =>
-    build(kids, fields, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
-  const collapseNode = (build: NodeBuilder, kids: readonly unknown[], raw: readonly unknown[], pos: number, end: number): unknown =>
-    kids.length === 1 ? kids[0] : plainNode(build, kids, raw, pos, end)
-  const childrenCollapseNode = (build: NodeBuilder, kids: readonly unknown[], pos: number, end: number): unknown =>
-    kids.length === 1 ? kids[0] : childrenNode(build, kids, undefined, pos, end)
-  function nodeOf(
-    variant: number, collapse: boolean, build: NodeBuilder, kids: readonly unknown[], raw: readonly unknown[],
-    fields: FieldMap | undefined, tl: readonly number[], state: unknown, pos: number, end: number,
-  ): unknown {
-    switch (variant) {
-      case V_GENERIC:
-        return collapse && kids.length === 1 ? kids[0] : build(kids, fields, new PlainSpan(pos, end), raw, tl, state)
-      case V_CHILDREN:
-      case V_CHILDREN_FIELDS: return childrenNode(build, kids, fields, pos, end)
-      case V_CHILDREN_COLLAPSE: return childrenCollapseNode(build, kids, pos, end)
-      case V_COLLAPSE: return collapseNode(build, kids, raw, pos, end)
-      default: return plainNode(build, kids, raw, pos, end)
-    }
   }
 
   /** Direct reducer whose declared arity proves `rawChildren` is unobservable.
@@ -735,7 +707,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = childrenNode(build, captured, undefined, pos, end)
+      const node = build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -780,7 +752,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = childrenNode(build, captured, fieldMap, pos, end)
+      const node = build(captured, fieldMap, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -825,7 +797,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = collapseNode(build, kids, rawKids, pos, end)
+      const span = new PlainSpan(pos, end)
+      const node = kids.length === 1
+        ? kids[0]
+        : build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, rawEntry(node, input, pos, end))
       }
@@ -869,7 +844,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
-      const node = childrenCollapseNode(build, captured, pos, end)
+      const node = captured.length === 1
+        ? captured[0]
+        : build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
         pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
@@ -1312,6 +1289,76 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   /** No fixed child array is permitted to survive into a choice piece. */
   const NEVER_PIECE: Piece = () => FAIL
+
+  // Arbitrary strict arities use a bounded scalar block chain. Fixed
+  // children are captured into prewritten four-term blocks at assembly;
+  // the parse path has no `kids[i]`, fixed-child loop, or opcode lookup.
+  const termBlock = (
+    step: (child: Piece, input: string, cur: number, ctx: ParseContext) => number,
+    count: number,
+    k0: Piece, k1: Piece, k2: Piece, k3: Piece,
+    next: SequenceTermBlock | undefined,
+  ): SequenceTermBlock => {
+    if (count === 1) return (input, cur, ctx, values) => {
+      cur = step(k0, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      return next === undefined ? cur : next(input, cur, ctx, values)
+    }
+    if (count === 2) return (input, cur, ctx, values) => {
+      cur = step(k0, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k1, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      return next === undefined ? cur : next(input, cur, ctx, values)
+    }
+    if (count === 3) return (input, cur, ctx, values) => {
+      cur = step(k0, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k1, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k2, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      return next === undefined ? cur : next(input, cur, ctx, values)
+    }
+    return (input, cur, ctx, values) => {
+      cur = step(k0, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k1, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k2, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      cur = step(k3, input, cur, ctx)
+      if (cur < 0) return -1
+      if (values !== undefined) values.push(TERMV)
+      return next === undefined ? cur : next(input, cur, ctx, values)
+    }
+  }
+  /**
+   * The term blocks of the sequence whose `n` terms start at `base`, from term
+   * `start`: a sequence's own tail runs them from its second term, and a route's
+   * continuation from the term after its corner.
+   */
+  function termChain(
+    step: (child: Piece, input: string, cur: number, ctx: ParseContext) => number,
+    base: number, n: number, start: number,
+  ): SequenceTermBlock {
+    const count = Math.min(4, n - start)
+    const child = (offset: number): Piece => link(code[base + start + offset]!)
+    return termBlock(
+      step, count, child(0), count > 1 ? child(1) : NEVER_PIECE,
+      count > 2 ? child(2) : NEVER_PIECE, count > 3 ? child(3) : NEVER_PIECE,
+      start + count < n ? termChain(step, base, n, start + count) : undefined,
+    )
+  }
   const NEVER_CLASS: ResolvedClass = { ascii: new Uint8Array(128), hi: [] }
   const EMPTY_EXPECTED_PREFIX: ChoiceExpectedPrefix = (_target, _prev, acc) => acc
 
@@ -1709,11 +1756,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /** Regex rows a route reads an `optional` gap from and hands to (`gapRegexPiece`). */
   const ROUTE_GAP_ROWS: ReadonlySet<number> = ROUTES?.gapRows ?? new Set<number>()
 
-  /** A repeat lowered as a continuation whose first item is already in hand. */
-  let REP_RESUMED_ENTRY = false
-  /** The corner a continuation resumes after: its end and its value. */
-  let RESUME_END = -1
-  let RESUME_VALUE: unknown
+  /**
+   * Items a repeat being lowered already holds when its piece is entered: 1 for a
+   * route's continuation, whose first item is the corner, at the position after
+   * it; 0 otherwise. The count the loop starts from, never tested.
+   */
+  let REP_SEED = 0
   /** The gap a resumed continuation's first term reads, handed over. */
   let RES_GAP_ROW = -1
   let RES_GAP_AT = -1
@@ -1769,7 +1817,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     wantValues: boolean
     tails: Tail[]
     known: boolean
-    trivRuntime: boolean
     collect: boolean
     dirty: boolean
     reportItem: boolean
@@ -1784,7 +1831,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     resumeCapture: boolean
     /** The scope this level runs under, installed only when it resumes; `undefined` where the live one is it. */
     scopeAt: Level | undefined
-    resumed: Piece | undefined
+    /** The continuation: a sequence's term blocks from the term after the corner, or the repeat seeded with its first item. */
+    resumed: Resumed | undefined
     exclusive: boolean
     choiceFx: string[]
     prefixFx: string[][]
@@ -1807,11 +1855,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     table: (RouteRun | undefined)[] | undefined
     route: Route | undefined
     levels: readonly Level[]
-    cuts: RouteCut[]
     guards: { recs: ScalarRecognizer[]; cut: number; chain: Piece | undefined }[]
   }
-  /** A cut or guard's chain is built the first time it cuts. */
-  type RouteCut = { at: Level; scope: Level | undefined; cut: number; chain: Piece | undefined }
   /** Routes per character, `undefined` where none; `NO_ROUTE` from `runRoute` means "run the body". */
   type TopRoutes = (RouteRun | undefined)[]
   const NO_ROUTE: unknown = Symbol('no route')
@@ -1828,7 +1873,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       derive: undefined, extra: undefined,
       variant: R.variant, build: undefined, captureWide: false, wantFields: false, readsState: false,
       omitsRaw: false, collapse: false, readsRaw: false,
-      leading: [], wantValues: false, tails: [], known: R.known, trivRuntime: R.trivRuntime,
+      leading: [], wantValues: false, tails: [], known: R.known,
       collect: false, dirty: R.dirty, reportItem: false, itemFx: EMPTY_FX, maxOne: false,
       sepGated: R.sepGated, sepCls: undefined, itemCls: undefined,
       resumeTop: R.resumeTop, resumeNode: undefined, resumeCapture: false, scopeAt: undefined, resumed: undefined,
@@ -2053,7 +2098,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   }
 
   function pendingRun(top: number, table: (RouteRun | undefined)[], route: Route | undefined): RouteRun {
-    return { chain: DECIDED, d: -1, top, table, route, levels: [], cuts: [], guards: [] }
+    return { chain: DECIDED, d: -1, top, table, route, levels: [], guards: [] }
   }
 
   /**
@@ -2090,12 +2135,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       table: undefined,
       route,
       levels,
-      cuts: route.cuts.map(x => ({
-        at: levels[x.at]!,
-        scope: x.scope >= 0 ? levels[x.scope] : undefined,
-        cut: x.cut,
-        chain: undefined,
-      })),
       guards: route.guards.map(g => ({ recs: g.terminals.map(tm => scalarFor(tm)!), cut: g.cut, chain: undefined })),
     }
   }
@@ -2120,17 +2159,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined) return NO_ROUTE
     let d = R.d
     let chain = R.chain
-    const cuts = R.cuts
-    for (let x = 0; x < cuts.length; x++) {
-      const X = cuts[x]!
-      const T = X.scope !== undefined ? X.scope.scopeTrivia : ctx.trivia
-      if (triviaMayStart(X.at, T, c)) {
-        if (X.cut <= 0) return NO_ROUTE
-        d = X.cut
-        chain = X.chain ??= cutChain(R.levels, X.cut)
-        break
-      }
-    }
     const guards = R.guards
     for (let x = 0; x < guards.length; x++) {
       const G = guards[x]!
@@ -2165,48 +2193,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return r
   }
 
-  /** May the trivia installed now start at `c`? Cached per level on the trivia object. */
-  function triviaMayStart(L: Level, T: ParseContext['trivia'], c: number): boolean {
-    if (T === undefined) return false
-    if (T !== L.tObj) {
-      const fs = T._meta.firstSet
-      L.tObj = T
-      L.tMask = fs.kind === 'empty' ? new Uint8Array(129) : fs.kind === 'ranges' ? maskOfRanges(fs.ranges) : null
-    }
-    return L.tMask === null || maskHas(L.tMask, c)
-  }
-
   /**
    * Level `L`'s continuation, entered with its left corner already parsed: a
-   * sequence's later terms, run as its own runner runs them, or the repeat from
-   * its second item (`REP_RESUMED_ENTRY`). Nothing before the corner runs again.
+   * sequence's own term blocks from the term after the corner (`termChain`), or
+   * the repeat's own loop seeded with one item (`REP_SEED`). Nothing before the
+   * corner runs again.
    */
-  function lowerSeeded(L: Level): Piece {
+  function lowerSeeded(L: Level): Resumed {
     const ip = L.ip
     if (L.kind === K_REP) {
-      REP_RESUMED_ENTRY = true
+      REP_SEED = 1
       const piece = lower(ip)
-      REP_RESUMED_ENTRY = false
+      REP_SEED = 0
       return piece
     }
-    const n = code[ip + 1]!
-    const lc = L.leading.length
-    const step = closureLabels.at(ip).buf ? nextTermBuffered : nextTerm
-    const terms: Piece[] = []
-    for (let t = lc + 1; t < n; t++) terms.push(link(code[ip + 2 + t]!))
-    const nt = terms.length
-    const wantValues = L.wantValues
-    return (input, _pos, ctx) => {
-      let cur = RESUME_END
-      const vals: unknown[] | undefined = wantValues ? [RESUME_VALUE] : undefined
-      for (let t = 0; t < nt; t++) {
-        cur = step(terms[t]!, input, cur, ctx)
-        if (cur < 0) return FAIL
-        vals?.push(TERMV)
-      }
-      EC.e = cur
-      return vals
-    }
+    return termChain(closureLabels.at(ip).buf ? nextTermBuffered : nextTerm, ip + 2, code[ip + 1]!, L.leading.length + 1)
   }
 
   /** The failure of a choice's one dispatched arm, as the choice piece reports it. */
@@ -2288,7 +2289,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * from the corner. Nothing above it is entered again; a later level resuming
    * into the same frame publishes nothing a second time.
    */
-  function resume(L: Level, input: string, pos: number, end: number, rv: unknown, ctx: ParseContext): unknown {
+  function resume(L: Level, input: string, pos: number, end: number, ctx: ParseContext, vals: unknown[] | undefined): unknown {
     // The run hid the caller's collectors, so one that is set is the frame an
     // earlier level opened for this same node (`L.resumeTop`): none lies between.
     if (ctx._cstBuf === undefined && ctx._cstChildren === undefined) {
@@ -2304,8 +2305,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
       pushCstChild(ctx, PV, rawEntry(PV, input, pos, end))
     }
-    RESUME_END = end
-    RESUME_VALUE = rv
     const gapped = RES_GAP_ROW >= 0
     if (gapped) { GAP.row = RES_GAP_ROW; GAP.at = RES_GAP_AT; GAP.end = RES_GAP_END; GAP.input = input }
     RES_GAP_ROW = -1
@@ -2314,12 +2313,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     ctx.captureTrivia = L.resumeCapture
     const S = L.scopeAt
     let r: unknown
-    if (S === undefined) r = run(input, pos, ctx)
+    if (S === undefined) r = run(input, end, ctx, vals)
     else {
       const sT = ctx.trivia, sL = ctx.triviaKindLabels, sS = SCAN, sLeadOf = LEAD_OF, sLead = LEAD_TABLE
       SCAN = S.scanFor; LEAD_OF = S.scopeTrivia; LEAD_TABLE = S.leadTable
       ctx.trivia = S.scopeTrivia; ctx.triviaKindLabels = S.scopeLabels
-      r = run(input, pos, ctx)
+      r = run(input, end, ctx, vals)
       ctx.trivia = sT; ctx.triviaKindLabels = sL; SCAN = sS; LEAD_OF = sLeadOf; LEAD_TABLE = sLead
     }
     ctx.captureTrivia = sC
@@ -2418,11 +2417,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (innermost) PV = r
           const end = EC.e
           if (!maxOne && end < input.length) {
-            if (!known) return resume(L, input, pos, end, r, ctx)
-            const q = routeGap(L, input, end, ctx)
-            if (q < 0) return resume(L, input, pos, end, r, ctx)
-            const cq = GAP_LEAD
-            if (cq >= 0 && cq < 128 ? (sepGated ? sepCls! : itemCls!).ascii[cq] === 1 : has(sepGated ? sepCls! : itemCls!, cq)) return resume(L, input, pos, end, r, ctx)
+            let go = !known
+            if (!go) {
+              const q = routeGap(L, input, end, ctx)
+              const cq = GAP_LEAD
+              go = q < 0 || (cq >= 0 && cq < 128 ? (sepGated ? sepCls! : itemCls!).ascii[cq] === 1 : has(sepGated ? sepCls! : itemCls!, cq))
+            }
+            if (go) {
+              // The repeat's own loop, from its second item; the first is the corner.
+              const out = resume(L, input, pos, end, ctx, undefined)
+              if (out !== FAIL && collect) (out as unknown[]).unshift(r)
+              return out
+            }
           }
           EC.e = end
           return collect ? [r] : undefined
@@ -2431,26 +2437,34 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case K_SEQ: {
         const leading = L.leading, nLead = leading.length, tails = L.tails, nTails = tails.length
         const known = L.known, wantValues = L.wantValues
+        // The corner is the sequence's last term: it completes alone.
+        if (nLead + 1 === code[L.ip + 1]!) return (input, pos, ctx) => {
+          for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
+          const r = next(input, pos, ctx)
+          if (r === FAIL) return r
+          if (innermost) PV = r
+          return wantValues ? [r] : undefined
+        }
         return (input, pos, ctx) => {
           for (let t = 0; t < nLead; t++) if (leading[t]!(input, pos, ctx) === FAIL) return FAIL
           const r = next(input, pos, ctx)
           if (r === FAIL) return r
           if (innermost) PV = r
           const end = EC.e
-          if (!known) return resume(L, input, pos, end, r, ctx)
-          const q = routeGap(L, input, end, ctx)
-          if (q < 0) return resume(L, input, pos, end, r, ctx)
-          const cq = GAP_LEAD
           const vals: unknown[] | undefined = wantValues ? [r] : undefined
-          for (let t = 0; t < nTails; t++) {
+          let go = !known
+          const q = go ? -1 : routeGap(L, input, end, ctx)
+          if (q < 0) go = true
+          const cq = GAP_LEAD
+          if (!go) tails: for (let t = 0; t < nTails; t++) {
             const T = tails[t]!
             switch (T.kind) {
               case T_OPT_GATE:
-                if (has(T.cls!, cq)) return resume(L, input, pos, end, r, ctx)
+                if (has(T.cls!, cq)) { go = true; break tails }
                 vals?.push(null)
                 break
               case T_REP_CLASS:
-                if (has(T.cls!, cq)) return resume(L, input, pos, end, r, ctx)
+                if (has(T.cls!, cq)) { go = true; break tails }
                 vals?.push(T.collect ? [] : undefined)
                 break
               case T_REP_GAP: {
@@ -2458,7 +2472,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                   const g = routeGapRead(T.gapRe!, input, q)
                   if ((g >= 0 && classHas(T.follow!, lead(input, g))) || (T.other !== undefined && classHas(T.other, cq))) {
                     if (g >= 0) { RES_GAP_ROW = T.gapRow; RES_GAP_AT = q; RES_GAP_END = g }
-                    return resume(L, input, pos, end, r, ctx)
+                    { go = true; break tails }
                   }
                 }
                 vals?.push(T.collect ? [] : undefined)
@@ -2470,7 +2484,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                   const at = g >= 0 ? g : q
                   if (maskHas(T.followMask!, lead(input, at))) {
                     if (g >= 0) { RES_GAP_ROW = T.gapRow; RES_GAP_AT = q; RES_GAP_END = g }
-                    return resume(L, input, pos, end, r, ctx)
+                    { go = true; break tails }
                   }
                   ctx._fe = at; ctx._fx = T.xf
                 }
@@ -2478,6 +2492,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 break
               }
             }
+          }
+          if (go) {
+            // The sequence's own term blocks, from the term after the corner.
+            if (vals !== undefined) vals.length = 1
+            const cur = resume(L, input, pos, end, ctx, vals) as number
+            if (cur < 0) return FAIL
+            EC.e = cur
+            return vals
           }
           EC.e = end
           return vals
@@ -2502,6 +2524,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const readsRaw = variant === V_PLAIN || variant === V_COLLAPSE || (variant === V_GENERIC && !omitsRaw)
         // A collapsing variant completes on its lone child as that child, so it builds no raw entry for it.
         const lonePasses = variant === V_COLLAPSE || variant === V_CHILDREN_COLLAPSE || (variant === V_GENERIC && collapse)
+        // Only a generic node's builder reads the state; the other variants pass none.
+        const genericState = readsState && variant === V_GENERIC
         // A level the value passes through keeps no frame state: the frame a
         // continuation opens is the route run's one slot (`resume`), and the
         // run hides the caller's collectors and fields once (`runRoute`).
@@ -2519,21 +2543,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (innermost) PV = r
           const end = EC.e
           const fields = ownFields ? buildFieldMap(fieldsArr) : undefined
-          const state = readsState ? ctx.state : undefined
+          const state = genericState ? ctx.state : undefined
           let nd: unknown
           if (!opened) {
             // The lone child: the value in hand, completing as the node's piece would on it.
             const pv = PV
             const kids = pv === undefined ? EMPTY_CH : [pv]
-            nd = pv !== undefined && lonePasses ? pv : nodeOf(variant, collapse, build, kids, readsRaw ? [rawEntry(pv, input, pos, end)] : EMPTY_CH, fields, captureWide ? EMPTY_TLOG : EMPTY_TL, state, pos, end)
+            nd = pv !== undefined && lonePasses ? pv : build(kids, fields, new PlainSpan(pos, end), readsRaw ? [rawEntry(pv, input, pos, end)] : EMPTY_CH, captureWide ? EMPTY_TLOG : EMPTY_TL, state)
           } else if (fk !== undefined) {
             // The frame a continuation opened: its children, as the node piece reads them.
-            nd = nodeOf(variant, collapse, build, capturedFlatChildren(fk), EMPTY_CH, fields, EMPTY_TL, state, pos, end)
+            const kids = capturedFlatChildren(fk)
+            nd = lonePasses && kids.length === 1 ? kids[0] : build(kids, fields, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, state)
           } else {
             const b = fb!
             const kids = b.ch ?? (b.single !== undefined ? [b.single] : EMPTY_CH)
             const rawKids = omitsRaw ? EMPTY_CH : b.raw ?? (b.rawSingle !== undefined ? [b.rawSingle] : EMPTY_CH)
-            nd = nodeOf(variant, collapse, build, kids, rawKids, fields, captureWide ? b.tl ?? EMPTY_TLOG : EMPTY_TL, state, pos, end)
+            nd = lonePasses && kids.length === 1 ? kids[0] : build(kids, fields, new PlainSpan(pos, end), rawKids, captureWide ? b.tl ?? EMPTY_TLOG : EMPTY_TL, state)
           }
           PV = nd
           EC.e = end
@@ -3886,66 +3911,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
         }
 
-        // Arbitrary strict arities use a bounded scalar block chain. Fixed
-        // children are captured into prewritten four-term blocks at assembly;
-        // the parse path has no `kids[i]`, fixed-child loop, or opcode lookup.
-        const block = (
-          count: number,
-          k0: Piece, k1: Piece, k2: Piece, k3: Piece,
-          next: SequenceTermBlock | undefined,
-        ): SequenceTermBlock => {
-          if (count === 1) return (input, cur, ctx, values) => {
-            cur = step(k0, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            return next === undefined ? cur : next(input, cur, ctx, values)
-          }
-          if (count === 2) return (input, cur, ctx, values) => {
-            cur = step(k0, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k1, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            return next === undefined ? cur : next(input, cur, ctx, values)
-          }
-          if (count === 3) return (input, cur, ctx, values) => {
-            cur = step(k0, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k1, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k2, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            return next === undefined ? cur : next(input, cur, ctx, values)
-          }
-          return (input, cur, ctx, values) => {
-            cur = step(k0, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k1, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k2, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            cur = step(k3, input, cur, ctx)
-            if (cur < 0) return -1
-            if (values !== undefined) values.push(TERMV)
-            return next === undefined ? cur : next(input, cur, ctx, values)
-          }
-        }
-        const bind = (start: number): SequenceTermBlock => {
-          const count = Math.min(4, n - start)
-          const child = (offset: number): Piece => link(code[base + start + offset]!)
-          return block(
-            count, child(0), count > 1 ? child(1) : NEVER_PIECE,
-            count > 2 ? child(2) : NEVER_PIECE, count > 3 ? child(3) : NEVER_PIECE,
-            start + count < n ? bind(start + count) : undefined,
-          )
-        }
+        const bind = (start: number): SequenceTermBlock => termChain(step, base, n, start)
         const first = linkFirst()
         const tail = bind(1)
         const runDirectTerms = (
@@ -4518,9 +4484,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_REP:
       case OP_REPV: {
-        // A route's continuation: the first item is already parsed (`resume`).
-        const resumedEntry = REP_RESUMED_ENTRY
-        REP_RESUMED_ENTRY = false
+        // A route's continuation enters with its first item parsed (`REP_SEED`).
+        const seed = REP_SEED
+        REP_SEED = 0
         const child = link(code[ip + 1]!)
         const min = code[ip + 2]!
         const max = code[ip + 3]!
@@ -4702,8 +4668,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const gateItems = itemMayStart !== undefined && ctx._probe === undefined
           const gateSep = sepClass !== undefined && ctx._probe === undefined
           let cur = pos
-          let count = 0
-          if (resumedEntry) { out?.push(RESUME_VALUE); cur = RESUME_END; count = 1 }
+          let count = seed
           for (;;) {
             if (max >= 0 && count >= max) break
             // A separated list is bounded by its SEPARATOR, so it stops at EOF at

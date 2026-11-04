@@ -69,9 +69,9 @@ describe('table assembler', () => {
       const source = Function.prototype.toString.call(linked.pieces.Root)
       if (name === 'Plain') {
         expect(source).toContain('ctx._cstChildren = kids')
-        expect(source).toContain('childrenNode(')
+        expect(source).toContain('EMPTY_CH')
       }
-      if (name === 'Collapsed') expect(source).toContain('childrenCollapseNode(')
+      if (name === 'Collapsed') expect(source).toContain('captured.length === 1')
       if (name === 'Projected') expect(source).toContain('kids, projection, type')
     }
 
