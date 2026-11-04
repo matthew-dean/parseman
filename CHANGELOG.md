@@ -5,14 +5,26 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
-- **Regression tests for three compositions a dialect grammar relies on, across a
-  package boundary.** A dialect's own dispatch routes to a base rule that owns its
-  opener through `routed()`; a base parent reads the dialect's override of a slot
-  below it, through the base's own rules and through a dialect rule that references
+- **The walker and the tables now agree on four more results, and three compositions
+  a dialect grammar relies on are pinned across a package boundary.**
+  - A `node()` over a bare rule reference delivers the `field()` below it on the
+    walker. It decided field capture while the reference was unresolved, so it dropped
+    the field that the tables delivered.
+  - A `sepBy` that fails first names its item. The derived set had no case for it, so
+    the tables reported `"sepBy"` or `"lazy"` as the expected token. Printed tables
+    carry the longer sets: `examples/csv` grows from 786 to 839 bytes.
+  - A `dispatch()` that commits inside a disjoint `choice()` fails where it failed on
+    the walker, as the tables and the walker's ordered path do. It reported the
+    choice's position.
+  - `run()` reports `expected` as a set. Arms that open with the same token reported
+    it once per arm on some paths.
+
+  The pinned shapes: a dialect's own dispatch routes to a base rule that owns its
+  opener through `routed()`; a base parent reads the dialect's override of a slot below
   it; and a base node reads a `field()` two non-node rule hops down, where the dialect
-  overrides the innermost rule. Each is checked on the macro's build-time table,
-  runtime `compose()` and `compile()`, which must build the same values. No behaviour
-  changes. See `test/unit/compose-inherited-shapes.test.ts`.
+  overrides the innermost rule. Each runs on the walker, the table of runtime
+  `compose()`, `compile()` and the macro's table, and compares value, span and expected
+  set. See `test/unit/compose-inherited-shapes.test.ts`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

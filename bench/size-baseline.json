@@ -1,6 +1,6 @@
 {
   "updatedAt": "2026-11-04",
-  "gitRev": "027ee755",
+  "gitRev": "db2058f5",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -11,9 +11,9 @@
       "locMultiplier": 0.081
     },
     "example/csv": {
-      "genBytes": 786,
-      "gzipBytes": 433,
-      "bytesRatio": 0.402,
+      "genBytes": 839,
+      "gzipBytes": 439,
+      "bytesRatio": 0.429,
       "locMultiplier": 0.176
     },
     "example/graphql": {

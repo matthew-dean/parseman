@@ -1,9 +1,10 @@
 /**
  * Three compositions a dialect grammar relies on, pinned across a package boundary:
  * the base is macro-built in one module and composed by a dialect in another, the
- * way a CSS grammar and its Less superset ship. Each shape is checked on the macro's
- * build-time table, on runtime `compose()` (the linked interpreter) and on `compile()`
- * of that composition, and the three must build the same values.
+ * way a CSS grammar and its Less superset ship. Each shape is checked on the walker,
+ * on the table encoded from runtime `compose()`, on `compile()` of that composition
+ * and on the macro's build-time table. All four must return the same value, span and
+ * expected set, on the inputs that parse and on the inputs that fail.
  *
  * - `routed()` seen through an inherited rule. The dialect's own value dispatch routes
  *   `media(` and `style(` to the base's `MediaTest`/`StyleTest`, which own the opener
@@ -17,6 +18,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import * as P from '../../src/index.ts'
+import { run as walk } from '../../src/functional/run.ts'
 import { evalMacroExports } from '../helpers/eval-macro-module.ts'
 import { macroComposed } from '../helpers/macro-package.ts'
 
@@ -33,15 +35,19 @@ function engines(baseSource: string, dialectSource: string): Engines {
   }
 }
 
-function agree(all: Engines, entry: string, input: string): unknown {
-  const want = P.run(all.interpreter[entry]!, input)
-  expect(want.ok, `${entry} on ${JSON.stringify(input)}`).toBe(true)
-  for (const engine of ['compile', 'macro'] as const) {
-    const got = P.run(all[engine][entry]!, input)
-    expect({ ok: got.ok, end: got.span.end, value: got.value }, `${engine}: ${entry} on ${JSON.stringify(input)}`)
-      .toEqual({ ok: want.ok, end: want.span.end, value: want.value })
+type Shape = { ok: boolean; span: { start: number; end: number }; value: unknown; expected: string[]; unconsumedFrom: number | null }
+const shape = (r: P.RunResult): Shape =>
+  ({ ok: r.ok, span: { start: r.span.start, end: r.span.end }, value: r.value, expected: [...r.expected].sort(), unconsumedFrom: r.unconsumedFrom })
+
+/** Every engine's result, checked equal; returns the walker's. */
+function agree(all: Engines, entry: string, input: string): Shape {
+  // The driver walks a combinator; the public `run()` encodes one to a table first.
+  const want = shape(walk(all.interpreter[entry]!, input))
+  const legs = { table: all.interpreter, compile: all.compile, macro: all.macro }
+  for (const [engine, map] of Object.entries(legs)) {
+    expect(shape(P.run(map[entry]!, input)), `${engine}: ${entry} on ${JSON.stringify(input)}`).toEqual(want)
   }
-  return want.value
+  return want
 }
 
 describe('routed() through an inherited rule', () => {
@@ -85,18 +91,18 @@ export const less = compose([css, rules({ trivia: ws }, g => ({
   const all = engines(BASE, LESS)
 
   it('routes media( and style( to the base rules', () => {
-    expect(agree(all, 'Value', 'media(print)')).toEqual(['media(', { type: 'Call', name: 'media', query: 'print' }])
-    expect(agree(all, 'Value', 'style(--x: 1)')).toEqual(['style(', { type: 'Call', name: 'style', query: ['--x', '1'] }])
+    expect(agree(all, 'Value', 'media(print)').value).toEqual(['media(', { type: 'Call', name: 'media', query: 'print' }])
+    expect(agree(all, 'Value', 'style(--x: 1)').value).toEqual(['style(', { type: 'Call', name: 'style', query: ['--x', '1'] }])
   })
 
   it('keeps the dialect arm and the base fallbacks', () => {
-    expect(agree(all, 'Value', 'e("a")')).toEqual(['e(', { type: 'Escape', value: 'a' }])
-    expect(agree(all, 'Value', 'rgb(0)')).toEqual(['rgb(', { type: 'Call', name: 'rgb', args: '0' }])
-    expect(agree(all, 'Value', 'auto')).toEqual(['auto', { type: 'Keyword', value: 'auto' }])
+    expect(agree(all, 'Value', 'e("a")').value).toEqual(['e(', { type: 'Escape', value: 'a' }])
+    expect(agree(all, 'Value', 'rgb(0)').value).toEqual(['rgb(', { type: 'Call', name: 'rgb', args: '0' }])
+    expect(agree(all, 'Value', 'auto').value).toEqual(['auto', { type: 'Keyword', value: 'auto' }])
   })
 
   it('routes through the dispatch when another dialect rule reaches it', () => {
-    expect(agree(all, 'Declaration', 'a: media(print)'))
+    expect(agree(all, 'Declaration', 'a: media(print)').value)
       .toEqual({ type: 'Declaration', name: 'a', value: { type: 'Call', name: 'media', query: 'print' } })
   })
 })
@@ -128,7 +134,7 @@ export const less = compose([css, rules(g => ({
   const all = engines(BASE, LESS)
 
   it("reads the dialect's slot through the base's own parents", () => {
-    expect(agree(all, 'HasPseudo', ':has(> @{b} .x, .y)')).toEqual({
+    expect(agree(all, 'HasPseudo', ':has(> @{b} .x, .y)').value).toEqual({
       type: 'Pseudo',
       name: 'has',
       args: [{ lead: '>', selector: [[{ var: 'b' }], ['.x']] }, [['.y']]],
@@ -136,7 +142,7 @@ export const less = compose([css, rules(g => ({
   })
 
   it('reads it through a dialect rule that references the inherited parent', () => {
-    expect(agree(all, 'SelectorBranch', '~ a@{b}:extend(.c)')).toEqual({
+    expect(agree(all, 'SelectorBranch', '~ a@{b}:extend(.c)').value).toEqual({
       selector: { lead: '~', selector: [['a', { var: 'b' }]] },
       extend: '.c',
     })
@@ -166,13 +172,73 @@ export const less = compose([css, rules(g => ({
   const all = engines(BASE, LESS)
 
   it('delivers the overridden separator field to the inherited node', () => {
-    expect(agree(all, 'Function', 'mix(a; b, c)')).toEqual({
+    expect(agree(all, 'Function', 'mix(a; b, c)').value).toEqual({
       name: 'mix',
       args: { items: ['a', 'b', 'c'], separators: ['; ', ', '] },
     })
   })
 
   it('delivers a single separator', () => {
-    expect(agree(all, 'FunctionArguments', 'a;b')).toEqual({ items: ['a', 'b'], separators: [';'] })
+    expect(agree(all, 'FunctionArguments', 'a;b').value).toEqual({ items: ['a', 'b'], separators: [';'] })
+  })
+})
+
+describe('a failure reads the same on every engine', () => {
+  const FN = `import { rules, node, field, regex, literal, sequence, oneOrMoreSep } from 'parseman' with { type: 'macro' }
+export const css = rules(g => ({
+  Function: node('Call', sequence(regex(/[a-z]+\\(/), g.FunctionArguments, literal(')')), c => c[1]),
+  FunctionArguments: node('Arguments', g.functionArgumentList, c => c),
+  functionArgumentList: oneOrMoreSep(g.FunctionArgument, field('separator', regex(/, */))),
+  FunctionArgument: node('Argument', regex(/[a-z0-9]+/), c => c[0].value),
+}))`
+  const FN_LESS = `import { rules, regex, compose } from 'parseman' with { type: 'macro' }
+import { css } from './base.js'
+export const less = compose([css, rules(g => ({
+  FunctionArgument: regex(/[a-z0-9@]+/),
+}))])`
+
+  it('names the item a list wanted, where a list is what failed', () => {
+    const all = engines(FN, FN_LESS)
+    const failed = agree(all, 'Function', 'mix(')
+    expect(failed.span.start).toBe(4)
+    expect(failed.expected).toEqual(['/[a-z0-9@]+/'])
+  })
+
+  const SUPPORTS = `import { rules, regex, literal, sequence, choice, trivia } from 'parseman' with { type: 'macro' }
+const ws = trivia(regex(/[ \\t\\n]+/))
+export const css = rules({ trivia: ws }, g => ({
+  Supports: sequence(literal('@supports'), g.SupportsCondition),
+  SupportsCondition: choice(g.SupportsNot, g.SupportsInParens),
+  SupportsNot: sequence(literal('not'), g.SupportsInParens),
+  SupportsInParens: choice(g.SupportsDeclaration, g.SupportsGroup),
+  SupportsDeclaration: sequence(literal('('), regex(/[a-z-]+/), literal(':'), regex(/[a-z0-9]+/), literal(')')),
+  SupportsGroup: sequence(literal('('), g.SupportsCondition, literal(')')),
+}))`
+  const SUPPORTS_LESS = `import { rules, regex, choice, compose, trivia } from 'parseman' with { type: 'macro' }
+import { css } from './base.js'
+const ws = trivia(regex(/[ \\t\\n]+/))
+export const less = compose([css, rules({ trivia: ws }, g => ({
+  SupportsInParens: choice(g.SupportsDeclaration, g.SupportsGroup, g.SupportsInterpolation),
+  SupportsInterpolation: regex(/@\\{[a-z]+\\}/),
+}))])`
+
+  it('lists a token once, where two arms open with it', () => {
+    const all = engines(SUPPORTS, SUPPORTS_LESS)
+    const failed = agree(all, 'Supports', '@supports [x]')
+    expect(failed.span.start).toBe(10)
+    expect(failed.expected).toContain('"not"')
+    expect(failed.expected.filter(e => e === '"("')).toHaveLength(1)
+  })
+
+  it('fails where a dispatch inside a choice committed', () => {
+    const arm = P.dispatch(
+      P.token(P.sequence(P.regex(/[a-z]+/), P.optional(P.literal('(')))),
+      P.when('url(', P.node('Url', P.sequence(P.routed(), P.literal(')')), c => c)),
+      P.otherwise(P.node('Keyword', P.routed(), c => c)),
+    )
+    const value = P.choice(arm, P.regex(/[0-9]+/))
+    const walked = walk(value, 'url(x')
+    expect(walked.span.start).toBe(4)
+    expect(shape(P.run(value, 'url(x'))).toEqual(shape(walked))
   })
 })
