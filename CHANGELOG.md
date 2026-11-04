@@ -147,11 +147,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `failAt`). The tables reported what the failed item left, e.g. `")"` inside the group
   of `x:(1;` where the interpreter said what may start a value.
 
-- **An internals overview, `docs/design/internals.md`.** The README's "Developing"
-  section now points at it: the pipeline, the engines, the table and wire format, macro
-  selection and how performance is measured. Its opcode table is checked against
-  `src/table/ops.ts` by `test/unit/internals-doc.test.ts`.
-
 - **An emitted assembly factory takes four fewer parameters.** `TRIVIALABELS`,
   `scanTrivia`, `commitTriviaScan` and `scanTriviaCompact` were declared by every factory
   and read by no generated code; they were kept so factories from older runtimes would
@@ -181,6 +176,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     keeps with object literals can still flip between a fast and a slow mode per process
     on Node 26. Build kept nodes with a constructor whose `prototype` is
     `Object.prototype`, and copy the arrays they keep with a spread or `slice()`.
+
+## 0.59.2 — 2026-11-04
+
+- **An internals overview, `docs/design/internals.md`.** The README's "Developing"
+  section now points at it: the pipeline, the engines, the table and wire format, macro
+  selection and how performance is measured. Its opcode table is checked against
+  `src/table/ops.ts` by `test/unit/internals-doc.test.ts`.
 
 ## 0.59.1 — 2026-11-04
 
