@@ -73,7 +73,10 @@ shape that meets this is the emitted-assembly factory, which takes its helpers i
 - **A factory refuses an older runtime.** `FACTORY_ARITY_GUARD` (`src/table/emit.ts`)
   throws, naming the printing version, when the runtime passes fewer helpers than the
   factory was printed with.
-- **Removing or reordering a helper breaks every factory printed before it**, and a
-  factory printed before 0.59.0 has no guard, so it would bind the wrong helpers. Such a
-  change belongs in a minor and must also add a runtime-side check of the factory's
-  declared parameter count.
+- **Removing a helper breaks every factory printed before it**, and a factory printed
+  before 0.59.0 has no guard, so it would bind the wrong helpers. Such a change belongs
+  in a minor and must also add a runtime-side check of the factory's declared parameter
+  count.
+- **Helpers are never reordered.** A reorder keeps the count, so neither guard would see
+  it. One would need a check of the order itself (an ABI identifier printed with the
+  factory), which does not exist.

@@ -36,8 +36,9 @@ pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm check:differentials
 see (INV-1 to INV-12, each described in `docs/design/invariant-gate.md`). Among
 them: no accessor installed onto an already-built object, no field in a public
 `*Options` type that nothing reads, no module unreachable from a published
-entry point, no declaration body duplicated across modules, no option read on a
-parse path, no comment naming a path that does not exist, and no `delete` on
+entry point, no declaration body duplicated across modules, no combinator `parse`
+body reading an `opts`/`options`/`_opts` captured at construction (per-call
+`parse(...)` options and `ctx` reads are allowed), no comment naming a path that does not exist, and no `delete` on
 an object the enclosing function did not construct (a `delete` on a long-lived
 object flips `%HasFastProperties` to false permanently — a `delete` on a scratch
 local is fine and deliberately not flagged). It is a required CI
