@@ -166,7 +166,14 @@ build reads that file. Ship it with the package. An ancestor that comes from ano
 package is recorded as a reference to that package's export and resolved from the
 artifact's location, so it isn't copied into every descendant. Nothing at runtime reads
 carried pieces, and a composed artifact no longer imports its ancestors just to forward
-them. Under other bundlers the pieces stay inline on the value
+them. An entry's export is traced through its re-exports, `export *` included, to the
+module that declares it, and only that module's pieces are written for it: an export
+traced to a module that recorded none (a precompiled dependency, say) gets no sidecar
+entry and keeps its inline pieces. An ancestor the build bundles, rather than keeping
+external, is written out in full. Each sidecar records a digest of its artifact, and a
+downstream build that finds a different artifact beside it fails, as it does when a
+compiled grammar's pieces cannot be found at all: neither falls back to a runtime
+`compose()`. Under other bundlers the pieces stay inline on the value
 (`test/unit/carried-pieces-sidecar.test.ts`).
 
 ## How this behaves in each execution mode
