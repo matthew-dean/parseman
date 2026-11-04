@@ -22,7 +22,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   See `docs/guide/extending.md` and `test/unit/rules-prior.test.ts`.
 - **A macro `composeLeaf()` now links its pieces as `compose()` and the runtime
   `composeLeaf()` do**, instead of merging their rule maps by name. The leaf can read
-  `prior.X`, and first sets and expected sets see the composed grammar.
+  `prior.X`, and first sets and expected sets see the composed grammar. A pre-final
+  piece that reads `prior` still counts as recognition-only. Tables of a real
+  `composeLeaf()` grammar can shrink: a reference between pieces used to stay
+  unresolved, so its expected sets held rule names.
+- **`compose()` and `composeLeaf()` results spell out their rule names.** Each is
+  typed with the names its items spell out, as well as lookup by any string, so
+  `composed.X` needs no `!` and `PriorRules<typeof composed>` rejects a misspelled rule.
 - **A `compose()` that references a rule no piece defines fails the build, naming
   the rule.** The macro fuse used to encode around the undefined slot, leave the
   runtime `compose()` in place and warn "ref() used before .define()", which read as
