@@ -104,6 +104,14 @@ describe('invariant gate', () => {
     expect(code).toBe(1)
   })
 
+  it('INV-13 gives two anonymous duplicate groups in one file separate allowlist keys', () => {
+    const { code, out } = runGate([`--root=${fixture('inv13-anon')}`, '--json'])
+    const keys = (JSON.parse(out) as { live: { key: string }[] }).live.map(f => f.key)
+    expect(keys.filter(k => k.startsWith('INV-13:')).length).toBe(2)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(code).toBe(1)
+  })
+
   it('fails when an allowlist entry no longer matches a finding', () => {
     // The allowlist may only get SHORTER. A stale entry is a standing licence
     // to reintroduce the violation it names, so the gate treats it as a

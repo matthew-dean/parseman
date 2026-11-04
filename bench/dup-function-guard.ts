@@ -27,7 +27,7 @@
  *   pnpm dupfn:guard
  *   pnpm dupfn:baseline
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { fail, summary } from './ab-harness.ts'
@@ -126,7 +126,7 @@ function worst(shapes: readonly FunctionShape[], n = 5): string[] {
     .map(g => `${g.length}x ${g[0]!.chars} chars \`${g[0]!.name}\` at lines ${g.map(s => s.line).join(', ')}`)
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const ROOT = path.resolve(HERE, '..')
   let artifacts: Artifact[]
   try {

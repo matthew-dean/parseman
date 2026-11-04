@@ -56,7 +56,7 @@
  *   pnpm callcount:baseline                # rewrite the baseline from the working tree
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { builtinModules } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -207,7 +207,7 @@ export function baselineFailures(baseline: Rows, head: Rows): string[] {
 
 const readJson = <T>(file: string): T | null => existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as T : null
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const argValue = (flag: string): string | null =>
     process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
   const UPDATE = process.argv.includes('--update')
