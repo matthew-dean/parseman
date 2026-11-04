@@ -5,6 +5,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **Regression tests for three compositions a dialect grammar relies on, across a
+  package boundary.** A dialect's own dispatch routes to a base rule that owns its
+  opener through `routed()`; a base parent reads the dialect's override of a slot
+  below it, through the base's own rules and through a dialect rule that references
+  it; and a base node reads a `field()` two non-node rule hops down, where the dialect
+  overrides the innermost rule. Each is checked on the macro's build-time table,
+  runtime `compose()` and `compile()`, which must build the same values. No behaviour
+  changes. See `test/unit/compose-inherited-shapes.test.ts`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the
