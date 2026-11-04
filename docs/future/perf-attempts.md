@@ -709,6 +709,52 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     piece, with no single item over ~5% of the parse, and inlining moves the remainder
     between neighbours run to run, so time profiling cannot attribute the last 1.7k. Not cut:
     no measured item is large enough to show over the ±0.3% instruction null.
+  - Rejected: a route that reuses the ordinary lowering through per-call heads (`3eac9adb`,
+    never merged). Each repeat and optional row exposed its head, and a route's continuation
+    was the row's own lowering, entered with the corner in hand. It removed the route's copies,
+    but it moved what they knew statically into the shared code: a `head()` call and tests on
+    every entry, and frames opened for continuations that then declined. Calls per parse rose
+    above `main` (`font: 1;` 238 against 210, `gen-workload.scss` 8.43M against 7.62M), and
+    instructions at `assemblyBudget` 0 rose +3.7% to +25.9% against `8543b285`. The CI
+    cross-process gate failed GraphQL `document` at +1.9%. Lesson: share the definition, and
+    keep what a site knows as data decided when the site is built.
+  - Rejected: a repeat level that asks the row's head before it resumes. Target: CSS
+    `font: 12px/1.5 a, b;` at or below `main`. It stayed +7.8% over `main` at
+    `assemblyBudget` 0: the decision is made once either way, so moving it saves nothing.
+  - **A route continues through the row's own pieces, decided by compile-time data.**
+    Replaces the attempt above (`perf/left-corner-routes-v2`). A sequence's continuation is
+    its own term blocks from the term after the corner. A repeat's is its own loop, lowered
+    with `count` starting at 1, with no test in the loop. Each level stores one mask of what
+    its continuation can start with; a character outside it completes the level, and a
+    character inside it enters the row, which decides the rest. The term-kind switch and the
+    route's gap reads are gone. A top node reads its routes in a piece of its own, so other
+    nodes keep `main`'s body, and `skipTrivia` and the repeat loop are `main`'s text again. A
+    level with no mask always resumes: dropping the masks altogether put `font: 1;` at 224
+    calls against `main`'s 210.
+    Calls per parse at `assemblyBudget` 0 (`main` → this): `font: 1;` 210 → 173, Less
+    `color: red;` 327 → 238, `benchmark.less` 2,244,583 → 1,947,177, bootstrap 2,368,876 →
+    2,097,765, `benchmark.css` 1,847,339 → 1,699,312, `gen-workload.scss` 7,618,527 →
+    7,070,924, `jess-x8.jess` 798,253 → 750,073; GraphQL and JSON unchanged. At the default
+    budget routes do not run (emitted sites do not route, and a selective artifact carries no
+    route data), so calls and shipped bytes equal `main`. Where every top declines (all
+    non-ASCII identifiers), the top's piece adds a call: 397,600 → 400,000 on CSS, 1,060,268 →
+    1,072,015 on Less. Route data costs a closure artifact: `example/css` 9,518 → 10,317 B,
+    `.jess` AST (no selective assembly) 392,568 → 419,915 B. Identity against `main` @
+    `c5e35167`: 0 diffs, four dialects, AST and CST, failure rows included.
+  - **A lookahead under trivia the labels cannot name is decided when routes are derived.**
+    A route that passed a sequence led by a lookahead, where the site's trivia was unknown
+    at encode time, checked at every entry whether that trivia could start at the
+    character, and cut the route back if so. Over one sweep of each dialect the check ran
+    43,675 times on Less (44 of 111 routes carried it; CSS 12 of 30, `.jess` 9 of 31) and
+    never fired: callers skip trivia before the node. Now a character that may start any
+    of the table's trivia stops the route above that sequence. A table with no trivia of
+    its own is called only with its caller's (`RunCfg.inheritedTrivia`), so any character
+    may start it, and no route passes the lookahead. Identity against `main` @
+    `c5e35167`: 0 diffs, four dialects, AST and CST. Why Less's trivia is unknown there:
+    the site (under `VarFallbackItem`) is reached under ten trivia slots, ten distinct
+    objects with the same first set (whitespace and `/`). The labels compare slots by
+    identity, so ten equal slots meet as unknown; interning equal trivia, or labelling
+    the lead set instead of the slot, would make it known.
   - Rejected: the ascent as one loop instead of nested level pieces (identity clean). CSS
     `font: 1/2;` +48.9% cycles / +6.0% instructions `--jitless` (nested: +30.6% / −2.3%),
     `font: 12px;` −2.6% / +0.3% (nested: −12.5% / −11.0%): the loop reads each level's facts
