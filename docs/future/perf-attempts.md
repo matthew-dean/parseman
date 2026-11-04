@@ -741,6 +741,15 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     release gate on the same commit fails one case against `v0.60.3` (`main` plus its
     version bump): GraphQL `document` +1.9% median (sign-test p 7.5e-10, slower in 118 of
     160 rounds); the other eleven cases are within ±1.3%.
+  - Rejected: a repeat level that asks the row's head before it resumes (the separator
+    attempt). Target: CSS `font: 12px/1.5 a, b;` (three resumes) at or below `main`. The
+    repeat level asked the row's own head (separator or next item after the trivia) and
+    resumed only when the row would consume; the resumed entry then skipped its own check.
+    Identity clean. JIT instructions, `assemblyBudget` 0, against `3eac9adb` (A/A null
+    ±0.6%, `benchmark.css` ±2.2%): `font: 1;` −0.6%, `font: 1/2;` −1.2%, `font: a, b;`
+    +0.3%, `font: 12px/1.5 a;` −0.4%, `font: 12px/1.5 a, b;` +0.3%, Less `color: red;`
+    −2.1%, files −1.4% to +0.4%. Three-resume `font` stays +7.8% over `main`: the target is
+    not reached, and the decision is made once either way, so moving it saves nothing.
   - **A lookahead under trivia the labels cannot name is decided when routes are derived.**
     A route that passed a sequence led by a lookahead, where the site's trivia was unknown
     at encode time, checked at every entry whether that trivia could start at the
