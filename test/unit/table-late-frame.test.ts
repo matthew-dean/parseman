@@ -6,7 +6,7 @@
  * test from, which runs as written in every engine.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { attempt, choice, classifiedTrivia, cstBuildHost, dispatch, field, literal, many, node, noTrivia, optional, otherwise, peek, regex, rules, sequence, transform, when } from '../../src/index.ts'
+import { attempt, choice, classifiedTrivia, cstBuildHost, dispatch, field, literal, many, node, noTrivia, optional, otherwise, peek, regex, rules, sepBy, sequence, transform, when } from '../../src/index.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
@@ -77,7 +77,7 @@ const hasLateFrame = (prog: TableProgram): boolean =>
 const lowers = (g: G): boolean => hasLateFrame(encodeTable(g))
 
 /** The four engines over one grammar, on every input, against the interpreter. */
-function agree(g: G, inputs: readonly string[]): void {
+function agree(g: G, inputs: readonly string[], opts: Parameters<typeof run>[2] = {}): void {
   const prog = encodeTable(g)
   const engines: [string, Parameters<typeof run>[0]][] = [
     ['reference', execRules(prog).Root!],
@@ -85,8 +85,8 @@ function agree(g: G, inputs: readonly string[]): void {
     ['emitted', tableRules(emittedOf(prog)).Root!],
   ]
   for (const input of inputs) {
-    const want = digestValue(run(g.Root!, input))
-    for (const [name, entry] of engines) expect(digestValue(run(entry, input)), `${input} ${name}`).toBe(want)
+    const want = digestValue(run(g.Root!, input, opts))
+    for (const [name, entry] of engines) expect(digestValue(run(entry, input, opts)), `${input} ${name}`).toBe(want)
   }
 }
 
@@ -125,8 +125,9 @@ describe('a late frame', () => {
     const prog = encodeTable(ladder())
     const twin = encodeTable(ladder(true))
     for (const input of INPUTS) {
-      const want = digestValue(run(tableRules(twin).Root!, input, { tolerant: true }))
-      expect(digestValue(run(tableRules(prog).Root!, input, { tolerant: true })), input).toBe(want)
+      const want = digestValue(run(tableRules(closureOf(twin)).Root!, input, { tolerant: true }))
+      expect(digestValue(run(tableRules(closureOf(prog)).Root!, input, { tolerant: true })), `${input} closure`).toBe(want)
+      expect(digestValue(run(tableRules(emittedOf(prog)).Root!, input, { tolerant: true })), `${input} emitted`).toBe(want)
     }
   })
 
@@ -161,6 +162,102 @@ describe('a late frame', () => {
       Atom: node('Atom', regex(/[0-9]+/), (children, _f, span) => ({ atom: children[0], span })),
     })) as G
     agree(g, ['1;', '1 ;', '1 + 2 ;', '1 + ;'])
+  })
+})
+
+/**
+ * What a lowered site leans on at run time. Each of these fails on the check that makes
+ * it safe: a registered plant in `scripts/differential-defects.mjs` drops that check.
+ */
+describe('a site that lowers', () => {
+  const sumOver = (opts: Parameters<typeof rules>[0]) => rules(opts, (g: G) => ({
+    Root: sequence(g.Sum!, literal(';')),
+    Sum: node('Sum', sequence(g.Atom!, many(sequence(literal('+'), g.Atom!))), bin('Sum'), { collapse: true }),
+    Atom: atom(),
+  })) as G
+  const SUMS = ['1;', '1 ;', '1 + 2;', '1 + 2 ;', '1 +;', '  1  +  2  ;', '1 + ;']
+
+  it('a trivia with no scanner runs as written', () => {
+    const slowTrivia = () => many(choice(regex(/ /), regex(/\t/)))
+    const g = sumOver({ trivia: slowTrivia() })
+    expect(lowers(g)).toBe(true)
+    agree(g, SUMS)
+  })
+
+  it('a scope the labels cannot name runs as written', () => {
+    const noTriviaGrammar = sumOver({})
+    expect(lowers(noTriviaGrammar)).toBe(true)
+    agree(noTriviaGrammar, SUMS, { trivia: regex(/ +/) })
+  })
+
+  it('a corner that returned undefined published nothing, so its node is built', () => {
+    const g = rules({ trivia: trivia() }, (g: G) => ({
+      Root: sequence(g.Sum!, literal(';')),
+      Sum: node('Sum', sequence(g.Atom!, many(sequence(literal('+'), g.Atom!))), bin('Sum'), { collapse: true }),
+      Atom: node('Atom', regex(/[0-9]+/), () => undefined),
+    })) as G
+    expect(lowers(g)).toBe(true)
+    agree(g, SUMS)
+    const prog = cst(g)
+    for (const input of SUMS) {
+      const want = digestValue(run(tableRules(closureOf(prog)).Root!, input, { build: cstBuildHost }))
+      expect(digestValue(run(tableRules(emittedOf(prog)).Root!, input, { build: cstBuildHost })), input).toBe(want)
+    }
+  })
+
+  it('a separated tail has no first test to read, so it runs as written', () => {
+    const g = rules({ trivia: trivia() }, (g: G) => ({
+      Root: sequence(g.List!, literal(';')),
+      List: node('List', sequence(g.Atom!, sepBy(g.Word!, literal(','))), bin('List'), { collapse: true }),
+      Word: node('Word', regex(/[a-z]+/), children => ({ word: children[0] })),
+      Atom: atom(),
+    })) as G
+    agree(g, ['1;', '1 a;', '1 a,b;', '1 a , b ;', '1 ,;', '1 a,;'])
+  })
+
+  it('a node without collapse always builds, so it runs as written', () => {
+    const build = vi.fn(bin('Sum'))
+    const g = rules({ trivia: trivia() }, (g: G) => ({
+      Root: sequence(g.Sum!, literal(';')),
+      Sum: node('Sum', sequence(g.Atom!, many(sequence(literal('+'), g.Atom!))), build),
+      Atom: atom(),
+    })) as G
+    expect(lowers(g)).toBe(false)
+    agree(g, SUMS)
+    build.mockClear()
+    expect(run(tableRules(closureOf(encodeTable(g))).Root!, '1;').ok).toBe(true)
+    expect(build).toHaveBeenCalledTimes(1)
+  })
+
+  /** The gap read to decide was not recorded, so a recording parse scans it again. */
+  const recording = (parentCaptures: boolean) => rules({ trivia: trivia() }, (g: G) => ({
+    Root: node('Root', sequence(g.Sum!, optional(literal('+!')), literal(';')), (children, _f, span, raw, log) => ({ children, span, raw, log }), parentCaptures ? { captureTrivia: true } : {}),
+    Sum: node('Sum', sequence(g.Atom!, many(literal('+='))), (children, _f, span, raw, log) => ({ children, span, raw, log }), { collapse: true, captureTrivia: true }),
+    Atom: node('Atom', regex(/[0-9]+/), children => children[0]),
+  })) as G
+  const RECORDED = ['1;', '1 /* a */;', '1 /* a */ += /* b */;', '1 /* a */ += /* b */ +=  ;', '1 /* a */ +! ;', '/* a */ 1 /* b */ +! /* c */;']
+
+  it('a node that captures its gaps gets them whichever way it decided', () => {
+    for (const parent of [false, true]) {
+      expect(lowers(recording(parent))).toBe(true)
+      agree(recording(parent), RECORDED)
+    }
+  })
+
+  it('root trivia records the gap once, and takes it back from a tail that took nothing', () => {
+    agree(ladder(), INPUTS, { rootTrivia: { select: ['comment'] } })
+    agree(recording(false), RECORDED, { rootTrivia: { select: ['comment'] } })
+  })
+
+  it('a raw parent over an undefined corner, with the gap recorded', () => {
+    const g = rules({ trivia: trivia() }, (g: G) => ({
+      Root: node('Root', sequence(g.Sum!, optional(literal('+!')), literal(';')), (children, _f, span, raw, log) => ({ children, span, raw, log })),
+      Sum: node('Sum', sequence(g.Atom!, many(literal('+='))), (children, _f, span, raw, log) => ({ children, span, raw, log }), { collapse: true, captureTrivia: true }),
+      Atom: node('Atom', regex(/[0-9]+/), () => undefined),
+    })) as G
+    expect(lowers(g)).toBe(true)
+    agree(g, RECORDED)
+    agree(g, RECORDED, { rootTrivia: { select: ['comment'] } })
   })
 })
 

@@ -515,7 +515,7 @@ export const OP_STRICT = 48
  * `corner` in the PARENT's collector and looks at the next token. Where `tail` cannot
  * start there, the corner is the result: no frame, no children, no builder. Where it
  * can, the corner's publication is taken back and `wrapper`'s frame opens around it and
- * `tail`, in this one function. `tail` is read for the decision (`continues.ts`). Where
+ * `tail`, in this one function. `tail` is read for the decision (`late-frame.ts`). Where
  * no decision can be made, and under recovery, a probe or the reference driver, this
  * is `wrapper`, the node as written.
  */

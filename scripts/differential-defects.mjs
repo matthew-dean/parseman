@@ -459,6 +459,115 @@ export const DEFECTS = {
     }],
   },
 
+  'cont-no-scanner-check-dropped': {
+    why: 'OP_CONT: a named trivia with no scanner runs late, so the decision calls a scanner that is not there',
+    edits: [{
+      file: 'src/table/late-frame.ts',
+      find: '(tri < 0 || triviaScan[tri] == null)',
+      replace: 'tri < 0',
+    }],
+  },
+
+  'cont-unknown-scope-check-dropped': {
+    why: 'OP_CONT: a scope the labels cannot name runs late, so the decision sees no gap at all',
+    edits: [{
+      file: 'src/table/late-frame.ts',
+      find: '(tri < 0 || triviaScan[tri] == null)',
+      replace: '(tri >= 0 && triviaScan[tri] == null)',
+    }],
+  },
+
+  /** A corner that returned undefined published nothing: its node has no child and builds. */
+  'cont-undefined-corner-lean-closure': {
+    why: 'OP_CONT, closure AST body: an undefined corner misses and returns undefined, so its node never builds',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (v !== undefined && !(gapRe === undefined ? startsTail(cls, input, at)',
+      replace: 'if (!(gapRe === undefined ? startsTail(cls, input, at)',
+    }],
+  },
+
+  'cont-undefined-corner-closure': {
+    why: 'OP_CONT, closure node body: an undefined corner misses and returns undefined, so its node never builds',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (c0 !== undefined && !(late.gapRe === undefined',
+      replace: 'if (!(late.gapRe === undefined',
+    }],
+  },
+
+  'cont-undefined-corner-emitted': {
+    why: 'OP_CONT, emitted: an undefined corner misses and returns undefined, so its node never builds',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if (g.gapRow < 0) test = `if(c0!==undefined&&${missAt(g.cls, at)})return c0\\n`',
+      replace: 'if (g.gapRow < 0) test = `if(${missAt(g.cls, at)})return c0\\n`',
+    }],
+  },
+
+  'cont-gate-reads-separated-list': {
+    why: 'OP_CONT: the row of a separated list holds its recovery sentinel, so the test reads the separator as the first token',
+    edits: [{
+      file: 'src/table/late-frame.ts',
+      find: 'if (code[at + 2] !== 0 || code[at + 4]! >= 0 || code[at + 7]! < 0) return undefined',
+      replace: 'if (code[at + 2] !== 0 || code[at + 7]! < 0) return undefined',
+    }],
+  },
+
+  'cont-recovery-late-closure': {
+    why: 'OP_CONT, closure: recovery runs the late path, so a tail that would have resynced never opens',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'cfg.tolerant || cfg.probe ? undefined : (ip, tri) => canDecide(code, ip, tri, t.triviaScan)',
+      replace: 'cfg.probe ? undefined : (ip, tri) => canDecide(code, ip, tri, t.triviaScan)',
+    }],
+  },
+
+  'cont-quiet-while-recording-closure': {
+    why: 'OP_CONT, closure: the tail skips the rescan while trivia records, so the gap is never recorded',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (ctx._triviaLog === undefined && ctx._rootTriviaLog === undefined\n      && (frame.cap === CAP_OFF || !((frame.cap === CAP_ON || ctx.captureTrivia === true)\n        && (frame.buf || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)))) {',
+      replace: 'if (frame.cap !== 99) {',
+    }],
+  },
+
+  'cont-quiet-while-recording-emitted': {
+    why: 'OP_CONT, emitted: the tail skips the rescan while trivia records, so the gap is never recorded',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'else ${capture === \'true\' ? `{\\n${recorded}\\n}`\n  : `if(ctx._triviaLog===undefined&&ctx._rootTriviaLog===undefined${capture === \'false\' ? \'\' : `&&!${capture}`}){',
+      replace: 'else ${`if(true){',
+    }],
+  },
+
+  'cont-rollback-dropped-closure': {
+    why: 'OP_CONT, closure: a tail that took nothing keeps the gap it recorded',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)\n      EC.e = end\n',
+      replace: 'EC.e = end\n',
+    }],
+  },
+
+  'cont-rollback-dropped-emitted': {
+    why: 'OP_CONT, emitted: a tail that took nothing keeps the gap it recorded',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if(v!==FAIL&&EC.e<=s0){rollbackScannedTriviaAt(ctx,tl0,tl1,lg0,lg1,rt0,rt1);EC.e=c1}',
+      replace: 'if(v!==FAIL&&EC.e<=s0){EC.e=c1}',
+    }],
+  },
+
+  'late-frame-ignores-collapse': {
+    why: 'encoder: a node without collapse lowers, so a one-child node returns the child and never builds',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'if (this.plan !== undefined || d.collapse !== true || d.build === undefined',
+      replace: 'if (this.plan !== undefined || d.build === undefined',
+    }],
+  },
+
   'node-gate-narrowed': {
     why: 'encoder: a node gate reads its body through a nullable pad, so a miss reports a static set where entering the body reports its own',
     edits: [{

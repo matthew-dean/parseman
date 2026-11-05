@@ -135,7 +135,7 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges, TRI_NONE } from './site-labels.ts'
+import { CAP_OFF, CAP_ON, type SiteLabel, computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges, TRI_NONE } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -1190,10 +1190,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * The tail of a late frame. The gap was scanned to decide, so with no gap there is
    * nothing to record or undo, and with nothing recording it is not scanned again.
    */
-  function lateTail(tail: Piece, input: string, end: number, at: number, ctx: ParseContext): unknown {
+  function lateTail(tail: Piece, input: string, end: number, at: number, ctx: ParseContext, frame: SiteLabel): unknown {
     if (at === end) return tail(input, end, ctx)
     if (ctx._triviaLog === undefined && ctx._rootTriviaLog === undefined
-      && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
+      && (frame.cap === CAP_OFF || !((frame.cap === CAP_ON || ctx.captureTrivia === true)
+        && (frame.buf || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)))) {
       const v = tail(input, at, ctx)
       if (v !== FAIL && EC.e <= at) EC.e = end
       return v
@@ -1587,6 +1588,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   let NODE_BODY: Piece | undefined
   /** Set by `OP_CONT` for the `OP_NODE` body that opens in its own closure. */
   let LATE_NODE: {
+    frame: SiteLabel
     corner: Piece
     tail: Piece
     scan: FastTriviaScanner | undefined
@@ -1916,9 +1918,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const q = gapRe!.test(input) ? gapRe!.lastIndex : -1
           return (q >= 0 && classHas(follow!, lead(input, q))) || (other !== undefined && classHas(other, lead(input, at)))
         }
+        const frame = closureLabels.at(code[wrapper + 2]!)
         const flags = code[wrapper + 3]!
         if (hostCst || cfg.trackLines || code[wrapper] !== OP_NODE || code[wrapper + 4]! >= 0 || (flags !== 32 && flags !== 34)) {
-          LATE_NODE = { corner, tail, scan, leads, cls, gapRe, mayStartPastGap }
+          LATE_NODE = { corner, tail, scan, leads, cls, gapRe, mayStartPastGap, frame }
           return lower(wrapper)
         }
         // An AST reducer: the frame is one of the two lean bodies, around these.
@@ -1935,7 +1938,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           } else ctx._cstChildren!.push(held)
           held = undefined
           heldRaw = undefined
-          return lateTail(tail, input, heldEnd, heldAt, ctx)
+          return lateTail(tail, input, heldEnd, heldAt, ctx, frame)
         }
         const open = flags === 34 ? childrenOnlyCollapseBuildNode(body, build) : collapseBuildNode(body, build)
         return (input, pos, ctx) => {
@@ -4221,7 +4224,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             buf.single = c0
             if (omitsRaw) buf.rawLen = 1
             else buf.rawSingle = c0Raw ?? rawEntry(c0, input, pos, c1)
-            v = lateTail(late.tail, input, c1, at, ctx)
+            v = lateTail(late.tail, input, c1, at, ctx, late.frame)
           }
           if (v !== FAIL && trailingTrivia && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
           const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(ctx._fields) : undefined

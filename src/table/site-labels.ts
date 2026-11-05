@@ -310,7 +310,9 @@ export function computeSiteLabels(
   // frame does not change the trivia in force, so no other site's answer moves.
   const opened = new Set<number>()
   const kids: number[] = []
-  const drain = (): void => {
+  const lateIps = new Set<number>()
+  for (const r of roots) push(r, TOP)
+  for (let pass = 0; pass < 2; pass++) {
     while (work.length > 0) {
       const ip = work.pop()!
       const down = transfer(code, ip, labels.get(ip)!, hostCst)
@@ -318,11 +320,7 @@ export function computeSiteLabels(
       if (late === undefined || code[ip] !== OP_SEED || opened.has(ip)) childSlots(code, ip, kids)
       for (const c of kids) push(c, down)
     }
-  }
-  for (const r of roots) push(r, TOP)
-  drain()
-  const lateIps = new Set<number>()
-  if (late !== undefined) {
+    if (late === undefined || pass === 1) break
     for (const [ip, l] of [...labels]) {
       if (code[ip] !== OP_CONT) continue
       if (late(ip, l.tri)) lateIps.add(ip)
@@ -332,7 +330,6 @@ export function computeSiteLabels(
         work.push(seed)
       }
     }
-    drain()
   }
   return { at: (ip: number): SiteLabel => labels.get(ip) ?? TOP, late: lateIps }
 }
