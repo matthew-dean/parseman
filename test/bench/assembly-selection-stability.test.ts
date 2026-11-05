@@ -1,5 +1,5 @@
 /**
- * A COMMENT CHANGES NOTHING A MODULE SHIPS.
+ * A COMMENT CHANGES NOTHING A MODULE SHIPS, AND WHITESPACE BUYS NO OTHER SITES.
  *
  * Checked on jess's CSS grammar (`fixtures/jess-grammars`): the failure this pins
  * showed on its SCSS sibling, where a slightly longer doc comment cost five functions
@@ -37,7 +37,7 @@ function editComments(id: string, code: string, edit: (comment: string) => strin
 const shipped = (id: string, code: string): string => editComments(id, code, () => '').replace(/\s+/g, ' ')
 
 describe('selective assembly on a real grammar', () => {
-  it('a comment changes nothing shipped', () => {
+  it('a comment changes nothing shipped, and re-indenting selects the same sites', () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'parseman-selection-')))
     try {
       cpSync(FIXTURE, root, { recursive: true })
@@ -59,6 +59,9 @@ describe('selective assembly on a real grammar', () => {
       const longer = editComments(id, code, c => c.startsWith('//') ? `${c} and some more` : `/* and some more ${c.slice(2)}`)
       expect(shipped(id, lower(removed, 2).code) === base, 'comments removed').toBe(true)
       expect(shipped(id, lower(longer, 2).code) === base, 'comments longer').toBe(true)
+      // The budget does not count whitespace either: re-indenting buys no other sites.
+      const reindented = code.replace(/^(?=[ \t]*\S)/gm, '    ')
+      expect(lower(reindented, 2).assemblySites).toEqual(lower(code, 2).assemblySites)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

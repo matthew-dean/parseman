@@ -85,6 +85,9 @@ function stripTsFromSource(node: Node, code: string): string {
   return stripComments(out + code.slice(cur, end))
 }
 
+/** The four characters ECMAScript treats as ending a line. */
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/
+
 /**
  * A reducer's source without its comments, and without the whitespace before them.
  * A reducer ships as a string in the carried IR, where a bundler cannot strip it, and
@@ -103,16 +106,16 @@ function stripComments(text: string): string {
     const before = text.slice(cur, c.start - 1)
     const kept = before.trimEnd()
     out += kept
-    lineEnd ||= before.length > kept.length && before.slice(kept.length).includes('\n')
-    lineEnd ||= c.value.includes('\n')
+    lineEnd ||= LINE_TERMINATOR.test(before.slice(kept.length)) || LINE_TERMINATOR.test(c.value)
     cur = c.end - 1
     const after = /^\s*/.exec(text.slice(cur))![0]
+    const endsLine = LINE_TERMINATOR.test(after)
     if (comments[i + 1]?.start === c.end + after.length) {
-      lineEnd ||= after.includes('\n')
+      lineEnd ||= endsLine
       cur += after.length
       return
     }
-    if (out !== '' && cur + after.length < text.length && !after.includes('\n')) {
+    if (out !== '' && cur + after.length < text.length && !endsLine) {
       if (lineEnd) out += '\n'
       else if (after === '') out += ' '
     }

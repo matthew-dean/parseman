@@ -47,6 +47,20 @@ const CASES: ReadonlyArray<readonly [string, string]> = [
   ['one comment with no spaces', `v => typeof/* a */v`],
   ['two comments, one with a line end', `v => { return /* a */ /* b\n c */ v }`],
   ['line comments on their own lines', `v => {\n  // one\n  // two\n  return v\n}`],
+  ['a carriage return before a comment after return', `v => {\n  return\r/* a */ v\n}`],
+  ['a carriage return inside a comment after return', `v => { return /* a\rb */ v }`],
+  ['a carriage return ending a line comment after return', `v => { return // a\r/* b */ v }`],
+  ['a carriage return between calls', `v => { const o = []\no.push(1)\r/* c */ o.push(2)\nreturn o.length }`],
+  ['U+2028 between declarations', `v => { const a = v\u2028/* c */ const b = a\nreturn b }`],
+  ['U+2029 after return', `v => { return\u2029/* c */ v }`],
+  ['a line end between two comments after return', `v => { return /* a */\n /* b */ v }`],
+  ['a line end, then a later comment', `v => { const a = v\n/* c */ const b = a; return /* d */ b }`],
+]
+
+const TS_CASES: ReadonlyArray<readonly [string, string, string]> = [
+  ['comment by a cast', `v => (v /* c */ as string) + 'x'`, 'aax'],
+  ['comment after an arrow with generics', `<T,>(v: T): T => /* c */ v`, 'aa'],
+  ['comment in a type', `(v: /* c */ string) => v`, 'aa'],
 ]
 
 const written = (reducer: string): unknown => (new Function(`return (${reducer})`)() as (v: string) => unknown)('aa')
@@ -56,11 +70,7 @@ describe('removing a comment from a reducer', () => {
     expect(lower(reducer)).toEqual(written(reducer))
   })
 
-  it.each([
-    ['comment by a cast', `v => (v /* c */ as string) + 'x'`, 'aax'],
-    ['comment after an arrow with generics', `<T,>(v: T): T => /* c */ v`, 'aa'],
-    ['comment in a type', `(v: /* c */ string) => v`, 'aa'],
-  ])('keeps its meaning in TypeScript: %s', (_label, reducer, value) => {
+  it.each(TS_CASES)('keeps its meaning in TypeScript: %s', (_label, reducer, value) => {
     expect(lower(reducer)).toBe(value)
   })
 
@@ -70,7 +80,7 @@ describe('removing a comment from a reducer', () => {
       lower(reducer, sink)
       return JSON.stringify([...sink.values()])
     }
-    for (const [, reducer] of CASES) {
+    for (const [, reducer] of [...CASES, ...TS_CASES]) {
       const longer = reducer.replace(/\/\* ([abc]) \*\//g, '/* $1 and some more */')
       expect(carried(longer)).toBe(carried(reducer))
     }
