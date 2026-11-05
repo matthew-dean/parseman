@@ -102,4 +102,20 @@ describe('removing a comment from a reducer', () => {
       expect(carried(commented)).toBe(carried(plain))
     }
   })
+
+  it.each(['compose', 'composeLeaf'])('ships the same from a %s() rule that reads prior', fn => {
+    const lowered = (comment: string): string => {
+      const source = `import { ${fn}, node, regex, rules } from 'parseman' with { type: 'macro' }
+${comment}
+const base = rules(g => ({ Doc: regex(/a+/) }))
+export const g = ${fn}([base, rules((g, prior) => ({ Doc: node('Doc', prior.Doc, k => k${comment === '' ? '' : ' /* why */'}) }))])
+`
+      const sink: CarriedSink = new Map()
+      const out = transformMacro(source, '/tmp/reducer-comments.ts', new Set(['parseman']), false, false, false, undefined, 0, sink)!
+      return out.code.replace('// a comment before the call\n', '\n') + JSON.stringify([...sink.values()])
+    }
+    const plain = lowered('')
+    expect(plain).toContain('"Doc"')
+    expect(lowered('// a comment before the call')).toBe(plain)
+  })
 })
