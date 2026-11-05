@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.61.1 — 2026-11-05
 
 - **`backtrackProbe` in `parseman/diagnostics` counts rewinds among matched terminals.**
   Per parse it reports how often one started behind the one before it and how many of
