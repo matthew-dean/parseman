@@ -69,14 +69,15 @@ const { values, positionals } = parseArgs({
   options: { reps: { type: 'string', default: '5' }, n1: { type: 'string', default: '20' }, n2: { type: 'string', default: '120' }, out: { type: 'string' } },
 })
 const [file, ...legArgs] = positionals
-if (file === undefined || legArgs.length === 0 || legArgs.some(leg => !leg.includes('='))) {
-  console.error('usage: ab-built.mjs [--reps 5] [--n1 20] [--n2 120] [--out rows.jsonl] <file> <name=module>...')
-  process.exit(2)
-}
 const legs = legArgs.map(leg => { const at = leg.indexOf('='); return { name: leg.slice(0, at), module: resolve(leg.slice(at + 1)) } })
 const reps = Number(values.reps)
 const n1 = Number(values.n1)
 const n2 = Number(values.n2)
+const namesOk = legs.length >= 2 && legArgs.every(leg => leg.includes('=')) && new Set(legs.map(leg => leg.name)).size === legs.length
+if (file === undefined || !namesOk || !Number.isInteger(n1) || !Number.isInteger(n2) || n1 < 0 || n2 <= n1) {
+  console.error('usage: ab-built.mjs [--reps 5] [--n1 20] [--n2 120] [--out rows.jsonl] <file> <name=module>...\n  at least two legs with different names, and n2 above n1')
+  process.exit(2)
+}
 
 const script = import.meta.filename
 const inChild = (mode, leg, count) => {
