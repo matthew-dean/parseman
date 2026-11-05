@@ -599,7 +599,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     Recovery is partial far more often: strict and tolerant tallies print on every sweep.
   - Engine cost, on a tree that merged `main` @ `1cb8a80d`: first-parse calls +0, AST and CST, on
     all five files. `callcount:guard` passes with no row above v0.61.4 and its baseline exact.
-    Sizes within 0.02% gzip. Marginal instructions, N 5 to 25, core `fe004e1b5`, 7 reps (15 for
+    Sizes within 0.11% gzip. Marginal instructions, N 5 to 25, core `fe004e1b5`, 7 reps (15 for
     `benchmark.css` AST), AST then CST, A/A in brackets, load 85 to 360: SCSS -0.46% (-0.42%),
     +0.15% (+0.58%); Less -0.79% (-0.58%), -0.38% (-0.15%); bootstrap -0.65% (-0.89%), -0.15%
     (+0.94%); `.jess` +0.01% (+0.50%), -0.21% (+0.23%); `benchmark.css` +0.26% (-1.39%), +2.24%

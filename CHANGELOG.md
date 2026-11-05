@@ -5,6 +5,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **Docs: `triviaLog` entries have four numbers when the trivia has kind labels.** The guide
+  documented only `[start, end, insertIdx]`. With labels each entry also carries `kind`.
+
 - **A `collapse` ladder level opens its frame only where its tail starts.** A
   `node(type, sequence(corner, tail), build, { collapse: true })` whose corner always
   publishes one node and whose tail is a `many()` or `optional()` now runs the corner in

@@ -29,10 +29,10 @@ const bin = (type: string) => (children: readonly unknown[], _f: unknown, span: 
 const trivia = () => classifiedTrivia({ whitespace: regex(/[ \t\n\r\f]+/), comment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//) })
 const asWritten = <T>(tail: Combinator<T>): Combinator<T> => transform(tail, v => v)
 
-const ladder = (twin = false, parentReadsRaw = false): G => {
+const ladder = (twin = false, parentReadsRaw = false, trackLines = false): G => {
   const wrap = (type: string, corner: Combinator<unknown>, tail: Combinator<unknown>): Combinator<unknown> =>
     node(type, sequence(corner, twin ? asWritten(tail) : tail), bin(type), { collapse: true })
-  return rules({ trivia: trivia() }, (g: G) => ({
+  return rules({ trivia: trivia(), trackLines }, (g: G) => ({
     Root: parentReadsRaw
       ? node('Decl', sequence(regex(/[a-z-]+/), literal(':'), g.Value!, literal(';')), (children, _f, span, raw) => ({ children, span, raw }))
       : node('Decl', sequence(regex(/[a-z-]+/), literal(':'), g.Value!, literal(';')), bin('Decl')),
@@ -100,6 +100,42 @@ describe('a late frame', () => {
   })
 
   it('every engine builds what the interpreter builds', () => agree(ladder(), INPUTS))
+
+  // Against its twin and not the interpreter, which tracks lines differently on any node.
+  it('a tracked wrapper builds what its twin builds', () => {
+    expect(lowers(ladder(false, false, true))).toBe(true)
+    const lowered = encodeTable(ladder(false, false, true))
+    const written = encodeTable(ladder(true, false, true))
+    for (const engine of [closureOf, emittedOf]) {
+      const entry = tableRules(engine(lowered)).Root!
+      const twin = tableRules(engine(written)).Root!
+      for (const input of ['a:1\n+ 2;', ...INPUTS]) {
+        expect(digestValue(run(entry, input)), input).toBe(digestValue(run(twin, input)))
+      }
+    }
+  })
+
+  it('a reducer that reads no raw children still indexes its log past the corner', () => {
+    const logged = (twin: boolean): G => rules({ trivia: trivia() }, (g: G) => {
+      const tail = many(sequence(literal('+'), g.Atom!))
+      const sum = node('Sum', sequence(g.Atom!, twin ? asWritten(tail) : tail), (children, _f, span, _raw, log) => ({ children, span, log }), { collapse: true, captureTrivia: true })
+      ;(sum._def as { buildRawUnused?: true }).buildRawUnused = true
+      return {
+        Root: sequence(literal('x'), g.Sum!),
+        Sum: sum,
+        Atom: node('Atom', regex(/[0-9]+/), children => children[0]),
+      }
+    }) as G
+    expect(lowers(logged(false))).toBe(true)
+    expect(lowers(logged(true))).toBe(false)
+    const lowered = encodeTable(logged(false))
+    const written = encodeTable(logged(true))
+    const input = 'x1 /*a*/ + /*b*/ 2'
+    const want = digestValue(run(tableRules(closureOf(written)).Root!, input))
+    for (const engine of [closureOf, emittedOf]) {
+      expect(digestValue(run(tableRules(engine(lowered)).Root!, input))).toBe(want)
+    }
+  })
 
   it('a program walker reaches the corner, the wrapper and the seed', () => {
     const ops = opHistogram(encodeTable(ladder()))

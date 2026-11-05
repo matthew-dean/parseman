@@ -289,6 +289,13 @@ const REGISTRY = [
       { defect: 'cont-rollback-dropped-closure', expect: 'moves' },
       { defect: 'cont-rollback-dropped-emitted', expect: 'moves' },
       { defect: 'late-frame-ignores-collapse', expect: 'moves' },
+      { defect: 'late-corner-through-expect', expect: 'moves' },
+      { defect: 'late-corner-undefined-ref-throws', expect: 'moves' },
+      { defect: 'cont-take-back-caller-sink-closure', expect: 'moves' },
+      { defect: 'cont-take-back-caller-sink-emitted', expect: 'moves' },
+      { defect: 'cont-lean-frame-takes-tracked-wrapper', expect: 'moves' },
+      { defect: 'cont-seed-raw-len-closure', expect: 'moves' },
+      { defect: 'cont-seed-raw-len-emitted', expect: 'moves' },
     ],
   },
   {
