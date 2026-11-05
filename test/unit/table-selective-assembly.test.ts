@@ -366,9 +366,25 @@ ${PADDING}`
         .toThrow(/assemblyProfile: gate or reducer `s => boom\(s\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
     })
 
-    it('refuses an empty corpus file', () => {
+    it('refuses a corpus where every file is empty', () => {
       expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])`, ' \n'))
-        .toThrow(/assemblyProfile: .*corpus\.txt is empty/)
+        .toThrow(/assemblyProfile: `files` has no non-empty file/)
+    })
+
+    it('skips an empty file in a corpus that has content', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+      try {
+        const empty = join(dir, 'empty.txt')
+        const full = join(dir, 'full.txt')
+        writeFileSync(empty, '')
+        writeFileSync(full, 'a')
+        const source = `import { compose, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: regex(/a/) }))])
+${PADDING}`
+        expect(() => transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [empty, full] })).not.toThrow()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
     })
 
     it('refuses a file that parses only by recovering', () => {
@@ -381,7 +397,7 @@ ${PADDING}`
 export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])
 ${PADDING}`
       expect(() => transformMacro(source, '/tmp/empty-files.ts', new Set(['parseman']), false, false, false, { entry: 'Doc', files: [] }))
-        .toThrow(/assemblyProfile: `files` is empty/)
+        .toThrow(/assemblyProfile: `files` has no non-empty file/)
     })
 
     it('names a file the grammar rejects or stops short of', () => {

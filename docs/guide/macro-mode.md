@@ -296,8 +296,8 @@ Sites are ranked by a static estimate of how often they run. The plugin's option
 `assemblyProfile: { entry, files }` ranks them by measured calls instead: the build parses
 `files` from rule `entry` on the closure engine and keeps the sites with the most calls per
 byte. It changes which sites are generated, never what a parse returns
-(`test/unit/table-selective-assembly.test.ts`). A corpus file that is empty, doesn't parse in full or parses only by
-recovering, an empty `files`, or a reducer or gate that throws, fails the build. Only reducers and gates whose names
+(`test/unit/table-selective-assembly.test.ts`). A corpus file that doesn't parse in full or parses only by recovering, a
+corpus with nothing in it, or a reducer or gate that throws, fails the build. Only reducers and gates whose names
 resolve at build time can run, so a grammar whose callbacks read imported helpers can't use
 this option yet.
 

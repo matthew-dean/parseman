@@ -184,8 +184,8 @@ export type AssemblyProfile = {
   /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar
    * without this rule keeps the static ranking. */
   readonly entry: string
-  /** Paths of representative inputs. There must be at least one, and each has to
-   * parse in full without recovery, or the build fails. */
+  /** Paths of representative inputs. At least one must have content, and each that
+   * does has to parse in full without recovery, or the build fails. */
   readonly files: readonly string[]
 }
 
@@ -2434,7 +2434,7 @@ function transformMacroImpl(
     if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1
       || !(assemblyProfile.entry in compiled.prog.rules)) return undefined
     const refuse = (why: string): never => { throw new Error(`${id} — assemblyProfile: ${why}`) }
-    if (assemblyProfile.files.length === 0) refuse('`files` is empty')
+    if (corpusTexts(assemblyProfile).every(text => text.trim() === '')) refuse('`files` has no non-empty file')
     let thrower: unknown
     // A builder re-lowered from carried IR is inert at build time; for COUNTING
     // only, a plain node stands in for it, so the corpus can run past it.
@@ -2451,7 +2451,7 @@ function transformMacroImpl(
       const entry = rules[assemblyProfile.entry]!
       corpusTexts(assemblyProfile).forEach((text, i) => {
         const file = assemblyProfile.files[i]!
-        if (text.trim() === '') refuse(`${file} is empty`)
+        if (text.trim() === '') return
         let result
         try { result = run(entry, text) } catch (e) {
           const source = String(thrower).replace(/\s+/g, ' ').slice(0, 200)
