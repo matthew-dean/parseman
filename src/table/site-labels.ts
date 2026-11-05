@@ -358,7 +358,7 @@ export function scanHandoffNeeded(code: Int32Array, ip: number, labels: SiteLabe
     const op = code[at]
     // A scan runs interpreted combinators that reach pieces through `prog.scans`.
     if (op === OP_SCAN) return true
-    if (op === OP_TOKEN || op === OP_SCOPE_CAP) continue
+    if (op === OP_TOKEN || (op === OP_SCOPE_CAP && code[at + 1] !== SCOPE_INHERIT)) continue
     if ((op === OP_SCOPE_PLAIN || op === OP_SCOPE) && !(code[at + 1]! >= 0 && l.tri === code[at + 1]!
       && (op === OP_SCOPE_PLAIN || code[at + 3]! === 0))) continue
     kids.length = 0
