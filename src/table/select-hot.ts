@@ -28,12 +28,12 @@ const ROUNDS = 60
 const CAP = 1e12
 /**
  * What a crossing a site removes counts for, against one call of the site itself.
- * 1, 4 and 16 were tried on a prototype and 4 was kept. On real builds of Jess's
- * grammars, 4 made fewer calls than either ranking without it on every file and budget
- * measured, including files held out of that choice. Only 4 has been measured that way:
- * the numbers are in `docs/future/perf-attempts.md`.
+ * Better than no weight, on every file and budget measured with real builds of
+ * Jess's grammars, but not tuned: 1 and 16 were only tried on a prototype, 2 and 8
+ * were never tried, and only 4 has been built and measured.
  */
 const CROSSING_WEIGHT = 4
+const TAKEN = -1
 
 /**
  * The sites to emit: highest weight per byte first, stopping at the first that
@@ -71,46 +71,45 @@ function staticRanking(code: readonly number[], entries: readonly number[], site
 
 /**
  * The sites the corpus ran, each next one being the best by calls plus the crossings
- * it removes, per byte. A site's crossings with a neighbour are bounded by the calls
- * of whichever is the callee, since the profile counts sites, not edges. The order
- * doesn't depend on the budget, so a larger budget's selection is still a superset.
+ * it removes, per byte. A crossing with a neighbour is estimated by the calls of
+ * whichever is the callee, since the profile counts sites, not edges. Nothing bounds
+ * the sum: a callee with N emitted callers gains N crossings' worth of its own calls,
+ * and `sequence(g.A, g.A)` counts twice. The order doesn't depend on the budget, so a
+ * larger budget's selection is still a superset.
  *
- * ponytail: rescans every remaining site per pick, O(n^2) in sites the corpus ran.
- * 29 ms of a 53 s build on Jess's Less grammar. A heap if a grammar's ever takes seconds.
+ * ponytail: rescans every site per pick, O(n^2) in sites the corpus ran. 3 ms of a
+ * 50 s build on Jess's Less grammar. A heap if a grammar's ever takes seconds.
  */
 function* connectedRanking(code: readonly number[], siteBytes: ReadonlyMap<number, number>, calls: ArrayLike<number>): Generator<number> {
-  const callees = new Map<number, number[]>()
-  const callers = new Map<number, number[]>()
+  // Ascending, so the first best a scan meets is the lowest: a tie breaks by site.
+  const ran = [...siteBytes.keys()].filter(ip => calls[ip]! > 0).sort((a, b) => a - b)
+  const slot = new Map(ran.map((ip, i) => [ip, i]))
+  const bytes = ran.map(ip => siteBytes.get(ip)!)
+  const worth = ran.map(ip => calls[ip]!)
+  const score = worth.map((value, i) => value / bytes[i]!)
+  const crossings: [neighbour: number, gain: number][][] = ran.map(() => [])
   const kids: number[] = []
-  for (const ip of siteBytes.keys()) {
+  ran.forEach((ip, from) => {
     kids.length = 0
     childSlots(code, ip, kids)
-    const own = kids.map(k => (code[k] === OP_GAPGATE ? code[k + 1]! : k)).filter(k => siteBytes.has(k))
-    callees.set(ip, own)
-    for (const k of own) {
-      const list = callers.get(k)
-      if (list === undefined) callers.set(k, [ip])
-      else list.push(ip)
+    for (const kid of kids) {
+      const callee = code[kid] === OP_GAPGATE ? code[kid + 1]! : kid
+      const to = slot.get(callee)
+      if (to === undefined) continue
+      const gain = CROSSING_WEIGHT * calls[callee]!
+      crossings[from]!.push([to, gain])
+      crossings[to]!.push([from, gain])
     }
-  }
-  const worth = new Map<number, number>()
-  for (const ip of siteBytes.keys()) if (calls[ip]! > 0) worth.set(ip, calls[ip]!)
-  while (worth.size > 0) {
-    let best = -1
-    let bestScore = -1
-    for (const [ip, value] of worth) {
-      const score = value / siteBytes.get(ip)!
-      if (score > bestScore || (score === bestScore && ip < best)) { best = ip; bestScore = score }
-    }
-    worth.delete(best)
-    yield best
-    for (const k of callees.get(best)!) {
-      const value = worth.get(k)
-      if (value !== undefined) worth.set(k, value + CROSSING_WEIGHT * calls[k]!)
-    }
-    for (const p of callers.get(best) ?? []) {
-      const value = worth.get(p)
-      if (value !== undefined) worth.set(p, value + CROSSING_WEIGHT * calls[best]!)
+  })
+  for (let left = ran.length; left > 0; left--) {
+    let best = 0
+    for (let i = 1; i < score.length; i++) if (score[i]! > score[best]!) best = i
+    score[best] = TAKEN
+    yield ran[best]!
+    for (const [neighbour, gain] of crossings[best]!) {
+      if (score[neighbour] === TAKEN) continue
+      worth[neighbour] = worth[neighbour]! + gain
+      score[neighbour] = worth[neighbour]! / bytes[neighbour]!
     }
   }
 }

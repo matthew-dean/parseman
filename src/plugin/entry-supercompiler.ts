@@ -66,8 +66,7 @@ type Edit = { readonly start: number; readonly end: number; readonly text: strin
 
 const PIECE = /^_pf(\d+)$/
 const MERGEABLE = /^_(?:pf|sk)\d+$/
-const SITE_NAME = /\b_(?:pf|sk)\d+\b/g
-const SITE_OR_TEMP = /\b(?:_(?:pf|sk)\d+|_t\d+_)\b/g
+const TEMP = /^_t\d+_/
 const WRAP = 'function __parseman_supercompile__(){\n'
 const SUFFIX = '\n}'
 
@@ -228,56 +227,111 @@ export function supercompileEntryAssembly(
   return supercompileEmittedAssembly(prog, cfg, extraIps, emitted)
 }
 
+/** A name in the source: a site, or a temporary (`tmp` in `emit-assembly.ts`). */
+type NameUse = { readonly start: number; readonly end: number; readonly name: string }
+
+/** The uses of site and temporary names under `root`, and the names bound there. */
+function namesUnder(root: Ast, uses: NameUse[], bound: Set<string>): boolean {
+  let plain = true
+  const bind = (id: Ast | undefined): void => {
+    const name = nameOf(id)
+    if (name !== undefined) bound.add(name)
+  }
+  const walk = (node: Ast, parent: Ast | undefined): void => {
+    if (node.type === 'VariableDeclarator') bind(ast(node.id))
+    else if (node.type === 'LabeledStatement') bind(ast(node.label))
+    else if (isFunction(node)) {
+      if (node !== root) bind(ast(node.id))
+      nodes(node.params).forEach(bind)
+    }
+    const name = nameOf(node)
+    if (name !== undefined && (MERGEABLE.test(name) || TEMP.test(name))) {
+      const isKey = parent?.type === 'Property' && parent.key === node && parent.computed !== true
+      const isProperty = parent?.type === 'MemberExpression' && parent.property === node && parent.computed !== true
+      if (parent?.type === 'Property' && parent.shorthand === true) plain = false
+      if (!isKey && !isProperty) uses.push({ ...range(node), name })
+    }
+    for (const child of children(node)) walk(child, node)
+  }
+  walk(root, undefined)
+  return plain
+}
+
 /**
  * Functions that read the same are one function: `optional(x)` written in 25 places
  * is 25 rows and one body, and a trivia skip can be pooled under two labels that
  * lower alike. This runs after the join, so a site with one caller has
  * already gone into it, the selection is untouched and every call a parse makes is
  * still made. Each pass can make the callers of a merged function read alike, so it
- * repeats until nothing merges. Temporaries are numbered per assembly, so they're
- * compared in order of use.
+ * repeats until nothing merges.
+ *
+ * Only identifiers are compared or renamed: a grammar's own text reaches this source
+ * as strings and regexes, and they count as written. A temporary is local by the
+ * emitter's contract and is numbered per assembly, so one this function binds is
+ * compared in order of use. A site name that's also bound somewhere, or abbreviated
+ * in `{_pf1}`, can't be renamed by name, so that source stays as it is.
  */
 export function mergeSameBodies(source: string): string {
   const parsed = parseSync('parseman-merge-same-bodies.js', WRAP + source + SUFFIX)
   if (parsed.errors.length > 0) return source
   const statements = nodes(ast(nodes((parsed.program as unknown as Ast).body)[0]?.body)?.body)
-  const parts: { name: string | undefined; text: string }[] = []
-  let at = 0
+  type Body = NameUse & { readonly uses: readonly NameUse[]; readonly local: ReadonlySet<string> }
+  const bodies: Body[] = []
+  const others: NameUse[] = []
+  const declared = new Set<string>()
   for (const statement of statements) {
     const name = statement.type === 'FunctionDeclaration' ? nameOf(ast(statement.id)) : undefined
-    if (name === undefined || !MERGEABLE.test(name)) continue
-    const { start, end } = range(statement)
-    parts.push({ name: undefined, text: source.slice(at, start) }, { name, text: source.slice(start, end) })
-    at = end
+    const uses: NameUse[] = []
+    const bound = new Set<string>()
+    if (!namesUnder(statement, uses, bound)) return source
+    for (const local of bound) declared.add(local)
+    if (name === undefined || !MERGEABLE.test(name)) others.push(...uses)
+    else bodies.push({ ...range(statement), name, uses: uses.sort((a, b) => a.start - b.start), local: bound })
   }
-  parts.push({ name: undefined, text: source.slice(at) })
+  for (const local of declared) if (MERGEABLE.test(local)) return source
 
-  const renames = new Map<string, string>()
-  for (;;) {
-    const first = new Map<string, string>()
-    const merged = new Map<string, string>()
-    for (const part of parts) {
-      if (part.name === undefined) continue
-      const temps = new Map<string, number>()
-      const key = part.text.replace(SITE_OR_TEMP, token => {
-        if (token === part.name) return '_self'
-        if (!token.startsWith('_t')) return token
-        const seen = temps.get(token) ?? temps.size
-        temps.set(token, seen)
-        return `_t#${seen}`
-      })
-      const kept = first.get(key)
-      if (kept === undefined) first.set(key, part.name)
-      else { merged.set(part.name, kept); part.text = ''; part.name = undefined }
-    }
-    if (merged.size === 0) break
-    for (const [from, to] of renames) renames.set(from, merged.get(to) ?? to)
-    for (const [from, to] of merged) renames.set(from, to)
-    const rename = (text: string): string => text.replace(SITE_NAME, name => merged.get(name) ?? name)
-    for (const part of parts) if (part.name !== undefined) part.text = rename(part.text)
+  const merged = new Map<string, string>()
+  const current = (name: string): string => {
+    let at = name
+    for (let next = merged.get(at); next !== undefined; next = merged.get(at)) at = next
+    return at
   }
-  const merged = parts.map(part => part.text).join('')
-  return renames.size === 0 ? source : merged.replace(SITE_NAME, name => renames.get(name) ?? name)
+  let live = bodies
+  for (let more = true; more;) {
+    more = false
+    const first = new Map<string, string>()
+    live = live.filter(body => {
+      const temps = new Map<string, number>()
+      const edits = body.uses.map((use): Edit => {
+        if (MERGEABLE.test(use.name)) {
+          const site = current(use.name)
+          return { ...use, text: site === body.name ? '#self' : site }
+        }
+        if (!body.local.has(use.name)) return { ...use, text: use.name }
+        const seen = temps.get(use.name) ?? temps.size
+        temps.set(use.name, seen)
+        return { ...use, text: `#t${seen}` }
+      })
+      const key = render(source, body.start, body.end, edits)
+      const kept = first.get(key)
+      if (kept === undefined) { first.set(key, body.name); return true }
+      merged.set(body.name, kept)
+      more = true
+      return false
+    })
+  }
+  if (merged.size === 0) return source
+
+  const edits: Edit[] = []
+  const rename = (use: NameUse): void => {
+    if (MERGEABLE.test(use.name) && merged.has(use.name)) edits.push({ ...use, text: current(use.name) })
+  }
+  others.forEach(rename)
+  for (const body of bodies) {
+    if (merged.has(body.name)) edits.push({ start: body.start, end: body.end, text: '' })
+    else body.uses.forEach(rename)
+  }
+  return render(source, 0, source.length, edits)
 }
 
 /**

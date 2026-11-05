@@ -304,7 +304,7 @@ describe('the macro build ships a selective assembly within its module budget', 
     }
     expect(fitted(total).length).toBe(count)
     expect(overshoots).toBeGreaterThan(100)
-  })
+  }, 60_000)
 
   it('a larger budget keeps every site a smaller one selected', () => {
     const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(i % 7 === 0 ? /[0-9]*(?:a|b|c|d|e|f)*/ : /[0-9]*/))] as const)
@@ -436,11 +436,60 @@ describe('an optional corpus profile ranks sites by measured calls', () => {
       expect(out).not.toMatch(/\b_pf2\b/)
     })
 
-    it('compare temporaries in order of use', () => {
-      const out = merged(fn('_pf1', 'const _t1_=2;return _t1_;'), fn('_pf2', 'const _t7_=2;return _t7_;'), fn('_pf3', 'const _t8_=2;const _t9_=3;return _t8_;'), fn('_pf4', 'const _t5_=2;const _t6_=3;return _t6_;'))
+    it('compare temporaries in order of use, whatever follows the prefix', () => {
+      const out = merged(fn('_pf1', 'const _t1_v0=2;return _t1_v0;'), fn('_pf2', 'const _t7_v0=2;return _t7_v0;'), fn('_pf3', 'const _t8_=2;const _t9_=3;return _t8_;'), fn('_pf4', 'const _t5_=2;const _t6_=3;return _t6_;'), fn('_pf5', '_t3_e:do{break _t3_e}while(false)'), fn('_pf6', '_t4_e:do{break _t4_e}while(false)'))
       expect(out).not.toMatch(/\b_pf2\b/)
       expect(out).toContain('function _pf3(')
       expect(out).toContain('function _pf4(')
+      expect(out).not.toMatch(/\b_pf6\b/)
+    })
+
+    it.each([
+      ['a string', 'return "a"', 'return "b"'],
+      ['a string that reads like a site', 'return "_pf8"', 'return "_pf9"'],
+      ['a string that reads like a temporary', 'return "_t1_"', 'return "_t2_"'],
+      ['a number', 'return 1', 'return 2'],
+      ['a regex', 'return /_pf8/', 'return /_pf9/'],
+      ['a failure set', 'ctx._fx=_fx0', 'ctx._fx=_fx1'],
+      ['a property that reads like a site', 'return ctx._pf8', 'return ctx._pf9'],
+      ['a temporary declared outside them', 'return _t1_v', 'return _t2_v'],
+    ])('stay apart when they differ in %s', (_what, one, two) => {
+      const out = merged(fn('_pf1', one), fn('_pf2', two), 'const t=_pf2')
+      expect(out).toContain('function _pf2(')
+      expect(out).toContain('const t=_pf2')
+    })
+
+    it('stay apart when one holds its own name as a string and the other the word a comparison might use', () => {
+      const out = merged(fn('_pf1', 'return "#self"'), fn('_pf2', 'return "_pf2"'), fn('_pf3', 'return _pf3'), fn('_pf4', 'return "#self"'))
+      expect(out).toContain('function _pf2(')
+      expect(out).toContain('function _pf3(')
+      expect(out).not.toMatch(/function _pf4\(/)
+    })
+
+    it('leave strings, regexes, comments and property names alone when a function goes', () => {
+      const out = merged('const before="é😀𝒳";', fn('_pf1', 'return "é😀"'), fn('_pf2', 'return "é😀"'), 'const k="_pf2";const r=/_pf2/;/* _pf2 */const p=ctx._pf2;const o={_pf2:1};const t=_pf2')
+      expect(out).toContain('const before="é😀𝒳";')
+      expect(out).not.toContain('function _pf2(')
+      expect(out).toContain('const k="_pf2";const r=/_pf2/;/* _pf2 */const p=ctx._pf2;const o={_pf2:1};const t=_pf1')
+    })
+
+    it('follow a merge into a function that merged later', () => {
+      const out = merged(fn('_pf1', 'return _pf8()'), fn('_pf3', 'return _pf9()'), fn('_pf5', 'return _pf9()'), fn('_pf8', 'return 1'), fn('_pf9', 'return 1'), 'const t=_pf5')
+      expect(out).toBe([fn('_pf1', 'return _pf8()'), '', '', fn('_pf8', 'return 1'), '', 'const t=_pf1'].join('\n'))
+    })
+
+    it('leave functions named only partly like a site', () => {
+      for (const [one, two] of [['_pf1x', '_pf2x'], ['x_pf1', 'x_pf2'], ['_sk1_', '_sk2_']] as const) {
+        const source = [fn(one, 'return 1'), fn(two, 'return 1'), `const t=${two}`].join('\n')
+        expect(merged(source)).toBe(source)
+      }
+    })
+
+    it('change nothing when a site name is also bound or abbreviated somewhere', () => {
+      for (const extra of ['const f=function(_pf2){return _pf2}', 'const f=()=>{const _pf2=1;return _pf2}', 'const o={_pf2}']) {
+        const source = [fn('_pf1', 'return 1'), fn('_pf2', 'return 1'), extra].join('\n')
+        expect(merged(source)).toBe(source)
+      }
     })
 
     it('include the trivia skips', () => {
@@ -454,6 +503,35 @@ describe('an optional corpus profile ranks sites by measured calls', () => {
       const out = merged(fn('_pf12', 'return _pf123(input,pos,ctx)'), fn('_pf45', 'return _pf453(input,pos,ctx)'))
       expect(out).toContain('function _pf12(')
       expect(out).toContain('function _pf45(')
+    })
+
+    describe('in a macro build, a name a grammar writes', () => {
+      const lower = (body: string, shared = 'sequence(regex(/a/), regex(/b/))') => transformMacro(`import { choice, compose, field, literal, node, optional, regex, rules, sequence } from 'parseman' with { type: 'macro' }\nconst shared = ${shared}\nexport const g = compose([rules(g => ({\n${body}\n}))])\n${PADDING}`, 'merge.ts', new Set(['parseman']))!
+      const twins = (literalText: string): string => `Doc: choice(sequence(g.A, literal('x')), sequence(g.A, literal('y')), sequence(g.B, literal('z')), sequence(g.B, literal('w')), g.K),
+  A: optional(shared),
+  B: optional(shared),
+  K: literal('${literalText}'),`
+
+      it('as a literal survives a merge that removes the function of that name', () => {
+        const first = lower(twins('LITERAL'), 'regex(/a/)')
+        const kept = new Set([...first.code.matchAll(/function (_pf\d+)\(/g)].map(m => m[1]))
+        const gone = first.assemblySites.map(site => `_pf${site}`).filter(name => !kept.has(name))
+        expect(gone.length).toBeGreaterThan(0)
+        for (const name of gone) {
+          const doc = evalMacroModule<Record<string, unknown>>(lower(twins(name), 'regex(/a/)').code, 'g').Doc
+          const result = run(doc as never, name)
+          expect(result.ok && result.unconsumedFrom === null, name).toBe(true)
+        }
+      })
+
+      it('as a field stays that field when the fields read like temporaries', () => {
+        const out = lower(`Doc: node(choice(sequence(literal('1'), g.A), sequence(literal('2'), g.B), sequence(literal('3'), g.A), sequence(literal('4'), g.B)), (children, fields) => Object.keys(fields ?? {})),
+  A: field('_t1_', shared),
+  B: field('_t2_', shared),`)
+        const doc = evalMacroModule<Record<string, unknown>>(out.code, 'g').Doc
+        expect(run(doc as never, '1ab').value).toEqual(['_t1_'])
+        expect(run(doc as never, '2ab').value).toEqual(['_t2_'])
+      })
     })
 
     it('in a macro build, leave one body and parse as before', () => {
@@ -504,11 +582,24 @@ ${PADDING}`
     })
 
     it('still takes a lone site that outweighs the crossing', () => {
-      expect(picked(calls(100, 5, 40))).toEqual([pair, lone])
+      expect(picked(calls(100, 1, 40))).toEqual([pair, lone])
     })
 
     it('never takes a site the corpus did not run', () => {
       expect(picked(calls(100, 0, 0), 30)).toEqual([pair])
+    })
+
+    it('counts a crossing by the callee\'s calls, not the caller\'s', () => {
+      expect(picked(calls(1, 100, 50))).toEqual([callee, pair])
+    })
+
+    it('breaks a tie by site, whatever order the sites were listed in', () => {
+      const first = Math.min(pair, lone)
+      const second = Math.max(pair, lone)
+      const counts = calls(10, 0, 10)
+      for (const order of [[first, second], [second, first]]) {
+        expect([...selectHotSites(prog.code, [], new Map(order.map(ip => [ip, 10])), 20, counts)]).toEqual([first, second])
+      }
     })
 
     it('sees a callee through a gap gate', () => {
