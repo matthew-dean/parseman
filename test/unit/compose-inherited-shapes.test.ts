@@ -309,4 +309,13 @@ describe('a node over a reference reads its field wherever the node sits', () =>
     })
     expect(engine(g, 'Entry', 'hi', walk)).toEqual(['text'])
   })
+
+  it('in a grammar first linked by a factory that then throws', () => {
+    const base = P.compose([P.rules(h => ({ Inner: inner(h as G) })), P.rules(() => ({ Text }))])
+    expect(() => P.rules((): G => {
+      void base.Inner
+      throw new Error('boom')
+    })).toThrow('boom')
+    expect(engine(base, 'Inner', 'hi', walk)).toEqual(['text'])
+  })
 })
