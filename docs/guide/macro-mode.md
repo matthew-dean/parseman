@@ -297,9 +297,9 @@ Sites are ranked by a static estimate of how often they run. The plugin's option
 `files` from rule `entry` on the closure engine and keeps the sites with the most calls per
 byte. It changes which sites are generated, never what a parse returns
 (`test/unit/table-selective-assembly.test.ts`). A corpus file that doesn't parse in full or parses only by recovering, a
-corpus with nothing in it, or a reducer or gate that throws, fails the build. Only reducers and gates whose names
-resolve at build time can run, so a grammar whose callbacks read imported helpers can't use
-this option yet.
+corpus with nothing in it, or a reducer or gate that throws, fails the build. Callback source runs at build time with
+no module around it, so a grammar whose reducers or gates read imported helpers passes them
+as `scope`: `assemblyProfile: { entry, files, scope: { valueStopOf } }`.
 
 Each extra variant costs real bytes, but no longer a full copy. Measured by
 `pnpm size:probe`, holding the grammar constant and varying only the number of variants:

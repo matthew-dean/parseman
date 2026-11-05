@@ -5,6 +5,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`assemblyProfile.scope` lets a grammar whose reducers or gates read imported helpers
+  use a measured ranking.** Callback source runs at build time with no module around it,
+  so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for
+  that run only.
 - **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
   or gate that threw.** So does a corpus with nothing in it, and a file that parses only
   by recovering. It used to swallow the throw, and when no file parsed it warned

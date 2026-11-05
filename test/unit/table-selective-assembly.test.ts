@@ -412,6 +412,46 @@ ${PADDING}`
     })
   })
 
+  it('`scope` gives the corpus run the helpers a gate imports, for that run only', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+    try {
+      const corpus = join(dir, 'corpus.txt')
+      writeFileSync(corpus, 'aaaa')
+      const source = `import { choice, compose, many, regex, rules } from 'parseman' with { type: 'macro' }
+import { allowA } from './helper.js'
+export const g = compose([rules(g => ({ Doc: many(choice({ gate: s => allowA(s), combinator: regex(/a/) }, regex(/b/))) }))])
+${PADDING}`
+      let calls = 0
+      const scope = { allowA: () => { calls++; return true } }
+      const out = transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [corpus], scope })!
+      expect(calls).toBeGreaterThan(0)
+      expect(out.warnings).toEqual([])
+      expect('allowA' in globalThis).toBe(false)
+      expect(() => transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [corpus] }))
+        .toThrow(/allowA is not defined/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('`scope` leaves a global of the same name as it was', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+    const g = globalThis as Record<string, unknown>
+    g.parsemanScopeTestName = 'before'
+    try {
+      const corpus = join(dir, 'corpus.txt')
+      writeFileSync(corpus, 'a')
+      const source = `import { compose, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: regex(/a/) }))])
+${PADDING}`
+      transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [corpus], scope: { parsemanScopeTestName: 'during' } })
+      expect(g.parsemanScopeTestName).toBe('before')
+    } finally {
+      delete g.parsemanScopeTestName
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('the assemblyProfile option changes only which sites are generated', () => {
     const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
     try {

@@ -187,6 +187,10 @@ export type AssemblyProfile = {
   /** Paths of representative inputs. At least one must have content, and each that
    * does has to parse in full without recovery, or the build fails. */
   readonly files: readonly string[]
+  /** The values of names a grammar's reducers and gates import, for the corpus run.
+   * Their source runs at build time with no module around it, so a grammar whose
+   * callbacks read imported helpers passes those helpers here. */
+  readonly scope?: Readonly<Record<string, unknown>>
 }
 
 /** Corpus file contents, re-read when a file's mtime moves, so a watch build that
@@ -2447,24 +2451,37 @@ function transformMacroImpl(
         },
       })
     })
-    return countSiteVisits(compiled.prog, rules => {
-      const entry = rules[assemblyProfile.entry]!
-      corpusTexts(assemblyProfile).forEach((text, i) => {
-        const file = assemblyProfile.files[i]!
-        if (text.trim() === '') return
-        let result
-        try { result = run(entry, text) } catch (e) {
-          const source = String(thrower).replace(/\s+/g, ' ').slice(0, 200)
-          throw new Error(`${id} — assemblyProfile: ${thrower === undefined ? 'the parse' : `gate or reducer \`${source}\``} threw on ${file}: ${String(e)}`, { cause: e })
-        }
-        if (!result.ok || result.unconsumedFrom !== null) {
-          refuse(`${file} does not parse from rule "${assemblyProfile.entry}": it stops at offset ${result.ok ? result.unconsumedFrom : result.span.end}`)
-        }
-        if (result.errors.length > 0) {
-          refuse(`${file} parses only by recovering from ${result.errors.length} error(s), first at offset ${result.errors[0]!.span.start}`)
-        }
-      })
-    }, fns)
+    // ponytail: callback source is evaluated in global scope, so the corpus run sees
+    // `scope` as globals for this one synchronous call. Rebind each callback instead if
+    // a build ever lowers modules concurrently on one thread.
+    const scope = assemblyProfile.scope ?? {}
+    const shadowed = Object.keys(scope).map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
+    Object.assign(globalThis, scope)
+    try {
+      return countSiteVisits(compiled.prog, rules => {
+        const entry = rules[assemblyProfile.entry]!
+        corpusTexts(assemblyProfile).forEach((text, i) => {
+          const file = assemblyProfile.files[i]!
+          if (text.trim() === '') return
+          let result
+          try { result = run(entry, text) } catch (e) {
+            const source = String(thrower).replace(/\s+/g, ' ').slice(0, 200)
+            throw new Error(`${id} — assemblyProfile: ${thrower === undefined ? 'the parse' : `gate or reducer \`${source}\``} threw on ${file}: ${String(e)}`, { cause: e })
+          }
+          if (!result.ok || result.unconsumedFrom !== null) {
+            refuse(`${file} does not parse from rule "${assemblyProfile.entry}": it stops at offset ${result.ok ? result.unconsumedFrom : result.span.end}`)
+          }
+          if (result.errors.length > 0) {
+            refuse(`${file} parses only by recovering from ${result.errors.length} error(s), first at offset ${result.errors[0]!.span.start}`)
+          }
+        })
+      }, fns)
+    } finally {
+      for (const [name, was] of shadowed) {
+        if (was === undefined) Reflect.deleteProperty(globalThis, name)
+        else Object.defineProperty(globalThis, name, was)
+      }
+    }
   }
   /** The fused table's replacement, with its selective default assembly if any. */
   const assembledReplacement = (compiled: CompiledRuleMapTable, metadata: string, select: ReadonlySet<number>): string =>
