@@ -450,8 +450,8 @@ jobs:
   #             not a differential against the parent commit. Gating each commit
   #             against its parent lets +2%/commit land forever.
   #
-  # No `fetch-depth: 0`: unlike the perf gates this one has no reference commit to
-  # build — the baseline is a committed file, so a shallow clone is sufficient.
+  # `fetch-depth: 0` is for the duplicate-function gate's merge base. Unlike the perf
+  # gates nothing here builds a reference commit: the baselines are committed files.
   # Fast (~1 min): it compiles grammars, it does not time anything, so it needs no
   # repeated measurement passes.
   size-gate:
@@ -462,6 +462,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The duplicate-function gate compares its baseline with the merge base.
+          fetch-depth: 0
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -472,6 +476,8 @@ jobs:
         run: pnpm size:guard
       - name: Real-grammar size gate — jess's grammars within 5x their source
         run: pnpm size:guard:jess
+      - name: Duplicate-function gate — function counts, and no new function printed twice
+        run: pnpm dupfn:guard
 
   # GRAMMAR WASTED-WORK GATE (bench/choice-cost-guard.ts)
   #
@@ -517,6 +523,32 @@ jobs:
       - name: Grammar wasted-work gate vs the committed absolute baseline
         run: pnpm choicecost:guard
 
+  # CALL-COUNT GATE (bench/call-count-guard.ts)
+  #
+  # Function calls and branch tests per parse, counted by an instrumentation build
+  # that nothing published contains. A count, not a timing: the same on every machine
+  # and every run, so one extra call per parse fails. It compares with the previous
+  # release, as xproc does, so it needs `fetch-depth: 0` for the tags, and it builds
+  # jess's vendored grammars on both sides.
+  call-count-gate:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Calls and branch tests per parse vs the previous release and the baseline
+        run: pnpm callcount:guard
+
   # The single required status check. The ruleset on `main` requires a context
   # named exactly `test`; a matrix job publishes one context PER LEG
   # (`test (node lts/*)`, …) and none named `test`, so making the matrix the
@@ -528,7 +560,7 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: [changes, test-matrix, docs-verify, release-gate, xproc-perf, size-gate, choice-cost-gate]
+    needs: [changes, test-matrix, docs-verify, release-gate, xproc-perf, size-gate, choice-cost-gate, call-count-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -541,8 +573,9 @@ jobs:
           xproc='${{ needs.xproc-perf.result }}'
           size='${{ needs.size-gate.result }}'
           choicecost='${{ needs.choice-cost-gate.result }}'
+          callcount='${{ needs.call-count-gate.result }}'
           code='${{ needs.changes.outputs.code }}'
-          echo "test-matrix=$matrix  docs-verify=$docs  release-gate=$release  xproc-perf=$xproc  size-gate=$size  choice-cost-gate=$choicecost  code-changed=$code"
+          echo "test-matrix=$matrix  docs-verify=$docs  release-gate=$release  xproc-perf=$xproc  size-gate=$size  choice-cost-gate=$choicecost  call-count-gate=$callcount  code-changed=$code"
 
           # docs-verify gates every change — it is never skipped.
           [ "$docs" = "success" ] || { echo "::error::docs:verify did not pass"; exit 1; }
@@ -597,4 +630,13 @@ jobs:
               [ "$code" = "false" ] || { echo "::error::choice-cost-gate skipped but code changed"; exit 1; }
               echo "documentation-only change — grammar wasted-work gate intentionally skipped" ;;
             *) echo "::error::choice-cost-gate result: $choicecost"; exit 1 ;;
+          esac
+
+          # And the call-count gate, by the same rule.
+          case "$callcount" in
+            success) ;;
+            skipped)
+              [ "$code" = "false" ] || { echo "::error::call-count-gate skipped but code changed"; exit 1; }
+              echo "documentation-only change — call-count gate intentionally skipped" ;;
+            *) echo "::error::call-count-gate result: $callcount"; exit 1 ;;
           esac
