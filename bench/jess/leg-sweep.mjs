@@ -1,0 +1,93 @@
+/**
+ * The same inputs through two built legs, compared whole: value, spans, errors and
+ * expected sets, under strict and recovery parsing. A leg is a directory of runnable
+ * artifacts from `bench/jess/build-leg.mts`; inputs come from `sweep-inputs.mjs`.
+ *
+ *   node bench/jess/leg-sweep.mjs <inputs.json> <dialect>-<variant> <legA> <legB> [--tolerant] [--examples=N] [--out=diffs.jsonl] [--leaves]
+ *
+ * `--leaves` compares a CST by its leaves and trivia rather than its node shape, for two
+ * grammars that are meant to differ in which wrappers they keep. It also counts node types.
+ */
+import { appendFileSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+
+const flags = process.argv.slice(2).filter(a => a.startsWith('--'))
+const [file, art, a, b] = process.argv.slice(2).filter(a => !a.startsWith('--'))
+if (!b) throw new Error('usage: leg-sweep.mjs <inputs.json> <dialect>-<variant> <legA> <legB> [--tolerant] [--examples=N] [--out=diffs.jsonl]')
+const tolerant = flags.includes('--tolerant')
+const flag = name => flags.find(f => f.startsWith(`--${name}=`))?.slice(name.length + 3)
+const examples = +(flag('examples') ?? 8)
+const out = flag('out')
+if (out) rmSync(out, { force: true })
+
+const load = async leg => await import(realpathSync(join(resolve(leg), `${art}.mjs`)))
+const A = await load(a)
+const B = await load(b)
+const inputs = JSON.parse(readFileSync(file, 'utf8'))
+const cst = art.includes('cst')
+
+const leavesOnly = flags.includes('--leaves')
+const typeDelta = {}
+const leaves = (n, out = []) => {
+  if (n === null || typeof n !== 'object') return out
+  if (Array.isArray(n)) { for (const c of n) leaves(c, out); return out }
+  if (n._tag === 'leaf') { out.push([n.value, n.span?.start, n.span?.end]); return out }
+  for (const c of n.children ?? []) leaves(c, out)
+  return out
+}
+const nodeTypes = (n, sign) => {
+  if (n === null || typeof n !== 'object') return
+  if (Array.isArray(n)) { for (const c of n) nodeTypes(c, sign); return }
+  if (n._tag !== 'node') return
+  typeDelta[n.type] = (typeDelta[n.type] ?? 0) + sign
+  for (const c of n.children ?? []) nodeTypes(c, sign)
+}
+
+const go = (m, input, sign) => {
+  const opts = { ...(tolerant ? { tolerant: true } : {}), ...(cst ? { build: m.cstBuildHost } : {}) }
+  try {
+    const r = m.run(m.grammar.Stylesheet, input, opts)
+    if (leavesOnly) nodeTypes(r.value, sign)
+    return {
+      ok: r.ok,
+      digest: leavesOnly
+        ? m.digestValue({ ok: r.ok, errors: r.errors, expected: r.expected, unconsumedFrom: r.unconsumedFrom, leaves: leaves(r.value), trivia: r.trivia })
+        : m.digestValue(r),
+      expected: r.expected,
+      errors: r.errors?.length ?? 0,
+      unconsumedFrom: r.unconsumedFrom ?? null,
+    }
+  } catch (e) {
+    return { threw: String(e.message).split('\n')[0] }
+  }
+}
+
+const counts = { inputs: inputs.length, same: 0, diff: 0, okFlip: 0, newThrow: 0, goneThrow: 0, bothThrow: 0, expectedOnly: 0, fewerExpected: 0, moreExpected: 0 }
+const kinds = {}
+const shown = []
+for (const [kind, input] of inputs) {
+  const x = go(A, input, -1)
+  const y = go(B, input, 1)
+  if (x.threw !== undefined && y.threw !== undefined) counts.bothThrow++
+  if (x.threw === y.threw && x.digest === y.digest) { counts.same++; continue }
+  counts.diff++
+  const k = kind.split(':')[0]
+  kinds[k] = (kinds[k] ?? 0) + 1
+  if (x.threw === undefined && y.threw !== undefined) counts.newThrow++
+  else if (x.threw !== undefined && y.threw === undefined) counts.goneThrow++
+  else if (x.ok !== y.ok) counts.okFlip++
+  if (x.expected && y.expected) {
+    const X = new Set(x.expected), Y = new Set(y.expected)
+    if ([...X].some(e => !Y.has(e))) counts.fewerExpected++
+    if ([...Y].some(e => !X.has(e))) counts.moreExpected++
+  }
+  const row = { kind, input: input.slice(0, 200), a: x, b: y }
+  if (out) appendFileSync(out, JSON.stringify(row) + '\n')
+  if (shown.length < examples) shown.push(row)
+}
+console.log(JSON.stringify({ art, tolerant, ...counts, kinds }))
+if (leavesOnly) console.log('  node types, B minus A:', JSON.stringify(Object.fromEntries(Object.entries(typeDelta).filter(([, v]) => v !== 0).sort((p, q) => p[1] - q[1]))))
+for (const r of shown) {
+  const fmt = v => v.threw !== undefined ? `THROW ${v.threw.slice(0, 60)}` : `${v.ok ? 'ok' : 'no'} err=${v.errors} un=${v.unconsumedFrom} exp=${v.expected.length}`
+  console.log(`  ${JSON.stringify(r.input.slice(0, 70))} [${r.kind.slice(0, 30)}] ${fmt(r.a)} | ${fmt(r.b)}`)
+}

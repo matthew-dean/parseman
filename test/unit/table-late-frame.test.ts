@@ -6,7 +6,7 @@
  * test from, which runs as written in every engine.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { choice, classifiedTrivia, cstBuildHost, dispatch, field, literal, many, node, noTrivia, optional, otherwise, regex, rules, sequence, transform, when } from '../../src/index.ts'
+import { attempt, choice, classifiedTrivia, cstBuildHost, dispatch, field, literal, many, node, noTrivia, optional, otherwise, peek, regex, rules, sequence, transform, when } from '../../src/index.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
@@ -169,7 +169,7 @@ describe('a late frame', () => {
  * node it published, or publishes something other than one node, so the frame's first
  * child is not the corner's value and the node runs as written.
  */
-const CORNER_INPUTS = ['1', '1 + 2', '1 + 2 + 3', 'k 1', 'k 1 + 2', 'z', 'z + 1', '+', '1 +', 'k', '', '1 2', 'k +', '1+2', ' 1 ', '1 /* c */ + 2']
+const CORNER_INPUTS = ['1;', '1}', '1 ;', '1 + 2', '1 + 2 + 3', 'k 1', 'k 1 + 2', 'z', 'z + 1', '+', '1 +', 'k', '', '1 2', 'k +', '1+2', ' 1 ', '1 /* c */ + 2']
 
 const atom = () => node('Atom', regex(/[0-9]+/), (children, _f, span) => ({ atom: children[0], span }))
 const sum = (corner: Combinator<unknown>, g: G) =>
@@ -202,6 +202,14 @@ const SHAPES: Record<string, () => G> = {
   })) as G,
   'a named separator tail': () => rules({ trivia: trivia() }, (g: G) => ({
     Root: node('List', sequence(g.Atom!, sequence(field('separator', regex(/,/)), g.Atom!)), bin('List'), { collapse: true }),
+    Atom: atom(),
+  })) as G,
+  'a required tail that reads as nullable through a lookahead': () => rules({ trivia: trivia() }, (g: G) => ({
+    Root: node('Item', sequence(g.Atom!, choice(literal(';'), peek(literal('}')))), bin('Item'), { collapse: true }),
+    Atom: atom(),
+  })) as G,
+  'a required tail that reads as nullable through an attempt': () => rules({ trivia: trivia() }, (g: G) => ({
+    Root: node('Item', sequence(g.Atom!, attempt(sequence(literal('+'), g.Atom!))), bin('Item'), { collapse: true }),
     Atom: atom(),
   })) as G,
 }

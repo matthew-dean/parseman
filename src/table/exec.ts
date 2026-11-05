@@ -477,7 +477,7 @@ function makeDriver(
       case OP_STRICT:
         ip = code[ctx._tolerant || ctx._probe !== undefined ? ip + 2 : ip + 1]!; continue rows
 
-      // The reference runs a `continues()` as written, and is the leg it is compared with.
+      // The reference runs a late frame's node as written, and is the leg it is compared with.
       case OP_CONT:
         ip = code[ip + 2]!; continue rows
       case OP_SEED:

@@ -557,60 +557,58 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ## Queued and in progress
 
-- **`continues(type, corner, tail, build)`: open a wrapper only when a tail starts
-  (prototype, `experiment/no-collapse-wrappers`).** Today a ladder level opens a frame and a
-  children array, runs its corner, counts one child and throws the frame away. `continues`
-  runs the corner with no frame, reads the tail's first-token test from its own rows (the
-  repeat's item class, its gap gate, an optional's gate), and on a miss the corner is the
-  result: no frame, array, builder call or count test. A hit takes the corner's published
-  child back and opens the wrapper with it seeded. The reference driver, recovery and probes
-  run the node as written. An encode error refuses a corner that does not publish one node
-  and a tail that cannot take nothing, so a one-child node that means something stays a `node`.
-  - Marginal instructions per parse, default runtime, default budgets, against `main` @
-    `2fb5b21e`, interleaved. AST, 5 reps, N 5 to 45: `benchmark.less` 367.8M to 330.7M
-    (-10.09%, A/A -0.93%); `bootstrap4-all.less` 397.8M to 368.4M (-7.39%, A/A -0.25%);
-    `gen-workload.scss` 1053.3M to 798.8M (-24.16%, A/A +0.90%); `jess-x8.jess` 145.4M to
-    131.8M (-9.34%, A/A -0.34%). `benchmark.css`, 9 reps: 212.6M to 201.5M (-5.22%, A/A +2.83%,
-    spread 6%, so noisy). CST, 3 reps, N 5 to 25: -17.10%, -15.48%, -32.37%, -11.83%, and CSS
-    -23.26%; every A/A inside +1.45%. AST with positions, same window: SCSS -29.09%, CSS
-    -15.20%. A Less -12.75% measured here does not count: `benchmark.less` stops at offset
-    73117 of 106802 on both legs, so it timed a partial parse. Re-measure once the
-    positions fix (#253) is in. An x64 gate was not run, and neither was `--jitless`.
-  - Sampled allocation per parse (A/A within 0.1%): Less 31.7 to 26.1 MB, bootstrap 33.5 to
-    28.8, SCSS 109.6 to 74.8, CSS 24.4 to 16.7, `.jess` 11.6 to 8.9. Calls per parse: -12.2%,
-    -10.0%, -23.5%, -8.6%, -10.9%. Builder calls (AST): Less 41,811 to 27,847, bootstrap
-    42,267 to 30,799, SCSS 204,035 to 74,016, CSS 41,063 to 24,936, `.jess` 16,833 to 9,913.
-    Scavenges over 60 parses: 60 to 53, 62 to 56, 137 to 99, 48 to 38, 43 to 37.
-  - Bytes do not improve: gzip moves -0.24% to +1.85% by artifact; the largest is CSS AST,
-    where selection shifted with the new weights. The vendored grammars lose 91 lines. The
-    engine gains 338: `unwrap` and `collapse` cannot go yet, for two reasons. Less `MathUnary` as
-    a choice changes the expected set on 24 of 1,301 corpus inputs (all truncated values), and
-    a wrapper opened on a false alarm still counts its children. `unwrap` has no site in any
-    of the four grammars, on `main` too, so it can go on its own.
-  - Identity: AST and AST with positions identical to `main` on every sweep input (CSS 385,
-    Less 1,301, SCSS 9,669, `.jess` 93), results, errors and spans. For AST with positions
-    that covers partial parses on the Less and `.jess` files that stop (#253). The interpreter against the
-    shipped AST parser disagrees on the same inputs as on `main`, none new (10 CSS, 73 Less, 51
-    SCSS, nearly all truncated inputs; not chased). `check:differentials` passes.
-    CST: nodes CSS 123,331 to 69,212, Less 272,482 to 189,646, SCSS 542,549 to 198,301, `.jess`
-    35,967 to 18,949; mean depth 4.66 to 3.46, 7.97 to 6.25, 10.31 to 4.92, 6.98 to 4.31.
-    Leaves and spans match, except that a `ValueList` comma is now a child leaf on 3 CSS and 43
-    Less inputs, because the tail is `many(...)` and not a `sepBy`.
-  - Grammar changes alone, on `main`'s engine, before any engine work: Less -2.60%, bootstrap
-    -1.78%, SCSS -3.15% to -4.13%. A wrapper whose reducer only returned its one child became
-    a plain choice.
-  - With left-corner routes (`perf/left-corner-routes-v2` @ `2d57fbbb`, scratch merge, N 5 to
-    25): routes run only at `assemblyBudget` 0, so that is the fair row. Routes alone: Less
-    -4.91%, bootstrap -3.16%, SCSS -2.82%, CSS -3.21%, `.jess` +0.38%. This alone: -7.74%, -6.19%,
-    -24.76%, -13.72%, -9.83%. Both: -6.64%, -4.26%, -24.14%, -14.86%, -5.74%. They overlap today,
-    because route derivation does not read `OP_CONT` and stops there. Teaching it would make a
-    plain site a one-level route; that was not built.
-  - Found on the way: `matchesEmpty` had no `field` case, so every `field`-led sequence read
-    as nullable and a real gate went missing (Less `ValueList` opened 2,797 wrappers to build 19).
-    The one-line fix alone is flat in instructions and cuts raw bytes up to 3% (`.jess` AST
-    392,568 to 380,971). `dispatch()` allocates a `[key, arm]` pair at every visit. Separately, the
-    shipped `.jess` AST-with-positions parser stops at offset 3975 of `jess-x8.jess`, on `main`
-    too, with `ok: true`: the same `compose()` defect as #253, not a new one.
+- **A `collapse` level opens its frame only where its tail starts (`experiment/no-collapse-wrappers`).**
+  Today a ladder level opens a frame and a children array, runs its corner, counts one child
+  and throws the frame away. The encoder now lowers `node(type, sequence(corner, tail), build,
+  { collapse: true })` to `OP_CONT` when the corner always publishes exactly one node and the
+  tail is a `many()` or `optional()` with a first-token test: the corner runs with no frame,
+  the tail's test reads its own rows, a miss returns the corner, and a hit moves the corner
+  into a frame opened in the same function. Nothing is marked in a grammar. Recovery, probes
+  and the reference driver run the node as written. A `transform()` or `dispatch()` corner, a
+  required tail that only reads as nullable, and a trivia with no scanner stay as written.
+  - The engine alone changes nothing in the vendored grammars: no vendored level has this
+    shape. Results, errors, expected sets and spans match `main` on every sweep input, strict
+    and recovering, AST: CSS 8,737, `.jess` 8,883, Less 17,073, SCSS 23,163. Calls per parse +2,
+    once. Sizes within 0.14% gzip. Marginal instructions, 3 reps, N 5 to 25: Less -0.34%,
+    bootstrap -0.33%, SCSS +0.42%, `.jess` +0.62%, all inside noise. `benchmark.css` AST +1.99%
+    over 9 reps with a 6% spread; `--jitless` says +0.08%, so that one is the JIT, not the path.
+  - The win needs grammars in that shape, so it is measured as an overlay and lands as Jess
+    grammar changes with their CST readers. Marginal instructions against `main` @ `24ec89d8`,
+    default runtime and budgets, interleaved, A/A in every row under 2%:
+
+    | | AST | CST |
+    | --- | --- | --- |
+    | `gen-workload.scss` | -19.67% | -25.98% |
+    | `benchmark.less` | -5.46% | -16.09% |
+    | `bootstrap4-all.less` | -4.77% | -12.45% |
+    | `jess-x8.jess` | -5.77% | -8.88% |
+    | `benchmark.css` | +4.12% | -11.87% |
+
+    Calls per parse: SCSS -18.34% and -18.53%, Less -8.76% and -10.29%, bootstrap -7.34% and
+    -8.91%, `.jess` -6.65% and -7.80%, CSS -1.58% and -9.22%. Strict and recovering results, on
+    AST and on CST leaves and trivia, match `main` on the sweep inputs. Only node types change.
+    Under `tolerant` the AST reducers throw on most inputs before and after (Less 15,724), so CST
+    is the recovery coverage that counts.
+  - `a.x b.y,c.z d.w{e:f}` x4000 through CSS AST: calls 3,117,937 to 3,565,924, +14.37%, on
+    the same grammar and engine that give `a.x{...}` -9.56%. That is selection, not the hit path:
+    with one selection, all closure -3.45% and all emitted +0.007%. `main` sits on a cliff here:
+    an `assemblyBudget` of 0.98 costs it +13.3%, and the overlay needs 1.5 (27% more bytes) to
+    climb back. So CSS AST does not pay until selection stops being a lottery, by corpus profile
+    or otherwise. Less -4.03% and SCSS -5.33% on the same input.
+  - What stopped paying. CSS `CompoundSelector`: a hit costs more than the `oneOrMore` it
+    replaces. `ComplexSelector` and CSS `ValueList`: their trivia is unknown at the site, so
+    they cannot decide. `RelativeSelector`: its corner is optional. Less `ValueList` written
+    as `sequence(item, many(...))`: 3% of calls and about 0.5% of instructions, and it changes
+    recovery on 73 of 17,073 inputs with 12 new throws, because `sepBy` resyncs and `many`
+    does not. It stays a `sepBy`. The earlier -8% to -10% on Less counted that and a
+    selection that happened to land well.
+  - `matchesEmpty` has no `field` case, so a `field`-led sequence reads as nullable and a real
+    gate goes missing. The one-line fix is flat in instructions, cuts raw bytes up to 3%, and
+    changes recovery: it is its own change, with its own sweep. `attempt` also falls to the
+    nullable default; no late frame reads it, because a tail needs a repeat or optional row.
+  - Sweep inputs and legs: `bench/jess/sweep-inputs.mjs`, `build-leg.mts`, `leg-sweep.mjs`.
+    `tolerant-sweep.ts` loads grammars at runtime, which `compose()` now refuses for a
+    macro-lowered base, so it stops on Less and `.jess` on `main` too.
 
 - **Left-corner routing (accepted direction, prototype).** Every level from a node down
   to the first node a character reaches starts at the same position with the same piece.

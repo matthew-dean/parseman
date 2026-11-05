@@ -26,6 +26,9 @@
  * `PM_TABLE_EMIT` is read once at `assemble.ts` module load: 0 forces the
  * closure walk, 1 allows the emitter. Comparing the two files is the
  * emitted-vs-closure identity claim for the recovery path.
+ *
+ * Less and `.jess` stop at load: `compose()` refuses a macro-lowered base at runtime. For
+ * those, compare built artifacts with `leg-sweep.mjs --tolerant`.
  */
 import { appendFileSync, readFileSync } from 'node:fs'
 import os from 'node:os'
