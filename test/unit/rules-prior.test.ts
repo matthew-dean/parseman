@@ -228,6 +228,14 @@ export const lf = composeLeaf([rec, d, rules(g => ({ T: node('T', g.V, k => ({ v
     expect(P.run(lf.T!, '%').ok).toBe(false)
   })
 
+  it('the package entry names the type compose() and composeLeaf() return', () => {
+    const base = P.rules(() => ({ List: P.literal('a') }))
+    const composed: P.ComposedRules<[typeof base]> = P.compose([base])
+    const leaf: P.ComposedRules<[typeof base]> = P.composeLeaf([base])
+    expect(P.run(composed.List, 'a').ok).toBe(true)
+    expect(P.run(leaf.List, 'a').ok).toBe(true)
+  })
+
   it('types prior from a composed base too', () => {
     const inner = P.rules(() => ({ List: P.regex(/a/) }))
     const base = P.compose([inner, P.rules(() => ({ Extra: P.regex(/b/) }))])

@@ -5,6 +5,33 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A rule referenced from a `noTrivia()` region keeps its own trivia in a line-tracked
+  `compose()` build.** `rules({ trackLines: true })` wraps every rule in
+  `parser({ trackLines: true }, …)`. `hasOwnTriviaBoundary` read any `parser()` scope as
+  declaring its own trivia, so the table dropped the scope row a cleared region needs
+  and the rule ran with no trivia. Only the line-tracked variant parsed differently: a
+  tail like `c !important` could not cross the space before `!`, and the parse stopped
+  there with `ok: true`. A `parser()` scope that names no trivia now answers for what it
+  wraps, at no cost in the gate's depth budget. Every reader of the gate takes the same
+  answer: `ref()` in the interpreter, `Encoder.scopedRef`, `readsScope`, `firstSetOf`,
+  `gapLead` and token lowering's `reinstallsRuleTrivia`.
+- **`parser({ captureTrivia: true }, …)` with no trivia of its own inherits the active
+  trivia in every table engine.** The table lowered it with the slot that means
+  `trivia: null`, so the reference driver, closure engine, emitted assembly and macro
+  builds cleared trivia for the region, where the interpreter inherited it, with or
+  without a `noTrivia()` around the reference. The form now has its own slot value,
+  `SCOPE_INHERIT`, and raises capture only. A grammar without this form lowers to the
+  same bytes. Selective builds hand the installed scanner to an emitted body under it.
+- **A `parser({ trivia })` scope with unclassified trivia drops the kind labels of a
+  classified scope around it, in the interpreter.** It kept them, so a capturing node
+  in that scope took the labelled scan, which skips nothing for unclassified trivia,
+  and rejected input the tables accept.
+- **Known difference, not changed here (#258):** a table has one line setting, where
+  the interpreter scopes it. A node outside a `parser({ trackLines: true })` scope gets
+  line fields from the table and none from the interpreter, a `trackLines: false` scope
+  under a tracked grammar keeps them in the table and drops them in the interpreter, and
+  a `trackLines: true` scope in an unreachable rule still turns them on for
+  `encodeTable`. A reducer reading `span` can see all three.
 - **`rules((g, prior) => …)`: a composing grammar can re-reduce or extend an inherited
   rule without copying it.** `prior.X` is the definition of `X` that the grammars
   composed before this one gave it, with a top-level `node()` unwrapped to its body, and
@@ -29,6 +56,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **`compose()` and `composeLeaf()` results spell out their rule names.** Each is
   typed with the names its items spell out, as well as lookup by any string, so
   `composed.X` needs no `!` and `PriorRules<typeof composed>` rejects a misspelled rule.
+- **The package entry exports `ComposedRules`.** `compose()` and `composeLeaf()` return
+  it, so a project emitting declarations for an exported composition failed with TS2883
+  on 0.60.5.
 - **A `compose()` that references a rule no piece defines fails the build, naming
   the rule.** The macro fuse used to encode around the undefined slot, leave the
   runtime `compose()` in place and warn "ref() used before .define()", which read as
