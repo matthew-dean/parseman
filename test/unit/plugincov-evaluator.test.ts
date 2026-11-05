@@ -595,10 +595,12 @@ describe('static value evaluation', () => {
 // ---------------------------------------------------------------------------
 
 describe('evaluateParserFactory — factory signature', () => {
-  it('rejects a factory that does not take exactly one plain identifier parameter', () => {
+  it('rejects a factory that does not take `g` and an optional `prior`, both plain identifiers', () => {
     expect(factory(`rules(() => ({ A: literal('a') }))`)).toBeNull()
-    expect(factory(`rules((g, h) => ({ A: literal('a') }))`)).toBeNull()
+    expect(factory(`rules((g, prior, h) => ({ A: literal('a') }))`)).toBeNull()
     expect(factory(`rules(({ g }) => ({ A: literal('a') }))`)).toBeNull()
+    expect(factory(`rules((g, { A }) => ({ A: literal('a') }))`)).toBeNull()
+    expect(factory(`rules((g, prior) => ({ A: literal('a') }))`)).not.toBeNull()
   })
 
   it('rejects a non-function first argument', () => {
