@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.61.2 — 2026-11-05
 
 - **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
   or gate that threw.** So does a corpus with nothing in it, and a file that parses only
@@ -12,6 +12,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   silently ship a different one. On Jess's Less and SCSS grammars the gates read imported
   helpers, which aren't in scope at build time, so a profile on those grammars now fails
   instead of being ignored.
+
+## 0.61.1 — 2026-11-05
+
 - **`backtrackProbe` in `parseman/diagnostics` counts rewinds among matched terminals.**
   Per parse it reports how often one started behind the one before it and how many of
   its bytes had already matched, plus the lookahead `not()`/`peek()` and regex lookarounds
