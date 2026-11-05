@@ -1,11 +1,14 @@
 /**
  * Inputs for `bench/jess/leg-sweep.mjs`, reproducible from a jess checkout: the corpus,
  * the small files cut at token boundaries and given comments and spacing, and a grid of
- * values and selectors in the positions a ladder is reached from. Seeded, so one checkout
- * gives one set. Writes `<outDir>/<dialect>.json` as `[kind, input][]`.
+ * values and selectors in the positions a ladder is reached from. Seeded per dialect, so a
+ * file added to one dialect leaves the others alone, and one checkout gives one set. The
+ * checkout's sha is printed; the Less test data and the Sass spec cache are outside it.
+ * Writes `<outDir>/<dialect>.json` as `[kind, input][]`.
  *
  *   JESS_ROOT=<jess checkout> node bench/jess/sweep-inputs.mjs <outDir>
  */
+import { execFileSync } from 'node:child_process'
 import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 const JR = process.env.JESS_ROOT
@@ -18,7 +21,7 @@ const C = {
   jess: { roots: ['packages/syntax/jess/jess-parser/test', 'packages/jess/test/files', 'packages/jess/benchmark', 'packages/fns/test/files', 'packages/rollup-plugin-jess/test'], ext: '.jess' },
 }
 const walk = (p, ext, out) => { if (!existsSync(p)) return; const st = statSync(p); if (st.isDirectory()) { for (const e of readdirSync(p).sort()) { if (e === 'node_modules') continue; walk(join(p, e), ext, out) } } else if (p.endsWith(ext)) out.push(p) }
-let seed = 42
+let seed = 0
 const R = m => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % m }
 const boundaries = s => { const o = []; for (let i = 1; i < s.length; i++) { if (/[\s,;:(){}\[\]+*\/=<>!-]/.test(s[i]) || /[\s,;:(){}\[\]+*\/=<>!-]/.test(s[i - 1])) o.push(i) } return o }
 const VALS = {
@@ -35,7 +38,9 @@ const gridValue = d => [...VALS.common, ...(VALS[d] ?? [])]
 const wrap = { v: v => `a{b:${v};}`, v2: v => `a{b:${v}}`, top: v => `b:${v};`, sub: v => `a{b:${v};c:d}` }
 const extra = d => d === 'less' ? [v => `@x:${v};`, v => `.m(${v});`, v => `.m(@a:${v}){}`, v => `@media (a:${v}){}`, v => `a when (${v}){}`, v => `a{.m(${v});}`] : d === 'scss' ? [v => `$x:${v};`, v => `@include m(${v});`, v => `@if ${v} {}`, v => `@return ${v};`, v => `@function f($a:${v}){}`, v => `@each $a in ${v} {}`, v => `a{--x:${v};}`] : d === 'jess' ? [v => `$x:${v};`, v => `$x = ${v};`, v => `@mixin m($a:${v}){}`] : [v => `@media (a:${v}){}`, v => `@supports (a:${v}){}`, v => `a{--x:${v};}`, v => `@page{b:${v}}`]
 mkdirSync(OUT, { recursive: true })
+console.log('jess', execFileSync('git', ['-C', JR, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim())
 for (const d of Object.keys(C)) {
+  seed = [...d].reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0x7fffffff, 42)
   const files = []; for (const r of C[d].roots) walk(join(JR, r), C[d].ext, files)
   const out = new Map()
   const add = (n, s) => { if (!out.has(s)) out.set(s, n) }

@@ -10,6 +10,10 @@
  *
  * `--timeout=<ms>` stops one parse and records it as a throw. Less recovery on a CST takes
  * minutes on some inputs, on `main` too; a timeout on one side only is noise to recheck.
+ *
+ * Each leg's parses are tallied as full, partial (`ok` with bytes left over), failed or
+ * threw. A partial parse compares where it stopped and what it built, never what the bytes
+ * after that would have done, so `same` covers no more of an input than its parse reached.
  */
 import { appendFileSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -48,6 +52,15 @@ const nodeTypes = (n, sign) => {
   for (const c of n.children ?? []) nodeTypes(c, sign)
 }
 
+const tally = () => ({ full: 0, partial: 0, failed: 0, threw: 0, corpusFull: 0, corpusPartial: 0 })
+const parses = { a: tally(), b: tally() }
+const count = (t, kind, v) => {
+  const end = v.threw !== undefined ? 'threw' : !v.ok ? 'failed' : v.unconsumedFrom === null ? 'full' : 'partial'
+  t[end]++
+  if (kind.startsWith('corpus:') && end === 'full') t.corpusFull++
+  if (kind.startsWith('corpus:') && end === 'partial') t.corpusPartial++
+}
+
 const go = (m, input, sign) => {
   const opts = { ...(tolerant ? { tolerant: true } : {}), ...(cst ? { build: m.cstBuildHost } : {}) }
   try {
@@ -69,12 +82,14 @@ const go = (m, input, sign) => {
   }
 }
 
-const counts = { inputs: inputs.length, same: 0, diff: 0, okFlip: 0, newThrow: 0, goneThrow: 0, bothThrow: 0, expectedOnly: 0, fewerExpected: 0, moreExpected: 0 }
+const counts = { inputs: inputs.length, same: 0, diff: 0, okFlip: 0, newThrow: 0, goneThrow: 0, bothThrow: 0, fewerExpected: 0, moreExpected: 0 }
 const kinds = {}
 const shown = []
 for (const [kind, input] of inputs) {
   const x = go(A, input, -1)
   const y = go(B, input, 1)
+  count(parses.a, kind, x)
+  count(parses.b, kind, y)
   if (x.threw !== undefined && y.threw !== undefined) counts.bothThrow++
   if (x.threw === y.threw && x.digest === y.digest) { counts.same++; continue }
   counts.diff++
@@ -92,7 +107,7 @@ for (const [kind, input] of inputs) {
   if (out) appendFileSync(out, JSON.stringify(row) + '\n')
   if (shown.length < examples) shown.push(row)
 }
-console.log(JSON.stringify({ art, tolerant, ...counts, kinds }))
+console.log(JSON.stringify({ art, tolerant, ...counts, kinds, parses }))
 if (leavesOnly) console.log('  node types, B minus A:', JSON.stringify(Object.fromEntries(Object.entries(typeDelta).filter(([, v]) => v !== 0).sort((p, q) => p[1] - q[1]))))
 for (const r of shown) {
   const fmt = v => v.threw !== undefined ? `THROW ${v.threw.slice(0, 60)}` : `${v.ok ? 'ok' : 'no'} err=${v.errors} un=${v.unconsumedFrom} exp=${v.expected.length}`

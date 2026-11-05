@@ -3,6 +3,10 @@
  * core reducers, into `<out>/<dialect>-<variant>.mjs`: one leg for `leg-sweep.mjs`.
  *
  *   PM_REAL_CORE=<jess>/packages/core node --import tsx/esm bench/jess/build-leg.mts <out> [all|css,less] [fixtureRoot]
+ *
+ * To build a leg from a commit older than this script, copy this file and this version of
+ * `bench/jess/real-grammars.ts` into that checkout first: `PM_REAL_CORE` and the
+ * `digestValue` export `leg-sweep.mjs` compares with are both new there.
  */
 import { copyFileSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
