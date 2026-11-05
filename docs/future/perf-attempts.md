@@ -679,8 +679,8 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     | 3.9 | 497,472, +24.88% | -3.99% | -2.62% |
 
     So CSS AST does not pay until selection stops being a lottery, by corpus profile or
-    otherwise. Before `assemblyBudget` changed meaning, the same picture took 1.3 and +15.46%
-    bytes; these are the numbers to use now.
+    otherwise. Before `assemblyBudget` changed meaning, calls turned negative at +15.46% bytes;
+    now it takes somewhere between +13.68% and +24.88%.
   - What stopped paying. CSS `CompoundSelector`: a hit costs more than the `oneOrMore` it
     replaces. `ComplexSelector` and CSS `ValueList`: their trivia is unknown at the site, so
     they cannot decide. `RelativeSelector`: its corner is optional. Less `ValueList` written
