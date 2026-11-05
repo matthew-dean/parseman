@@ -139,6 +139,13 @@ describe('backtrackProbe', () => {
       expect(() => backtrackProbe(g, engine).measure('Item', 'a', { state: {} })).toThrow(/differs from the plain one/)
     })
 
+    it.each(['closure', 'interpreter'] as const)('throws on %s when both parses fail at different positions', (engine) => {
+      const g = rules(() => ({
+        Item: sequence(literal('a'), optional(sequence(literal('b'), gate(spend))), literal('c')),
+      }))
+      expect(() => backtrackProbe(g, engine).measure('Item', 'abx', { state: {} })).toThrow(/differs from the plain one/)
+    })
+
     it.each(['closure', 'interpreter'] as const)('undercounts on %s when it comes out the same', (engine) => {
       const g = rules(() => ({
         Item: sequence(optional(sequence(gate(spend), regex(/a+/), literal('!'))), regex(/a+/)),

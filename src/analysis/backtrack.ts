@@ -77,7 +77,7 @@ function ruleEntries(grammar: Record<string, unknown>): Array<[string, Combinato
 }
 
 function outcome(r: RunResult): string {
-  return digestValue({ ok: r.ok, value: r.value, unconsumedFrom: r.unconsumedFrom })
+  return digestValue({ ok: r.ok, value: r.value, span: r.span, unconsumedFrom: r.unconsumedFrom })
 }
 
 type Grammar = Readonly<Record<string, unknown>> | TableProgram | CompactProgram
