@@ -1,12 +1,12 @@
 /**
- * WHAT A BUDGET BUYS ON A REAL GRAMMAR.
+ * A COMMENT CHANGES NOTHING A MODULE SHIPS.
  *
- * A larger budget keeps every site a smaller one selected, and editing a comment
- * changes nothing a module ships. Both are checked on jess's CSS grammar
- * (`fixtures/jess-grammars`): the failure they pin showed on its SCSS sibling, where
- * a slightly longer doc comment cost five functions and about 1% of parse speed.
- * CSS alone is enough to catch each way of breaking them, and lowers in about a
- * second where a dialect composed over it takes eight.
+ * Checked on jess's CSS grammar (`fixtures/jess-grammars`): the failure this pins
+ * showed on its SCSS sibling, where a slightly longer doc comment cost five functions
+ * and about 1% of parse speed. CSS alone catches each way of breaking it, and lowers
+ * in about a second where a dialect composed over it takes eight. That a larger budget
+ * never loses a site is `fitHotSites`'s unit test; `bench/jess/selection-sweep.ts`
+ * sweeps it over the real grammars by hand.
  */
 import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -18,14 +18,16 @@ import { CARRIED_SIDECAR_SUFFIX, transformMacro, type CarriedSink } from '../../
 const ALIASES = new Set(['parseman'])
 const FIXTURE = resolve(import.meta.dirname, '../../fixtures/jess-grammars')
 
-/** Rebuilt with every comment passed through `edit`; an empty result takes the whitespace before it too. */
+/** Rebuilt with every comment passed through `edit`; an empty result takes the whitespace before it too, keeping a line end. */
 function editComments(id: string, code: string, edit: (comment: string) => string): string {
   let out = ''
   let at = 0
   for (const c of parseSync(id, code).comments) {
     const before = code.slice(at, c.start)
     const text = edit(code.slice(c.start, c.end))
-    out += text === '' ? before.trimEnd() : before + text
+    const kept = before.trimEnd()
+    const keepsLine = before.slice(kept.length).includes('\n') && code[c.end] !== '\n'
+    out += text === '' ? kept + (keepsLine ? '\n' : '') : before + text
     at = c.end
   }
   return out + code.slice(at)
@@ -35,7 +37,7 @@ function editComments(id: string, code: string, edit: (comment: string) => strin
 const shipped = (id: string, code: string): string => editComments(id, code, () => '').replace(/\s+/g, ' ')
 
 describe('selective assembly on a real grammar', () => {
-  it('a larger budget never loses a site, and a comment changes nothing shipped', () => {
+  it('a comment changes nothing shipped', () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'parseman-selection-')))
     try {
       cpSync(FIXTURE, root, { recursive: true })
@@ -51,16 +53,6 @@ describe('selective assembly on a real grammar', () => {
       const id = join(root, 'css', 'grammar.ts')
       const code = readFileSync(id, 'utf8')
       const lower = (source: string, share: number) => transformMacro(source, id, ALIASES, false, false, false, undefined, share)!
-
-      let last = new Set<number>()
-      // Small steps: near the ceiling a single site is the difference, and a step that
-      // loses sites loses them to the next few hundred bytes of budget.
-      for (let share = 2.4; share < 2.8; share += 0.02) {
-        const now = new Set(lower(code, share).assemblySites)
-        expect([...last].filter(s => !now.has(s)), `share ${share}`).toEqual([])
-        last = now
-      }
-      expect(last.size).toBeGreaterThan(0)
 
       const base = shipped(id, lower(code, 2).code)
       const removed = editComments(id, code, () => '')

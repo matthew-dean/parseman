@@ -174,7 +174,9 @@ export type ParsecraftPluginOptions = {
    * comments and whitespace aside. **Default `0.5`.** `0` ships no assembly. The right number is
    * per grammar: a larger one parses faster in steady state and costs import and
    * first-parse time, so measure both, and keep the artifact within 5× its source
-   * (docs/design/runtime-and-size-contract.md, rules 4 and 6).
+   * (docs/design/runtime-and-size-contract.md, rules 4 and 6). A larger budget never
+   * loses a site, with one limit: a module with two AST grammars spends it in order, so
+   * a larger budget can buy the first a big site and leave the second fewer.
    */
   assemblyBudget?: number
 }

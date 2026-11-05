@@ -11,7 +11,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   grammar a doc comment moved the build from 61 functions to 56 and parsing about 1%
   slower. Selection also shrank its target and retried when the source overshot, so
   a few more bytes of budget could lose sites. It now takes a prefix of the ranking
-  and drops the last site until it fits. A comment edit no longer changes anything a
+  and drops the last site until it fits. (A module with two AST grammars spends the
+  budget in order, so the second can still lose sites to a larger budget.) A comment edit no longer changes anything a
   module ships: reducer sources in the carried IR lose their comments, and the namespace
   of a `compose()` or `composeLeaf()` no longer depends on where it sits in the file.
   The default is `0.5` on the new base. Comments are about 40% of Jess's grammars, so an

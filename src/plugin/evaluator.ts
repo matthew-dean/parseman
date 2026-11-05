@@ -86,24 +86,38 @@ function stripTsFromSource(node: Node, code: string): string {
 }
 
 /**
- * A reducer's source without its comments, each taken with the whitespace before
- * it, so the text is what it would be had the comment never been written. A
- * reducer ships as a string in the carried IR, where a bundler cannot strip it, and
- * a comment must not change what a module ships.
+ * A reducer's source without its comments, and without the whitespace before them.
+ * A reducer ships as a string in the carried IR, where a bundler cannot strip it, and
+ * a comment must not change what a module ships. A comment still separates tokens and,
+ * if it crossed or followed a line end, still ends a line: automatic semicolon
+ * insertion and `return` depend on that line end.
  */
 function stripComments(text: string): string {
   if (!text.includes('/*') && !text.includes('//')) return text
   const wrapped = `(${text})`
   let out = ''
   let cur = 0
-  for (const c of parseSync('reducer.ts', wrapped).comments) {
-    const end = c.end - 1
-    const kept = text.slice(cur, c.start - 1).trimEnd()
+  let lineEnd = false
+  const comments = parseSync('reducer.ts', wrapped).comments
+  comments.forEach((c, i) => {
+    const before = text.slice(cur, c.start - 1)
+    const kept = before.trimEnd()
     out += kept
-    // A comment is whitespace to the language, and one spanning lines ends a line.
-    if (kept !== '' && !/\s/.test(text[end] ?? ' ')) out += c.value.includes('\n') ? '\n' : ' '
-    cur = end
-  }
+    lineEnd ||= before.length > kept.length && before.slice(kept.length).includes('\n')
+    lineEnd ||= c.value.includes('\n')
+    cur = c.end - 1
+    const after = /^\s*/.exec(text.slice(cur))![0]
+    if (comments[i + 1]?.start === c.end + after.length) {
+      lineEnd ||= after.includes('\n')
+      cur += after.length
+      return
+    }
+    if (out !== '' && cur + after.length < text.length && !after.includes('\n')) {
+      if (lineEnd) out += '\n'
+      else if (after === '') out += ' '
+    }
+    lineEnd = false
+  })
   return out + text.slice(cur)
 }
 
