@@ -1180,18 +1180,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return cur
   }
 
-  /**
-   * The tail of a late frame. The gap was scanned to decide, so with no gap there is
-   * nothing to record or undo.
-   */
   /** Whether `cls` admits the character at `at`, without a call for the ASCII answer. */
   function startsTail(cls: ResolvedClass, input: string, at: number): boolean {
     const c = input.charCodeAt(at)
     return c < 128 ? cls.ascii[c] === 1 : classHas(cls, lead(input, at))
   }
 
+  /**
+   * The tail of a late frame. The gap was scanned to decide, so with no gap there is
+   * nothing to record or undo, and with nothing recording it is not scanned again.
+   */
   function lateTail(tail: Piece, input: string, end: number, at: number, ctx: ParseContext): unknown {
     if (at === end) return tail(input, end, ctx)
+    if (ctx._triviaLog === undefined && ctx._rootTriviaLog === undefined
+      && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
+      const v = tail(input, at, ctx)
+      if (v !== FAIL && EC.e <= at) EC.e = end
+      return v
+    }
     const need = rollbackNeeded(ctx)
     const mTl = need ? cstTlLen(ctx) : 0
     const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
@@ -1929,10 +1935,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           } else ctx._cstChildren!.push(held)
           held = undefined
           heldRaw = undefined
-          if (ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined) return lateTail(tail, input, heldEnd, heldAt, ctx)
-          const v = tail(input, heldAt, ctx)
-          if (v !== FAIL && EC.e <= heldAt) EC.e = heldEnd
-          return v
+          return lateTail(tail, input, heldEnd, heldAt, ctx)
         }
         const open = flags === 34 ? childrenOnlyCollapseBuildNode(body, build) : collapseBuildNode(body, build)
         return (input, pos, ctx) => {

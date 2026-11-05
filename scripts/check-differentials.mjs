@@ -276,7 +276,8 @@ const REGISTRY = [
       { defect: 'cont-take-back-dropped-emitted', expect: 'moves' },
       { defect: 'cont-gate-always-misses-closure', expect: 'moves' },
       { defect: 'cont-gate-always-misses-emitted', expect: 'moves' },
-      { defect: 'cont-tail-at-corner-end-closure', expect: 'moves' },
+      { defect: 'cont-empty-tail-keeps-gap-closure', expect: 'moves' },
+      { defect: 'cont-empty-tail-keeps-gap-emitted', expect: 'moves' },
     ],
   },
   {

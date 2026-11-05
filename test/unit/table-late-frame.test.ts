@@ -6,7 +6,7 @@
  * test from, which runs as written in every engine.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { choice, classifiedTrivia, cstBuildHost, dispatch, field, literal, many, node, noTrivia, otherwise, regex, rules, sequence, transform, when } from '../../src/index.ts'
+import { choice, classifiedTrivia, cstBuildHost, dispatch, field, literal, many, node, noTrivia, optional, otherwise, regex, rules, sequence, transform, when } from '../../src/index.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
@@ -26,11 +26,13 @@ const bin = (type: string) => (children: readonly unknown[], _f: unknown, span: 
 const trivia = () => classifiedTrivia({ whitespace: regex(/[ \t\n\r\f]+/), comment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//) })
 const asWritten = <T>(tail: Combinator<T>): Combinator<T> => transform(tail, v => v)
 
-const ladder = (twin = false): G => {
+const ladder = (twin = false, parentReadsRaw = false): G => {
   const wrap = (type: string, corner: Combinator<unknown>, tail: Combinator<unknown>): Combinator<unknown> =>
     node(type, sequence(corner, twin ? asWritten(tail) : tail), bin(type), { collapse: true })
   return rules({ trivia: trivia() }, (g: G) => ({
-    Root: node('Decl', sequence(regex(/[a-z-]+/), literal(':'), g.Value!, literal(';')), bin('Decl')),
+    Root: parentReadsRaw
+      ? node('Decl', sequence(regex(/[a-z-]+/), literal(':'), g.Value!, literal(';')), (children, _f, span, raw) => ({ children, span, raw }))
+      : node('Decl', sequence(regex(/[a-z-]+/), literal(':'), g.Value!, literal(';')), bin('Decl')),
     Value: wrap('Sequence', g.Sum!, many(g.Sum!)),
     Sum: wrap('Sum', g.Product!, many(sequence(regex(/[+-]/), g.Product!))),
     Product: wrap('Product', g.Atom!, many(sequence(regex(/[*/]/), g.Atom!))),
@@ -95,6 +97,18 @@ describe('a late frame', () => {
   })
 
   it('every engine builds what the interpreter builds', () => agree(ladder(), INPUTS))
+
+  it('a parent that keeps raw children gets one raw child for the corner', () => agree(ladder(false, true), INPUTS))
+
+  it('a tail that passes its test and takes nothing leaves the gap outside', () => {
+    const g = rules({ trivia: regex(/ +/) }, (g: G) => ({
+      Root: node('Root', sequence(g.Sum!, optional(literal('+!'))), bin('Root')),
+      Sum: node('Sum', sequence(g.Atom!, many(literal('+='))), bin('Sum'), { collapse: true }),
+      Atom: node('Atom', regex(/[0-9]+/), children => ({ atom: children[0] })),
+    })) as G
+    expect(lowers(g)).toBe(true)
+    agree(g, ['1', '1 ', '1 +', '1 +!', '1 += +=', ' 1 += ', '1+='])
+  })
 
   it('a CST host sees the same tree, trivia and spans as the node run as written', () => {
     const prog = cst(ladder())

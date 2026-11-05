@@ -440,13 +440,22 @@ export const DEFECTS = {
     }],
   },
 
-  /** The tail starts before the gap the test already read past. */
-  'cont-tail-at-corner-end-closure': {
-    why: 'OP_CONT, closure: the tail runs at the end of the corner rather than past the gap',
+  /** A tail that took nothing keeps the gap the test read past. */
+  'cont-empty-tail-keeps-gap-closure': {
+    why: 'OP_CONT, closure: a tail that passes its test and takes nothing leaves the gap consumed',
     edits: [{
       file: 'src/table/assemble.ts',
-      find: 'const v = tail(input, heldAt, ctx)',
-      replace: 'const v = tail(input, heldEnd, ctx)',
+      find: 'if (v !== FAIL && EC.e <= at) EC.e = end\n',
+      replace: '',
+    }],
+  },
+
+  'cont-empty-tail-keeps-gap-emitted': {
+    why: 'OP_CONT, emitted: a tail that passes its test and takes nothing leaves the gap consumed',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if(v!==FAIL&&EC.e<=${at})EC.e=c1`',
+      replace: '`',
     }],
   },
 
