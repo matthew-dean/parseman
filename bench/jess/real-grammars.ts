@@ -140,6 +140,7 @@ export async function withBuiltSnapshot<T>(fn: (snap: Snapshot) => Promise<T>, f
             `export { ${exportName} as grammar } from ${JSON.stringify(entryFile)}`,
             `export { run, compile, compose } from ${JSON.stringify(join(SRC, 'index.ts'))}`,
             `export { cstBuildHost } from ${JSON.stringify(join(SRC, 'compiler/linker.ts'))}`,
+            `export { digestValue } from ${JSON.stringify(join(SRC, 'oracle/index.ts'))}`,
           ].join('\n'),
           loader: 'js', resolveDir: root,
         },

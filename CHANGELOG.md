@@ -5,6 +5,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A `collapse` ladder level opens its frame only where its tail starts.** A
+  `node(type, sequence(corner, tail), build, { collapse: true })` whose corner always
+  publishes one node and whose tail is a `many()` or `optional()` now runs the corner in
+  the parent's collector and tests the tail's first token. On a miss the corner is the
+  result, with no frame, children array or count test. On a hit the corner moves into a
+  frame opened in the same function. There is no new option and nothing to mark. The
+  closure engine, the printed assembly, `compile()` and the macro lower it; recovery, a
+  probe and the reference driver run the node as written. Tables gain two opcodes,
+  `OP_CONT` and `OP_SEED`. See `docs/design/internals.md`, `docs/guide/ast.md` and
+  `test/unit/table-late-frame.test.ts`.
 - **`assemblyProfile.scope` lets a grammar whose reducers or gates read imported helpers
   use a measured ranking.** Callback source runs at build time with no module around it,
   so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for

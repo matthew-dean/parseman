@@ -215,7 +215,7 @@ that is what the sweeps themselves are for. It times nothing.
 
 ### UNPROVEN is not passing
 
-Four of the twelve registered differentials drive jess's grammars over jess's
+Four of the registered differentials drive jess's grammars over jess's
 corpora, which live in an unpinned sibling checkout (`JESS_ROOT`) this repo does
 not vendor. Where that checkout is absent they are reported UNPROVEN on their own
 summary line — never as passing, and never silently omitted. CI runs the plain

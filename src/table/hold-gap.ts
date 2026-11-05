@@ -17,7 +17,7 @@
 import {
   OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_COV, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI,
   OP_NODE, OP_NOT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ,
-  OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM, OP_GAPGATE,
+  OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM, OP_GAPGATE, OP_CONT, OP_SEED,
 } from './ops.ts'
 import { childSlots } from './child-slots.ts'
 import { leadingTriviaFieldAt } from './field-spec.ts'
@@ -48,6 +48,10 @@ export function rowNullable(code: ArrayLike<number>, k: readonly unknown[], ip: 
     out = kids.length === 0 || kids.some(c => rowNullable(code, k, c, memo))
   } else if (op === OP_REP || op === OP_REPV) {
     out = code[ip + 2] === 0 || rowNullable(code, k, code[ip + 1]!, memo)
+  } else if (op === OP_SEED) {
+    out = rowNullable(code, k, code[ip + 1]!, memo)
+  } else if (op === OP_CONT) {
+    out = rowNullable(code, k, code[ip + 1]!, memo) && rowNullable(code, k, code[ip + 3]!, memo)
   } else if (WRAPPERS.has(op)) {
     if (childSlots(code, ip, kids) && kids.length === 1) out = rowNullable(code, k, kids[0]!, memo)
   }
