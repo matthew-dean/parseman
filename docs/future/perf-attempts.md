@@ -652,8 +652,23 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     conversion. Why the JIT differs was not isolated. Use `fe004e1b5` or later, and name the core
     with the number.
   - Strict and recovering results on the overlay match `main` @ `1cb8a80d`: AST whole, CST by
-    leaves. Trivia was not compared: a CST from `cstBuildHost` does not carry it. Inputs where both
-    sides threw compare only the message. Every CST node was also compared by a throwaway script, with single-child
+    leaves and logged trivia, except for the trivia below. Inputs where both sides threw compare
+    only the message; under `tolerant` that is 15,721 of 17,071 Less AST inputs.
+  - An earlier version of this record said trivia was compared. It wasn't: a CST from `cstBuildHost`
+    does not carry it, and the sweep hashed a field that doesn't exist. Compared now, with a host
+    that keeps each node's `triviaLog`, the overlay differs from `main` on two sets:
+    - Less, strict, 40 inputs lose a run, 20 comments and 20 spaces: `a{b:~/*c*/(a=b);}`,
+      `a{b:~ (a=b);}` and `@media (a:a=/*c*/b){}`. `ValueSequence` logged it on `main`.
+    - `.jess`, tolerant, 2 inputs gain a run on `CompoundSelector`: `a/*c*/ > b {}`, `a/*c*/ || b {}`.
+    CSS and SCSS show none. These come from the conversion and not the late frame: the same overlay
+    with lowering turned off matches it with lowering on, whole on AST and CST, and by leaves and
+    trivia, strict and tolerant, on all four dialects. A collapse wrapper takes its log with it, so
+    the Jess change has to keep those comments or accept losing them.
+  - Fixing what review found on the late frame moved no overlay number that resolves. Against the
+    same overlay built before the fixes, first-parse calls are unchanged except `benchmark.css` AST
+    (-32 of 1,724,400) and the selector row (-8). Instructions stay inside leg spreads of 3% to 10%.
+    CSS AST grows 0.16% (388,014 to 388,641 bytes) because the budget now buys slightly different sites.
+  - Every CST node was also compared by a throwaway script, with single-child
     chains erased and each node's type and span kept. In CSS and SCSS the only change is lost
     wrappers. Three exceptions, each the whole of what differs, strict and tolerant inputs in brackets:
     - Less `ValueListWithPriority` starts after its leading comment (50, 8): `b:/*c*/1 !important;`
