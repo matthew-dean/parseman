@@ -284,7 +284,7 @@ export const cssDiagnosticCstGrammar = composeLeaf([...pieces, rules({ trivia, h
 A module's terminal grammar — its `composeLeaf()`, or a `compose()` in a module that
 declares no `composeLeaf()` — gets a speed variant on its default AST/no-lines table:
 generated code for its hottest sites, within the plugin's `assemblyBudget`: a multiple of the
-module's own source length, `0.25` by default, `0` for none. The closure engine runs every
+module's own code, comments and whitespace aside, `0.5` by default, `0` for none. The closure engine runs every
 other site, and the two hand over at each boundary. The right budget is per grammar: a
 larger one parses faster in steady state and costs import and first-parse time, so measure
 both, and keep the artifact within 5× its source. The
@@ -297,15 +297,17 @@ Sites are ranked by a static estimate of how often they run. The plugin's option
 `files` from rule `entry` on the closure engine and keeps the sites with the most calls per
 byte. It changes which sites are generated, never what a parse returns
 (`test/unit/table-selective-assembly.test.ts`). A corpus file that doesn't parse in full or parses only by recovering, a
-corpus with nothing in it, or a reducer or gate that throws, fails the build. So does a build where grammars were
-profiled and none has the `entry` rule. A direct `transformMacro` caller gets `assemblyProfile: 'no-entry'` on the result
+corpus with nothing in it, or a reducer or gate that throws, fails the build. A file with only whitespace counts as empty:
+it's skipped, and a corpus of nothing else fails. A build also fails where grammars were profiled and none has the `entry`
+rule. A direct `transformMacro` caller gets `assemblyProfile: 'no-entry'` on the result
 instead, and has to read it. esbuild, webpack and rspack can't list a build's modules, so under them the check reads every
 module the plugin instance has seen, and a later build on that instance that dropped the module with the rule still
 passes. A Vite dev server doesn't run the check. A callback the corpus doesn't reach never runs, so nothing checks it.
 
 Callback source runs at build time with no module around it, so a grammar whose reducers or gates read imported helpers
 passes them as `scope`: `assemblyProfile: { entry, files, scope: { valueStopOf } }`. The names are visible as globals
-during the corpus run only.
+during the corpus run only. Without `scope` the build fails (same test file, "fails on a gate that reads an imported
+helper").
 
 - A name that's already a global fails the build. The opposite slip is silent: a helper named like a real global and
   left out of `scope` uses the global. A grammar's own `escape` left out of `scope` would run the global `escape`.

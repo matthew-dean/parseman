@@ -143,7 +143,7 @@ const grammar = rules(g => ({ Entry: literal('ok') }))
 import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
 const recognition = rules(g => ({ ${recognitionRules} }))
 const grammar = composeLeaf([recognition, rules(g => ({ Entry: g.R0 }))])
-${'// the assembly budget is a share of the module source\n'.repeat(2000)}`, 'canonical-compose-leaf.ts', new Set(['parseman']))
+export const padding = '${'x'.repeat(110_000)}'`, 'canonical-compose-leaf.ts', new Set(['parseman']))
     expect(out?.warnings).toEqual([])
     expect(out?.code.match(/a:\[\{/g)).toHaveLength(1)
     expect(out?.code).toMatch(/const recognition\s*=\s*\/\* @__PURE__ \*\/ tableRules\(\{\s*a:\[\],/)

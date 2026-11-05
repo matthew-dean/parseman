@@ -180,6 +180,15 @@ export function matches(pattern: RegExp): DispatchStringMatcher {
   return { kind: 'matches', value: pattern.source, flags: pattern.flags }
 }
 
+/** The matcher a `dispatch()` def records for a case, as the builder that made it. */
+export function dispatchMatcher(entry: DispatchMatcherCase): DispatchStringMatcher {
+  switch (entry.kind) {
+    case 'startsWith': return startsWith(entry.value)
+    case 'endsWith': return endsWith(entry.value)
+    case 'matches': return matches(new RegExp(entry.value, entry.flags))
+  }
+}
+
 export function when<T>(
   key: DispatchWhenKey,
   parser: Combinator<T>,

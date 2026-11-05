@@ -59,7 +59,7 @@ import { builtinModules } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
-import { materialise, previousRelease, previousReleases, git, fail, sign, sameSource, summary } from './ab-harness.ts'
+import { assertIndependentLegs, materialise, previousRelease, previousReleases, git, fail, sign, sameSource, summary } from './ab-harness.ts'
 import { aggregateSeed, caseVerdict, mergeShards, missingOperandFlags, nodeMajor, pinnedReferenceError, printReferenceArgErrors, verdictModeArgErrors, type Shard, type VerdictSettings } from './xproc-stats.ts'
 
 const GATE = 'xproc-gate'
@@ -233,6 +233,9 @@ async function measureAll(): Promise<{ logs: Map<string, number[]>; minLogs: Map
   const COPY = ['bench/grammar-density', 'bench/workloads', 'examples'] as const
   const refDist = buildSide(materialise(GATE, ROOT, REF, COPY))
   const headDist = buildSide(HEAD_REF === null ? workingTreeBuildDir() : materialise(GATE, ROOT, HEAD_REF, COPY))
+  // Checked on the built dist/ each side is copied from: every worker then loads that
+  // copy from one stage path, on purpose (`prepareStage`).
+  assertIndependentLegs(GATE, { reference: refDist, head: headDist }, SELF)
   const stage = await prepareStage()
   const out = { logs: new Map(cases.map(c => [c.id, [] as number[]])), minLogs: new Map(cases.map(c => [c.id, [] as number[]])) }
   const ROUNDS = Math.max(...cases.map(c => roundsFor(c.id)))

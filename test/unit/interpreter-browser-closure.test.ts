@@ -51,7 +51,10 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // sets without the nullable-pad refinement (`consuming: false`, which
 // `classifyFinalChoice` takes too); `node()`, `attempt()` and the repeats record
 // whether they guard their child (`guarded`), which the table's gates mirror.
-const BASELINE_RAW_BYTES = 63_510
+// Bumped +554B to 64,064B: `rules()` passes its factory the `prior` handle, a proxy
+// that reads the earlier piece's definition (or, before any composition, a placeholder
+// the carried IR writes back as `prior.X`, which names itself when run unfilled).
+const BASELINE_RAW_BYTES = 64_064
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

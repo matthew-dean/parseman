@@ -1,6 +1,6 @@
 {
   "name": "parseman",
-  "version": "0.60.0",
+  "version": "0.61.0",
   "packageManager": "pnpm@10.15.1",
   "engines": {
     "node": "^20.19.0 || >=22.13.0"
@@ -119,6 +119,10 @@
     "size:guard:jess": "node --import tsx/esm bench/jess-grammar-size-guard.ts",
     "vendor:jess-grammars": "node scripts/vendor-jess-grammars.mjs",
     "size:probe": "node --import tsx/esm bench/size/probe.ts",
+    "callcount:guard": "node --import tsx/esm bench/call-count-guard.ts",
+    "callcount:baseline": "node --import tsx/esm bench/call-count-guard.ts --update",
+    "dupfn:guard": "node --import tsx/esm bench/dup-function-guard.ts",
+    "dupfn:baseline": "node --import tsx/esm bench/dup-function-guard.ts --update",
     "choicecost:guard": "node --import tsx/esm bench/choice-cost-guard.ts",
     "choicecost:baseline": "node --import tsx/esm bench/choice-cost-guard.ts --update",
     "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report",
