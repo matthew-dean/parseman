@@ -309,16 +309,16 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   generated code, and each call between them and the closure engine crosses a wrapper. A site's
   worth now counts the crossings it removes. Real tsdown builds of Jess's grammars against
   `main` static, on a loaded machine with no `--jitless` or x64 run: `benchmark.less` at budget
-  `0.5` -11.47% instructions and -2.85% calls, against -7.43% and +8.95% for `main` profiled.
-  All 33 rows are in [#271](https://github.com/matthew-dean/parseman/pull/271), `2ac0017a`.
+  `0.5` -11.19% instructions and -2.86% calls, against -6.95% and +8.95% for `main` profiled.
+  Every row is in [#271](https://github.com/matthew-dean/parseman/pull/271), `61b9f562`.
   Weight 4 beats no weight but isn't tuned: 2 and 8 are untried.
 
 - **One function for functions that read the same.** `optional(x)` written in 25 places was
   25 functions, and connected selection took more of them. Merging them after the entry join,
   comparing identifiers only, makes the same calls: `call-count` passes against v0.61.4.
-  Duplicate functions on Jess's builds, with `main` static in brackets: Less at `0.5` 46 (46),
-  SCSS at `0.612` 45 (46), CSS at `2.72` 18 (53).
-  [#271](https://github.com/matthew-dean/parseman/pull/271), `2ac0017a`.
+  Duplicate functions on Jess's builds, with `main` static in brackets: Less at `0.5` 48 (48),
+  SCSS at `0.612` 47 (51), CSS at `2.72` 15 (46).
+  [#271](https://github.com/matthew-dean/parseman/pull/271), `61b9f562`.
 
 - **A budget that comments cannot move, and a selection that only grows.** The budget was a
   share of the module's raw text, so a comment edit could buy or lose functions: 61 against
