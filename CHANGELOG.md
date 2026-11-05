@@ -5,6 +5,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
+  or gate that threw.** So does a corpus with nothing in it, and a file that parses only
+  by recovering. It used to swallow the throw, and when no file parsed it warned
+  and shipped the static ranking, so a build configured with a measured ranking could
+  silently ship a different one. On Jess's Less and SCSS grammars the gates read imported
+  helpers, which aren't in scope at build time, so a profile on those grammars now fails
+  instead of being ignored.
 - **`backtrackProbe` in `parseman/diagnostics` counts rewinds among matched terminals.**
   Per parse it reports how often one started behind the one before it and how many of
   its bytes had already matched, plus the lookahead `not()`/`peek()` and regex lookarounds
