@@ -315,7 +315,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   does not fit cannot give that property, because a budget that admits a big site then
   loses the small ones a smaller budget took after skipping it. Sizes at the budgets Jess
   moves to, against `main`: Less 696,315 B (698,114), SCSS at `0.61` 442,881 B (444,036),
-  CSS at `2.72` 431,166 B (432,322). Identity 0 diffs, AST and CST, all four grammars.
+  CSS at `2.72` 421,972 B (422,073). Identity 0 diffs, AST and CST, all four grammars.
   Issues [#179](https://github.com/matthew-dean/parseman/issues/179),
   [#255](https://github.com/matthew-dean/parseman/issues/255).
 - **Trivia lead gate.** A trivia skip at a character no trivia can start returns `cur`
