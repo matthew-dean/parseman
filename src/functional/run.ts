@@ -496,7 +496,9 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
 
   const value = r.ok ? (r as { value: unknown }).value : undefined
   let span = r.span ?? { start: 0, end: 0 }
-  const expected = r.ok ? [] : ((r as { expected?: string[] }).expected ?? [])
+  // A set: arms that open alike each report the same token, and an expectation list
+  // that offers `"("` twice is wrong for a reader. Only a failed parse reaches this.
+  const expected = r.ok ? [] : [...new Set((r as { expected?: string[] }).expected ?? [])]
 
   let unconsumedFrom: number | null = null
   if (r.ok) {

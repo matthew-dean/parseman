@@ -9,6 +9,7 @@ import { literal, node, sequence } from '../../src/index.ts'
 import { EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 import { defaultAssemblyCfgs, emitTableModule } from '../../src/table/emit.ts'
 import { encodeTable } from '../../src/table/encode.ts'
+import { expandCompact, type CompactProgram } from '../../src/table/program.ts'
 import { PARSEMAN_VERSION } from '../../src/version.ts'
 
 describe('printed assembly factory', () => {
@@ -36,5 +37,15 @@ describe('printed assembly factory', () => {
 
   it('throws a clear error when a runtime passes more helpers, as a 0.59 runtime does', () => {
     expect(() => factory(...[...EMITTED_PARAMS, 'a', 'b', 'c'].map(() => undefined))).toThrow(refusal)
+  })
+})
+
+describe('printed table wire form', () => {
+  it('refuses a table printed before the token pool, and says what to do', () => {
+    const prog = encodeTable({ Entry: node('Pair', sequence(literal('a'), literal('b'))) })
+    // The wire form before the pool: expected sets spell out their strings, and there is no `es`.
+    const older = { c: prog.code, k: prog.k, x: prog.cc, e: prog.fx, d: prog.disp, r: prog.rules, f: prog.fns }
+    expect(() => expandCompact(older as unknown as CompactProgram))
+      .toThrow(`parseman: this parser was printed by an earlier parseman; reprint it with parseman ${PARSEMAN_VERSION}`)
   })
 })
