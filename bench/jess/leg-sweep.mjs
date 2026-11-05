@@ -91,7 +91,7 @@ const go = (m, input, sign) => {
     return {
       ok: r.ok,
       digest: leavesOnly
-        ? m.digestValue({ ok: r.ok, errors: r.errors, expected: r.expected, unconsumedFrom: r.unconsumedFrom, leaves: leaves(r.value), trivia: triviaLogs(r.value).sort((p, q) => p[0] - q[0] || p[1] - q[1] || p[2] - q[2]) })
+        ? m.digestValue({ ok: r.ok, span: r.span, errors: r.errors, expected: r.expected, unconsumedFrom: r.unconsumedFrom, leaves: leaves(r.value), trivia: triviaLogs(r.value).sort((p, q) => p[0] - q[0] || p[1] - q[1] || p[2] - q[2]) })
         : m.digestValue(r),
       expected: r.expected,
       errors: r.errors?.length ?? 0,
