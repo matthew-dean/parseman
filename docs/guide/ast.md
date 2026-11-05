@@ -358,6 +358,14 @@ and the macro build**: the compiled output emits a
 `children.length === 1 ? <single-child> : build(…)` ternary, and the plugin reads static
 `{ unwrap: true }` / `{ collapse: true }` literals as the 4th argument.
 
+`compile()` and the macro also skip the frame for the common ladder level, a `collapse`
+node of the form `sequence(corner, tail)` where `corner` always publishes exactly one
+node and `tail` is a `many()` or `optional()`. The corner runs first, and the frame opens
+only if the tail can start at the next token. The tree, spans, errors and expected sets
+are the ones the node as written produces, so there is nothing to mark. A shape the encoder
+can't prove this for runs as written: a `transform()` or `dispatch()` corner, a corner
+that isn't always a node, a tail with no first-token test, or a trivia with no scanner.
+
 ## Projecting one semantic child
 
 Some AST rules aren't one-child wrappers. They recognize punctuation, comments, or other
