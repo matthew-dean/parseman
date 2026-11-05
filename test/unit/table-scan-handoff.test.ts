@@ -12,6 +12,7 @@ import { encodeTable } from '../../src/table/encode.ts'
 import { cfgKey, tableRules } from '../../src/table/assemble.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
+import { OP_SCOPE_CAP } from '../../src/table/ops.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
 
@@ -70,4 +71,34 @@ describe('scanner handoff into an emitted body', () => {
       else expect(calls.n).toBe(0)
     })
   }
+
+  it('a capture-only scope reads the scanner it was entered with', () => {
+    const tab = regex(/[\t]+/)
+    const g = rules<Record<string, Combinator<unknown>>>({ trivia: regex(/[ ]+/) }, g => ({
+      Shared: sequence(literal('a'), literal('b')),
+      Cap: parser({ captureTrivia: true }, g.Shared!),
+      Mid: parser({ trivia: tab }, sequence(literal('m:'), g.Cap!)),
+      Peer: sequence(literal('p:'), g.Shared!),
+      Root: sequence(literal('o:'), choice(g.Mid!, g.Peer!)),
+    })) as Record<string, Combinator<unknown>>
+    const prog = encodeTable(g, {})
+    const cfg = defaultAssemblyCfgs(prog)[0]!
+    const extra = assemblyExtraIps(prog)
+    const sites = [...emitAssemblySource(resolveTable(prog), prog, cfg, extra, true).siteBytes.keys()]
+    const scopes = sites.filter(ip => prog.code[ip] === OP_SCOPE_CAP)
+    expect(scopes.length).toBeGreaterThan(0)
+    for (const scope of scopes) {
+      // The scope is emitted and `Mid`, which installs the tab scanner, is not.
+      const em = emitAssemblySource(resolveTable(prog), prog, cfg, extra, true, new Set([scope, prog.rules.Root!]))
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+      const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
+      const hybrid = tableRules({
+        ...prog,
+        asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }],
+      }).Root!
+      for (const [input, ok] of [['o:m:a\tb', true], ['o:m:a b', false], ['o:p:a b', true], ['o:p:a\tb', false]] as const) {
+        expect(run(hybrid as never, input).ok, `${scope}: ${JSON.stringify(input)}`).toBe(ok)
+      }
+    }
+  })
 })

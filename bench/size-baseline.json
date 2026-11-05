@@ -1,6 +1,6 @@
 {
   "updatedAt": "2026-11-04",
-  "gitRev": "027ee755",
+  "gitRev": "af541fb6",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -95,9 +95,9 @@
       "locMultiplier": 0.633
     },
     "probe/compose-leaf": {
-      "genBytes": 1048,
-      "gzipBytes": 624,
-      "bytesRatio": 1.351,
+      "genBytes": 1062,
+      "gzipBytes": 622,
+      "bytesRatio": 1.369,
       "locMultiplier": 1.357
     },
     "probe/trivia-on": {
@@ -131,21 +131,21 @@
       "locMultiplier": 1.267
     },
     "probe/variants-1": {
-      "genBytes": 1314,
-      "gzipBytes": 726,
-      "bytesRatio": 1.564,
+      "genBytes": 1328,
+      "gzipBytes": 727,
+      "bytesRatio": 1.581,
       "locMultiplier": 2.067
     },
     "probe/variants-2": {
-      "genBytes": 2146,
-      "gzipBytes": 782,
-      "bytesRatio": 2.096,
+      "genBytes": 2174,
+      "gzipBytes": 778,
+      "bytesRatio": 2.123,
       "locMultiplier": 2.5
     },
     "probe/variants-4": {
-      "genBytes": 3802,
-      "gzipBytes": 834,
-      "bytesRatio": 2.7,
+      "genBytes": 3858,
+      "gzipBytes": 831,
+      "bytesRatio": 2.74,
       "locMultiplier": 3
     }
   }

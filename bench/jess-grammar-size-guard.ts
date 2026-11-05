@@ -9,8 +9,9 @@
  * The grammars are the vendored snapshot, built as jess builds them
  * (`bench/jess/real-grammars.ts`). No assembly profile is configured: the default
  * static ranking must meet the ceiling on its own, and every variant must be VALID —
- * it loads, and a CST variant parses a stylesheet through a CST host. AST parses are
- * run by `bench/call-count-guard.ts` and jess's own suites.
+ * it loads, and a CST variant parses the inputs below through a CST host, with its
+ * positions build reading the same tree as its plain build. AST parses are run by
+ * `bench/call-count-guard.ts` and jess's own suites.
  *
  * FAILS CLOSED: a lowering warning, a missing or invalid variant, or any variant
  * over the ceiling exits 1.
@@ -24,18 +25,27 @@ import { DIALECTS, FIXTURE, VARIANTS, withBuiltSnapshot, type Dialect } from './
 
 export const REAL_GRAMMAR_CEILING = 5
 
-/** Valid in every dialect. */
-const VALIDITY_INPUT = '.a { color: red; }\n'
+/**
+ * Valid in every dialect. The `!important` tail crosses trivia from a rule referenced
+ * out of a cleared region, which a line-tracked build once could not do.
+ */
+const VALIDITY_INPUT = '.a { color: red !important; }\n'
+/** `.jess` forms that same defect rejected and gave a wrong span, respectively. */
+const JESS_VALIDITY_INPUTS = ['.box { three: $(\n  $one\n) four; }\n', '$c: #{ a: #{ b: red; }; };\n']
+
+/** A CST with its line and column fields dropped, which only a positions build has. */
+const offsetsOnly = (tree: unknown): string =>
+  JSON.stringify(tree, (key, value: unknown) => /^(?:start|end)(?:Line|Column)$/.test(key) ? undefined : value)
 
 export type VariantSize = {
   dialect: Dialect; variant: string; bytes: number; sourceBytes: number; ratio: number
-  /** Loads, and (CST variants) parses `VALIDITY_INPUT` through a CST host. */
+  /** Loads, and (CST variants) parses its inputs through a CST host as the plain build reads them. */
   valid: boolean
 }
 
 type Loaded = {
   grammar: Record<string, unknown>
-  run: (entry: unknown, input: string, opts: object) => { ok: boolean; unconsumedFrom: number | null }
+  run: (entry: unknown, input: string, opts: object) => { ok: boolean; unconsumedFrom: number | null; value: unknown }
   cstBuildHost: unknown
 }
 
@@ -44,6 +54,8 @@ export async function measureJessGrammars(): Promise<{ sizes: VariantSize[]; war
     const sizes: VariantSize[] = []
     for (const dialect of DIALECTS) {
       const sourceBytes = Buffer.byteLength(readFileSync(join(snap.root, dialect, 'grammar.ts')))
+      const inputs = dialect === 'jess' ? [VALIDITY_INPUT, ...JESS_VALIDITY_INPUTS] : [VALIDITY_INPUT]
+      let plainTrees: string | undefined
       for (const variant of Object.keys(VARIANTS)) {
         const { bytes } = await snap.shipped(dialect, variant)
         let valid = false
@@ -51,8 +63,10 @@ export async function measureJessGrammars(): Promise<{ sizes: VariantSize[]; war
           const mod = await import(await snap.runnable(dialect, variant)) as Loaded
           const entry = mod.grammar['Stylesheet']
           valid = typeof entry === 'function' && (!variant.startsWith('cst') || (() => {
-            const r = mod.run(entry, VALIDITY_INPUT, { build: mod.cstBuildHost })
-            return r.ok && r.unconsumedFrom === null
+            const results = inputs.map(input => mod.run(entry, input, { build: mod.cstBuildHost }))
+            const trees = offsetsOnly(results.map(r => r.value))
+            if (variant === 'cst') plainTrees = trees
+            return results.every(r => r.ok && r.unconsumedFrom === null) && trees === plainTrees
           })())
         } catch { valid = false }
         sizes.push({ dialect, variant, bytes, sourceBytes, ratio: bytes / sourceBytes, valid })
@@ -69,7 +83,7 @@ export function realGrammarFailures(sizes: readonly VariantSize[], warnings: rea
   if (sizes.length !== expected) failures.push(`expected ${expected} variants, measured ${sizes.length}`)
   for (const s of sizes) {
     if (!(s.bytes > 0)) failures.push(`${s.dialect} ${s.variant}: empty output`)
-    if (!s.valid) failures.push(`${s.dialect} ${s.variant}: not valid (did not load, or a CST variant did not parse ${JSON.stringify(VALIDITY_INPUT)})`)
+    if (!s.valid) failures.push(`${s.dialect} ${s.variant}: not valid (did not load, a CST variant did not parse ${JSON.stringify(VALIDITY_INPUT)} or the .jess inputs, or its positions build read a different tree)`)
     if (s.ratio > REAL_GRAMMAR_CEILING) {
       failures.push(`${s.dialect} ${s.variant}: ${s.bytes.toLocaleString('en-US')} B is ${s.ratio.toFixed(2)}x its grammar.ts — over the ${REAL_GRAMMAR_CEILING}x ceiling`)
     }
