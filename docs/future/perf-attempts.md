@@ -579,14 +579,16 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     -10.0%, -23.5%, -8.6%, -10.9%. Builder calls (AST): Less 41,811 to 27,847, bootstrap
     42,267 to 30,799, SCSS 204,035 to 74,016, CSS 41,063 to 24,936, `.jess` 16,833 to 9,913.
     Scavenges over 60 parses: 60 to 53, 62 to 56, 137 to 99, 48 to 38, 43 to 37.
-  - Bytes do not improve: gzip moves -0.5% to +2.3% by artifact; the largest is CSS AST
-    (+1.9%), from assembly selection, not code size. The vendored grammars lose 91 lines. The
+  - Bytes do not improve: gzip moves -0.24% to +1.85% by artifact; the largest is CSS AST,
+    where selection shifted with the new weights. The vendored grammars lose 91 lines. The
     engine gains 338: `unwrap` and `collapse` cannot go yet, for two reasons. Less `MathUnary` as
     a choice changes the expected set on 24 of 1,301 corpus inputs (all truncated values), and
     a wrapper opened on a false alarm still counts its children. `unwrap` has no site in any
     of the four grammars, on `main` too, so it can go on its own.
   - Identity: AST and AST with positions identical to `main` on every sweep input (CSS 385,
-    Less 1,301, SCSS 9,669, `.jess` 93), results, errors and spans. `check:differentials` passes.
+    Less 1,301, SCSS 9,669, `.jess` 93), results, errors and spans. The interpreter against the
+    shipped AST parser disagrees on the same inputs as on `main`, none new (10 CSS, 73 Less, 51
+    SCSS, all failing inputs; not chased). `check:differentials` passes.
     CST: nodes CSS 123,331 to 69,212, Less 272,482 to 189,646, SCSS 542,549 to 198,301, `.jess`
     35,967 to 18,949; mean depth 4.66 to 3.46, 7.97 to 6.25, 10.31 to 4.92, 6.98 to 4.31.
     Leaves and spans match, except that a `ValueList` comma is now a child leaf on 3 CSS and 43
