@@ -5,8 +5,9 @@
  *
  *   node bench/jess/leg-sweep.mjs <inputs.json> <dialect>-<variant> <legA> <legB> [--tolerant] [--examples=N] [--out=diffs.jsonl] [--leaves]
  *
- * `--leaves` compares a CST by its leaves and trivia rather than its node shape, for two
- * grammars that are meant to differ in which wrappers they keep. It also counts node types.
+ * `--leaves` compares a CST by its leaves rather than its node shape, for two grammars that
+ * are meant to differ in which wrappers they keep. It also counts node types. Trivia is not
+ * compared: a CST from `cstBuildHost` does not carry it.
  *
  * `--timeout=<ms>` stops one parse and records it as a throw. Less recovery on a CST takes
  * minutes on some inputs, on `main` too; a timeout on one side only is noise to recheck.
@@ -14,6 +15,8 @@
  * Each leg's parses are tallied as full, partial (`ok` with bytes left over), failed or
  * threw. A partial parse compares where it stopped and what it built, never what the bytes
  * after that would have done, so `same` covers no more of an input than its parse reached.
+ * Inputs where both legs throw have no parse to compare: they count as `bothThrow`, or as
+ * `diff` if the messages differ, and never as `same`.
  */
 import { appendFileSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -71,7 +74,7 @@ const go = (m, input, sign) => {
     return {
       ok: r.ok,
       digest: leavesOnly
-        ? m.digestValue({ ok: r.ok, errors: r.errors, expected: r.expected, unconsumedFrom: r.unconsumedFrom, leaves: leaves(r.value), trivia: r.trivia })
+        ? m.digestValue({ ok: r.ok, errors: r.errors, expected: r.expected, unconsumedFrom: r.unconsumedFrom, leaves: leaves(r.value) })
         : m.digestValue(r),
       expected: r.expected,
       errors: r.errors?.length ?? 0,
@@ -90,8 +93,10 @@ for (const [kind, input] of inputs) {
   const y = go(B, input, 1)
   count(parses.a, kind, x)
   count(parses.b, kind, y)
-  if (x.threw !== undefined && y.threw !== undefined) counts.bothThrow++
-  if (x.threw === y.threw && x.digest === y.digest) { counts.same++; continue }
+  if (x.threw !== undefined && y.threw !== undefined) {
+    counts.bothThrow++
+    if (x.threw === y.threw) continue
+  } else if (x.threw === y.threw && x.digest === y.digest) { counts.same++; continue }
   counts.diff++
   const k = kind.split(':')[0]
   kinds[k] = (kinds[k] ?? 0) + 1

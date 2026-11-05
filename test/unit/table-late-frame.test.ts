@@ -6,8 +6,9 @@
  * test from, which runs as written in every engine.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { attempt, choice, classifiedTrivia, cstBuildHost, dispatch, field, literal, many, node, noTrivia, optional, otherwise, peek, regex, rules, sepBy, sequence, transform, when } from '../../src/index.ts'
+import { attempt, choice, classifiedTrivia, cstBuildHost, dispatch, expect as expectOr, field, literal, many, node, noTrivia, optional, otherwise, peek, regex, rules, sepBy, sequence, transform, when } from '../../src/index.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
+import { ref } from '../../src/combinators/ref.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
@@ -270,6 +271,42 @@ describe('a site that lowers', () => {
   })
 })
 
+describe('a late frame under a sink the caller installed', () => {
+  // A node pushes to a parent frame and never to the caller's own leaf list, so the
+  // corner published nothing there for the frame to take back.
+  const corners: Record<string, () => Combinator<unknown>> = {
+    'a terminal node': () => atom(),
+    'a node over a sequence': () => node('Atom', sequence(regex(/[0-9]/), regex(/[0-9]*/)), bin('Atom')),
+    'a collapsed terminal node': () => node('Atom', regex(/[0-9]+/), bin('Atom'), { collapse: true }),
+  }
+  for (const [name, corner] of Object.entries(corners)) {
+    it(`${name} leaves the caller's earlier leaves alone`, () => {
+      const g = rules({ trivia: trivia() }, (g: G) => ({
+        Root: sequence(literal('x'), g.Sum!),
+        Sum: node('Sum', sequence(g.Corner!, many(sequence(literal('+'), g.Corner!))), bin('Sum'), { collapse: true }),
+        Corner: corner(),
+      })) as G
+      expect(lowers(g)).toBe(true)
+      const prog = encodeTable(g)
+      const engines: [string, (input: string, pos: number, ctx: ParseContext) => unknown][] = [
+        ['interpreter', (input, pos, ctx) => g.Root!.parse(input, pos, ctx)],
+        ['reference', execRules(prog).Root as never],
+        ['closure', tableRules(closureOf(prog)).Root as never],
+        ['emitted', tableRules(emittedOf(prog)).Root as never],
+      ]
+      for (const input of ['x1', 'x1 + 2']) {
+        for (const [engine, entry] of engines) {
+          const ctx = createParseContext()
+          const sink: { value: string }[] = []
+          ctx._cstLeaves = sink
+          entry(input, 0, ctx)
+          expect(sink.map(leaf => leaf.value), `${input} ${engine}`).toEqual(['x'])
+        }
+      }
+    })
+  }
+})
+
 /**
  * What the encoder must not prove. Each corner returns something other than the one
  * node it published, or publishes something other than one node, so the frame's first
@@ -327,6 +364,19 @@ describe('a shape that cannot be proved', () => {
       agree(make(), CORNER_INPUTS)
     })
   }
+
+  it('an expect over a node publishes nothing when the node fails, so it runs as written', () => {
+    const g = rules({ trivia: trivia() }, (g: G) => ({ Root: sum(expectOr(g.Atom!, 'atom'), g), Atom: atom() })) as G
+    expect(lowers(g)).toBe(false)
+  })
+
+  it('a ref not defined yet still encodes, and the node runs as written', () => {
+    const corner = ref<unknown>()
+    const g = rules({ trivia: trivia() }, (g: G) => ({ Root: sum(corner, g), Atom: atom() })) as G
+    expect(lowers(g)).toBe(false)
+    corner.define(atom())
+    agree(g, CORNER_INPUTS)
+  })
 
   it('the proof reads the corner through references and arms', () => {
     const g = rules({ trivia: trivia() }, (g: G) => ({

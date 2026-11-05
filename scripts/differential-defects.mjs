@@ -388,8 +388,8 @@ export const DEFECTS = {
     why: 'encoder: a transform corner lowers to a late frame, so the frame holds the mapped value and the parent loses the node',
     edits: [{
       file: 'src/table/encode.ts',
-      find: "    case 'node': return true\n    case 'lazy': return publishesOneNode(",
-      replace: "    case 'node': return true\n    case 'transform': return publishesOneNode(d.parser, rr, seen)\n    case 'lazy': return publishesOneNode(",
+      find: "    case 'node': return true\n    case 'lazy': {",
+      replace: "    case 'node': return true\n    case 'transform': return publishesOneNode(d.parser, rr, seen)\n    case 'lazy': {",
     }],
   },
 
@@ -397,8 +397,8 @@ export const DEFECTS = {
     why: 'encoder: a dispatch corner lowers to a late frame, so a selector that publishes leaves a second child behind',
     edits: [{
       file: 'src/table/encode.ts',
-      find: "    case 'node': return true\n    case 'lazy': return publishesOneNode(",
-      replace: "    case 'node': return true\n    case 'dispatch': return true\n    case 'lazy': return publishesOneNode(",
+      find: "    case 'node': return true\n    case 'lazy': {",
+      replace: "    case 'node': return true\n    case 'dispatch': return true\n    case 'lazy': {",
     }],
   },
 
@@ -407,8 +407,8 @@ export const DEFECTS = {
     why: 'OP_CONT, closure: a hit keeps the corner in the parent as well as in the frame',
     edits: [{
       file: 'src/table/assemble.ts',
-      find: 'ctx._cstLeaves !== undefined) heldRaw = popCstChild(ctx)',
-      replace: 'ctx._cstLeaves !== undefined) heldRaw = undefined',
+      find: 'ctx._cstChildren !== undefined) heldRaw = popCstChild(ctx)',
+      replace: 'ctx._cstChildren !== undefined) heldRaw = undefined',
     }],
   },
 
@@ -416,8 +416,8 @@ export const DEFECTS = {
     why: 'OP_CONT, emitted: a hit keeps the corner in the parent as well as in the frame',
     edits: [{
       file: 'src/table/emit-assembly.ts',
-      find: 'sLv!==undefined)c0Raw=popCstChild(ctx)',
-      replace: 'sLv!==undefined)c0Raw=undefined',
+      find: 'sCh!==undefined)c0Raw=popCstChild(ctx)',
+      replace: 'sCh!==undefined)c0Raw=undefined',
     }],
   },
 

@@ -1958,7 +1958,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           if (v !== undefined && !(gapRe === undefined ? startsTail(cls, input, at) : mayStartPastGap(input, at))) return v
           if (ctx._cstBuf === undefined && ctx._cstRawChildren === undefined && ctx._cstChildren !== undefined) ctx._cstChildren.pop()
-          else if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined || ctx._cstLeaves !== undefined) heldRaw = popCstChild(ctx)
+          else if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) heldRaw = popCstChild(ctx)
           held = v
           heldEnd = end
           heldAt = at

@@ -164,7 +164,8 @@ function isGap(p: Combinator<unknown>): boolean {
  * Does this combinator publish exactly one node child and return that same value, on
  * every path? Only then can a late frame (`OP_CONT`) take the corner's publication back
  * and be the child it would have captured. A `transform` returns what its function
- * makes of the child; a `dispatch` returns `[key, arm]` and its selector can publish too.
+ * makes of the child; a `dispatch` returns `[key, arm]` and its selector can publish too;
+ * an `expect` publishes nothing when its child fails. A `ref()` not defined yet proves nothing.
  */
 function publishesOneNode(p: Combinator<unknown>, rr: RefResolver | undefined, seen = new Set<Combinator<unknown>>()): boolean {
   if (seen.has(p)) return true
@@ -172,9 +173,13 @@ function publishesOneNode(p: Combinator<unknown>, rr: RefResolver | undefined, s
   const d = p._def
   switch (d.tag) {
     case 'node': return true
-    case 'lazy': return publishesOneNode(winnerForRef(p, rr) ?? d.thunk(), rr, seen)
+    case 'lazy': {
+      let target = winnerForRef(p, rr)
+      if (target === undefined) { try { target = d.thunk() } catch { return false } }
+      return publishesOneNode(target, rr, seen)
+    }
     case 'choice': return d.parsers.every(a => publishesOneNode(a, rr, seen))
-    case 'grammar': case 'withCtx': case 'label': case 'expect': return publishesOneNode(d.parser, rr, seen)
+    case 'grammar': case 'withCtx': case 'label': return publishesOneNode(d.parser, rr, seen)
     default: return false
   }
 }

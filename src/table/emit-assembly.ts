@@ -2773,7 +2773,7 @@ return nd
         }
         const child = late === undefined ? link(code[ip + 2]!) : ''
         const runBody = late === undefined ? `const v=${child}(input,pos,ctx)` : late.body
-        const takeBack = late === undefined ? '' : 'let c0Raw\nif(sBuf===undefined&&sRaw===undefined&&sCh!==undefined)sCh.pop()\nelse if(sBuf!==undefined||sCh!==undefined||sLv!==undefined)c0Raw=popCstChild(ctx)\n'
+        const takeBack = late === undefined ? '' : 'let c0Raw\nif(sBuf===undefined&&sRaw===undefined&&sCh!==undefined)sCh.pop()\nelse if(sBuf!==undefined||sCh!==undefined)c0Raw=popCstChild(ctx)\n'
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
         const type = k[code[ip + 5]!] as string

@@ -652,7 +652,8 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     conversion. Why the JIT differs was not isolated. Use `fe004e1b5` or later, and name the core
     with the number.
   - Strict and recovering results on the overlay match `main` @ `1cb8a80d`: AST whole, CST by
-    leaves and trivia. Every CST node was also compared by a throwaway script, with single-child
+    leaves. Trivia was not compared: a CST from `cstBuildHost` does not carry it. Inputs where both
+    sides threw compare only the message. Every CST node was also compared by a throwaway script, with single-child
     chains erased and each node's type and span kept. In CSS and SCSS the only change is lost
     wrappers. Three exceptions, each the whole of what differs, strict and tolerant inputs in brackets:
     - Less `ValueListWithPriority` starts after its leading comment (50, 8): `b:/*c*/1 !important;`
