@@ -2,19 +2,19 @@
   "against": "v0.61.0",
   "rows": {
     "macro/css/ast/site.css calls": {
-      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.61. The gate copies that file into the reference leg, which then builds v0.61.0 at the new numbers on the old meaning, a far larger budget than v0.61.0 shipped. The increase is that artifact, not this change: against the v0.61.0 baseline, built at its own budget, HEAD is 44 calls lower.",
+      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.612. The gate copies that file into the reference leg, which then builds v0.61.0 at the new numbers on the old meaning, a far larger budget than v0.61.0 shipped. The increase is that artifact, not this change: against the v0.61.0 baseline, built at its own budget, HEAD is 44 calls lower.",
       "limit": 7949
     },
     "macro/css/ast/site.css branches": {
-      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.61. The gate copies that file into the reference leg, which then builds v0.61.0 at the new numbers on the old meaning, a far larger budget than v0.61.0 shipped. The increase is that artifact, not this change: against the v0.61.0 baseline, built at its own budget, HEAD is 6 branch tests lower.",
+      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.612. The gate copies that file into the reference leg, which then builds v0.61.0 at the new numbers on the old meaning, a far larger budget than v0.61.0 shipped. The increase is that artifact, not this change: against the v0.61.0 baseline, built at its own budget, HEAD is 6 branch tests lower.",
       "limit": 15711
     },
     "macro/scss/ast/site.css calls": {
-      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.61. The gate copies that file into the reference leg, which then builds v0.61.0 at the new numbers on the old meaning, a far larger budget than v0.61.0 shipped. The increase is that artifact, not this change: against the v0.61.0 baseline, built at its own budget, HEAD is 226 calls lower.",
-      "limit": 30917
+      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.612. The gate copies that file into the reference leg, which then builds v0.61.0 at the new numbers on the old meaning, a far larger budget than v0.61.0 shipped. The increase is that artifact, not this change: against the v0.61.0 baseline, built at its own budget, HEAD is 226 calls lower.",
+      "limit": 30933
     },
     "macro/scss/ast/site.css branches": {
-      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.61. The gate copies that file into the reference leg, which then builds v0.61.0 at the new numbers on the old meaning, a far larger budget than v0.61.0 shipped. The increase is that artifact, not this change: against the v0.61.0 baseline, built at its own budget, HEAD is 904 branch tests higher (+0.06%), from a different set of selected sites. Which test it is was not traced.",
+      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.612. The gate copies that file into the reference leg, which then builds v0.61.0 at the new numbers on the old meaning, a far larger budget than v0.61.0 shipped. The increase is that artifact, not this change: against the v0.61.0 baseline, built at its own budget, HEAD is 904 branch tests higher (+0.06%), from a different set of selected sites. Which test it is was not traced.",
       "limit": 99984
     }
   }

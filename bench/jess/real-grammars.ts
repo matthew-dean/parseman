@@ -37,7 +37,7 @@ export type Dialect = 'css' | 'less' | 'scss' | 'jess'
  * rank statically in both.
  */
 export const ASSEMBLY_BUDGETS: Readonly<Record<Dialect, number | undefined>> = {
-  css: 2.72, less: undefined, scss: 0.61, jess: 0,
+  css: 2.72, less: undefined, scss: 0.612, jess: 0,
 }
 export const DIALECTS: readonly Dialect[] = ['css', 'less', 'scss', 'jess']
 /** Variant name -> export suffix, as jess's `grammar-variants.mts` ships them. */
