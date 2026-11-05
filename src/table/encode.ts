@@ -41,6 +41,7 @@ import {
   collectLexicalCapabilities, winnerWrapsReference,
 } from '../compiler/token-capability.ts'
 import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
+import { continuationGate } from './late-frame.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -160,10 +161,10 @@ function isGap(p: Combinator<unknown>): boolean {
 }
 
 /**
- * Does this combinator publish exactly one node child, on every path? The corner of a
- * `continues()` has to: its publication is what is taken back when the wrapper opens,
- * and what the wrapper's first child is. A leaf reports a different value and raw
- * entry at a root, and a sequence publishes several.
+ * Does this combinator publish exactly one node child and return that same value, on
+ * every path? Only then can a late frame (`OP_CONT`) take the corner's publication back
+ * and be the child it would have captured. A `transform` returns what its function
+ * makes of the child; a `dispatch` returns `[key, arm]` and its selector can publish too.
  */
 function publishesOneNode(p: Combinator<unknown>, rr: RefResolver | undefined, seen = new Set<Combinator<unknown>>()): boolean {
   if (seen.has(p)) return true
@@ -171,22 +172,8 @@ function publishesOneNode(p: Combinator<unknown>, rr: RefResolver | undefined, s
   const d = p._def
   switch (d.tag) {
     case 'node': return true
-    case 'lazy': {
-      const target = winnerForRef(p, rr) ?? d.thunk()
-      return publishesOneNode(target, rr, seen)
-    }
+    case 'lazy': return publishesOneNode(winnerForRef(p, rr) ?? d.thunk(), rr, seen)
     case 'choice': return d.parsers.every(a => publishesOneNode(a, rr, seen))
-    // A dispatch's own value is `[key, arm]`, so it reaches a corner through a
-    // `transform` that takes the arm out. The transform's function is the author's.
-    case 'transform': {
-      let body = d.parser
-      while (body._def.tag === 'lazy' || body._def.tag === 'grammar') body = body._def.tag === 'grammar' ? body._def.parser : winnerForRef(body, rr) ?? body._def.thunk()
-      const inner = body._def
-      if (inner.tag !== 'dispatch') return publishesOneNode(body, rr, seen)
-      return inner.cases.every(c => publishesOneNode(c.parser, rr, seen))
-        && (inner.matchers?.every(m => publishesOneNode(m.parser, rr, seen)) ?? true)
-        && (inner.otherwise === undefined || publishesOneNode(inner.otherwise, rr, seen))
-    }
     case 'grammar': case 'withCtx': case 'label': case 'expect': return publishesOneNode(d.parser, rr, seen)
     default: return false
   }
@@ -1892,8 +1879,8 @@ class Encoder {
         // without, on match and on failure.
         // An AUTHORING error, not a table gap — raise what the other two engines do.
         if (d.type === undefined) missingInferredType()
-        const late = d.continues === true && this.plan === undefined
-        const child = late ? this.continuesBody(d) : this.node(d.parser).ip
+        const late = this.opensLate(d)
+        const child = late ? this.lateBody(d.parser._def as Extract<ParserDef, { tag: 'sequence' }>) : this.node(d.parser).ip
         // Capture flags, resolved HERE from the reducer's declared arity using the
         // same analysis codegen runs (`src/compiler/build-arity.ts`). `hostMode:
         // 'cst'` forces them on, exactly as the emitted `cstOut` path does. The
@@ -1962,8 +1949,14 @@ class Encoder {
         // `deriveExpected(body)`, which for a body with nullable leading terms
         // names tokens the run would have skipped — `['"@"', '"(", '"x"']` where
         // running the body reports `['"x"']` alone.
-        // `child` is `SEQ 2 seed tail …`, and `seed` is `SEED corner`.
-        const run = late ? this.emit(OP_CONT, this.code[this.code[child + 2]! + 1]!, body, this.code[child + 3]!) : body
+        // `child` is `SEQ 2 seed tail …`, and `seed` is `SEED corner`. A tail with no first
+        // test has nothing to decide on: the node runs as written, over its corner.
+        let run = body
+        if (late) {
+          const corner = this.code[this.code[child + 2]! + 1]!
+          if (continuationGate(this.code, this.code[child + 3]!) === undefined) this.code[child + 2] = corner
+          else run = this.emit(OP_CONT, corner, body, this.code[child + 3]!)
+        }
         if (matchesEmpty(d.parser, new Set(), this.refResolver())) return run
         // A node whose BODY is a bare cross-rule ref (`node('X', g.Y, …)`) caches its
         // first set from the ref's base binding. Under a compose OVERRIDE the winner
@@ -2301,18 +2294,23 @@ class Encoder {
   }
 
   /**
-   * The wrapper's body of a `continues()`: the sequence as written, with the corner
-   * behind `OP_SEED`. Refuses what the form cannot express, at build time.
+   * `node(sequence(corner, tail), build, { collapse: true })` with a tail that can take
+   * nothing and a corner that is one node: the frame can open after the corner, only if
+   * the tail can start. Any other node keeps its frame from the start, and so does one
+   * with no reducer, whose host can scope the corner's trivia to its type.
    */
-  private continuesBody(d: Extract<ParserDef, { tag: 'node' }>): number {
+  private opensLate(d: Extract<ParserDef, { tag: 'node' }>): boolean {
+    if (this.plan !== undefined || d.collapse !== true || d.build === undefined || d.trailingTrivia === true) return false
     const seq = d.parser._def
-    if (seq.tag !== 'sequence' || seq.parsers.length !== 2) throw new Error(`continues('${d.type}'): the body must be (corner, tail)`)
-    const corner = seq.parsers[0]!
-    const tail = seq.parsers[1]!
-    if (!matchesEmpty(tail, new Set(), this.refResolver())) throw new Error(`continues('${d.type}'): the tail must be able to take nothing`)
-    if (!publishesOneNode(corner, this.refResolver())) throw new Error(`continues('${d.type}'): the corner must publish exactly one node and return it`)
-    const seed = this.emit(OP_SEED, this.node(corner).ip)
-    const tailIp = this.node(tail).ip
+    return seq.tag === 'sequence' && seq.parsers.length === 2
+      && matchesEmpty(seq.parsers[1]!, new Set(), this.refResolver())
+      && publishesOneNode(seq.parsers[0]!, this.refResolver())
+  }
+
+  /** The body of a late frame: the sequence as written, its corner behind `OP_SEED`. */
+  private lateBody(seq: Extract<ParserDef, { tag: 'sequence' }>): number {
+    const seed = this.emit(OP_SEED, this.node(seq.parsers[0]!).ip)
+    const tailIp = this.node(seq.parsers[1]!).ip
     const head = this.emitHead(seq.valueUnused ? OP_SEQV : OP_SEQ, 5)
     this.code[head + 1] = 2
     this.code[head + 2] = seed

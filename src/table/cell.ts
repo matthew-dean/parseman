@@ -37,12 +37,6 @@ export type Fail = typeof FAIL
  * The end-position out-parameter — `_pfEnd` in emitted text, `END` in the
  * closure walk and the driver. One per assembly.
  */
-export type EndCell = {
-  e: number
-  /** A corner on its way into the frame `OP_CONT` opens late: value, start, end. */
-  sv: unknown
-  ss: number
-  se: number
-}
+export type EndCell = { e: number }
 
-export const newEndCell = (): EndCell => ({ e: 0, sv: undefined, ss: 0, se: 0 })
+export const newEndCell = (): EndCell => ({ e: 0 })

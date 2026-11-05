@@ -128,7 +128,7 @@ function meet(a: SiteLabel, b: SiteLabel): SiteLabel {
  * site resolves to `TOP` through `labelAt`, and the enclosing assembly is
  * unemittable regardless.
  */
-export function reachableSites(code: Int32Array, roots: Iterable<number>, strict = false): Set<number> {
+export function reachableSites(code: Int32Array, roots: Iterable<number>): Set<number> {
   const seen = new Set<number>()
   const stack = [...roots]
   const kids: number[] = []
@@ -137,7 +137,7 @@ export function reachableSites(code: Int32Array, roots: Iterable<number>, strict
     if (seen.has(ip)) continue
     seen.add(ip)
     kids.length = 0
-    if (!strict || code[ip] !== OP_SEED) childSlots(code, ip, kids)
+    childSlots(code, ip, kids)
     for (const c of kids) stack.push(c)
   }
   return seen
@@ -161,7 +161,7 @@ export function passCollapse(code: Int32Array, ip: number, hostCst: boolean): bo
     else if (op === OP_RULE) at = code[at + 1]!
     else break
   }
-  return code[at] === OP_NODE
+  return code[at] === OP_NODE || code[at] === OP_CONT
 }
 
 /**
@@ -266,7 +266,11 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
 }
 
 /** A site's label, or `TOP` for anything the walk did not reach. */
-export type SiteLabels = { at: (ip: number) => SiteLabel }
+export type SiteLabels = {
+  at: (ip: number) => SiteLabel
+  /** The `OP_CONT` sites whose corner runs in the parent's collector in every engine. */
+  late: ReadonlySet<number>
+}
 
 /**
  * Compute a label for every site reachable from `roots`.
@@ -284,12 +288,11 @@ export function computeSiteLabels(
   code: Int32Array,
   roots: Iterable<number>,
   hostCst: boolean,
-  /** The assembly runs `OP_CONT`'s decision (not recovery, not a probe). */
-  strict = false,
+  /** Does this assembly run this `OP_CONT` late, in EVERY engine it holds? Absent: none. */
+  late?: (ip: number, tri: number) => boolean,
 ): SiteLabels {
   const labels = new Map<number, SiteLabel>()
   const work: number[] = []
-
   const push = (ip: number, l: SiteLabel): void => {
     const cur = labels.get(ip)
     if (cur === undefined) {
@@ -302,24 +305,41 @@ export function computeSiteLabels(
     labels.set(ip, next)
     work.push(ip)
   }
-
-  for (const r of roots) push(r, TOP)
-
+  // A corner a late frame never runs takes no label from that frame. So every frame is
+  // late until a site proves undecidable, when its seed's edge joins the same fixpoint: a
+  // frame does not change the trivia in force, so no other site's answer moves.
+  const opened = new Set<number>()
   const kids: number[] = []
-  while (work.length > 0) {
-    const ip = work.pop()!
-    const down = transfer(code, ip, labels.get(ip)!, hostCst)
-    kids.length = 0
-    // A strict assembly runs the corner in the parent's collector; otherwise `wrapper`
-    // is the node as written, with the corner in its frame.
-    if (code[ip] === OP_CONT) {
-      if (strict) kids.push(code[ip + 1]!)
-      kids.push(code[ip + 2]!)
-    } else if (code[ip] !== OP_SEED || !strict) childSlots(code, ip, kids)
-    for (const c of kids) push(c, down)
+  const drain = (): void => {
+    while (work.length > 0) {
+      const ip = work.pop()!
+      const down = transfer(code, ip, labels.get(ip)!, hostCst)
+      kids.length = 0
+      if (late === undefined || code[ip] !== OP_SEED || opened.has(ip)) childSlots(code, ip, kids)
+      for (const c of kids) push(c, down)
+    }
   }
+  for (const r of roots) push(r, TOP)
+  drain()
+  const lateIps = new Set<number>()
+  if (late !== undefined) {
+    for (const [ip, l] of [...labels]) {
+      if (code[ip] !== OP_CONT) continue
+      if (late(ip, l.tri)) lateIps.add(ip)
+      else {
+        const seed = seedOf(code, ip)
+        opened.add(seed)
+        work.push(seed)
+      }
+    }
+    drain()
+  }
+  return { at: (ip: number): SiteLabel => labels.get(ip) ?? TOP, late: lateIps }
+}
 
-  return { at: (ip: number): SiteLabel => labels.get(ip) ?? TOP }
+/** `CONT corner wrapper tail`, `NODE … body`, `SEQ n seed tail`. */
+function seedOf(code: ArrayLike<number>, cont: number): number {
+  return code[code[code[cont + 2]! + 2]! + 2]!
 }
 
 /**

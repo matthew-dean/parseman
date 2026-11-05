@@ -504,18 +504,20 @@ export const OP_RGATE2 = 47
  */
 export const OP_STRICT = 48
 /**
- * `CONT corner wrapper tail` — `continues()`: run `corner` in the PARENT's collector,
- * then look at the next token. Where `tail` cannot start there, the corner is the
- * result: no frame, no children, no builder. Where it can, the corner's publication is
- * taken back and `wrapper` runs at the same start: an ordinary `OP_NODE` whose body is
- * `SEED`, then `tail`. `tail` is read for the decision only (`continues.ts`). Recovery,
- * a probe and the reference driver have no decision to make: they run `wrapper`.
+ * `CONT corner wrapper tail` — a `collapse` node that is `sequence(corner, tail)`, with
+ * a tail that can take nothing and a corner that is one node. A strict assembly runs
+ * `corner` in the PARENT's collector and looks at the next token. Where `tail` cannot
+ * start there, the corner is the result: no frame, no children, no builder. Where it
+ * can, the corner's publication is taken back and `wrapper`'s frame opens around it and
+ * `tail`, in this one function. `tail` is read for the decision (`continues.ts`). Where
+ * no decision can be made, and under recovery, a probe or the reference driver, this
+ * is `wrapper`, the node as written.
  */
 export const OP_CONT = 49
 /**
- * `SEED corner` — the corner `OP_CONT` holds, published into the frame it opened late.
- * Where no decision was made (recovery, a probe, the reference driver) it is `corner`,
- * so `wrapper` is the node as written.
+ * `SEED corner` — marks the first term of `wrapper`'s body. Run, it is `corner`. It
+ * exists so the labels can leave out the edge from a late frame to its corner, which
+ * never runs there.
  */
 export const OP_SEED = 50
 /**

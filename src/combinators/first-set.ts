@@ -216,7 +216,6 @@ function matchesEmptyBody(
     case 'dispatch':
       return me(d.selector)
     case 'transform':
-    case 'field':
     case 'label':
     case 'trivia':
     case 'token':

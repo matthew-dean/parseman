@@ -530,7 +530,6 @@ class Serializer {
         const optEntries = [
           ...(def.unwrap ? ['unwrap: true'] : []),
           ...(def.collapse ? ['collapse: true'] : []),
-          ...(def.continues ? ['continues: true'] : []),
           ...(projectEntry === undefined ? [] : [projectEntry]),
           ...(def.captureTrivia ? ['captureTrivia: true'] : []),
           ...(def.trailingTrivia ? ['trailingTrivia: true'] : []),

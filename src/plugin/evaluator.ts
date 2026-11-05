@@ -582,7 +582,7 @@ function staticNodeOptionsFromValue(value: unknown): parseman.NodeOptions<readon
   const rec = value as Record<string, unknown>
   for (const name of Object.keys(rec)) {
     const v = rec[name]
-    if (name === 'unwrap' || name === 'collapse' || name === 'continues' || name === 'captureTrivia' || name === 'trailingTrivia') {
+    if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
       if (v === true) opts[name] = true
       else if (v !== false && v !== undefined) return STATIC_NODE_OPTIONS_FAILED
     } else if (name === 'project') {
@@ -596,7 +596,7 @@ function staticNodeOptionsFromValue(value: unknown): parseman.NodeOptions<readon
       opts.buildArity = v
     }
   }
-  return opts.unwrap || opts.collapse || opts.continues || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined || opts.buildArity !== undefined ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined || opts.buildArity !== undefined ? opts : undefined
 }
 
 function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
@@ -610,7 +610,7 @@ function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
     const p = prop as unknown as ObjectProperty
     if (p.computed) return STATIC_NODE_OPTIONS_FAILED
     const name = propName(p as never)
-    if (name === 'unwrap' || name === 'collapse' || name === 'continues' || name === 'captureTrivia' || name === 'trailingTrivia') {
+    if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
       const value = staticLiteralValue(p.value)
       if (value === true) opts[name] = true
       else if (value !== false && value !== undefined) return STATIC_NODE_OPTIONS_FAILED
@@ -628,7 +628,7 @@ function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
       opts.buildArity = arity
     }
   }
-  return opts.unwrap || opts.collapse || opts.continues || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined || opts.buildArity !== undefined ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined || opts.buildArity !== undefined ? opts : undefined
 }
 
 /**
@@ -722,28 +722,17 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
   // Capture the build callback source (like transform) so codegen inlines it; the
   // inner parser carries the capture. Options may be the trailing argument or the
   // third argument when no build callback is present.
-  // continues(type, corner, tail, build?, opts?) is `node(type, sequence(corner, tail), build,
-  // { ...opts, collapse: true, continues: true })`.
-  if ((callee.name === 'node' || callee.name === 'continues') && code !== undefined) {
-    const isContinues = callee.name === 'continues'
-    const [firstArg, secondArg, thirdArg, fourthArg, fifthArg] = node.arguments
+  if (callee.name === 'node' && code !== undefined) {
+    const [firstArg, secondArg, thirdArg, fourthArg] = node.arguments
     if (!firstArg || firstArg.type === 'SpreadElement') return null
     const firstVal = anyValue(firstArg as Expression, scope, code, mfs)
     const explicitType = typeof firstVal === 'string' ? firstVal : undefined
-    if (isContinues && explicitType === undefined) return null
     const parserArg = explicitType !== undefined ? secondArg : firstArg
-    const buildArg = isContinues ? fourthArg : explicitType !== undefined ? thirdArg : secondArg
-    const optsArg = isContinues ? fifthArg : explicitType !== undefined ? fourthArg : thirdArg
+    const buildArg = explicitType !== undefined ? thirdArg : secondArg
+    const optsArg = explicitType !== undefined ? fourthArg : thirdArg
     if (!parserArg || parserArg.type === 'SpreadElement') return null
-    const parsed = anyValue(parserArg as Expression, scope, code, mfs)
-    if (!isCombinator(parsed)) return null
-    let inner: parseman.Combinator<unknown> = parsed
-    if (isContinues) {
-      if (!thirdArg || thirdArg.type === 'SpreadElement') return null
-      const tail = anyValue(thirdArg as Expression, scope, code, mfs)
-      if (!isCombinator(tail)) return null
-      inner = parseman.sequence(parsed, tail)
-    }
+    const inner = anyValue(parserArg as Expression, scope, code, mfs)
+    if (!isCombinator(inner)) return null
     // `build` is OPTIONAL — a structural node() omits it (or passes the literal
     // `undefined` to reach the 4th opts arg). Structural nodes build via the
     // injected `ctx.build` host; codegen keys that off `def.build === undefined`.
@@ -773,7 +762,6 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       if (optsResult === STATIC_NODE_OPTIONS_FAILED || optsResult === STATIC_NODE_OPTIONS_NOT_OPTIONS) return null
       opts = optsResult
     }
-    if (isContinues) opts = { ...opts, collapse: true, continues: true }
     try {
       const combi = explicitType !== undefined
         ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)

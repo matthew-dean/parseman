@@ -83,6 +83,7 @@ import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
+  popCstChild,
 } from '../cst/capture-buffer.ts'
 import { PlainBuf, PlainField, PlainLeaf, PlainNode, PlainSpan } from '../cst/plain.js'
 import {
@@ -109,8 +110,8 @@ import {
   EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
-import { collapseEmpty, holdCorner, lead, pastTrivia, publishSeed, rawEntry, spanLines } from './run-support.ts'
-import { continuationGate } from './continues.ts'
+import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
+import { canDecide, continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows, newGapSlot } from './gap-gate.ts'
 import { failCleanAnalysis } from './fail-clean.ts'
@@ -544,7 +545,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const GAP_ROWS = gapRows(code, [...Object.values(prog.rules), ...labelExtraIps])
   const GAP = newGapSlot()
   const closureLabels = computeSiteLabels(
-    code, [...Object.values(prog.rules), ...labelExtraIps], hostCst, !cfg.tolerant && !cfg.probe,
+    code, [...Object.values(prog.rules), ...labelExtraIps], hostCst,
+    cfg.tolerant || cfg.probe ? undefined : (ip, tri) => canDecide(code, ip, tri, t.triviaScan),
   )
 
   /**
@@ -1178,6 +1180,34 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return cur
   }
 
+  /**
+   * The tail of a late frame. The gap was scanned to decide, so with no gap there is
+   * nothing to record or undo.
+   */
+  /** Whether `cls` admits the character at `at`, without a call for the ASCII answer. */
+  function startsTail(cls: ResolvedClass, input: string, at: number): boolean {
+    const c = input.charCodeAt(at)
+    return c < 128 ? cls.ascii[c] === 1 : classHas(cls, lead(input, at))
+  }
+
+  function lateTail(tail: Piece, input: string, end: number, at: number, ctx: ParseContext): unknown {
+    if (at === end) return tail(input, end, ctx)
+    const need = rollbackNeeded(ctx)
+    const mTl = need ? cstTlLen(ctx) : 0
+    const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+    const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+    const scanEnd = skipTrivia(input, end, ctx)
+    const scanTl = need ? cstTlLen(ctx) : 0
+    const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
+    const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+    const v = tail(input, scanEnd, ctx)
+    if (v !== FAIL && EC.e <= scanEnd) {
+      if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
+      EC.e = end
+    }
+    return v
+  }
+
   /** A non-first term at a site proven to run under an open node capture buffer. */
   function nextTermBuffered(child: Piece, input: string, cur: number, ctx: ParseContext): number {
     const t = ctx.trivia
@@ -1549,6 +1579,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    */
   let FIRST_DECIDED: Piece | undefined
   let NODE_BODY: Piece | undefined
+  /** Set by `OP_CONT` for the `OP_NODE` body that opens in its own closure. */
+  let LATE_NODE: {
+    corner: Piece
+    tail: Piece
+    scan: FastTriviaScanner | undefined
+    leads: Uint8Array | null
+    cls: ResolvedClass
+    gapRe: RegExp | undefined
+    mayStartPastGap: (input: string, at: number) => boolean
+  } | undefined
   const DECIDED: Piece = (_input, pos) => { EC.e = pos; return null }
   function lookaheadLedNode(ip: number): Piece | undefined {
     const op = code[ip]
@@ -1848,48 +1888,69 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (_input, pos) => { EC.e = pos; return '' }
 
       case OP_SEED:
-        if (cfg.tolerant || cfg.probe) return link(code[ip + 1]!)
-        return (input, _pos, ctx) => publishSeed(EC, ctx, input)
+        return link(code[ip + 1]!)
 
       case OP_CONT: {
-        if (cfg.tolerant || cfg.probe) return link(code[ip + 2]!)
+        const wrapper = code[ip + 2]!
+        if (!closureLabels.late.has(ip)) return lower(wrapper)
         const corner = link(code[ip + 1]!)
-        const wrapper = link(code[ip + 2]!)
-        // A tail row with no first test leaves no decision to make here: the wrapper opens.
-        const g = continuationGate(code, code[ip + 3]!)
-        if (g === undefined) return (input, pos, ctx) => {
-          const v = corner(input, pos, ctx)
-          if (v === FAIL) return FAIL
-          holdCorner(EC, ctx, v, pos, EC.e)
-          return wrapper(input, pos, ctx)
-        }
-        // The trivia the wrapper's sequence would scan before the tail.
-        const noGap = closureLabels.at(ip).tri === TRI_NONE
+        const tail = link(code[ip + 3]!)
+        const g = continuationGate(code, code[ip + 3]!)!
+        const tri = closureLabels.at(ip).tri
+        // The gap the tail would start past, read without recording anything: no scan
+        // at a character no trivia can start.
+        const scan = tri === TRI_NONE ? undefined : t.triviaScan[tri]!
+        const leads = tri === TRI_NONE ? null : LEAD_TABLES[tri]!
         const cls = cc[g.cls]!
-        if (g.gapRow < 0) return (input, pos, ctx) => {
-          const v = corner(input, pos, ctx)
-          if (v === FAIL) return FAIL
-          const end = EC.e
-          const at = noGap ? end : pastTrivia(input, end, ctx)
-          if (v !== undefined && at >= 0 && !classHas(cls, lead(input, at))) return v
-          holdCorner(EC, ctx, v, pos, end)
-          return wrapper(input, pos, ctx)
+        const gapRe = g.gapRow < 0 ? undefined : k[code[g.gapRow + 1]!] as RegExp
+        const follow = g.follow < 0 ? undefined : cc[g.follow]!
+        const other = g.other < 0 ? undefined : cc[g.other]!
+        const mayStartPastGap = (input: string, at: number): boolean => {
+          gapRe!.lastIndex = at
+          const q = gapRe!.test(input) ? gapRe!.lastIndex : -1
+          return (q >= 0 && classHas(follow!, lead(input, q))) || (other !== undefined && classHas(other, lead(input, at)))
         }
-        const gapRe = k[code[g.gapRow + 1]!] as RegExp
-        const follow = cc[g.follow]!
-        const other = g.other >= 0 ? cc[g.other]! : undefined
+        const flags = code[wrapper + 3]!
+        if (hostCst || cfg.trackLines || code[wrapper] !== OP_NODE || code[wrapper + 4]! >= 0 || (flags !== 32 && flags !== 34)) {
+          LATE_NODE = { corner, tail, scan, leads, cls, gapRe, mayStartPastGap }
+          return lower(wrapper)
+        }
+        // An AST reducer: the frame is one of the two lean bodies, around these.
+        const build = fns[code[wrapper + 1]!] as NodeBuilder
+        let held: unknown
+        let heldRaw: unknown
+        let heldEnd = 0
+        let heldAt = 0
+        const body: Piece = (input, pos, ctx) => {
+          const b = ctx._cstBuf
+          if (b !== undefined) {
+            b.single = held
+            b.rawSingle = heldRaw ?? rawEntry(held, input, pos, heldEnd)
+          } else ctx._cstChildren!.push(held)
+          held = undefined
+          heldRaw = undefined
+          if (ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined) return lateTail(tail, input, heldEnd, heldAt, ctx)
+          const v = tail(input, heldAt, ctx)
+          if (v !== FAIL && EC.e <= heldAt) EC.e = heldEnd
+          return v
+        }
+        const open = flags === 34 ? childrenOnlyCollapseBuildNode(body, build) : collapseBuildNode(body, build)
         return (input, pos, ctx) => {
           const v = corner(input, pos, ctx)
           if (v === FAIL) return FAIL
           const end = EC.e
-          const at = noGap ? end : pastTrivia(input, end, ctx)
-          if (v !== undefined && at >= 0) {
-            gapRe.lastIndex = at
-            const q = gapRe.test(input) ? gapRe.lastIndex : -1
-            if ((q < 0 || !classHas(follow, lead(input, q))) && (other === undefined || !classHas(other, lead(input, at)))) return v
+          let at = end
+          if (scan !== undefined) {
+            const c = input.charCodeAt(end)
+            if (leads === null || !(c < 128) || leads[c] !== 0) at = scan(input, end)
           }
-          holdCorner(EC, ctx, v, pos, end)
-          return wrapper(input, pos, ctx)
+          if (v !== undefined && !(gapRe === undefined ? startsTail(cls, input, at) : mayStartPastGap(input, at))) return v
+          if (ctx._cstBuf === undefined && ctx._cstRawChildren === undefined && ctx._cstChildren !== undefined) ctx._cstChildren.pop()
+          else if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined || ctx._cstLeaves !== undefined) heldRaw = popCstChild(ctx)
+          held = v
+          heldEnd = end
+          heldAt = at
+          return open(input, pos, ctx)
         }
       }
 
@@ -3970,7 +4031,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
-        const scalarChild = !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
+        const late = LATE_NODE
+        LATE_NODE = undefined
+        const scalarChild = late === undefined && !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
           ? scalarTerminalNodeChild(code, ip)
           : -1
         if (scalarChild >= 0) {
@@ -4005,7 +4068,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return nd
           }
         }
-        const child = NODE_BODY ?? link(code[ip + 2]!)
+        const child = NODE_BODY ?? (late === undefined ? link(code[ip + 2]!) : undefined!)
         NODE_BODY = undefined
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
@@ -4031,7 +4094,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // branch in the generic node body. Their eligibility is entirely table
         // data plus this assembly's fixed option set; direct/custom contexts and
         // every richer node shape retain the generic implementation below.
-        if (!hostCst && !tracked) {
+        if (!hostCst && !tracked && late === undefined) {
           // The trailing-trivia bit (128) rides on the two leanest shapes; it adds
           // a consume, not a capture.
           if (build !== undefined && proj < 0 && (flags & ~128) === 0) {
@@ -4093,6 +4156,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         return (input, pos, ctx) => {
           const host = HOST
+          let c0: unknown
+          let c1 = 0
+          let at = 0
+          let c0Raw: unknown
+          if (late !== undefined) {
+            c0 = late.corner(input, pos, ctx)
+            if (c0 === FAIL) return FAIL
+            c1 = EC.e
+            at = c1
+            if (late.scan !== undefined) {
+              const c = input.charCodeAt(c1)
+              if (late.leads === null || !(c < 128) || late.leads[c] !== 0) at = late.scan(input, c1)
+            }
+            if (c0 !== undefined && !(late.gapRe === undefined ? startsTail(late.cls, input, at) : late.mayStartPastGap(input, at))) return c0
+            if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined || ctx._cstLeaves !== undefined) c0Raw = popCstChild(ctx)
+          }
           // `beginCstNodeCapture`/`endCstNodeCapture` INLINED, and the two objects
           // they exchange — the six-field `saved` and the three-field
           // `{children, rawChildren, triviaLog}` — held in locals instead.
@@ -4123,7 +4202,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (structural && host?._parsemanTriviaKinds !== undefined) {
             ctx._triviaCaptureMask = host._parsemanTriviaKinds(type)
           }
-          const v = child(input, pos, ctx)
+          let v: unknown
+          if (late === undefined) v = child(input, pos, ctx)
+          else {
+            buf.single = c0
+            if (omitsRaw) buf.rawLen = 1
+            else buf.rawSingle = c0Raw ?? rawEntry(c0, input, pos, c1)
+            v = lateTail(late.tail, input, c1, at, ctx)
+          }
           if (v !== FAIL && trailingTrivia && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
           const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(ctx._fields) : undefined
           ctx._fields = savedFields
@@ -4327,7 +4413,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
-        collapseEmpty, holdCorner, pastTrivia, publishSeed,
+        collapseEmpty, popCstChild,
         PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
       )
       emitReached = new Set(pre.reached)
@@ -4412,7 +4498,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
-        collapseEmpty, holdCorner, pastTrivia, publishSeed,
+        collapseEmpty, popCstChild,
         PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
       )
       emitReached = em.reached

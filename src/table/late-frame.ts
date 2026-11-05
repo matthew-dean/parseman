@@ -1,14 +1,14 @@
 /**
- * WHAT A `continues()` TAIL CAN START WITH, read off the row that runs it.
+ * WHAT THE TAIL OF A LATE FRAME CAN START WITH, read off the row that runs it.
  *
  * `OP_CONT` asks, after the corner, whether the tail could do anything at the next
  * token. The answer is the repeat's or the optional's own first test (`OP_REP` ip+7
  * and its `OP_GAPGATE`, an `OP_OPT` over `OP_GATE`), so it holds exactly where the row
- * would have ended without entering its item. Any other tail has no answer: the
- * wrapper always opens, and a tail that takes nothing collapses in it as `collapse`
- * does.
+ * would have ended without entering its item. Any other tail has no answer, and with
+ * no answer the frame always opens: that site runs as written.
  */
 import { OP_GAPGATE, OP_GATE, OP_OPT, OP_REP, OP_REPV, OP_RULE, OP_WITHCTX } from './ops.ts'
+import { TRI_NONE } from './site-labels.ts'
 
 export type ContinuationGate = {
   /** Class of the first character, past any trivia. */
@@ -41,4 +41,14 @@ export function continuationGate(code: ArrayLike<number>, ip: number): Continuat
   return code[item] === OP_GAPGATE
     ? { cls: code[at + 7]!, gapRow: code[item + 2]!, follow: code[item + 3]!, other: code[item + 4]! }
     : { cls: code[at + 7]!, gapRow: -1, follow: -1, other: -1 }
+}
+
+/**
+ * Can this assembly decide at this `OP_CONT`? It needs the tail's test, and the
+ * trivia the label names: a scope it cannot name, or one with no scanner, would cost a
+ * hit more calls than the frame it saves on a miss.
+ */
+export function canDecide(code: ArrayLike<number>, ip: number, tri: number, triviaScan: readonly unknown[]): boolean {
+  if (tri !== TRI_NONE && (tri < 0 || triviaScan[tri] == null)) return false
+  return continuationGate(code, code[ip + 3]!) !== undefined
 }

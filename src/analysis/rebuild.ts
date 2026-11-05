@@ -236,7 +236,6 @@ export function rebuildCombinator(
         const opts = {
           ...(d.unwrap ? { unwrap: true } : {}),
           ...(d.collapse ? { collapse: true } : {}),
-          ...(d.continues ? { continues: true } : {}),
           ...(d.project === undefined ? {} : { project: d.project }),
           ...(d.captureTrivia ? { captureTrivia: true } : {}),
           ...(d.trailingTrivia ? { trailingTrivia: true } : {}),

@@ -380,6 +380,76 @@ export const DEFECTS = {
     }],
   },
 
+  /**
+   * A corner the encoder proved in error. Its publication is not its value, so the
+   * frame's first child is not what the corner published.
+   */
+  'late-corner-through-transform': {
+    why: 'encoder: a transform corner lowers to a late frame, so the frame holds the mapped value and the parent loses the node',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "    case 'node': return true\n    case 'lazy': return publishesOneNode(",
+      replace: "    case 'node': return true\n    case 'transform': return publishesOneNode(d.parser, rr, seen)\n    case 'lazy': return publishesOneNode(",
+    }],
+  },
+
+  'late-corner-through-dispatch': {
+    why: 'encoder: a dispatch corner lowers to a late frame, so a selector that publishes leaves a second child behind',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "    case 'node': return true\n    case 'lazy': return publishesOneNode(",
+      replace: "    case 'node': return true\n    case 'dispatch': return true\n    case 'lazy': return publishesOneNode(",
+    }],
+  },
+
+  /** The corner's publication stays in the parent after the frame opens: two children. */
+  'cont-take-back-dropped-closure': {
+    why: 'OP_CONT, closure: a hit keeps the corner in the parent as well as in the frame',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'ctx._cstLeaves !== undefined) heldRaw = popCstChild(ctx)',
+      replace: 'ctx._cstLeaves !== undefined) heldRaw = undefined',
+    }],
+  },
+
+  'cont-take-back-dropped-emitted': {
+    why: 'OP_CONT, emitted: a hit keeps the corner in the parent as well as in the frame',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'sLv!==undefined)c0Raw=popCstChild(ctx)',
+      replace: 'sLv!==undefined)c0Raw=undefined',
+    }],
+  },
+
+  /** The test says miss where the tail would have started: a shorter parse. */
+  'cont-gate-always-misses-closure': {
+    why: 'OP_CONT, closure: the tail test answers no, so a node that continues never opens',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'return c < 128 ? cls.ascii[c] === 1 : classHas(cls, lead(input, at))',
+      replace: 'return c < 128 ? false : classHas(cls, lead(input, at))',
+    }],
+  },
+
+  'cont-gate-always-misses-emitted': {
+    why: 'OP_CONT, emitted: the tail test answers no, so a node that continues never opens',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if (g.gapRow < 0) test = `if(c0!==undefined&&${missAt(g.cls, at)})return c0\\n`',
+      replace: 'if (g.gapRow < 0) test = `if(c0!==undefined)return c0\\n`',
+    }],
+  },
+
+  /** The tail starts before the gap the test already read past. */
+  'cont-tail-at-corner-end-closure': {
+    why: 'OP_CONT, closure: the tail runs at the end of the corner rather than past the gap',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'const v = tail(input, heldAt, ctx)',
+      replace: 'const v = tail(input, heldEnd, ctx)',
+    }],
+  },
+
   'node-gate-narrowed': {
     why: 'encoder: a node gate reads its body through a nullable pad, so a miss reports a static set where entering the body reports its own',
     edits: [{

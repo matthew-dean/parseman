@@ -15,7 +15,8 @@
  * A build given a corpus (`assemblyProfile`) ranks by measured calls instead.
  */
 import { childSlots } from './child-slots.ts'
-import { OP_CHOICE, OP_DISPATCH, OP_GAPGATE, OP_REP, OP_REPV, OP_SEED } from './ops.ts'
+import { continuationGate } from './late-frame.ts'
+import { OP_CHOICE, OP_CONT, OP_DISPATCH, OP_GAPGATE, OP_REP, OP_REPV } from './ops.ts'
 
 const LOOP = 8
 const ROUNDS = 60
@@ -59,8 +60,11 @@ function staticWeights(code: readonly number[], entries: readonly number[]): Map
       kids.length = 0
       childSlots(code, ip, kids)
       const op = code[ip]
-      // Selection is for a strict parse, where `OP_SEED` holds no call to its corner.
-      if (op === OP_SEED) kids.length = 0
+      // A late frame is lowered with its wrapper in one function, calling these two.
+      if (op === OP_CONT && continuationGate(code, code[ip + 3]!) !== undefined) {
+        kids.length = 0
+        kids.push(code[ip + 1]!, code[ip + 3]!)
+      }
       const scale = op === OP_REP || op === OP_REPV ? LOOP
         : op === OP_CHOICE || op === OP_DISPATCH ? 1 / Math.max(1, kids.length)
         : 1

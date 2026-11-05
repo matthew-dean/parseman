@@ -16,7 +16,7 @@
  * - SCSS: ../../../scss/scss-parser/src/grammar.ts
  * - Jess: ../../../jess/jess-parser/src/grammar.ts
  */
-import { balanced, classifiedTrivia, choice, compose, composeLeaf, continues, transform, dispatch, endsWith, expect, field, keywords, literal, makeWhen, makeWord, many, matches, noTrivia, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek, regex, routed, rules, scanTo, sequence, startsWith, token, when } from 'parseman' with { type: 'macro' };
+import { balanced, classifiedTrivia, choice, compose, composeLeaf, dispatch, endsWith, expect, field, keywords, literal, makeWhen, makeWord, many, matches, noTrivia, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek, regex, routed, rules, scanTo, sequence, startsWith, token, when } from 'parseman' with { type: 'macro' };
 import type { Combinator } from 'parseman';
 import { cssSyntax } from '../parser-shared/recognition.js';
 import { cssPseudoSyntax } from '../parser-shared/pseudo-consts.js';
@@ -1377,10 +1377,12 @@ const cssFactory = (g: GrammarSelf) => {
     ),
     (children) => {
       const branch = children.find(isSelectorBranch)!;
+      if (children.length === 1) {
+        return branch;
+      }
       const lead = cssRelativeCombinator(children[0]);
       return relativeSelector(lead, branchSegments(branch));
-    },
-    { collapse: true }
+    }
   );
 
   /*
@@ -1586,22 +1588,21 @@ const cssFactory = (g: GrammarSelf) => {
     g.NamespaceTypeSelector,
     g.BasicSelector
   );
-  const compoundItem = choice(
-    g.NestingSelector,
-    g.simpleSelectorAtom
+  const CompoundSelector = node(
+    'CompoundSelector',
+    noTrivia(parser(
+      { trivia: compoundTrivia },
+      oneOrMore(choice(
+        g.NestingSelector,
+        g.simpleSelectorAtom
+      ))
+    )),
+    children => selectorTermFromTokens(children.filter(isSimpleToken))
   );
-  const CompoundSelector = noTrivia(parser(
-    { trivia: compoundTrivia },
-    continues(
-      'CompoundSelector',
-      compoundItem,
-      many(compoundItem),
-      children => selectorTermFromTokens(children.filter(isSimpleToken))
-    )
-  ));
-  const ComplexSelector = continues(
+  const ComplexSelector = node(
     'ComplexSelector',
-    g.CompoundSelector,
+    sequence(
+      g.CompoundSelector,
 
       /*
        * The separator between compound selectors may be an explicit combinator
@@ -1614,7 +1615,8 @@ const cssFactory = (g: GrammarSelf) => {
       many(sequence(
         optional(combinator),
         g.CompoundSelector
-      )),
+      ))
+    ),
     children => selectorBranchOf(complexSegments(children))
   );
 
@@ -2766,13 +2768,17 @@ const cssFactory = (g: GrammarSelf) => {
     g.Dimension,
     g.Color,
     g.UnicodeRange,
-    transform(IdentOrFunction, pair => pair[1]),
+    IdentOrFunction,
     g.ParenValue,
     g.SquareValue,
     g.Quoted,
     g.PunctuationValue
   );
-  const Value = g.valueAtom;
+  const Value = node(
+    'Value',
+    g.valueAtom,
+    { project: 0 }
+  );
 
   /*
    * The slash level. `/` is a LIST SEPARATOR, not a value, and it groups only
@@ -2786,12 +2792,14 @@ const cssFactory = (g: GrammarSelf) => {
    * has no left operand, and nothing below this rung can start on it. There is
    * deliberately NO first-position guard anywhere — the rejection is emergent.
    */
-  const ValueTerm = noTrivia(continues(
+  const ValueTerm = node(
     'ValueTerm',
-    g.Value,
-    many(sequence(
-      valueSlashBoundary,
-      g.Value
+    noTrivia(sequence(
+      g.Value,
+      many(sequence(
+        valueSlashBoundary,
+        g.Value
+      ))
     )),
     (children) => {
       const values = valueSlotChildren(children);
@@ -2802,22 +2810,24 @@ const cssFactory = (g: GrammarSelf) => {
             '/'
           );
     }
-  ));
-  const ValueSequence = noTrivia(continues(
+  );
+  const ValueSequence = node(
     'ValueSequence',
-    g.ValueTerm,
-    many(choice(
-      sequence(
-        field(
-          'separator',
-          cssValueTrivia
+    noTrivia(sequence(
+      g.ValueTerm,
+      many(choice(
+        sequence(
+          field(
+            'separator',
+            cssValueTrivia
+          ),
+          g.ValueTerm
         ),
         g.ValueTerm
-      ),
-      g.ValueTerm
+      ))
     )),
     children => componentRun(children)
-  ));
+  );
 
   /*
    * A `{}`-wrapped free-form argument (css-values-5 §3.1.1): "the production
@@ -2847,13 +2857,12 @@ const cssFactory = (g: GrammarSelf) => {
       'curly'
     )
   );
-  const ValueList = continues(
+  const ValueList = node(
     'ValueList',
-    g.ValueSequence,
-    many(sequence(
-      authoredValueComma,
-      g.ValueSequence
-    )),
+    oneOrMoreSep(
+      g.ValueSequence,
+      authoredValueComma
+    ),
     (children, fields) => {
       const terms = valueSlotChildren(children);
       if (terms.length === 1) {

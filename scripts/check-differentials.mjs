@@ -263,6 +263,23 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'late-frame',
+    needs: 'repo',
+    file: 'test/unit/table-late-frame.test.ts',
+    legs: 'a precedence ladder through the interpreter, the reference driver, closures and emitted functions, AST and CST, and against a twin the encoder cannot lower; corners it must not prove (a transform, a dispatch with a publishing selector, a sequence, a leaf, a mixed choice), runtime and macro',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-late-frame.test.ts']),
+    plants: [
+      { defect: 'late-corner-through-transform', expect: 'moves' },
+      { defect: 'late-corner-through-dispatch', expect: 'moves' },
+      { defect: 'cont-take-back-dropped-closure', expect: 'moves' },
+      { defect: 'cont-take-back-dropped-emitted', expect: 'moves' },
+      { defect: 'cont-gate-always-misses-closure', expect: 'moves' },
+      { defect: 'cont-gate-always-misses-emitted', expect: 'moves' },
+      { defect: 'cont-tail-at-corner-end-closure', expect: 'moves' },
+    ],
+  },
+  {
     id: 'gap-gate',
     needs: 'repo',
     file: 'test/unit/table-gap-gate.test.ts',
