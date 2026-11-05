@@ -10,9 +10,8 @@
  * (`bench/jess/real-grammars.ts`). No assembly profile is configured: the default
  * static ranking must meet the ceiling on its own, and every variant must be VALID —
  * it loads, and a CST variant parses the inputs below through a CST host, with its
- * positions build reading the same tree as its plain build. An AST variant's reducers
- * build `@jesscss/core` nodes, which are not vendored; jess's own suites cover an AST
- * parse.
+ * positions build reading the same tree as its plain build. AST parses are run by
+ * `bench/call-count-guard.ts` and jess's own suites.
  *
  * FAILS CLOSED: a lowering warning, a missing or invalid variant, or any variant
  * over the ceiling exits 1.

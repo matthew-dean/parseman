@@ -53,11 +53,16 @@ import { token, leaf, sourceLeaf } from '../combinators/token.ts'
 import { expect } from '../combinators/expect.ts'
 import { adjacent, notAdjacent } from '../combinators/adjacency.ts'
 import { parser } from '../combinators/grammar.ts'
+import { dispatch, dispatchMatcher, otherwise, routed, when, type DispatchArm } from '../combinators/dispatch.ts'
+import { withCtx } from '../combinators/withCtx.ts'
 
 /** A node kind reused verbatim: no public factory reconstructs it without loss. */
 const FROZEN_TAGS: ReadonlySet<string> = new Set([
   'dispatch', 'recover', 'scanTo', 'guard', 'withCtx', 'routed', 'trivia', 'unknown', 'lines', 'columns',
 ])
+
+/** The frozen kinds `RebuildOptions.thaw` rebuilds. */
+const THAWED_TAGS: ReadonlySet<string> = new Set(['dispatch', 'withCtx', 'routed', 'guard'])
 
 /** A subtree that was reused verbatim instead of rebuilt. */
 export type FrozenSubtree = {
@@ -117,6 +122,23 @@ function subtreeContains(p: Combinator<unknown>, targets: ReadonlySet<Combinator
   return hit
 }
 
+export type RebuildOptions = {
+  /**
+   * Also rebuild `dispatch`, a gated `choice`, `withCtx` and `routed` instead of
+   * freezing them. Each is reconstructed from its own def fields — the arms, gates,
+   * matchers and `extra` the grammar built it with. Off for `proposeFixes()`, whose
+   * reports name the frozen kinds; on for an instrumented rebuild, which must reach
+   * every terminal (`backtrack.ts`).
+   */
+  readonly thaw?: boolean
+  /**
+   * Called with each node and what it was rebuilt to (itself, for a frozen or
+   * childless one), and its result is used in its place. Not called for a
+   * replacement or a `lazy` slot.
+   */
+  readonly after?: (original: Combinator<unknown>, rebuilt: Combinator<unknown>) => Combinator<unknown>
+}
+
 /**
  * Rebuild `root`, replacing every combinator that is a key of `replacements` with its
  * value. The replacement is spliced WITHOUT descending into the original target.
@@ -124,7 +146,10 @@ function subtreeContains(p: Combinator<unknown>, targets: ReadonlySet<Combinator
 export function rebuildCombinator(
   root: Combinator<unknown>,
   replacements: ReadonlyMap<Combinator<unknown>, Combinator<unknown>>,
+  options: RebuildOptions = {},
 ): RebuildResult {
+  const thaw = options.thaw === true
+  const after = options.after ?? ((_p: Combinator<unknown>, out: Combinator<unknown>) => out)
   const memo = new Map<Combinator<unknown>, Combinator<unknown>>()
   const frozenKeys = new Set<string>()
   const frozen: FrozenSubtree[] = []
@@ -141,12 +166,13 @@ export function rebuildCombinator(
     if (d === undefined || typeof d !== 'object') { memo.set(p, p); return p }
     const here = (p as { _ruleName?: string })._ruleName ?? rule
 
-    if (FROZEN_TAGS.has(d.tag)) {
+    if (FROZEN_TAGS.has(d.tag) && !(thaw && THAWED_TAGS.has(d.tag))) {
       const key = JSON.stringify([here, d.tag])
       if (!frozenKeys.has(key)) { frozenKeys.add(key); frozen.push({ tag: d.tag, rule: here }) }
       for (const t of subtreeContains(p, targets)) if (!unapplied.includes(t)) unapplied.push(t)
-      memo.set(p, p)
-      return p
+      const kept = after(p, p)
+      memo.set(p, kept)
+      return kept
     }
 
     // A ref/lazy is the only place a cycle can close. Publish an EMPTY slot into the
@@ -188,12 +214,21 @@ export function rebuildCombinator(
         // arity (it takes GatedArm objects the grammar built), and the whole point of
         // rebuilding a choice is that its strategy is recomputed — which the gated path
         // suppresses anyway. Freeze it rather than rebuild it wrong.
+        if (d.gates.some(g => g !== null) && thaw) {
+          const unsafeChoice = choice as unknown as (...items: unknown[]) => Combinator<unknown>
+          out = unsafeChoice(...d.parsers.map((arm, i) => {
+            const gate = d.gates[i]
+            return gate ? { combinator: one(arm), gate } : one(arm)
+          }))
+          break
+        }
         if (d.gates.some(g => g !== null)) {
           const key = JSON.stringify([here, "choice(gated)"])
           if (!frozenKeys.has(key)) { frozenKeys.add(key); frozen.push({ tag: 'choice(gated)', rule: here }) }
           for (const t of subtreeContains(p, targets)) if (!unapplied.includes(t)) unapplied.push(t)
-          memo.set(p, p)
-          return p
+          const kept = after(p, p)
+          memo.set(p, kept)
+          return kept
         }
         const kids = d.parsers.map(one) as [Combinator<unknown>, ...Combinator<unknown>[]]
         out = choice(...kids); break
@@ -250,8 +285,9 @@ export function rebuildCombinator(
           const key = `${here} node(untyped+build+opts)`
           if (!frozenKeys.has(key)) { frozenKeys.add(key); frozen.push({ tag: 'node(untyped+build+opts)', rule: here }) }
           for (const t of subtreeContains(p, targets)) if (!unapplied.includes(t)) unapplied.push(t)
-          memo.set(p, p)
-          return p
+          const kept = after(p, p)
+          memo.set(p, kept)
+          return kept
         }
         out = d.type === undefined
           ? (d.build === undefined ? node(one(d.parser), opts) : node(one(d.parser), d.build))
@@ -259,6 +295,20 @@ export function rebuildCombinator(
         if (d.buildRawUnused === true && out._def.tag === 'node') out._def.buildRawUnused = true
         break
       }
+      case 'dispatch': {
+        const arms: DispatchArm<unknown>[] = d.cases.map(e =>
+          when(e.keys, one(e.parser), e.caseInsensitive ? { caseInsensitive: true } : undefined))
+        for (const e of d.matchers ?? []) {
+          arms.push(when(dispatchMatcher(e), one(e.parser), e.caseInsensitive ? { caseInsensitive: true } : undefined))
+        }
+        if (d.otherwise) arms.push(otherwise(one(d.otherwise), d.otherwiseCommit === false ? { commit: false } : undefined))
+        const unsafeDispatch = dispatch as (selector: Combinator<string>, ...items: DispatchArm<unknown>[]) => Combinator<unknown>
+        out = unsafeDispatch(one(d.selector) as Combinator<string>, ...arms)
+        break
+      }
+      case 'withCtx': out = withCtx(d.extra, one(d.parser)); break
+      case 'routed': out = d.fallback === undefined ? routed() : routed(one(d.fallback)); break
+      case 'guard': out = p; break
       case 'grammar': {
         const inner = one(d.parser)
         out = parser({
@@ -273,13 +323,15 @@ export function rebuildCombinator(
         const key = JSON.stringify([here, (d as { tag: string }).tag])
         if (!frozenKeys.has(key)) { frozenKeys.add(key); frozen.push({ tag: (d as { tag: string }).tag, rule: here }) }
         for (const t of subtreeContains(p, targets)) if (!unapplied.includes(t)) unapplied.push(t)
-        memo.set(p, p)
-        return p
+        const kept = after(p, p)
+        memo.set(p, kept)
+        return kept
       }
     }
     carryStamps(p, out)
-    memo.set(p, out)
-    return out
+    const done = after(p, out)
+    memo.set(p, done)
+    return done
   }
 
   const rebuilt = go(root, (root as { _ruleName?: string })._ruleName ?? '<entry>')

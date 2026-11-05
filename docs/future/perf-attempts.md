@@ -305,6 +305,19 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ### Unreleased on `main`
 
+- **A budget that comments cannot move, and a selection that only grows.** The budget was a
+  share of the module's raw text, so a comment edit could buy or lose functions: 61 against
+  56 on Jess's SCSS, about 1% of parse speed. Selection also shrank its target by at least 1%
+  and retried when the source overshot, so a little more budget could lose sites: across 40
+  budget steps per grammar it lost css 33, less 30, scss 41 (11 in one step), `.jess` 13. Now
+  a selection is a prefix of the ranking, the budget is a share of the code without comments
+  or whitespace, and the default share is `0.5`. Sweep: 0 sites lost. Skipping a site that
+  does not fit cannot give that property, because a budget that admits a big site then
+  loses the small ones a smaller budget took after skipping it. Sizes at the budgets Jess
+  moves to, against `main`: Less 696,315 B (698,114), SCSS at `0.61` 442,881 B (444,036),
+  CSS at `2.72` 421,972 B (422,073). Identity 0 diffs, AST and CST, all four grammars.
+  Issues [#179](https://github.com/matthew-dean/parseman/issues/179),
+  [#255](https://github.com/matthew-dean/parseman/issues/255).
 - **Trivia lead gate.** A trivia skip at a character no trivia can start returns `cur`
   without the runtime scan, in both table engines (the closure engine per trivia slot,
   the emitted assembly in its skips and sequence terms), and the term takes no trivia
@@ -343,8 +356,8 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   Reverted: no speed for size. `c70b72e7`, reverted by `bc11a9ca` before 0.57.0.
 - **Static stable selection.** Quantize the static site rank so selection holds still under
   small edits, and buy a prefix of the order. SCSS +0.4% `--jitless`. Reverted before
-  0.58.0. `f4294abd`, reverted by `cf7d344f`. The instability it targeted is still open
-  ([#179](https://github.com/matthew-dean/parseman/issues/179), queued below).
+  0.58.0. `f4294abd`, reverted by `cf7d344f`. A plain prefix of the ranking, without the
+  quantizing, shipped later: see "A budget that comments cannot move".
 - **Profile-driven selection (`assemblyProfile`) for Jess's builds.** Train the profile on
   Less's unit tests, measure on the held-out `benchmark.less`. No grammar was better on every
   measure. Less: whole file −0.3% to −2.9% JIT but cold start +4.7%; SCSS +4.2% JIT; CSS +1.5%
@@ -669,6 +682,18 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     `tolerant-sweep.ts` loads grammars at runtime, which `compose()` now refuses for a
     macro-lowered base, so it stops on Less and `.jess` on `main` too.
 
+- **Selective assembly ranked by a corpus instead of statically: faster at the same bytes.**
+  A real `tsdown` build of Jess's AST grammars, trained on `benchmark.less` and
+  `bootstrap-less-port`, or on the Bootstrap and Foundation SCSS files that parse today.
+  JIT marginal instructions against `main`, on files outside the training set, not on a
+  quiet machine. A/A within 0.7%.
+  Less at `0.5`: `less-plugin-dls` -8.1%, less.js test data -5.5%, 682,388 B against
+  687,822 B. SCSS at `0.5`: generated workload -2.7%, Sass spec files -3.0%, 432,585 B
+  against 445,982 B. The static ranking at the same budgets is within 1.6% of `main`.
+  Needs `assemblyProfile.scope` for grammars whose callbacks read helpers. Jess adopts it
+  in a parser bump; the SCSS corpus waits on the parser gaps that stop the other files
+  parsing. Quiet-machine and `--jitless` rows are still to do.
+
 - **Left-corner routing (accepted direction, prototype).** Every level from a node down
   to the first node a character reaches starts at the same position with the same piece.
   Each route is its own chain of closures, so wrappers that only route cost nothing. The
@@ -752,12 +777,6 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     nearly free (a keyword node over an identifier).
   Census on `perf/left-corner-routing` @ `25597760`; probe edits were made only in a scratch
   checkout of the grammar.
-- **Comment-sensitive selection
-  ([#179](https://github.com/matthew-dean/parseman/issues/179)).** Comment-only edits to
-  Jess's SCSS grammar moved the emitted function count from 61 to 55: the build measured
-  −13.9% JIT at 61 and −11% at 55. Cause: the budget is a fraction of source length, and the
-  static ranker caps recursive-cycle weights, so near the line the choice comes down to
-  emitted size. Done when comment edits leave the artifact byte-identical.
 - **Gate head-side bias
   ([#175](https://github.com/matthew-dean/parseman/issues/175)).** `expected/none` reads about
   +1% slower on the head side whenever the compared trees differ, even for plugin-only or

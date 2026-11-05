@@ -17,6 +17,7 @@ import type { Combinator } from '../types.ts'
 import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
 import { rules, RULES_RECIPE, type PriorRules, type RulesOptions, type RulesRecipe } from '../combinators/parser.ts'
+import { parseSync } from 'oxc-parser'
 import * as parseman from '../index.ts'
 import { confirmedBuildParamUnused } from '../compiler/build-arity.ts'
 import { directBuilderBindings } from './direct-builder-static.ts'
@@ -72,7 +73,7 @@ function stripTsFromSource(node: Node, code: string): string {
   walk(node)
   const start = (node as { start: number }).start
   const end = (node as { end: number }).end
-  if (cuts.length === 0) return code.slice(start, end)
+  if (cuts.length === 0) return stripComments(code.slice(start, end))
   cuts.sort((a, b) => a[0] - b[0])
   let out = ''
   let cur = start
@@ -81,7 +82,46 @@ function stripTsFromSource(node: Node, code: string): string {
     out += code.slice(cur, s)
     cur = e
   }
-  return out + code.slice(cur, end)
+  return stripComments(out + code.slice(cur, end))
+}
+
+/** The four characters ECMAScript treats as ending a line. */
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/
+
+/**
+ * A reducer's source without its comments, and without the whitespace before them.
+ * A reducer ships as a string in the carried IR, where a bundler cannot strip it, and
+ * a comment must not change what a module ships. A comment still separates tokens and,
+ * if it crossed or followed a line end, still ends a line: automatic semicolon
+ * insertion and `return` depend on that line end.
+ */
+function stripComments(text: string): string {
+  if (!text.includes('/*') && !text.includes('//')) return text
+  const wrapped = `(${text})`
+  let out = ''
+  let cur = 0
+  let lineEnd = false
+  const comments = parseSync('reducer.ts', wrapped).comments
+  comments.forEach((c, i) => {
+    const before = text.slice(cur, c.start - 1)
+    const kept = before.trimEnd()
+    out += kept
+    lineEnd ||= LINE_TERMINATOR.test(before.slice(kept.length)) || LINE_TERMINATOR.test(c.value)
+    cur = c.end - 1
+    const after = /^\s*/.exec(text.slice(cur))![0]
+    const endsLine = LINE_TERMINATOR.test(after)
+    if (comments[i + 1]?.start === c.end + after.length) {
+      lineEnd ||= endsLine
+      cur += after.length
+      return
+    }
+    if (out !== '' && cur + after.length < text.length && !endsLine) {
+      if (lineEnd) out += '\n'
+      else if (after === '') out += ' '
+    }
+    lineEnd = false
+  })
+  return out + text.slice(cur)
 }
 
 /**

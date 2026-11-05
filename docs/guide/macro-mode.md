@@ -284,7 +284,7 @@ export const cssDiagnosticCstGrammar = composeLeaf([...pieces, rules({ trivia, h
 A module's terminal grammar — its `composeLeaf()`, or a `compose()` in a module that
 declares no `composeLeaf()` — gets a speed variant on its default AST/no-lines table:
 generated code for its hottest sites, within the plugin's `assemblyBudget`: a multiple of the
-module's own source length, `0.25` by default, `0` for none. The closure engine runs every
+module's own code, comments and whitespace aside, `0.5` by default, `0` for none. The closure engine runs every
 other site, and the two hand over at each boundary. The right budget is per grammar: a
 larger one parses faster in steady state and costs import and first-parse time, so measure
 both, and keep the artifact within 5× its source. The
@@ -296,7 +296,28 @@ Sites are ranked by a static estimate of how often they run. The plugin's option
 `assemblyProfile: { entry, files }` ranks them by measured calls instead: the build parses
 `files` from rule `entry` on the closure engine and keeps the sites with the most calls per
 byte. It changes which sites are generated, never what a parse returns
-(`test/unit/table-selective-assembly.test.ts`).
+(`test/unit/table-selective-assembly.test.ts`, like every claim below; the quoted names are its tests). A corpus file that
+doesn't parse in full or parses only by recovering, a corpus with nothing in it, or a reducer or gate that throws, fails the
+build ("a corpus that cannot run fails the build"). A file with only whitespace counts as empty: it's skipped, and a corpus of
+nothing else fails ("skips a whitespace-only file in a corpus that has content"). A build also fails where grammars were
+profiled and none has the `entry` rule ("a build where no grammar has the entry rule"). A direct `transformMacro` caller gets
+`assemblyProfile: 'no-entry'` on the result instead, and has to read it ("tells a direct caller that no grammar has the entry
+rule"). esbuild can't list a build's modules, so under it the check reads every module the plugin instance has seen, and a
+later build on that instance that dropped the module with the rule still passes ("reads every module the plugin has seen
+under esbuild, which can't list a build's modules"). A Vite dev server doesn't run the check ("a Vite dev server doesn't fail on a mistyped entry"). A callback
+the corpus doesn't reach never runs, so nothing checks it ("never runs a callback the corpus doesn't reach").
+
+Callback source runs at build time with no module around it, so a grammar whose reducers or gates read imported helpers
+passes them as `scope`: `assemblyProfile: { entry, files, scope: { valueStopOf } }`. The names are visible as globals
+during the corpus run only ("`scope` gives the corpus run the helpers a gate imports, for that run only"). Without `scope` the build fails
+("fails on a gate that reads an imported helper").
+
+- A name that's already a global fails the build ("refuses a name that is already a global, leaving it alone"). The opposite slip is silent: a helper
+  named like a real global and left out of `scope` uses the global, so a grammar's own `escape` left out of `scope` would run
+  the global `escape` ("runs the global when a helper named like one is left out of `scope`").
+- Direct `node()` builders don't run in the corpus run. A plain node stands in for each, so a helper only a builder reads
+  doesn't fail the build, and the counts don't depend on what the builder does ("a plain node stands in for a builder carried
+  from another module").
 
 Each extra variant costs real bytes, but no longer a full copy. Measured by
 `pnpm size:probe`, holding the grammar constant and varying only the number of variants:

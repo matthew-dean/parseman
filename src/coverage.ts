@@ -2,9 +2,9 @@ import { lines } from './combinators/lines.ts'
 import { run, type RunOptions, type RunResult, type Runnable } from './functional/run.ts'
 import { GRAMMAR_COVERAGE_DEFINITIONS } from './grammar-metadata.ts'
 export { GRAMMAR_COVERAGE_DEFINITIONS } from './grammar-metadata.ts'
-import type { Combinator, DispatchCase, DispatchMatcherCase, ParseContext, ParseResult } from './types.ts'
+import type { Combinator, DispatchCase, ParseContext, ParseResult } from './types.ts'
 import { choice } from './combinators/choice.ts'
-import { dispatch, endsWith, matches, otherwise, startsWith, when, type DispatchArm, type DispatchStringMatcher } from './combinators/dispatch.ts'
+import { dispatch, dispatchMatcher, otherwise, when, type DispatchArm } from './combinators/dispatch.ts'
 import { attempt } from './combinators/attempt.ts'
 import { getCoreLiteralValue } from './combinators/choice.ts'
 import { not } from './combinators/not.ts'
@@ -23,18 +23,6 @@ import { composedCoverageRules, linkedWinnersOf } from './compiler/linker.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition, type GrammarCoveragePlan } from './compiler/grammar-coverage-ids.ts'
 
 export type { GrammarCoverageDefinition } from './compiler/grammar-coverage-ids.ts'
-
-function dispatchMatcher(entry: DispatchMatcherCase): DispatchStringMatcher {
-  switch (entry.kind) {
-    case 'startsWith':
-      return startsWith(entry.value)
-    case 'endsWith':
-      return endsWith(entry.value)
-    case 'matches':
-      return matches(new RegExp(entry.value, entry.flags))
-  }
-}
-
 
 export type GrammarCoverageSnapshot = {
   definitions: readonly GrammarCoverageDefinition[]

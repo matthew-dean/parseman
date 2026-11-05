@@ -13,7 +13,8 @@
  *
  * What it does, and nothing else:
  *   - `parseman` and `parseman/<sub>` resolve into this worktree's `src/`
- *   - `@jesscss/parser-shared/<x>` resolves to that package's `src/`, not `lib/`
+ *   - `@jesscss/parser-shared/<x>` resolves to that package's `src/`, not `lib/`,
+ *     and `@jesscss/css-parser/grammar/base` to the css grammar's source
  *   - a `./x.js` relative specifier falls back to `./x.ts` when only the TS exists
  *   - `.ts` sources are transpiled by esbuild with import ATTRIBUTES stripped
  *
@@ -96,6 +97,11 @@ export function resolve(specifier, context, nextResolve) {
   if (specifier.startsWith('parseman/')) {
     const sub = specifier.slice('parseman/'.length)
     return { url: pathToFileURL(resolvePath(PM_SRC, sub, 'index.ts')).href, format: 'module', shortCircuit: true }
+  }
+  // less, scss and jess compose on `cssBaseRules`. Its package export is the BUILT
+  // macro artifact, which a runtime `compose()` cannot link, so it too comes from source.
+  if (specifier === '@jesscss/css-parser/grammar/base') {
+    return { url: pathToFileURL(resolvePath(JESS_ROOT, 'packages/syntax/css/css-parser/src/grammar.ts')).href, format: 'module', shortCircuit: true }
   }
   if (specifier.startsWith('@jesscss/parser-shared/')) {
     const sub = specifier.slice('@jesscss/parser-shared/'.length)

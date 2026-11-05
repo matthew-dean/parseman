@@ -13,6 +13,8 @@ import { assemble, tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { OP_CONT } from '../../src/table/ops.ts'
 import { reachableSites } from '../../src/table/site-labels.ts'
+import { opHistogram } from '../../src/table/inspect.ts'
+import { backtrackProbe } from '../../src/analysis/backtrack.ts'
 import { expandCompact, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
@@ -97,6 +99,13 @@ describe('a late frame', () => {
   })
 
   it('every engine builds what the interpreter builds', () => agree(ladder(), INPUTS))
+
+  it('a program walker reaches the corner, the wrapper and the seed', () => {
+    const ops = opHistogram(encodeTable(ladder()))
+    expect(ops.CONT).toBeGreaterThan(0)
+    expect(ops.SEED).toBe(ops.CONT)
+    expect(backtrackProbe(ladder()).measure('Root', 'a:1 + 2 * 3;')).toBeDefined()
+  })
 
   it('a parent that keeps raw children gets one raw child for the corner', () => agree(ladder(false, true), INPUTS))
 

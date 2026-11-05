@@ -12,10 +12,9 @@
  *   - `runnable` that shipped bundle with the table runtime inlined, so it loads;
  *                call `shipped` for the variant first.
  *
- * `@jesscss/core` is not vendored: reducers use it at run time only. In a runnable
- * bundle it is a stub whose members build plain objects, so an AST parse — which
- * runs reducers — is not meaningful there; a CST parse through a CST host builds
- * nodes through the host and is.
+ * A shipped bundle leaves `@jesscss/core` external. A runnable one resolves it to
+ * `core/core.js`, the snapshot's bundle of the core entries reducers import, so an AST
+ * parse runs its reducers and builds the real tree.
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -32,12 +31,13 @@ export type Dialect = 'css' | 'less' | 'scss' | 'jess'
 /**
  * The `assemblyBudget` each grammar's package passes to the plugin in jess's build.
  * `undefined` is the plugin default. Keep these equal to jess's tsdown configs, or
- * the gate measures artifacts jess does not ship. No jess build passes an
- * `assemblyProfile`, so every grammar's sites are ranked statically, here as in
- * jess.
+ * the gate measures artifacts jess does not ship. Jess's CSS build also passes an
+ * `assemblyProfile`, which this snapshot does not: the corpus is not vendored, so
+ * CSS's sites are ranked statically here and by measured calls there. Less and SCSS
+ * rank statically in both.
  */
 export const ASSEMBLY_BUDGETS: Readonly<Record<Dialect, number | undefined>> = {
-  css: 1, less: undefined, scss: undefined, jess: 0,
+  css: 2.72, less: undefined, scss: 0.612, jess: 0,
 }
 export const DIALECTS: readonly Dialect[] = ['css', 'less', 'scss', 'jess']
 /** Variant name -> export suffix, as jess's `grammar-variants.mts` ships them. */
@@ -49,18 +49,6 @@ export const VARIANTS: Readonly<Record<string, string>> = {
 }
 
 const SRC = resolve(import.meta.dirname, '../../src')
-const CORE_STUB = 'const __core = new Proxy(function () {}, { get: (t, k) => k === "then" ? undefined : __core, apply: (t, self, args) => ({ args }), construct: (t, args) => ({ args }) });\n'
-
-/** `import { a as b } from "@jesscss/core…"` → reads off the stub. */
-function stubCore(code: string): string {
-  // `PM_REAL_CORE`: a built `@jesscss/core` directory. A runnable bundle then runs the real
-  // reducers, so an AST parse means what jess's does (the instruction and identity sweeps).
-  const real = process.env.PM_REAL_CORE
-  if (real !== undefined) return code.replace(/from "@jesscss\/core(\/[a-z]+)?"/g, (_w, sub: string | undefined) => `from ${JSON.stringify(join(real, 'lib', `${sub ?? '/index'}.js`))}`)
-  return CORE_STUB + code.replace(/import \{([^}]*)\} from "(@jesscss\/core[^"]*)";?/g, (_w, names: string) =>
-    `const {${names.replace(/\bas\b/g, ':')}} = __core;`)
-}
-
 export type Snapshot = {
   readonly root: string
   readonly warnings: readonly string[]
@@ -162,11 +150,11 @@ export async function withBuiltSnapshot<T>(fn: (snap: Snapshot) => Promise<T>, f
           name: 'runnable',
           setup(b) {
             b.onResolve({ filter: /^parseman(\/table)?$/ }, args => ({ path: join(SRC, args.path === 'parseman' ? 'index.ts' : 'table/index.ts') }))
-            b.onResolve({ filter: /^@jesscss\/core(\/.*)?$/ }, () => ({ external: true }))
+            b.onResolve({ filter: /^@jesscss\/core(\/.*)?$/ }, () => ({ path: join(root, 'core/core.js') }))
           },
         }, ...extra],
       })
-      return write(outFile, stubCore(res.outputFiles[0]!.text))
+      return write(outFile, res.outputFiles[0]!.text)
     }
 
     for (const m of ['recognition', 'pseudo-consts', 'unknown-at-rule']) lower(`parser-shared/${m}.ts`)

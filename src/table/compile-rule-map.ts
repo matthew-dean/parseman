@@ -5,7 +5,7 @@ import { collectGrammarReflection, GRAMMAR_REFLECTION, type GrammarReflection } 
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { defaultAssemblyCfgs, emitTableExpression } from './emit.ts'
 import { emitAssemblySource, Unemittable } from './emit-assembly.ts'
-import { selectHotSites } from './select-hot.ts'
+import { fitHotSites } from './select-hot.ts'
 
 /** The most the entry supercompiler may grow an assembly (`entry-supercompiler.ts`, its 5% source cap). */
 const SUPERCOMPILE_GROWTH = 1.05
@@ -372,29 +372,16 @@ export function compileRuleMap(
     // The estimate (prelude plus site bodies) leaves out what selected sites add
     // around their bodies — shared helpers and the `_px` wrappers of the closure
     // sites they call — and the supercompiler may grow the source by up to 5%. So
-    // the selection is judged by the source it actually emits, scaled for that 5%,
-    // and narrowed until that fits.
+    // the selection is judged by the source it actually emits, scaled for that 5%.
     const ceiling = budget / SUPERCOMPILE_GROWTH
     // A budget that cannot cover the prelude buys nothing, by design: no refusal.
     if (ceiling <= fixed) return none
-    // Narrowed until it fits, with no attempt limit: the target shrinks by at
-    // least 1% a round, so the selection either fits or empties. An empty one
-    // says why — a build that asked for an assembly and silently shipped none is
-    // a regression no test sees (the artifact still parses, on the closures).
-    let target = ceiling
-    for (;;) {
-      const sites = selectHotSites(artifact.code, Object.values(artifact.rules), siteBytes, target - fixed, profile)
-      if (sites.size === 0) {
-        return {
-          ...none,
-          refusal: `a site within its ${Math.floor(ceiling)} B selection ceiling (the prelude alone is ${fixed} B)`,
-        }
-      }
-      const bytes = emitAssemblySource(table, artifact, cfg, roots, true, sites, true).source.length
-      if (bytes <= ceiling) return { sites, bytes: Math.ceil(bytes * SUPERCOMPILE_GROWTH) }
-      // Scale by the overshoot, and by at least 1%: near the ceiling a site is
-      // the unit, and the ratio alone can stall a few bytes over it.
-      target *= Math.min(ceiling / bytes, 0.99)
+    const fit = fitHotSites(artifact.code, Object.values(artifact.rules), siteBytes, fixed, ceiling,
+      sites => emitAssemblySource(table, artifact, cfg, roots, true, sites, true).source.length, profile)
+    if (fit !== undefined) return { sites: fit.sites, bytes: Math.ceil(fit.bytes * SUPERCOMPILE_GROWTH) }
+    return {
+      ...none,
+      refusal: `a site within its ${Math.floor(ceiling)} B selection ceiling (the prelude alone is ${fixed} B)`,
     }
   }
 

@@ -119,7 +119,7 @@ describe('a choice of routed arms gates on the character after the token', () =>
     })) as Record<string, Comb>
     const prog = encodeTable(terms)
     expect([...reachableIps(prog)].filter(ip => prog.code[ip] === OP_RGATE)).toHaveLength(4)
-    expect(run(terms.Sheet!, 'k').expected).toEqual(['keyword', 'keyword', 'number', '"X"'])
+    expect(run(terms.Sheet!, 'k').expected).toEqual(['keyword', 'number', '"X"'])
     for (const [name, entries] of readers(prog)) {
       for (const input of ['k', 'k?', 'k ?', 'k is', 'k of', 'k 9', 'k x', 'k;k', 'k is;k?']) {
         expect(digestValue(run(entries.Sheet!, input)), `${name} ${JSON.stringify(input)}`)

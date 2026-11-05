@@ -22,7 +22,12 @@ const LOOP = 8
 const ROUNDS = 60
 const CAP = 1e12
 
-/** The sites to emit: highest weight per byte first, while they fit in `budget` bytes. */
+/**
+ * The sites to emit: highest weight per byte first, stopping at the first that
+ * does not fit in `budget` bytes. Stopping rather than skipping is what makes a
+ * larger budget a superset: a skip lets a budget that just admits a big site lose
+ * the small ones a smaller budget took after skipping it. Insertion order is rank.
+ */
 export function selectHotSites(
   code: readonly number[],
   entries: readonly number[],
@@ -42,12 +47,38 @@ export function selectHotSites(
   let spent = 0
   for (const ip of ranked) {
     if (w(ip) === 0) break
-    const bytes = siteBytes.get(ip)!
-    if (spent + bytes > budget) continue
-    spent += bytes
+    spent += siteBytes.get(ip)!
+    if (spent > budget) break
     selected.add(ip)
   }
   return selected
+}
+
+/**
+ * The largest prefix of the ranking whose real source fits `ceiling`. `siteBytes`
+ * leaves out what sites add around their bodies, so the estimate can overshoot:
+ * each overshoot drops the last site and measures again. Walking down the one
+ * order is what keeps a selection a prefix of any larger budget's: that budget has
+ * every candidate this one has, so it can never settle on fewer. `undefined` when
+ * not even the first site fits.
+ */
+export function fitHotSites(
+  code: readonly number[],
+  entries: readonly number[],
+  siteBytes: ReadonlyMap<number, number>,
+  /** What any selection costs before its first site body. */
+  fixed: number,
+  ceiling: number,
+  sourceBytes: (sites: ReadonlySet<number>) => number,
+  profile?: ArrayLike<number>,
+): { readonly sites: ReadonlySet<number>; readonly bytes: number } | undefined {
+  const ranked = [...selectHotSites(code, entries, siteBytes, ceiling - fixed, profile)]
+  for (; ranked.length > 0; ranked.pop()) {
+    const sites = new Set(ranked)
+    const bytes = sourceBytes(sites)
+    if (bytes <= ceiling) return { sites, bytes }
+  }
+  return undefined
 }
 
 function staticWeights(code: readonly number[], entries: readonly number[]): Map<number, number> {

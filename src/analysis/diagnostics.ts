@@ -30,4 +30,8 @@ export { measureChoiceCost, armFirstSets } from './corpus.ts'
 export type { CorpusSample, CorpusSite, ChoiceCorpusCost, ArmCorpusCost } from './corpus.ts'
 
 export { rebuildCombinator } from './rebuild.ts'
+export type { RebuildOptions } from './rebuild.ts'
+
+export { backtrackProbe } from './backtrack.ts'
+export type { BacktrackProbe, BacktrackEngine, BacktrackMeasurement, BacktrackCounts } from './backtrack.ts'
 export type { RebuildResult, FrozenSubtree } from './rebuild.ts'

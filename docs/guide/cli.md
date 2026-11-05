@@ -202,3 +202,56 @@ import { proposeFixes, renderFixReport } from 'parseman/diagnostics'
 const report = proposeFixes(Document, { corpus })
 if (report.verified.length > 0) console.log(renderFixReport(report))
 ```
+
+### Measuring backtracking
+
+`backtrackProbe` parses with an instrumented copy of a grammar and counts rewinds among
+the terminals that matched: how often one started behind the end of the one before
+(`rewinds`), how many of their bytes had already matched (`bytesReread`), and the lookahead
+`not()`/`peek()` and regex lookarounds did. Each measurement also runs the plain grammar,
+returns that result, and throws if the instrumented parse returned anything else.
+
+```ts
+import { rules, choice, sequence, literal, regex } from 'parseman'
+import { backtrackProbe } from 'parseman/diagnostics'
+
+const g = rules(() => ({
+  Item: choice(
+    sequence(regex(/[ab]+/), literal('x')),
+    sequence(regex(/[a-z]/), regex(/[a-z]/), literal('y')),
+  ),
+}))
+const { counts } = backtrackProbe(g, 'closure').measure('Item', 'aby')
+// counts.rewinds === 1, counts.bytesReread === 2
+```
+
+The second argument picks the engine, `'closure'` (the default) or `'interpreter'`;
+`probe.engine` says which one ran. The closure engine runs a rewritten copy of the
+grammar's table, the same lowering `compile()` uses. The emitted engine runs that same
+program and reports the same counts. It is not offered here, because building it means
+turning source into code, which at runtime only `compile()` may do. Parséman's own
+tests and benches check it from a build-time module. The interpreter runs the
+combinator graph before the table's lowering, so where that lowering factors a shared
+prefix or folds a lookahead away, its counts differ. The instrumented copy is separate
+from the grammar, so a parse that does not ask for the probe pays nothing for it.
+
+**Counts of zero do not mean the parse wasted no work.** These are not counted:
+
+- Failed terminal reads. Only a match reports. On 2,000 `a`s,
+  `many(choice(regex(/[a-z]+;/), regex(/[a-z]/)))` scans about 2M characters in regexes
+  that fail, and every count is 0.
+- Trivia re-scans: the same gap skipped again after a position is restored.
+- The choice predecide pretest, which reads an arm's leading terminal before the arm runs.
+- `token()` bodies on the table. A `token()` the table lowers to one row is one read, with
+  its retries inside it. On the same input,
+  `many(token(choice(sequence(regex(/[a-z]+/), literal(';')), regex(/[a-z]/))))` reports
+  2,000 rewinds on the interpreter and 0 on the closure engine, which does the same
+  retries. A `token()` that does not lower still reports its terminals.
+
+`regexLookaroundBytes` is a lower bound too. It reads 0 for `/a(?!bbbb)/`, which read past
+its match to decide, and 0 for every failed run.
+
+Both parses of a measurement get the same `state`, the plain one first. A grammar that
+writes state, such as a `gate()` that mutates it, sees the first parse's writes in the
+second, so the measurement either throws or counts a different parse, possibly with fewer
+rewinds.
