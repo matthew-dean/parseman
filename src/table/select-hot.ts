@@ -12,7 +12,13 @@
  * `LOOP`, and a choice or dispatch splits its weight evenly across its arms. The
  * weights are propagated `ROUNDS` times, so a recursive cycle saturates at `CAP`
  * instead of diverging. Sites are then taken greedily by weight per emitted byte.
- * A build given a corpus (`assemblyProfile`) ranks by measured calls instead.
+ *
+ * A build given a corpus (`assemblyProfile`) ranks by measured calls, and takes
+ * sites connected: every call from an emitted site to a closure site, or back,
+ * crosses the engine boundary through a wrapper, so a hot site beside the emitted
+ * ones is worth more than the same site alone. Ranking by calls per byte alone
+ * leaves islands: on Jess's Less grammar at budget 0.5, it made 6.7% to 9.0% more calls
+ * per parse than the static ranking.
  */
 import { childSlots } from './child-slots.ts'
 import { OP_CHOICE, OP_DISPATCH, OP_GAPGATE, OP_REP, OP_REPV } from './ops.ts'
@@ -20,6 +26,14 @@ import { OP_CHOICE, OP_DISPATCH, OP_GAPGATE, OP_REP, OP_REPV } from './ops.ts'
 const LOOP = 8
 const ROUNDS = 60
 const CAP = 1e12
+/**
+ * What a crossing a site removes counts for, against one call of the site itself.
+ * 1, 4 and 16 were tried on a prototype and 4 was kept. On real builds of Jess's
+ * grammars, 4 made fewer calls than either ranking without it on every file and budget
+ * measured, including files held out of that choice. Only 4 has been measured that way:
+ * the numbers are in `docs/future/perf-attempts.md`.
+ */
+const CROSSING_WEIGHT = 4
 
 /**
  * The sites to emit: highest weight per byte first, stopping at the first that
@@ -38,19 +52,67 @@ export function selectHotSites(
 ): Set<number> {
   const selected = new Set<number>()
   if (budget <= 0) return selected
-  const weight = profile === undefined ? staticWeights(code, entries) : undefined
-  const w = (ip: number): number => (weight !== undefined ? weight.get(ip) : profile![ip]) ?? 0
-  // Ties (saturated cycles) break by site offset, so a build is deterministic.
-  const ranked = [...siteBytes.keys()].sort((a, b) =>
-    w(b) / siteBytes.get(b)! - w(a) / siteBytes.get(a)! || a - b)
   let spent = 0
-  for (const ip of ranked) {
-    if (w(ip) === 0) break
+  for (const ip of profile === undefined ? staticRanking(code, entries, siteBytes) : connectedRanking(code, siteBytes, profile)) {
     spent += siteBytes.get(ip)!
     if (spent > budget) break
     selected.add(ip)
   }
   return selected
+}
+
+/** The sites by estimated weight per byte. Ties (saturated cycles) break by site
+ * offset, so a build is deterministic. */
+function staticRanking(code: readonly number[], entries: readonly number[], siteBytes: ReadonlyMap<number, number>): number[] {
+  const weight = staticWeights(code, entries)
+  const w = (ip: number): number => weight.get(ip) ?? 0
+  return [...siteBytes.keys()].filter(ip => w(ip) > 0).sort((a, b) => w(b) / siteBytes.get(b)! - w(a) / siteBytes.get(a)! || a - b)
+}
+
+/**
+ * The sites the corpus ran, each next one being the best by calls plus the crossings
+ * it removes, per byte. A site's crossings with a neighbour are bounded by the calls
+ * of whichever is the callee, since the profile counts sites, not edges. The order
+ * doesn't depend on the budget, so a larger budget's selection is still a superset.
+ *
+ * ponytail: rescans every remaining site per pick, O(n^2) in sites the corpus ran.
+ * 29 ms of a 53 s build on Jess's Less grammar. A heap if a grammar's ever takes seconds.
+ */
+function* connectedRanking(code: readonly number[], siteBytes: ReadonlyMap<number, number>, calls: ArrayLike<number>): Generator<number> {
+  const callees = new Map<number, number[]>()
+  const callers = new Map<number, number[]>()
+  const kids: number[] = []
+  for (const ip of siteBytes.keys()) {
+    kids.length = 0
+    childSlots(code, ip, kids)
+    const own = kids.map(k => (code[k] === OP_GAPGATE ? code[k + 1]! : k)).filter(k => siteBytes.has(k))
+    callees.set(ip, own)
+    for (const k of own) {
+      const list = callers.get(k)
+      if (list === undefined) callers.set(k, [ip])
+      else list.push(ip)
+    }
+  }
+  const worth = new Map<number, number>()
+  for (const ip of siteBytes.keys()) if (calls[ip]! > 0) worth.set(ip, calls[ip]!)
+  while (worth.size > 0) {
+    let best = -1
+    let bestScore = -1
+    for (const [ip, value] of worth) {
+      const score = value / siteBytes.get(ip)!
+      if (score > bestScore || (score === bestScore && ip < best)) { best = ip; bestScore = score }
+    }
+    worth.delete(best)
+    yield best
+    for (const k of callees.get(best)!) {
+      const value = worth.get(k)
+      if (value !== undefined) worth.set(k, value + CROSSING_WEIGHT * calls[k]!)
+    }
+    for (const p of callers.get(best) ?? []) {
+      const value = worth.get(p)
+      if (value !== undefined) worth.set(p, value + CROSSING_WEIGHT * calls[best]!)
+    }
+  }
 }
 
 /**

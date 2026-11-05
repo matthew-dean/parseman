@@ -26,6 +26,10 @@ import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { fitHotSites, selectHotSites } from '../../src/table/select-hot.ts'
+import { childSlots } from '../../src/table/child-slots.ts'
+import { OP_GAPGATE } from '../../src/table/ops.ts'
+import { mergeSameBodies } from '../../src/plugin/entry-supercompiler.ts'
+import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cssRules } from '../../examples/css/parser.ts'
 import { jsonRules, jsonWs } from '../../bench/table-grammars.ts'
@@ -401,6 +405,169 @@ describe('an optional corpus profile ranks sites by measured calls', () => {
     const closure = tableRules({ ...prog, asm: [] }).Stylesheet!
     const entry = tableRules(selective(prog, picked)).Stylesheet!
     for (const input of CASES[0]!.inputs) expect(run(entry as never, input)).toEqual(run(closure as never, input))
+  })
+
+  describe('functions that read the same', () => {
+    const fn = (name: string, body: string): string => `function ${name}(input,pos,ctx){${body}}`
+    const merged = (...lines: string[]): string => mergeSameBodies(lines.join('\n'))
+
+    it('are one function, and every call reaches it', () => {
+      const out = merged(fn('_pf1', 'return _pf9(input,pos,ctx)'), fn('_pf2', 'return _pf9(input,pos,ctx)'), fn('_pf9', 'return 9;'), 'const t={1:_pf1,2:_pf2}')
+      expect(out).toContain('function _pf1(')
+      expect(out).not.toMatch(/\b_pf2\b/)
+      expect(out).toContain('const t={1:_pf1,2:_pf1}')
+    })
+
+    it('stay apart when they call different functions', () => {
+      const out = merged(fn('_pf1', 'return _pf8(input,pos,ctx)'), fn('_pf2', 'return _pf9(input,pos,ctx)'))
+      expect(out).toContain('function _pf1(')
+      expect(out).toContain('function _pf2(')
+    })
+
+    it('merge callers that read alike once what they call has merged', () => {
+      const out = merged(fn('_pf1', 'return _pf3(input,pos,ctx)'), fn('_pf2', 'return _pf4(input,pos,ctx)'), fn('_pf3', 'return 1;'), fn('_pf4', 'return 1;'), 'const t=_pf2')
+      expect(out).not.toMatch(/\b_pf[24]\b/)
+      expect(out).toContain('const t=_pf1')
+    })
+
+    it('merge a site that calls itself with its twin', () => {
+      const out = merged(fn('_pf1', 'return _pf1(input,pos,ctx)'), fn('_pf2', 'return _pf2(input,pos,ctx)'), 'const t=_pf2')
+      expect(out).toContain('const t=_pf1')
+      expect(out).not.toMatch(/\b_pf2\b/)
+    })
+
+    it('compare temporaries in order of use', () => {
+      const out = merged(fn('_pf1', 'const _t1_=2;return _t1_;'), fn('_pf2', 'const _t7_=2;return _t7_;'), fn('_pf3', 'const _t8_=2;const _t9_=3;return _t8_;'), fn('_pf4', 'const _t5_=2;const _t6_=3;return _t6_;'))
+      expect(out).not.toMatch(/\b_pf2\b/)
+      expect(out).toContain('function _pf3(')
+      expect(out).toContain('function _pf4(')
+    })
+
+    it('include the trivia skips', () => {
+      const skip = (name: string): string => `function ${name}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
+      const out = merged(skip('_sk0'), skip('_sk1'), fn('_pf1', 'return _sk1(input,pos,ctx)'))
+      expect(out).not.toMatch(/\b_sk1\b/)
+      expect(out).toContain('return _sk0(input,pos,ctx)')
+    })
+
+    it('stay apart when one name is the start of the other', () => {
+      const out = merged(fn('_pf12', 'return _pf123(input,pos,ctx)'), fn('_pf45', 'return _pf453(input,pos,ctx)'))
+      expect(out).toContain('function _pf12(')
+      expect(out).toContain('function _pf45(')
+    })
+
+    it('in a macro build, leave one body and parse as before', () => {
+      const source = `import { choice, compose, literal, optional, regex, rules, sequence } from 'parseman' with { type: 'macro' }
+const shared = regex(/a/)
+export const g = compose([rules(g => ({
+  Doc: choice(sequence(g.A, literal('x')), sequence(g.A, literal('y')), sequence(g.B, literal('z')), sequence(g.B, literal('w'))),
+  A: optional(shared),
+  B: optional(shared),
+}))])
+${PADDING}`
+      const out = transformMacro(source, 'merge.ts', new Set(['parseman']))!
+      const sites = out.assemblySites.length
+      expect(sites).toBeGreaterThan(0)
+      const bodies = out.code.match(/function _pf\d+\(input,pos,ctx\)\{\s*ctx\._fc=false\s*const v=_pf\d+\(input,pos,ctx\)/g) ?? []
+      expect(bodies.length).toBe(1)
+      const doc = evalMacroModule<Record<string, unknown>>(out.code, 'g').Doc
+      for (const [input, ok] of [['ax', true], ['y', true], ['az', true], ['w', true], ['q', false]] as const) {
+        const result = run(doc as never, input)
+        expect(result.ok && result.unconsumedFrom === null).toBe(ok)
+      }
+    })
+  })
+
+  describe('sites next to each other', () => {
+    const prog = encodeTable({ Pair: sequence(regex(/a/), regex(/b/)), Lone: sequence(regex(/c/), regex(/d/)) } as unknown as RuleMap, {})
+    const pair = prog.rules.Pair!
+    const lone = prog.rules.Lone!
+    const inner: number[] = []
+    childSlots(prog.code, pair, inner)
+    const callee = inner[0]!
+    const sites = new Map([pair, callee, lone].map(ip => [ip, 10]))
+    const calls = (pairCalls: number, calleeCalls: number, loneCalls: number): Int32Array => {
+      const counts = new Int32Array(prog.code.length)
+      counts[pair] = pairCalls
+      counts[callee] = calleeCalls
+      counts[lone] = loneCalls
+      return counts
+    }
+    const picked = (counts: Int32Array, budget = 20): number[] => [...selectHotSites(prog.code, [], sites, budget, counts)]
+
+    it('takes the callee of an emitted site over a lone site with more calls', () => {
+      expect(picked(calls(100, 30, 40))).toEqual([pair, callee])
+    })
+
+    it('takes the caller of an emitted site over a lone site with more calls', () => {
+      expect(picked(calls(30, 100, 40))).toEqual([callee, pair])
+    })
+
+    it('still takes a lone site that outweighs the crossing', () => {
+      expect(picked(calls(100, 5, 40))).toEqual([pair, lone])
+    })
+
+    it('never takes a site the corpus did not run', () => {
+      expect(picked(calls(100, 0, 0), 30)).toEqual([pair])
+    })
+
+    it('sees a callee through a gap gate', () => {
+      const pad = regex(/[ \t]*/)
+      const gated = encodeTable(rules(g => ({
+        Doc: noTrivia(sequence(regex(/[0-9]+/), many(sequence(g.Op!, regex(/[0-9]+/))))),
+        Op: noTrivia(sequence(pad, literal('+'), pad)),
+      })) as unknown as RuleMap, {})
+      const gate = [...reachableIps(gated)].find(ip => gated.code[ip] === OP_GAPGATE)!
+      const item = gated.code[gate + 1]!
+      const repeat = [...reachableIps(gated)].find(ip => { const kids: number[] = []; childSlots(gated.code, ip, kids); return kids.includes(gate) })!
+      const lonely = [...reachableIps(gated)].find(ip => ip !== item && ip !== repeat && ip !== gate)!
+      const counts = new Int32Array(gated.code.length)
+      counts[repeat] = 100
+      counts[item] = 30
+      counts[lonely] = 40
+      const bytes = new Map([repeat, item, lonely].map(ip => [ip, 10]))
+      expect([...selectHotSites(gated.code, [], bytes, 20, counts)]).toEqual([repeat, item])
+    })
+
+    it('a larger budget only adds to what a smaller one took', () => {
+      const css = encodeTable(cssRules as unknown as RuleMap, {})
+      const { siteBytes } = emitAssemblySource(resolveTable(css), css, defaultAssemblyCfgs(css)[0]!, assemblyExtraIps(css), true)
+      const counts = countSiteVisits(css, rules => { run(rules.Stylesheet as never, 'a { color: red } @media x { b { y: z } }') })
+      const total = [...siteBytes.values()].reduce((a, b) => a + b, 0)
+      let last: number[] = []
+      for (let budget = 0; budget <= total; budget += Math.ceil(total / 40)) {
+        const now = [...selectHotSites(css.code, [], siteBytes, budget, counts)]
+        expect(now.slice(0, last.length)).toEqual(last)
+        last = now
+      }
+      expect(last.length).toBeGreaterThan(1)
+    })
+
+    it('crosses the engine boundary fewer times than ranking by calls per byte alone', () => {
+      const css = encodeTable(cssRules as unknown as RuleMap, {})
+      const { siteBytes } = emitAssemblySource(resolveTable(css), css, defaultAssemblyCfgs(css)[0]!, assemblyExtraIps(css), true)
+      const counts = countSiteVisits(css, rules => {
+        for (const input of CASES[0]!.inputs) { try { run(rules.Stylesheet as never, input) } catch { /* the calls it made still count */ } }
+      })
+      const kept = [...siteBytes.keys()].filter(ip => counts[ip]! > 0)
+      const edges = kept.flatMap(ip => { const kids: number[] = []; childSlots(css.code, ip, kids); return kids.filter(k => siteBytes.has(k)).map(k => [ip, k] as const) })
+      const crossings = (taken: ReadonlySet<number>): number => edges.reduce((sum, [from, to]) => sum + (taken.has(from) !== taken.has(to) ? counts[to]! : 0), 0)
+      const byRatio = (budget: number): Set<number> => {
+        const taken = new Set<number>()
+        let spent = 0
+        for (const ip of [...kept].sort((a, b) => counts[b]! / siteBytes.get(b)! - counts[a]! / siteBytes.get(a)! || a - b)) {
+          spent += siteBytes.get(ip)!
+          if (spent > budget) break
+          taken.add(ip)
+        }
+        return taken
+      }
+      const total = kept.reduce((sum, ip) => sum + siteBytes.get(ip)!, 0)
+      for (const share of [0.25, 0.5, 0.75]) {
+        const budget = total * share
+        expect(crossings(selectHotSites(css.code, [], siteBytes, budget, counts)), `share ${share}`).toBeLessThan(crossings(byRatio(budget)))
+      }
+    })
   })
 
   it('reports no sites when a later compose() leaves the module on the runtime compose()', () => {

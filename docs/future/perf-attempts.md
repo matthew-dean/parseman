@@ -305,6 +305,46 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ### Unreleased on `main`
 
+- **Connected selection for `assemblyProfile`.** A call between generated code and the closure
+  engine crosses through a wrapper, so ranking by measured calls per byte left islands: on
+  Jess's Less grammar at budget `0.5` it made 6.7% to 9.0% more calls per parse than the static
+  ranking. A site's worth now counts the crossings it removes, weighted 4. Real tsdown builds
+  of Jess's grammars, each file through the package's own `parseWith`, against `main`'s static
+  ranking. Marginal JIT instructions at 3 reps; digests match on every row. The machine was
+  loaded (load 29 to 143), and this hasn't been rerun quietly. No `--jitless` or x64 run.
+
+  | File | In the corpus? | Budget | Instructions, `main` profiled | Instructions, this | Calls, `main` profiled | Calls, this | A/A instructions |
+  | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | `benchmark.less` | yes | 0.5 | -7.43% | **-11.47%** | +8.95% | **-2.85%** | +0.16% |
+  | `benchmark.less` | yes | 1 | -11.97% | -12.29% | -2.71% | -6.45% | -0.65% |
+  | `uikit` | held out | 0.5 | -5.20% | -8.88% | +7.65% | -2.16% | -0.61% |
+  | `uikit` | held out | 1 | -10.43% | -11.08% | -2.52% | -5.71% | +0.14% |
+  | Bootstrap 3 | held out | 0.5 | -5.75% | -7.03% | +7.99% | -2.44% | -0.38% |
+  | Bootstrap 3 | held out | 1 | -8.22% | -10.39% | -1.25% | -5.34% | +0.57% |
+  | Foundation SCSS, Bootstrap-only corpus | held out | 0.612 | -0.60% | -4.10% | +5.35% | -4.52% | +0.57% |
+  | `misc` SCSS | held out | 0.612 | -1.88% | -3.95% | +5.16% | -6.72% | -0.27% |
+  | `misc` SCSS | held out | 1 | -1.23% | -2.07% | +4.88% | -4.38% | +0.32% |
+  | `foundation.css` | held out | 2.72 | -11.02% | -14.26% | -14.57% | -16.79% | +0.24% |
+  | `foundation.css` | held out | 1 | -13.75% | -12.74% | -14.42% | -18.20% | +0.21% |
+  | `infima` | held out | 2.72 | -8.79% | -8.37% | -12.62% | -17.19% | -0.74% |
+  | `infima` | held out | 1 | -6.34% | -8.30% | -5.10% | -13.38% | -0.14% |
+
+  Calls are below both `main` rankings on all 33 rows measured. Instructions are below `main`'s
+  static ranking on all of them, but not always below its profiled one: CSS at budget 1 on
+  `benchmark.css` (+0.92%, +1.31% in two runs), `foundation.css` (+1.17%) and `bootstrap.css`
+  (+0.37%), and `infima` at 2.72 (+0.46%, inside its A/A). Less `ast.js` is 587,152 B at `0.5`
+  against 594,740 B for `main`'s static ranking, and 672,386 B at `1` against 686,453 B. The
+  weight 4 came from a prototype trying 1, 4 and 16. Only 4 has been measured on real builds.
+  The ranking rescans per pick: 29 ms of a 53 s Less build.
+
+- **One function for functions that read the same.** `optional(x)` written in 25 places was
+  25 functions, and connected selection took more of them: SCSS at `0.612` went from 46
+  duplicates to 66, CSS at `1` from 21 to 38. Merging them after the entry join brings every
+  profiled build to no more than `main`'s static count: Less at `0.5` 46 (46), SCSS at
+  `0.612` 45 (46), CSS at `2.72` 18 (53). In the guard, `macro/css/ast` goes from 54 to 17
+  and `macro/scss/ast` from 47 to 41. Calls per parse are exact against the release in all
+  25 rows.
+
 - **A budget that comments cannot move, and a selection that only grows.** The budget was a
   share of the module's raw text, so a comment edit could buy or lose functions: 61 against
   56 on Jess's SCSS, about 1% of parse speed. Selection also shrank its target by at least 1%
@@ -341,6 +381,21 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   - Branch `perf/shipped-alloc-trivia`.
 
 ## Rejected (measured)
+
+- **Merging same-text functions before the entry join.** Two earlier places for the merge
+  above. Interning `optional` rows in the encoder moved the static selection and raised calls
+  by up to +0.15% (`macro/less/ast/site.css`). Merging at emission left the selection alone
+  but raised calls by up to +0.12% (`macro/scss/ast/site.css`), because a merged function has
+  several callers and the entry join only takes a function with one. No branch kept.
+
+- **One generated function per shape.** The ceiling is small: identical shapes would save at
+  most 4,064 B on Less and 5,929 B on SCSS, most of it `_px` wrappers. Tried as one wrapper
+  per scanner with the callee passed as an argument. After the freed budget buys sites, that
+  saves 890 B on Less and 976 B on SCSS, with no gain in instructions: worse on 4 of 8 rows
+  (`benchmark.less` -10.3% to -10.0%, generated SCSS -4.1% to -3.0%), better on 3 and level on
+  1. Calls on `benchmark.less` rise to 2,250,635
+  against `main`'s 2,247,253. Numbers are from the prototype harness on a loaded machine. No
+  branch kept.
 
 - **Dropping the trivia gap memo.** Remove `skipDeferredTrivia`'s repeat-scan memo, on
   top of the lead gate. Jess's Less build: `color: red;` 36.1k → 37.0k (A/A 36.4k), whole
@@ -475,6 +530,17 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   (`scratchpad/left-corner/visits.ts`).
 
 ## Parked
+
+- **Dropping the SCSS nested-property pre-scan by reordering arms.** Delete
+  `directNestedPropertyAhead` and try `Declaration` first; the two arms can't both succeed.
+  Against the fixture on `main`, instructions and calls: `gen-workload` -0.7% and -0.4%,
+  Foundation -1.9% and -1.6%, Bootstrap -0.6% and -0.6%, `spec-all` -5.3% and -6.2%. A file of
+  only nested properties, written by hand as the worst case, reads +41% and +39%, because
+  the value is parsed twice. A/A within 0.1% on instructions; not quiet. Real files barely use
+  the form: none in `gen-workload`, Foundation or Bootstrap, and 1 against 364 declarations in
+  `spec-all`. `a: "s;t" { b: c }` and `a: url(p;q) { c: d }` newly parse, which is correct SCSS.
+  Not shipped: a rise on that input breaks the calls bar. Retry on a factored prefix when
+  #265's `continues` lands. Local record `c73f282b` on `perf/scss-nested-property-forward`.
 
 - **Test the decisive first term before opening frames.** Failed attempts the first term
   decided (nothing consumed) leave removable pieces of 4.4% (CSS), 6.0% (Less), 10.0% (SCSS)

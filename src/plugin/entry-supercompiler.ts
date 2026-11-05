@@ -65,6 +65,9 @@ type Call = {
 type Edit = { readonly start: number; readonly end: number; readonly text: string }
 
 const PIECE = /^_pf(\d+)$/
+const MERGEABLE = /^_(?:pf|sk)\d+$/
+const SITE_NAME = /\b_(?:pf|sk)\d+\b/g
+const SITE_OR_TEMP = /\b(?:_(?:pf|sk)\d+|_t\d+_)\b/g
 const WRAP = 'function __parseman_supercompile__(){\n'
 const SUFFIX = '\n}'
 
@@ -226,6 +229,58 @@ export function supercompileEntryAssembly(
 }
 
 /**
+ * Functions that read the same are one function: `optional(x)` written in 25 places
+ * is 25 rows and one body, and a trivia skip can be pooled under two labels that
+ * lower alike. This runs after the join, so a site with one caller has
+ * already gone into it, the selection is untouched and every call a parse makes is
+ * still made. Each pass can make the callers of a merged function read alike, so it
+ * repeats until nothing merges. Temporaries are numbered per assembly, so they're
+ * compared in order of use.
+ */
+export function mergeSameBodies(source: string): string {
+  const parsed = parseSync('parseman-merge-same-bodies.js', WRAP + source + SUFFIX)
+  if (parsed.errors.length > 0) return source
+  const statements = nodes(ast(nodes((parsed.program as unknown as Ast).body)[0]?.body)?.body)
+  const parts: { name: string | undefined; text: string }[] = []
+  let at = 0
+  for (const statement of statements) {
+    const name = statement.type === 'FunctionDeclaration' ? nameOf(ast(statement.id)) : undefined
+    if (name === undefined || !MERGEABLE.test(name)) continue
+    const { start, end } = range(statement)
+    parts.push({ name: undefined, text: source.slice(at, start) }, { name, text: source.slice(start, end) })
+    at = end
+  }
+  parts.push({ name: undefined, text: source.slice(at) })
+
+  const renames = new Map<string, string>()
+  for (;;) {
+    const first = new Map<string, string>()
+    const merged = new Map<string, string>()
+    for (const part of parts) {
+      if (part.name === undefined) continue
+      const temps = new Map<string, number>()
+      const key = part.text.replace(SITE_OR_TEMP, token => {
+        if (token === part.name) return '_self'
+        if (!token.startsWith('_t')) return token
+        const seen = temps.get(token) ?? temps.size
+        temps.set(token, seen)
+        return `_t#${seen}`
+      })
+      const kept = first.get(key)
+      if (kept === undefined) first.set(key, part.name)
+      else { merged.set(part.name, kept); part.text = ''; part.name = undefined }
+    }
+    if (merged.size === 0) break
+    for (const [from, to] of renames) renames.set(from, merged.get(to) ?? to)
+    for (const [from, to] of merged) renames.set(from, to)
+    const rename = (text: string): string => text.replace(SITE_NAME, name => merged.get(name) ?? name)
+    for (const part of parts) if (part.name !== undefined) part.text = rename(part.text)
+  }
+  const merged = parts.map(part => part.text).join('')
+  return renames.size === 0 ? source : merged.replace(SITE_NAME, name => renames.get(name) ?? name)
+}
+
+/**
  * Plugin-only final splice for an ordinary macro replacement. The table
  * compiler emits its canonical callback-free public artifact first; this pass
  * then finds the precompiled assembly through the table object's AST shape and
@@ -274,7 +329,7 @@ export function supercompileRuleMapReplacement(
   const start = body.start - prefix.length + 1
   const end = body.end - prefix.length - 1
   if (replacement.slice(start, end) !== FACTORY_ARITY_GUARD + canonical.source + '\n') return replacement
-  const transformed = replacement.slice(0, start) + FACTORY_ARITY_GUARD + candidate.source + '\n' + replacement.slice(end)
+  const transformed = replacement.slice(0, start) + FACTORY_ARITY_GUARD + mergeSameBodies(candidate.source) + '\n' + replacement.slice(end)
   const checked = parseSync('parseman-entry-supercompile-replacement-result.js', prefix + transformed)
   return checked.errors.length === 0 ? transformed : replacement
 }
