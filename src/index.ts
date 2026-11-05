@@ -141,7 +141,7 @@ export type {
 // back to `FusedRule`, `isInterpretedFuse` would have to be re-exported in the same
 // change — a dual shape with no way to detect it is the worse of the two.
 export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
-export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
+export type { ComposedRules, CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans } from './line-index.ts'
 export type { LineIndex } from './line-index.ts'

@@ -56,6 +56,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **`compose()` and `composeLeaf()` results spell out their rule names.** Each is
   typed with the names its items spell out, as well as lookup by any string, so
   `composed.X` needs no `!` and `PriorRules<typeof composed>` rejects a misspelled rule.
+- **The package entry exports `ComposedRules`.** `compose()` and `composeLeaf()` return
+  it, so a project emitting declarations for an exported composition failed with TS2883
+  on 0.60.5.
 - **A `compose()` that references a rule no piece defines fails the build, naming
   the rule.** The macro fuse used to encode around the undefined slot, leave the
   runtime `compose()` in place and warn "ref() used before .define()", which read as
