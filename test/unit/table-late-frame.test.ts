@@ -101,7 +101,7 @@ describe('a late frame', () => {
   it('a parent that keeps raw children gets one raw child for the corner', () => agree(ladder(false, true), INPUTS))
 
   it('a tail that passes its test and takes nothing leaves the gap outside', () => {
-    const g = rules({ trivia: regex(/ +/) }, (g: G) => ({
+    const g = rules({ trivia: trivia() }, (g: G) => ({
       Root: node('Root', sequence(g.Inner!, optional(literal('+'))), bin('Root')),
       Inner: node('Inner', sequence(g.Sum!, optional(literal('+!'))), bin('Inner')),
       Sum: node('Sum', sequence(g.Atom!, many(literal('+='))), bin('Sum'), { collapse: true }),
@@ -143,7 +143,7 @@ describe('a late frame', () => {
 
   it('a builder runs only for a node that continued, and its start is the corner\'s', () => {
     const build = vi.fn(bin('Sum'))
-    const g = rules({ trivia: regex(/ +/) }, (g: G) => ({
+    const g = rules({ trivia: trivia() }, (g: G) => ({
       Sum: node('Sum', sequence(g.Atom!, many(sequence(literal('+'), g.Atom!))), build, { collapse: true }),
       Atom: node('Atom', regex(/[0-9]+/), (children, _f, span) => ({ atom: children[0], span })),
     })) as G
@@ -155,7 +155,7 @@ describe('a late frame', () => {
   })
 
   it('a trailing gap stays outside a corner with no tail', () => {
-    const g = rules({ trivia: regex(/ +/) }, (g: G) => ({
+    const g = rules({ trivia: trivia() }, (g: G) => ({
       Root: sequence(g.Sum!, literal(';')),
       Sum: node('Sum', sequence(g.Atom!, many(sequence(literal('+'), g.Atom!))), bin('Sum'), { collapse: true }),
       Atom: node('Atom', regex(/[0-9]+/), (children, _f, span) => ({ atom: children[0], span })),
