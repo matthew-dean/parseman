@@ -1042,6 +1042,10 @@ return 1
   /** `ctx.captureTrivia === true && (a sink is open)`, as far as the label resolves it. */
   function skipCapturing(l: SiteLabel): string {
     if (l.tri < 0 || !swapLegal || triviaLabelled[l.tri]! || t.triviaScan[l.tri] == null) return 'true'
+    return capturesHere(l)
+  }
+
+  function capturesHere(l: SiteLabel): string {
     const sink = l.buf ? 'true' : '(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)'
     return l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
   }
@@ -1484,13 +1488,13 @@ v=${tail}(input,s0,ctx)
 if(v!==FAIL&&EC.e<=s0){rollbackScannedTriviaAt(ctx,tl0,tl1,lg0,lg1,rt0,rt1);EC.e=c1}`
         const quiet = `v=${tail}(input,${at},ctx)
 if(v!==FAIL&&EC.e<=${at})EC.e=c1`
-        const capture = skipCapturing(seqLabel)
-        // No gap: nothing to record, keep or take back.
+        const capture = capturesHere(seqLabel)
+        // No gap: nothing to record, keep or take back. Nothing recording: not scanned again.
         const body = `let v
 ${tri === TRI_NONE ? `v=${tail}(input,c1,ctx)`
   : `if(q0===c1)v=${tail}(input,c1,ctx)
 else ${capture === 'true' ? `{\n${recorded}\n}`
-  : `if(ctx._triviaLog===undefined${capture === 'false' ? '' : `&&!${capture}`}){
+  : `if(ctx._triviaLog===undefined&&ctx._rootTriviaLog===undefined${capture === 'false' ? '' : `&&!${capture}`}){
 ${quiet}
 }else{
 ${recorded}
