@@ -187,7 +187,7 @@ describe('a site that lowers', () => {
   it('a scope the labels cannot name runs as written', () => {
     const noTriviaGrammar = sumOver({})
     expect(lowers(noTriviaGrammar)).toBe(true)
-    agree(noTriviaGrammar, SUMS, { trivia: regex(/ +/) })
+    agree(noTriviaGrammar, ['1;', '1+2;', '1+2+3;', '1+;', '1 +2;', '1;;'])
   })
 
   it('a corner that returned undefined published nothing, so its node is built', () => {
