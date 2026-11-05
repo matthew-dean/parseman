@@ -9,7 +9,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A
   site's worth now counts the crossings it removes. A build without a profile picks the same
-  sites as before.
+  sites as before, except that a `collapse` level the emitter can't decide at no longer leaves
+  its wrapper out of the estimate.
 - **A macro build prints functions that read the same once.** `optional(x)` written in 25
   places was 25 functions. Which sites are generated doesn't change, and neither do the calls
   a parse makes.
