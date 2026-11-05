@@ -24,7 +24,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, externalAccesses, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, externalAccesses, ruleMapRecipes, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
 import { compileRuleMap, type CompiledRuleMapTable } from '../table/compile-rule-map.ts'
@@ -239,12 +239,6 @@ function codeBytes(code: string, comments: readonly { start: number; end: number
  */
 /** A build failure the lowering must not soften into a warning and a fallback. */
 class LinkRefusal extends Error {}
-
-/** Whether a rule-map entry has a definition (a `g.X` merely read does not). */
-function isResolved(rule: Combinator<unknown>): boolean {
-  if (rule._def.tag !== 'lazy') return true
-  try { rule._def.thunk(); return true } catch { return false }
-}
 
 function reasonSuffix(runtimeOnly: readonly string[] | undefined): string {
   return runtimeOnly === undefined || runtimeOnly.length === 0
@@ -2082,7 +2076,7 @@ function transformMacroImpl(
   /**
    * Evaluate a carried list back to combinators, one entry per piece: its rule map
    * and the `rules()` recipe it was built from. `compose()` links the recipes into
-   * one namespace (`mergedCarriedRules`); `composeLeaf()` merges the maps by name.
+   * one namespace (`mergedCarriedRules`), and `composeLeaf()` does the same.
    * Either way the merged grammar is encoded ONCE by `compileRuleMap` — no relocation
    * of code offsets and no merging of const / fn / expected pools between two
    * already-encoded programs.
@@ -2119,38 +2113,6 @@ function transformMacroImpl(
   }
 
   /**
-   * Fold ordered rule maps into the composed map: a later piece's name WINS, and
-   * `Map` keeps each name at its first-sighting position so the encoded rule order
-   * tracks the source lowering's rather than drifting per compose.
-   *
-   * A REFERENCE IS NOT A DEFINITION. A `rules(g => …)` cache also holds every `g.X`
-   * that was merely ACCESSED, so a delta that calls `g.Pair` carries a `Pair` entry
-   * that is an unresolved named lazy. Merged in name order that entry lands LAST and
-   * shadows the base piece which actually defines `Pair` — the encoder then finds a
-   * hole where the winner should be and refuses the whole grammar with "ref() used
-   * before .define()". The same filter guards `compileLinkableTable`'s `isLocal`
-   * (`compile-linkable-table.ts`) and `recoverComposedRules`; this site needs it
-   * for the same reason, and skipping it is why cross-piece composition looked blocked.
-   *
-   * The reference itself is not lost: it stays inside the delta's own rule bodies and
-   * `enc.winners` binds it BY NAME to whichever piece supplies the definition.
-   */
-  const mergeRuleMaps = (
-    maps: ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
-  ): Array<[string, Combinator<unknown>]> => {
-    const winners = new Map<string, Combinator<unknown>>()
-    for (const map of maps) {
-      for (const [name, rule] of map) {
-        if (rule._def.tag === 'lazy') {
-          try { rule._def.thunk() } catch { continue }
-        }
-        winners.set(name, rule)
-      }
-    }
-    return [...winners]
-  }
-
-  /**
    * LINK a carried list into the composed map, exactly as runtime `compose()` does:
    * every piece's carried `rules()` recipe runs again against ONE namespace
    * (`linkRules`), a later piece's rule winning by name, and the composing trivia and
@@ -2175,25 +2137,6 @@ function transformMacroImpl(
     // refuses it too (the caller throws `dangling`) rather than encode around the hole.
     const dangling = danglingReference(linked)
     return { rules: Object.entries(linked), trackLines: carriedMaps.trackLines, dangling }
-  }
-
-  /**
-   * COMPOSING-WINS for `composeLeaf()`'s carried pieces, as an OVERRIDE rather than
-   * a gap-fill: `compileRuleMap`'s `applyAmbient` only fills a rule that carries no
-   * trivia of its own. (`compose()` gets the same override from `linkRules`.)
-   *
-   * Safe to mutate: every rule here came from `evalRuleMapIR`, which constructs FRESH
-   * combinators per piece per compose, so this cannot leak into another compose of the
-   * same base grammar.
-   */
-  const applyComposingTrivia = (
-    ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-    composing: Combinator<unknown>,
-  ): void => {
-    for (const [, rule] of ruleMap) {
-      if (rule._meta.isTrivia) continue
-      ;(rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = composing
-    }
   }
 
   /** Resolve one `compose([...])` argument to its RE-LOWERABLE carried items (IR
@@ -2361,10 +2304,17 @@ function transformMacroImpl(
     // does — one encode, one `tableRules(…)` expression, no linker. `carried` is
     // unchanged either way: it is the re-lowerable IR list, not a lowering artifact,
     // so a downstream re-compose behaves identically whichever engine emitted here.
-    const merged = mergedCarriedRules(carried, {
-      trivia: composing,
-      ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
-    })
+    let merged: ReturnType<typeof mergedCarriedRules>
+    try {
+      merged = mergedCarriedRules(carried, {
+        trivia: composing,
+        ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
+      })
+    } catch (e) {
+      // Linking refuses the composition (a `prior.X` no earlier piece defines): a
+      // runtime `compose()` would refuse it the same way, so the build fails, here.
+      throw new Error(`${id}:${lineOf(init.start)} — ${(e as Error).message}`, { cause: e })
+    }
     if (merged?.dangling !== undefined) throw new Error(`${id}:${lineOf(init.start)} — compose: ${merged.dangling}`)
     if (merged !== null) {
       // Harvest the direct-builder import provenance carried on the merged graph so
@@ -2498,22 +2448,15 @@ function transformMacroImpl(
       return null
     }
     const localArg = elements[elements.length - 1]!
-    let localRules: Iterable<readonly [string, unknown]> | null = null
-    // The LOCAL leaf grammar's own ambient scanSkip (from its `rules({ scanSkip })`)
-    // governs the scanTo/balanced sites IT defines — unlike trivia (composing-wins),
-    // opaque units are dialect-specific, so the local declaration is threaded to the
-    // local piece's compile.
-    let localScanSkip: Combinator<unknown>[] | undefined
+    let localRules: ReadonlyMap<string, Combinator<unknown>> | null = null
     const importedFactories: string[] = []
     if (isRulesCall(localArg)) {
       const evaluated = evaluateRulesFactory(localArg, callLabel('composeLeaf', init.start))
       localRules = evaluated?.ruleMap ?? null
-      localScanSkip = evaluated?.scanSkip
       if (evaluated?.importedFactory) importedFactories.push(evaluated.importedFactory)
     } else if (localArg.type === 'Identifier') {
       const name = (localArg as unknown as { name: string }).name
       localRules = localRuleMaps.get(name) ?? null
-      localScanSkip = localGrammarScanSkip.get(name)
     }
     if (!localRules) {
       // Distinguish "the argument is the wrong SHAPE" from "the argument is the right
@@ -2548,13 +2491,6 @@ function transformMacroImpl(
       // may place one beneath a direct node(). Re-lower their terminals with
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
-      const localNs = nsFor(callLabel('composeLeaf', init.start))
-      const localEntries = [...localRules] as Array<[string, Combinator<unknown>]>
-
-      // TABLE FIRST — same merge as `compose()`, with the local leaf map appended LAST
-      // so it wins every name and binds the imported shapes' holes (`enc.winners`
-      // resolves those by name; see `mergedCarriedRules`).
-      //
       // The recognition-only gate is preserved EXACTLY, and is the reason this path
       // needs no `compileLinkable`: `hasDirectBuilders` / `isRecognitionOnly` are
       // predicates over the combinator graph, not products of lowering it, so
@@ -2577,36 +2513,23 @@ function transformMacroImpl(
           warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
           return null
         }
-        // The local grammar's OWN ambient scanSkip is stamped onto the LOCAL entries
-        // only. Passing it as a merged-map option instead would let `applyAmbient`
-        // hand it to every imported rule that happens to carry no stamp of its own —
-        // opaque units are dialect-specific, and that is precisely the leak the
-        // per-piece threading in the source path exists to avoid.
-        if (localScanSkip) {
-          for (const [, rule] of localEntries) {
-            if (rule._meta.isTrivia) continue
-            const meta = rule._meta as { grammarScanSkip?: Combinator<unknown>[] }
-            if (meta.grammarScanSkip === undefined) meta.grammarScanSkip = localScanSkip
-          }
+        // The same link as `compose()` and runtime `composeLeaf()`: the leaf is the last
+        // recipe, so it wins every name, binds the imported shapes' holes and fills its
+        // `prior.X`. Each recipe keeps its own scanSkip; the composing trivia governs all.
+        let linked: Record<string, Combinator<unknown>>
+        try {
+          linked = linkRules(
+            [...carriedMaps.pieces.flatMap(p => p.recipes), ...ruleMapRecipes.get(localRules)!],
+            { trivia: composing },
+          )
+        } catch (e) {
+          throw new LinkRefusal(`${id}:${lineOf(init.start)} — composeLeaf: ${(e as Error).message.replace(/^compose: /, '')}`, { cause: e })
         }
-        const leafMerged = mergeRuleMaps([...carriedMaps.pieces.map(p => p.rules), localEntries])
-        // The same refusal as `compose()`, over a merge by name: a name some piece only
-        // reads (an unresolved entry of a carried map, or a local factory's external
-        // access) that no piece defines.
-        const accessed = [
-          ...carriedMaps.pieces.flatMap(p => p.rules).filter(([, rule]) => !isResolved(rule)).map(([name]) => name),
-          ...(localRules instanceof Map ? externalAccesses.get(localRules) ?? [] : []),
-        ]
-        const dangling = danglingReference(Object.fromEntries(leafMerged), accessed)
+        const dangling = danglingReference(linked)
         if (dangling !== undefined) throw new LinkRefusal(`${id}:${lineOf(init.start)} — composeLeaf: ${dangling}`)
-        // Composing-wins governs the leaf fuse too. The local entries are NOT freshly
-        // evaluated (they come from this module's own `rules()` factory), so they are
-        // excluded from the override — their declared trivia IS the composing candidate,
-        // and rewriting `_meta` on them would mutate the module-level grammar object.
-        if (composing) applyComposingTrivia(carriedMaps.pieces.flatMap(p => p.rules), composing)
         const refusals: string[] = []
         const compiled = compileRuleMap(
-          leafMerged,
+          Object.entries(linked),
           {
             ...(composing ? { trivia: composing } : {}),
             ...(carriedMaps.trackLines ? { trackLines: true } : {}),

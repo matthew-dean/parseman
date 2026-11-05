@@ -18,6 +18,30 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   The default is `0.5` on the new base. Comments are about 40% of Jess's grammars, so an
   explicit budget needs raising to buy what it did: a grammar that passed `1` and is half
   comments passes about `2.7`.
+- **`rules((g, prior) => …)`: a composing grammar can re-reduce or extend an inherited
+  rule without copying it.** `prior.X` is the definition of `X` that the grammars
+  composed before this one gave it, with a top-level `node()` unwrapped to its body, and
+  its `g.` references stay bound to the composition. `X: node('X', prior.X, reduce)`
+  swaps only the reducer; `X: node('X', choice(prior.X, arm), reduce)` adds an arm.
+  Dropping that `node()` drops the inherited node too.
+  The earlier definition is placed in the new rule, so it parses and encodes as the
+  rule written out by hand would (the encoded table is identical). A grammar built on
+  its own ships `prior.X` in its carried pieces, and a composition where no earlier
+  piece defines `X` refuses it, at runtime and in the build. Annotating the parameter
+  as `PriorRules<typeof base>` types `prior.X` and rejects a misspelled rule. A `prior.X`
+  nothing fills throws a message naming it on every engine, and `toEBNF` prints it as
+  `/* prior.X */`. The interpreter, the reference driver, the closure engine, the printed
+  assembly, `compile()` and the macro's cross-module table build the same values.
+  See `docs/guide/extending.md` and `test/unit/rules-prior.test.ts`.
+- **A macro `composeLeaf()` now links its pieces as `compose()` and the runtime
+  `composeLeaf()` do**, instead of merging their rule maps by name. The leaf can read
+  `prior.X`, and first sets and expected sets see the composed grammar. A pre-final
+  piece that reads `prior` still counts as recognition-only. Tables of a real
+  `composeLeaf()` grammar can shrink: a reference between pieces used to stay
+  unresolved, so its expected sets held rule names.
+- **`compose()` and `composeLeaf()` results spell out their rule names.** Each is
+  typed with the names its items spell out, as well as lookup by any string, so
+  `composed.X` needs no `!` and `PriorRules<typeof composed>` rejects a misspelled rule.
 - **A `compose()` that references a rule no piece defines fails the build, naming
   the rule.** The macro fuse used to encode around the undefined slot, leave the
   runtime `compose()` in place and warn "ref() used before .define()", which read as
