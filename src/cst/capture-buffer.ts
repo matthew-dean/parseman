@@ -128,9 +128,11 @@ export function popCstChild(ctx: ParseContext): void {
   const b = ctx._cstBuf
   if (b) {
     const ch = b.ch
-    if (b.rawOnly !== true && ch) {
-      ch.pop()
-      if (ch.length === 1) { b.single = ch[0]; b.ch = undefined }
+    if (b.rawOnly !== true) {
+      if (ch) {
+        ch.pop()
+        if (ch.length === 1) { b.single = ch[0]; b.ch = undefined }
+      } else b.single = undefined
     }
     if (b.noRaw === true) b.rawLen = (b.rawLen ?? 1) - 1
     else if (b.raw) {

@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { union, intersects, fromChar, fromRange, any, empty, sequenceFirstSet, firstSetOf, isZeroWidthAssertion, matchesEmpty } from '../../src/combinators/first-set.ts'
-import { attempt, sequence, not, optional, many, oneOrMore, literal, regex, choice, rules } from '../../src/index.ts'
+import { attempt, field, sequence, not, optional, many, oneOrMore, literal, regex, choice, rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import type { Combinator, FirstSet } from '../../src/types.ts'
 
@@ -246,5 +246,17 @@ describe('first-set — attempt() forwards its inner first set', () => {
     const prog = encodeTable(grammar())
     expect(prog.disp).toHaveLength(1)
     expect(prog.disp[0]![0]).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('first-set — a named separator', () => {
+  // A comma list spelled `A (field(',') A)*`, as a value list is. `field` reads
+  // its child: it consumes what its child consumes.
+  it('a sequence led by field() starts where the field does', () => {
+    const g = rules(g => ({
+      Tail: sequence(field('separator', regex(/,[ \t]*/)), g.Item),
+      Item: regex(/[a-z]+/),
+    }))
+    expect(firstSetOf(g.Tail)).toEqual({ kind: 'ranges', ranges: [{ lo: 44, hi: 44 }] })
   })
 })

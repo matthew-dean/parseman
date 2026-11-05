@@ -51,7 +51,7 @@ import {
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_STRICT,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_STRICT, OP_CONT, OP_SEED,
 } from './ops.ts'
 import {
   choiceCannotCommit, choiceLogRollbackMask, choiceRollbackMask, failureLogRollback, failureRollbackClean, validateDispatchSpec,
@@ -67,6 +67,7 @@ import {
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
+import { continuationGate } from './continues.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows } from './gap-gate.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
@@ -139,7 +140,7 @@ export const EMITTED_PARAMS = [
   // The deferred-commit trivia skip (`trivia-gap.ts`).
   'skipDeferredTrivia',
   // The pass-through collapse (`run-support.ts`).
-  'collapseEmpty',
+  'collapseEmpty', 'holdCorner', 'pastTrivia', 'publishSeed',
   // Constructor-built tree objects (`cst/plain.d.ts`): a `new` call has no
   // allocation site, so V8 cannot pretenure them.
   '_SP', '_LF', '_ND', '_FC', '_BUF',
@@ -669,12 +670,12 @@ export function emitAssemblySource(
   // pool's `extraIps` — and each starts at `TOP`, because a caller outside the
   // emitted scope supplies a context this pass cannot see.
   const roots = [...Object.values(prog.rules), ...extraIps]
-  const reachable = [...reachableSites(code, roots)]
+  const reachable = [...reachableSites(code, roots, !cfg.tolerant && !cfg.probe)]
   // A gap whose regex lowers to an inline scan is scanned again by its row, for
   // less than reading the slot costs; only a gap matched by its RegExp takes the
   // slot (`gapRegexLowers`).
   const GAP_ROWS = gapNeutral ? new Set<number>() : new Set([...gapRows(code, roots)].filter(row => !gapRegexLowers(k[code[row + 1]!])))
-  const labels = computeSiteLabels(code, roots, hostCst)
+  const labels = computeSiteLabels(code, roots, hostCst, !cfg.tolerant && !cfg.probe)
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
   // both the recognizer and the ordinary-terminal lowering.
@@ -1205,6 +1206,8 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
     if (op === OP_RULE || op === OP_GAPGATE) return code[ip + 1]!
     if (op === OP_STRICT) return code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!
+    if (op === OP_CONT && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
+    if (op === OP_SEED && (cfg.tolerant || cfg.probe)) return code[ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
     // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
@@ -1427,6 +1430,44 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
         // unguarded facts, not an invariant, and it is already reachable through the
         // hand-built-program idiom this file's driver tests use.
         return `${head}EC.e=pos;return ''}`
+
+      case OP_SEED:
+        return `${head}return publishSeed(EC,ctx,input)}`
+
+      case OP_CONT: {
+        const corner = link(code[ip + 1]!)
+        const wrapper = link(code[ip + 2]!)
+        const tri = labels.at(ip).tri
+        const g = continuationGate(code, code[ip + 3]!)
+        const missAt = (idx: number, at: string): string => {
+          const resolved = t.cc[idx]!
+          const ci = classes.push([resolved]) - 1
+          classPlan.push([idx])
+          const ref = hoist('cg', `CLS[${ci}][0]`)
+          return isAsciiOnlyClass(resolved) ? `${ref}.ascii[input.charCodeAt(${at})]!==1` : `!classHas(${ref},lead(input,${at}))`
+        }
+        let test = ''
+        if (g !== undefined) {
+          // A named scope's scanner directly; else the one in force, read off `ctx`.
+          const scan = tri >= 0 && t.triviaScan[tri] != null ? hoist('cs', `TRIVIASCAN[${tri}]`) : null
+          const at = tri === TRI_NONE ? 'e' : 'q0'
+          const scanned = tri === TRI_NONE ? '' : `const q0=${scan !== null ? `${scan}(input,e)` : 'pastTrivia(input,e,ctx)'}\n`
+          const known = tri === TRI_NONE || scan !== null ? '' : '&&q0>=0'
+          if (g.gapRow < 0) test = `${scanned}if(v!==undefined${known}&&${missAt(g.cls, at)})return v\n`
+          else {
+            const re = hoist('cr', `K[${code[g.gapRow + 1]!}]`)
+            const other = g.other >= 0 ? missAt(g.other, at) : 'true'
+            test = `${scanned}${re}.lastIndex=${at}\nconst gq=${re}.test(input)?${re}.lastIndex:-1\nif(v!==undefined${known}&&(gq<0||${missAt(g.follow, 'gq')})&&${other})return v\n`
+          }
+        }
+        return `${head}
+const v=${corner}(input,pos,ctx)
+if(v===FAIL)return FAIL
+const e=EC.e
+${test}holdCorner(EC,ctx,v,pos,e)
+return ${wrapper}(input,pos,ctx)
+}`
+      }
 
       case OP_GATE: {
         const child = link(code[ip + 2]!)

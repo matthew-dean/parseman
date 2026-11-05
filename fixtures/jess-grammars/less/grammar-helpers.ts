@@ -937,6 +937,17 @@ function isAdjacentComponentBoundary(child: unknown): boolean {
 
 /** Shared value-term reduction for grammar branches that keep comments in
  * Parseman's trivia log rather than as semantic `Comment` value nodes. */
+function valueRunNode(
+  children: readonly unknown[],
+  _fields: unknown,
+  _span: unknown,
+  _rawChildren: unknown,
+  triviaLog: readonly number[],
+  state: unknown
+): ValueSlot {
+  return valuePieceReducerWithTrivia(children, triviaLog, state);
+}
+
 function valuePieceReducerWithTrivia(
   children: readonly unknown[],
   triviaLog: readonly number[],
@@ -3195,6 +3206,7 @@ export {
   triviaTextAtInsertIndex,
   unsupportedVariableNameFrom,
   valuePieceReducerWithTrivia,
+  valueRunNode,
   lessValueSlot,
   variableNameTerminalText,
   variableNameText,

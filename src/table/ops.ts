@@ -504,6 +504,21 @@ export const OP_RGATE2 = 47
  */
 export const OP_STRICT = 48
 /**
+ * `CONT corner wrapper tail` — `continues()`: run `corner` in the PARENT's collector,
+ * then look at the next token. Where `tail` cannot start there, the corner is the
+ * result: no frame, no children, no builder. Where it can, the corner's publication is
+ * taken back and `wrapper` runs at the same start: an ordinary `OP_NODE` whose body is
+ * `SEED`, then `tail`. `tail` is read for the decision only (`continues.ts`). Recovery,
+ * a probe and the reference driver have no decision to make: they run `wrapper`.
+ */
+export const OP_CONT = 49
+/**
+ * `SEED corner` — the corner `OP_CONT` holds, published into the frame it opened late.
+ * Where no decision was made (recovery, a probe, the reference driver) it is `corner`,
+ * so `wrapper` is the node as written.
+ */
+export const OP_SEED = 50
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -542,4 +557,6 @@ export const OP_NAMES: Record<number, string> = {
   [OP_GAPGATE]: 'GAPGATE',
   [OP_RGATE2]: 'RGATE2',
   [OP_STRICT]: 'STRICT',
+  [OP_CONT]: 'CONT',
+  [OP_SEED]: 'SEED',
 }

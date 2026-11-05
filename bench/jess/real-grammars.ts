@@ -53,6 +53,10 @@ const CORE_STUB = 'const __core = new Proxy(function () {}, { get: (t, k) => k =
 
 /** `import { a as b } from "@jesscss/core…"` → reads off the stub. */
 function stubCore(code: string): string {
+  // `PM_REAL_CORE`: a built `@jesscss/core` directory. A runnable bundle then runs the real
+  // reducers, so an AST parse means what jess's does (the instruction and identity sweeps).
+  const real = process.env.PM_REAL_CORE
+  if (real !== undefined) return code.replace(/from "@jesscss\/core(\/[a-z]+)?"/g, (_w, sub: string | undefined) => `from ${JSON.stringify(join(real, 'lib', `${sub ?? '/index'}.js`))}`)
   return CORE_STUB + code.replace(/import \{([^}]*)\} from "(@jesscss\/core[^"]*)";?/g, (_w, names: string) =>
     `const {${names.replace(/\bas\b/g, ':')}} = __core;`)
 }
@@ -148,6 +152,7 @@ export async function withBuiltSnapshot<T>(fn: (snap: Snapshot) => Promise<T>, f
             `export { ${exportName} as grammar } from ${JSON.stringify(entryFile)}`,
             `export { run, compile, compose } from ${JSON.stringify(join(SRC, 'index.ts'))}`,
             `export { cstBuildHost } from ${JSON.stringify(join(SRC, 'compiler/linker.ts'))}`,
+            `export { digestValue } from ${JSON.stringify(join(SRC, 'oracle/index.ts'))}`,
           ].join('\n'),
           loader: 'js', resolveDir: root,
         },

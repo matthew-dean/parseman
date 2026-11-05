@@ -15,6 +15,8 @@
 import type { ParseContext } from '../types.ts'
 import { popCstChild, pushCstChild } from '../cst/capture-buffer.ts'
 import { PlainLeaf, PlainLineSpan, PlainSpan } from '../cst/plain.js'
+import type { EndCell } from './cell.ts'
+import { fastTriviaScanner } from '../combinators/trivia-skip.ts'
 
 export type Span = { start: number; end: number }
 export type LineSpan = Span & {
@@ -61,6 +63,45 @@ export function lead(input: string, pos: number): number {
   const c = input.charCodeAt(pos)
   if (c < 0xd800 || c > 0xdbff) return c
   return input.codePointAt(pos) ?? c
+}
+
+/**
+ * `OP_CONT`, when the tail may start: the corner's publication to the parent is taken
+ * back and it is held for the frame about to open. Its `EC.e` stays the corner's end.
+ */
+export function holdCorner(cell: EndCell, ctx: ParseContext, v: unknown, start: number, end: number): void {
+  if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined || ctx._cstLeaves !== undefined) popCstChild(ctx)
+  cell.sv = v
+  cell.ss = start
+  cell.se = end
+}
+
+/**
+ * Where a sequence's next term would start, read without recording anything, in a
+ * scope whose trivia the labels cannot name: `OP_CONT` looks past it and, where the
+ * tail cannot start, a sequence would have rolled that gap back. −1: no scanner, so
+ * no answer.
+ */
+export function pastTrivia(input: string, end: number, ctx: ParseContext): number {
+  const t = ctx.trivia
+  if (t === undefined) return end
+  const s = fastTriviaScanner(t)
+  return s === null ? -1 : s(input, end)
+}
+
+/**
+ * `OP_SEED`: the corner `OP_CONT` holds, published into the frame it just opened,
+ * with the raw entry the corner published to the parent. Runs first in that frame.
+ */
+export function publishSeed(cell: EndCell, ctx: ParseContext, input: string): unknown {
+  const v = cell.sv
+  const b = ctx._cstBuf
+  pushCstChild(ctx, v, (b !== undefined ? b.noRaw === true : ctx._cstRawChildren === undefined)
+    ? undefined
+    : rawEntry(v, input, cell.ss, cell.se))
+  cell.sv = undefined
+  cell.e = cell.se
+  return v
 }
 
 const EMPTY_KIDS: readonly unknown[] = Object.freeze([])

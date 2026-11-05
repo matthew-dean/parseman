@@ -27,6 +27,7 @@ export { ref } from './combinators/ref.ts'
 export { not } from './combinators/not.ts'
 export { peek } from './combinators/peek.ts'
 export { node } from './combinators/node.ts'
+export { continues } from './combinators/continues.ts'
 export type { BuildNode, NodeCombinator, NodeOptions, NodeProjectOptions } from './combinators/node.ts'
 // lazy() is intentionally NOT exported.
 export { transform, trivia, classifiedTrivia, label, field } from './combinators/map.ts'

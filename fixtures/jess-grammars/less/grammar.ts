@@ -23,7 +23,7 @@ import {
   attempt, rules, classifiedTrivia, compose,
   node, regex, literal, sequence, choice, many, oneOrMore, oneOrMoreSep, optional,
   not, scanTo, balanced, expect, parser, noTrivia, label, word, keywords, field, leaf, sourceLeaf, peek,
-  dispatch, endsWith, startsWith, makeWhen, makeWord, matches, otherwise, routed, token, transform, when, withCtx
+  dispatch, endsWith, startsWith, makeWhen, makeWord, matches, otherwise, routed, token, transform, when, withCtx, continues
 } from 'parseman' with { type: 'macro' };
 import type { Combinator, FieldCapture, FieldMap, Span } from 'parseman';
 import { lessSyntax } from '../parser-shared/recognition.js';
@@ -151,7 +151,7 @@ import {
   staticSelectorPseudoFrom,
   staticText,
   staticTextWithTriviaGaps,
-  valuePieceReducerWithTrivia,
+  valuePieceReducerWithTrivia, valueRunNode,
   lessValueSlot,
   sourceFromState,
   variableNameText,
@@ -1914,11 +1914,7 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
    * speculative delimiter CST leaves.
    */
   const functionArgumentBoundaryAhead = not(regex(/[^,;:)]|$/));
-  const FunctionScalarArgument = node(
-    'FunctionScalarArgument',
-    sequence(g.MathValue, functionArgumentBoundaryAhead),
-    children => requireValueNode(children[0])
-  );
+  const FunctionScalarArgument = sequence(g.MathValue, functionArgumentBoundaryAhead);
   // `not` is an explicit Less condition opener even without a comparison, in
   // BOTH its grouped `not(<cond>)` and its bare `not <operand>` forms — the
   // fixture asserts they behave identically. Without this the bare form is eaten
@@ -2439,9 +2435,7 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
     calcBacktickTail,
     noTrivia(sequence(calcValueWithoutBacktick, optional(calcBacktickTail)))
   );
-  const Value = node(
-    'Value',
-    choice(
+  const Value = choice(
       g.MixinReference,
       g.InterpolatedValue,
       g.EscapedQuoted,
@@ -2452,16 +2446,14 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
       g.PropertyReference,
       g.Dimension,
       g.FormatFunction,
-      IdentifierOrFunction,
+      transform(IdentifierOrFunction, pair => pair[1]),
       g.EscapedParen,
       g.QueryColonFeature,
       g.Paren,
       g.SquareValue,
       g.EscapeValue,
       PercentEscape
-    ),
-    children => requireValueNode(children.find(isValueNode))
-  );
+  ) as Combinator<ValueNode>;
   // Signed numerics are already one Dimension leaf (`-2px`).  Less unary minus
   // is glued to a variable or grouping (`-@x`, `-(...)`); `- @x` is instead a
   // preserved space-list. The grammar keeps that source-order/spacing
@@ -2485,12 +2477,7 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
         ),
     { collapse: true }
   );
-  const MathAtom = node(
-    'MathAtom',
-    g.MathUnary,
-    children => requireValueNode(children[0]),
-    { collapse: true }
-  );
+  const MathAtom = g.MathUnary;
   // Every Less math operator is parsed HERE, the division slash included —
   // there is no second production that reads a slash (ledger P34). The run is
   // flat because its precedence is not fixed: a slash is a product operator in
@@ -2500,12 +2487,12 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
   // run's consumer folds it once, by the rule for its own position
   // (`lessMathInGroup` / `lessMathInValue`), instead of the grammar folding it
   // one way and a later step re-reading the result.
-  const MathSum = node(
+  const MathSum = noTrivia(continues(
     'MathSum',
-    noTrivia(sequence(g.MathAtom, mathRunTail)),
-    lessMathRun,
-    { collapse: true }
-  );
+    g.MathAtom,
+    mathRunTail,
+    lessMathRun
+  ));
   // A math run in a plain value position: the math policy picks what shape its
   // slashes take (`lessMathInValue`).
   const MathValue = node(
@@ -2565,7 +2552,8 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
    * A `<` reaches a piece only as a `<syntax>` type name (`syntaxTypeName`);
    * anywhere else it is a comparison.
    */
-  const valuePiece = choice(g.UnicodeRange, g.MathValue, literal('-'), literal('%'), syntaxTypeName, delimValue);
+  const terminalValuePiece = choice(literal('-'), literal('%'), syntaxTypeName, delimValue);
+  const valuePiece = choice(g.UnicodeRange, g.MathValue, terminalValuePiece);
   const nestedAtRuleValueStart = regex(/@[^;{}()'"]*\{/);
   /**
    * A `*` or `+` with no operand after it (`x: a *`): the delim it is in a CSS
@@ -2681,19 +2669,16 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
    * with more, the run is a value's, so its math run is folded as a value's is
    * (`lessMathInValue`).
    */
-  const OperandRun = node(
+  const OperandRun = noTrivia(continues(
     'OperandRun',
-    noTrivia(sequence(
-      g.MathSum,
-      withCtx((state: LessParseState | undefined) => ({ ...state, valueStop: 'condition' as const }), many(valueContinuation))
-    )),
+    g.MathSum,
+    withCtx((state: LessParseState | undefined) => ({ ...state, valueStop: 'condition' as const }), many(valueContinuation)),
     (children, _fields, _span, _rawChildren, triviaLog, state) => runOperand(valuePieceReducerWithTrivia(
       [lessMathInValue(requireMathSum(children), state), ...children.slice(1)],
       triviaLog,
       state
-    )),
-    { collapse: true }
-  );
+    ))
+  ));
   // Adjacent value pieces are normally separated by authored whitespace, but a
   // Less variable reference may also be glued straight onto the previous piece
   // (`1px@v`, `calc(@w + 2vw)@suffix`). Less treats the glued form as the same
@@ -2730,11 +2715,12 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
    * nested inside a piece of an argument's run (`foo(~(a=b) c)`) never reads
    * its parent's stop.
    */
-  const ValueRun = node(
-    'ValueSequence',
-    noTrivia(sequence(g.valuePiece, many(valueContinuation))),
-    (children, _fields, _span, _rawChildren, triviaLog, state) => valuePieceReducerWithTrivia(children, triviaLog, state)
-  );
+  const valueRunTail = many(valueContinuation);
+  const ValueRun = noTrivia(choice(
+    continues('ValueSequence', g.UnicodeRange, valueRunTail, valueRunNode),
+    continues('ValueSequence', g.MathValue, valueRunTail, valueRunNode),
+    node('ValueSequence', sequence(terminalValuePiece, valueRunTail), valueRunNode)
+  ));
   /**
    * The value run every caller but a call argument reads: `ValueRun`, with any
    * stop it is entered under cleared (see `ValueRun`).
@@ -2748,9 +2734,10 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
    * namespace read (`@t[family]`, `#ns.m()[x]`) is one value piece like any
    * other, so `@t[family], sans-serif` keeps both items.
    */
-  const ValueList = node(
+  const ValueList = continues(
     'ValueList',
-    oneOrMoreSep(g.ValueSequence, commaSeparator),
+    g.ValueSequence,
+    many(sequence(commaSeparator, g.ValueSequence)),
     (children, fields, _span, _rawChildren, triviaLog, state) =>
       commaListWithComments(children, fields, triviaLog, state, isLessValueSlotValue)
   );
@@ -2786,18 +2773,15 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
    * the bare value. `choice(<value> !important, <value>)` would share the value
    * first-set, so every value without a priority would be read twice.
    */
-  const ValueListWithPriority = node(
+  const ValueListWithPriority = sequence(not(literal('{')), continues(
     'ValueListWithPriority',
-    sequence(
-      not(literal('{')),
-      g.ValueList,
-      optional(sequence(literal('!'), g.ImportantToken))
-    ),
+    g.ValueList,
+    optional(sequence(literal('!'), g.ImportantToken)),
     (children) => {
       const value = requireValueSlot(children[0]);
       return children.some(child => isLessTerminalText(child, '!')) ? important(value) : value;
     }
-  );
+  ));
   // Less custom properties retain CSS declaration-value text.  The direct
   // route therefore treats every ordinary byte run — a bare `@name` included —
   // as literal `Any` content, and only the shared strict `@{…}` grammar
@@ -3645,18 +3629,7 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
   // emitted AST and PEG priority are unchanged; a `node()` boundary keeps the
   // lookahead marker from splicing into the statement list.
   const rulesetNotDeclaration = not(regex(/[-\w]+[ \t]*:[ \t\n\r\f]/));
-  const guardedRuleset = node(
-    'GuardedRuleset',
-    sequence(rulesetNotDeclaration, g.RulesetWithExtends),
-    (children) => {
-      const ruleset = children.find(isRuleset);
-      if (ruleset === undefined) {
-        throw new TypeError('Less declaration-guarded ruleset lost its rule.');
-      }
-      return ruleset;
-    },
-    { collapse: true }
-  );
+  const guardedRuleset = sequence(rulesetNotDeclaration, g.RulesetWithExtends);
   const declarationItem = node(
     'DeclarationItem',
     sequence(
@@ -3706,18 +3679,7 @@ const lessGrammarFactory = (g: LessInputRules & SharedSyntax) => {
     },
     { collapse: true }
   );
-  const nestedGuardedRuleset = node(
-    'GuardedRuleset',
-    sequence(rulesetNotDeclaration, g.NestedRulesetWithExtends),
-    (children) => {
-      const ruleset = children.find(isRuleset);
-      if (ruleset === undefined) {
-        throw new TypeError('Less guarded ruleset lost its ruleset fact.');
-      }
-      return ruleset;
-    },
-    { collapse: true }
-  );
+  const nestedGuardedRuleset = sequence(rulesetNotDeclaration, g.NestedRulesetWithExtends);
   const blockItem = choice(atStatement, mixinStatement, g.FunctionStatement, nestedGuardedRuleset, declarationItem, literal(';'));
   // Every braced statement body — a ruleset's, a mixin definition's, an
   // at-rule block's — takes a body-form `&:extend()` after the shared arms

@@ -60,7 +60,7 @@
  * label licenses at a leaf is dropping the TEST — never the capture.
  */
 import {
-  OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_SOURCE_LEAF,
+  OP_CONT, OP_SEED, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_SOURCE_LEAF,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE,
   OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
@@ -128,7 +128,7 @@ function meet(a: SiteLabel, b: SiteLabel): SiteLabel {
  * site resolves to `TOP` through `labelAt`, and the enclosing assembly is
  * unemittable regardless.
  */
-export function reachableSites(code: Int32Array, roots: Iterable<number>): Set<number> {
+export function reachableSites(code: Int32Array, roots: Iterable<number>, strict = false): Set<number> {
   const seen = new Set<number>()
   const stack = [...roots]
   const kids: number[] = []
@@ -137,7 +137,7 @@ export function reachableSites(code: Int32Array, roots: Iterable<number>): Set<n
     if (seen.has(ip)) continue
     seen.add(ip)
     kids.length = 0
-    childSlots(code, ip, kids)
+    if (!strict || code[ip] !== OP_SEED) childSlots(code, ip, kids)
     for (const c of kids) stack.push(c)
   }
   return seen
@@ -284,6 +284,8 @@ export function computeSiteLabels(
   code: Int32Array,
   roots: Iterable<number>,
   hostCst: boolean,
+  /** The assembly runs `OP_CONT`'s decision (not recovery, not a probe). */
+  strict = false,
 ): SiteLabels {
   const labels = new Map<number, SiteLabel>()
   const work: number[] = []
@@ -308,7 +310,12 @@ export function computeSiteLabels(
     const ip = work.pop()!
     const down = transfer(code, ip, labels.get(ip)!, hostCst)
     kids.length = 0
-    childSlots(code, ip, kids)
+    // A strict assembly runs the corner in the parent's collector; otherwise `wrapper`
+    // is the node as written, with the corner in its frame.
+    if (code[ip] === OP_CONT) {
+      if (strict) kids.push(code[ip + 1]!)
+      kids.push(code[ip + 2]!)
+    } else if (code[ip] !== OP_SEED || !strict) childSlots(code, ip, kids)
     for (const c of kids) push(c, down)
   }
 

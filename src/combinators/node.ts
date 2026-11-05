@@ -79,6 +79,8 @@ export type NodeOptions<Tags extends readonly string[] = readonly never[]> = {
   project?: number
   captureTrivia?: boolean
   trailingTrivia?: boolean
+  /** Set by `continues()`: the body is `sequence(corner, tail)` and the frame opens late. */
+  continues?: boolean
   tags?: Tags
   /**
    * Declared positional arity of `build` — the ESCAPE HATCH for a reducer parseman
@@ -205,8 +207,8 @@ export function node<N>(
   if (project !== undefined && (unwrap || collapse)) {
     throw new Error('node() options cannot combine project with unwrap or collapse')
   }
-  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || project !== undefined || captureTrivia || trailingTrivia || buildArity !== undefined || (tags !== undefined && tags.length > 0)
-    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(project !== undefined ? { project } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}), ...(buildArity !== undefined ? { buildArity } : {}), ...(tags !== undefined && tags.length > 0 ? { tags } : {}) }
+  const def: Extract<ParserDef, { tag: 'node' }> = opts?.continues === true || unwrap || collapse || project !== undefined || captureTrivia || trailingTrivia || buildArity !== undefined || (tags !== undefined && tags.length > 0)
+    ? { ...baseDef, ...(opts?.continues === true ? { continues: true } : {}), ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(project !== undefined ? { project } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}), ...(buildArity !== undefined ? { buildArity } : {}), ...(tags !== undefined && tags.length > 0 ? { tags } : {}) }
     : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia

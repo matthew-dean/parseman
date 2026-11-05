@@ -91,7 +91,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
-  OP_COV, OP_GAPGATE, OP_STRICT,
+  OP_COV, OP_GAPGATE, OP_STRICT, OP_CONT, OP_SEED,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
@@ -109,7 +109,8 @@ import {
   EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
-import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
+import { collapseEmpty, holdCorner, lead, pastTrivia, publishSeed, rawEntry, spanLines } from './run-support.ts'
+import { continuationGate } from './continues.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows, newGapSlot } from './gap-gate.ts'
 import { failCleanAnalysis } from './fail-clean.ts'
@@ -133,7 +134,7 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges } from './site-labels.ts'
+import { computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges, TRI_NONE } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -543,7 +544,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const GAP_ROWS = gapRows(code, [...Object.values(prog.rules), ...labelExtraIps])
   const GAP = newGapSlot()
   const closureLabels = computeSiteLabels(
-    code, [...Object.values(prog.rules), ...labelExtraIps], hostCst,
+    code, [...Object.values(prog.rules), ...labelExtraIps], hostCst, !cfg.tolerant && !cfg.probe,
   )
 
   /**
@@ -1845,6 +1846,52 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_EMPTY:
         return (_input, pos) => { EC.e = pos; return '' }
+
+      case OP_SEED:
+        if (cfg.tolerant || cfg.probe) return link(code[ip + 1]!)
+        return (input, _pos, ctx) => publishSeed(EC, ctx, input)
+
+      case OP_CONT: {
+        if (cfg.tolerant || cfg.probe) return link(code[ip + 2]!)
+        const corner = link(code[ip + 1]!)
+        const wrapper = link(code[ip + 2]!)
+        // A tail row with no first test leaves no decision to make here: the wrapper opens.
+        const g = continuationGate(code, code[ip + 3]!)
+        if (g === undefined) return (input, pos, ctx) => {
+          const v = corner(input, pos, ctx)
+          if (v === FAIL) return FAIL
+          holdCorner(EC, ctx, v, pos, EC.e)
+          return wrapper(input, pos, ctx)
+        }
+        // The trivia the wrapper's sequence would scan before the tail.
+        const noGap = closureLabels.at(ip).tri === TRI_NONE
+        const cls = cc[g.cls]!
+        if (g.gapRow < 0) return (input, pos, ctx) => {
+          const v = corner(input, pos, ctx)
+          if (v === FAIL) return FAIL
+          const end = EC.e
+          const at = noGap ? end : pastTrivia(input, end, ctx)
+          if (v !== undefined && at >= 0 && !classHas(cls, lead(input, at))) return v
+          holdCorner(EC, ctx, v, pos, end)
+          return wrapper(input, pos, ctx)
+        }
+        const gapRe = k[code[g.gapRow + 1]!] as RegExp
+        const follow = cc[g.follow]!
+        const other = g.other >= 0 ? cc[g.other]! : undefined
+        return (input, pos, ctx) => {
+          const v = corner(input, pos, ctx)
+          if (v === FAIL) return FAIL
+          const end = EC.e
+          const at = noGap ? end : pastTrivia(input, end, ctx)
+          if (v !== undefined && at >= 0) {
+            gapRe.lastIndex = at
+            const q = gapRe.test(input) ? gapRe.lastIndex : -1
+            if ((q < 0 || !classHas(follow, lead(input, q))) && (other === undefined || !classHas(other, lead(input, at)))) return v
+          }
+          holdCorner(EC, ctx, v, pos, end)
+          return wrapper(input, pos, ctx)
+        }
+      }
 
       /* ── transparent / structural ────────────────────────────────────────── */
 
@@ -4280,7 +4327,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
-        collapseEmpty,
+        collapseEmpty, holdCorner, pastTrivia, publishSeed,
         PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
       )
       emitReached = new Set(pre.reached)
@@ -4365,7 +4412,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
-        collapseEmpty,
+        collapseEmpty, holdCorner, pastTrivia, publishSeed,
         PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
       )
       emitReached = em.reached

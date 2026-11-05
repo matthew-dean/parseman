@@ -17,7 +17,7 @@
  * The same factory builds the package AST route and the public positioned CST
  * route via Parseman's `hostMode`.
  */
-import { balanced, classifiedTrivia, choice, compose, dispatch, endsWith, expect, field, keywords, label, literal, makeWhen, makeWord, many, matches, noTrivia, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek, regex, routed, rules, scanTo, sequence, token, when, withCtx } from 'parseman' with { type: 'macro' };
+import { balanced, classifiedTrivia, choice, compose, continues, dispatch, endsWith, expect, field, keywords, label, literal, makeWhen, makeWord, many, matches, noTrivia, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek, regex, routed, rules, scanTo, sequence, token, transform, when, withCtx } from 'parseman' with { type: 'macro' };
 import type { Combinator } from 'parseman';
 import { cssSyntax } from '../parser-shared/recognition.js';
 import { cssPseudoSyntax } from '../parser-shared/pseudo-consts.js';
@@ -1355,9 +1355,7 @@ const scssFactory = (g: ScssInputRules) => {
    * identifier reduces to the identical `Interpolation` value. A standalone
    * `SassInterpolation` arm after it is therefore unreachable.
    */
-  const ValueAtom = node<ValueNode>(
-    'ValueAtom',
-    choice(
+  const ValueAtom = choice(
       g.Quoted,
       withCtx(state => leaveCalculation(state), g.InterpolatedValue),
       g.VariableReference,
@@ -1365,15 +1363,13 @@ const scssFactory = (g: ScssInputRules) => {
       g.Dimension,
       g.CustomPropertyValue,
       g.UnicodeRange,
-      IdentifierOrFunction,
+      transform(IdentifierOrFunction, pair => pair[1]),
       g.Map,
       g.EmptyList,
       g.Paren,
       g.Square,
       ParentSelector
-    ),
-    children => requireValue(children[0])
-  );
+  ) as Combinator<ValueNode>;
 
   /*
    * Signed numerics are one Dimension leaf. Unary signs only own a variable or
@@ -1381,7 +1377,7 @@ const scssFactory = (g: ScssInputRules) => {
    * The sign may have trailing whitespace (`- $x`, `+ ($x)`), but it must be
    * at the current expression start: `1 -2` is still a space-list boundary.
    */
-  const MathUnary = node<ValueNode>(
+  const MathUnary = choice(node<ValueNode>(
     'MathUnary',
     choice(
 
@@ -1410,13 +1406,9 @@ const scssFactory = (g: ScssInputRules) => {
         regex(/\+(?=[ \t\n\r\f]*[\$(])/),
         optional(space),
         g.ValueAtom
-      )),
-      g.ValueAtom
+      ))
     ),
     (children) => {
-      if (children.length === 1) {
-        return requireValue(children[0]);
-      }
       const sign = requireToken(children[0]).value;
       if (sign.toLowerCase() === 'not') {
         const operand = requireValue(children[children.length - 1]);
@@ -1448,7 +1440,7 @@ const scssFactory = (g: ScssInputRules) => {
           )
         : value;
     }
-  );
+  ), g.ValueAtom) as Combinator<ValueNode>;
 
   /*
    * Parenthesized SCSS arithmetic has the normal product-before-sum precedence,
@@ -1462,50 +1454,42 @@ const scssFactory = (g: ScssInputRules) => {
   const MathProductOperator = node<MathOperatorFact>('MathProductOperator', noTrivia(productOperator), mathOperatorFact);
   const MathTopProductOperator = node<MathOperatorFact>('MathTopProductOperator', noTrivia(topProductOperator), mathOperatorFact);
   const MathSumOperator = node<MathOperatorFact>('MathSumOperator', sumOperator, mathOperatorFact);
-  const MathProduct = node<ValueNode>(
+  const MathProduct = noTrivia(continues<ValueNode>(
     'MathProduct',
-    noTrivia(sequence(
-      g.MathUnary,
-      many(sequence(
-        g.MathProductOperator,
-        g.MathUnary
-      ))
+    g.MathUnary,
+    many(sequence(
+      g.MathProductOperator,
+      g.MathUnary
     )),
     scssFoldOperation
-  );
-  const MathSum = node<ValueNode>(
+  ));
+  const MathSum = noTrivia(continues<ValueNode>(
     'MathSum',
-    noTrivia(sequence(
-      g.MathProduct,
-      many(sequence(
-        g.MathSumOperator,
-        g.MathProduct
-      ))
+    g.MathProduct,
+    many(sequence(
+      g.MathSumOperator,
+      g.MathProduct
     )),
     (children, _fields, span, _rawChildren, _triviaLog, state) => scssSum(children, span, state)
-  );
-  const MathTopProduct = node<ValueNode>(
+  ));
+  const MathTopProduct = noTrivia(continues<ValueNode>(
     'MathTopProduct',
-    noTrivia(sequence(
-      g.MathUnary,
-      many(sequence(
-        g.MathTopProductOperator,
-        g.MathUnary
-      ))
+    g.MathUnary,
+    many(sequence(
+      g.MathTopProductOperator,
+      g.MathUnary
     )),
     scssFoldOperation
-  );
-  const MathTopSum = node<ValueNode>(
+  ));
+  const MathTopSum = noTrivia(continues<ValueNode>(
     'MathTopSum',
-    noTrivia(sequence(
-      g.MathTopProduct,
-      many(sequence(
-        g.MathSumOperator,
-        g.MathTopProduct
-      ))
+    g.MathTopProduct,
+    many(sequence(
+      g.MathSumOperator,
+      g.MathTopProduct
     )),
     (children, _fields, span, _rawChildren, _triviaLog, state) => scssSum(children, span, state)
-  );
+  ));
 
   /*
    * `and` / `or` in VALUE position (§4.5.5). They are NATIVE operators that
@@ -1537,44 +1521,40 @@ const scssFactory = (g: ScssInputRules) => {
     g.LogicalOr,
     children => conditionWord(children)
   );
-  const ValueLogicalAnd = node<ValueNode>(
+  const ValueLogicalAnd = noTrivia(continues<ValueNode>(
     'ValueLogicalAnd',
-    noTrivia(sequence(
-      g.MathTopSum,
-      many(sequence(
-        valueTrivia,
-        choice(
-          {
-            gate: state => isIfTest(state),
-            combinator: ConditionAnd
-          },
-          g.LogicalAnd
-        ),
-        valueTrivia,
-        g.MathTopSum
-      ))
+    g.MathTopSum,
+    many(sequence(
+      valueTrivia,
+      choice(
+        {
+          gate: state => isIfTest(state),
+          combinator: ConditionAnd
+        },
+        g.LogicalAnd
+      ),
+      valueTrivia,
+      g.MathTopSum
     )),
     children => foldLogicalOperation(children)
-  );
-  const ValueLogicalOr = node<ValueNode>(
+  ));
+  const ValueLogicalOr = noTrivia(continues<ValueNode>(
     'ValueLogicalOr',
-    noTrivia(sequence(
-      g.ValueLogicalAnd,
-      many(sequence(
-        valueTrivia,
-        choice(
-          {
-            gate: state => isIfTest(state),
-            combinator: ConditionOr
-          },
-          g.LogicalOr
-        ),
-        valueTrivia,
-        g.ValueLogicalAnd
-      ))
+    g.ValueLogicalAnd,
+    many(sequence(
+      valueTrivia,
+      choice(
+        {
+          gate: state => isIfTest(state),
+          combinator: ConditionOr
+        },
+        g.LogicalOr
+      ),
+      valueTrivia,
+      g.ValueLogicalAnd
     )),
     children => foldLogicalOperation(children)
-  );
+  ));
 
   /**
    * A delim SCSS gives no meaning, as the component css builds for it: the
@@ -1639,14 +1619,12 @@ const scssFactory = (g: ScssInputRules) => {
     ),
     children => scssValueTail(children)
   );
-  const ValueTerm = node<ValueSlot>(
+  const ValueTerm = noTrivia(continues<ValueSlot>(
     'ValueTerm',
-    noTrivia(sequence(
-      g.ValueLogicalOr,
-      many(ValueTail)
-    )),
+    g.ValueLogicalOr,
+    many(ValueTail),
     scssSlashGroupedTerm
-  );
+  ));
 
   /*
    * ONE definition of what a call argument is, referenced by both argument
@@ -1716,18 +1694,15 @@ const scssFactory = (g: ScssInputRules) => {
    * component values (ledger N18). Labelled as the css rung it is; a lone space
    * list is that list, with no node of its own.
    */
-  const valueSequence = node<ValueSlot>(
+  const valueSequence = noTrivia(continues<ValueSlot>(
     'ValueSequence',
-    noTrivia(sequence(
-      g.ValueTerm,
-      many(sequence(
-        gluedPunctuationDelim,
-        g.ValueTerm
-      ))
+    g.ValueTerm,
+    many(sequence(
+      gluedPunctuationDelim,
+      g.ValueTerm
     )),
-    children => gluedRun(children),
-    { collapse: true }
-  );
+    children => gluedRun(children)
+  ));
 
   /**
    * A `/` or `*` with nothing on its left: a punctuation-led value (ledger
@@ -1801,12 +1776,10 @@ const scssFactory = (g: ScssInputRules) => {
       return { separator, value: requireScssCallArg(value) };
     }
   );
-  const Value = node<ValueSlot>(
+  const Value = continues<ValueSlot>(
     'Value',
-    sequence(
-      valueSequence,
-      many(g.ValuePair)
-    ),
+    valueSequence,
+    many(g.ValuePair),
     (children) => {
       const first = requireValueSlot(children[0]);
       if (children.length === 1) {
@@ -4815,23 +4788,21 @@ const scssFactory = (g: ScssInputRules) => {
     literal('+'),
     literal('~')
   );
-  const RelativeSelector = node<SelectorBranch>(
-    'RelativeSelector',
-    parser(
-      { trivia: whitespace },
+  const RelativeSelector = parser(
+    { trivia: whitespace },
+    node<SelectorBranch>(
+      'RelativeSelector',
       sequence(
         optional(scssRelativeSelectorCombinator),
         g.ComplexSelector
-      )
-    ),
-    (children) => {
-      const branch = children.find(isSelectorBranch)!;
-      if (children.length === 1) {
-        return branch;
-      }
-      const lead = scssRelativeCombinator(children[0]);
-      return relativeSelector(lead, branchSegments(branch));
-    }
+      ),
+      (children) => {
+        const branch = children.find(isSelectorBranch)!;
+        const lead = scssRelativeCombinator(children[0]);
+        return relativeSelector(lead, branchSegments(branch));
+      },
+      { collapse: true }
+    )
   );
 
   /*
@@ -5078,11 +5049,7 @@ const scssFactory = (g: ScssInputRules) => {
     when(endsWith('('), GenericFunctionPseudo),
     otherwise(GenericBarePseudo)
   );
-  const PseudoSelector = node<SimpleToken>(
-    'PseudoSelector',
-    PseudoSelectorDispatch,
-    children => children.find(isSimpleToken)!
-  );
+  const PseudoSelector = PseudoSelectorDispatch as Combinator<SimpleToken>;
   const CompoundSelector = node<SelectorTerm>(
     'CompoundSelector',
     noTrivia(sequence(
@@ -5117,15 +5084,13 @@ const scssFactory = (g: ScssInputRules) => {
    * converges to CSS's `ComplexSelector` shape. `|` is not a combinator here:
    * it is a namespace prefix bound into a single type selector.
    */
-  const ComplexSelector = node<SelectorBranch>(
+  const ComplexSelector = continues<SelectorBranch>(
     'ComplexSelector',
-    sequence(
-      g.CompoundSelector,
-      many(sequence(
-        optional(scssCombinator),
-        g.CompoundSelector
-      ))
-    ),
+    g.CompoundSelector,
+    many(sequence(
+      optional(scssCombinator),
+      g.CompoundSelector
+    )),
     (children) => {
       const segments: Array<{ combinator?: ScssSegmentCombinator; term: SelectorTerm }> = [];
       let combinator: ScssSegmentCombinator = ' ';

@@ -25,7 +25,7 @@
  * The same factory builds the package AST route and the public positioned CST
  * route via Parseman's `hostMode`.
  */
-import { attempt, balanced, choice, classifiedTrivia, compose, dispatch, endsWith, expect, field, keywords, literal, makeWhen, makeWord, many, noTrivia, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek, regex, routed, rules, scanTo, sequence, token, when, withCtx, word } from 'parseman' with { type: 'macro' };
+import { attempt, balanced, choice, classifiedTrivia, compose, continues, dispatch, endsWith, expect, field, keywords, literal, makeWhen, makeWord, many, noTrivia, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek, regex, routed, rules, scanTo, sequence, token, when, withCtx, word, transform } from 'parseman' with { type: 'macro' };
 import type { Combinator } from 'parseman';
 import { unknownAtRuleRecognition } from '../parser-shared/unknown-at-rule.js';
 import { cssPseudoSyntax } from '../parser-shared/pseudo-consts.js';
@@ -2550,16 +2550,16 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
    * (`type(<length>)`, the `attr()` type), except a `*`, which has no left
    * operand there.
    */
-  const CallComponent = node<ValueSlot>(
-    'CallComponent',
-    choice(
-      g.ValueSpaceGroup,
+  const CallComponent = choice(
+    g.ValueSpaceGroup,
+    node<ValueSlot>(
+      'CallComponent',
       noTrivia(sequence(
         punctuationDelim,
         g.ValueSpaceGroup
-      ))
-    ),
-    callComponentFrom
+      )),
+      callComponentFrom
+    )
   );
 
   /*
@@ -3454,7 +3454,7 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
     g.InterpolatedValue,
     g.CustomPropertyValue,
     g.UnicodeRange,
-    g.IdentifierOrFunction,
+    transform(g.IdentifierOrFunction, pair => pair[1]),
     g.Quoted,
     g.Color,
     g.Dimension,
@@ -3472,14 +3472,10 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
       combinator: g.DollarBraceValue
     }
   );
-  const ValueAtom = node<ValueNode>(
-    'ValueAtom',
-    choice(
-      g.Collection,
-      g.CurlyList,
-      nonBlockValueAtom
-    ),
-    children => requireValueNode(children[0])
+  const ValueAtom = choice(
+    g.Collection,
+    g.CurlyList,
+    nonBlockValueAtom
   );
 
   /*
@@ -3489,25 +3485,18 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
    * is loosest, then whitespace, then slash, so `font: 12px/1.5 sans-serif` is
    * `[12px / 1.5, sans-serif]`. `/` still never becomes unwrapped arithmetic.
    */
-  const ValueTerm = node<ValueSlot>(
+  const ValueTerm = noTrivia(continues<ValueSlot, 'ValueTerm'>(
     'ValueTerm',
-    noTrivia(sequence(
-      g.ValueAtom,
-      many(sequence(
-        valueSlashBoundary,
-        nonBlockValueAtom
-      ))
+    g.ValueAtom,
+    many(sequence(
+      valueSlashBoundary,
+      nonBlockValueAtom
     )),
-    (children) => {
-      const values = children.filter(isJessValueSlotValue);
-      return values.length === 1
-        ? values[0]!
-        : list(
-            values,
-            '/'
-          );
-    }
-  );
+    children => list(
+      children.filter(isJessValueSlotValue),
+      '/'
+    )
+  ));
 
   /**
    * A `*`, a delim outside `$( … )` like the others (`a * b`, `2*[3]`), but its
@@ -3576,10 +3565,9 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
    * brace block may only be a value's FIRST atom (see `nonBlockValueAtom`), so
    * a continuation term may not open one.
    */
-  const ValueSpaceGroup = node<ValueSlot>(
+  const ValueSpaceGroup = noTrivia(continues<ValueSlot, 'ValueSpaceGroup'>(
     'ValueSpaceGroup',
-    noTrivia(sequence(
-      g.ValueTerm,
+    g.ValueTerm,
       many(choice(
         sequence(
           field(
@@ -3614,20 +3602,18 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
           )
         ),
         gluedRunItem
-      ))
-    )),
+      )),
     children => componentRun(children, isJessValueSlotValue)
-  );
+  ));
 
   /**
    * The same run inside a paren group, where a padded `>`, `~` or `:` is a
    * delim (see `groupPaddedDelimRun`): a run css builds is a run here too, so
    * its delims are read as css's are (ledger P48).
    */
-  const groupSpaceGroup = node<ValueSlot>(
+  const groupSpaceGroup = noTrivia(continues<ValueSlot, 'ValueSpaceGroup'>(
     'ValueSpaceGroup',
-    noTrivia(sequence(
-      g.ValueTerm,
+    g.ValueTerm,
       many(choice(
         sequence(
           field(
@@ -3650,10 +3636,9 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
           )
         ),
         gluedRunItem
-      ))
-    )),
+      )),
     children => componentRun(children, isJessValueSlotValue)
-  );
+  ));
 
   /**
    * A `/` or `*` with nothing on its left: a punctuation-led value (ledger
@@ -3679,16 +3664,14 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
   );
 
   /** A comma list of runs. */
-  const Value = node<ValueSlot>(
+  const Value = continues<ValueSlot, 'Value'>(
     'Value',
-    sequence(
-      g.ValueSpaceGroup,
-      many(sequence(
-        literal(','),
-        optional(rawWhitespace),
-        g.ValueSpaceGroup
-      ))
-    ),
+    g.ValueSpaceGroup,
+    many(sequence(
+      literal(','),
+      optional(rawWhitespace),
+      g.ValueSpaceGroup
+    )),
     commaList
   );
 
@@ -3699,36 +3682,32 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
    * `var()` fallback's leading `/` is css's to accept (css-variables-1 §2).
    * Valid input never reaches the separator arms.
    */
-  const statementValue = node<ValueSlot>(
+  const statementValue = continues<ValueSlot, 'Value'>(
     'Value',
-    sequence(
+    choice(
+      g.ValueSpaceGroup,
+      LeadingSeparatorValue
+    ),
+    many(sequence(
+      literal(','),
+      optional(rawWhitespace),
       choice(
         g.ValueSpaceGroup,
         LeadingSeparatorValue
-      ),
-      many(sequence(
-        literal(','),
-        optional(rawWhitespace),
-        choice(
-          g.ValueSpaceGroup,
-          LeadingSeparatorValue
-        )
-      ))
-    ),
+      )
+    )),
     commaList
   );
 
   /** A paren group's comma list of `groupSpaceGroup` runs. */
-  const groupValue = node<ValueSlot>(
+  const groupValue = continues<ValueSlot, 'Value'>(
     'Value',
-    sequence(
-      groupSpaceGroup,
-      many(sequence(
-        literal(','),
-        optional(regex(/[ \t\n\r\f]+/)),
-        groupSpaceGroup
-      ))
-    ),
+    groupSpaceGroup,
+    many(sequence(
+      literal(','),
+      optional(regex(/[ \t\n\r\f]+/)),
+      groupSpaceGroup
+    )),
     commaList
   );
 
@@ -6219,25 +6198,27 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
     )
   );
 
-  const CompoundSelector = node<SelectorTerm>(
-    'CompoundSelector',
-    noTrivia(parser(
-      { trivia: compoundTrivia },
-      oneOrMore(choice(
-        parser(
-          { trivia: whitespace },
-          g.AttributeSelector
-        ),
-        g.PseudoSelector,
-        g.InterpolatedParentSuffix,
-        g.InterpolatedSimple,
-        g.Parent,
-        g.NamespaceTypeSelector,
-        g.BasicSelector
-      ))
-    )),
-    reduceCompound
+  const compoundItem = choice(
+    parser(
+      { trivia: whitespace },
+      g.AttributeSelector
+    ),
+    g.PseudoSelector,
+    g.InterpolatedParentSuffix,
+    g.InterpolatedSimple,
+    g.Parent,
+    g.NamespaceTypeSelector,
+    g.BasicSelector
   );
+  const CompoundSelector = noTrivia(parser(
+    { trivia: compoundTrivia },
+    continues<SelectorTerm, 'CompoundSelector'>(
+      'CompoundSelector',
+      compoundItem,
+      many(compoundItem),
+      reduceCompound
+    )
+  ));
 
   /*
    * The separator between compound selectors may be an explicit combinator
@@ -6246,15 +6227,13 @@ const jessFactory = (g: JessRules & SharedSyntax) => {
    * base does — there is no `ComplexTail` wrapper node, so the concrete tree
    * converges to CSS's `ComplexSelector` shape.
    */
-  const ComplexSelector = node<SelectorBranch>(
+  const ComplexSelector = continues<SelectorBranch, 'ComplexSelector'>(
     'ComplexSelector',
-    sequence(
-      g.CompoundSelector,
-      many(sequence(
-        optional(selectorCombinator),
-        g.CompoundSelector
-      ))
-    ),
+    g.CompoundSelector,
+    many(sequence(
+      optional(selectorCombinator),
+      g.CompoundSelector
+    )),
     (children) => {
       const segments: Array<{ combinator?: JessComplexTail['combinator']; term: SelectorTerm }> = [];
       let combinator: JessComplexTail['combinator'] = ' ';
