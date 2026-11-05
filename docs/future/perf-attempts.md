@@ -566,40 +566,92 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   into a frame opened in the same function. Nothing is marked in a grammar. Recovery, probes
   and the reference driver run the node as written. A `transform()` or `dispatch()` corner, a
   required tail that only reads as nullable, and a trivia with no scanner stay as written.
-  - The engine alone changes nothing in the vendored grammars: no vendored level has this
-    shape. Results, errors, expected sets and spans match `main` on every sweep input, strict
-    and recovering, AST: CSS 8,737, `.jess` 8,883, Less 17,073, SCSS 23,163. Calls per parse +2,
-    once. Sizes within 0.14% gzip. Marginal instructions, 3 reps, N 5 to 25: Less -0.34%,
-    bootstrap -0.33%, SCSS +0.42%, `.jess` +0.62%, all inside noise. `benchmark.css` AST +1.99%
-    over 9 reps with a 6% spread; `--jitless` says +0.08%, so that one is the JIT, not the path.
+  - No vendored site lowers, so the vendored grammars test for collateral damage, not for
+    the late path. The evidence for that path is the synthetic differential
+    (`check:differentials --only=late-frame`, `test/unit/table-late-frame.test.ts`) and the
+    overlay below. Against `main` @ `80732b81`, results, errors, expected sets and spans match
+    on every sweep input, strict and recovering, AST and CST: CSS 8,740, `.jess` 8,880, Less
+    17,070, SCSS 23,194 (inputs and core from Jess `fe004e1b5`). A partial parse compares only
+    what it reached, and much of the sweep is partial. Strict AST, full / partial / failed /
+    threw:
+
+    | | Full | Partial | Failed | Threw | Corpus files, full / partial |
+    | --- | --- | --- | --- | --- | --- |
+    | CSS | 5,166 | 2,214 | 334 | 1,026 | 35 / 41 |
+    | `.jess` | 3,513 | 4,140 | 1,227 | 0 | 21 / 3 |
+    | Less | 11,566 | 3,730 | 991 | 783 | 267 / 20 |
+    | SCSS | 10,559 | 7,933 | 4,537 | 165 | 1,807 / 214 |
+
+    Recovery is partial far more often: strict and tolerant tallies print on every sweep.
+  - Engine cost: calls +0 on the first parse, which holds the one assembly, AST and CST, on all
+    five files and `chunk.jess`. Sizes within 0.08% gzip. Marginal instructions, 7 reps, N 5 to 25, core
+    `fe004e1b5`, with A/A: SCSS -0.03% (+0.02%), Less +0.32% (+0.14%), bootstrap +0.16% (+0.10%),
+    `.jess` -0.05% (-0.22%). `benchmark.css`, 15 reps: -0.89% (A/A +0.15%) at N 5 to 25, +0.40%
+    (A/A +0.17%) at N 5 to 45, -0.04% (A/A -0.05%) at N 45 to 145, and -0.05% (A/A +0.04%) under
+    `--jitless`, used as a diagnostic. All neutral.
   - The win needs grammars in that shape, so it is measured as an overlay and lands as Jess
-    grammar changes with their CST readers. Marginal instructions against `main` @ `24ec89d8`,
-    default runtime and budgets, interleaved, A/A in every row under 2%:
+    grammar changes with their CST readers. Marginal instructions and first-parse calls against
+    `main` @ `80732b81`, default runtime and budgets, interleaved, 7 reps, N 5 to 25, core
+    `fe004e1b5`:
 
-    | | AST | CST |
+    | | AST (A/A) | CST (A/A) | Calls, AST | Calls, CST |
+    | --- | --- | --- | --- | --- |
+    | `gen-workload.scss` | -19.74% (+0.02%) | -25.73% (-0.43%) | -18.25% | -18.53% |
+    | `benchmark.less` | -4.91% (+0.14%) | -17.83% (+0.21%) | -8.72% | -10.29% |
+    | `bootstrap4-all.less` | -4.09% (+0.10%) | -12.93% (+0.66%) | -7.30% | -8.91% |
+    | `jess-x8.jess` | -6.18% (-0.22%) | -7.22% (+0.72%) | -6.57% | -7.80% |
+    | `benchmark.css` | -0.75% (+0.67%) | -9.73% (+0.09%) | -1.57% | -9.22% |
+
+  - `benchmark.css` AST depends on which Jess core is linked, more than on anything here. Same
+    legs, `main` @ `80732b81`, 15 reps except the last row, A/A in brackets:
+
+    | | Core `fe004e1b5` | Core `cea50fa88` |
     | --- | --- | --- |
-    | `gen-workload.scss` | -19.67% | -25.98% |
-    | `benchmark.less` | -5.46% | -16.09% |
-    | `bootstrap4-all.less` | -4.77% | -12.45% |
-    | `jess-x8.jess` | -5.77% | -8.88% |
-    | `benchmark.css` | +4.12% | -11.87% |
+    | Overlay, N 5 to 25 | -0.82% (+0.15%) | +2.54% (-0.58%) |
+    | Overlay, N 5 to 45 | -1.49% (+0.17%) | +1.71% (-0.27%) |
+    | Overlay, N 45 to 145, 9 reps | -4.70% (-0.05%) | -0.93% (-0.61%) |
+    | Overlay, `--jitless`, 3 reps | -5.22% (+0.04%) | -5.15% (-0.08%) |
+    | Tip, N 5 to 25 | -0.89% (+0.15%) | +0.89% (-0.58%) |
+    | Tip, N 5 to 45 | +0.40% (+0.17%) | +2.25% (-0.27%) |
+    | Tip, N 45 to 145, 9 reps | -0.04% (-0.05%) | +5.59% (-0.61%) |
+    | Tip, `--jitless`, 3 reps | -0.05% (+0.04%) | -0.09% (-0.08%) |
 
-    Calls per parse: SCSS -18.34% and -18.53%, Less -8.76% and -10.29%, bootstrap -7.34% and
-    -8.91%, `.jess` -6.65% and -7.80%, CSS -1.58% and -9.22%. Strict and recovering results, on
-    AST and on CST leaves and trivia, match `main` on the sweep inputs. In a CST, wrappers go, and
-    kept nodes keep their spans in CSS and SCSS. Three exceptions: Less `ValueListWithPriority`
-    starts after its leading trivia (50 inputs), Less `MathValue` starts before a comment it used to
-    start after (`a=/*c*/b`, 40 inputs), and `.jess` gains a `ValueAtom` on a slash's right operand
-    (70 inputs). Under `tolerant` the AST reducers throw on most inputs before and after (Less
-    15,724), so CST is the recovery coverage that counts. Less CST recovery ran with a 5 s limit per
-    parse: 7 inputs stop on both sides, so they were not compared. That cost is on `main` too:
-    recovery grows about threefold per line on `.units-extended`-style declaration runs.
-  - `a.x b.y,c.z d.w{e:f}` x4000 through CSS AST: calls 3,117,937 to 3,565,924, +14.37%, on
-    the same grammar and engine that give `a.x{...}` -9.56%. That is selection, not the hit path:
-    with one selection, all closure -3.45% and all emitted +0.007%. `main` sits on a cliff here:
-    an `assemblyBudget` of 0.98 costs it +13.3%, and the overlay needs 1.5 (27% more bytes) to
-    climb back. So CSS AST does not pay until selection stops being a lottery, by corpus profile
-    or otherwise. Less -4.03% and SCSS -5.33% on the same input.
+    Interpreted cost is the same on both cores, while the older core's JIT rows spread 4% to
+    13% across reps against under 1% to 3.5% on the newer one. Earlier figures of +4.12% for the
+    overlay and +1.99% for the tip came from 3 and 9 reps on `cea50fa88`, the first on an earlier
+    conversion. Why the JIT differs was not isolated. Use `fe004e1b5` or later, and name the core
+    with the number.
+  - Strict and recovering results on the overlay match `main`: AST whole, CST by leaves and
+    trivia. Every CST node was also compared by a throwaway script, with single-child chains erased
+    and each node's type and span kept. In CSS and SCSS the only change is lost wrappers. Three exceptions, each the
+    whole of what differs, strict and tolerant inputs in brackets:
+    - Less `ValueListWithPriority` starts after its leading comment (50, 8): `b:/*c*/1 !important;`
+      is 2-19 on `main`, 7-19 here.
+    - Less `MathValue` starts before the comment or space it used to start after (40, 0): `a=/*c*/b`,
+      `a= b` and `~/*c*/(a=b)`.
+    - `.jess` gains a `ValueAtom` on a slash's right operand (70, 9): `a{b:a / b;}`.
+
+    They belong to the Jess grammar change, which fixes or accepts them. Under `tolerant` the
+    AST reducers throw on most Less inputs before and after (15,720), so CST is the recovery
+    coverage that counts. Less CST recovery ran with a 5 s limit per parse: 7 inputs stop on both
+    sides, so they were not compared. That cost is on `main` too: recovery grows about threefold
+    per line on `.units-extended`-style declaration runs.
+  - `a.x b.y,c.z d.w{e:f}` x4000 through CSS AST, against `main`, 9 reps, N 5 to 25, core
+    `fe004e1b5`: calls +14.13%, instructions +4.48% (A/A -0.23%), on the same grammar and engine
+    that give `a.x{...}` fewer calls. That is selection, not the hit path. With one selection,
+    all closure is calls -3.07%, instructions -2.36% (A/A -0.39%), and all emitted is calls -2.84%,
+    instructions -2.79% (A/A -0.13%). An earlier +0.007% measured an older, wider conversion. `main`
+    sits on a cliff here: an `assemblyBudget` of 0.98 costs it calls +13.13%, instructions +6.26%.
+    Overlay budgets, against `main` at 1:
+
+    | Budget | Bytes | Calls | Instructions |
+    | --- | --- | --- | --- |
+    | 1.05 (equal bytes) | 422,034, -0.01% | +11.10% | +3.56% |
+    | 1.3 | 487,319, +15.46% | -2.55% | -3.18% |
+    | 1.5 | 535,607, +26.90% | -3.70% | -4.14% |
+
+    So CSS AST does not pay until selection stops being a lottery, by corpus profile or
+    otherwise.
   - What stopped paying. CSS `CompoundSelector`: a hit costs more than the `oneOrMore` it
     replaces. `ComplexSelector` and CSS `ValueList`: their trivia is unknown at the site, so
     they cannot decide. `RelativeSelector`: its corner is optional. Less `ValueList` written
@@ -612,6 +664,8 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     changes recovery: it is its own change, with its own sweep. `attempt` also falls to the
     nullable default; no late frame reads it, because a tail needs a repeat or optional row.
   - Sweep inputs and legs: `bench/jess/sweep-inputs.mjs`, `build-leg.mts`, `leg-sweep.mjs`.
+    `leg-sweep` is not in `check:differentials`: a run needs two full builds and minutes of
+    parsing.
     `tolerant-sweep.ts` loads grammars at runtime, which `compose()` now refuses for a
     macro-lowered base, so it stops on Less and `.jess` on `main` too.
 
