@@ -2,7 +2,8 @@ import { scanRefs } from './program.ts'
 import { regexFirstTwo } from '../regex/first-set.ts'
 import { factorPrefixArms, factorSharedEnds, factoredChoices } from './factor-choice.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union, winnerForRef, type RefResolver } from '../combinators/first-set.ts'
+import { classifyFinalChoice, empty, firstSetOf, followOfTerm, intersects, matchesEmpty, union, winnerForRef, type RefResolver } from '../combinators/first-set.ts'
+import { FOLLOW_ANY, FOLLOW_INHERIT, followAndInherited } from '../recovery/scan.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
@@ -712,23 +713,15 @@ class Encoder {
   }
 
   /**
-   * The class of the follow set of term `i` in a sequence — the sync sentinel a
-   * list nested in that term resyncs to, INFERRED from structure exactly as
-   * `sequence()` (combinators/sequence.ts:58) and the source
-   * lowering's `emitSeqValues` infer it: the union of every LATER term's first
-   * set, not merely up to the first non-nullable one, so a mandatory middle term
-   * cannot hide a later close. −1 where there is no usable sentinel, which is the
-   * same set of cases `firstSetSentinel` answers `null` for.
+   * The encoded follow set of term `i` in a sequence: the sync point a list nested in
+   * that term resyncs to, inferred from structure as `sequence()` does
+   * (`followOfTerm`). The slot's forms are in `recovery/scan.ts`.
    */
   private followClass(parsers: readonly Combinator<unknown>[], i: number): number {
-    let fs: FirstSet = { kind: 'empty' }
-    const rr = this.refResolver()
-    for (let j = i + 1; j < parsers.length; j++) {
-      // As the interpreter's `followSentinels` derive them (`sequence.ts`): with no
-      // trivia, whatever scope the sequence runs in.
-      fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false))
-    }
-    return this.charClass(fs)
+    const { first, open } = followOfTerm(parsers, i, this.refResolver())
+    const cls = this.charClass(first)
+    if (cls < 0) return first.kind === 'empty' ? FOLLOW_INHERIT : FOLLOW_ANY
+    return open ? followAndInherited(cls) : cls
   }
 
   private constant(v: unknown): number {

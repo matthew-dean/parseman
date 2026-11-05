@@ -2,7 +2,8 @@ import type {
   Combinator, ParseContext, ParseResult, ParserMeta, FirstSet,
   AutoNotCheck, CharRange, ChoiceStrategy, GatedArm,
 } from '../types.ts'
-import { union, intersects, matchesEmpty } from './first-set.ts'
+import { firstSetOf, union, intersects, matchesEmpty } from './first-set.ts'
+import { firstSetSentinel, matchesAt } from '../recovery/scan.ts'
 import { deriveExpected } from './expect.ts'
 import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
 import { scalarOf } from './scalar.ts'
@@ -104,6 +105,31 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
     return ~pos
   }
 
+  // An arm a later arm could still take over from runs as a strict parse would: its
+  // failure is an answer, not damage, and a list inside it may not recover.
+  let armStarts: (Combinator<null> | null)[] | undefined
+  const laterArmMayStart = (i: number, input: string, pos: number, ctx: ParseContext): boolean => {
+    // Derived here, not from `_meta`: a rule's reference has no first set until it's resolved.
+    armStarts ??= parsers.map(arm => matchesEmpty(arm) ? null : firstSetSentinel(firstSetOf(arm, new Set(), undefined, undefined, false)))
+    for (let j = i + 1; j < parsers.length; j++) {
+      if (gates[j] && !gates[j]!(ctx.state)) continue
+      const start = armStarts[j]
+      if (start === null || start === undefined || matchesAt(start, input, pos, ctx)) return true
+    }
+    return false
+  }
+  const tolerantArms = parsers.map((arm, i) => ({
+    parse(input: string, pos: number, ctx: ParseContext): ParseResult<unknown> {
+      if (ctx._tolerant !== true || !laterArmMayStart(i, input, pos, ctx)) return arm.parse(input, pos, ctx)
+      ctx._tolerant = undefined
+      const result = arm.parse(input, pos, ctx)
+      ctx._tolerant = true
+      return result
+    },
+  }))
+  // The two strategies below are their own paths, so the ordinary path tests only this.
+  const firstMatch = strategy?.tag !== 'greedyClassify' && strategy?.tag !== 'literalsLongestFirst'
+
   return {
     _tag: 'choice',
     _meta: meta,
@@ -164,6 +190,41 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
         return { ok: false, expected: [...scalarExpected], span: { start: pos, end: pos } }
       }
 
+      // ── firstMatch (+ gated arms): try each arm in order, skipping gated-off arms ──
+      if (firstMatch) {
+        const arms = ctx._tolerant === true ? tolerantArms : parsers
+        for (let i = 0; i < arms.length; i++) {
+          if (gates[i] && !gates[i]!(ctx.state)) continue   // gate blocks this arm
+          // Save leaf-array lengths so a failed/rejected arm can be rolled back.
+          const mark = saveTriviaMark(ctx)
+          // A rejected arm takes no columns of a tab: `lines()` reads `columns()`'s split mark.
+          const split = ctx._columnsSplit
+          const result = arms[i]!.parse(input, pos, ctx)
+          if (!result.ok) {
+            rollbackTrivia(ctx, mark)
+            ctx._columnsSplit = split
+            const at = result.span.start
+            if (at > expectedAt) { expectedAt = at; expected.length = 0 }
+            if (at === expectedAt) expected.push(...result.expected)
+            if (result.committed) return { ok: false, expected, span: result.span, committed: true }
+            continue
+          }
+          const checks = autoNot[i]
+          if (checks && autoNotFires(input, result.span.end, checks)) {
+            rollbackTrivia(ctx, mark)
+            continue
+          }
+          return result as ParseResult<UnionArms<T>>
+        }
+        // A nested gated choice can decline every arm after an enclosing arm has
+        // already advanced. Do not let that empty dynamic set erase both the
+        // shallower arms and the choice's own static opener contract.
+        if (expected.length === 0) {
+          for (const parser of parsers) expected.push(...deriveExpected(parser))
+        }
+        return { ok: false, expected, span: { start: pos, end: pos } }
+      }
+
       // ── greedyClassify: run one regex, classify by string equality ─────────
       //    One parse call total. No backtracking.
       if (strategy?.tag === 'greedyClassify') {
@@ -181,44 +242,10 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       }
 
       // ── literalsLongestFirst: sorted descending by length, no backtracking ─
-      if (strategy?.tag === 'literalsLongestFirst') {
-        for (const p of sortedParsers!) {
-          const r = p.parse(input, pos, ctx)
-          if (r.ok) return r as ParseResult<UnionArms<T>>
-          expected.push(...r.expected)
-        }
-        return { ok: false, expected, span: { start: pos, end: pos } }
-      }
-
-      // ── firstMatch (+ gated arms): try each arm in order, skipping gated-off arms ──
-      for (let i = 0; i < parsers.length; i++) {
-        if (gates[i] && !gates[i]!(ctx.state)) continue   // gate blocks this arm
-        // Save leaf-array lengths so a failed/rejected arm can be rolled back.
-        const mark = saveTriviaMark(ctx)
-        // A rejected arm takes no columns of a tab: `lines()` reads `columns()`'s split mark.
-        const split = ctx._columnsSplit
-        const result = parsers[i]!.parse(input, pos, ctx)
-        if (!result.ok) {
-          rollbackTrivia(ctx, mark)
-          ctx._columnsSplit = split
-          const at = result.span.start
-          if (at > expectedAt) { expectedAt = at; expected.length = 0 }
-          if (at === expectedAt) expected.push(...result.expected)
-          if (result.committed) return { ok: false, expected, span: result.span, committed: true }
-          continue
-        }
-        const checks = autoNot[i]
-        if (checks && autoNotFires(input, result.span.end, checks)) {
-          rollbackTrivia(ctx, mark)
-          continue
-        }
-        return result as ParseResult<UnionArms<T>>
-      }
-      // A nested gated choice can decline every arm after an enclosing arm has
-      // already advanced. Do not let that empty dynamic set erase both the
-      // shallower arms and the choice's own static opener contract.
-      if (expected.length === 0) {
-        for (const parser of parsers) expected.push(...deriveExpected(parser))
+      for (const p of sortedParsers!) {
+        const r = p.parse(input, pos, ctx)
+        if (r.ok) return r as ParseResult<UnionArms<T>>
+        expected.push(...r.expected)
       }
       return { ok: false, expected, span: { start: pos, end: pos } }
     },

@@ -85,7 +85,8 @@ annotate anything:
 - `sepBy(elem, sep)` knows its **separator** — the natural per-element resync token.
 - A list inside `sequence(open, …, close)` learns the **enclosing delimiter**: the
   `sequence` publishes the first set of its following terms as the sync point while it
-  parses each term, so the nested list resyncs to `close`.
+  parses each term, so the nested list resyncs to `close`. When every later term can match
+  nothing, what the enclosing construct reads can come next too, so that's part of the set.
 
 That covers the block-body and declaration-list shapes an editor cares about, with the
 grammar written exactly as it would be for strict parsing:
@@ -116,6 +117,10 @@ entirely outside the grammar. See [Editor / language-server integration](./edito
 
 ### Guarantees
 
+- **A document that parses under strict is clean under tolerant:** no errors, and the
+  same tree. A list only recovers once nothing else can read the input. While a later
+  choice arm can start at the same place, an `optional` can stand aside, the list can end
+  there, or the parse is inside `not`, `peek` or `token`, a failure stays a plain failure.
 - **The span covers only the skipped text**, never the sync token.
 - **A missing element between two separators** (`{a:1;;b}`) comes back as a zero-width
   `ParseError`; the loop then consumes the separator, so a zero-width failure can never

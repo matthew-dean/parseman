@@ -5,6 +5,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A document that parses under strict now gives the same tree and no errors under
+  `tolerant: true`.** A list could read the token after it as junk, skip it, and report an
+  error on valid input, or send a grammar's reducer a recovered child it couldn't read. It
+  now recovers only once nothing else can read the input. This also removes tolerant parse
+  time that doubled per line on valid Less. Printed tables change in value only, by 128 to
+  212 bytes on Jess's grammars; strict parses never read those words.
 - **`assemblyProfile.scope` lets a grammar whose reducers or gates read imported helpers
   use a measured ranking.** Callback source runs at build time with no module around it,
   so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for

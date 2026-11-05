@@ -1,11 +1,11 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseFail } from '../types.ts'
-import { sequenceFirstSet, firstSetOf, matchesEmpty, union } from './first-set.ts'
+import { followOfTerm, matchesEmpty, sequenceFirstSet } from './first-set.ts'
 import {
   advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt,
   scanTriviaCompact,
 } from './trivia-skip.ts'
 import { cstTlLen } from '../cst/capture-buffer.ts'
-import { firstSetSentinel } from '../recovery/scan.ts'
+import { ANY_SYNC, firstSetSentinel, orSentinel } from '../recovery/scan.ts'
 import { adjacencyFail, adjacencyOf, holdsAdjacency, type AdjacencyDef } from './adjacency.ts'
 import { scalarOf } from './scalar.ts'
 import { LEAD, leadsTrivia } from './field-trivia.ts'
@@ -96,7 +96,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
   }
 
   // Recovery follow sets are derived only when the general family runs tolerantly.
-  let followSentinels: (Combinator<null> | null)[] | undefined
+  let follows: ((inherited: Combinator<unknown> | undefined) => Combinator<unknown> | undefined)[] | undefined
 
   return {
     _tag: 'sequence',
@@ -106,11 +106,12 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnwrapParsers<T>> {
       const tolerant = ctx._tolerant === true
       if (tolerant) {
-        followSentinels ??= parsers.map((_, i) => firstSetSentinel(
-          parsers.slice(i + 1).reduce<ReturnType<typeof firstSetOf>>(
-            (set, parser) => union(set, firstSetOf(parser, new Set(), undefined, undefined, false)), { kind: 'empty' },
-          ),
-        ))
+        follows ??= parsers.map((_, i) => {
+          const { first, open } = followOfTerm(parsers, i)
+          const own = firstSetSentinel(first)
+          if (own === null) return first.kind === 'empty' ? inherited => inherited : () => ANY_SYNC
+          return open ? inherited => orSentinel(own, inherited) : () => own
+        })
       }
       const inheritedSync = ctx._sync
       const deferredTrivia = needsDeferredTriviaCommit(ctx)
@@ -118,7 +119,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
       let cur = pos
       try {
         for (let i = 0; i < parsers.length; i++) {
-          if (tolerant) ctx._sync = followSentinels![i] ?? inheritedSync
+          if (tolerant) ctx._sync = follows![i]!(inheritedSync)
           const assertion = adjacency?.[i]
           if (assertion) {
             if (!holdsAdjacency(input, cur, ctx, assertion)) return adjacencyFail(cur, assertion)

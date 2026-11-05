@@ -55,7 +55,8 @@ export function orSentinel(
   a: Combinator<unknown>,
   b: Combinator<unknown> | undefined,
 ): Combinator<unknown> {
-  if (b === undefined) return a
+  if (b === undefined || b === a) return a
+  if (b === ANY_SYNC) return ANY_SYNC
   return {
     _tag: 'orSentinel',
     _meta: { firstSet: { kind: 'any' }, canMatchNewline: false, isTrivia: false },
@@ -90,6 +91,57 @@ export function firstSetSentinel(fs: FirstSet): Combinator<null> | null {
       return { ok: false, expected: [], span: { start: pos, end: pos } }
     },
   }
+}
+
+/**
+ * The sync point where any character might come next: it matches everywhere, so a list
+ * under it ends cleanly at a failed element and calls nothing junk.
+ */
+export const ANY_SYNC: Combinator<null> = {
+  _tag: 'anySync',
+  _meta: { firstSet: { kind: 'any' }, canMatchNewline: false, isTrivia: false },
+  _def: { tag: 'unknown' },
+  parse: (_input: string, pos: number): ParseResult<null> => ({ ok: true, value: null, span: { start: pos, end: pos } }),
+}
+
+/**
+ * A sequence term's encoded follow slot: a class alone when a later term has to read,
+ * `followAndInherited(class)` when later terms can all match nothing, `FOLLOW_INHERIT` when
+ * no terms come later, and `FOLLOW_ANY` when a later term's first set is unknown.
+ */
+export const FOLLOW_INHERIT = -1
+export const FOLLOW_ANY = -2
+export const followAndInherited = (cls: number): number => -3 - cls
+
+/** The sync point a sequence publishes before a term, from that term's encoded slot. */
+export function followSync(
+  slot: number,
+  sentinelFor: (cls: number) => Combinator<unknown> | undefined,
+  inherited: Combinator<unknown> | undefined,
+): Combinator<unknown> | undefined {
+  if (slot >= 0) return sentinelFor(slot) ?? inherited
+  if (slot === FOLLOW_INHERIT) return inherited
+  if (slot === FOLLOW_ANY) return ANY_SYNC
+  const own = sentinelFor(-3 - slot)
+  return own === undefined ? inherited : orSentinel(own, inherited)
+}
+
+/**
+ * Can this list end here? A failed item only proves the list ended when the sync point
+ * matches where the item started, before the trivia skipped to reach it (a follow term
+ * may read that trivia), or at the separator a dropped trailing separator gives back.
+ */
+export function listMayEndAt(
+  sync: Combinator<unknown>,
+  input: string,
+  ctx: ParseContext,
+  itemStart: number,
+  cur: number,
+  sepStart: number,
+): boolean {
+  return matchesAt(sync, input, itemStart, ctx)
+    || (cur !== itemStart && matchesAt(sync, input, cur, ctx))
+    || (sepStart >= 0 && sepStart !== cur && matchesAt(sync, input, sepStart, ctx))
 }
 
 /**

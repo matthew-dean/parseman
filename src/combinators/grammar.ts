@@ -4,6 +4,7 @@ import { markUnusedValues } from '../compiler/value-usage.ts'
 import { triviaKindMask } from '../cst/trivia-kinds.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { createParseContext } from '../parse-context.ts'
+import { ANY_SYNC } from '../recovery/scan.ts'
 import { scalarOf, scalarRootOf, type ScalarParser } from './scalar.ts'
 
 export type ParseOptions = {
@@ -217,6 +218,7 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
         ctx.trivia = scopeTrivia
         ctx.triviaKindLabels = scopeLabels
       }
+      if (ctx._tolerant && _ctx?.trivia !== undefined && _ctx.trivia !== ctx.trivia) ctx._sync = ANY_SYNC
       if (forceCaptureTrivia || _ctx?.captureTrivia) ctx.captureTrivia = true
       // Kind-filter for per-node capture. Resolve against this scope's trivia
       // labels — this parser's own trivia if it declares one, else the INHERITED

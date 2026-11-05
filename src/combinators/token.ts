@@ -52,10 +52,13 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       ctx._triviaLog = undefined
       ctx._rootTriviaLog = undefined
 
+      const tolerant = ctx._tolerant
+      ctx._tolerant = undefined
       let result: ParseResult<unknown>
       try {
         result = root.parse(input, pos, ctx)
       } finally {
+        ctx._tolerant = tolerant
         ctx.trivia = savedTrivia
         ctx.triviaKindLabels = savedKinds
         ctx._cstBuf = savedBuf

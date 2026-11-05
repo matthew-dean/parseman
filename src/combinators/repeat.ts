@@ -1,8 +1,8 @@
 import type { Combinator, ParseContext, ParseOk, ParseResult, ParserMeta } from '../types.ts'
 import { advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, needsTriviaRollback, rollbackTrivia, saveTriviaMark, scanTriviaCompact } from './trivia-skip.ts'
-import { matchesEmpty, startsFirstSet } from './first-set.ts'
+import { firstSetOf, matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
-import { matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
+import { ANY_SYNC, firstSetSentinel, listMayEndAt, matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
 import { demoteCapturedToRaw } from '../cst/capture-buffer.ts'
 import { scalarOf, type ScalarParser } from './scalar.ts'
 import { LEAD, leadsTrivia } from './field-trivia.ts'
@@ -60,11 +60,16 @@ function repItem<T>(
   // zero-width/leaf miss reaches the same loop stop. Skipped under a completions
   // probe or tolerant recovery, where a swallowed failure still feeds the probe /
   // triggers resync (matching the codegen guard's `!ctx.recovery` gate).
-  if (guardable && ctx._probe === undefined && !ctx._tolerant && !startsFirstSet(combinator, input, pos)) {
-    if (mark !== undefined) rollbackTrivia(ctx, mark)
-    return 'stop'
+  let result: ParseResult<T>
+  if (ctx._tolerant === true) {
+    result = tolerantItem(combinator, input, cur, pos, ctx, mandatory, false, -1)
+  } else {
+    if (guardable && ctx._probe === undefined && !startsFirstSet(combinator, input, pos)) {
+      if (mark !== undefined) rollbackTrivia(ctx, mark)
+      return 'stop'
+    }
+    result = combinator.parse(input, pos, ctx)
   }
-  const result = combinator.parse(input, pos, ctx)
   if (!result.ok) {
     if (mark !== undefined) rollbackTrivia(ctx, mark)
     if (result.committed) return { fail: result, failPos: pos }
@@ -84,6 +89,38 @@ function repItem<T>(
     if (mark !== undefined) rollbackTrivia(ctx, mark)
     return 'stop'
   }
+  return result
+}
+
+/** What can follow an item of a separator-less list: another item. */
+function itemFollowSync(combinator: Combinator<unknown>, inherited: Combinator<unknown> | undefined): Combinator<unknown> {
+  if (matchesEmpty(combinator)) return ANY_SYNC
+  const own = firstSetSentinel(firstSetOf(combinator, new Set(), undefined, undefined, false))
+  return own === null ? ANY_SYNC : orSentinel(own, inherited)
+}
+
+/**
+ * One item under recovery. What can follow it is published for lists inside it. While
+ * the list may end here, a failed item is only the list ending, and whatever is inside
+ * it may not recover.
+ */
+function tolerantItem<T>(
+  combinator: Combinator<T>,
+  input: string,
+  cur: number,
+  pos: number,
+  ctx: ParseContext,
+  mandatory: boolean,
+  separated: Combinator<unknown> | false,
+  sepStart: number,
+): ParseResult<T> {
+  const sync = ctx._sync
+  const mayEnd = !mandatory && sync !== undefined && listMayEndAt(sync, input, ctx, pos, cur, sepStart)
+  ctx._sync = separated === false ? itemFollowSync(combinator, sync) : orSentinel(separated, sync)
+  if (mayEnd) ctx._tolerant = undefined
+  const result = combinator.parse(input, pos, ctx)
+  ctx._sync = sync
+  if (mayEnd) ctx._tolerant = true
   return result
 }
 
@@ -187,11 +224,9 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
           // sync available ⇒ nothing to skip to → break.
           const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
-          // Sync token at the POST-trivia failure position ⇒ clean list end (the
-          // trailing trivia belongs to the enclosing context), not junk. Checking
-          // `item.failPos` (past leading trivia), not `cur`, keeps trivia out of
-          // both the break decision and the recovered error span.
-          if (matchesAt(sync, input, item.failPos, ctx)) break
+          // Sync token at the failure position ⇒ clean list end (the trailing trivia
+          // belongs to the enclosing context), not junk.
+          if (listMayEndAt(sync, input, ctx, item.failPos, cur, -1)) break
           expected ??= deriveExpected(combinator)
           const { error, end } = recoverScan(input, item.failPos, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
@@ -258,7 +293,9 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       // First item is mandatory (parsed at pos directly — leading trivia is the
       // enclosing context's responsibility); subsequent items skip leading trivia.
-      const first = combinator.parse(input, pos, ctx)
+      const first = ctx._tolerant === true
+        ? tolerantItem(combinator, input, pos, pos, ctx, true, false, -1)
+        : combinator.parse(input, pos, ctx)
       if (!first.ok) return first
       // Aggregate skipped when never observed (see `many`).
       const values: T[] | undefined = def.valueUnused ? undefined : [first.value]
@@ -295,7 +332,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
           // Cold path (element failure). Strict: break. Tolerant: resync — see many().
           const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
-          if (matchesAt(sync, input, item.failPos, ctx)) break
+          if (listMayEndAt(sync, input, ctx, item.failPos, cur, -1)) break
           expected ??= deriveExpected(combinator)
           const { error, end } = recoverScan(input, item.failPos, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
@@ -343,7 +380,12 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
         return { ok: true, value: null, span: { start: pos, end: pos } }
       }
       const mark = saveTriviaMark(ctx)
+      // Where what follows could start here, the child failing is only the optional
+      // being absent, and whatever is inside it may not recover.
+      const absent = ctx._tolerant === true && ctx._sync !== undefined && matchesAt(ctx._sync, input, pos, ctx)
+      if (absent) ctx._tolerant = undefined
       const result = combinator.parse(input, pos, ctx)
+      if (absent) ctx._tolerant = true
       if (result.ok) return result as ParseResult<T>
       // Inner failed → roll back any CST leaves/trivia it captured before giving up.
       rollbackTrivia(ctx, mark)
@@ -523,7 +565,10 @@ export function sepBy<T, S>(
     },
     _parseScalar: keepSeparators || separatorLeads ? undefined : parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
-      const first = combinator.parse(input, pos, ctx)
+      const tolerant = ctx._tolerant === true
+      const first = tolerant
+        ? tolerantItem(combinator, input, pos, pos, ctx, false, separator, -1)
+        : combinator.parse(input, pos, ctx)
       const values: T[] = []
       let cur: number
       if (first.ok) {
@@ -602,7 +647,9 @@ export function sepBy<T, S>(
             nextPos = advanceTrivia(input, sep.span.end, ctx)
           }
         }
-        const next = combinator.parse(input, nextPos, ctx)
+        const next = tolerant
+          ? tolerantItem(combinator, input, cur, nextPos, ctx, false, separator, sepPos)
+          : combinator.parse(input, nextPos, ctx)
         if (!next.ok) {
           if (next.committed) return next
           // Cold path. Strict: roll back the trailing separator + break. Tolerant:
@@ -624,7 +671,7 @@ export function sepBy<T, S>(
           // no rollback happens on that path: both the separator and the recovered
           // error element belong to the list.
           const term = ctx._tolerant ? ctx._sync : undefined
-          if (term !== undefined && !matchesAt(term, input, nextPos, ctx)) {
+          if (term !== undefined && !listMayEndAt(term, input, ctx, nextPos, cur, sepPos)) {
             expected ??= deriveExpected(combinator)
             const rec = recoverScan(input, nextPos, ctx, orSentinel(separator, term), expected)
             values.push(rec.error as unknown as T)

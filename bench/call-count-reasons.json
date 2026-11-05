@@ -1,21 +1,33 @@
 {
-  "against": "v0.61.2",
+  "against": "v0.61.3",
   "rows": {
-    "macro/css/ast/site.css calls": {
-      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.612. The gate copies that file into the reference leg, which then builds v0.61.2 at the new numbers on the old meaning, a far larger budget than v0.61.2 shipped. The increase is that artifact, not this change: against the v0.61.2 baseline, built at its own budget, HEAD is 44 calls lower.",
-      "limit": 7949
+    "closure/css/stylesheet branches": {
+      "why": "Under `tolerant`, a `oneOrMore` publishes what can follow its first item, so inner lists don't read the next item as junk. Its entry therefore tests whether recovery is on: one branch test per entry and no added calls. Strict table parses only reach this entry through interpreted trivia, on a detached context where recovery is always off, so the output cannot change.",
+      "limit": 1200
+    },
+    "emitted/css/stylesheet branches": {
+      "why": "Under `tolerant`, a `oneOrMore` publishes what can follow its first item, so inner lists don't read the next item as junk. Its entry therefore tests whether recovery is on: one branch test per entry and no added calls. Strict table parses only reach this entry through interpreted trivia, on a detached context where recovery is always off, so the output cannot change.",
+      "limit": 1200
+    },
+    "macro/css/ast/positions/site.css branches": {
+      "why": "Under `tolerant`, a `oneOrMore` publishes what can follow its first item, so inner lists don't read the next item as junk. Its entry therefore tests whether recovery is on: one branch test per entry and no added calls. Strict table parses only reach this entry through interpreted trivia, on a detached context where recovery is always off, so the output cannot change.",
+      "limit": 23
     },
     "macro/css/ast/site.css branches": {
-      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.612. The gate copies that file into the reference leg, which then builds v0.61.2 at the new numbers on the old meaning, a far larger budget than v0.61.2 shipped. The increase is that artifact, not this change: against the v0.61.2 baseline, built at its own budget, HEAD is 6 branch tests lower.",
-      "limit": 15711
+      "why": "Under `tolerant`, a `oneOrMore` publishes what can follow its first item, so inner lists don't read the next item as junk. Its entry therefore tests whether recovery is on: one branch test per entry and no added calls. Strict table parses only reach this entry through interpreted trivia, on a detached context where recovery is always off, so the output cannot change.",
+      "limit": 23
     },
-    "macro/scss/ast/site.css calls": {
-      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.612. The gate copies that file into the reference leg, which then builds v0.61.2 at the new numbers on the old meaning, a far larger budget than v0.61.2 shipped. The increase is that artifact, not this change: against the v0.61.2 baseline, built at its own budget, HEAD is 226 calls lower.",
-      "limit": 30933
+    "macro/css/cst/site.css branches": {
+      "why": "Under `tolerant`, a `oneOrMore` publishes what can follow its first item, so inner lists don't read the next item as junk. Its entry therefore tests whether recovery is on: one branch test per entry and no added calls. Strict table parses only reach this entry through interpreted trivia, on a detached context where recovery is always off, so the output cannot change.",
+      "limit": 23
     },
-    "macro/scss/ast/site.css branches": {
-      "why": "This release changes what `assemblyBudget` means, so `bench/jess/real-grammars.ts` moves CSS from 1 to 2.72 and SCSS from the default to 0.612. The gate copies that file into the reference leg, which then builds v0.61.2 at the new numbers on the old meaning, a far larger budget than v0.61.2 shipped. The increase is that artifact, not this change: against the v0.61.2 baseline, built at its own budget, HEAD is 904 branch tests higher (+0.06%), from a different set of selected sites. Which test it is was not traced.",
-      "limit": 99984
+    "macro/jess/cst/site.css branches": {
+      "why": "Under `tolerant`, a `oneOrMore` publishes what can follow its first item, so inner lists don't read the next item as junk. Its entry therefore tests whether recovery is on: one branch test per entry and no added calls. Strict table parses only reach this entry through interpreted trivia, on a detached context where recovery is always off, so the output cannot change.",
+      "limit": 1
+    },
+    "macro/scss/cst/site.css branches": {
+      "why": "Under `tolerant`, a `oneOrMore` publishes what can follow its first item, so inner lists don't read the next item as junk. Its entry therefore tests whether recovery is on: one branch test per entry and no added calls. Strict table parses only reach this entry through interpreted trivia, on a detached context where recovery is always off, so the output cannot change.",
+      "limit": 1
     }
   }
 }
