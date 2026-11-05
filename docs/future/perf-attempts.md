@@ -572,8 +572,10 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     `gen-workload.scss` 1053.3M to 798.8M (-24.16%, A/A +0.90%); `jess-x8.jess` 145.4M to
     131.8M (-9.34%, A/A -0.34%). `benchmark.css`, 9 reps: 212.6M to 201.5M (-5.22%, A/A +2.83%,
     spread 6%, so noisy). CST, 3 reps, N 5 to 25: -17.10%, -15.48%, -32.37%, -11.83%, and CSS
-    -23.26%; every A/A inside +1.45%. AST with positions, same window: Less -12.75%, SCSS
-    -29.09%, CSS -15.20%. An x64 gate was not run, and neither was `--jitless`.
+    -23.26%; every A/A inside +1.45%. AST with positions, same window: SCSS -29.09%, CSS
+    -15.20%. A Less -12.75% measured here does not count: `benchmark.less` stops at offset
+    73117 of 106802 on both legs, so it timed a partial parse. Re-measure once the
+    positions fix (#253) is in. An x64 gate was not run, and neither was `--jitless`.
   - Sampled allocation per parse (A/A within 0.1%): Less 31.7 to 26.1 MB, bootstrap 33.5 to
     28.8, SCSS 109.6 to 74.8, CSS 24.4 to 16.7, `.jess` 11.6 to 8.9. Calls per parse: -12.2%,
     -10.0%, -23.5%, -8.6%, -10.9%. Builder calls (AST): Less 41,811 to 27,847, bootstrap
@@ -586,7 +588,8 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     a wrapper opened on a false alarm still counts its children. `unwrap` has no site in any
     of the four grammars, on `main` too, so it can go on its own.
   - Identity: AST and AST with positions identical to `main` on every sweep input (CSS 385,
-    Less 1,301, SCSS 9,669, `.jess` 93), results, errors and spans. The interpreter against the
+    Less 1,301, SCSS 9,669, `.jess` 93), results, errors and spans. For AST with positions
+    that covers partial parses on the Less and `.jess` files that stop (#253). The interpreter against the
     shipped AST parser disagrees on the same inputs as on `main`, none new (10 CSS, 73 Less, 51
     SCSS, nearly all truncated inputs; not chased). `check:differentials` passes.
     CST: nodes CSS 123,331 to 69,212, Less 272,482 to 189,646, SCSS 542,549 to 198,301, `.jess`
@@ -607,7 +610,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     The one-line fix alone is flat in instructions and cuts raw bytes up to 3% (`.jess` AST
     392,568 to 380,971). `dispatch()` allocates a `[key, arm]` pair at every visit. Separately, the
     shipped `.jess` AST-with-positions parser stops at offset 3975 of `jess-x8.jess`, on `main`
-    too, with `ok: true`.
+    too, with `ok: true`: the same `compose()` defect as #253, not a new one.
 
 - **Left-corner routing (accepted direction, prototype).** Every level from a node down
   to the first node a character reaches starts at the same position with the same piece.
