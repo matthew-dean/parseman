@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.61.0 — 2026-11-04
 
 - **Mechanical guardrails for engine refactors, in CI and the local preflight.**
   Nothing in `src/` changes; the published package differs only by four new scripts in
@@ -89,6 +89,41 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   now kept in the grammar's carried IR as `void g["X"]`, so the build refuses it where
   runtime `compose()` did and the build did not. See
   `test/unit/compose-dangling-reference.test.ts`.
+- **Printed tables store each expected token once.** An expected set is now a list of
+  indices into one pool of tokens, instead of a list of strings. Raw table size drops
+  8% to 20% on the real CSS, Less, SCSS and Jess grammars. Gzipped bundles barely
+  change, since gzip already removed the repetition. A table printed by an earlier
+  version has to be printed again, and now refuses to load with a message saying so
+  instead of a `TypeError`. **The printed form changed, so this is 0.61.0:** a 0.60.x
+  runtime reading a new table reports indices as its expected tokens, and `^0.60.x`
+  never resolves to 0.61, so package ranges keep the two apart. Jess needs `^0.61.0`
+  to adopt it.
+- **The walker and the tables now agree on four more results, and three compositions
+  a dialect grammar relies on are pinned across a package boundary.**
+  - A `node()` over a rule reference delivers the `field()` below it on the walker. It
+    decided field capture while the reference was unresolved, so it dropped the field
+    that the tables delivered. A node built in a `rules()` factory now decides again
+    once the references are defined, wherever it sits, with no cost per parse. A node
+    whose reference is defined after that link finishes still drops it: one built
+    outside a factory, one over a module-level `ref()` defined after `rules()` returns,
+    and one over a `ref()` that a later factory defines. See #256.
+  - A `sepBy` that fails first names its item. The derived set had no case for it, so
+    the tables reported `"sepBy"` or `"lazy"` as the expected token.
+  - A `dispatch()` that commits inside a disjoint `choice()` fails where it failed on
+    the walker, as the tables and the walker's ordered path do. It reported the
+    choice's position.
+  - `run()` reports `expected` as a set. Arms that open with the same token reported
+    it once per arm on some paths.
+
+  Failing input on `rules()` grammars can still list different `expected` sets on the
+  walker and the tables, at the same position: see #256.
+
+  The pinned shapes: a dialect's own dispatch routes to a base rule that owns its
+  opener through `routed()`; a base parent reads the dialect's override of a slot below
+  it; and a base node reads a `field()` two non-node rule hops down, where the dialect
+  overrides the innermost rule. Each runs on the walker, the table of runtime
+  `compose()`, `compile()` and the macro's table, and compares value, span and expected
+  set. See `test/unit/compose-inherited-shapes.test.ts`.
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the

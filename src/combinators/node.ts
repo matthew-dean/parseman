@@ -3,6 +3,7 @@ import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/cap
 import { buildReadsTrivia, buildReadsState, cstOutputHost } from '../compiler/build-arity.ts'
 import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { consumeTrivia } from './trivia-skip.ts'
+import { afterLink } from './link-scope.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { annotateSpanFromLineContext } from '../line-index.ts'
@@ -231,8 +232,16 @@ export function node<N>(
   // a log it never reads, at the price of the full capture frame on every match.
   const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : project === undefined)
   const readsState = build ? buildReadsState(def) : project === undefined
-  const hasOwnFields = parserHasOwnFields(combinator)
-  const capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)
+  let hasOwnFields = parserHasOwnFields(combinator)
+  let capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)
+  // Inside a `rules()` factory a body that reaches its field through `g.X` reads as
+  // having none until that reference is defined, so settle it again then.
+  if (!hasOwnFields) {
+    afterLink(() => {
+      hasOwnFields = parserHasOwnFields(combinator)
+      capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)
+    })
+  }
   // First-set fail-fast (mirrors emitNode's codegen guard): a node whose body can't
   // match empty and whose first set can't start here can only fail, so reject BEFORE
   // allocating the CST capture frame. Sound and output-neutral — the failing body
