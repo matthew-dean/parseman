@@ -3317,7 +3317,7 @@ function transformMacroImpl(
   }
 
   return {
-    assemblySites,
+    assemblySites: applied.length > 0 ? assemblySites : [],
     code: ms.toString(),
     map: ms.generateMap({ hires: true }),
     warnings,

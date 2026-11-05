@@ -399,6 +399,17 @@ describe('an optional corpus profile ranks sites by measured calls', () => {
     for (const input of CASES[0]!.inputs) expect(run(entry as never, input)).toEqual(run(closure as never, input))
   })
 
+  it('reports no sites when a later compose() leaves the module on the runtime compose()', () => {
+    const source = `import { choice, compose, many, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: many(choice(g.A, g.B)), A: regex(/a/), B: regex(/b+/) }))])
+${PADDING}`
+    const lower = (code: string) => transformMacro(code, '/tmp/fallback.ts', new Set(['parseman']), false, false, false, undefined, 2)!
+    expect(lower(source).assemblySites.length).toBeGreaterThan(0)
+    const fellBack = lower(`${source}export const late = compose([imported])\n`)
+    expect(fellBack.code).toContain('compose([rules(')
+    expect(fellBack.assemblySites).toEqual([])
+  })
+
   describe('a corpus that cannot run fails the build', () => {
     const lower = (grammar: string, corpus: string): void => {
       const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
