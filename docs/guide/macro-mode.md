@@ -296,26 +296,28 @@ Sites are ranked by a static estimate of how often they run. The plugin's option
 `assemblyProfile: { entry, files }` ranks them by measured calls instead: the build parses
 `files` from rule `entry` on the closure engine and keeps the sites with the most calls per
 byte. It changes which sites are generated, never what a parse returns
-(`test/unit/table-selective-assembly.test.ts`). A corpus file that doesn't parse in full or parses only by recovering, a
-corpus with nothing in it, or a reducer or gate that throws, fails the build. A file with only whitespace counts as empty:
-it's skipped, and a corpus of nothing else fails. A build also fails where grammars were profiled and none has the `entry`
-rule. A direct `transformMacro` caller gets `assemblyProfile: 'no-entry'` on the result
-instead, and has to read it. esbuild, webpack and rspack can't list a build's modules, so under them the check reads every
-module the plugin instance has seen, and a later build on that instance that dropped the module with the rule still
-passes. A Vite dev server doesn't run the check. A callback the corpus doesn't reach never runs, so nothing checks it.
+(`test/unit/table-selective-assembly.test.ts`, like every claim below; the quoted names are its tests). A corpus file that
+doesn't parse in full or parses only by recovering, a corpus with nothing in it, or a reducer or gate that throws, fails the
+build ("a corpus that cannot run fails the build"). A file with only whitespace counts as empty: it's skipped, and a corpus of
+nothing else fails ("skips a whitespace-only file in a corpus that has content"). A build also fails where grammars were
+profiled and none has the `entry` rule ("a build where no grammar has the entry rule"). A direct `transformMacro` caller gets
+`assemblyProfile: 'no-entry'` on the result instead, and has to read it ("tells a direct caller that no grammar has the entry
+rule"). esbuild can't list a build's modules, so under it the check reads every module the plugin instance has seen, and a
+later build on that instance that dropped the module with the rule still passes ("reads every module the plugin has seen
+under esbuild, which can't list a build's modules"). A Vite dev server doesn't run the check ("a Vite dev server doesn't fail on a mistyped entry"). A callback
+the corpus doesn't reach never runs, so nothing checks it ("never runs a callback the corpus doesn't reach").
 
 Callback source runs at build time with no module around it, so a grammar whose reducers or gates read imported helpers
 passes them as `scope`: `assemblyProfile: { entry, files, scope: { valueStopOf } }`. The names are visible as globals
-during the corpus run only. Without `scope` the build fails (same test file, "fails on a gate that reads an imported
-helper").
+during the corpus run only ("`scope` gives the corpus run the helpers a gate imports, for that run only"). Without `scope` the build fails
+("fails on a gate that reads an imported helper").
 
-- A name that's already a global fails the build. The opposite slip is silent: a helper named like a real global and
-  left out of `scope` uses the global. A grammar's own `escape` left out of `scope` would run the global `escape`.
-- `scope` is one flat namespace, so two modules can't bind one name to different helpers.
+- A name that's already a global fails the build ("refuses a name that is already a global, leaving it alone"). The opposite slip is silent: a helper
+  named like a real global and left out of `scope` uses the global, so a grammar's own `escape` left out of `scope` would run
+  the global `escape` ("runs the global when a helper named like one is left out of `scope`").
 - Direct `node()` builders don't run in the corpus run. A plain node stands in for each, so a helper only a builder reads
-  doesn't fail the build, and the counts don't depend on what the builder does.
-- A `tsdown.config.ts` needs `tsdown --config-loader unrun` when it imports a helper through a `./helper.js` specifier, or
-  imports a helper that itself imports one. The native loader doesn't map `./helper.js` to `./helper.ts`.
+  doesn't fail the build, and the counts don't depend on what the builder does ("a plain node stands in for a builder carried
+  from another module").
 
 Each extra variant costs real bytes, but no longer a full copy. Measured by
 `pnpm size:probe`, holding the grammar constant and varying only the number of variants:

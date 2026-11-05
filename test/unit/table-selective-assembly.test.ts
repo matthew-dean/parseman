@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { build as esbuild } from 'esbuild'
 import { rolldown } from 'rolldown'
+import { createServer } from 'vite'
 import parseman, { CARRIED_SIDECAR_SUFFIX, transformMacro, type CarriedSink } from '../../src/plugin/index.ts'
 import { PARSEMAN_VERSION } from '../../src/version.ts'
 import { supercompileRuleMapReplacement } from '../../src/plugin/entry-supercompiler.ts'
@@ -447,6 +448,12 @@ export const g = compose([rules(g => ({ Doc: ${doc} }))])`, 'a'))
         .toThrow(new RegExp(`assemblyProfile: gate or reducer \`${callback}\` threw on .*corpus\\.txt: ReferenceError: allowed is not defined`))
     })
 
+    it('never runs a callback the corpus doesn\'t reach', () => {
+      const unreached = `export const g = compose([rules(g => ({ Doc: choice(regex(/a/), transform(regex(/b/), v => boom(v))) }))])`
+      expect(() => lower(unreached, 'a')).not.toThrow()
+      expect(() => lower(unreached, 'b')).toThrow(/boom/)
+    })
+
     it('refuses a corpus where every file is empty', () => {
       expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])`, ' \n'))
         .toThrow(/assemblyProfile: `files` has no non-empty file/)
@@ -561,6 +568,13 @@ ${PADDING}`
       expect(key in globalThis).toBe(false)
     })
 
+    it('runs the global when a helper named like one is left out of `scope`', () => {
+      const seen: string[] = []
+      const report = (v: string): string => { seen.push(v); return v }
+      lower(`export const g = compose([rules(g => ({ Doc: transform(regex(/é/), v => report(escape(v))) }))])`, { report }, 'é')
+      expect(seen).toEqual(['%E9'])
+    })
+
     it('leaves nothing behind when a reducer throws or a file does not parse', () => {
       const THROWS = `export const g = compose([rules(g => ({ Doc: transform(regex(/a/), v => { throw new Error('x') }) }))])`
       expect(() => lower(THROWS, { parsemanScopeThrow: 1 })).toThrow(/threw/)
@@ -634,6 +648,19 @@ ${PADDING}`, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { en
       writeFileSync(join(dir, 'g.ts'), 'export const = 1\n')
       writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
       await expect(build(entry('Doc'))).rejects.not.toThrow(/no grammar has rule/)
+    }))
+
+    it('tells a direct caller that no grammar has the entry rule', () => withBuild(async dir => {
+      const out = transformMacro(IMPORT + grammar('Other'), join(dir, 'other.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [join(dir, 'corpus.txt')] })
+      expect(out?.assemblyProfile).toBe('no-entry')
+    }))
+
+    it('a Vite dev server doesn\'t fail on a mistyped entry', () => withBuild(async dir => {
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc'))
+      const runtime = { name: 'runtime', enforce: 'pre' as const, resolveId: (id: string) => (id.startsWith('parseman') ? '\0parseman' : null), load: (id: string) => (id === '\0parseman' ? 'export const tableRules = 0, compileTable = 0' : null) }
+      const server = await createServer({ configFile: false, root: dir, logLevel: 'silent', server: { middlewareMode: true }, optimizeDeps: { noDiscovery: true, include: [] }, plugins: [runtime, parseman.vite({ assemblyProfile: { entry: 'Docs', files: [join(dir, 'corpus.txt')] } })] })
+      await expect(server.transformRequest('/g.ts')).resolves.not.toBeNull()
+      await expect(server.close()).resolves.toBeUndefined()
     }))
 
     it('reads only the modules in this build', () => withBuild(async (dir, build, entry) => {
