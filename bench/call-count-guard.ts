@@ -98,7 +98,7 @@ export type Reasons = { against: string; rows: Record<string, Reason> }
  */
 const JESS_CASES: ReadonlyArray<{ dialect: string; variant: string; fixture: string }> = [
   ...['css', 'scss', 'jess'].flatMap(dialect => ['ast', 'ast/positions', 'cst'].map(variant => ({ dialect, variant, fixture: 'site.css' }))),
-  ...['ast', 'cst'].flatMap(variant => ['site.css', 'app.less'].map(fixture => ({ dialect: 'less', variant, fixture }))),
+  ...['ast', 'ast/positions', 'cst'].flatMap(variant => ['site.css', 'app.less'].map(fixture => ({ dialect: 'less', variant, fixture }))),
 ]
 
 function runWorker(args: WorkerArgs): Rows {

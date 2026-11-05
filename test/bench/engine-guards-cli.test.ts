@@ -335,7 +335,7 @@ describe('the count worker refuses a parse it should not count', () => {
     expect(none.code).not.toBe(0)
   }, 60_000)
 
-  it('refuses Less positions on `!important`, until #253 is fixed', async () => {
+  it('counts Less positions on `!important`', async () => {
     const important = path.join(WORKER_DIR, 'important.css')
     writeFileSync(important, '.a { b: c !important; }')
     await withBuiltSnapshot(async snap => {
@@ -345,8 +345,8 @@ describe('the count worker refuses a parse it should not count', () => {
         module: await snap.runnable('less', 'ast/positions'),
         cases: [{ id: 'macro/less/ast/positions/probe', dialect: 'less', input: important, cst: false }],
       })
-      expect(r.out).toContain('left input unconsumed from byte 0')
-      expect(r.code).not.toBe(0)
+      expect(r.out).toContain('"macro/less/ast/positions/probe"')
+      expect(r.code).toBe(0)
     })
   }, 300_000)
 })
