@@ -7,9 +7,13 @@
  *
  * `--leaves` compares a CST by its leaves and trivia rather than its node shape, for two
  * grammars that are meant to differ in which wrappers they keep. It also counts node types.
+ *
+ * `--timeout=<ms>` stops one parse and records it as a throw. Less recovery on a CST takes
+ * minutes on some inputs, on `main` too; a timeout on one side only is noise to recheck.
  */
 import { appendFileSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { runInThisContext } from 'node:vm'
 
 const flags = process.argv.slice(2).filter(a => a.startsWith('--'))
 const [file, art, a, b] = process.argv.slice(2).filter(a => !a.startsWith('--'))
@@ -17,6 +21,7 @@ if (!b) throw new Error('usage: leg-sweep.mjs <inputs.json> <dialect>-<variant> 
 const tolerant = flags.includes('--tolerant')
 const flag = name => flags.find(f => f.startsWith(`--${name}=`))?.slice(name.length + 3)
 const examples = +(flag('examples') ?? 8)
+const timeout = +(flag('timeout') ?? 0)
 const out = flag('out')
 if (out) rmSync(out, { force: true })
 
@@ -46,7 +51,9 @@ const nodeTypes = (n, sign) => {
 const go = (m, input, sign) => {
   const opts = { ...(tolerant ? { tolerant: true } : {}), ...(cst ? { build: m.cstBuildHost } : {}) }
   try {
-    const r = m.run(m.grammar.Stylesheet, input, opts)
+    const parse = () => m.run(m.grammar.Stylesheet, input, opts)
+    globalThis.sweepParse = parse
+    const r = timeout ? runInThisContext('sweepParse()', { timeout }) : parse()
     if (leavesOnly) nodeTypes(r.value, sign)
     return {
       ok: r.ok,

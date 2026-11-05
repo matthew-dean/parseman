@@ -591,7 +591,9 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     starts after its leading trivia (50 inputs), Less `MathValue` starts before a comment it used to
     start after (`a=/*c*/b`, 40 inputs), and `.jess` gains a `ValueAtom` on a slash's right operand
     (70 inputs). Under `tolerant` the AST reducers throw on most inputs before and after (Less
-    15,724), so CST is the recovery coverage that counts.
+    15,724), so CST is the recovery coverage that counts. Less CST recovery ran with a 5 s limit per
+    parse: 7 inputs stop on both sides, so they were not compared. That cost is on `main` too:
+    recovery grows about threefold per line on `.units-extended`-style declaration runs.
   - `a.x b.y,c.z d.w{e:f}` x4000 through CSS AST: calls 3,117,937 to 3,565,924, +14.37%, on
     the same grammar and engine that give `a.x{...}` -9.56%. That is selection, not the hit path:
     with one selection, all closure -3.45% and all emitted +0.007%. `main` sits on a cliff here:
