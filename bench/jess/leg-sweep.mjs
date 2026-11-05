@@ -5,9 +5,10 @@
  *
  *   node bench/jess/leg-sweep.mjs <inputs.json> <dialect>-<variant> <legA> <legB> [--tolerant] [--examples=N] [--out=diffs.jsonl] [--leaves]
  *
- * `--leaves` compares a CST by its leaves rather than its node shape, for two grammars that
- * are meant to differ in which wrappers they keep. It also counts node types. Trivia is not
- * compared: a CST from `cstBuildHost` does not carry it.
+ * `--leaves` compares a CST by its leaves and the trivia its kept nodes logged, rather than its
+ * node shape, for two grammars that are meant to differ in which wrappers they keep. A CST from
+ * `cstBuildHost` does not carry trivia, so this mode's host keeps each node's `triviaLog`. It
+ * also counts node types.
  *
  * `--timeout=<ms>` stops one parse and records it as a throw. Less recovery on a CST takes
  * minutes on some inputs, on `main` too; a timeout on one side only is noise to recheck.
@@ -47,6 +48,22 @@ const leaves = (n, out = []) => {
   for (const c of n.children ?? []) leaves(c, out)
   return out
 }
+// The trivia every kept node logged, in source order. A wrapper a grammar drops takes its
+// ownership with it, so this compares which runs were kept and never which node holds one.
+const triviaLogs = (n, out = []) => {
+  if (n === null || typeof n !== 'object') return out
+  if (Array.isArray(n)) { for (const c of n) triviaLogs(c, out); return out }
+  if (n._tag !== 'node') return out
+  const log = n.triviaLog ?? []
+  for (let i = 0; i + 3 < log.length; i += 4) out.push([log[i], log[i + 1], log[i + 3]])
+  for (const c of n.children ?? []) triviaLogs(c, out)
+  return out
+}
+const logging = m => Object.assign((type, children, fields, span, raw, log, state, tags) => {
+  const nd = m.cstBuildHost(type, children, fields, span, raw, log, state, tags)
+  if (log?.length > 0) nd.triviaLog = [...log]
+  return nd
+}, { _parsemanCstOutput: true })
 const nodeTypes = (n, sign) => {
   if (n === null || typeof n !== 'object') return
   if (Array.isArray(n)) { for (const c of n) nodeTypes(c, sign); return }
@@ -65,7 +82,7 @@ const count = (t, kind, v) => {
 }
 
 const go = (m, input, sign) => {
-  const opts = { ...(tolerant ? { tolerant: true } : {}), ...(cst ? { build: m.cstBuildHost } : {}) }
+  const opts = { ...(tolerant ? { tolerant: true } : {}), ...(cst ? { build: leavesOnly ? logging(m) : m.cstBuildHost } : {}) }
   try {
     const parse = () => m.run(m.grammar.Stylesheet, input, opts)
     globalThis.sweepParse = parse
@@ -74,7 +91,7 @@ const go = (m, input, sign) => {
     return {
       ok: r.ok,
       digest: leavesOnly
-        ? m.digestValue({ ok: r.ok, errors: r.errors, expected: r.expected, unconsumedFrom: r.unconsumedFrom, leaves: leaves(r.value) })
+        ? m.digestValue({ ok: r.ok, errors: r.errors, expected: r.expected, unconsumedFrom: r.unconsumedFrom, leaves: leaves(r.value), trivia: triviaLogs(r.value).sort((p, q) => p[0] - q[0] || p[1] - q[1] || p[2] - q[2]) })
         : m.digestValue(r),
       expected: r.expected,
       errors: r.errors?.length ?? 0,
