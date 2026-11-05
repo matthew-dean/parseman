@@ -166,6 +166,8 @@ Artifacts are stamped with the Parséman version (`src/version.ts`); nothing rea
 | differentials | `pnpm check:differentials` ([doc](./differential-gates.md)) | a harness that cannot fail: each one must catch a defect planted in `src/` |
 | coverage | `pnpm test:coverage && pnpm coverage:guard` | untested new code |
 | size | `pnpm size:guard`, `pnpm size:guard:jess` | any artifact growth; Jess grammars over 5× their source |
+| duplicate functions | `pnpm dupfn:guard` ([doc](./perf-gates.md#the-bars-an-engine-change-has-to-meet)) | a function printed twice in the emitted or printed output |
+| call count | `pnpm callcount:guard` ([doc](./perf-gates.md#the-bars-an-engine-change-has-to-meet)) | more function calls or branch tests per parse than the previous release |
 | perf | see below | slower parsing |
 
 ## How performance is measured

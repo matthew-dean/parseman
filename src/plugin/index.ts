@@ -186,7 +186,9 @@ export type AssemblyProfile = {
   /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar
    * without this rule keeps the static ranking. */
   readonly entry: string
-  /** Paths of representative inputs. */
+  /** Paths of representative inputs. At least one must have content, and each that
+   * does has to parse in full without recovery, or the build fails. A file with only
+   * whitespace counts as empty. */
   readonly files: readonly string[]
 }
 
@@ -2399,29 +2401,44 @@ function transformMacroImpl(
     return sites
   }
   /** Measured site calls over the optional corpus, or `undefined` for the static
-   * ranking. A file whose parse throws still contributes the calls it made. */
+   * ranking. A corpus that cannot run fails the build: a static ranking standing in
+   * for the measured one configured is a slower parser that nothing reports. */
   const profileOf = (compiled: CompiledRuleMapTable): Int32Array | undefined => {
     // Only the default AST/no-lines table carries an assembly, so only it is profiled.
     if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1
       || !(assemblyProfile.entry in compiled.prog.rules)) return undefined
-    let parsed = 0
+    const refuse = (why: string): never => { throw new Error(`${id} — assemblyProfile: ${why}`) }
+    if (corpusTexts(assemblyProfile).every(text => text.trim() === '')) refuse('`files` has no non-empty file')
+    let thrower: unknown
     // A builder re-lowered from carried IR is inert at build time; for COUNTING
     // only, a plain node stands in for it, so the corpus can run past it.
     const fns = compiled.prog.fns.map(fn => {
       const type = (fn as { [INERT_BUILDER]?: string } | null)?.[INERT_BUILDER]
-      return type === undefined ? fn
-        : (children: unknown, _fields: unknown, span: unknown) => ({ type, span, children })
+      if (type !== undefined) return (children: unknown, _fields: unknown, span: unknown) => ({ type, span, children })
+      return typeof fn !== 'function' ? fn : new Proxy(fn, {
+        apply(target, self, args) {
+          try { return Reflect.apply(target, self, args) as unknown } catch (e) { thrower ??= target; throw e }
+        },
+      })
     })
-    const counts = countSiteVisits(compiled.prog, rules => {
+    return countSiteVisits(compiled.prog, rules => {
       const entry = rules[assemblyProfile.entry]!
-      for (const text of corpusTexts(assemblyProfile)) {
-        try { if (run(entry, text).ok) parsed++ } catch { /* the calls it made still count */ }
-      }
+      corpusTexts(assemblyProfile).forEach((text, i) => {
+        const file = assemblyProfile.files[i]!
+        if (text.trim() === '') return
+        let result
+        try { result = run(entry, text) } catch (e) {
+          const source = String(thrower).replace(/\s+/g, ' ').slice(0, 200)
+          throw new Error(`${id} — assemblyProfile: ${thrower === undefined ? 'the parse' : `gate or reducer \`${source}\``} threw on ${file}: ${String(e)}`, { cause: e })
+        }
+        if (!result.ok || result.unconsumedFrom !== null) {
+          refuse(`${file} does not parse from rule "${assemblyProfile.entry}": it stops at offset ${result.ok ? result.unconsumedFrom : result.span.end}`)
+        }
+        if (result.errors.length > 0) {
+          refuse(`${file} parses only by recovering from ${result.errors.length} error(s), first at offset ${result.errors[0]!.span.start}`)
+        }
+      })
     }, fns)
-    if (parsed > 0) return counts
-    // Not `warn()`: nothing fell back to the interpreter — the build is only untuned.
-    warnings.push(`${id} — assemblyProfile: no corpus file parsed from rule "${assemblyProfile.entry}"; using the static ranking`)
-    return undefined
   }
   /** The fused table's replacement, with its selective default assembly if any. */
   const assembledReplacement = (compiled: CompiledRuleMapTable, metadata: string, select: ReadonlySet<number>): string =>

@@ -1,0 +1,29 @@
+{
+  "against": "v0.60.6",
+  "rows": {
+    "macro/jess/ast/site.css branches": {
+      "why": "Compose now re-reads a winner's inherited shape (#248, which fixes shapes lost through compose). A constant cost per parse on the SCSS and .jess macro builds, about 0.01% of branch tests with no change in calls. Which test it is was not traced.",
+      "limit": 168
+    },
+    "macro/jess/ast/positions/site.css branches": {
+      "why": "Compose now re-reads a winner's inherited shape (#248, which fixes shapes lost through compose). A constant cost per parse on the SCSS and .jess macro builds, about 0.01% of branch tests with no change in calls. Which test it is was not traced.",
+      "limit": 168
+    },
+    "macro/jess/cst/site.css branches": {
+      "why": "Compose now re-reads a winner's inherited shape (#248, which fixes shapes lost through compose). A constant cost per parse on the SCSS and .jess macro builds, about 0.01% of branch tests with no change in calls. Which test it is was not traced.",
+      "limit": 168
+    },
+    "macro/scss/ast/site.css branches": {
+      "why": "Compose now re-reads a winner's inherited shape (#248, which fixes shapes lost through compose). A constant cost per parse on the SCSS and .jess macro builds, about 0.01% of branch tests with no change in calls. Which test it is was not traced.",
+      "limit": 153
+    },
+    "macro/scss/ast/positions/site.css branches": {
+      "why": "Compose now re-reads a winner's inherited shape (#248, which fixes shapes lost through compose). A constant cost per parse on the SCSS and .jess macro builds, about 0.01% of branch tests with no change in calls. Which test it is was not traced.",
+      "limit": 153
+    },
+    "macro/scss/cst/site.css branches": {
+      "why": "Compose now re-reads a winner's inherited shape (#248, which fixes shapes lost through compose). A constant cost per parse on the SCSS and .jess macro builds, about 0.01% of branch tests with no change in calls. Which test it is was not traced.",
+      "limit": 153
+    }
+  }
+}

@@ -399,13 +399,93 @@ describe('an optional corpus profile ranks sites by measured calls', () => {
     for (const input of CASES[0]!.inputs) expect(run(entry as never, input)).toEqual(run(closure as never, input))
   })
 
+  describe('a corpus that cannot run fails the build', () => {
+    const lower = (grammar: string, corpus: string): void => {
+      const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+      try {
+        const file = join(dir, 'corpus.txt')
+        writeFileSync(file, corpus)
+        const source = `import { choice, compose, expect, literal, many, regex, rules, sequence, transform } from 'parseman' with { type: 'macro' }
+${grammar}
+${PADDING}`
+        transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [file] })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
+    it('names the reducer that threw, the file and the error', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(transform(regex(/a ?/), v => boom(v))) }))])`, 'a a'))
+        .toThrow(/assemblyProfile: gate or reducer `v => boom\(v\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
+    })
+
+    it('names the gate that threw', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: choice({ gate: s => boom(s), combinator: regex(/a/) }, regex(/b/)) }))])`, 'a'))
+        .toThrow(/assemblyProfile: gate or reducer `s => boom\(s\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
+    })
+
+    it.each([
+      ['gate', `choice({ gate: s => allowed(s), combinator: regex(/a/) }, regex(/b/))`, 's => allowed\\(s\\)'],
+      ['reducer', `transform(regex(/a/), v => allowed(v))`, 'v => allowed\\(v\\)'],
+    ])('fails on a %s that reads an imported helper', (_kind, doc, callback) => {
+      expect(() => lower(`import { allowed } from './helpers.js'
+export const g = compose([rules(g => ({ Doc: ${doc} }))])`, 'a'))
+        .toThrow(new RegExp(`assemblyProfile: gate or reducer \`${callback}\` threw on .*corpus\\.txt: ReferenceError: allowed is not defined`))
+    })
+
+    it('refuses a corpus where every file is empty', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])`, ' \n'))
+        .toThrow(/assemblyProfile: `files` has no non-empty file/)
+    })
+
+    it.each([['zero-length', ''], ['whitespace-only', ' \n']])('skips a %s file in a corpus that has content', (_kind, text) => {
+      const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+      try {
+        const empty = join(dir, 'empty.txt')
+        const full = join(dir, 'full.txt')
+        writeFileSync(empty, text)
+        writeFileSync(full, 'a')
+        const source = `import { compose, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: regex(/a/) }))])
+${PADDING}`
+        expect(() => transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [empty, full] })).not.toThrow()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('refuses a file that parses only by recovering', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: sequence(regex(/a/), expect(literal(';'))) }))])`, 'a'))
+        .toThrow(/assemblyProfile: .*corpus\.txt parses only by recovering from 1 error/)
+    })
+
+    it('refuses an empty `files`', () => {
+      const source = `import { compose, many, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])
+${PADDING}`
+      expect(() => transformMacro(source, '/tmp/empty-files.ts', new Set(['parseman']), false, false, false, { entry: 'Doc', files: [] }))
+        .toThrow(/assemblyProfile: `files` has no non-empty file/)
+    })
+
+    it('names a file the grammar rejects or stops short of', () => {
+      for (const [doc, corpus, stop] of [['regex(/a ?/)', 'b', 0], ['many(regex(/a ?/))', 'a b', 2]] as const) {
+        expect(() => lower(`export const g = compose([rules(g => ({ Doc: ${doc} }))])`, corpus))
+          .toThrow(new RegExp(`assemblyProfile: .*corpus\\.txt does not parse from rule "Doc": it stops at offset ${stop}`))
+      }
+    })
+
+    it('a grammar without the entry rule keeps the static ranking', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Other: many(regex(/a ?/)) }))])`, 'b')).not.toThrow()
+    })
+  })
+
   it('the assemblyProfile option changes only which sites are generated', () => {
     const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
     try {
       const corpus = join(dir, 'corpus.txt')
       writeFileSync(corpus, 'b b b b b b b b b b')
       const source = `import { choice, compose, many, regex, rules, literal } from 'parseman' with { type: 'macro' }
-export const g = compose([rules(g => ({ Doc: many(choice(g.A, g.B, g.C)), A: literal('a'), B: regex(/b ?/), C: regex(/c+/) }))])
+export const g = compose([rules(g => ({ Doc: many(choice(g.A, g.B, g.C)), A: literal('a'), B: regex(/b ?/), C: regex(/c+ ?/) }))])
 ${PADDING}`
       const plain = transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']))!
       const profile = { entry: 'Doc', files: [corpus] }

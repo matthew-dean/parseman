@@ -90,7 +90,7 @@ describe('compact lexical token plan wire', () => {
     const prog = encodeTable({ Root: root })
     expect('tokenPlan' in prog).toBe(false)
     const compact: CompactProgram = {
-      c: prog.code, k: prog.k, x: prog.cc, e: prog.fx, d: prog.disp,
+      c: prog.code, k: prog.k, x: prog.cc, e: [], es: [], d: prog.disp,
       r: prog.rules, f: prog.fns,
     }
     expect('tokenPlan' in expandCompact(compact)).toBe(false)

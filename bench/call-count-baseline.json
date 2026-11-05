@@ -1,0 +1,102 @@
+{
+  "emitted/less/stylesheet": {
+    "calls": 776257,
+    "branches": 3931540
+  },
+  "emitted/less/mixins": {
+    "calls": 837629,
+    "branches": 4234919
+  },
+  "emitted/css/stylesheet": {
+    "calls": 434657,
+    "branches": 2356925
+  },
+  "emitted/graphql/document": {
+    "calls": 203741,
+    "branches": 1616611
+  },
+  "emitted/json/document": {
+    "calls": 166652,
+    "branches": 884709
+  },
+  "closure/less/stylesheet": {
+    "calls": 1129029,
+    "branches": 5692179
+  },
+  "closure/less/mixins": {
+    "calls": 1216449,
+    "branches": 6156813
+  },
+  "closure/css/stylesheet": {
+    "calls": 619361,
+    "branches": 3161178
+  },
+  "closure/graphql/document": {
+    "calls": 294347,
+    "branches": 1724325
+  },
+  "closure/json/document": {
+    "calls": 268887,
+    "branches": 1309587
+  },
+  "macro/css/ast/site.css": {
+    "calls": 201177,
+    "branches": 779985
+  },
+  "macro/css/ast/positions/site.css": {
+    "calls": 245216,
+    "branches": 1344296
+  },
+  "macro/css/cst/site.css": {
+    "calls": 216438,
+    "branches": 1108404
+  },
+  "macro/scss/ast/site.css": {
+    "calls": 355741,
+    "branches": 1479154
+  },
+  "macro/scss/ast/positions/site.css": {
+    "calls": 405983,
+    "branches": 2297744
+  },
+  "macro/scss/cst/site.css": {
+    "calls": 341220,
+    "branches": 1802888
+  },
+  "macro/jess/ast/site.css": {
+    "calls": 243951,
+    "branches": 1161529
+  },
+  "macro/jess/ast/positions/site.css": {
+    "calls": 283664,
+    "branches": 1670635
+  },
+  "macro/jess/cst/site.css": {
+    "calls": 261079,
+    "branches": 1346602
+  },
+  "macro/less/ast/site.css": {
+    "calls": 323138,
+    "branches": 1397580
+  },
+  "macro/less/ast/app.less": {
+    "calls": 295133,
+    "branches": 1287956
+  },
+  "macro/less/ast/positions/site.css": {
+    "calls": 379636,
+    "branches": 2094761
+  },
+  "macro/less/ast/positions/app.less": {
+    "calls": 353216,
+    "branches": 1943072
+  },
+  "macro/less/cst/site.css": {
+    "calls": 312475,
+    "branches": 1597701
+  },
+  "macro/less/cst/app.less": {
+    "calls": 284016,
+    "branches": 1446986
+  }
+}

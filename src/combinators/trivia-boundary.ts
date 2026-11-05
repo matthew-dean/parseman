@@ -20,9 +20,11 @@ const MAX_DEPTH = 12
  *
  * `lazy` is deliberately false and is never followed: a reference is the
  * delegation this question is about, so following it would both loop and answer
- * for a different rule. `grammar` is false because it declares its own scope, so
- * an outer install never reaches its body. `dispatch` is false because it is a
- * ROUTE: its arms re-enter from the routed token and spell their own padding.
+ * for a different rule. A `grammar` that names or clears trivia declares its own
+ * scope, so an outer install never reaches its body and the answer is false; one
+ * that does not (`parser({ trackLines: true }, …)`, which `rules({ trackLines })`
+ * wraps every rule in) inherits, so it is transparent. `dispatch` is false because
+ * it is a ROUTE: its arms re-enter from the routed token and spell their own padding.
  *
  * Structural and pure — callers resolve it ONCE, not per parse.
  */
@@ -35,6 +37,12 @@ export function hasOwnTriviaBoundary(p: Combinator<unknown>, depth: number = MAX
     // Multi-term forms: the gaps BETWEEN terms are the ambient-trivia positions.
     case 'sequence': return d.parsers.length > 1
     case 'many': case 'oneOrMore': case 'sepBy': return true
+    // A scope that names or clears trivia keeps an outer install out of its body.
+    // Any other inherits, so it falls through at no cost in depth: line tracking
+    // wraps every rule in one, and must not change what this walk sees.
+    case 'grammar':
+      if (d.triviaParser || d.clearTrivia) return false
+      depth++
     // Transparent wrappers — they add no position, so ask what they wrap.
     case 'node': case 'transform': case 'leaf': case 'label': case 'field':
     case 'token': case 'attempt': case 'optional': case 'expect': case 'withCtx':

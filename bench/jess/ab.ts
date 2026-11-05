@@ -124,7 +124,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { interleave, materialise, median, pairedMedianRatio, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
+import { assertIndependentLegs, interleave, materialise, median, pairedMedianRatio, sign, type Case, type Contest, type Measurement } from '../ab-harness.ts'
 import { run } from '../../src/functional/run.ts'
 import {
   DIALECTS, ENTRY, JESS_ROOT, LOAD_CEILING, VARIANT_SETTINGS,
@@ -922,6 +922,7 @@ async function main(): Promise<void> {
   writeFileSync(path.join(ROOT, '.cache', 'jess-ab-refsrc'), refSrc)
   const refSha = (JSON.parse(readFileSync(path.join(refDir, 'package.json'), 'utf8')) as { version: string }).version
   const headSrc = path.join(ROOT, 'src')
+  assertIndependentLegs(GATE, { reference: refSrc, head: headSrc }, SELF)
 
   console.log(`${GATE}: ${SELF
     ? `SELF-CHECK — ${REF} against itself. Identical code on both sides; this MUST read flat.`

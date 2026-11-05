@@ -4,6 +4,7 @@ import type { Runnable } from '../functional/run.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
+import { collectAfterLink } from './link-scope.ts'
 import { parser as grammarParser } from './grammar.ts'
 import { collectGrammarReflection, NODE_TAG, NODE_TYPE, type GrammarWithReflection } from '../cst/reflection.ts'
 import { attachGrammarReflection } from '../cst/reflection-attach.ts'
@@ -289,6 +290,7 @@ export function linkRules(
   // before the rule's own parser is built — enabling forward references. A later
   // recipe's definition of a name WINS; the name keeps its first position.
   const winners = new Map<string, { parser: Combinator<unknown>; options: RulesOptions | undefined }>()
+  const afterLink: (() => void)[] = []
   // `prior.X`: the winner for X BEFORE the running recipe, read while that recipe's
   // factory runs (its own definitions join `winners` only after it returns). It is
   // the earlier definition itself, inlined into the new rule's graph, so it costs no
@@ -307,41 +309,45 @@ export function linkRules(
       return hole
     },
   })
-  for (const recipe of recipes) {
-    const definitions = recipe.factory(proxy, prior)
-    for (const key of Object.keys(definitions)) {
-      winners.set(key, { parser: definitions[key]!, options: recipe.options })
+  const copies = new Map<object, Combinator<unknown>>()
+  try {
+    for (const recipe of recipes) {
+      const definitions = collectAfterLink(afterLink, () => recipe.factory(proxy, prior))
+      for (const key of Object.keys(definitions)) {
+        winners.set(key, { parser: definitions[key]!, options: recipe.options })
+      }
     }
+    // Fill each ref with its actual definition, or store directly if never accessed via proxy.
+    for (const [key, { parser: defined }] of winners) {
+      const placeholder = cache[key]
+      const parser = ownRule(defined, copies)
+      if (placeholder === parser) {
+        throw new Error(`rules(): rule "${key}" cannot be a direct alias to itself`)
+      }
+      if (isDefinableRef(placeholder)) {
+        if (!isNamedRuleRefForAnotherRule(parser, key)) tagRule(parser, key)
+        placeholder.define(parser)
+        // Propagate actual first-set so later choices wrapping this ref get correct dispatch.
+        placeholder._meta.firstSet = parser._meta.firstSet
+        placeholder._meta.canMatchNewline = parser._meta.canMatchNewline
+      } else if (isNamedRuleRefForAnotherRule(parser, key) || link !== undefined) {
+        if (!isNamedRuleRefForAnotherRule(parser, key)) tagRule(parser, key)
+        const alias = ref()
+        tagRule(alias, key)
+        alias.define(parser)
+        alias._meta.firstSet = parser._meta.firstSet
+        alias._meta.canMatchNewline = parser._meta.canMatchNewline
+        cache[key] = alias
+      } else {
+        tagRule(parser, key)
+        cache[key] = parser
+      }
+    }
+  } finally {
+    // A nested link's nodes wait on this list, so they settle even if this link throws.
+    for (const settle of afterLink) settle()
   }
   const keys = [...winners.keys()]
-
-  // Fill each ref with its actual definition, or store directly if never accessed via proxy.
-  const copies = new Map<object, Combinator<unknown>>()
-  for (const [key, { parser: defined }] of winners) {
-    const placeholder = cache[key]
-    const parser = ownRule(defined, copies)
-    if (placeholder === parser) {
-      throw new Error(`rules(): rule "${key}" cannot be a direct alias to itself`)
-    }
-    if (isDefinableRef(placeholder)) {
-      if (!isNamedRuleRefForAnotherRule(parser, key)) tagRule(parser, key)
-      placeholder.define(parser)
-      // Propagate actual first-set so later choices wrapping this ref get correct dispatch.
-      placeholder._meta.firstSet = parser._meta.firstSet
-      placeholder._meta.canMatchNewline = parser._meta.canMatchNewline
-    } else if (isNamedRuleRefForAnotherRule(parser, key) || link !== undefined) {
-      if (!isNamedRuleRefForAnotherRule(parser, key)) tagRule(parser, key)
-      const alias = ref()
-      tagRule(alias, key)
-      alias.define(parser)
-      alias._meta.firstSet = parser._meta.firstSet
-      alias._meta.canMatchNewline = parser._meta.canMatchNewline
-      cache[key] = alias
-    } else {
-      tagRule(parser, key)
-      cache[key] = parser
-    }
-  }
 
   // Grammar-level stamps, per rule. Each touches only its own rule — a wrap
   // replaces that rule's entry, and references hold the placeholder — so one pass
