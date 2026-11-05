@@ -570,6 +570,18 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ## Queued and in progress
 
+- **Selective assembly ranked by a corpus instead of statically: faster at the same bytes.**
+  A real `tsdown` build of Jess's AST grammars, trained on `benchmark.less` and
+  `bootstrap-less-port`, or on the Bootstrap and Foundation SCSS files that parse today.
+  JIT marginal instructions against `main`, on files outside the training set, not on a
+  quiet machine. A/A within 0.7%.
+  Less at `0.5`: `less-plugin-dls` -8.1%, less.js test data -5.5%, 682,388 B against
+  687,822 B. SCSS at `0.5`: generated workload -2.7%, Sass spec files -3.0%, 432,585 B
+  against 445,982 B. The static ranking at the same budgets is within 1.6% of `main`.
+  Needs `assemblyProfile.scope` for grammars whose callbacks read helpers. Jess adopts it
+  in a parser bump; the SCSS corpus waits on the parser gaps that stop the other files
+  parsing. Quiet-machine and `--jitless` rows are still to do.
+
 - **Left-corner routing (accepted direction, prototype).** Every level from a node down
   to the first node a character reaches starts at the same position with the same piece.
   Each route is its own chain of closures, so wrappers that only route cost nothing. The

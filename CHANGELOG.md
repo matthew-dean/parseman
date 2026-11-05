@@ -5,6 +5,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`assemblyProfile.scope` lets a grammar whose reducers or gates read imported helpers
+  use a measured ranking.** Callback source runs at build time with no module around it,
+  so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for
+  that run only.
+  A name that's already a global fails the build.
+- **A build fails when grammars were profiled and none has the `entry` rule.** A mistyped
+  rule name used to give the static ranking with no warning, so the output looked profiled
+  and wasn't. A direct `transformMacro` caller gets `assemblyProfile: 'no-entry'` on the
+  result instead, and has to read it.
 - **`assemblyBudget` is now a share of a module's code, not counting comments or
   whitespace, and a larger budget never loses a site.** The budget was a share of the
   module's raw text, so a longer comment bought more generated code: on Jess's SCSS
