@@ -384,8 +384,8 @@ export const DEFECTS = {
     why: 'encoder: a node gate reads its body through a nullable pad, so a miss reports a static set where entering the body reports its own',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, false)\n        if (fs.kind === \'any\') return body',
-      replace: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, true)\n        if (fs.kind === \'any\') return body',
+      find: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, false)\n        if (fs.kind === \'any\') return run',
+      replace: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, true)\n        if (fs.kind === \'any\') return run',
     }],
   },
 

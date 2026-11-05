@@ -557,6 +557,56 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ## Queued and in progress
 
+- **`continues(type, corner, tail, build)`: open a wrapper only when a tail starts
+  (prototype, `experiment/no-collapse-wrappers`).** Today a ladder level opens a frame and a
+  children array, runs its corner, counts one child and throws the frame away. `continues`
+  runs the corner with no frame, reads the tail's first-token test from its own rows (the
+  repeat's item class, its gap gate, an optional's gate), and on a miss the corner is the
+  result: no frame, array, builder call or count test. A hit takes the corner's published
+  child back and opens the wrapper with it seeded. The reference driver, recovery and probes
+  run the node as written. An encode error refuses a corner that does not publish one node
+  and a tail that cannot take nothing, so a one-child node that means something stays a `node`.
+  - Marginal instructions per parse, default runtime, default budgets, against `main` @
+    `2fb5b21e`, interleaved. AST, 5 reps, N 5 to 45: `benchmark.less` 367.8M to 330.7M
+    (-10.09%, A/A -0.93%); `bootstrap4-all.less` 397.8M to 368.4M (-7.39%, A/A -0.25%);
+    `gen-workload.scss` 1053.3M to 798.8M (-24.16%, A/A +0.90%); `jess-x8.jess` 145.4M to
+    131.8M (-9.34%, A/A -0.34%). `benchmark.css`, 9 reps: 212.6M to 201.5M (-5.22%, A/A +2.83%,
+    spread 6%, so noisy). CST, 3 reps, N 5 to 25: -17.10%, -15.48%, -32.37%, -11.83%, and CSS
+    -23.26%; every A/A inside +1.45%. AST with positions, same window: Less -12.75%, SCSS
+    -29.09%, CSS -15.20%. An x64 gate was not run, and neither was `--jitless`.
+  - Sampled allocation per parse (A/A within 0.1%): Less 31.7 to 26.1 MB, bootstrap 33.5 to
+    28.8, SCSS 109.6 to 74.8, CSS 24.4 to 16.7, `.jess` 11.6 to 8.9. Calls per parse: -12.2%,
+    -10.0%, -23.5%, -8.6%, -10.9%. Builder calls (AST): Less 41,811 to 27,847, bootstrap
+    42,267 to 30,799, SCSS 204,035 to 74,016, CSS 41,063 to 24,936, `.jess` 16,833 to 9,913.
+    Scavenges over 60 parses: 60 to 53, 62 to 56, 137 to 99, 48 to 38, 43 to 37.
+  - Bytes do not improve: gzip moves -0.5% to +2.3% by artifact; the largest is CSS AST
+    (+1.9%), from assembly selection, not code size. The vendored grammars lose 91 lines. The
+    engine gains 338: `unwrap` and `collapse` cannot go yet, for two reasons. Less `MathUnary` as
+    a choice changes the expected set on 24 of 1,301 corpus inputs (all truncated values), and
+    a wrapper opened on a false alarm still counts its children. `unwrap` has no site in any
+    of the four grammars, on `main` too, so it can go on its own.
+  - Identity: AST and AST with positions identical to `main` on every sweep input (CSS 385,
+    Less 1,301, SCSS 9,669, `.jess` 93), results, errors and spans. `check:differentials` passes.
+    CST: nodes CSS 123,331 to 69,212, Less 272,482 to 189,646, SCSS 542,549 to 198,301, `.jess`
+    35,967 to 18,949; mean depth 4.66 to 3.46, 7.97 to 6.25, 10.31 to 4.92, 6.98 to 4.31.
+    Leaves and spans match, except that a `ValueList` comma is now a child leaf on 3 CSS and 43
+    Less inputs, because the tail is `many(...)` and not a `sepBy`.
+  - Grammar changes alone, on `main`'s engine, before any engine work: Less -2.60%, bootstrap
+    -1.78%, SCSS -3.15% to -4.13%. A wrapper whose reducer only returned its one child became
+    a plain choice.
+  - With left-corner routes (`perf/left-corner-routes-v2` @ `2d57fbbb`, scratch merge, N 5 to
+    25): routes run only at `assemblyBudget` 0, so that is the fair row. Routes alone: Less
+    -4.91%, bootstrap -3.16%, SCSS -2.82%, CSS -3.21%, `.jess` +0.38%. This alone: -7.74%, -6.19%,
+    -24.76%, -13.72%, -9.83%. Both: -6.64%, -4.26%, -24.14%, -14.86%, -5.74%. They overlap today,
+    because route derivation does not read `OP_CONT` and stops there. Teaching it would make a
+    plain site a one-level route; that was not built.
+  - Found on the way: `matchesEmpty` had no `field` case, so every `field`-led sequence read
+    as nullable and a real gate went missing (Less `ValueList` opened 2,797 wrappers to build 19).
+    The one-line fix alone is flat in instructions and cuts raw bytes up to 3% (`.jess` AST
+    392,568 to 380,971). `dispatch()` allocates a `[key, arm]` pair at every visit. Separately, the
+    shipped `.jess` AST-with-positions parser stops at offset 3975 of `jess-x8.jess`, on `main`
+    too, with `ok: true`.
+
 - **Left-corner routing (accepted direction, prototype).** Every level from a node down
   to the first node a character reaches starts at the same position with the same piece.
   Each route is its own chain of closures, so wrappers that only route cost nothing. The
