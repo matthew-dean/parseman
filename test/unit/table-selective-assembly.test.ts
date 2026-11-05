@@ -27,14 +27,15 @@ import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../s
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { fitHotSites, selectHotSites } from '../../src/table/select-hot.ts'
 import { childSlots } from '../../src/table/child-slots.ts'
-import { OP_GAPGATE } from '../../src/table/ops.ts'
+import { continuationGate } from '../../src/table/late-frame.ts'
+import { OP_CONT, OP_GAPGATE } from '../../src/table/ops.ts'
 import { mergeSameBodies } from '../../src/plugin/entry-supercompiler.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cssRules } from '../../examples/css/parser.ts'
 import { jsonRules, jsonWs } from '../../bench/table-grammars.ts'
 import type { Combinator } from '../../src/types.ts'
-import { choice, literal, many, noTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { choice, literal, many, node, noTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
 import { seeded } from '../helpers/table-readers.ts'
 
 /**
@@ -618,6 +619,31 @@ ${PADDING}`
       counts[lonely] = 40
       const bytes = new Map([repeat, item, lonely].map(ip => [ip, 10]))
       expect([...selectHotSites(gated.code, [], bytes, 20, counts)]).toEqual([repeat, item])
+    })
+
+    it('sees a late frame\'s corner and its tail', () => {
+      const built = (type: string) => (children: readonly unknown[]) => ({ type, children })
+      const level = (type: string, corner: Combinator<unknown>, tail: Combinator<unknown>): Combinator<unknown> =>
+        node(type, sequence(corner, tail), built(type), { collapse: true })
+      const ladder = encodeTable(rules({ trivia: regex(/[ ]+/) }, (g: RuleMap) => ({
+        Sum: level('Sum', g.Product!, many(sequence(regex(/[+-]/), g.Product!))),
+        Product: level('Product', g.Atom!, many(sequence(regex(/[*/]/), g.Atom!))),
+        Atom: node('Atom', regex(/[0-9a-z]+/), built('Atom')),
+      })) as unknown as RuleMap, {})
+      const cont = [...reachableIps(ladder)].find(ip => ladder.code[ip] === OP_CONT && continuationGate(ladder.code, ladder.code[ip + 3]!) !== undefined)!
+      expect(cont).toBeDefined()
+      const corner = ladder.code[cont + 1]!
+      const tail = ladder.code[cont + 3]!
+      const lonely = [...reachableIps(ladder)].find(ip => ![cont, corner, tail].includes(ip))!
+      const pick = (one: number, other: number): number[] => {
+        const counts = new Int32Array(ladder.code.length)
+        counts[cont] = 100
+        counts[one] = 30
+        counts[lonely] = 40
+        return [...selectHotSites(ladder.code, [], new Map([cont, one, other, lonely].map(ip => [ip, 10])), 20, counts)]
+      }
+      expect(pick(tail, corner)).toEqual([cont, tail])
+      expect(pick(corner, tail)).toEqual([cont, corner])
     })
 
     it('a larger budget only adds to what a smaller one took', () => {

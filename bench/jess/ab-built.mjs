@@ -107,7 +107,6 @@ for (const leg of legs) {
   leg.digest = inChild('digest', leg, 0)
   leg.instructions = []
   leg.cycles = []
-  leg.bytes = readFileSync(leg.module).length
 }
 for (let rep = 0; rep < reps; rep++) {
   for (const leg of [...legs.slice(rep % legs.length), ...legs.slice(0, rep % legs.length)]) {
@@ -129,7 +128,7 @@ for (const leg of legs) {
   console.log(line.join('  '))
 }
 if (values.out !== undefined) {
-  const row = { file, reps, n1, n2, load, legs: Object.fromEntries(legs.map(leg => [leg.name, { calls: leg.calls, digest: leg.digest, bytes: leg.bytes, instructions: reps > 0 ? median(leg.instructions) : null, cycles: reps > 0 ? median(leg.cycles) : null }])) }
+  const row = { file, reps, n1, n2, load, legs: Object.fromEntries(legs.map(leg => [leg.name, { calls: leg.calls, digest: leg.digest, instructions: reps > 0 ? median(leg.instructions) : null, cycles: reps > 0 ? median(leg.cycles) : null }])) }
   appendFileSync(values.out, `${JSON.stringify(row)}\n`)
 }
 process.exit(sameTree ? 0 : 1)

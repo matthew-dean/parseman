@@ -62,6 +62,22 @@ export function selectHotSites(
   return selected
 }
 
+/**
+ * The sites the function for `ip` calls, as `emit-assembly.ts` lowers it. A late frame
+ * is lowered with its wrapper in one function, calling its corner and its tail. A gap
+ * gate has no body, so its item counts as the repeat's own child, and adding the row
+ * moves no other site's estimate (`gap-gate.ts`).
+ */
+function edgesAsLowered(code: readonly number[], ip: number, out: number[]): void {
+  out.length = 0
+  if (code[ip] === OP_CONT && continuationGate(code, code[ip + 3]!) !== undefined) {
+    out.push(code[ip + 1]!, code[ip + 3]!)
+    return
+  }
+  childSlots(code, ip, out)
+  for (let i = 0; i < out.length; i++) if (code[out[i]!] === OP_GAPGATE) out[i] = code[out[i]! + 1]!
+}
+
 /** The sites by estimated weight per byte. Ties (saturated cycles) break by site
  * offset, so a build is deterministic. */
 function staticRanking(code: readonly number[], entries: readonly number[], siteBytes: ReadonlyMap<number, number>): number[] {
@@ -91,10 +107,8 @@ function* connectedRanking(code: readonly number[], siteBytes: ReadonlyMap<numbe
   const crossings: [neighbour: number, gain: number][][] = ran.map(() => [])
   const kids: number[] = []
   ran.forEach((ip, from) => {
-    kids.length = 0
-    childSlots(code, ip, kids)
-    for (const kid of kids) {
-      const callee = code[kid] === OP_GAPGATE ? code[kid + 1]! : kid
+    edgesAsLowered(code, ip, kids)
+    for (const callee of kids) {
       const to = slot.get(callee)
       if (to === undefined) continue
       const gain = CROSSING_WEIGHT * calls[callee]!
@@ -149,23 +163,12 @@ function staticWeights(code: readonly number[], entries: readonly number[]): Map
     const next = new Map<number, number>()
     for (const ip of entries) next.set(ip, 1)
     for (const [ip, w] of weight) {
-      kids.length = 0
-      childSlots(code, ip, kids)
+      edgesAsLowered(code, ip, kids)
       const op = code[ip]
-      // A late frame is lowered with its wrapper in one function, calling these two.
-      if (op === OP_CONT && continuationGate(code, code[ip + 3]!) !== undefined) {
-        kids.length = 0
-        kids.push(code[ip + 1]!, code[ip + 3]!)
-      }
       const scale = op === OP_REP || op === OP_REPV ? LOOP
         : op === OP_CHOICE || op === OP_DISPATCH ? 1 / Math.max(1, kids.length)
         : 1
-      for (const k of kids) {
-        // A gap gate has no body: weigh its item as the repeat's own child, so
-        // adding the row moves no other site's estimate (`gap-gate.ts`).
-        const kid = code[k] === OP_GAPGATE ? code[k + 1]! : k
-        next.set(kid, Math.min(CAP, (next.get(kid) ?? 0) + w * scale))
-      }
+      for (const kid of kids) next.set(kid, Math.min(CAP, (next.get(kid) ?? 0) + w * scale))
     }
     weight = next
   }
