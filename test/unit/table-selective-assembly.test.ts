@@ -21,7 +21,7 @@ import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
-import { selectHotSites } from '../../src/table/select-hot.ts'
+import { fitHotSites, selectHotSites } from '../../src/table/select-hot.ts'
 import { run } from '../../src/functional/run.ts'
 import { cssRules } from '../../examples/css/parser.ts'
 import { jsonRules, jsonWs } from '../../bench/table-grammars.ts'
@@ -205,14 +205,22 @@ describe('a selective assembly parses exactly as the closure engine', () => {
       expect(spent).toBeLessThanOrEqual(budget)
       expect(picked.size).toBeGreaterThan(0)
     }
+    // A larger budget keeps every site: a big site it now admits does not crowd out
+    // the small ones a smaller budget took after it.
+    let last = new Set<number>()
+    for (let budget = total / 100; budget < total; budget += total / 100) {
+      const picked = selectHotSites(prog.code, entries, siteBytes, budget)
+      expect([...last].filter(ip => !picked.has(ip)), `budget ${budget}`).toEqual([])
+      last = picked
+    }
     // Deterministic: the same inputs select the same sites.
     expect([...selectHotSites(prog.code, entries, siteBytes, total / 2)])
       .toEqual([...selectHotSites(prog.code, entries, siteBytes, total / 2)])
   })
 })
 
-/** A module long enough (the budget is the module's own length) to pay for an assembly's prelude. */
-const PADDING = '// padding\n'.repeat(12000)
+/** A module with enough code (a budget is a share of it, comments aside) to pay for an assembly's prelude. */
+const PADDING = `export const padding = '${'x'.repeat(132_000)}'\n`
 const factoryBytes = (code: string): number[] =>
   [...code.matchAll(/factory:function\([^)]*\)\{([\s\S]*?)\n\},plan:/g)].map(m => m[1]!.length)
 
@@ -236,10 +244,8 @@ describe('the macro build ships a selective assembly within its module budget', 
   })
 
   it('never comes back empty from a budget that a smaller budget already filled', () => {
-    // The narrowing loop scales its target by ceiling/bytes. Near the ceiling a
-    // whole site is the step, so that ratio can stall a few bytes over it; the
-    // loop must still land on a fitting selection rather than give up and ship
-    // no assembly at all.
+    // Near the ceiling a whole site is the step, so a walk down the ranking must
+    // still land on a fitting selection rather than give up and ship no assembly.
     const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(/[0-9]*/))] as const)
     const compiled = compileRuleMap([
       ['Doc', many(choice(...words.map(([, w]) => w) as [Combinator<unknown>, ...Combinator<unknown>[]]))],
@@ -254,6 +260,58 @@ describe('the macro build ships a selective assembly within its module budget', 
       if (sites.size > 0) { filled = true; expect(bytes).toBeLessThanOrEqual(budget) }
     }
     expect(filled).toBe(true)
+  }, 60_000)
+
+  it('each budget\'s selection is a prefix of every larger budget\'s, when the estimate overshoots', () => {
+    // The real source is not the sum of the estimates: a site can pull in a shared
+    // helper, and can also remove the wrapper another site needed to call it.
+    const count = 80
+    const bytesOf = (ip: number): number => 40 + (ip * 2_654_435_761 >>> 0) % 400
+    const siteBytes = new Map(Array.from({ length: count }, (_, ip) => [ip, bytesOf(ip)]))
+    const calls = Array.from({ length: count }, (_, ip) => 1 + (ip * 40_503 >>> 0) % 997)
+    const fixed = 500
+    const sourceBytes = (sites: ReadonlySet<number>): number => {
+      let bytes = fixed
+      for (const ip of sites) {
+        bytes += bytesOf(ip) + (ip % 11 === 0 ? 1_500 : 0) + (sites.has(ip + 1) ? -30 : 60)
+      }
+      return bytes
+    }
+    const fitted = (ceiling: number): number[] =>
+      [...fitHotSites([], [], siteBytes, fixed, ceiling, sourceBytes, calls)?.sites ?? []]
+
+    const total = sourceBytes(new Set(siteBytes.keys()))
+    let last: number[] = []
+    let lastEstimated: number[] = []
+    let overshoots = 0
+    for (let ceiling = fixed; ceiling <= total; ceiling += 7) {
+      const sites = fitted(ceiling)
+      expect(sites.slice(0, last.length), `ceiling ${ceiling}`).toEqual(last)
+      expect(sourceBytes(new Set(sites)), `ceiling ${ceiling}`).toBeLessThanOrEqual(Math.max(ceiling, fixed))
+      const estimated = [...selectHotSites([], [], siteBytes, ceiling - fixed, calls)]
+      expect(estimated.slice(0, lastEstimated.length), `ceiling ${ceiling}`).toEqual(lastEstimated)
+      if (sites.length < estimated.length) overshoots++
+      last = sites
+      lastEstimated = estimated
+    }
+    expect(fitted(total).length).toBe(count)
+    expect(overshoots).toBeGreaterThan(100)
+  })
+
+  it('a larger budget keeps every site a smaller one selected', () => {
+    const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(i % 7 === 0 ? /[0-9]*(?:a|b|c|d|e|f)*/ : /[0-9]*/))] as const)
+    const compiled = compileRuleMap([
+      ['Doc', many(choice(...words.map(([, w]) => w) as [Combinator<unknown>, ...Combinator<unknown>[]]))],
+      ...words,
+    ])!
+    const full = compiled.selectAssembly(Infinity).bytes
+    let last = new Set<number>()
+    for (let share = 0.02; share < 1; share += 0.02) {
+      const { sites } = compiled.selectAssembly(Math.floor(full * share))
+      expect([...last].filter(ip => !sites.has(ip)), `share ${share}`).toEqual([])
+      last = new Set(sites)
+    }
+    expect(last.size).toBeGreaterThan(0)
   }, 60_000)
 
   it('a terminal composeLeaf carries generated code for some sites, the closure engine for the rest', () => {
@@ -339,6 +397,17 @@ describe('an optional corpus profile ranks sites by measured calls', () => {
     const closure = tableRules({ ...prog, asm: [] }).Stylesheet!
     const entry = tableRules(selective(prog, picked)).Stylesheet!
     for (const input of CASES[0]!.inputs) expect(run(entry as never, input)).toEqual(run(closure as never, input))
+  })
+
+  it('reports no sites when a later compose() leaves the module on the runtime compose()', () => {
+    const source = `import { choice, compose, many, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: many(choice(g.A, g.B)), A: regex(/a/), B: regex(/b+/) }))])
+${PADDING}`
+    const lower = (code: string) => transformMacro(code, '/tmp/fallback.ts', new Set(['parseman']), false, false, false, undefined, 2)!
+    expect(lower(source).assemblySites.length).toBeGreaterThan(0)
+    const fellBack = lower(`${source}export const late = compose([imported])\n`)
+    expect(fellBack.code).toContain('compose([rules(')
+    expect(fellBack.assemblySites).toEqual([])
   })
 
   describe('a corpus that cannot run fails the build', () => {

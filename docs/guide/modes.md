@@ -42,7 +42,7 @@ At build time the plugin runs your combinator declarations and replaces them wit
 literal. Ordinary rules stay compact data. A module's terminal grammar — its
 `composeLeaf()`, or a `compose()` in a module that declares no `composeLeaf()` — gets one
 extra thing: generated code for its hottest sites, baked in at build time, within a budget
-of the module's own source length (the plugin's `assemblyBudget`, a quarter by default). The closure engine runs every other site. Its
+of the module's own code, comments and whitespace aside (the plugin's `assemblyBudget`, a half by default). The closure engine runs every other site. Its
 line-tracking and CST siblings stay compact, so you don't pay for that four times over
 (`test/unit/table-selective-assembly.test.ts`; `pnpm size:guard:jess` holds jess's four
 grammars within 5× their source).
