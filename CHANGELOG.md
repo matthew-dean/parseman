@@ -6,7 +6,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 ## Unreleased
 
 - **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
-  or gate that threw.** It used to swallow the throw, and when no file parsed it warned
+  or gate that threw.** So does an empty `files`, an empty file, and one that parses only
+  by recovering. It used to swallow the throw, and when no file parsed it warned
   and shipped the static ranking, so a build configured with a measured ranking could
   silently ship a different one. On Jess's Less and SCSS grammars the gates read imported
   helpers, which aren't in scope at build time, so a profile on those grammars now fails

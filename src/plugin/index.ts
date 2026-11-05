@@ -184,7 +184,8 @@ export type AssemblyProfile = {
   /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar
    * without this rule keeps the static ranking. */
   readonly entry: string
-  /** Paths of representative inputs. Each has to parse, or the build fails. */
+  /** Paths of representative inputs. There must be at least one, and each has to
+   * parse in full without recovery, or the build fails. */
   readonly files: readonly string[]
 }
 
@@ -2432,6 +2433,8 @@ function transformMacroImpl(
     // Only the default AST/no-lines table carries an assembly, so only it is profiled.
     if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1
       || !(assemblyProfile.entry in compiled.prog.rules)) return undefined
+    const refuse = (why: string): never => { throw new Error(`${id} — assemblyProfile: ${why}`) }
+    if (assemblyProfile.files.length === 0) refuse('`files` is empty')
     let thrower: unknown
     // A builder re-lowered from carried IR is inert at build time; for COUNTING
     // only, a plain node stands in for it, so the corpus can run past it.
@@ -2447,15 +2450,18 @@ function transformMacroImpl(
     return countSiteVisits(compiled.prog, rules => {
       const entry = rules[assemblyProfile.entry]!
       corpusTexts(assemblyProfile).forEach((text, i) => {
-        const file = assemblyProfile.files[i]
+        const file = assemblyProfile.files[i]!
+        if (text.trim() === '') refuse(`${file} is empty`)
         let result
         try { result = run(entry, text) } catch (e) {
           const source = String(thrower).replace(/\s+/g, ' ').slice(0, 200)
-          throw new Error(`${id} — assemblyProfile: ${thrower === undefined ? 'the parse' : `reducer \`${source}\``} threw on ${file}: ${String(e)}`, { cause: e })
+          throw new Error(`${id} — assemblyProfile: ${thrower === undefined ? 'the parse' : `gate or reducer \`${source}\``} threw on ${file}: ${String(e)}`, { cause: e })
         }
         if (!result.ok || result.unconsumedFrom !== null) {
-          const stop = result.ok ? result.unconsumedFrom : result.span.end
-          throw new Error(`${id} — assemblyProfile: ${file} does not parse from rule "${assemblyProfile.entry}": it stops at offset ${stop}`)
+          refuse(`${file} does not parse from rule "${assemblyProfile.entry}": it stops at offset ${result.ok ? result.unconsumedFrom : result.span.end}`)
+        }
+        if (result.errors.length > 0) {
+          refuse(`${file} parses only by recovering from ${result.errors.length} error(s), first at offset ${result.errors[0]!.span.start}`)
         }
       })
     }, fns)

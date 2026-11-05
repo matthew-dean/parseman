@@ -347,7 +347,7 @@ describe('an optional corpus profile ranks sites by measured calls', () => {
       try {
         const file = join(dir, 'corpus.txt')
         writeFileSync(file, corpus)
-        const source = `import { compose, many, regex, rules, transform } from 'parseman' with { type: 'macro' }
+        const source = `import { choice, compose, expect, literal, many, regex, rules, sequence, transform } from 'parseman' with { type: 'macro' }
 ${grammar}
 ${PADDING}`
         transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [file] })
@@ -358,7 +358,30 @@ ${PADDING}`
 
     it('names the reducer that threw, the file and the error', () => {
       expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(transform(regex(/a ?/), v => boom(v))) }))])`, 'a a'))
-        .toThrow(/assemblyProfile: reducer `v => boom\(v\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
+        .toThrow(/assemblyProfile: gate or reducer `v => boom\(v\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
+    })
+
+    it('names the gate that threw', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: choice({ gate: s => boom(s), combinator: regex(/a/) }, regex(/b/)) }))])`, 'a'))
+        .toThrow(/assemblyProfile: gate or reducer `s => boom\(s\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
+    })
+
+    it('refuses an empty corpus file', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])`, ' \n'))
+        .toThrow(/assemblyProfile: .*corpus\.txt is empty/)
+    })
+
+    it('refuses a file that parses only by recovering', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: sequence(regex(/a/), expect(literal(';'))) }))])`, 'a'))
+        .toThrow(/assemblyProfile: .*corpus\.txt parses only by recovering from 1 error/)
+    })
+
+    it('refuses an empty `files`', () => {
+      const source = `import { compose, many, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])
+${PADDING}`
+      expect(() => transformMacro(source, '/tmp/empty-files.ts', new Set(['parseman']), false, false, false, { entry: 'Doc', files: [] }))
+        .toThrow(/assemblyProfile: `files` is empty/)
     })
 
     it('names a file the grammar rejects or stops short of', () => {
