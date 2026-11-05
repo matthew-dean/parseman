@@ -232,17 +232,16 @@ export function node<N>(
   // a log it never reads, at the price of the full capture frame on every match.
   const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : project === undefined)
   const readsState = build ? buildReadsState(def) : project === undefined
-  const readsFields = build ? buildReadsFields(def) : project === undefined
-  let hasOwnFields = false
-  let capturesFields = false
-  const settleFields = (): void => {
-    hasOwnFields = parserHasOwnFields(combinator)
-    capturesFields = hasOwnFields && readsFields
-  }
-  settleFields()
+  let hasOwnFields = parserHasOwnFields(combinator)
+  let capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)
   // Inside a `rules()` factory a body that reaches its field through `g.X` reads as
   // having none until that reference is defined, so settle it again then.
-  if (!hasOwnFields) afterLink(settleFields)
+  if (!hasOwnFields) {
+    afterLink(() => {
+      hasOwnFields = parserHasOwnFields(combinator)
+      capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)
+    })
+  }
   // First-set fail-fast (mirrors emitNode's codegen guard): a node whose body can't
   // match empty and whose first set can't start here can only fail, so reject BEFORE
   // allocating the CST capture frame. Sound and output-neutral — the failing body
