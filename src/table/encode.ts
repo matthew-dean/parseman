@@ -19,7 +19,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, SCOPE_INHERIT, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV, OP_GAPGATE, OP_RGATE2, OP_STRICT,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_COV, OP_GAPGATE, OP_RGATE2, OP_STRICT, OP_CONT, OP_SEED,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
@@ -42,6 +42,7 @@ import {
   collectLexicalCapabilities, winnerWrapsReference,
 } from '../compiler/token-capability.ts'
 import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
+import { continuationGate } from './late-frame.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -158,6 +159,30 @@ function isGap(p: Combinator<unknown>): boolean {
     for (let c = r.lo; c <= r.hi; c++) if (!GAP_CHARS.has(c)) return false
     return true
   })
+}
+
+/**
+ * Does this combinator publish exactly one node child and return that same value, on
+ * every path? Only then can a late frame (`OP_CONT`) take the corner's publication back
+ * and be the child it would have captured. A `transform` returns what its function
+ * makes of the child; a `dispatch` returns `[key, arm]` and its selector can publish too;
+ * an `expect` publishes nothing when its child fails. A `ref()` not defined yet proves nothing.
+ */
+function publishesOneNode(p: Combinator<unknown>, rr: RefResolver | undefined, seen = new Set<Combinator<unknown>>()): boolean {
+  if (seen.has(p)) return true
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'node': return true
+    case 'lazy': {
+      let target = winnerForRef(p, rr)
+      if (target === undefined) { try { target = d.thunk() } catch { return false } }
+      return publishesOneNode(target, rr, seen)
+    }
+    case 'choice': return d.parsers.every(a => publishesOneNode(a, rr, seen))
+    case 'grammar': case 'withCtx': case 'label': return publishesOneNode(d.parser, rr, seen)
+    default: return false
+  }
 }
 
 class Encoder {
@@ -1852,7 +1877,8 @@ class Encoder {
         // without, on match and on failure.
         // An AUTHORING error, not a table gap — raise what the other two engines do.
         if (d.type === undefined) missingInferredType()
-        const child = this.node(d.parser).ip
+        const late = this.opensLate(d)
+        const child = late ? this.lateBody(d.parser._def as Extract<ParserDef, { tag: 'sequence' }>) : this.node(d.parser).ip
         // Capture flags, resolved HERE from the reducer's declared arity using the
         // same analysis codegen runs (`src/compiler/build-arity.ts`). `hostMode:
         // 'cst'` forces them on, exactly as the emitted `cstOut` path does. The
@@ -1921,7 +1947,15 @@ class Encoder {
         // `deriveExpected(body)`, which for a body with nullable leading terms
         // names tokens the run would have skipped — `['"@"', '"(", '"x"']` where
         // running the body reports `['"x"']` alone.
-        if (matchesEmpty(d.parser, new Set(), this.refResolver())) return body
+        // `child` is `SEQ 2 seed tail …`, and `seed` is `SEED corner`. A tail with no first
+        // test has nothing to decide on: the node runs as written, over its corner.
+        let run = body
+        if (late) {
+          const corner = this.code[this.code[child + 2]! + 1]!
+          if (continuationGate(this.code, this.code[child + 3]!) === undefined) this.code[child + 2] = corner
+          else run = this.emit(OP_CONT, corner, body, this.code[child + 3]!)
+        }
+        if (matchesEmpty(d.parser, new Set(), this.refResolver())) return run
         // A node whose BODY is a bare cross-rule ref (`node('X', g.Y, …)`) caches its
         // first set from the ref's base binding. Under a compose OVERRIDE the winner
         // for `Y` may be WIDER, so the cached set gates out input the merged rule
@@ -1933,11 +1967,11 @@ class Encoder {
         // that set match what entering the body reports (a `keywords()` term, a
         // list's item set, an optional lead are only known by running it).
         const fs = this.gateFirstSet(d.parser, d.guarded === true, false)
-        if (fs.kind === 'any') return body
+        if (fs.kind === 'any') return run
         const cls = this.charClass(fs)
-        if (cls < 0) return body
+        if (cls < 0) return run
         const e = deriveExpected(d.parser)
-        return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
+        return this.emit(OP_GATE, cls, run, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
       case 'token': {
         // A token runs its body with trivia cleared (`token.ts`), so its body is
@@ -2265,6 +2299,33 @@ class Encoder {
   }
 
   /**
+   * `node(sequence(corner, tail), build, { collapse: true })` with a tail that can take
+   * nothing and a corner that is one node: the frame can open after the corner, only if
+   * the tail can start. Any other node keeps its frame from the start, and so does one
+   * with no reducer, whose host can scope the corner's trivia to its type.
+   */
+  private opensLate(d: Extract<ParserDef, { tag: 'node' }>): boolean {
+    if (this.plan !== undefined || d.collapse !== true || d.build === undefined || d.trailingTrivia === true) return false
+    const seq = d.parser._def
+    return seq.tag === 'sequence' && seq.parsers.length === 2
+      && matchesEmpty(seq.parsers[1]!, new Set(), this.refResolver())
+      && publishesOneNode(seq.parsers[0]!, this.refResolver())
+  }
+
+  /** The body of a late frame: the sequence as written, its corner behind `OP_SEED`. */
+  private lateBody(seq: Extract<ParserDef, { tag: 'sequence' }>): number {
+    const seed = this.emit(OP_SEED, this.node(seq.parsers[0]!).ip)
+    const tailIp = this.node(seq.parsers[1]!).ip
+    const head = this.emitHead(seq.valueUnused ? OP_SEQV : OP_SEQ, 5)
+    this.code[head + 1] = 2
+    this.code[head + 2] = seed
+    this.code[head + 3] = tailIp
+    this.code[head + 4] = this.followClass(seq.parsers, 0)
+    this.code[head + 5] = this.followClass(seq.parsers, 1)
+    return head
+  }
+
+  /**
    * Peephole: an `OP_RULE` row is pure indirection — a switch dispatch and a
    * call frame to do nothing but jump. Rewrite every child slot that points at
    * one to point at its target instead. Transitive, and cycle-safe by bounding
@@ -2299,6 +2360,8 @@ class Encoder {
         case OP_REJECT: return [ip + 1]
         case OP_REP: case OP_REPV: return this.code[ip + 4]! >= 0 ? [ip + 1, ip + 4] : [ip + 1]
         case OP_STRICT: return [ip + 1, ip + 2]
+        case OP_CONT: return [ip + 1, ip + 2, ip + 3]
+        case OP_SEED: return [ip + 1]
         default: return []
       }
     }

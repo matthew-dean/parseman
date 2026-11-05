@@ -83,6 +83,7 @@ import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   type CstCaptureBuf,
+  popCstChild,
 } from '../cst/capture-buffer.ts'
 import { PlainBuf, PlainField, PlainLeaf, PlainNode, PlainSpan } from '../cst/plain.js'
 import {
@@ -91,7 +92,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, SCOPE_INHERIT, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
-  OP_COV, OP_GAPGATE, OP_STRICT,
+  OP_COV, OP_GAPGATE, OP_STRICT, OP_CONT, OP_SEED,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_RGATE, OP_RGATE2,
   OP_LEX_BODY, OP_LEX_PROGRAM,
 } from './ops.ts'
@@ -110,6 +111,7 @@ import {
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
 import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
+import { canDecide, continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows, newGapSlot } from './gap-gate.ts'
 import { failCleanAnalysis } from './fail-clean.ts'
@@ -133,7 +135,7 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
-import { computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges } from './site-labels.ts'
+import { CAP_OFF, CAP_ON, type SiteLabel, computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges, TRI_NONE } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { ANY_SYNC, captureError, firstSetSentinel, followSync, listMayEndAt, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -564,6 +566,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const GAP = newGapSlot()
   const closureLabels = computeSiteLabels(
     code, [...Object.values(prog.rules), ...labelExtraIps], hostCst,
+    cfg.tolerant || cfg.probe ? undefined : (ip, tri) => canDecide(code, ip, tri, t.triviaScan),
   )
 
   /**
@@ -1195,6 +1198,41 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // by anything — unrecord it and leave the cursor where it was.
     if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
     return cur
+  }
+
+  /** Whether `cls` admits the character at `at`, without a call for the ASCII answer. */
+  function startsTail(cls: ResolvedClass, input: string, at: number): boolean {
+    const c = input.charCodeAt(at)
+    return c < 128 ? cls.ascii[c] === 1 : classHas(cls, lead(input, at))
+  }
+
+  /**
+   * The tail of a late frame. The gap was scanned to decide, so with no gap there is
+   * nothing to record or undo, and with nothing recording it is not scanned again.
+   */
+  function lateTail(tail: Piece, input: string, end: number, at: number, ctx: ParseContext, frame: SiteLabel): unknown {
+    if (at === end) return tail(input, end, ctx)
+    if (ctx._triviaLog === undefined && ctx._rootTriviaLog === undefined
+      && (frame.cap === CAP_OFF || !((frame.cap === CAP_ON || ctx.captureTrivia === true)
+        && (frame.buf || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)))) {
+      const v = tail(input, at, ctx)
+      if (v !== FAIL && EC.e <= at) EC.e = end
+      return v
+    }
+    const need = rollbackNeeded(ctx)
+    const mTl = need ? cstTlLen(ctx) : 0
+    const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+    const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+    const scanEnd = skipTrivia(input, end, ctx)
+    const scanTl = need ? cstTlLen(ctx) : 0
+    const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
+    const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+    const v = tail(input, scanEnd, ctx)
+    if (v !== FAIL && EC.e <= scanEnd) {
+      if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
+      EC.e = end
+    }
+    return v
   }
 
   /** A non-first term at a site proven to run under an open node capture buffer. */
@@ -1865,6 +1903,88 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_EMPTY:
         return (_input, pos) => { EC.e = pos; return '' }
+
+      case OP_SEED:
+        return link(code[ip + 1]!)
+
+      case OP_CONT: {
+        const wrapper = code[ip + 2]!
+        if (!closureLabels.late.has(ip)) return lower(wrapper)
+        const corner = link(code[ip + 1]!)
+        const tail = link(code[ip + 3]!)
+        const g = continuationGate(code, code[ip + 3]!)!
+        const tri = closureLabels.at(ip).tri
+        // The gap the tail would start past, read without recording anything: no scan
+        // at a character no trivia can start.
+        const scan = tri === TRI_NONE ? undefined : t.triviaScan[tri]!
+        const leads = tri === TRI_NONE ? null : LEAD_TABLES[tri]!
+        const cls = cc[g.cls]!
+        const gapRe = g.gapRow < 0 ? undefined : k[code[g.gapRow + 1]!] as RegExp
+        const follow = g.follow < 0 ? undefined : cc[g.follow]!
+        const other = g.other < 0 ? undefined : cc[g.other]!
+        const mayStartPastGap = (input: string, at: number): boolean => {
+          gapRe!.lastIndex = at
+          const q = gapRe!.test(input) ? gapRe!.lastIndex : -1
+          return (q >= 0 && classHas(follow!, lead(input, q))) || (other !== undefined && classHas(other, lead(input, at)))
+        }
+        const frame = closureLabels.at(code[wrapper + 2]!)
+        const flags = code[wrapper + 3]!
+        const buildIdx = code[wrapper + 1]!
+        // The seed for this frame, handed over before anything can parse.
+        let held: unknown
+        let heldRaw: unknown
+        let heldEnd = 0
+        let heldAt = 0
+        const omitsRaw = !hostCst && buildIdx >= 0 && code[wrapper + 4]! < 0 && (flags & 2) !== 0
+        const body: Piece = omitsRaw
+          ? (input, _pos, ctx) => {
+              const b = ctx._cstBuf
+              if (b !== undefined) {
+                b.single = held
+                b.rawLen = 1
+              } else ctx._cstChildren!.push(held)
+              held = undefined
+              heldRaw = undefined
+              return lateTail(tail, input, heldEnd, heldAt, ctx, frame)
+            }
+          : (input, pos, ctx) => {
+              const b = ctx._cstBuf
+              if (b !== undefined) {
+                b.single = held
+                b.rawSingle = heldRaw ?? rawEntry(held, input, pos, heldEnd)
+              } else ctx._cstChildren!.push(held)
+              held = undefined
+              heldRaw = undefined
+              return lateTail(tail, input, heldEnd, heldAt, ctx, frame)
+            }
+        let open: Piece
+        // An AST reducer: the frame is one of the two lean bodies. Any other frame is
+        // the node's own closure, with `body` for its child.
+        if (!hostCst && !cfg.trackLines && code[wrapper] === OP_NODE && code[wrapper + 4]! < 0 && (flags === 32 || flags === 34)) {
+          const build = fns[buildIdx] as NodeBuilder
+          open = flags === 34 ? childrenOnlyCollapseBuildNode(body, build) : collapseBuildNode(body, build)
+        } else {
+          NODE_BODY = body
+          open = lower(wrapper)
+        }
+        return (input, pos, ctx) => {
+          const v = corner(input, pos, ctx)
+          if (v === FAIL) return FAIL
+          const end = EC.e
+          let at = end
+          if (scan !== undefined) {
+            const c = input.charCodeAt(end)
+            if (leads === null || !(c < 128) || leads[c] !== 0) at = scan(input, end)
+          }
+          if (v !== undefined && !(gapRe === undefined ? startsTail(cls, input, at) : mayStartPastGap(input, at))) return v
+          if (ctx._cstBuf === undefined && ctx._cstRawChildren === undefined && ctx._cstChildren !== undefined) ctx._cstChildren.pop()
+          else if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) heldRaw = popCstChild(ctx)
+          held = v
+          heldEnd = end
+          heldAt = at
+          return open(input, pos, ctx)
+        }
+      }
 
       /* ── transparent / structural ────────────────────────────────────────── */
 
@@ -4348,7 +4468,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
-        collapseEmpty,
+        collapseEmpty, popCstChild,
         PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
       )
       emitReached = new Set(pre.reached)
@@ -4433,7 +4553,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         matchesAt, recoverScan, orSentinel, captureError,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
-        collapseEmpty,
+        collapseEmpty, popCstChild,
         PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
       )
       emitReached = em.reached

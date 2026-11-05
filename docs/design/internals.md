@@ -260,5 +260,7 @@ Operands follow the opcode in `code`. Full layouts and the reasons behind each a
 | 46 | `GAPGATE` | `c p cls other` | optional repeat item opening with a gap; transparent, read by its repeat |
 | 47 | `RGATE2` | `cls child fx first second` | `RGATE` that also tests the second character after the routed token |
 | 48 | `STRICT` | `strict tolerant` | one construct encoded for a strict parse and for recovery; an assembly resolves it to one child |
+| 49 | `CONT` | `corner wrapper tail` | a `collapse` node whose corner always publishes one node and whose tail can take nothing: run the corner in the parent's collector, then open `wrapper` only if `tail` can start at the next token; recovery, a probe and the reference driver run `wrapper` as written |
+| 50 | `SEED` | `corner` | the corner `CONT` holds, published as the first child of the frame it opened late; where no decision was made, `corner` itself |
 
 Which engine handles which: `assemble.ts` and `exec.ts` handle all of them. `emit-assembly.ts` lowers all but `GUARD`, `GREEDY`, `REJECT`, `LIVE` and `COV`, and refuses those (the closure engine runs that assembly). It follows `RULE` as an alias of its child and inlines `ADJ` into its sequence.
