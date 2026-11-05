@@ -252,9 +252,9 @@ export const ALLOW = new Map([
    * is to define it once and capture it, which is engine work this gate's lane
    * did not do. */
   ['INV-13:src/combinators/trivia-skip.ts:needsTriviaRollback|src/table/assemble.ts:rollbackNeeded#6402e771bc1910b5',
-    { category: 'DEBT', why: 'the closure assembler re-declares trivia-skip\'s rollback test instead of importing it', ref: 'docs/design/perf-gates.md' }],
+    { category: 'DEBT', why: 'the closure assembler re-declares trivia-skip\'s rollback test instead of importing it', ref: 'https://github.com/matthew-dean/parseman/issues/252' }],
   ['INV-13:src/table/assemble.ts:bindRunners|src/table/assemble.ts:bindRunners#158ebbaf2b43b421',
-    { category: 'DEBT', why: 'two sequence lowerings each declare the same runner-block binder', ref: 'docs/design/perf-gates.md' }],
+    { category: 'DEBT', why: 'two sequence lowerings each declare the same runner-block binder', ref: 'https://github.com/matthew-dean/parseman/issues/252' }],
   ['INV-13:src/table/assemble.ts:runAdjTerms|src/table/assemble.ts:runDirectTerms#b9ee4a0a2574a154',
-    { category: 'DEBT', why: 'the adjacent and direct sequence lowerings each declare the same first-then-tail runner', ref: 'docs/design/perf-gates.md' }],
+    { category: 'DEBT', why: 'the adjacent and direct sequence lowerings each declare the same first-then-tail runner', ref: 'https://github.com/matthew-dean/parseman/issues/252' }],
 ])

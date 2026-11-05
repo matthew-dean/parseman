@@ -465,6 +465,7 @@ jobs:
         with:
           # The duplicate-function gate compares its baseline with the merge base.
           fetch-depth: 0
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

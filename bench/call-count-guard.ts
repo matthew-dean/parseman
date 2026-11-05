@@ -136,7 +136,9 @@ export async function measureSide(dir: string, out: string, only?: (row: string)
     writeFileSync(module, instrument(bundle.outputFiles[0]!.text, module))
     for (const engine of ['emitted', 'closure'] as const) {
       if (!want(`${engine}/`)) continue
-      for (const [id, c] of Object.entries(runWorker({ kind: 'workloads', module, engine }))) rows[`${engine}/${id}`] = c
+      for (const [id, c] of Object.entries(runWorker({ kind: 'workloads', module, engine }))) {
+        if (want(`${engine}/${id}`)) rows[`${engine}/${id}`] = c
+      }
     }
   }
 

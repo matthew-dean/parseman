@@ -301,7 +301,7 @@ export function assertIndependentLegs(gate: string, legs: Readonly<Record<string
     if (!existsSync(dir)) fail(gate, `leg ${label}: ${dir} does not exist.`)
     const real = realpathSync(dir)
     console.log(`  leg ${label.padEnd(10)} parseman from ${real}`)
-    const { dev, ino } = statSync(dir)
+    const { dev, ino } = statSync(dir, { bigint: true })
     const id = `${dev}:${ino}`
     const other = seen.get(id)
     if (other !== undefined && !selfCheck) {
