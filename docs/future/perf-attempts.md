@@ -588,7 +588,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   - Identity: AST and AST with positions identical to `main` on every sweep input (CSS 385,
     Less 1,301, SCSS 9,669, `.jess` 93), results, errors and spans. The interpreter against the
     shipped AST parser disagrees on the same inputs as on `main`, none new (10 CSS, 73 Less, 51
-    SCSS, all failing inputs; not chased). `check:differentials` passes.
+    SCSS, nearly all truncated inputs; not chased). `check:differentials` passes.
     CST: nodes CSS 123,331 to 69,212, Less 272,482 to 189,646, SCSS 542,549 to 198,301, `.jess`
     35,967 to 18,949; mean depth 4.66 to 3.46, 7.97 to 6.25, 10.31 to 4.92, 6.98 to 4.31.
     Leaves and spans match, except that a `ValueList` comma is now a child leaf on 3 CSS and 43
