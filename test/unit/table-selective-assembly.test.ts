@@ -366,17 +366,26 @@ ${PADDING}`
         .toThrow(/assemblyProfile: gate or reducer `s => boom\(s\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
     })
 
+    it.each([
+      ['gate', `choice({ gate: s => allowed(s), combinator: regex(/a/) }, regex(/b/))`, 's => allowed\\(s\\)'],
+      ['reducer', `transform(regex(/a/), v => allowed(v))`, 'v => allowed\\(v\\)'],
+    ])('fails on a %s that reads an imported helper', (_kind, doc, callback) => {
+      expect(() => lower(`import { allowed } from './helpers.js'
+export const g = compose([rules(g => ({ Doc: ${doc} }))])`, 'a'))
+        .toThrow(new RegExp(`assemblyProfile: gate or reducer \`${callback}\` threw on .*corpus\\.txt: ReferenceError: allowed is not defined`))
+    })
+
     it('refuses a corpus where every file is empty', () => {
       expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])`, ' \n'))
         .toThrow(/assemblyProfile: `files` has no non-empty file/)
     })
 
-    it('skips an empty file in a corpus that has content', () => {
+    it.each([['zero-length', ''], ['whitespace-only', ' \n']])('skips a %s file in a corpus that has content', (_kind, text) => {
       const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
       try {
         const empty = join(dir, 'empty.txt')
         const full = join(dir, 'full.txt')
-        writeFileSync(empty, '')
+        writeFileSync(empty, text)
         writeFileSync(full, 'a')
         const source = `import { compose, regex, rules } from 'parseman' with { type: 'macro' }
 export const g = compose([rules(g => ({ Doc: regex(/a/) }))])

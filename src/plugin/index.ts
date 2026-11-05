@@ -185,7 +185,8 @@ export type AssemblyProfile = {
    * without this rule keeps the static ranking. */
   readonly entry: string
   /** Paths of representative inputs. At least one must have content, and each that
-   * does has to parse in full without recovery, or the build fails. */
+   * does has to parse in full without recovery, or the build fails. A file with only
+   * whitespace counts as empty. */
   readonly files: readonly string[]
 }
 
