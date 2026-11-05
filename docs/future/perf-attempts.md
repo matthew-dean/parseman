@@ -586,9 +586,12 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
     Calls per parse: SCSS -18.34% and -18.53%, Less -8.76% and -10.29%, bootstrap -7.34% and
     -8.91%, `.jess` -6.65% and -7.80%, CSS -1.58% and -9.22%. Strict and recovering results, on
-    AST and on CST leaves and trivia, match `main` on the sweep inputs. Only node types change.
-    Under `tolerant` the AST reducers throw on most inputs before and after (Less 15,724), so CST
-    is the recovery coverage that counts.
+    AST and on CST leaves and trivia, match `main` on the sweep inputs. In a CST, wrappers go, and
+    kept nodes keep their spans in CSS and SCSS. Three exceptions: Less `ValueListWithPriority`
+    starts after its leading trivia (50 inputs), Less `MathValue` starts before a comment it used to
+    start after (`a=/*c*/b`, 40 inputs), and `.jess` gains a `ValueAtom` on a slash's right operand
+    (70 inputs). Under `tolerant` the AST reducers throw on most inputs before and after (Less
+    15,724), so CST is the recovery coverage that counts.
   - `a.x b.y,c.z d.w{e:f}` x4000 through CSS AST: calls 3,117,937 to 3,565,924, +14.37%, on
     the same grammar and engine that give `a.x{...}` -9.56%. That is selection, not the hit path:
     with one selection, all closure -3.45% and all emitted +0.007%. `main` sits on a cliff here:
