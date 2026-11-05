@@ -3,76 +3,8 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.61.0 — 2026-11-04
+## 0.61.0 — 2026-11-05
 
-- **A rule referenced from a `noTrivia()` region keeps its own trivia in a line-tracked
-  `compose()` build.** `rules({ trackLines: true })` wraps every rule in
-  `parser({ trackLines: true }, …)`. `hasOwnTriviaBoundary` read any `parser()` scope as
-  declaring its own trivia, so the table dropped the scope row a cleared region needs
-  and the rule ran with no trivia. Only the line-tracked variant parsed differently: a
-  tail like `c !important` could not cross the space before `!`, and the parse stopped
-  there with `ok: true`. A `parser()` scope that names no trivia now answers for what it
-  wraps, at no cost in the gate's depth budget. Every reader of the gate takes the same
-  answer: `ref()` in the interpreter, `Encoder.scopedRef`, `readsScope`, `firstSetOf`,
-  `gapLead` and token lowering's `reinstallsRuleTrivia`.
-- **`parser({ captureTrivia: true }, …)` with no trivia of its own inherits the active
-  trivia in every table engine.** The table lowered it with the slot that means
-  `trivia: null`, so the reference driver, closure engine, emitted assembly and macro
-  builds cleared trivia for the region, where the interpreter inherited it, with or
-  without a `noTrivia()` around the reference. The form now has its own slot value,
-  `SCOPE_INHERIT`, and raises capture only. A grammar without this form lowers to the
-  same bytes. Selective builds hand the installed scanner to an emitted body under it.
-- **A `parser({ trivia })` scope with unclassified trivia drops the kind labels of a
-  classified scope around it, in the interpreter.** It kept them, so a capturing node
-  in that scope took the labelled scan, which skips nothing for unclassified trivia,
-  and rejected input the tables accept.
-- **Known difference, not changed here (#258):** a table has one line setting, where
-  the interpreter scopes it. A node outside a `parser({ trackLines: true })` scope gets
-  line fields from the table and none from the interpreter, a `trackLines: false` scope
-  under a tracked grammar keeps them in the table and drops them in the interpreter, and
-  a `trackLines: true` scope in an unreachable rule still turns them on for
-  `encodeTable`. A reducer reading `span` can see all three.
-- **`rules((g, prior) => …)`: a composing grammar can re-reduce or extend an inherited
-  rule without copying it.** `prior.X` is the definition of `X` that the grammars
-  composed before this one gave it, with a top-level `node()` unwrapped to its body, and
-  its `g.` references stay bound to the composition. `X: node('X', prior.X, reduce)`
-  swaps only the reducer; `X: node('X', choice(prior.X, arm), reduce)` adds an arm.
-  Dropping that `node()` drops the inherited node too.
-  The earlier definition is placed in the new rule, so it parses and encodes as the
-  rule written out by hand would (the encoded table is identical). A grammar built on
-  its own ships `prior.X` in its carried pieces, and a composition where no earlier
-  piece defines `X` refuses it, at runtime and in the build. Annotating the parameter
-  as `PriorRules<typeof base>` types `prior.X` and rejects a misspelled rule. A `prior.X`
-  nothing fills throws a message naming it on every engine, and `toEBNF` prints it as
-  `/* prior.X */`. The interpreter, the reference driver, the closure engine, the printed
-  assembly, `compile()` and the macro's cross-module table build the same values.
-  See `docs/guide/extending.md` and `test/unit/rules-prior.test.ts`.
-- **A macro `composeLeaf()` now links its pieces as `compose()` and the runtime
-  `composeLeaf()` do**, instead of merging their rule maps by name. The leaf can read
-  `prior.X`, and first sets and expected sets see the composed grammar. A pre-final
-  piece that reads `prior` still counts as recognition-only. Tables of a real
-  `composeLeaf()` grammar can shrink: a reference between pieces used to stay
-  unresolved, so its expected sets held rule names.
-- **`compose()` and `composeLeaf()` results spell out their rule names.** Each is
-  typed with the names its items spell out, as well as lookup by any string, so
-  `composed.X` needs no `!` and `PriorRules<typeof composed>` rejects a misspelled rule.
-- **The package entry exports `ComposedRules`.** `compose()` and `composeLeaf()` return
-  it, so a project emitting declarations for an exported composition failed with TS2883
-  on 0.60.5.
-- **A `compose()` that references a rule no piece defines fails the build, naming
-  the rule.** The macro fuse used to encode around the undefined slot, leave the
-  runtime `compose()` in place and warn "ref() used before .define()", which read as
-  a parseman defect. The cause is the grammar: a `g.X` whose name no composed piece
-  returns, usually a base sub-expression that is a local const rather than a rule
-  key. The build now throws `<file>:<line> — compose: rule "VarFallback" references
-  missing rule "VarFunction"` (or, when no live rule reads the name, `rule(s) "X" are
-  referenced but defined by no composed grammar`): the words runtime `compose()`
-  already refused the grammar with, after the call site. `composeLeaf()` refuses the
-  same grammar the same way (`— composeLeaf: …`) instead of failing to fuse with the
-  old message. A `g.X` a factory reads outside every rule (`const unused = g.X`) is
-  now kept in the grammar's carried IR as `void g["X"]`, so the build refuses it where
-  runtime `compose()` did and the build did not. See
-  `test/unit/compose-dangling-reference.test.ts`.
 - **Printed tables store each expected token once.** An expected set is now a list of
   indices into one pool of tokens, instead of a list of strings. Raw table size drops
   8% to 20% on the real CSS, Less, SCSS and Jess grammars. Gzipped bundles barely
@@ -82,6 +14,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   runtime reading a new table reports indices as its expected tokens, and `^0.60.x`
   never resolves to 0.61, so package ranges keep the two apart. Jess needs `^0.61.0`
   to adopt it.
+
 - **The walker and the tables now agree on four more results, and three compositions
   a dialect grammar relies on are pinned across a package boundary.**
   - A `node()` over a rule reference delivers the `field()` below it on the walker. It
@@ -108,6 +41,92 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   overrides the innermost rule. Each runs on the walker, the table of runtime
   `compose()`, `compile()` and the macro's table, and compares value, span and expected
   set. See `test/unit/compose-inherited-shapes.test.ts`.
+
+## 0.60.6 — 2026-11-05
+
+- **A rule referenced from a `noTrivia()` region keeps its own trivia in a line-tracked
+  `compose()` build.** `rules({ trackLines: true })` wraps every rule in
+  `parser({ trackLines: true }, …)`. `hasOwnTriviaBoundary` read any `parser()` scope as
+  declaring its own trivia, so the table dropped the scope row a cleared region needs
+  and the rule ran with no trivia. Only the line-tracked variant parsed differently: a
+  tail like `c !important` could not cross the space before `!`, and the parse stopped
+  there with `ok: true`. A `parser()` scope that names no trivia now answers for what it
+  wraps, at no cost in the gate's depth budget. Every reader of the gate takes the same
+  answer: `ref()` in the interpreter, `Encoder.scopedRef`, `readsScope`, `firstSetOf`,
+  `gapLead` and token lowering's `reinstallsRuleTrivia`.
+
+- **`parser({ captureTrivia: true }, …)` with no trivia of its own inherits the active
+  trivia in every table engine.** The table lowered it with the slot that means
+  `trivia: null`, so the reference driver, closure engine, emitted assembly and macro
+  builds cleared trivia for the region, where the interpreter inherited it, with or
+  without a `noTrivia()` around the reference. The form now has its own slot value,
+  `SCOPE_INHERIT`, and raises capture only. A grammar without this form lowers to the
+  same bytes. Selective builds hand the installed scanner to an emitted body under it.
+
+- **A `parser({ trivia })` scope with unclassified trivia drops the kind labels of a
+  classified scope around it, in the interpreter.** It kept them, so a capturing node
+  in that scope took the labelled scan, which skips nothing for unclassified trivia,
+  and rejected input the tables accept.
+
+- **Known difference, not changed here (#258):** a table has one line setting, where
+  the interpreter scopes it. A node outside a `parser({ trackLines: true })` scope gets
+  line fields from the table and none from the interpreter, a `trackLines: false` scope
+  under a tracked grammar keeps them in the table and drops them in the interpreter, and
+  a `trackLines: true` scope in an unreachable rule still turns them on for
+  `encodeTable`. A reducer reading `span` can see all three.
+
+- **The package entry exports `ComposedRules`.** `compose()` and `composeLeaf()` return
+  it, so a project emitting declarations for an exported composition failed with TS2883
+  on 0.60.5.
+
+## 0.60.5 — 2026-11-05
+
+- **`rules((g, prior) => …)`: a composing grammar can re-reduce or extend an inherited
+  rule without copying it.** `prior.X` is the definition of `X` that the grammars
+  composed before this one gave it, with a top-level `node()` unwrapped to its body, and
+  its `g.` references stay bound to the composition. `X: node('X', prior.X, reduce)`
+  swaps only the reducer; `X: node('X', choice(prior.X, arm), reduce)` adds an arm.
+  Dropping that `node()` drops the inherited node too.
+  The earlier definition is placed in the new rule, so it parses and encodes as the
+  rule written out by hand would (the encoded table is identical). A grammar built on
+  its own ships `prior.X` in its carried pieces, and a composition where no earlier
+  piece defines `X` refuses it, at runtime and in the build. Annotating the parameter
+  as `PriorRules<typeof base>` types `prior.X` and rejects a misspelled rule. A `prior.X`
+  nothing fills throws a message naming it on every engine, and `toEBNF` prints it as
+  `/* prior.X */`. The interpreter, the reference driver, the closure engine, the printed
+  assembly, `compile()` and the macro's cross-module table build the same values.
+  See `docs/guide/extending.md` and `test/unit/rules-prior.test.ts`.
+
+- **A macro `composeLeaf()` now links its pieces as `compose()` and the runtime
+  `composeLeaf()` do**, instead of merging their rule maps by name. The leaf can read
+  `prior.X`, and first sets and expected sets see the composed grammar. A pre-final
+  piece that reads `prior` still counts as recognition-only. Tables of a real
+  `composeLeaf()` grammar can shrink: a reference between pieces used to stay
+  unresolved, so its expected sets held rule names.
+
+- **`compose()` and `composeLeaf()` results spell out their rule names.** Each is
+  typed with the names its items spell out, as well as lookup by any string, so
+  `composed.X` needs no `!` and `PriorRules<typeof composed>` rejects a misspelled rule.
+
+## 0.60.4 — 2026-11-05
+
+- **A `compose()` that references a rule no piece defines fails the build, naming
+  the rule.** The macro fuse used to encode around the undefined slot, leave the
+  runtime `compose()` in place and warn "ref() used before .define()", which read as
+  a parseman defect. The cause is the grammar: a `g.X` whose name no composed piece
+  returns, usually a base sub-expression that is a local const rather than a rule
+  key. The build now throws `<file>:<line> — compose: rule "VarFallback" references
+  missing rule "VarFunction"` (or, when no live rule reads the name, `rule(s) "X" are
+  referenced but defined by no composed grammar`): the words runtime `compose()`
+  already refused the grammar with, after the call site. `composeLeaf()` refuses the
+  same grammar the same way (`— composeLeaf: …`) instead of failing to fuse with the
+  old message. A `g.X` a factory reads outside every rule (`const unused = g.X`) is
+  now kept in the grammar's carried IR as `void g["X"]`, so the build refuses it where
+  runtime `compose()` did and the build did not. See
+  `test/unit/compose-dangling-reference.test.ts`.
+
+## 0.60.3 — 2026-11-04
+
 - **A `not()` or `peek()` whose child commits a failure no longer commits the grammar
   around it, in the table engines.** The interpreter's lookaheads return a fresh
   result, so commitment inside the probe never escapes. The reference driver, the
@@ -118,6 +137,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   sequence(literal('Q'))))), literal('a'), literal('z')), sequence(literal('x'),
   literal('a'), literal('b')))` failed on `xab`. The lookahead now clears it. See
   `test/unit/table-lookahead-contains-commitment.test.ts`.
+
 - **A choice, `optional()` or `attempt()` over a node that fails after scanning trivia
   restores the trivia logs in the emitted assembly.** A failed node drops its own
   capture frame, but the trivia its body recorded into the root trivia log (and the
@@ -137,6 +157,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   trivia on `ctx.trivia`: that parse takes an assembly of its own that restores the
   logs as the closure engine does. See
   `test/unit/table-node-arm-trivia-rollback.test.ts`.
+
+## 0.60.2 — 2026-11-04
+
 - **A downstream build that cannot find a compiled grammar's carried pieces fails;
   it no longer falls back to a runtime `compose()`.** A facade chunk
   (`export { t as grammar } from './shared-HASH.js'`) or an `export *` entry with no
@@ -144,6 +167,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   back to runtime" and emit a runtime `compose()` of a compiled grammar, which throws
   at import. The reader now follows the re-export to the module that declares the
   grammar, and fails the build, naming the artifact, when no pieces are found there.
+
 - **A sidecar names the artifact it was written for.** It records `artifact`, a
   SHA-256 digest of the chunk (less a trailing `sourceMappingURL` comment), and a
   downstream build that finds a different artifact beside it fails instead of
@@ -151,12 +175,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   no digest and is read as before. The digest is taken in a `generateBundle` hook of
   order `post`, after Vite's own hook rewrites a chunk's dynamic `import()` through
   its preload helper; taken earlier, every such Vite artifact read as stale.
+
 - **A bundled ancestor is written out, not as a package reference.** An ancestor
   imported from another package was always recorded as `{ from, name }`, resolved
   from the artifact's location. That holds only where the build keeps the package
   external; one the build bundled is not imported by the artifact, and is missing or
   a different version wherever it is composed. The sidecar now writes such an
   ancestor's pieces in full, as it already did for a relative import.
+
 - **A sidecar carries only the pieces of the grammar its chunk exports.** When the
   plugin could not trace an entry's export to the module that recorded it, it took
   any one module of the bundle that recorded the same name, in this chunk or not. An
@@ -171,6 +197,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   now each get its pieces, where before neither did, and an export reached through
   two `export *` paths to the same declaration is one binding, not an ambiguity. See
   `test/unit/carried-pieces-sidecar.test.ts`.
+
+## 0.60.1 — 2026-11-04
+
 - **The frozen ablation copies `src/table/exec-baseline.ts` and `encode-baseline.ts` are
   removed**, with the `PM_TABLE_COUNT` row counters in the reference driver `exec.ts`,
   which only the deleted experiment benches set. None of them is reachable from a
@@ -392,7 +421,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `export` on internal values that nothing outside their module reads. Tables and
   artifacts are byte-identical.
 
-## 0.59.0 — 2026-11-02
+## 0.59.0 — 2026-11-03
 
 - **Tree objects are built by constructors, so V8 cannot pretenure them.** V8 decides per
   object-literal allocation site whether to allocate straight into old space, from where
@@ -424,6 +453,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     whose `prototype` is `Object.prototype` (see `examples/css/css-node.js`), and copy the
     arrays they keep with a spread or `slice()` rather than an array literal.
 
+## 0.58.3 — 2026-11-02
+
 - **Regex first sets read escapes that are not their letter.** The first-set analyzer read
   several escapes as the escaped letter: `\p{…}`/`\P{…}`, `\u{…}` under `u`, `\cJ`, the legacy
   octal `\012`, and `\k<name>`. The class and literal readers read `\012` as NUL followed by
@@ -451,6 +482,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     followed by the rest of a witness the pattern is built to match. It checks the same
     at every node of generated `sequence`/`choice`/`optional`/`peek`/`not`/`literal` trees
     over those regexes. It is registered in `check:differentials`.
+
 - **A trivia skip at a character no trivia can start returns without scanning.** Both
   table engines now test the character first. The closure engine reads a per-slot table
   that its scopes install with their trivia; the emitted assembly prints the slot's first
@@ -459,6 +491,21 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   trivia and CSTs are unchanged. Jess's Less build parses `benchmark.less` in 3.9% fewer
   instructions with the JIT and 8.8% fewer with `--jitless`. Test:
   `test/unit/table-trivia-lead-gate.test.ts`, registered in `check:differentials`.
+
+- **A whole-token `balanced()` in a failed arm leaves no error in the emitted
+  assembly.** Such a group is lowered as one lexical program over its interpreted
+  scan, and the scan records a `parseError` for an unclosed group. The emitted
+  engine's side-sink census counted only `OP_SCAN` as an `_errors` writer, so a
+  choice arm or `optional()` that failed after an unclosed group restored the arm's
+  captures but not its error: `choice(sequence(balanced('(', ')'), literal('!')),
+  literal('('))` on `(x` succeeded through the second arm and still returned the
+  first arm's `")"` error. The closure engine and the reference driver were right.
+  A budgeted selection is priced without these marks, so they move no site in or
+  out of it. See `test/unit/table-lex-program-scan-errors.test.ts` and
+  `test/unit/table-scan-sink-selection.test.ts`.
+
+## 0.58.2 — 2026-11-02
+
 - **The perf verdict is a cross-process gate under default V8: `pnpm perf:xproc:gate`,
   configured in `bench/xproc-gate.json`.** Each case is timed in fresh processes,
   one parser per process, from each side's own `dist/` build under plain `node`. A
@@ -478,11 +525,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   warning on stderr ahead of the command's own output. The hook now goes through
   `module.registerHooks()` where Node has it (22.15+, 23.5+) and keeps `register()`
   on 20.x and earlier 22.x, which have nothing else.
+
+## 0.58.1 — 2026-11-02
+
 - **`parseman/run` exports `buildLineIndex` and `offsetToLineCol`.** A package that
   runs a compiled grammar and reports line/column positions imported them from the
   main entry, which loads the combinators, the compiler and the analysis with them.
   `src/line-index.ts` was already in the run entry's closure, so the entry's module
   list is unchanged. See `test/unit/run-entry-closure.test.ts`.
+
 - **A routed arm's first-character gate reports what its next term fails with.** A
   choice arm led by `routed()` is gated on its next term's first character
   (`OP_RGATE`, 0.58.0), and a miss reported `deriveExpected` of that term. For a
@@ -491,17 +542,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   sequence(routed(), keywords(['as', 'of'])), …)))` on `k?` reported `"as"`, `"of"`
   in every table engine. A miss now reports the terminal's own failure set, and a
   label's name. Which arms are gated is unchanged.
-- **A whole-token `balanced()` in a failed arm leaves no error in the emitted
-  assembly.** Such a group is lowered as one lexical program over its interpreted
-  scan, and the scan records a `parseError` for an unclosed group. The emitted
-  engine's side-sink census counted only `OP_SCAN` as an `_errors` writer, so a
-  choice arm or `optional()` that failed after an unclosed group restored the arm's
-  captures but not its error: `choice(sequence(balanced('(', ')'), literal('!')),
-  literal('('))` on `(x` succeeded through the second arm and still returned the
-  first arm's `")"` error. The closure engine and the reference driver were right.
-  A budgeted selection is priced without these marks, so they move no site in or
-  out of it. See `test/unit/table-lex-program-scan-errors.test.ts` and
-  `test/unit/table-scan-sink-selection.test.ts`.
 
 ## 0.58.0 — 2026-10-31
 
