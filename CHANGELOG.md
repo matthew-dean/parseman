@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.61.5 — 2026-11-05
 
 - **A `collapse` ladder level opens its frame only where its tail starts.** A
   `node(type, sequence(corner, tail), build, { collapse: true })` whose corner always
@@ -15,15 +15,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   probe and the reference driver run the node as written. Tables gain two opcodes,
   `OP_CONT` and `OP_SEED`. See `docs/design/internals.md`, `docs/guide/ast.md` and
   `test/unit/table-late-frame.test.ts`.
+
+## 0.61.4 — 2026-11-05
+
 - **`assemblyProfile.scope` lets a grammar whose reducers or gates read imported helpers
   use a measured ranking.** Callback source runs at build time with no module around it,
   so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for
   that run only.
   A name that's already a global fails the build.
+
 - **A build fails when grammars were profiled and none has the `entry` rule.** A mistyped
   rule name used to give the static ranking with no warning, so the output looked profiled
   and wasn't. A direct `transformMacro` caller gets `assemblyProfile: 'no-entry'` on the
   result instead, and has to read it.
+
+## 0.61.3 — 2026-11-05
+
 - **`assemblyBudget` is now a share of a module's code, not counting comments or
   whitespace, and a larger budget never loses a site.** The budget was a share of the
   module's raw text, so a longer comment bought more generated code: on Jess's SCSS
@@ -37,6 +44,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   The default is `0.5` on the new base. Comments are about 40% of Jess's grammars, so an
   explicit budget needs raising to buy what it did: a grammar that passed `1` and is half
   comments passes about `2.7`.
+
+## 0.61.2 — 2026-11-05
+
 - **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
   or gate that threw.** So does a corpus with nothing in it, and a file that parses only
   by recovering. It used to swallow the throw, and when no file parsed it warned
@@ -44,6 +54,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   silently ship a different one. On Jess's Less and SCSS grammars the gates read imported
   helpers, which aren't in scope at build time, so a profile on those grammars now fails
   instead of being ignored.
+
+## 0.61.1 — 2026-11-05
+
 - **`backtrackProbe` in `parseman/diagnostics` counts rewinds among matched terminals.**
   Per parse it reports how often one started behind the one before it and how many of
   its bytes had already matched, plus the lookahead `not()`/`peek()` and regex lookarounds
