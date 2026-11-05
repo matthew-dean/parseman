@@ -9,8 +9,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `tolerant: true`.** A list could read the token after it as junk, skip it, and report an
   error on valid input, or send a grammar's reducer a recovered child it couldn't read. It
   now recovers only once nothing else can read the input. This also removes tolerant parse
-  time that doubled per line on valid Less. Printed tables change in value only, by 128 to
-  212 bytes on Jess's grammars; strict parses never read those words.
+  time that doubled per line on valid Less. Printed tables change in value only, by 130 to
+  238 bytes on Jess's grammars; strict parses never read those words.
 - **A `collapse` ladder level opens its frame only where its tail starts.** A
   `node(type, sequence(corner, tail), build, { collapse: true })` whose corner always
   publishes one node and whose tail is a `many()` or `optional()` now runs the corner in
