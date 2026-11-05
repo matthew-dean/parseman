@@ -9,6 +9,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   use a measured ranking.** Callback source runs at build time with no module around it,
   so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for
   that run only.
+  A name that's already a global fails the build.
+- **An `assemblyProfile` whose `entry` no grammar has fails the build.** A mistyped rule
+  name used to give the static ranking with no warning, so the output looked profiled
+  and wasn't.
 - **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
   or gate that threw.** So does a corpus with nothing in it, and a file that parses only
   by recovering. It used to swallow the throw, and when no file parsed it warned

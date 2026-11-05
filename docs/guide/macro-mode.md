@@ -297,9 +297,20 @@ Sites are ranked by a static estimate of how often they run. The plugin's option
 `files` from rule `entry` on the closure engine and keeps the sites with the most calls per
 byte. It changes which sites are generated, never what a parse returns
 (`test/unit/table-selective-assembly.test.ts`). A corpus file that doesn't parse in full or parses only by recovering, a
-corpus with nothing in it, or a reducer or gate that throws, fails the build. Callback source runs at build time with
-no module around it, so a grammar whose reducers or gates read imported helpers passes them
-as `scope`: `assemblyProfile: { entry, files, scope: { valueStopOf } }`.
+corpus with nothing in it, a reducer or gate that throws, or a build where no grammar has the `entry` rule, fails the
+build. A callback the corpus doesn't reach never runs, so nothing checks it.
+
+Callback source runs at build time with no module around it, so a grammar whose reducers or gates read imported helpers
+passes them as `scope`: `assemblyProfile: { entry, files, scope: { valueStopOf } }`. The names are visible as globals
+during the corpus run only.
+
+- A name that's already a global fails the build. The opposite slip is silent: a helper named like a real global and
+  left out of `scope` uses the global. A grammar's own `escape` left out of `scope` would run the global `escape`.
+- `scope` is one flat namespace, so two modules can't bind one name to different helpers.
+- Direct `node()` builders don't run in the corpus run. A plain node stands in for each, so a helper only a builder reads
+  doesn't fail the build, and the counts don't depend on what the builder does.
+- A `tsdown.config.ts` that imports helpers from `.ts` source needs `tsdown --config-loader unrun`. The native loader
+  doesn't map `./helper.js` to `./helper.ts`.
 
 Each extra variant costs real bytes, but no longer a full copy. Measured by
 `pnpm size:probe`, holding the grammar constant and varying only the number of variants:

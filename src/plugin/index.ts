@@ -182,14 +182,25 @@ export type ParsecraftPluginOptions = {
 /** A corpus a build parses to rank selective-assembly sites — see `assemblyProfile`. */
 export type AssemblyProfile = {
   /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar
-   * without this rule keeps the static ranking. */
+   * without this rule keeps the static ranking, but a build where no grammar has it
+   * fails: the corpus never ran. */
   readonly entry: string
   /** Paths of representative inputs. At least one must have content, and each that
-   * does has to parse in full without recovery, or the build fails. */
+   * does has to parse in full without recovery, or the build fails. A callback the
+   * corpus doesn't reach is never run, so nothing checks it. */
   readonly files: readonly string[]
-  /** The values of names a grammar's reducers and gates import, for the corpus run.
+  /**
+   * The values of names a grammar's reducers and gates import, for the corpus run.
    * Their source runs at build time with no module around it, so a grammar whose
-   * callbacks read imported helpers passes those helpers here. */
+   * callbacks read imported helpers passes those helpers here. See
+   * `docs/guide/macro-mode.md` for what this does and doesn't cover.
+   *
+   * It's one flat namespace, so two modules can't bind one name to different helpers.
+   * A name that's already a global fails the build. A helper named like a global and
+   * left out of `scope` silently uses the global. A direct `node()` builder doesn't
+   * run in the corpus run: a plain node stands in for it, so a helper only a builder
+   * reads is neither needed here nor checked.
+   */
   readonly scope?: Readonly<Record<string, unknown>>
 }
 
@@ -550,6 +561,9 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
   // Module id → its carried lists, under a bundler that writes them beside the chunk.
   // Any other bundler gets them inline, as before.
   const sinks = SIDECAR_FRAMEWORKS.has(meta.framework) ? new Map<string, CarriedSink>() : undefined
+  // Module id → whether its grammars ran the corpus. A module without the entry rule is
+  // fine on its own, because one plugin sees many modules, so only the build can tell.
+  const profiled = new Map<string, NonNullable<TransformMacroResult['assemblyProfile']>>()
   // `order: 'post'`: the sidecar records a digest of each chunk's code, so it is
   // taken after every other plugin's `generateBundle` has rewritten that code (Vite
   // rewrites a dynamic `import()` through its preload helper there).
@@ -571,10 +585,16 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
       return /\.[jt]sx?$/.test(id) && !id.includes('node_modules')
     },
 
+    buildEnd() {
+      if (profiled.size === 0 || [...profiled.values()].includes('ran')) return
+      throw new Error(`assemblyProfile: no grammar has rule "${opts.assemblyProfile?.entry}", so the corpus never ran (${[...profiled.keys()].join(', ')})`)
+    },
+
     transform(this: { warn?: (msg: string) => void; addWatchFile?: (file: string) => void }, code: string, id: string) {
       // What this module recorded on an earlier build of a watch session is stale
       // from here: it records again below, or it no longer lowers anything.
       sinks?.delete(id)
+      profiled.delete(id)
       if (!code.includes('parseman')) return null
       if (!code.includes('macro')) return null
       // A corpus edit changes which sites a profiled build generates, so a watch
@@ -584,6 +604,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
       const sink: CarriedSink | undefined = sinks && new Map()
       const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true, opts.assemblyProfile, opts.assemblyBudget, sink)
       if (sinks && sink && sink.size > 0) sinks.set(id, sink)
+      if (result?.assemblyProfile !== undefined) profiled.set(id, result.assemblyProfile)
       if (result?.warnings.length) {
         for (const w of result.warnings) {
           if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -778,6 +799,9 @@ export type TransformMacroResult = {
   map: ReturnType<MagicString['generateMap']>
   /** Diagnostics for macro-referencing shapes that fell back to the interpreter. */
   warnings: string[]
+  /** With an `assemblyProfile`: `'ran'` when a grammar here parsed the corpus,
+   * `'no-entry'` when the grammars that could have don't have its `entry` rule. */
+  assemblyProfile?: 'ran' | 'no-entry'
 }
 
 /**
@@ -2433,10 +2457,15 @@ function transformMacroImpl(
   /** Measured site calls over the optional corpus, or `undefined` for the static
    * ranking. A corpus that cannot run fails the build: a static ranking standing in
    * for the measured one configured is a slower parser that nothing reports. */
+  let profileOutcome: TransformMacroResult['assemblyProfile']
   const profileOf = (compiled: CompiledRuleMapTable): Int32Array | undefined => {
     // Only the default AST/no-lines table carries an assembly, so only it is profiled.
-    if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1
-      || !(assemblyProfile.entry in compiled.prog.rules)) return undefined
+    if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1) return undefined
+    if (!(assemblyProfile.entry in compiled.prog.rules)) {
+      profileOutcome ??= 'no-entry'
+      return undefined
+    }
+    profileOutcome = 'ran'
     const refuse = (why: string): never => { throw new Error(`${id} — assemblyProfile: ${why}`) }
     if (corpusTexts(assemblyProfile).every(text => text.trim() === '')) refuse('`files` has no non-empty file')
     let thrower: unknown
@@ -2452,12 +2481,16 @@ function transformMacroImpl(
       })
     })
     // ponytail: callback source is evaluated in global scope, so the corpus run sees
-    // `scope` as globals for this one synchronous call. Rebind each callback instead if
-    // a build ever lowers modules concurrently on one thread.
+    // `scope` as globals for this one synchronous call, and nothing can interleave with
+    // it. Async work a callback starts that outlives the call no longer sees them;
+    // rebind each callback instead if a helper ever needs that.
     const scope = assemblyProfile.scope ?? {}
-    const shadowed = Object.keys(scope).map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
-    Object.assign(globalThis, scope)
+    const names = Object.keys(scope)
+    for (const name of names) {
+      if (name in globalThis) refuse(`\`scope\` name "${name}" is already a global; a callback couldn't tell which one it reads`)
+    }
     try {
+      for (const name of names) Object.defineProperty(globalThis, name, { value: scope[name], configurable: true })
       return countSiteVisits(compiled.prog, rules => {
         const entry = rules[assemblyProfile.entry]!
         corpusTexts(assemblyProfile).forEach((text, i) => {
@@ -2477,10 +2510,7 @@ function transformMacroImpl(
         })
       }, fns)
     } finally {
-      for (const [name, was] of shadowed) {
-        if (was === undefined) Reflect.deleteProperty(globalThis, name)
-        else Object.defineProperty(globalThis, name, was)
-      }
+      for (const name of names) Reflect.deleteProperty(globalThis, name)
     }
   }
   /** The fused table's replacement, with its selective default assembly if any. */
@@ -3390,5 +3420,6 @@ function transformMacroImpl(
     code: ms.toString(),
     map: ms.generateMap({ hires: true }),
     warnings,
+    ...(profileOutcome === undefined ? {} : { assemblyProfile: profileOutcome }),
   }
 }
