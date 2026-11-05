@@ -280,7 +280,6 @@ const REGISTRY = [
       { defect: 'cont-empty-tail-keeps-gap-emitted', expect: 'moves' },
       { defect: 'cont-no-scanner-check-dropped', expect: 'moves' },
       { defect: 'cont-unknown-scope-check-dropped', expect: 'moves' },
-      { defect: 'cont-undefined-corner-lean-closure', expect: 'moves' },
       { defect: 'cont-undefined-corner-closure', expect: 'moves' },
       { defect: 'cont-undefined-corner-emitted', expect: 'moves' },
       { defect: 'cont-gate-reads-separated-list', expect: 'moves' },

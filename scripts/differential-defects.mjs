@@ -478,21 +478,12 @@ export const DEFECTS = {
   },
 
   /** A corner that returned undefined published nothing: its node has no child and builds. */
-  'cont-undefined-corner-lean-closure': {
-    why: 'OP_CONT, closure AST body: an undefined corner misses and returns undefined, so its node never builds',
+  'cont-undefined-corner-closure': {
+    why: 'OP_CONT, closure: an undefined corner misses and returns undefined, so its node never builds',
     edits: [{
       file: 'src/table/assemble.ts',
       find: 'if (v !== undefined && !(gapRe === undefined ? startsTail(cls, input, at)',
       replace: 'if (!(gapRe === undefined ? startsTail(cls, input, at)',
-    }],
-  },
-
-  'cont-undefined-corner-closure': {
-    why: 'OP_CONT, closure node body: an undefined corner misses and returns undefined, so its node never builds',
-    edits: [{
-      file: 'src/table/assemble.ts',
-      find: 'if (c0 !== undefined && !(late.gapRe === undefined',
-      replace: 'if (!(late.gapRe === undefined',
     }],
   },
 

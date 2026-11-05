@@ -1586,17 +1586,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    */
   let FIRST_DECIDED: Piece | undefined
   let NODE_BODY: Piece | undefined
-  /** Set by `OP_CONT` for the `OP_NODE` body that opens in its own closure. */
-  let LATE_NODE: {
-    frame: SiteLabel
-    corner: Piece
-    tail: Piece
-    scan: FastTriviaScanner | undefined
-    leads: Uint8Array | null
-    cls: ResolvedClass
-    gapRe: RegExp | undefined
-    mayStartPastGap: (input: string, at: number) => boolean
-  } | undefined
   const DECIDED: Piece = (_input, pos) => { EC.e = pos; return null }
   function lookaheadLedNode(ip: number): Piece | undefined {
     const op = code[ip]
@@ -1920,27 +1909,44 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
         const frame = closureLabels.at(code[wrapper + 2]!)
         const flags = code[wrapper + 3]!
-        if (hostCst || cfg.trackLines || code[wrapper] !== OP_NODE || code[wrapper + 4]! >= 0 || (flags !== 32 && flags !== 34)) {
-          LATE_NODE = { corner, tail, scan, leads, cls, gapRe, mayStartPastGap, frame }
-          return lower(wrapper)
-        }
-        // An AST reducer: the frame is one of the two lean bodies, around these.
-        const build = fns[code[wrapper + 1]!] as NodeBuilder
+        const buildIdx = code[wrapper + 1]!
+        // The seed for this frame, handed over before anything can parse.
         let held: unknown
         let heldRaw: unknown
         let heldEnd = 0
         let heldAt = 0
-        const body: Piece = (input, pos, ctx) => {
-          const b = ctx._cstBuf
-          if (b !== undefined) {
-            b.single = held
-            b.rawSingle = heldRaw ?? rawEntry(held, input, pos, heldEnd)
-          } else ctx._cstChildren!.push(held)
-          held = undefined
-          heldRaw = undefined
-          return lateTail(tail, input, heldEnd, heldAt, ctx, frame)
+        const omitsRaw = !hostCst && buildIdx >= 0 && code[wrapper + 4]! < 0 && (flags & 2) !== 0
+        const body: Piece = omitsRaw
+          ? (input, _pos, ctx) => {
+              const b = ctx._cstBuf
+              if (b !== undefined) {
+                b.single = held
+                b.rawLen = 1
+              } else ctx._cstChildren!.push(held)
+              held = undefined
+              heldRaw = undefined
+              return lateTail(tail, input, heldEnd, heldAt, ctx, frame)
+            }
+          : (input, pos, ctx) => {
+              const b = ctx._cstBuf
+              if (b !== undefined) {
+                b.single = held
+                b.rawSingle = heldRaw ?? rawEntry(held, input, pos, heldEnd)
+              } else ctx._cstChildren!.push(held)
+              held = undefined
+              heldRaw = undefined
+              return lateTail(tail, input, heldEnd, heldAt, ctx, frame)
+            }
+        let open: Piece
+        // An AST reducer: the frame is one of the two lean bodies. Any other frame is
+        // the node's own closure, with `body` for its child.
+        if (!hostCst && !cfg.trackLines && code[wrapper] === OP_NODE && code[wrapper + 4]! < 0 && (flags === 32 || flags === 34)) {
+          const build = fns[buildIdx] as NodeBuilder
+          open = flags === 34 ? childrenOnlyCollapseBuildNode(body, build) : collapseBuildNode(body, build)
+        } else {
+          NODE_BODY = body
+          open = lower(wrapper)
         }
-        const open = flags === 34 ? childrenOnlyCollapseBuildNode(body, build) : collapseBuildNode(body, build)
         return (input, pos, ctx) => {
           const v = corner(input, pos, ctx)
           if (v === FAIL) return FAIL
@@ -4047,9 +4053,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
-        const late = LATE_NODE
-        LATE_NODE = undefined
-        const scalarChild = late === undefined && !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
+        const scalarChild = !hostCst && !cfg.tolerant && !cfg.probe && !cfg.coverage && !cfg.trackLines
           ? scalarTerminalNodeChild(code, ip)
           : -1
         if (scalarChild >= 0) {
@@ -4084,7 +4088,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return nd
           }
         }
-        const child = NODE_BODY ?? (late === undefined ? link(code[ip + 2]!) : undefined!)
+        const child = NODE_BODY ?? link(code[ip + 2]!)
         NODE_BODY = undefined
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
@@ -4110,7 +4114,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // branch in the generic node body. Their eligibility is entirely table
         // data plus this assembly's fixed option set; direct/custom contexts and
         // every richer node shape retain the generic implementation below.
-        if (!hostCst && !tracked && late === undefined) {
+        if (!hostCst && !tracked) {
           // The trailing-trivia bit (128) rides on the two leanest shapes; it adds
           // a consume, not a capture.
           if (build !== undefined && proj < 0 && (flags & ~128) === 0) {
@@ -4172,22 +4176,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const omitsRaw = !hostCst && build !== undefined && proj < 0 && (flags & 2) !== 0
         return (input, pos, ctx) => {
           const host = HOST
-          let c0: unknown
-          let c1 = 0
-          let at = 0
-          let c0Raw: unknown
-          if (late !== undefined) {
-            c0 = late.corner(input, pos, ctx)
-            if (c0 === FAIL) return FAIL
-            c1 = EC.e
-            at = c1
-            if (late.scan !== undefined) {
-              const c = input.charCodeAt(c1)
-              if (late.leads === null || !(c < 128) || late.leads[c] !== 0) at = late.scan(input, c1)
-            }
-            if (c0 !== undefined && !(late.gapRe === undefined ? startsTail(late.cls, input, at) : late.mayStartPastGap(input, at))) return c0
-            if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined || ctx._cstLeaves !== undefined) c0Raw = popCstChild(ctx)
-          }
           // `beginCstNodeCapture`/`endCstNodeCapture` INLINED, and the two objects
           // they exchange — the six-field `saved` and the three-field
           // `{children, rawChildren, triviaLog}` — held in locals instead.
@@ -4218,14 +4206,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (structural && host?._parsemanTriviaKinds !== undefined) {
             ctx._triviaCaptureMask = host._parsemanTriviaKinds(type)
           }
-          let v: unknown
-          if (late === undefined) v = child(input, pos, ctx)
-          else {
-            buf.single = c0
-            if (omitsRaw) buf.rawLen = 1
-            else buf.rawSingle = c0Raw ?? rawEntry(c0, input, pos, c1)
-            v = lateTail(late.tail, input, c1, at, ctx, late.frame)
-          }
+          const v = child(input, pos, ctx)
           if (v !== FAIL && trailingTrivia && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
           const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(ctx._fields) : undefined
           ctx._fields = savedFields
