@@ -26,6 +26,7 @@
  *   INV-10 no comment naming a repo path that does not exist
  *   INV-11 one engine, one public name — no `as` rename across engine vocabularies
  *   INV-12 no descriptor installation or WeakMap side cache in table runtime graph
+ *   INV-13 no parallel copy of a function in engine source, at any depth
  *
  * INV-8/9/10 are the NAMING rules. They exist because every duplicate-definition
  * defect this project has paid for was found by accident, and three of the five
@@ -44,6 +45,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, resolve, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseSync } from 'oxc-parser'
+import { functionShapes } from './function-shapes.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 /**
@@ -1287,6 +1289,56 @@ const MIN_DUP_CHARS = 160
       return lo + 1
     }
     check(f, r.program, lineAt)
+  }
+}
+
+/* ================================================================== *
+ * INV-13 — no parallel copy of a function in engine source.
+ *
+ * DECIDES: two functions, at ANY nesting depth, anywhere under the parse-time
+ * runtime (`src/table/`, `src/cst/`, `src/combinators/`, `src/recovery/`), whose
+ * shapes are equal and whose body is at least INV13_MIN_CHARS characters once
+ * whitespace and comments are gone. A shape is the function's AST with the names
+ * it binds itself renamed in order (`scripts/function-shapes.mjs`), so a copy
+ * whose locals were renamed is still a copy. Free names and property names are
+ * kept: two pieces that close over different helpers are different pieces.
+ *
+ * WHY: INV-4 sees only TOP-LEVEL declarations in DIFFERENT files, byte for byte.
+ * The engines are one large function each (`assemble()` is one on purpose), so
+ * the copies a refactor makes inside them are nested, in the same file, and
+ * usually retyped. One definition per piece is bar 1 of an engine change
+ * (docs/design/perf-gates.md); this is its structural half.
+ *
+ * `src/table/exec.ts` is excluded: the reference driver keeps its own copies of
+ * protocol logic ON PURPOSE, so a bug in a shared copy cannot hide from the
+ * identity sweep that compares it with the shipped engines.
+ *
+ * FALSE-POSITIVE FLOOR: equality of the whole normalised AST, so there is no
+ * similarity threshold. The length floor is lower than INV-4's because nested
+ * pieces are short; one-line idioms stay under it.
+ * ================================================================== */
+const INV13_MIN_CHARS = 120
+const INV13_DIRS = ['src/table/', 'src/cst/', 'src/combinators/', 'src/recovery/']
+{
+  /** @type {Map<string, { file: string, line: number, name: string }[]>} */
+  const byShape = new Map()
+  for (const [file, { code }] of parsed) {
+    if (!INV13_DIRS.some((d) => file.startsWith(d)) || file === 'src/table/exec.ts') continue
+    for (const s of functionShapes(code, file, INV13_MIN_CHARS)) {
+      if (!byShape.has(s.hash)) byShape.set(s.hash, [])
+      byShape.get(s.hash).push({ file, line: s.line, name: s.name })
+    }
+  }
+  for (const [hash, sites] of byShape) {
+    if (sites.length < 2) continue
+    const where = sites.map((s) => `${s.file}:${s.line} \`${s.name}\``).join(' , ')
+    const first = sites[0]
+    report('INV-13', first.file, first.line,
+      `one function written ${sites.length} times — ${where}. Define it once and call or capture that one`,
+      // The shape is in the key: names alone would let one allowlist entry excuse a
+      // new pair with the same names, and every anonymous group in a file. Editing an
+      // allowlisted pair therefore makes its entry stale, which is a prompt to re-check it.
+      `INV-13:${sites.map((s) => `${s.file}:${s.name}`).sort().join('|')}#${hash}`)
   }
 }
 

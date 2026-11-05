@@ -43,7 +43,7 @@
  *   because they come from two separate module graphs.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, symlinkSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, cpSync, readFileSync, realpathSync, statSync, symlinkSync, rmSync } from 'node:fs'
 import * as nodeModule from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -212,6 +212,31 @@ export function git(args: string[], cwd: string, timeout?: number): string {
 }
 
 /**
+ * A committed baseline as it stood at `ref`, by default the merge base with
+ * `origin/main`, or `null` if that commit has no such file. CI needs `fetch-depth: 0`.
+ */
+export function baselineAtBase<T>(gate: string, root: string, file: string, ref: string | null): { sha: string; rows: T } | null {
+  let sha: string
+  try {
+    sha = git(['rev-parse', '--verify', `${ref ?? git(['merge-base', 'HEAD', 'origin/main'], root).trim()}^{commit}`], root).trim()
+  } catch (error) {
+    fail(gate, `could not find the commit to compare ${file} with; CI needs fetch-depth: 0.\n${String(error).slice(0, 300)}`)
+  }
+  if (git(['ls-tree', '--name-only', sha, file], root).trim() === '') return null
+  return { sha, rows: JSON.parse(git(['show', `${sha}:${file}`], root)) as T }
+}
+
+/**
+ * Rows at the merge base that a baseline no longer has. A gate counts what its own
+ * code lists, so dropping or renaming a row and rewriting the baseline would otherwise
+ * read as green. Adding a row is allowed.
+ */
+export function vanishedRows(base: Readonly<Record<string, unknown>>, baseline: Readonly<Record<string, unknown>>): string[] {
+  return Object.keys(base).filter(row => !(row in baseline)).sort()
+    .map(row => `${row}: in the baseline at the merge base but not in this one; removing or renaming a row needs an owner's bypass`)
+}
+
+/**
  * The previous release: the newest stable `v*` tag whose source HEAD already contains,
  * other than HEAD itself. It is the reference the per-release gates measure against.
  *
@@ -256,6 +281,34 @@ export function previousReleases(root: string, gate: string, count: number): Arr
     return fail(gate, 'no v* release tag is contained in HEAD, so there is no previous release to measure against. A shallow clone has no tags: check out with fetch-depth: 0.')
   }
   return out
+}
+
+/**
+ * Refuse to compare legs that load parseman from the same place.
+ *
+ * `legs` maps each leg's label to the directory its parseman resolves from (its `src/`
+ * or its built `dist/`). They are compared by device and inode, so a symlink, a `..`
+ * path, a case variant on a case-insensitive disk or a bind mount is caught. Two legs
+ * with one directory are one build timed twice: an A/B whose legs ran one source tree through a symlink read "neutral"
+ * on a change that cost up to 25.9% on the routed path.
+ *
+ * `selfCheck` is the one exception: an A/A run that says so in its banner and gates
+ * nothing. Its legs are the same build by design.
+ */
+export function assertIndependentLegs(gate: string, legs: Readonly<Record<string, string>>, selfCheck = false): void {
+  const seen = new Map<string, string>()
+  for (const [label, dir] of Object.entries(legs)) {
+    if (!existsSync(dir)) fail(gate, `leg ${label}: ${dir} does not exist.`)
+    const real = realpathSync(dir)
+    console.log(`  leg ${label.padEnd(10)} parseman from ${real}`)
+    const { dev, ino } = statSync(dir, { bigint: true })
+    const id = `${dev}:${ino}`
+    const other = seen.get(id)
+    if (other !== undefined && !selfCheck) {
+      fail(gate, `legs ${other} and ${label} both resolve parseman from ${real}. Two legs need two independent builds; refusing to measure.`)
+    }
+    seen.set(id, label)
+  }
 }
 
 /** Bound for the cache-verification git calls — they are local metadata reads. */

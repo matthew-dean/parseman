@@ -522,8 +522,8 @@ describe('a list that ends under its minimum reports its item as the interpreter
   it('an item whose derived set is empty, strict and tolerant', () => {
     for (const trivia of [undefined, comment]) {
       const g = rules(trivia === undefined ? {} : { trivia }, () => ({
-        S: sequence(literal('>'), oneOrMoreSep(oneOrMoreSep(sequence(pad, literal(';')), literal(',')), literal(',')), literal('<')),
-        T: sequence(literal('>'), oneOrMoreSep(oneOrMoreSep(literal(';'), literal(','), { min: 2 }), literal(',')), literal('<')),
+        S: sequence(literal('>'), oneOrMoreSep(sequence(not(literal('?'))), literal(',')), literal('<')),
+        T: sequence(literal('>'), oneOrMoreSep(sequence(not(literal('?'))), literal(','), { min: 2 }), literal('<')),
       })) as Record<string, Comb>
       for (const [name, entries] of readers(encodeTable(g))) {
         for (const rule of ['S', 'T'] as const) {

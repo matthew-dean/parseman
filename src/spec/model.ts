@@ -507,7 +507,9 @@ class Builder {
 
       case 'lazy': {
         const inner = resolveLazy(self)
-        return inner ? this.walk(inner) : { kind: 'annotation', text: '?' }
+        if (inner) return this.walk(inner)
+        const prior = (self as { _priorOf?: string })._priorOf
+        return { kind: 'annotation', text: prior === undefined ? '?' : `prior.${prior}` }
       }
 
       case 'unknown':

@@ -68,6 +68,9 @@ describe('invariant gate', () => {
     ['inv10', 'INV-10', 'which does not exist'],
     ['inv12-descriptor', 'INV-12', 'installs a descriptor after construction'],
     ['inv12-weakmap', 'INV-12', 'hides metadata behind an identity lookup'],
+    // INV-13: one piece written twice inside one engine function, its locals
+    // renamed. INV-4 cannot see it: it is nested, and it is in one file.
+    ['inv13', 'INV-13', 'one function written 2 times'],
     // INV-11 plants BOTH halves in one fixture. 11a is `import { execRules as
     // tableRules }` — the edit that let the reference interpreter answer to the
     // shipped engine's name for two releases. 11b is a renaming re-export from an
@@ -98,6 +101,15 @@ describe('invariant gate', () => {
       .toContain('TWO DIFFERENT table engines')
     expect(out, '11b — one function published under a second name from an entry point')
       .toContain('may not rename one')
+    expect(code).toBe(1)
+  })
+
+  it('INV-13 keys each pair by shape, so one entry cannot excuse another pair of the same names', () => {
+    const { code, out } = runGate([`--root=${fixture('inv13-keys')}`, '--json'])
+    const keys = (JSON.parse(out) as { live: { key: string }[] }).live.map(f => f.key)
+    expect(keys.filter(k => k.startsWith('INV-13:src/table/lower.ts:<anon>|'))).toHaveLength(2)
+    expect(keys.filter(k => k.startsWith('INV-13:src/table/lower.ts:read|'))).toHaveLength(2)
+    expect(new Set(keys).size).toBe(keys.length)
     expect(code).toBe(1)
   })
 

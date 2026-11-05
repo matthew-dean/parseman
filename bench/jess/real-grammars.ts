@@ -12,10 +12,9 @@
  *   - `runnable` that shipped bundle with the table runtime inlined, so it loads;
  *                call `shipped` for the variant first.
  *
- * `@jesscss/core` is not vendored: reducers use it at run time only. In a runnable
- * bundle it is a stub whose members build plain objects, so an AST parse — which
- * runs reducers — is not meaningful there; a CST parse through a CST host builds
- * nodes through the host and is.
+ * A shipped bundle leaves `@jesscss/core` external. A runnable one resolves it to
+ * `core/core.js`, the snapshot's bundle of the core entries reducers import, so an AST
+ * parse runs its reducers and builds the real tree.
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -49,14 +48,6 @@ export const VARIANTS: Readonly<Record<string, string>> = {
 }
 
 const SRC = resolve(import.meta.dirname, '../../src')
-const CORE_STUB = 'const __core = new Proxy(function () {}, { get: (t, k) => k === "then" ? undefined : __core, apply: (t, self, args) => ({ args }), construct: (t, args) => ({ args }) });\n'
-
-/** `import { a as b } from "@jesscss/core…"` → reads off the stub. */
-function stubCore(code: string): string {
-  return CORE_STUB + code.replace(/import \{([^}]*)\} from "(@jesscss\/core[^"]*)";?/g, (_w, names: string) =>
-    `const {${names.replace(/\bas\b/g, ':')}} = __core;`)
-}
-
 export type Snapshot = {
   readonly root: string
   readonly warnings: readonly string[]
@@ -157,11 +148,11 @@ export async function withBuiltSnapshot<T>(fn: (snap: Snapshot) => Promise<T>, f
           name: 'runnable',
           setup(b) {
             b.onResolve({ filter: /^parseman(\/table)?$/ }, args => ({ path: join(SRC, args.path === 'parseman' ? 'index.ts' : 'table/index.ts') }))
-            b.onResolve({ filter: /^@jesscss\/core(\/.*)?$/ }, () => ({ external: true }))
+            b.onResolve({ filter: /^@jesscss\/core(\/.*)?$/ }, () => ({ path: join(root, 'core/core.js') }))
           },
         }, ...extra],
       })
-      return write(outFile, stubCore(res.outputFiles[0]!.text))
+      return write(outFile, res.outputFiles[0]!.text)
     }
 
     for (const m of ['recognition', 'pseudo-consts', 'unknown-at-rule']) lower(`parser-shared/${m}.ts`)

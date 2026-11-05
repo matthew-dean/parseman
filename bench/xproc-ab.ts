@@ -39,7 +39,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { materialise as materialiseAt, median, pairedMedianRatio, previousRelease, sign } from './ab-harness.ts'
+import { assertIndependentLegs, materialise as materialiseAt, median, pairedMedianRatio, previousRelease, sign } from './ab-harness.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -174,6 +174,7 @@ const materialise = (sha: string | null): string =>
   materialiseAt('grammar-gate', ROOT, sha, ['bench/grammar-density'])
 const refDir = materialise(REF)
 const headDir = materialise(HEAD_REF)
+assertIndependentLegs('xproc-ab', { reference: path.join(refDir, 'src'), head: path.join(headDir, 'src') })
 const headSha = sh(['rev-parse', '--short', 'HEAD']).trim()
 
 const { DENSITY_CASES } = await import(path.join(ROOT, 'bench', 'grammar-density', 'grammar.ts')) as {
