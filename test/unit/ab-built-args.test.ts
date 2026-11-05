@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const SCRIPT = new URL('../../bench/jess/ab-built.mjs', import.meta.url).pathname
@@ -10,10 +11,21 @@ describe('bench/jess/ab-built.mjs arguments', () => {
     ['two legs with one name, which the row would keep as one', ['f', 'a=m.js', 'a=n.js']],
     ['equal parse counts, which divide by zero', ['--n1', '20', '--n2', '20', 'f', 'a=m.js', 'b=n.js']],
     ['falling parse counts', ['--n1', '120', '--n2', '20', 'f', 'a=m.js', 'b=n.js']],
+    ['a repetition count that is not a number', ['--reps', 'many', 'f', 'a=m.js', 'b=n.js']],
     ['a parse count that is not a number', ['--n2', 'many', 'f', 'a=m.js', 'b=n.js']],
   ])('refuses %s before it runs a leg', (_, args) => {
     const result = run(...args)
     expect(result.status).toBe(2)
     expect(result.stderr).toContain('usage:')
+  })
+
+  it('names what each leg ran before any number', () => {
+    const module = new URL(import.meta.url).pathname
+    const result = run('--reps', '1', 'f', `one=${module}`, `two=${module}`)
+    const real = realpathSync(module)
+    expect(result.stdout).toContain(`one: built parser ${real}`)
+    expect(result.stdout).toContain(`two: built parser ${real}`)
+    expect(result.stdout).toContain('closure engine parseman at')
+    expect(result.stdout).not.toContain('calls')
   })
 })

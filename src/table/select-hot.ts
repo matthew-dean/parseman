@@ -21,8 +21,7 @@
  * per parse than the static ranking.
  */
 import { childSlots } from './child-slots.ts'
-import { continuationGate } from './late-frame.ts'
-import { OP_CHOICE, OP_CONT, OP_DISPATCH, OP_GAPGATE, OP_REP, OP_REPV } from './ops.ts'
+import { OP_CHOICE, OP_CONT, OP_DISPATCH, OP_GAPGATE, OP_REP, OP_REPV, OP_SEED } from './ops.ts'
 
 const LOOP = 8
 const ROUNDS = 60
@@ -63,25 +62,34 @@ export function selectHotSites(
 }
 
 /**
- * The sites the function for `ip` calls, as `emit-assembly.ts` lowers it. A late frame
- * is lowered with its wrapper in one function, calling its corner and its tail. A gap
- * gate has no body, so its item counts as the repeat's own child, and adding the row
- * moves no other site's estimate (`gap-gate.ts`).
+ * The sites the function for `ip` calls, as `emit-assembly.ts` lowers it. An `OP_CONT`
+ * with a body is a late frame, lowered with its wrapper in one function, calling its
+ * corner and its tail. With no body, the emitter can't decide there and it's an alias
+ * to its wrapper, as `OP_SEED` is to its corner. A gap gate has no body either, so its
+ * item counts as the repeat's own child, and adding the row moves no other site's
+ * estimate (`gap-gate.ts`).
  */
-function edgesAsLowered(code: readonly number[], ip: number, out: number[]): void {
+export function edgesAsLowered(code: readonly number[], siteBytes: ReadonlyMap<number, number>, ip: number, out: number[]): void {
   out.length = 0
-  if (code[ip] === OP_CONT && continuationGate(code, code[ip + 3]!) !== undefined) {
-    out.push(code[ip + 1]!, code[ip + 3]!)
-    return
+  if (code[ip] !== OP_CONT) childSlots(code, ip, out)
+  else if (siteBytes.has(ip)) out.push(code[ip + 1]!, code[ip + 3]!)
+  else out.push(code[ip + 2]!)
+  for (let i = 0; i < out.length; i++) {
+    let row = out[i]!
+    for (;;) {
+      const op = code[row]
+      if (op === OP_GAPGATE || op === OP_SEED) row = code[row + 1]!
+      else if (op === OP_CONT && !siteBytes.has(row)) row = code[row + 2]!
+      else break
+    }
+    out[i] = row
   }
-  childSlots(code, ip, out)
-  for (let i = 0; i < out.length; i++) if (code[out[i]!] === OP_GAPGATE) out[i] = code[out[i]! + 1]!
 }
 
 /** The sites by estimated weight per byte. Ties (saturated cycles) break by site
  * offset, so a build is deterministic. */
 function staticRanking(code: readonly number[], entries: readonly number[], siteBytes: ReadonlyMap<number, number>): number[] {
-  const weight = staticWeights(code, entries)
+  const weight = staticWeights(code, entries, siteBytes)
   const w = (ip: number): number => weight.get(ip) ?? 0
   return [...siteBytes.keys()].filter(ip => w(ip) > 0).sort((a, b) => w(b) / siteBytes.get(b)! - w(a) / siteBytes.get(a)! || a - b)
 }
@@ -107,7 +115,7 @@ function* connectedRanking(code: readonly number[], siteBytes: ReadonlyMap<numbe
   const crossings: [neighbour: number, gain: number][][] = ran.map(() => [])
   const kids: number[] = []
   ran.forEach((ip, from) => {
-    edgesAsLowered(code, ip, kids)
+    edgesAsLowered(code, siteBytes, ip, kids)
     for (const callee of kids) {
       const to = slot.get(callee)
       if (to === undefined) continue
@@ -156,14 +164,14 @@ export function fitHotSites(
   return undefined
 }
 
-function staticWeights(code: readonly number[], entries: readonly number[]): Map<number, number> {
+function staticWeights(code: readonly number[], entries: readonly number[], siteBytes: ReadonlyMap<number, number>): Map<number, number> {
   let weight = new Map<number, number>()
   const kids: number[] = []
   for (let round = 0; round < ROUNDS; round++) {
     const next = new Map<number, number>()
     for (const ip of entries) next.set(ip, 1)
     for (const [ip, w] of weight) {
-      edgesAsLowered(code, ip, kids)
+      edgesAsLowered(code, siteBytes, ip, kids)
       const op = code[ip]
       const scale = op === OP_REP || op === OP_REPV ? LOOP
         : op === OP_CHOICE || op === OP_DISPATCH ? 1 / Math.max(1, kids.length)

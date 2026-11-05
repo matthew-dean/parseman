@@ -10,7 +10,8 @@
  * doesn't parse in full. In a Jess checkout that's
  * `packages/syntax/less/less-parser/lib/index.js`. Each leg resolves its own
  * `parseman`, so the legs can be two checkouts, or one checkout built twice. The first
- * leg is the base. Name one build twice for an A/A.
+ * leg is the base. Name one build twice for an A/A. Each leg's module and the `parseman`
+ * it resolves are printed first, by `realpath`, so a symlink can't mislabel a leg.
  *
  * `bench/jess/ab.ts` compares Parseman releases on one copy of the grammars. This
  * compares what a real bundler build shipped, which is what a macro option like
@@ -23,7 +24,7 @@
  * parse throws or the legs build different trees.
  */
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, readFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, realpathSync } from 'node:fs'
 import { Session } from 'node:inspector'
 import { createRequire } from 'node:module'
 import { loadavg } from 'node:os'
@@ -74,8 +75,8 @@ const reps = Number(values.reps)
 const n1 = Number(values.n1)
 const n2 = Number(values.n2)
 const namesOk = legs.length >= 2 && legArgs.every(leg => leg.includes('=')) && new Set(legs.map(leg => leg.name)).size === legs.length
-if (file === undefined || !namesOk || !Number.isInteger(n1) || !Number.isInteger(n2) || n1 < 0 || n2 <= n1) {
-  console.error('usage: ab-built.mjs [--reps 5] [--n1 20] [--n2 120] [--out rows.jsonl] <file> <name=module>...\n  at least two legs with different names, and n2 above n1')
+if (file === undefined || !namesOk || !Number.isInteger(reps) || reps < 0 || !Number.isInteger(n1) || !Number.isInteger(n2) || n1 < 0 || n2 <= n1) {
+  console.error('usage: ab-built.mjs [--reps 5] [--n1 20] [--n2 120] [--out rows.jsonl] <file> <name=module>...\n  at least two legs with different names, reps a whole number, and n2 above n1')
   process.exit(2)
 }
 
@@ -103,6 +104,14 @@ const median = list => {
   return sorted.length % 2 === 1 ? sorted[sorted.length >> 1] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
 }
 
+for (const leg of legs) {
+  let engine = 'none resolved'
+  try {
+    const parseman = realpathSync(createRequire(leg.module).resolve('parseman'))
+    engine = parseman
+  } catch { /* a leg that doesn't resolve it fails below */ }
+  console.log(`${leg.name}: built parser ${realpathSync(leg.module)}  closure engine parseman at ${engine}`)
+}
 for (const leg of legs) {
   leg.calls = Number(inChild('calls', leg, 0))
   leg.digest = inChild('digest', leg, 0)

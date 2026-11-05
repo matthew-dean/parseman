@@ -35,9 +35,11 @@ const twins = (siteLike: readonly string[]) => {
     Failure2: label('another thing', letter),
     Number1: label('a letter', regex(/d/)),
     Number2: label('a letter', regex(/e/)),
-    Fields: node(choice(sequence(literal('1'), g.Field1!), sequence(literal('2'), g.Field2!)), (_children, fields) => Object.keys(fields ?? {})),
+    Fields: node(choice(sequence(literal('1'), g.Field1!), sequence(literal('2'), g.Field2!), sequence(literal('3'), g.SiteField1!), sequence(literal('4'), g.SiteField2!)), (_children, fields) => Object.keys(fields ?? {})),
     Field1: field('_t1_', pair),
     Field2: field('_t2_', pair),
+    SiteField1: field(siteLike[0]!, pair),
+    SiteField2: field(siteLike[1]!, pair),
     Optional1: optional(letter),
     Optional2: optional(letter),
     Temp1: literal('_t1_'),
@@ -71,7 +73,7 @@ const TWINS = twins(SITE_LIKE)
 
 const CSS_INPUTS = ['a { color: red }', '@media x { b { y: z } }', '.a > .b, #x:hover { margin: 0 1px; background: url(a.png) }', '@import "a"; /* c */ @font-face { src: local("x") }', 'a { color', 'a { color: red', '@media', '.a >', '[a=', 'a { @@@ }']
 const CSS_PIECES = ['a', 'a {', 'a { color: red }', '@media x {', '.a > .b', '#x:hover', '[a=b]', '[a=', '1px', 'rgb(1,2,', 'color: red;', 'color:', 'url(x', '"str', '/* c', '!important', '@', '{', '}', '(', ')', ':', '::before', 'a, b', 'a,', '']
-const TWIN_PIECES = ['c', 'd', 'e', 'f', 'q', '1ab', '2ab', '1a', 'x', 'xd', 'xe', '_t1_', '_t2_', '_t1_v0', '', ...SITE_LIKE]
+const TWIN_PIECES = ['c', 'd', 'e', 'f', 'q', '1ab', '2ab', '3ab', '4ab', '1a', 'x', 'xd', 'xe', '_t1_', '_t2_', '_t1_v0', '', ...SITE_LIKE]
 
 const assembled = (prog: TableProgram, source: string, joined: ReturnType<typeof supercompileEmittedAssembly>) => {
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
@@ -92,7 +94,7 @@ describe('a merged build against the closure engine', () => {
 
   describe.each([
     ['the css example', cssRules as unknown as RuleMap, 'Stylesheet', CSS_INPUTS, CSS_PIECES],
-    ['rules that differ in one thing a merge could lose', TWINS as unknown as RuleMap, 'Doc', ['fcdefx', 'fz', 'x', '1ab2ab', `_t1_${SITE_LIKE.join('')}`, 'q'], TWIN_PIECES],
+    ['rules that differ in one thing a merge could lose', TWINS as unknown as RuleMap, 'Doc', ['fcdefx', 'fz', 'x', '1ab2ab3ab4ab', `_t1_${SITE_LIKE.join('')}`, 'q'], TWIN_PIECES],
   ] as const)('%s', (_name, ruleMap, root, inputs, pieces) => {
     const prog = encodeTable(ruleMap, {})
     const cfg = defaultAssemblyCfgs(prog)[0]!

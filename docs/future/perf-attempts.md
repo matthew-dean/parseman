@@ -305,13 +305,12 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ### Unreleased on `main`
 
-- **Connected selection for `assemblyProfile`.** Ranking by calls per byte left islands of
-  generated code, and each call between them and the closure engine crosses a wrapper. A site's
-  worth now counts the crossings it removes. Real tsdown builds of Jess's grammars against
-  `main` static, on a loaded machine with no `--jitless` or x64 run: `benchmark.less` at budget
-  `0.5` -11.19% instructions and -2.86% calls, against -6.95% and +8.95% for `main` profiled.
-  Every row is in [#271](https://github.com/matthew-dean/parseman/pull/271), `61b9f562`.
-  Weight 4 beats no weight but isn't tuned: 2 and 8 are untried.
+- **Connected selection for `assemblyProfile`.** A site's worth now counts the wrapper
+  crossings it removes, so a profile no longer leaves islands of generated code. Jess's Less
+  build on `benchmark.less` at `0.5`, on a loaded machine with no `--jitless` or x64 run, against
+  `main` static: -11.19% instructions and -2.86% calls (`main` profiled: -6.95% and +8.95%).
+  Rows in [#271](https://github.com/matthew-dean/parseman/pull/271), `61b9f562`. Weight 4 beats
+  no weight but isn't tuned: 2 and 8 are untried.
 
 - **One function for functions that read the same.** `optional(x)` written in 25 places was
   25 functions, and connected selection took more of them. Merging them after the entry join,
@@ -506,16 +505,12 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ## Parked
 
-- **Dropping the SCSS nested-property pre-scan by reordering arms.** Delete
-  `directNestedPropertyAhead` and try `Declaration` first; the two arms can't both succeed.
-  Against the fixture on `main`, instructions and calls: `gen-workload` -0.7% and -0.4%,
-  Foundation -1.9% and -1.6%, Bootstrap -0.6% and -0.6%, `spec-all` -5.3% and -6.2%. A file of
-  only nested properties, written by hand as the worst case, reads +41% and +39%, because
-  the value is parsed twice. A/A within 0.1% on instructions; not quiet. Real files barely use
-  the form: none in `gen-workload`, Foundation or Bootstrap, and 1 against 364 declarations in
-  `spec-all`. `a: "s;t" { b: c }` and `a: url(p;q) { c: d }` newly parse, which is correct SCSS.
-  Not shipped: a rise on that input breaks the calls bar. Retry on a factored prefix when
-  #265's `continues` lands. The experiment changed only `fixtures/jess-grammars/scss/grammar.ts`.
+- **Dropping the SCSS nested-property pre-scan by reordering arms.** Try `Declaration` first.
+  Instructions and calls against the fixture on `main`: `gen-workload` -0.7% and -0.4%, Foundation
+  -1.9% and -1.6%, Bootstrap -0.6% and -0.6%, `spec-all` -5.3% and -6.2%. A file of only nested
+  properties reads +41% and +39%, since the value parses twice; real files barely use the form.
+  Not shipped: that rise breaks the calls bar. #265 landed with no `continues` option, so a retry
+  needs a factored prefix of its own. The experiment changed only `fixtures/jess-grammars/scss/grammar.ts`.
 
 - **Test the decisive first term before opening frames.** Failed attempts the first term
   decided (nothing consumed) leave removable pieces of 4.4% (CSS), 6.0% (Less), 10.0% (SCSS)

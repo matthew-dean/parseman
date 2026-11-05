@@ -25,7 +25,7 @@ import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
-import { fitHotSites, selectHotSites } from '../../src/table/select-hot.ts'
+import { edgesAsLowered, fitHotSites, selectHotSites } from '../../src/table/select-hot.ts'
 import { childSlots } from '../../src/table/child-slots.ts'
 import { continuationGate } from '../../src/table/late-frame.ts'
 import { OP_CONT, OP_GAPGATE } from '../../src/table/ops.ts'
@@ -619,6 +619,60 @@ ${PADDING}`
       counts[lonely] = 40
       const bytes = new Map([repeat, item, lonely].map(ip => [ip, 10]))
       expect([...selectHotSites(gated.code, [], bytes, 20, counts)]).toEqual([repeat, item])
+    })
+
+    describe.each([
+      ['lowers its frames', regex(/[ ]+/), 2, /[0-9a-z]+/],
+      ['has no trivia, so nothing to decide on', undefined, 0, /[0-9a-z]+/],
+      ['has trivia it can\'t name', choice(regex(/[ ]+/), regex(/\/\*x\*\//)), 0, /[0-9a-z]+/],
+      ['is entered on a frame, with no first set to gate on', undefined, 0, /./s],
+    ] as const)('a ladder that %s', (_name, trivia, late, atom) => {
+      const built = (type: string) => (children: readonly unknown[]) => ({ type, children })
+      const level = (type: string, corner: Combinator<unknown>, tail: Combinator<unknown>): Combinator<unknown> =>
+        node(type, sequence(corner, tail), built(type), { collapse: true })
+      const prog = encodeTable(rules(trivia === undefined ? {} : { trivia }, (g: RuleMap) => ({
+        Sum: level('Sum', g.Product!, many(sequence(regex(/[+-]/), g.Product!))),
+        Product: level('Product', g.Atom!, many(sequence(regex(/[*/]/), g.Atom!))),
+        Atom: node('Atom', regex(atom), built('Atom')),
+      })) as unknown as RuleMap, {})
+      const { siteBytes, source } = emitAssemblySource(resolveTable(prog), prog, defaultAssemblyCfgs(prog)[0]!, assemblyExtraIps(prog), true)
+
+      it('has the late frames it should', () => {
+        expect([...siteBytes.keys()].filter(ip => prog.code[ip] === OP_CONT)).toHaveLength(late)
+      })
+
+      it('reads a frame with no body as its wrapper alone', () => {
+        const kids: number[] = []
+        for (const ip of reachableIps(prog)) {
+          if (prog.code[ip] !== OP_CONT || siteBytes.has(ip)) continue
+          edgesAsLowered(prog.code, siteBytes, ip, kids)
+          expect(kids).toEqual([prog.code[ip + 2]])
+        }
+      })
+
+      it('has every call a function makes among its edges', () => {
+        const kids: number[] = []
+        const functions = source.split(/\n(?=function )/).flatMap(text => {
+          const name = /^function _pf(\d+)\(/.exec(text)
+          return name === null ? [] : [[Number(name[1]), text] as const]
+        })
+        expect(functions.length).toBe(siteBytes.size)
+        let calls = 0
+        for (const [ip, text] of functions) {
+          edgesAsLowered(prog.code, siteBytes, ip, kids)
+          for (const [, callee] of text.matchAll(/\b_pf(\d+)\(/g)) {
+            if (Number(callee) === ip) continue
+            calls++
+            expect(kids).toContain(Number(callee))
+          }
+        }
+        expect(calls).toBeGreaterThan(10)
+      })
+
+      it('leaves no site out of a static selection that can take them all', () => {
+        const picked = selectHotSites(prog.code, Object.values(prog.rules), siteBytes, Infinity)
+        expect([...siteBytes.keys()].filter(ip => !picked.has(ip))).toEqual([])
+      })
     })
 
     it('sees a late frame\'s corner and its tail', () => {
