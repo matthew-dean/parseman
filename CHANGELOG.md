@@ -13,6 +13,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **A macro build prints functions that read the same once.** `optional(x)` written in 25
   places was 25 functions. Which sites are generated doesn't change, and neither do the calls
   a parse makes.
+- **Docs: `triviaLog` entries have four numbers when the trivia has kind labels.** The guide
+  documented only `[start, end, insertIdx]`. With labels each entry also carries `kind`.
+
 - **A `collapse` ladder level opens its frame only where its tail starts.** A
   `node(type, sequence(corner, tail), build, { collapse: true })` whose corner always
   publishes one node and whose tail is a `many()` or `optional()` now runs the corner in
