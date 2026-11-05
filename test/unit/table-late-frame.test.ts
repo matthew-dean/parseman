@@ -102,7 +102,8 @@ describe('a late frame', () => {
 
   it('a tail that passes its test and takes nothing leaves the gap outside', () => {
     const g = rules({ trivia: regex(/ +/) }, (g: G) => ({
-      Root: node('Root', sequence(g.Sum!, optional(literal('+!'))), bin('Root')),
+      Root: node('Root', sequence(g.Inner!, optional(literal('+'))), bin('Root')),
+      Inner: node('Inner', sequence(g.Sum!, optional(literal('+!'))), bin('Inner')),
       Sum: node('Sum', sequence(g.Atom!, many(literal('+='))), bin('Sum'), { collapse: true }),
       Atom: node('Atom', regex(/[0-9]+/), children => ({ atom: children[0] })),
     })) as G
