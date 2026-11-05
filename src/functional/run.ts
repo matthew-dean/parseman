@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseError, ParseResult, Span } from '../types.ts'
-import { REC } from '../recovery/scan.ts'
+import { REC, unreadError } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
 import { buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
 /* `cst/host-mode.ts` and `cst/trivia-entries.ts` are import-free by design, so
@@ -517,7 +517,10 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
         pos = t.span.end
       }
     }
-    unconsumedFrom = pos < input.length ? pos : null
+    if (pos < input.length) {
+      unconsumedFrom = pos
+      if (options.tolerant) errors.push(unreadError(input, pos, []))
+    }
   }
 
   // `rootTrivia` is ABSENT rather than empty when no requested category was

@@ -139,3 +139,12 @@ export function childSlotOffsets(code: ArrayLike<number>, ip: number, out: numbe
       return false
   }
 }
+
+/** For each arm of the choice at `ip`, the function index of its gate, if it has one. */
+export function armGateFns(code: ArrayLike<number>, ip: number): (number | undefined)[] {
+  return Array.from({ length: code[ip + 2]! }, (_, i) => {
+    let arm = code[ip + 4 + i]!
+    if (code[arm] === OP_COV) arm = code[arm + 1]!
+    return code[arm] === OP_ARMGATE ? code[arm + 1]! : undefined
+  })
+}

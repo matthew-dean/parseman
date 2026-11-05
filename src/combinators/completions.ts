@@ -50,11 +50,11 @@ export function completionsAt(
   // parse "succeeds" (list recovery swallowed the incomplete element at the cursor),
   // so the meaningful expectation lives in the deepest failure the probe recorded
   // while recovering: return that instead of an empty set.
-  if (result.ok) return options.tolerant ? (probe.best?.expected ?? []) : []
+  if (result.ok) return options.tolerant ? [...new Set(probe.best?.expected)] : []
 
   // Use whichever failure (probe or top-level) sits at the deeper position.
   const best = deeperFail(probe.best, result)
-  return best?.expected ?? []
+  return [...new Set(best?.expected)]
 }
 
 function deeperFail(a: ParseFail | null, b: ParseFail | null): ParseFail | null {

@@ -67,7 +67,7 @@ import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
-import { childSlots } from './child-slots.ts'
+import { armGateFns, childSlots } from './child-slots.ts'
 import { canDecide, continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows } from './gap-gate.ts'
@@ -883,9 +883,9 @@ return cur
    * publish below collapses to the inherited sentinel with no array read.
    */
   const sentRef = (cls: number): string => cls < 0 ? 'undefined' : hoist('sent', `SENTS[${cls}]`)
-  /** A lookahead asks whether its child matches, so nothing inside it may recover. */
   /** The always-matching sync point: the last entry of a recovery assembly's sentinel pool. */
   const ANY_SYNC = 'SENTS[SENTS.length-1]'
+  /** A lookahead asks whether its child matches, so nothing inside it may recover. */
   const strictly = (call: string): string => REC
     ? `const tol=ctx._tolerant\nctx._tolerant=undefined\n${call}\nctx._tolerant=tol`
     : call
@@ -1175,10 +1175,50 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // to the hoisted declaration rather than to a forwarding stub. This is the
     // whole of `assemble.ts`'s `inFlight` map and its one shared closure.
     byIp.set(target, fname)
-    const body = lower(target, fname)
+    // A choice whose arms may overlap answers through this front under recovery; see
+    // `overlappingChoice` in run-support.ts, which is the same thing for the closures.
+    const body = REC && code[target] === OP_CHOICE && !disp[code[target + 1]!]!.exclusive
+      ? `${lower(target, `${fname}_s`)}\n${overlapFront(target, fname)}`
+      : lower(target, fname)
     siteBytes.set(target, body.length)
     bodies.push(body)
     return fname
+  }
+
+  function overlapFront(ip: number, fname: string): string {
+    const cls = hoist('ac', `DISP[${code[ip + 1]!}].armCls`)
+    const n = code[ip + 2]!
+    const list = `[${Array.from({ length: n }, (_, i) => link(code[ip + 4 + i]!)).join(',')}]`
+    const gates = hoist('ag', `[${armGateFns(code, ip).map(g => g === undefined ? 'undefined' : fnRef(g)).join(',')}]`)
+    return `function ${fname}(input,pos,ctx){
+if(ctx._rec===undefined)return ${fname}_s(input,pos,ctx)
+const strict=ctx._tolerant!==true
+const c=strict?0:lead(input,pos)
+if(!strict){
+let open=0
+for(let i=0;i<${n};i++){const g=${cls}[i];if((g===null||g===undefined||classHas(g,c))&&${gates}[i]?.(ctx.state)!==false)open++}
+if(open<2)return ${fname}_s(input,pos,ctx)
+ctx._tolerant=undefined
+}
+let v
+const f=ctx._rec.failedBefore(ctx,${ip},pos)
+if(f!==undefined){ctx._fe=f.at;ctx._fx=f.expected;if(f.committed)ctx._fc=true;v=FAIL}
+else{v=${fname}_s(input,pos,ctx)
+if(v===FAIL){if(ctx._fx!==undefined)ctx._fx=[...new Set(ctx._fx)]
+ctx._rec.noteFailed(ctx,${ip},pos,ctx._fe,ctx._fx)}}
+if(strict)return v
+ctx._tolerant=true
+if(v!==FAIL)return v
+const arm=ctx._rec.furthest(ctx,${n},i=>{
+const g=${cls}[i]
+if(g!==null&&g!==undefined&&!classHas(g,c))return -1
+ctx._fc=false
+const r=${list}[i](input,pos,ctx)
+return r!==FAIL?pos:ctx._fc===true?Infinity:ctx._fe??pos
+})
+ctx._fc=false
+return ${list}[arm](input,pos,ctx)
+}`
   }
 
   /**
@@ -2106,29 +2146,6 @@ return FAIL
 }`
         }
 
-        // An arm a later arm could still take over from runs as a strict parse would:
-        // its failure is an answer, not damage, and a list inside it may not recover.
-        if (REC) {
-          for (let i = 0; i < n - 1; i++) {
-            const arm = arms[i]!
-            const later = Array.from({ length: n - i - 1 }, (_, j) => {
-              const at = i + 1 + j
-              return (table.armCls[at] ?? null) === null ? 'true' : `classHas(${hoist('g', `DISP[${code[ip + 1]!}].armCls[${at}]`)},c)`
-            }).join('||')
-            const name = `_sa${uid++}_`
-            choiceDefs.push(`function ${name}(input,pos,ctx){
-if(ctx._tolerant!==true)return ${arm}(input,pos,ctx)
-const c=lead(input,pos)
-if(!(${later}))return ${arm}(input,pos,ctx)
-ctx._tolerant=undefined
-const v=${arm}(input,pos,ctx)
-ctx._tolerant=true
-return v
-}`)
-            arms[i] = name
-          }
-        }
-
         if (cfg.probe) {
           // A probe assembly enters every arm in source order, as the
           // interpreter's `firstMatch` does, so each opener reaches `failAt`.
@@ -2661,11 +2678,10 @@ ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
          * (`recovery/scan.ts`), so an error's span, its expected set and its CST
          * embedding are produced once and cannot drift between engines.
          *
-         * Reached only in a recovery table, and inside it only on the FAILURE of
-         * an element, so a matching item pays one `_sync` read at entry and
-         * nothing else. Everything else in this loop is the emitted strict loop
-         * unchanged — which is the whole point, and what the top-level refusal
-         * this replaces was giving up.
+         * Reached only in a recovery table. A matching item pays for a sync test and a
+         * publish; the scan runs only on the FAILURE of an element. Everything else in
+         * this loop is the emitted strict loop unchanged — which is the whole point, and
+         * what the top-level refusal this replaces was giving up.
          *
          * THE FOUR AGREEMENTS WITH `assemble.ts:2036`, each load-bearing:
          *  - a MANDATORY item of a separator-less repeat does NOT recover, so the
@@ -2749,7 +2765,7 @@ ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
 `}${gapCode(rb)}ctx._fc=false
 ${REC ? `const ${recTol}=ctx._tolerant===true
-const ${recEnd}=${recTol}&&${my}!==undefined&&${recGate}(matchesAt(${my},input,itemStart,ctx)||(cur!==itemStart&&matchesAt(${my},input,cur,ctx))||(sepEnd>=0&&${p}sst!==cur&&matchesAt(${my},input,${p}sst,ctx)))
+const ${recEnd}=${recTol}&&${my}!==undefined&&${recGate}ctx._rec.mayEnd(${my},input,ctx,itemStart,sepEnd>=0?${p}sst:-1)
 if(${recEnd})ctx._tolerant=undefined
 ctx._sync=${itemSync}
 ` : ''}const v=${child}(input,itemStart,ctx)

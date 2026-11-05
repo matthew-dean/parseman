@@ -102,9 +102,9 @@ describe('tolerant parseDoc — errors + unconsumedFrom are populated', () => {
     expect(doc.unconsumedFrom).toBeNull()
   })
 
-  it('trailing junk after a complete parse surfaces via unconsumedFrom', () => {
+  it('trailing junk after a complete parse is an error, and surfaces via unconsumedFrom', () => {
     const doc = parseDoc<CSTNode>(registry, root, '{a:1}xyz', { tolerant: true })
-    expect(doc.errors).toEqual([])
+    expect(doc.errors.map(e => [e.span.start, e.span.end])).toEqual([[5, 8]])
     expect(doc.unconsumedFrom).toBe(5)
   })
 

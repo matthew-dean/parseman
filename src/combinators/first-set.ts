@@ -156,20 +156,12 @@ export function empty(): FirstSet {
 }
 
 /**
- * Can this parser SUCCEED consuming zero characters (nullable / matches-empty)?
- * Used to compute a sound sequence first-set: a nullable leading term lets the
- * NEXT term's first chars start the whole sequence. MUST err toward `true` when
- * unsure — over-estimating nullability only widens the (over-approximated) first
- * set, which stays sound; under-estimating would drop valid start chars and make
- * first-char dispatch skip a matching arm.
- */
-/**
  * What can come after term `i` of a sequence, for a list nested in that term to resync to.
  *
  * `first` is the union of every later term's first set, not only up to the first
  * non-nullable one, so a mandatory middle term cannot hide a later close. `open` says
  * every later term can match empty, so whatever follows the sequence can come next too.
- * `unknown` says a term that can come next has no usable first set: any character might
+ * A `first` of kind `any` says a later term has no usable first set: any character might
  * follow, and no character can be called junk.
  */
 export function followOfTerm(
@@ -186,6 +178,14 @@ export function followOfTerm(
   return { first, open }
 }
 
+/**
+ * Can this parser SUCCEED consuming zero characters (nullable / matches-empty)?
+ * Used to compute a sound sequence first-set: a nullable leading term lets the
+ * NEXT term's first chars start the whole sequence. MUST err toward `true` when
+ * unsure — over-estimating nullability only widens the (over-approximated) first
+ * set, which stays sound; under-estimating would drop valid start chars and make
+ * first-char dispatch skip a matching arm.
+ */
 export function matchesEmpty(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>> = new Set(),

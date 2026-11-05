@@ -54,9 +54,10 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +554B to 64,064B: `rules()` passes its factory the `prior` handle, a proxy
 // that reads the earlier piece's definition (or, before any composition, a placeholder
 // the carried IR writes back as `prior.X`, which names itself when run unfilled).
-// Bumped +1,418B to 65,482B: a tolerant parse in the interpreter now scopes recovery by what
-// can follow, as the table does (`followOfTerm`, `tolerantItem`, a choice's `tolerantArms`).
-const BASELINE_RAW_BYTES = 65_482
+// Bumped +1,317B to 66,799B: a tolerant parse in the interpreter now scopes recovery by what
+// can follow, as the table does (`followOfTerm`, `tolerantItem`), and a choice whose arms overlap
+// answers strictly first, with a record of where it failed and the furthest arm to recover in.
+const BASELINE_RAW_BYTES = 66_799
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

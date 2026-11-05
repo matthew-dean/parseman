@@ -42,6 +42,8 @@ import { failAt } from '../combinators/probe.ts'
  */
 import { committed, spanLines, stampRuleMap } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
+import { armGateFns } from './child-slots.ts'
+import { overlappingChoice } from './run-support.ts'
 import { ANY_SYNC, captureError, firstSetSentinel, followSync, listMayEndAt, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
   decodeClassSpec, expandCompact, resolveTable,
@@ -320,6 +322,7 @@ function makeDriver(
     return input.codePointAt(pos) ?? c
   }
 
+  let plainChoice = -1
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
     // A row that only hands on to one child at the same position (a gate that
     // passes, a rule trampoline, `OP_STRICT`) continues here rather than
@@ -438,7 +441,7 @@ function makeDriver(
 
       case OP_GATE: {
         // Skipped under a probe / tolerant recovery — see `assemble.ts`.
-        if (ctx._probe === undefined && !ctx._tolerant && !classHas(cc[code[ip + 1]!]!, lead(input, pos))) {
+        if (ctx._probe === undefined && ctx._rec === undefined && !classHas(cc[code[ip + 1]!]!, lead(input, pos))) {
           ctx._fe = pos; ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
@@ -475,7 +478,7 @@ function makeDriver(
         ip = code[ip + 1]!; continue rows
 
       case OP_STRICT:
-        ip = code[ctx._tolerant || ctx._probe !== undefined ? ip + 2 : ip + 1]!; continue rows
+        ip = code[ctx._rec !== undefined || ctx._probe !== undefined ? ip + 2 : ip + 1]!; continue rows
 
       // The reference runs a late frame's node as written, and is the leg it is compared with.
       case OP_CONT:
@@ -943,6 +946,16 @@ function makeDriver(
         }
         const table = disp[d]!
         const c = lead(input, pos)
+        // `plainChoice` marks the re-entry that runs this row as a strict parse does.
+        if (REC && !table.exclusive) {
+          if (plainChoice !== ip) {
+            const arms = Array.from({ length: code[ip + 2]! }, (_, i) => (at: string, from: number, cx: ParseContext) => exec(code[base + i]!, at, from, cx))
+            const plain = (at: string, from: number, cx: ParseContext): unknown => { plainChoice = ip; return exec(ip, at, from, cx) }
+            const gates = armGateFns(code, ip).map(g => g === undefined ? undefined : fns[g] as (s: unknown) => boolean)
+            return overlappingChoice(ip, plain, table.armCls, gates, arms, FAIL, input, pos, ctx)
+          }
+          plainChoice = -1
+        }
         if (table.exclusive) {
           let arm = -1
           if (c >= 0 && c < 128) {
@@ -1045,18 +1058,7 @@ function makeDriver(
             continue
           }
           ctx._fc = false
-          // An arm a later arm could still take over from runs as a strict parse would:
-          // its failure is an answer, not damage, and a list inside it may not recover.
-          let taken = false
-          if (REC && ctx._tolerant === true) {
-            for (let j = i + 1; j < n && !taken; j++) {
-              const later = table.armCls[j] ?? null
-              taken = later === null || classHas(later, c)
-            }
-          }
-          if (taken) ctx._tolerant = undefined
           const v = exec(code[base + i]!, input, pos, ctx)
-          if (taken) ctx._tolerant = true
           if (v !== FAIL) return v
           const at = ctx._fe ?? pos
           if (at > best) { best = at; acc = undefined }
@@ -1320,7 +1322,7 @@ function makeDriver(
           // whatever is inside it may not recover.
           const tolerant = REC && ctx._tolerant === true
           const mayEnd = tolerant && mySync !== undefined && (sep >= 0 || count >= min)
-            && listMayEndAt(mySync, input, ctx, itemStart, cur, sepEnd >= 0 ? sepStart : -1)
+            && listMayEndAt(mySync, input, ctx, itemStart, sepEnd >= 0 ? sepStart : -1)
           if (mayEnd) ctx._tolerant = undefined
           if (REC) ctx._sync = itemSync
           const v = exec(child, input, itemStart, ctx)

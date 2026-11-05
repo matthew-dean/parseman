@@ -107,6 +107,16 @@ export const DEFECTS = {
     }],
   },
 
+  'tolerant-emit-recovery': {
+    why: 'emitted tolerant assembly only: a recovered error reports the wrong expected set',
+    edits: [
+      {
+        file: 'src/table/emit-assembly.ts',
+        find: 'const rr=recoverScan(input,itemStart,ctx,${recSent},${recFx})\n',
+        replace: 'const rr=recoverScan(input,itemStart,ctx,${recSent},${recFx})\nrr.error.expected=["PLANT"]\n',
+      },
+    ],
+  },
   /**
    * Recovery is not lowered into the TOLERANT assembly.
    *

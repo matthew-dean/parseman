@@ -7,10 +7,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 - **A document that parses under strict now gives the same tree and no errors under
   `tolerant: true`.** A list could read the token after it as junk, skip it, and report an
-  error on valid input, or send a grammar's reducer a recovered child it couldn't read. It
-  now recovers only once nothing else can read the input. This also removes tolerant parse
-  time that doubled per line on valid Less. Printed tables change in value only, by 130 to
-  238 bytes on Jess's grammars; strict parses never read those words.
+  error on valid input, or send a grammar's reducer a recovered child it couldn't read. Where
+  more than one arm of a choice can start, the arms now answer as a strict parse would. This
+  also removes tolerant parse time that doubled per line on valid Less. Printed tables change
+  in value only; strict parses never read those words.
+- **Under `tolerant: true`, an error inside overlapping arms stays where it is.** When no arm
+  answers, the arm that read the furthest reads the text again with recovery on. That's the
+  one re-read, and it happens only on a failure. A choice that failed strictly at a position
+  isn't worked out again, so failing nested text stays linear.
+- **A tolerant parse that stops before the end now reports it (breaking).** What it didn't read
+  is one more `ParseError`, so `ok: true` with no errors now means the whole input was read.
+  `unconsumedFrom` is unchanged.
+- **`parseDoc`'s `edit()` under `tolerant` no longer reuses a rule that had to recover.** It
+  widens instead, so an edit gives what a fresh parse gives, at the cost of a wider reparse
+  while the edited text is broken.
+- **`parseDoc` reads a table entry's trivia when it works out `unconsumedFrom`,** as `run` does,
+  so trailing whitespace on a `tableRules` document no longer counts as unread.
+- **`completionsAt` lists each candidate once.** Under `tolerant` it now reports the failure at
+  the cursor, where it could report one further back: `.a { color: red; ` offered selector
+  tokens from offset 10 and now offers `}`.
 - **A `collapse` ladder level opens its frame only where its tail starts.** A
   `node(type, sequence(corner, tail), build, { collapse: true })` whose corner always
   publishes one node and whose tail is a `many()` or `optional()` now runs the corner in

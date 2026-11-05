@@ -4,7 +4,7 @@
 import type { Combinator, ParseContext, ParseError, ParseResult, ParserDef, Span } from '../types.ts'
 import type { NodeLike, CSTLeaf, CSTError } from '../cst/types.ts'
 import { relativizeCST, absoluteSpanCST } from '../cst/relative-spans.ts'
-import { REC } from '../recovery/scan.ts'
+import { REC, unreadError } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
 import { fusedHostModeOf, fusedHostElidedOf } from '../compiler/linker.ts'
 import { assertHostModeCompatible } from '../cst/host-mode.ts'
@@ -467,6 +467,8 @@ function parseMiddle(
       return null
     }
     if (!r.ok || r.span.end <= pos || r.span.end > reEnd) return null
+    // A rule that had to recover says nothing about what the whole parse would do here.
+    if (ctx._errors !== undefined && ctx._errors.length > 0) return null
     out.push(relativizeCST(r.value as unknown as AnyChild, cStart))
     pos = r.span.end
     if (separator !== null) expectElement = false
@@ -758,6 +760,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
     const end = (newTree as unknown as { span: { end: number } }).span.end
     const errors = collectEmbeddedErrors(newTree, 0, [])
     const unconsumedFrom = unconsumedAfter(end, newInput, trivia)
+    if (this._opts.tolerant && unconsumedFrom !== null) errors.push(unreadError(newInput, unconsumedFrom, []))
     return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: newTree }, errors, unconsumedFrom, newInput)
   }
 
@@ -808,6 +811,9 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       const ctx: ParseContext = mkCtx(node.state, this._opts.build, !!this._opts.tolerant)
       const r = ruleFn(newInput, absStart, ctx)
       if (!r.ok) continue
+      // A rule that had to recover says nothing about what the whole parse would do here:
+      // an enclosing choice can still answer with another arm. Widen.
+      if (ctx._errors !== undefined && ctx._errors.length > 0) continue
       if (r.span.end !== absEnd + delta) continue
 
       // Stage-2 soundness guard: only reuse the untouched suffix if the re-parse
@@ -886,12 +892,9 @@ function triviaOf<N extends NodeLike>(
   opts: ParseDocOptions<N>,
 ): Combinator<unknown> | undefined {
   if (opts.trivia) return opts.trivia
-  // Only an interpreter Combinator carries `_meta`; a bare parse function or a
-  // compiled-grammar object (which bakes its ambient trivia into codegen) does
-  // not, so there's nothing to derive and trailing trivia isn't skipped.
-  if (entry === undefined || typeof entry === 'function') return undefined
-  const meta = (entry as { _meta?: { grammarTrivia?: Combinator<unknown> } })._meta
-  return meta ? meta.grammarTrivia : undefined
+  // A table entry is a function with `grammarTrivia` stamped on it, read as `run()` reads
+  // it. A bare parse function has no `_meta`, so trailing trivia isn't skipped.
+  return (entry as { _meta?: { grammarTrivia?: Combinator<unknown> } } | undefined)?._meta?.grammarTrivia
 }
 
 /**
@@ -951,6 +954,7 @@ export function parseDoc<N extends NodeLike>(
     // flat too (like run()), and unconsumedFrom reports any trailing junk.
     const errors = ctx._errors ? [...ctx._errors] : []
     const unconsumedFrom = unconsumedAfter(r.span.end, input, triviaOf(entry, opts))
+    if (opts.tolerant && unconsumedFrom !== null) errors.push(unreadError(input, unconsumedFrom, []))
     return new ParseDocImpl(registry, rootRule, opts, { abs: r.value }, errors, unconsumedFrom, input)
   }
   // Hard (non-recovered) failure: the single top-level failure, as a parseError.

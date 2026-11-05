@@ -99,8 +99,7 @@ run(block, '{a:1;$$;b:2}', { tolerant: true })   // → [decl, error, decl]
 ```
 
 A top-level list with no separator and no enclosing delimiter has no sync point to skip
-to, so it falls back to strict behavior — stop at the first bad element — and a
-`tolerant` flag alone can't rescue it. In practice, a list an editor cares about is
+to, so it stops at the first bad element, and what it didn't read comes back as one error. In practice, a list an editor cares about is
 always inside a block or separated, so inference covers it.
 
 ### The grammar carries no recovery annotation
@@ -118,17 +117,33 @@ entirely outside the grammar. See [Editor / language-server integration](./edito
 ### Guarantees
 
 - **A document that parses under strict is clean under tolerant:** no errors, and the
-  same tree. A list only recovers once nothing else can read the input. While a later
-  choice arm can start at the same place, an `optional` can stand aside, the list can end
-  there, or the parse is inside `not`, `peek` or `token`, a failure stays a plain failure.
+  same tree. Where more than one arm of a choice can start, the arms answer as a strict
+  parse would. So does a list item where the list could end, an `optional` that can stand
+  aside, and anything inside `not`, `peek` or `token`.
+- **Damage goes to the arm that read the furthest.** When none of those arms answers, the
+  text is damage. The arm that got furthest reads it again with recovery on, and the error
+  lands inside that arm. That second read happens only on a failure.
+- **A parse never stops silently.** If it stops before the end of the input, what it didn't
+  read is one more `ParseError`, and `unconsumedFrom` still says where it stopped. The rest
+  of the file isn't recovered at that point: nothing enclosing the list says where to resync.
 - **The span covers only the skipped text**, never the sync token.
 - **A missing element between two separators** (`{a:1;;b}`) comes back as a zero-width
   `ParseError`; the loop then consumes the separator, so a zero-width failure can never
   spin.
 - **A trailing separator before the close** (`{a:1;}`) isn't junk — the list ends cleanly
   with no spurious error.
-- **Cold path.** None of this runs on well-formed input, and the strict default (no
-  `tolerant`) is byte-identical to a parser with no recovery at all.
+- **Valid input isn't free under `tolerant`.** A list checks its sync point at each item, and
+  a choice records where it failed. A strict parse (no `tolerant`) runs none of this: it's
+  byte-identical to a parser with no recovery at all.
+- **Time.** A choice that failed strictly at a position fails there once: it's recorded per
+  choice, position, trivia scope and state, so failing nested text stays linear. A strict
+  parse has no such record and can be exponential on the same text
+  ([#275](https://github.com/matthew-dean/parseman/issues/275)).
+- **Depth.** Recursion uses the call stack, so very deep nesting throws `RangeError`, under
+  strict as well: from about 128 levels on Jess's grammars with Node's default stack
+  ([#275](https://github.com/matthew-dean/parseman/issues/275)).
+- **One known false error.** A list whose items can be empty doesn't count its separator as
+  something it can start with, so a list right before it can read that separator as damage.
 
 ## `expect` — required tokens
 

@@ -110,7 +110,8 @@ import {
   EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
-import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
+import { armGateFns } from './child-slots.ts'
+import { collapseEmpty, lead, overlappingChoice as recoverOverlap, rawEntry, spanLines } from './run-support.ts'
 import { canDecide, continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows, newGapSlot } from './gap-gate.ts'
@@ -483,15 +484,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const REC = prog.rec === 1 && cfg.tolerant
   /** A completions-probe assembly: lookaheads restore `_probe.best` around their child. */
   const PROBE = cfg.probe
-  /**
-   * The sync sentinel for a char-class index, built ONCE at assembly.
-   *
-   * `firstSetSentinel` is the interpreter's own constructor and codegen calls it
-   * per publish through `_ctx._rec.sentinel(...)`; the ranges are recoverable from
-   * the class spec, so the table builds the identical combinator here and the
-   * publish is a slot read. −1 means "no usable sentinel", which is the same
-   * answer `firstSetSentinel` gives for an `any`/`empty` first set.
-   */
+  /** A choice whose arms may overlap answers through `recoverOverlap` under recovery. */
+  const overlappingChoice = (ip: number, plain: Piece): Piece => {
+    if (!REC || code[ip] !== OP_CHOICE) return plain
+    const table = disp[code[ip + 1]!]!
+    if (table.exclusive) return plain
+    const arms = Array.from({ length: code[ip + 2]! }, (_, i) => link(code[ip + 4 + i]!))
+    const gates = armGateFns(code, ip).map(g => g === undefined ? undefined : fns[g] as (s: unknown) => boolean)
+    return (input, pos, ctx) => recoverOverlap(ip, plain, table.armCls, gates, arms, FAIL, input, pos, ctx)
+  }
+
   /** A lookahead asks whether its child matches, so nothing inside it may recover. */
   const strictly = (piece: Piece): Piece => !REC ? piece : (input, pos, ctx) => {
     const tolerant = ctx._tolerant
@@ -513,6 +515,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return v
   }
   const sentinels = new Map<number, Combinator<null> | undefined>()
+  /**
+   * The sync sentinel for a char-class index, built ONCE at assembly.
+   *
+   * `firstSetSentinel` is the interpreter's own constructor and codegen calls it
+   * per publish through `_ctx._rec.sentinel(...)`; the ranges are recoverable from
+   * the class spec, so the table builds the identical combinator here and the
+   * publish is a slot read. −1 means "no usable sentinel", which is the same
+   * answer `firstSetSentinel` gives for an `any`/`empty` first set.
+   */
   function sentinelFor(cls: number): Combinator<null> | undefined {
     if (cls < 0) return undefined
     const hit = sentinels.get(cls)
@@ -1587,7 +1598,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // holder first so a recursive child can still link back through this site.
     const piece = scopeIsIdentity(code, ip, closureLabels.at(ip))
       ? link(code[ip + 2]!)
-      : countedPiece(lookaheadLedNode(ip) ?? lower(ip), ip)
+      : countedPiece(lookaheadLedNode(ip) ?? overlappingChoice(ip, lower(ip)), ip)
 
     inFlight.delete(ip)
     holder.set(piece)
@@ -3295,25 +3306,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // those arms are always entered. A probe assembly enters every arm, as
         // the interpreter's `firstMatch` does, so each opener reaches `failAt`.
         const armCls = cfg.probe ? table.armCls.map(() => null) : table.armCls
-        // An arm a later arm could still take over from runs as a strict parse would:
-        // its failure is an answer, not damage, and a list inside it may not recover.
-        const armAt = (i: number): Piece => {
-          const arm = link(code[base + i]!)
-          if (!REC || i === n - 1) return arm
-          const later = table.armCls.slice(i + 1).map(cls => cls ?? null)
-          return (input, pos, ctx) => {
-            if (ctx._tolerant !== true) return arm(input, pos, ctx)
-            const c = lead(input, pos)
-            if (!later.some(cls => cls === null || classHas(cls, c))) return arm(input, pos, ctx)
-            ctx._tolerant = undefined
-            const v = arm(input, pos, ctx)
-            ctx._tolerant = true
-            return v
-          }
-        }
         if (n === 2 || n === 3) {
-          const a0 = armAt(0), a1 = armAt(1)
-          const a2 = n === 3 ? armAt(2) : undefined
+          const a0 = link(code[base]!), a1 = link(code[base + 1]!)
+          const a2 = n === 3 ? link(code[base + 2]!) : undefined
           const predecide = !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines
           const p0ip = predecide ? leadingScalarTerminal(code, code[base]!, 2, true, true) : -1
           const p1ip = predecide ? leadingScalarTerminal(code, code[base + 1]!, 2, true, true) : -1
@@ -3437,7 +3432,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
 
         const bindGeneral = (start: number, prior: ChoiceExpectedPrefix): GeneralChoiceBlock => {
-          const arm = (i: number): Piece => i < n ? armAt(i) : NEVER_PIECE
+          const arm = (i: number): Piece => i < n ? link(code[base + i]!) : NEVER_PIECE
           const expected = (i: number): readonly string[] => i < n
             ? fx[code[base + n + i]!] as string[]
             : EMPTY_FX
@@ -3468,7 +3463,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
 
           const bindMasked = (start: number, prior: ChoiceExpectedPrefix): MaskedChoiceBlock => {
-            const arm = (i: number): Piece => i < n ? armAt(i) : NEVER_PIECE
+            const arm = (i: number): Piece => i < n ? link(code[base + i]!) : NEVER_PIECE
             const expected = (i: number): readonly string[] => i < n
               ? fx[code[base + n + i]!] as string[]
               : EMPTY_FX
@@ -3773,10 +3768,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * (`recovery/scan.ts`), so an error's span, its expected set and its CST
          * embedding cannot drift between engines.
          *
-         * Reached only in a recovery table, and inside it only on the FAILURE of
-         * an element, so a matching item pays a `_sync` read at entry and nothing
-         * else. The `ctx._tolerant` gate is the same dormancy the source lowering
-         * and the interpreter have.
+         * Reached only in a recovery table. A matching item pays for a sync test and a
+         * publish; the scan runs only on the FAILURE of an element. The `ctx._tolerant`
+         * gate is the same dormancy the source lowering and the interpreter have.
          *
          * WHAT RECOVERS, AND WHERE THE THREE ENGINES AGREE:
          *  - a MANDATORY item (`count < min`) of a separator-less repeat does NOT
@@ -3857,7 +3851,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               // whatever is inside it may not recover.
               const tolerant = ctx._tolerant === true
               const mayEnd = tolerant && mySync !== undefined && (sep !== undefined || count >= min)
-                && listMayEndAt(mySync, input, ctx, itemStart, cur, sepEnd >= 0 ? sepStart : -1)
+                && listMayEndAt(mySync, input, ctx, itemStart, sepEnd >= 0 ? sepStart : -1)
               if (mayEnd) ctx._tolerant = undefined
               ctx._sync = itemSync
               const v = child(input, itemStart, ctx)

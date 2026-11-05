@@ -1,8 +1,9 @@
-import type { Combinator, FirstSet, ParseContext, ParseError, ParseResult, RecoveryHelpers } from '../types.ts'
-import { cstCaptureActive, pushCstChild } from '../cst/capture-buffer.ts'
+import type { Combinator, FailedChoice, FirstSet, ParseContext, ParseError, ParseResult, RecoveryHelpers } from '../types.ts'
+import { cstCaptureActive, pushCstChild, rollbackCstCapture, saveCstMark } from '../cst/capture-buffer.ts'
 import { rangesHaveLead } from '../lead-ranges.ts'
 import { annotateSpanFromLineContext, recordLineRangeFromContext } from '../line-index.ts'
 import { PlainSpan } from '../cst/plain.js'
+import { createDetachedParseContext } from '../parse-context.ts'
 
 /**
  * Recovery MECHANISM — sync-source-agnostic. These primitives implement "scan
@@ -136,12 +137,73 @@ export function listMayEndAt(
   input: string,
   ctx: ParseContext,
   itemStart: number,
-  cur: number,
   sepStart: number,
 ): boolean {
-  return matchesAt(sync, input, itemStart, ctx)
-    || (cur !== itemStart && matchesAt(sync, input, cur, ctx))
-    || (sepStart >= 0 && sepStart !== cur && matchesAt(sync, input, sepStart, ctx))
+  if (matchesAt(sync, input, itemStart, ctx)) return true
+  const gap = ctx.trivia?.parse(input, itemStart, createDetachedParseContext(false, ctx.state))
+  const next = gap?.ok === true ? gap.span.end : itemStart
+  // No first set names the end of input, and an empty list may stop there. After a
+  // separator it can't: the item the separator promised is missing.
+  return (sepStart < 0 && next >= input.length) || (next !== itemStart && matchesAt(sync, input, next, ctx))
+}
+
+/** What a tolerant parse didn't read: an error, so stopping early is never a silent success. */
+export function unreadError(input: string, from: number, expected: string[]): ParseError {
+  return { _tag: 'parseError', span: new PlainSpan(from, input.length), expected }
+}
+
+/**
+ * Has this choice already failed strictly at `pos`, in the same trivia scope and state?
+ * The same text fails the same way, so a tolerant parse doesn't work it out again; without
+ * this, overlapping arms re-read a failing nested region once per arm per level.
+ */
+export function failedBefore(ctx: ParseContext, site: number, pos: number): FailedChoice | undefined {
+  const failed = ctx._failed?.get(pos * 4194304 + site)
+  return failed !== undefined && failed.trivia === ctx.trivia && sameState(failed.state, ctx.state) ? failed : undefined
+}
+
+/** State is copied on write, so equal fields are equal state, whichever copy holds them. */
+function sameState(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  for (const k of keys) if ((a as Record<string, unknown>)[k] !== (b as Record<string, unknown>)[k]) return false
+  return true
+}
+
+/**
+ * What a failed choice expected, once each: each arm reports the arms below it, so across
+ * overlapping levels the raw list grows by a factor of the arms per level.
+ */
+export function noteFailed(ctx: ParseContext, site: number, pos: number, at: number | undefined, expected: unknown): void {
+  (ctx._failed ??= new Map()).set(pos * 4194304 + site, { trivia: ctx.trivia, state: ctx.state, at, expected, committed: ctx._fc === true })
+}
+
+/**
+ * No arm of a choice answers, so this text is damage, and only the arm that read the
+ * furthest gets to recover. `attempt` runs arm `i` strictly and says where it failed, or
+ * −1 when the arm can't start here. It is the one place a parse reads text again: only on
+ * a failure, and once per failed choice.
+ */
+export function furthestArm(ctx: ParseContext, n: number, attempt: (i: number) => number): number {
+  const split = ctx._columnsSplit
+  let best = -1
+  let bestAt = -1
+  ctx._tolerant = undefined
+  const log = ctx._triviaLog?.length
+  const rootLog = ctx._rootTriviaLog?.length
+  for (let i = 0; i < n; i++) {
+    const mark = saveCstMark(ctx)
+    const at = attempt(i)
+    rollbackCstCapture(ctx, mark)
+    if (ctx._triviaLog !== undefined) ctx._triviaLog.length = log ?? 0
+    if (ctx._rootTriviaLog !== undefined) ctx._rootTriviaLog.length = rootLog ?? 0
+    ctx._columnsSplit = split
+    if (at > bestAt) { bestAt = at; best = i }
+  }
+  ctx._tolerant = true
+  return best
 }
 
 /**
@@ -204,4 +266,4 @@ export function captureError(ctx: ParseContext, error: ParseError): void {
  * interpreter list loops read the same bundle, guaranteeing byte-identical recovery
  * across paths. Shared here so every driver installs the exact same instance.
  */
-export const REC: RecoveryHelpers = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel, capture: captureError }
+export const REC: RecoveryHelpers = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel, capture: captureError, furthest: furthestArm, failedBefore, noteFailed, mayEnd: listMayEndAt }

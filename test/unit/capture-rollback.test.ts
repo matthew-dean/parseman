@@ -141,7 +141,8 @@ describe('speculative rollback truncates ctx._errors (no ghost error)', () => {
     const arm2 = sequence(literal('['), many(sequence(ws, item)))
     const r = run(choice(arm1, arm2) as never, '[abc !!! def', { tolerant: true })
     expect(r.ok).toBe(true)
-    expect(r.errors).toEqual([]) // ghost error over unconsumed input is gone
+    // No ghost error from arm1. What the winning arm didn't read is the one error.
+    expect(r.errors.map(e => [e.span.start, e.span.end])).toEqual([[4, 12]])
   })
 
   it('a not() lookahead over a recovering parser leaves no error behind', async () => {

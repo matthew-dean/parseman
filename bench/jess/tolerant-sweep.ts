@@ -25,7 +25,8 @@
  *
  * `PM_TABLE_EMIT` is read once at `assemble.ts` module load: 0 forces the
  * closure walk, 1 allows the emitter. Comparing the two files is the
- * emitted-vs-closure identity claim for the recovery path.
+ * emitted-vs-closure identity claim for the recovery path. `run-tabled.ts` always
+ * builds closures, so the emitted leg goes through `compile()` to reach the emitter.
  *
  * Less and `.jess` stop at load: `compose()` refuses a macro-lowered base at runtime. For
  * those, compare built artifacts with `leg-sweep.mjs --tolerant`.
@@ -33,7 +34,9 @@
 import { appendFileSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import { resolve } from 'node:path'
-import { run } from '../../src/functional/run-tabled.ts'
+import { run as runInterpreter } from '../../src/functional/run.ts'
+import { run as runClosure } from '../../src/functional/run-tabled.ts'
+import { compile } from '../../src/table/compile.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { assertParseman, corpus, corpusTotal, loadGrammar, JESS_ROOT, ENTRY, type Dialect } from './grammars.ts'
 
@@ -46,6 +49,9 @@ const prov = await assertParseman()
 const g = await loadGrammar(dialect, 'ast')
 const entry = g.rules[ENTRY]
 if (entry === undefined) throw new Error(`${dialect}: no rule ${ENTRY}`)
+const parse = emit === 'closure'
+  ? (input: string) => runClosure(entry as never, input, { tolerant: true })
+  : (compiled => (input: string) => runInterpreter(compiled, input, { tolerant: true }))((compile(g.rules as unknown as Record<string, unknown> & { readonly _def?: never }) as Record<string, never>)[ENTRY]!)
 
 /** Large hand-maintained fixtures the corpus roots do not cover. */
 const EXTRA: Record<Dialect, string[]> = {
@@ -66,7 +72,7 @@ const lines: string[] = []
 for (const f of files) {
   let rec: Record<string, unknown>
   try {
-    const r = run(entry as never, f.input, { tolerant: true })
+    const r = parse(f.input)
     // EVERY facet a recovery change can move, not just the count.
     // A `ParseError` IS its span and its expected set (`types.ts:408`) — there is
     // no message field. BOTH are digested: a recovery change that preserves every
