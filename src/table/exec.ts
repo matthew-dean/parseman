@@ -18,7 +18,7 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, SCOPE_INHERIT, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV, OP_GAPGATE, OP_STRICT, OP_CONT, OP_SEED,
@@ -785,14 +785,16 @@ function makeDriver(
         // labelled trivia is excluded here rather than tested later: `scanTrivia`
         // suppresses its own fast path when labels are present, so a swap there
         // would drop the labelled records silently.
-        SCAN = FAST && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
-        ctx.trivia = scopeTrivia
-        // A scope installs its trivia's KIND LABELS too. Root-trivia rows are
-        // only ever written on the labelled scan path (trivia-skip.ts:212) — the
-        // unlabelled fast scanner returns before any root logging and does not
-        // even test `_rootTriviaLog` — so a scope that sets trivia without its
-        // labels captures NOTHING at the root, silently.
-        ctx.triviaKindLabels = scopeTrivia?._meta.triviaKindLabels
+        if (ki !== SCOPE_INHERIT) {
+          SCAN = FAST && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
+          ctx.trivia = scopeTrivia
+          // A scope installs its trivia's KIND LABELS too. Root-trivia rows are
+          // only ever written on the labelled scan path (trivia-skip.ts:212) — the
+          // unlabelled fast scanner returns before any root logging and does not
+          // even test `_rootTriviaLog` — so a scope that sets trivia without its
+          // labels captures NOTHING at the root, silently.
+          ctx.triviaKindLabels = scopeTrivia?._meta.triviaKindLabels
+        }
         // SCOPE_CAP additionally turns capture ON for the child. It is an OR with
         // whatever the enclosing context already asked for (`grammar.ts:129`), so
         // the RESTORE puts the saved value back rather than writing `false` — an

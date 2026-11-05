@@ -212,6 +212,12 @@ export const OP_TOKEN = 29
  */
 export const OP_SCOPE_CAP = 30
 /**
+ * `k` of a `SCOPE_CAP` row whose `parser({ captureTrivia: true })` names no trivia.
+ * It raises capture and leaves the trivia the scope was entered with in force,
+ * where `k = -1` clears it (`trivia: null`).
+ */
+export const SCOPE_INHERIT = -2
+/**
  * `WITHCTX k c` — `withCtx(extra, c)`. `k >= 0` is `extra` in the const pool
  * (the replace form); `k < 0` is the derive form, `~k` indexing the author's
  * `(state) => state` in `prog.fns`, called once per entry with the outer state.

@@ -35,7 +35,7 @@
  *   node scripts/check-differentials.mjs --list     # print the registry, run nothing
  *   node scripts/check-differentials.mjs --only=id[,id]
  *
- * ENVIRONMENT. Four of the twelve registered differentials drive JESS'S grammars
+ * ENVIRONMENT. Four of the registered differentials drive JESS'S grammars
  * over JESS'S corpora, which live in a jess worktree (`JESS_ROOT`) that this repo
  * does not vendor. There is no default: a checkout nobody built (a mirror that
  * tracks `dev` while its packages' `lib/` stay at an older commit) makes every one

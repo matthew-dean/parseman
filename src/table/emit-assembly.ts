@@ -50,7 +50,7 @@ import {
   OP_ADJ, OP_ARMGATE, OP_RGATE, OP_RGATE2, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
-  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
+  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, SCOPE_INHERIT, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
   OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_STRICT, OP_CONT, OP_SEED,
 } from './ops.ts'
 import {
@@ -1707,6 +1707,15 @@ return r.value
         const cap = op === OP_SCOPE_CAP
         const flags = op === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
         const child = link(code[ip + 2]!)
+        if (ki === SCOPE_INHERIT) {
+          return `${head}
+const sC=ctx.captureTrivia
+ctx.captureTrivia=true
+const v=${child}(input,pos,ctx)
+ctx.captureTrivia=sC
+return v
+}`
+        }
         // THE SWAP, RESOLVED AT EMIT. `swapLegal` is `!trackLines`, an option;
         // the other two are table data. All three are known here, so the body
         // holds the scanner it installs as a hoisted const.
