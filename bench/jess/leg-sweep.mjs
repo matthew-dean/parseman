@@ -55,7 +55,13 @@ const triviaLogs = (n, out = []) => {
   if (Array.isArray(n)) { for (const c of n) triviaLogs(c, out); return out }
   if (n._tag !== 'node') return out
   const log = n.triviaLog ?? []
-  for (let i = 0; i + 3 < log.length; i += 4) out.push([log[i], log[i + 1], log[i + 3]])
+  // Rows are start, end, insertIdx, kind only when the grammar has kind labels. Three-number
+  // rows have no kind, and reading them as four would compare nothing.
+  if (log.length % 4 !== 0) throw new Error(`triviaLog on ${n.type} is not rows of four: length ${log.length}`)
+  for (let i = 0; i < log.length; i += 4) {
+    if (log[i] >= log[i + 1]) throw new Error(`triviaLog on ${n.type} is not rows of four: row ${i / 4} runs ${log[i]} to ${log[i + 1]}`)
+    out.push([log[i], log[i + 1], log[i + 3]])
+  }
   for (const c of n.children ?? []) triviaLogs(c, out)
   return out
 }
