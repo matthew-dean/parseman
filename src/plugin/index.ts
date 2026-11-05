@@ -21,6 +21,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { createUnplugin } from 'unplugin'
+import type { UnpluginBuildContext } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
@@ -181,9 +182,10 @@ export type ParsecraftPluginOptions = {
 
 /** A corpus a build parses to rank selective-assembly sites — see `assemblyProfile`. */
 export type AssemblyProfile = {
-  /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar
-   * without this rule keeps the static ranking, but a build where no grammar has it
-   * fails: the corpus never ran. */
+  /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar without
+   * this rule keeps the static ranking. A build fails when grammars were profiled and
+   * none has the rule. A direct `transformMacro` caller gets `assemblyProfile:
+   * 'no-entry'` on the result instead, and has to read it. */
   readonly entry: string
   /** Paths of representative inputs. At least one must have content, and each that
    * does has to parse in full without recovery, or the build fails. A callback the
@@ -585,9 +587,12 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
       return /\.[jt]sx?$/.test(id) && !id.includes('node_modules')
     },
 
-    buildEnd() {
-      if (profiled.size === 0 || [...profiled.values()].includes('ran')) return
-      throw new Error(`assemblyProfile: no grammar has rule "${opts.assemblyProfile?.entry}", so the corpus never ran (${[...profiled.keys()].join(', ')})`)
+    buildEnd(this: UnpluginBuildContext & { getModuleIds?: () => Iterable<string> }, error?: unknown) {
+      if (error) return
+      // esbuild, webpack and rspack can't list a build's modules, so there every module seen counts.
+      const ids = [...this.getModuleIds?.() ?? profiled.keys()].filter(id => profiled.has(id))
+      if (ids.length === 0 || ids.some(id => profiled.get(id) === 'ran')) return
+      throw new Error(`assemblyProfile: no grammar has rule "${opts.assemblyProfile?.entry}", so the corpus never ran (${ids.join(', ')})`)
     },
 
     transform(this: { warn?: (msg: string) => void; addWatchFile?: (file: string) => void }, code: string, id: string) {

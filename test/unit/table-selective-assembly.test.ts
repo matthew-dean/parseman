@@ -14,6 +14,7 @@ import { AssemblyCache, cfgKey, countSiteVisits, tableRules } from '../../src/ta
 import { mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { build as esbuild } from 'esbuild'
 import { rolldown } from 'rolldown'
 import parseman, { CARRIED_SIDECAR_SUFFIX, transformMacro, type CarriedSink } from '../../src/plugin/index.ts'
 import { PARSEMAN_VERSION } from '../../src/version.ts'
@@ -515,14 +516,14 @@ ${PADDING}`, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { en
   describe('a build where no grammar has the entry rule', () => {
     const grammar = (rule: string): string => `export const ${rule.toLowerCase()} = compose([rules(g => ({ ${rule}: regex(/a/) }))])\n`
     const IMPORT = `import { compose, regex, rules } from 'parseman' with { type: 'macro' }\n`
-    const withBuild = async (test: (dir: string, build: (plugin: ReturnType<typeof parseman.rolldown>) => Promise<void>, entry: (name: string) => ReturnType<typeof parseman.rolldown>) => Promise<void>): Promise<void> => {
+    const withBuild = async (test: (dir: string, build: (plugin: ReturnType<typeof parseman.rolldown>, input?: readonly string[]) => Promise<void>, entry: (name: string) => ReturnType<typeof parseman.rolldown>) => Promise<void>): Promise<void> => {
       const dir = realpathSync(mkdtempSync(join(tmpdir(), 'parseman-profile-')))
       writeFileSync(join(dir, 'corpus.txt'), 'a')
       try {
         await test(
           dir,
-          async plugin => {
-            const bundle = await rolldown({ input: [join(dir, 'g.ts'), join(dir, 'other.ts')], external: /^parseman/, plugins: [plugin] })
+          async (plugin, input = ['g.ts', 'other.ts']) => {
+            const bundle = await rolldown({ input: input.map(file => join(dir, file)), external: /^parseman/, plugins: [plugin] })
             try { await bundle.generate({ format: 'esm' }) } finally { await bundle.close() }
           },
           name => parseman.rolldown({ assemblyProfile: { entry: name, files: [join(dir, 'corpus.txt')] } }),
@@ -543,6 +544,39 @@ ${PADDING}`, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { en
       writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc') + grammar('Second'))
       writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
       await expect(build(entry('Doc'))).resolves.toBeUndefined()
+    }))
+
+    it('counts a module where only a later grammar has it', () => withBuild(async (dir, build, entry) => {
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Second') + grammar('Doc'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await expect(build(entry('Doc'))).resolves.toBeUndefined()
+    }))
+
+    it('leaves a real error as it was', () => withBuild(async (dir, build, entry) => {
+      writeFileSync(join(dir, 'g.ts'), 'export const = 1\n')
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await expect(build(entry('Doc'))).rejects.not.toThrow(/no grammar has rule/)
+    }))
+
+    it('reads only the modules in this build', () => withBuild(async (dir, build, entry) => {
+      const plugin = entry('Doc')
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await build(plugin)
+      await expect(build(plugin, ['other.ts'])).rejects.toThrow(/no grammar has rule "Doc".*other\.ts/)
+      writeFileSync(join(dir, 'plain.ts'), 'export const notAGrammar = 1\n')
+      await expect(build(plugin, ['plain.ts'])).resolves.toBeUndefined()
+    }))
+
+    it('reads every module the plugin has seen under esbuild, which can\'t list a build\'s modules', () => withBuild(async dir => {
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      const build = (plugin: ReturnType<typeof parseman.esbuild>, file: string) => esbuild({ entryPoints: [join(dir, file)], bundle: true, write: false, external: ['parseman'], plugins: [plugin], logLevel: 'silent' })
+      const profile = { assemblyProfile: { entry: 'Doc', files: [join(dir, 'corpus.txt')] } }
+      await expect(build(parseman.esbuild(profile), 'other.ts')).rejects.toThrow(/no grammar has rule "Doc"/)
+      const shared = parseman.esbuild(profile)
+      await expect(build(shared, 'g.ts')).resolves.toBeDefined()
+      await expect(build(shared, 'other.ts')).resolves.toBeDefined()
     }))
 
     it('sees a module that loses the rule on a later build', () => withBuild(async (dir, build, entry) => {

@@ -10,9 +10,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for
   that run only.
   A name that's already a global fails the build.
-- **An `assemblyProfile` whose `entry` no grammar has fails the build.** A mistyped rule
-  name used to give the static ranking with no warning, so the output looked profiled
-  and wasn't.
+- **A build fails when grammars were profiled and none has the `entry` rule.** A mistyped
+  rule name used to give the static ranking with no warning, so the output looked profiled
+  and wasn't. A direct `transformMacro` caller gets `assemblyProfile: 'no-entry'` on the
+  result instead, and has to read it.
 - **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
   or gate that threw.** So does a corpus with nothing in it, and a file that parses only
   by recovering. It used to swallow the throw, and when no file parsed it warned
