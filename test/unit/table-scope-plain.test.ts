@@ -62,14 +62,12 @@ function engines(
   }
 }
 
-function outcome(entry: Entry, input: string, drive: typeof run = run, options: RunOptions = SELECTED): unknown {
+function outcome(entry: Entry, input: string, drive: typeof run = run, options: RunOptions = SELECTED): Record<string, unknown> {
   const result = drive(entry, input, options)
   return {
     ok: result.ok,
     value: result.value,
-    // Offsets only. A scope that asks for lines turns them on for a whole table,
-    // and for that scope alone in the interpreter.
-    span: result.span && { start: result.span.start, end: result.span.end },
+    span: result.span,
     expected: result.ok ? undefined : result.expected,
     unconsumedFrom: result.unconsumedFrom,
     rootTrivia: result.rootTrivia === undefined ? undefined : {
@@ -85,12 +83,24 @@ function outcome(entry: Entry, input: string, drive: typeof run = run, options: 
   }
 }
 
-function expectIdentity(entries: Record<string, Entry>, input: string, options: RunOptions = SELECTED): void {
+/**
+ * A scope that asks for lines turns them on for a whole table, and for that scope
+ * alone in the interpreter, so a grammar with one compares offsets. See #258.
+ */
+const offsetsOnly = (o: Record<string, unknown>): Record<string, unknown> => {
+  const span = o.span as { start: number; end: number }
+  return { ...o, span: { start: span.start, end: span.end } }
+}
+
+function expectIdentity(
+  entries: Record<string, Entry>, input: string, options: RunOptions = SELECTED,
+  compared: (o: Record<string, unknown>) => Record<string, unknown> = o => o,
+): void {
   // `run` from the package root tables a grammar first, so only this driver walks
   // the combinators. Every other leg answers to it.
-  const expected = outcome(entries.run!, input, interpreterRun, options)
+  const expected = compared(outcome(entries.run!, input, interpreterRun, options))
   for (const [name, entry] of Object.entries(entries)) {
-    expect(outcome(entry, input, run, options), `${name}: ${JSON.stringify(input)}`).toEqual(expected)
+    expect(compared(outcome(entry, input, run, options)), `${name}: ${JSON.stringify(input)}`).toEqual(expected)
   }
 }
 
@@ -244,10 +254,31 @@ export const parser = compose([rules({ trivia: ws${trackLines ? ', trackLines: t
       Root: outer(g),
     })) as unknown as Record<string, Combinator<unknown>>
     expect(syntheticScopeTargets(engines(tracked, 'Root').prog)).toEqual(new Set(['Body']))
-    expectIdentity(engines(tracked, 'Root').entries, 'x:a b')
+    expectIdentity(engines(tracked, 'Root').entries, 'x:a b', SELECTED, offsetsOnly)
     expect(run(tracked.Root as Entry, 'x:a b').unconsumedFrom).toBeNull()
     expect(syntheticScopeTargets(engines(cleared, 'Root').prog)).toEqual(new Set())
     expectIdentity(engines(cleared, 'Root').entries, 'x:a b')
+  })
+
+  it('compares line fields when the whole grammar tracks lines', () => {
+    const grammar = rules({ trivia: regex(/[ \n]+/), trackLines: true }, () => ({
+      Root: sequence(literal('a'), literal('b')),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const { entries } = engines(grammar, 'Root')
+    expectIdentity(entries, 'a\nb', {})
+    expect(outcome(entries.run!, 'a\nb', interpreterRun, {}).span).toMatchObject({ endLine: 2 })
+  })
+
+  it('an unclassified scope does not keep the labels of the classified scope around it', () => {
+    // The capture is what sends a skip down the labelled scan.
+    const grammar = rules({ trivia: documentTrivia() }, () => ({
+      Root: parser({ trivia: regex(/_+/) }, node('N', parser({ captureTrivia: true }, sequence(literal('a'), literal('b'))),
+        ((c: readonly unknown[]) => c.length) as never)),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const { entries } = engines(grammar, 'Root')
+    expectIdentity(entries, 'a_b', {})
+    expect(outcome(entries.run!, 'a_b', interpreterRun, {})).toMatchObject({ ok: true, unconsumedFrom: null })
+    expect(outcome(entries.run!, 'a b', interpreterRun, {})).toMatchObject({ ok: false })
   })
 
   describe('a capture-only scope inherits its trivia', () => {

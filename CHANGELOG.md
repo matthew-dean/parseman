@@ -21,7 +21,17 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   builds cleared trivia for the region, where the interpreter inherited it, with or
   without a `noTrivia()` around the reference. The form now has its own slot value,
   `SCOPE_INHERIT`, and raises capture only. A grammar without this form lowers to the
-  same bytes.
+  same bytes. Selective builds hand the installed scanner to an emitted body under it.
+- **A `parser({ trivia })` scope with unclassified trivia drops the kind labels of a
+  classified scope around it, in the interpreter.** It kept them, so a capturing node
+  in that scope took the labelled scan, which skips nothing for unclassified trivia,
+  and rejected input the tables accept.
+- **Known difference, not changed here (#258):** a table has one line setting, where
+  the interpreter scopes it. A node outside a `parser({ trackLines: true })` scope gets
+  line fields from the table and none from the interpreter, a `trackLines: false` scope
+  under a tracked grammar keeps them in the table and drops them in the interpreter, and
+  a `trackLines: true` scope in an unreachable rule still turns them on for
+  `encodeTable`. A reducer reading `span` can see all three.
 - **A `compose()` that references a rule no piece defines fails the build, naming
   the rule.** The macro fuse used to encode around the undefined slot, leave the
   runtime `compose()` in place and warn "ref() used before .define()", which read as

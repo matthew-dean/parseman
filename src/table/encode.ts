@@ -2182,13 +2182,19 @@ class Encoder {
         // this scope's trivia is opaque to root capture, which `run()` consumes.
         // Nothing in the parse changes, so there is nothing for the table to
         // lower — accepting it is not a gap, it is the correct lowering.
-        // ONLY `true` IS MEANINGFUL HERE. `grammar.ts:94` stores
-        // `opts.trackLines ?? false`, so an UNSET scope and an explicitly-false
-        // one are the same value on the def — the distinction is lost. At parse
-        // time `:103` reads `opts.trackLines ?? _ctx?.trackLines ?? false`, i.e.
-        // unset INHERITS. So stored-false cannot be read as "force off", and
-        // comparing it against the setting refused every inner scope of a
-        // trackLines:true grammar — all four `*PositionsGrammar`s.
+        // ONLY `true` IS MEANINGFUL HERE. `def.trackLines` is `opts.trackLines ??
+        // false`, so an unset scope and an explicitly-false one read the same on that
+        // field (`def.constructionTrackLines` keeps the difference, and the encoder
+        // does not read it). An unset scope inherits, so stored-false cannot be read
+        // as "force off", and comparing it against the setting refused every inner
+        // scope of a trackLines:true grammar — all four `*PositionsGrammar`s.
+        //
+        // THIS IS NOT THE INTERPRETER'S SCOPING, AND A REDUCER CAN SEE IT (#258). A
+        // table has one line setting. A node outside a `trackLines: true` scope gets
+        // line fields from the table and none from the interpreter; a
+        // `trackLines: false` scope under a tracked grammar keeps them in the table
+        // and drops them in the interpreter; and a `trackLines: true` scope in a rule
+        // the entry cannot reach still turns them on for `encodeTable`.
         //
         // A SCOPE THAT ASKS FOR TRACKING NO LONGER REFUSES. `encodeTable` folds
         // every such scope into the table's own `track` before encoding begins
