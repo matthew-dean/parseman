@@ -9,14 +9,17 @@
  * Vendored, not referenced: the gate must measure the same bytes on every machine
  * and in CI, and a parseman artifact carries no reference to a sibling checkout.
  * Each grammar's relative imports are followed and copied. Imports between the
- * vendored packages become relative paths; `@jesscss/core` stays bare (reducers
- * use it at run time only, and the gate never runs them).
+ * vendored packages become relative paths; `@jesscss/core` stays bare, and a bundle
+ * of the two entries reducers import goes in `core/core.js`, so the gates that run
+ * these grammars run their reducers too.
  *
  *   node scripts/vendor-jess-grammars.mjs --jess ~/git/oss/jess --ref origin/dev
  */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, posix, relative, resolve } from 'node:path'
+import { build } from 'esbuild'
 
 const arg = name => {
   const i = process.argv.indexOf(`--${name}`)
@@ -73,6 +76,26 @@ while (pending.length > 0) {
   mkdirSync(dirname(target), { recursive: true })
   writeFileSync(target, source)
 }
+
+// Built from the commit's sources, in a directory of their own so the path comments in
+// the bundle do not name this machine. Third-party modules come from the jess checkout.
+const coreTree = mkdtempSync(join(tmpdir(), 'jess-core-'))
+try {
+  execFileSync('tar', ['-x', '-C', coreTree], {
+    input: execFileSync('git', ['-C', JESS, 'archive', '--format=tar', commit, 'packages/core/src'], { maxBuffer: 1 << 28 }),
+  })
+  await build({
+    absWorkingDir: coreTree,
+    stdin: { contents: "export * from './packages/core/src/ast.ts'\nexport * from './packages/core/src/diagnostics.ts'\n", resolveDir: coreTree, loader: 'ts' },
+    bundle: true, format: 'esm', platform: 'neutral', mainFields: ['module', 'main'], charset: 'utf8',
+    nodePaths: [join(JESS, 'packages/core/node_modules'), join(JESS, 'node_modules')],
+    outfile: join(OUT, 'core/core.js'),
+  })
+} finally {
+  rmSync(coreTree, { recursive: true, force: true })
+}
+files['core/core.js'] = 'packages/core/src/ast.ts, packages/core/src/diagnostics.ts (bundled)'
+
 writeFileSync(join(OUT, 'SOURCE.json'), `${JSON.stringify({
   repository: 'https://github.com/jesscss/jess',
   commit,

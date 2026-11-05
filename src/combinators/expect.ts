@@ -81,6 +81,7 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     case 'optional':
     case 'many':
     case 'oneOrMore':
+    case 'sepBy':
     case 'transform':
     case 'not':
     case 'peek':     return deriveExpected(def.parser)

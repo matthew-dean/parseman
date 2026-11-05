@@ -215,7 +215,7 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
         ctx.triviaKindLabels = undefined
       } else if (scopeTrivia !== undefined) {
         ctx.trivia = scopeTrivia
-        if (scopeLabels) ctx.triviaKindLabels = scopeLabels
+        ctx.triviaKindLabels = scopeLabels
       }
       if (forceCaptureTrivia || _ctx?.captureTrivia) ctx.captureTrivia = true
       // Kind-filter for per-node capture. Resolve against this scope's trivia

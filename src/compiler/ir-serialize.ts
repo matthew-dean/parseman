@@ -18,7 +18,7 @@
  * source, or an unsupported construct) — the caller then keeps the lowered source.
  */
 import type { Combinator, DispatchMatcherCase, ParserDef } from '../types.ts'
-import { rules } from '../combinators/parser.ts'
+import { priorNameOf, rules } from '../combinators/parser.ts'
 import { ref } from '../combinators/ref.ts'
 import { regex } from '../combinators/regex.ts'
 import { literal } from '../combinators/literal.ts'
@@ -191,6 +191,8 @@ class Serializer {
   private localRuleNames = new Map<Comb, string>()
   private ruleMap: ReadonlyArray<readonly [string, Comb]>
   private scanSkip: readonly Comb[]
+  /** Whether any rule reads a `prior.X` hole, so the factory takes `(g, prior)`. */
+  private usesPrior = false
 
   private accessed: readonly string[]
   private referenced = new Set<string>()
@@ -214,7 +216,7 @@ class Serializer {
     if (seen.has(c)) return
     seen.add(c)
     if (c._def.tag === 'lazy') {
-      if (ruleNameOf(c) !== undefined) throw new Unserializable('scanSkip unit references a grammar rule')
+      if (ruleNameOf(c) !== undefined || priorNameOf(c) !== undefined) throw new Unserializable('scanSkip unit references a grammar rule')
       const target = lazyTarget(c)
       if (target) this.assertNoRuleRef(target, seen)
       return
@@ -307,9 +309,10 @@ class Serializer {
     }
     // Shared consts go INSIDE the factory: they can reference `g[name]` rule refs,
     // and `g` only exists in the factory scope.
+    const params = this.usesPrior ? '(g, prior)' : '(g)'
     const factory = innerDecls.length === 0
-      ? `(g) => ({\n${body}\n})`
-      : `(g) => {\n${innerDecls.map(d => '  ' + d).join('\n')}\n  return ({\n${body}\n})\n}`
+      ? `${params} => ({\n${body}\n})`
+      : `${params} => {\n${innerDecls.map(d => '  ' + d).join('\n')}\n  return ({\n${body}\n})\n}`
     const call = `rules(${optionsArg}${factory})`
     return outerDecls.length === 0
       ? call
@@ -321,6 +324,7 @@ class Serializer {
   private analyze(c: Comb, active: Set<Comb>): void {
     const def = c._def
     if (def.tag === 'lazy') {
+      if (priorNameOf(c) !== undefined) { this.usesPrior = true; return } // resolved by prior[name]
       if (ruleNameOf(c) !== undefined) return          // named rule ref — resolved by g[name]
       const target = lazyTarget(c)
       if (!target) throw new Unserializable('unresolved unnamed ref')
@@ -422,6 +426,8 @@ class Serializer {
     }
     switch (def.tag) {
       case 'lazy': {
+        const prior = priorNameOf(c)
+        if (prior !== undefined) return `prior[${JSON.stringify(prior)}]`
         const name = this.localRuleNames.get(c) ?? ruleNameOf(c)
         if (name !== undefined) { this.referenced.add(name); return `g[${JSON.stringify(name)}]` }
         const target = lazyTarget(c)!
