@@ -1,11 +1,9 @@
 /**
- * TOLERANT RECOVERY, compared across all FOUR engines, on the two fields the
- * identity sweep does not digest.
+ * TOLERANT RECOVERY, compared across all FOUR engines.
  *
- * `bench/table-lowering-identity.ts` hashes `{ ok, value, unconsumedFrom }`.
- * `errors` and `expected` are not in that digest, so every divergence this file
- * exists to catch would pass the sweep: the tree is the same and the diagnostics
- * are gone. The table had NO recovery at all — `run()` routed through it
+ * `bench/table-lowering-identity.ts` runs strict, so recovery never reaches its
+ * digest, and every divergence this file exists to catch would pass the sweep: the
+ * tree is the same and the diagnostics are gone. The table had NO recovery at all — `run()` routed through it
  * returned `ok: true` with an empty `errors` array on input the other two engines
  * report on — and that is precisely the shape a value digest cannot see.
  *

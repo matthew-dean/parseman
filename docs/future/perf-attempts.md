@@ -305,6 +305,20 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ### Unreleased on `main`
 
+- **Connected selection for `assemblyProfile`.** A site's worth now counts the wrapper
+  crossings it removes, so a profile no longer leaves islands of generated code. Jess's Less
+  build on `benchmark.less` at `0.5`, on a loaded machine with no `--jitless` or x64 run, against
+  `main` static: -11.19% instructions and -2.86% calls (`main` profiled: -6.95% and +8.95%).
+  Rows in [#271](https://github.com/matthew-dean/parseman/pull/271), `61b9f562`. Weight 4 beats
+  no weight but isn't tuned: 2 and 8 are untried.
+
+- **One function for functions that read the same.** `optional(x)` written in 25 places was
+  25 functions, and connected selection took more of them. Merging them after the entry join,
+  comparing identifiers only, makes the same calls: `call-count` passes against v0.61.4.
+  Duplicate functions on Jess's builds, with `main` static in brackets: Less at `0.5` 48 (48),
+  SCSS at `0.612` 47 (51), CSS at `2.72` 15 (46).
+  [#271](https://github.com/matthew-dean/parseman/pull/271), `61b9f562`.
+
 - **A budget that comments cannot move, and a selection that only grows.** The budget was a
   share of the module's raw text, so a comment edit could buy or lose functions: 61 against
   56 on Jess's SCSS, about 1% of parse speed. Selection also shrank its target by at least 1%
@@ -341,6 +355,21 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   - Branch `perf/shipped-alloc-trivia`.
 
 ## Rejected (measured)
+
+- **Merging same-text functions before the entry join.** Two earlier places for the merge
+  above. Interning `optional` rows in the encoder moved the static selection and raised calls
+  by up to +0.15% (`macro/less/ast/site.css`). Merging at emission left the selection alone
+  but raised calls by up to +0.12% (`macro/scss/ast/site.css`), because a merged function has
+  several callers and the entry join only takes a function with one. No branch kept.
+
+- **One generated function per shape.** The ceiling is small: identical shapes would save at
+  most 4,064 B on Less and 5,929 B on SCSS, most of it `_px` wrappers. Tried as one wrapper
+  per scanner with the callee passed as an argument. After the freed budget buys sites, that
+  saves 890 B on Less and 976 B on SCSS, with no gain in instructions: worse on 4 of 8 rows
+  (`benchmark.less` -10.3% to -10.0%, generated SCSS -4.1% to -3.0%), better on 3 and level on
+  1. Calls on `benchmark.less` rise to 2,250,635
+  against `main`'s 2,247,253. Numbers are from the prototype harness on a loaded machine. No
+  branch kept.
 
 - **Dropping the trivia gap memo.** Remove `skipDeferredTrivia`'s repeat-scan memo, on
   top of the lead gate. Jess's Less build: `color: red;` 36.1k → 37.0k (A/A 36.4k), whole
@@ -476,6 +505,13 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ## Parked
 
+- **Dropping the SCSS nested-property pre-scan by reordering arms.** Try `Declaration` first.
+  Instructions and calls against the fixture on `main`: `gen-workload` -0.7% and -0.4%, Foundation
+  -1.9% and -1.6%, Bootstrap -0.6% and -0.6%, `spec-all` -5.3% and -6.2%. A file of only nested
+  properties reads +41% and +39%, since the value parses twice; real files barely use the form.
+  Not shipped: that rise breaks the calls bar. #265 landed with no `continues` option, so a retry
+  needs a factored prefix of its own. The experiment changed only `fixtures/jess-grammars/scss/grammar.ts`.
+
 - **Test the decisive first term before opening frames.** Failed attempts the first term
   decided (nothing consumed) leave removable pieces of 4.4% (CSS), 6.0% (Less), 10.0% (SCSS)
   and 9.6% (`.jess`) of all pieces, with 2.5k–31k node frames per fixture. At about 0–20
@@ -599,7 +635,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     Recovery is partial far more often: strict and tolerant tallies print on every sweep.
   - Engine cost, on a tree that merged `main` @ `1cb8a80d`: first-parse calls +0, AST and CST, on
     all five files. `callcount:guard` passes with no row above v0.61.4 and its baseline exact.
-    Sizes within 0.02% gzip. Marginal instructions, N 5 to 25, core `fe004e1b5`, 7 reps (15 for
+    Sizes within 0.11% gzip. Marginal instructions, N 5 to 25, core `fe004e1b5`, 7 reps (15 for
     `benchmark.css` AST), AST then CST, A/A in brackets, load 85 to 360: SCSS -0.46% (-0.42%),
     +0.15% (+0.58%); Less -0.79% (-0.58%), -0.38% (-0.15%); bootstrap -0.65% (-0.89%), -0.15%
     (+0.94%); `.jess` +0.01% (+0.50%), -0.21% (+0.23%); `benchmark.css` +0.26% (-1.39%), +2.24%

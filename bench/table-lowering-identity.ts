@@ -56,10 +56,12 @@ export type IdentityReport = {
 
 type RunnableLike = Parameters<typeof run>[0]
 
-function digestRun(entry: RunnableLike, input: string, trivia?: RunnableLike): string {
-  const r = run(entry, input, trivia === undefined ? {} : { trivia })
-  // Digest the OUTCOME, not just the value: ok, value, and where the parse
-  // stopped. A path that silently consumed less would otherwise pass.
+function digestRun(entry: RunnableLike, input: string, trivia?: RunnableLike, rootTrivia?: readonly string[]): string {
+  const r = run(entry, input, {
+    ...(trivia === undefined ? {} : { trivia }),
+    ...(rootTrivia === undefined ? {} : { rootTrivia: { select: [...rootTrivia] } }),
+  })
+  // Digest the OUTCOME, not just the value: everything a caller of `run()` can read.
   // FAILURE IS PART OF THE OUTPUT. Digesting only { ok, value, unconsumedFrom }
   // made every divergence in HOW a parse fails invisible to every sweep — a
   // table could report the wrong expected set, or none at all, and agree.
@@ -68,8 +70,11 @@ function digestRun(entry: RunnableLike, input: string, trivia?: RunnableLike): s
   return digestValue({
     ok: r.ok,
     value: r.value,
+    span: r.span,
     unconsumedFrom: r.unconsumedFrom,
+    errors: r.errors,
     expected: r.ok ? undefined : [...(r.expected ?? [])].sort(),
+    rootTrivia: r.rootTrivia?.rows,
   })
 }
 
@@ -85,6 +90,8 @@ export function checkIdentity(
      * must say which they got.
      */
     interpreterOnly?: boolean
+    /** Trivia kinds to ask `run()` to report: root trivia reaches the digest only when asked for. */
+    rootTrivia?: readonly string[]
   } = {},
 ): IdentityReport {
   const settings = opts.settings ?? {}
@@ -107,10 +114,10 @@ export function checkIdentity(
   const report: IdentityReport = { total: 0, matched: 0, mismatches: [] }
   for (const c of cases) {
     report.total++
-    const di = digestRun(interp as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
-    const dc = comp === undefined ? undefined : digestRun(comp, c.input, opts.trivia as RunnableLike | undefined)
-    const dt = digestRun(tbl as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
-    const dr = digestRun(ref as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
+    const di = digestRun(interp as RunnableLike, c.input, opts.trivia as RunnableLike | undefined, opts.rootTrivia)
+    const dc = comp === undefined ? undefined : digestRun(comp, c.input, opts.trivia as RunnableLike | undefined, opts.rootTrivia)
+    const dt = digestRun(tbl as RunnableLike, c.input, opts.trivia as RunnableLike | undefined, opts.rootTrivia)
+    const dr = digestRun(ref as RunnableLike, c.input, opts.trivia as RunnableLike | undefined, opts.rootTrivia)
     let ok = true
     if (dt !== di) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs interpreted', a: dt, b: di }) }
     if (dc !== undefined && dt !== dc) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs compiled', a: dt, b: dc }) }

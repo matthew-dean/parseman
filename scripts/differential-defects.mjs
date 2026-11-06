@@ -412,6 +412,73 @@ export const DEFECTS = {
     }],
   },
 
+  /** Unproved corners: `expect` publishes nothing when its child fails, and a ref not defined yet has no target. */
+  'late-corner-through-expect': {
+    why: 'encoder: an expect corner lowers to a late frame, though it publishes nothing when its child fails',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "case 'grammar': case 'withCtx': case 'label': return publishesOneNode(d.parser, rr, seen)",
+      replace: "case 'grammar': case 'withCtx': case 'label': case 'expect': return publishesOneNode(d.parser, rr, seen)",
+    }],
+  },
+
+  'late-corner-undefined-ref-throws': {
+    why: 'encoder: the proof calls the thunk of a ref not defined yet uncaught, so a grammar that encoded before no longer does',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'if (target === undefined) { try { target = d.thunk() } catch { return false } }\n      return publishesOneNode',
+      replace: 'if (target === undefined) target = d.thunk()\n      return publishesOneNode',
+    }],
+  },
+
+  /** A node publishes to a parent frame and never to a leaf list the caller installed. */
+  'cont-take-back-caller-sink-closure': {
+    why: 'OP_CONT, closure: a hit under only a caller-installed leaf list pops a leaf the corner never pushed',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'ctx._cstChildren !== undefined) heldRaw = popCstChild(ctx)',
+      replace: 'ctx._cstChildren !== undefined || ctx._cstLeaves !== undefined) heldRaw = popCstChild(ctx)',
+    }],
+  },
+
+  'cont-take-back-caller-sink-emitted': {
+    why: 'OP_CONT, emitted: a hit under only a caller-installed leaf list pops a leaf the corner never pushed',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'sCh!==undefined)c0Raw=popCstChild(ctx)',
+      replace: 'sCh!==undefined||sLv!==undefined)c0Raw=popCstChild(ctx)',
+    }],
+  },
+
+  /** The lean frame has no line tracking, so a tracked wrapper has to go through the node's own closure. */
+  'cont-lean-frame-takes-tracked-wrapper': {
+    why: 'OP_CONT, closure: a tracked wrapper gets a lean frame, which throws at the tail',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'code[wrapper] === OP_NODE && ',
+      replace: '',
+    }],
+  },
+
+  /** With no raw children kept, the seed still counts as one or the log's insert indexes move. */
+  'cont-seed-raw-len-closure': {
+    why: 'OP_CONT, closure: the seed does not count as a raw child, so a reducer reading the log gets insert indexes one short',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '                b.single = held\n                b.rawLen = 1\n',
+      replace: '                b.single = held\n',
+    }],
+  },
+
+  'cont-seed-raw-len-emitted': {
+    why: 'OP_CONT, emitted: the seed does not count as a raw child, so a reducer reading the log gets insert indexes one short',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "'buf.single=c0\\nbuf.rawLen=1\\n'",
+      replace: "'buf.single=c0\\n'",
+    }],
+  },
+
   /** The corner's publication stays in the parent after the frame opens: two children. */
   'cont-take-back-dropped-closure': {
     why: 'OP_CONT, closure: a hit keeps the corner in the parent as well as in the frame',
@@ -894,6 +961,29 @@ export const DEFECTS = {
       file: 'src/table/scan-shapes.ts',
       find: 'if (/[msuv]/.test(flags)) return null',
       replace: 'if (/[msu]/.test(flags)) return null',
+    }],
+  },
+
+  /**
+   * The first merge of same-reading functions compared and renamed with a regex over
+   * the source, so a grammar's string reading `_pf5` became another site's name.
+   */
+  'merge-renames-by-regex': {
+    why: 'merge of same-reading functions: renames site-like text in strings too',
+    edits: [{
+      file: 'src/plugin/entry-supercompiler.ts',
+      find: 'return render(source, 0, source.length, edits)\n}',
+      replace: "return render(source, 0, source.length, edits).replace(/\\b_(?:pf|sk)\\d+\\b/g, name => merged.has(name) ? current(name) : name)\n}",
+    }],
+  },
+
+  /** The same mistake on the comparing side: two functions differ only in such a string. */
+  'merge-compares-site-like-text': {
+    why: 'merge of same-reading functions: compares site-like strings as equal',
+    edits: [{
+      file: 'src/plugin/entry-supercompiler.ts',
+      find: 'const key = render(source, body.start, body.end, edits)',
+      replace: "const key = render(source, body.start, body.end, edits).replace(/\"_pf\\d+\"/g, '\"#\"')",
     }],
   },
 

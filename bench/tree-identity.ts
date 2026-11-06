@@ -48,8 +48,10 @@ export type Divergence = {
 export type TreeIdentityResult = {
   files: number
   compared: number
-  /** Pairs where at least one side produced a TREE. The number that matters. */
+  /** Pairs where at least one side produced a WHOLE TREE. The number that matters. */
   realTrees: number
+  /** Pairs where neither side threw alike and neither read the input through. Compared, but no tree. */
+  noTree: number
   /** Pairs where both sides threw the same error. Agreement, but weak evidence. */
   identicalThrows: number
   mismatched: number
@@ -225,6 +227,13 @@ export function firstDivergence(
 
 type Entry = (src: string) => unknown
 
+/** A tree, or a run result that read its whole input. */
+function isWholeTree(v: unknown): boolean {
+  if (v === null || typeof v !== 'object' || !('ok' in v)) return true
+  const r = v as { ok: unknown; unconsumedFrom?: unknown }
+  return r.ok === true && (r.unconsumedFrom ?? null) === null
+}
+
 /**
  * Resolve the AST / CST / Doc entry points of a built parser.
  *
@@ -267,29 +276,32 @@ export async function compareTrees(opts: {
   const eb = await entriesOf(opts.b)
   const modes = Object.keys(ea).filter(m => m in eb)
   const files = await collect(opts.corpus, opts.exts)
-  const r: TreeIdentityResult = { files: files.length, compared: 0, realTrees: 0, identicalThrows: 0, mismatched: 0, divergences: [] }
+  const r: TreeIdentityResult = { files: files.length, compared: 0, realTrees: 0, noTree: 0, identicalThrows: 0, mismatched: 0, divergences: [] }
 
   for (const f of files) {
     let src: string
     try { src = readFileSync(f, 'utf8') } catch { continue }
     if (src.length > (opts.maxBytes ?? 400_000)) continue
     for (const mode of modes) {
-      const call = (fn: Entry): { ok: true, v: unknown } | { ok: false, v: string } => {
-        try { return { ok: true, v: fn(src) } } catch (e) { return { ok: false, v: `THROW:${(e as Error)?.message}` } }
+      // `returned` says only that the entry did not throw. A run result can return
+      // `{ ok: false }`, or `ok` with bytes left over, and neither is a tree.
+      const call = (fn: Entry): { returned: true, v: unknown } | { returned: false, v: string } => {
+        try { return { returned: true, v: fn(src) } } catch (e) { return { returned: false, v: `THROW:${(e as Error)?.message}` } }
       }
       const ra = call(ea[mode]!), rb = call(eb[mode]!)
       // The rename map projects the A side only: A is the incumbent whose names
       // the candidate declared it was changing.
-      const x = ra.ok ? serializeTree(ra.v, new Map(), rename) : ra.v
-      const y = rb.ok ? serializeTree(rb.v, new Map()) : rb.v
+      const x = ra.returned ? serializeTree(ra.v, new Map(), rename) : ra.v
+      const y = rb.returned ? serializeTree(rb.v, new Map()) : rb.v
       r.compared++
       if (x.startsWith('THROW:') && y.startsWith('THROW:')) {
         if (x === y) { r.identicalThrows++; continue }
-      } else r.realTrees++
+      } else if ((ra.returned && isWholeTree(ra.v)) || (rb.returned && isWholeTree(rb.v))) r.realTrees++
+      else r.noTree++
       if (x !== y) {
         r.mismatched++
         if (r.divergences.length < 50) {
-          const d = ra.ok && rb.ok
+          const d = ra.returned && rb.returned
             ? firstDivergence(ra.v, rb.v, rename)
             : { path: 'throw', a: x.slice(0, 160), b: y.slice(0, 160) }
           r.divergences.push({ mode, file: f, path: d?.path ?? 'root', a: d?.a ?? '', b: d?.b ?? '' })
@@ -336,7 +348,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   console.log(`modes: ${modesA.join(', ')}${rename ? ` · rename map: ${Object.keys(rename).length} entries (injective)` : ''}`)
   console.log(`files: ${r.files}`)
-  console.log(`compared ${r.compared} pairs · ${r.realTrees} REAL TREES · ${r.identicalThrows} identical-throw · ${r.mismatched} MISMATCHED`)
+  console.log(`compared ${r.compared} pairs · ${r.realTrees} REAL TREES · ${r.noTree} no tree · ${r.identicalThrows} identical-throw · ${r.mismatched} MISMATCHED`)
   for (const d of r.divergences) console.log(`\n${d.mode} ${d.file}\n  at ${d.path}\n  a: ${d.a}\n  b: ${d.b}`)
 
   // Coverage is part of the result, not a footnote. A run that examined almost

@@ -7,7 +7,7 @@ import { emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
-import { literal, many, node, oneOrMore, oneOrMoreSep, regex, rules, sepBy, trivia } from '../../src/index.ts'
+import { classifiedTrivia, expect as expectOr, literal, many, node, oneOrMore, oneOrMoreSep, parser, regex, rules, sepBy, sequence, token, trivia } from '../../src/index.ts'
 import { csvParser } from '../../examples/csv/parser.ts'
 import type { Combinator } from '../../src/types.ts'
 
@@ -903,5 +903,36 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(val('Min3', 'a  a  a')).toEqual(['a', 'a', 'a'])
     // Still genuinely bounded: two items cannot be found in one.
     expect(run(tbl.Min3! as never, 'a a', { trivia: ws as never }).ok).toBe(false)
+  })
+})
+
+/**
+ * What `checkIdentity` digests. Each grammar here puts one field of the outcome where a
+ * fault in one engine moves that field and nothing else.
+ */
+describe('table lowering — the identity digest reads the whole outcome', () => {
+  const comments = (): Combinator<unknown> => classifiedTrivia({ whitespace: regex(/[ ]+/), comment: regex(/\/\*[^*]*\*\//) })
+  type G = Record<string, Combinator<unknown>>
+
+  it('root trivia, when it is asked for', () => {
+    const g = rules({ trivia: comments() }, (r: G) => ({
+      R: sequence(literal('a'), token(r.S!), literal('d')),
+      S: sequence(literal('b'), parser({ trivia: comments() }, sequence(literal('c'), literal('e')))),
+    })) as G
+    const row = [{ name: 'gaps', input: 'a /*1*/ bc /*2*/ e /*3*/ d' }]
+    expect(checkIdentity(g, 'R', row, { rootTrivia: ['comment'] }).mismatches).toEqual([])
+  })
+
+  it('errors', () => {
+    const g = rules({ trivia: regex(/[ ]+/) }, (r: G) => ({
+      R: many(expectOr(r.A!, 'want')),
+      A: sequence(literal('a'), literal('b')),
+    })) as G
+    expect(checkIdentity(g, 'R', [{ name: 'partial item', input: 'a' }]).mismatches).toEqual([])
+  })
+
+  it('the span of a failure', () => {
+    const g = rules({}, () => ({ R: sequence(regex(/a/), literal('b')) })) as G
+    expect(checkIdentity(g, 'R', [{ name: 'second term', input: 'ax' }]).mismatches).toEqual([])
   })
 })
