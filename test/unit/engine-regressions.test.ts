@@ -107,6 +107,15 @@ describe('rollback', () => {
     }
   })
 
+  it('a dispatch that fails inside a choice takes back its selector', () => {
+    const word = regex(/[a-z]+/)
+    const inner = choice(dispatch(word, when('foo', sequence(routed(), literal('x')))), literal('1'))
+    const g = rules({}, () => ({ R: node('N', choice(inner, word)) })) as G
+    expect(leaves(agreed(g, 'k', { build: host }).value)).toEqual({ N: ['k'] })
+    expect(leaves(agreed(g, 'k').value)).toEqual({ N: ['k'] })
+    expect(leaves((compile(g.R as never).parse('k') as { value: unknown }).value)).toEqual({ N: ['k'] })
+  })
+
   it('a dispatch with no fallback leaves no selector behind for the next arm', () => {
     const g = rules({}, () => ({
       R: node('N', choice(dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('x')))), regex(/[a-z]+/))),

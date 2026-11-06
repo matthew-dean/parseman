@@ -234,8 +234,9 @@ class Encoder {
    * An exclusive dispatch runs its one arm with no mark, and an ordered choice
    * returns a committed arm's failure before restoring, so either leaves what an
    * arm leaves. A choice in neither set, or in both, is taken to leave rows. Both
-   * sets are complete only once every rule is encoded, so the trivia-log census
-   * runs then (`logCensus`).
+   * sets are complete only once every rule is encoded, so the census runs then
+   * (`logCensus`). Captures read them too: a restoring choice restores each arm its
+   * own census marks.
    */
   private restoringChoices = new Set<Combinator<unknown>>()
   private leakingChoices = new Set<Combinator<unknown>>()
@@ -873,16 +874,16 @@ class Encoder {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     const winner = refName === undefined ? undefined : this.winners?.[refName]
     const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
-    return mayLeavePartialCapture(root, new Set(), true, throughNodes)
+    return mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms)
       || this.reachesSideWriter(root)
       || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
   }
 
   /** The rollback census of an `optional()` or `attempt()` row at `ip` over `child`. */
   private censusTransaction(child: Combinator<unknown>, ip: number): void {
-    if (this.failureNeedsRollback(child, undefined, false)) return
-    this.failureRollbackCleanSites.add(ip)
     this.logCensus.push(() => {
+      if (this.failureNeedsRollback(child, undefined, false)) return
+      this.failureRollbackCleanSites.add(ip)
       if (this.failureNeedsRollback(child, undefined, this.restoresArms)) this.failureLogRollbackSites.add(ip)
     })
   }
@@ -1743,12 +1744,6 @@ class Encoder {
         // assemblies and never serialized; tolerant assemblies retain the
         // universal rollback because repeat recovery can publish an error from
         // inside any arm. Arity >31 falls back to -1 rather than truncating.
-        let rollbackMask = kids.length > 31 ? -1 : 0
-        if (rollbackMask === 0) {
-          for (let i = 0; i < arms.length; i++) {
-            if (this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], false)) rollbackMask |= 1 << i
-          }
-        }
         const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
         this.code[head + 1] = dispIdx
         this.code[head + 2] = kids.length
@@ -1760,11 +1755,15 @@ class Encoder {
           this.code[head + 4 + i] = kids[i]!
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
-        this.choiceRollbackMasks.set(head, rollbackMask)
-        if (rollbackMask !== -1) {
-          const full = rollbackMask
+        if (kids.length > 31) this.choiceRollbackMasks.set(head, -1)
+        else {
           this.logCensus.push(() => {
+            let full = 0
             let logMask = 0
+            for (let i = 0; i < arms.length; i++) {
+              if (this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], false)) full |= 1 << i
+            }
+            this.choiceRollbackMasks.set(head, full)
             for (let i = 0; i < arms.length; i++) {
               if ((full & (1 << i)) === 0 && this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], this.restoresArms)) logMask |= 1 << i
             }
