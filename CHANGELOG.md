@@ -5,6 +5,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A list with a minimum above one takes back its items when it fails in a choice.** Generated
+  code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
+  nothing behind on failure, so a later arm's tree also held the items the list kept.
+  `node('N', choice(sepBy(literal('a'), literal(','), { min: 2 }), literal('a')))` on `"a"` now
+  gives `[a]`, not `[a, a]`. A choice with such a list now marks and restores around that arm.
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A
