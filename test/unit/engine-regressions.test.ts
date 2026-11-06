@@ -187,7 +187,7 @@ describe('expected sets', () => {
     expect(agreed(g, 'aq').expected).toEqual(['"c"', '"d"', '"e"', '"x"', '/b/'])
   })
 
-  it('a choice failing at its start reports nothing past a corner under attempt', () => {
+  it('a choice failing at its start reports nothing past a corner under attempt or field', () => {
     const ladder = (): G => rules({}, () => ({
       R: choice(
         node('N0', sequence(
@@ -201,6 +201,8 @@ describe('expected sets', () => {
     expect(agreed(ladder(), '', { build: host }).expected).toEqual(['"z"', '/[+*-]/'])
     const plain = rules({}, () => ({ R: choice(sequence(attempt(literal('a')), literal('b')), literal('z')) })) as G
     expect(agreed(plain, '').expected).toEqual(['"a"', '"z"'])
+    const named = rules({}, () => ({ R: choice(sequence(field('k', literal('a')), literal('b')), literal('z')) })) as G
+    expect(agreed(named, '').expected).toEqual(['"a"', '"z"'])
   })
 
   // The tables only: the interpreter's set differs, https://github.com/matthew-dean/parseman/issues/256

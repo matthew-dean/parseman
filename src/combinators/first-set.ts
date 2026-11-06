@@ -167,7 +167,7 @@ export function matchesEmpty(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
-  throughAttempt = false,
+  exact = false,
 ): boolean {
   // RECURSION-STACK guard: a mutually-nullable ref cycle (e.g.
   // `A = oneOrMore(B); B = oneOrMore(A)`) would recurse forever. Treat a node
@@ -178,7 +178,7 @@ export function matchesEmpty(
   if (seen.has(p)) return true
   seen.add(p)
   try {
-    return matchesEmptyBody(p, seen, resolve, throughAttempt)
+    return matchesEmptyBody(p, seen, resolve, exact)
   } finally {
     seen.delete(p)
   }
@@ -188,9 +188,9 @@ function matchesEmptyBody(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>>,
   resolve: RefResolver | undefined,
-  throughAttempt: boolean,
+  exact: boolean,
 ): boolean {
-  const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen, resolve, throughAttempt)
+  const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen, resolve, exact)
   const d = p._def as ParserDef
   switch (d.tag) {
     case 'literal':   return d.value.length === 0
@@ -217,10 +217,11 @@ function matchesEmptyBody(
       return d.parsers.some(me)
     case 'dispatch':
       return me(d.selector)
-    // Nullable to the choice classifier on purpose, so an attempt never authorizes
-    // one-arm dispatch. `throughAttempt` asks what it can actually match.
+    // Nullable to the choice classifier, so an attempt never authorizes one-arm
+    // dispatch. `exact` asks what these can actually match.
     case 'attempt':
-      if (!throughAttempt) return true
+    case 'field':
+      if (!exact) return true
     // falls through
     case 'transform':
     case 'label':
