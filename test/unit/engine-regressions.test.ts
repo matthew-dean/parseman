@@ -8,6 +8,7 @@ import {
   attempt, choice, classifiedTrivia, dispatch, expect as expectOr, field, leaf, literal, many, node, not, optional, otherwise, parser,
   regex, routed, rules, sepBy, sequence, sourceLeaf, token, transform, when,
 } from '../../src/index.ts'
+import { compile } from '../../src/table/compile.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { run } from '../../src/functional/run.ts'
 import { tableRules } from '../../src/table/assemble.ts'
@@ -89,6 +90,21 @@ describe('rollback', () => {
   it('a failed sepBy with a minimum takes back the items it kept', () => {
     const g = rules({}, () => ({ R: node('N', choice(sepBy(literal('a'), literal(','), { min: 2 }), literal('a'))) })) as G
     expect(leaves(agreed(g, 'a', { build: host }, 'emitted').value)).toEqual({ N: ['a'] })
+  })
+
+  it('a choice that fails inside another takes back what its arm kept', () => {
+    const inner = (): Combinator<unknown> => choice(sequence(literal('a'), literal('b')), literal('x'))
+    const shapes: Record<string, () => Combinator<unknown>> = {
+      choice: () => choice(inner(), literal('a')),
+      optional: () => sequence(optional(inner()), literal('a')),
+      attempt: () => choice(attempt(inner()), literal('a')),
+    }
+    for (const shape of Object.values(shapes)) {
+      const g = rules({}, () => ({ R: node('N', shape()) })) as G
+      expect(leaves(agreed(g, 'a', { build: host }).value)).toEqual({ N: ['a'] })
+      expect(leaves(agreed(g, 'a').value)).toEqual({ N: ['a'] })
+      expect(leaves((compile(g.R as never).parse('a') as { value: unknown }).value)).toEqual({ N: ['a'] })
+    }
   })
 
   it('a dispatch with no fallback leaves no selector behind for the next arm', () => {

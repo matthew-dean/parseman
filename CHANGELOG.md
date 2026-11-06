@@ -5,6 +5,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A failed choice inside another choice, an `optional` or an `attempt` no longer leaves its
+  arm's captures in `compile()` and generated code.** A choice whose openers are disjoint runs
+  its one arm with nothing of its own to restore, and the analysis told the enclosing site there
+  was nothing to restore either, so
+  `node('N', choice(choice(sequence(literal('a'), literal('b')), literal('x')), literal('a')))`
+  on `a` built `N` with `a` twice.
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A

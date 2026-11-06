@@ -182,8 +182,8 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  *     dedicated rollback, so still covered conservatively here)
  * Atomic terminals (literal/regex/keywords/charClass/guard/not) fail without
  * having captured. node() buffers into a private sub-scope and discards it on
- * failure, so it never leaks. choice/firstMatch roll back each failed arm
- * internally. optional/many never "fail" with partial output. Delegating
+ * failure, so it never leaks. A choice leaves what one of its arms leaves.
+ * optional/many never "fail" with partial output. Delegating
  * wrappers (transform/label/grammar/withCtx/expect) pass through to inner.
  */
 export function mayLeavePartialCapture(
@@ -222,17 +222,15 @@ export function mayLeavePartialCapture(
     // what its body leaves; without, it leaves nothing.
     case 'node':
       return throughNodes && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes)
-    // choice/firstMatch already roll back each failed arm's captures; on overall
-    // failure nothing committed remains. The trivia logs are the exception: a
-    // choice the table lowers as an exclusive dispatch runs its one selected arm
-    // with no mark of its own (`emit-assembly.ts`, `table.exclusive`), so the
-    // rows that arm's trivia scans recorded stay when it fails. With
-    // `throughNodes` a choice leaves what one of its arms leaves, unless
-    // `throughNodes` is the encoder's answer that this choice marks and restores
-    // each arm it enters.
+    // A choice leaves what one of its arms leaves. The table lowers a choice whose
+    // openers are disjoint as an exclusive dispatch, which runs its one selected
+    // arm with no mark of its own (`emit-assembly.ts`, `table.exclusive`), and an
+    // ordered choice returns a committed arm's failure before restoring. So
+    // whatever holds this choice has to restore for it. The exception is
+    // `throughNodes` as the encoder's answer that this choice marks and restores
+    // each arm it enters, which is about the trivia logs.
     case 'choice':
-      return throughNodes !== false
-        && !(typeof throughNodes === 'function' && throughNodes(p))
+      return !(typeof throughNodes === 'function' && throughNodes(p))
         && d.parsers.some(arm => mayLeavePartialCapture(arm, new Set(seen), triviaActive, throughNodes))
     case 'dispatch':
       // These are independent graph predicates. Sharing one mutable `seen` set
