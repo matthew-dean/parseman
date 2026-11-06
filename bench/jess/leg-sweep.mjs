@@ -91,7 +91,9 @@ const count = (t, kind, v) => {
 }
 
 const go = (m, input, sign) => {
-  const opts = { ...(tolerant ? { tolerant: true } : {}), ...(cst ? { build: leavesOnly ? logging(m) : m.cstBuildHost } : {}) }
+  // The state Jess's own parse entries pass. Without it a reducer that keeps authored source throws.
+  const state = { source: input, document: { forgivenSelectorItems: [] } }
+  const opts = { state, ...(tolerant ? { tolerant: true } : {}), ...(cst ? { build: leavesOnly ? logging(m) : m.cstBuildHost } : {}) }
   try {
     const parse = () => m.run(m.grammar.Stylesheet, input, opts)
     globalThis.sweepParse = parse

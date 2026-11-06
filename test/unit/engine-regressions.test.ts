@@ -10,6 +10,7 @@ import {
 } from '../../src/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { run } from '../../src/functional/run.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import type { Combinator } from '../../src/types.ts'
 import { readers } from '../helpers/table-readers.ts'
@@ -235,5 +236,32 @@ describe('a caller-installed sink', () => {
     const want = withSink('_cstLeaves', g.R, 'ab12')
     expect(want.sink).toHaveLength(1)
     for (const [name, table] of readers(encodeTable(g))) expect(withSink('_cstLeaves', table.R, 'ab12'), name).toEqual(want)
+  })
+})
+
+describe('a table with no direct builder, driven by a CST host it was not built for', () => {
+  // A projecting node under an 'ast' table sets no capture bits, and no direct builder
+  // makes this pair an error, so the host alone decides that its fields and trivia are kept.
+  // A bare `tableRules` emits for the host it meets; the other legs fall to the closure engine.
+  const g = rules({ trivia: spaces }, () => ({
+    R: node('N', sequence(field('a', literal('x')), literal('y')), { project: 0 }),
+  })) as G
+  const built = (read: (v: Record<string, unknown>) => unknown): void => {
+    const prog = encodeTable(g)
+    const want = run(g.R as never, 'x y', { build: host } as never).value as Record<string, unknown>
+    expect(read(want)).toBeDefined()
+    const legs = [...readers(prog), ['emitted for this host', tableRules(prog)]] as const
+    for (const [name, table] of legs) {
+      const got = run(table.R as never, 'x y', { build: host } as never).value as Record<string, unknown>
+      expect(read(got), name).toEqual(read(want))
+    }
+  }
+
+  it('hands the host the fields of a projecting node', () => {
+    built(v => v.fields)
+  })
+
+  it('hands the host the trivia of a projecting node', () => {
+    built(v => (v.triviaLog as unknown[]).length > 0 ? v.triviaLog : undefined)
   })
 })

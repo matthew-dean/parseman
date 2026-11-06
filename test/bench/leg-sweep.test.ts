@@ -7,14 +7,16 @@ import { afterAll, describe, expect, it } from 'vitest'
 const root = mkdtempSync(join(tmpdir(), 'leg-sweep-'))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
-// A leg as `build-leg.mts` lays it out, whose parse throws on any input holding `boom`.
+// A leg as `build-leg.mts` lays it out, whose parse throws on any input holding `boom`, and,
+// like a Jess reducer that keeps authored source, on a parse state without the input.
 const leg = (name: string): string => {
   const dir = join(root, name)
   mkdirSync(dir)
   writeFileSync(join(dir, 'css-ast.mjs'), `
 export const grammar = { Stylesheet: {} }
 export const digestValue = v => JSON.stringify(v)
-export const run = (_entry, input) => {
+export const run = (_entry, input, options) => {
+  if (options.state?.source !== input) throw new Error('no parse input in the state')
   if (input.includes('boom')) throw new Error('dead leg')
   return { ok: true, value: input, span: { start: 0, end: input.length }, errors: [], expected: [], unconsumedFrom: null }
 }
