@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, classifiedTrivia, dispatch, expect as expectOr, field, leaf, literal, many, node, not, optional, otherwise, parser,
+  attempt, choice, classifiedTrivia, dispatch, expect as expectOr, field, leaf, literal, many, node, not, oneOrMore, optional, otherwise, parser,
   regex, routed, rules, sepBy, sequence, sourceLeaf, token, transform, when,
 } from '../../src/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
@@ -105,7 +105,14 @@ describe('rollback', () => {
     expect((agreed(g, 'b').errors as unknown[]).length).toBe(1)
   })
 
-  // With no trivia the closure engine keeps it: https://github.com/matthew-dean/parseman/issues/278
+  it('a repeat item that fails keeps no error, with no trivia either', () => {
+    const item = (r: G) => expectOr(r.A!, 'want')
+    const A = sequence(literal('a'), literal('b'))
+    expect(agreed(rules({}, (r: G) => ({ R: many(item(r)), A })) as G, 'a').errors).toEqual([])
+    const required = agreed(rules({}, (r: G) => ({ R: oneOrMore(item(r)), A })) as G, 'a').errors as { expected: string[] }[]
+    expect(required.map(e => e.expected)).toEqual([['want']])
+  })
+
   it('a repeat item that fails under trivia keeps no error', () => {
     const g = rules({ trivia: spaces }, (r: G) => ({ R: many(expectOr(r.A!, 'want')), A: sequence(literal('a'), literal('b')) })) as G
     expect(agreed(g, 'a').errors).toEqual([])

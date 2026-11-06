@@ -15,7 +15,7 @@
  * cursor from before the gap.
  */
 import {
-  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_COV, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI,
+  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_COV, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI,
   OP_NODE, OP_NOT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ,
   OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM, OP_GAPGATE, OP_CONT, OP_SEED,
 } from './ops.ts'
@@ -24,11 +24,12 @@ import { leadingTriviaFieldAt } from './field-spec.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 
 const WRAPPERS = new Set([OP_NODE, OP_XFORM, OP_LEAF, OP_SOURCE_LEAF, OP_TOKEN, OP_SCOPE, OP_SCOPE_CAP,
-  OP_SCOPE_PLAIN, OP_FIELD, OP_LABEL, OP_EXPECT, OP_WITHCTX, OP_RULE, OP_ATTEMPT, OP_COV, OP_GAPGATE])
+  OP_SCOPE_PLAIN, OP_FIELD, OP_LABEL, OP_WITHCTX, OP_RULE, OP_ATTEMPT, OP_COV, OP_GAPGATE])
 
 /**
  * Can the row at `ip` match empty? `true` wherever it cannot tell. A first-set
  * gate row wraps only a child that cannot (`encode.ts` gates nothing nullable).
+ * `expect` is not a wrapper here: whatever its child needs, it recovers at zero width.
  */
 export function rowNullable(code: ArrayLike<number>, k: readonly unknown[], ip: number, memo: Map<number, boolean>): boolean {
   const hit = memo.get(ip)

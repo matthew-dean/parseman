@@ -5,6 +5,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`run()` no longer reports an error from a failed `expect()` item that `many()` or
+  `oneOrMore()` gave back.** With no trivia, the closure engine treated an `expect()` item as
+  unable to match empty, so it kept no mark and the error stayed after the item was dropped.
+  Parses that report no such error make the same calls as before.
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A
