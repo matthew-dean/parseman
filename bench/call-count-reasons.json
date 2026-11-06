@@ -1,5 +1,5 @@
 {
-  "against": "v0.61.5",
+  "against": "v0.61.6",
   "rows": {
     "closure/css/stylesheet branches": {
       "why": "Under `tolerant`, a `oneOrMore` publishes what can follow its first item, so inner lists don't read the next item as junk. Its entry therefore tests whether recovery is on: one branch test per entry and no added calls. Strict table parses only reach this entry through interpreted trivia, on a detached context where recovery is always off, so the output cannot change. A `choice` reached the same way tests whether recovery is installed, one branch test per entry.",
