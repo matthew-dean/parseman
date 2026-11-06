@@ -377,6 +377,18 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'merged-build',
+    needs: 'repo',
+    file: 'test/unit/merged-build-differential.test.ts',
+    legs: 'a build with same-reading functions merged against the closure engine alone (`tableRules` with `asm: []`), both shipped paths, entered through every rule with `expected` compared: the CSS example, and rules that differ only in a failure set, a number or a site-like string, on profiled and static selections at five budget shares',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/merged-build-differential.test.ts']),
+    plants: [
+      { defect: 'merge-renames-by-regex', expect: 'moves' },
+      { defect: 'merge-compares-site-like-text', expect: 'moves' },
+    ],
+  },
+  {
     id: 'regex-escape-first-sets',
     needs: 'repo',
     file: 'test/unit/regex-escape-first-set-engines.test.ts',

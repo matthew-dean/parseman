@@ -295,7 +295,8 @@ the generated functions are a build-time materialization of part of the same tab
 Sites are ranked by a static estimate of how often they run. The plugin's optional
 `assemblyProfile: { entry, files }` ranks them by measured calls instead: the build parses
 `files` from rule `entry` on the closure engine and keeps the sites with the most calls per
-byte. It changes which sites are generated, never what a parse returns
+byte, counting the calls a site saves from crossing between engines when a neighbour is already
+kept ("sites next to each other"). It changes which sites are generated, never what a parse returns
 (`test/unit/table-selective-assembly.test.ts`, like every claim below; the quoted names are its tests). A corpus file that
 doesn't parse in full or parses only by recovering, a corpus with nothing in it, or a reducer or gate that throws, fails the
 build ("a corpus that cannot run fails the build"). A file with only whitespace counts as empty: it's skipped, and a corpus of

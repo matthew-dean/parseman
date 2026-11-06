@@ -954,6 +954,29 @@ export const DEFECTS = {
     }],
   },
 
+  /**
+   * The first merge of same-reading functions compared and renamed with a regex over
+   * the source, so a grammar's string reading `_pf5` became another site's name.
+   */
+  'merge-renames-by-regex': {
+    why: 'merge of same-reading functions: renames site-like text in strings too',
+    edits: [{
+      file: 'src/plugin/entry-supercompiler.ts',
+      find: 'return render(source, 0, source.length, edits)\n}',
+      replace: "return render(source, 0, source.length, edits).replace(/\\b_(?:pf|sk)\\d+\\b/g, name => merged.has(name) ? current(name) : name)\n}",
+    }],
+  },
+
+  /** The same mistake on the comparing side: two functions differ only in such a string. */
+  'merge-compares-site-like-text': {
+    why: 'merge of same-reading functions: compares site-like strings as equal',
+    edits: [{
+      file: 'src/plugin/entry-supercompiler.ts',
+      find: 'const key = render(source, body.start, body.end, edits)',
+      replace: "const key = render(source, body.start, body.end, edits).replace(/\"_pf\\d+\"/g, '\"#\"')",
+    }],
+  },
+
   'macro-timing-exit-off': {
     why: 'macro timing gate: regressions are reported but never block CI',
     edits: [{
