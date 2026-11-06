@@ -705,12 +705,12 @@ describe('terminals the table REBUILDS rather than references', () => {
 })
 
 /**
- * FAILURE REPORTING — the half the three-way identity gate cannot see.
+ * FAILURE REPORTING, compared directly.
  *
- * `bench/table-lowering-identity.ts` digests `{ ok, value, unconsumedFrom }`. The `expected`
- * set is not in the digest, so a table that accepts and rejects exactly the right
- * inputs while reporting a different error passes the whole sweep. These compare
- * the reported sets directly, against BOTH shipped engines.
+ * A value digest cannot see a table that accepts and rejects exactly the right
+ * inputs while reporting a different error. `bench/table-lowering-identity.ts` now
+ * digests the sets too, but only on the rows it is handed. These compare the
+ * reported sets directly, against BOTH shipped engines.
  */
 describe('table failure reporting matches the interpreter and the compiled path', () => {
   // `withCtx` + `gate()` earn a row here specifically because this is the pair

@@ -1,10 +1,9 @@
 /**
  * TABLE-LOWERING GAPS THE IDENTITY SWEEP CANNOT SEE.
  *
- * `bench/table-lowering-identity.ts` digests `{ ok, value, unconsumedFrom }`.
- * Neither `expected` nor `committed` is in that digest, and a construct the
- * encoder REFUSES never reaches the sweep at all — so every divergence below
- * passed it. They surfaced only when `compile()` was pointed at the table
+ * `committed` is not in the digest of `bench/table-lowering-identity.ts`, and a
+ * construct the encoder REFUSES never reaches the sweep at all. Every divergence
+ * below passed it when it digested only `{ ok, value, unconsumedFrom }`. They surfaced only when `compile()` was pointed at the table
  * lowering and the existing suites ran against it.
  *
  * Each case compares the interpreter against BOTH table drivers as a WHOLE
