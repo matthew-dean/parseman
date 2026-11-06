@@ -1542,7 +1542,11 @@ class Encoder {
         // Not under a coverage plan, which credits the arms as written.
         if (this.plan === undefined) {
           const shared = factorSharedEnds(d)
-          if (shared !== undefined) return this.node(shared).ip
+          if (shared !== undefined) {
+            // Factored as an `attempt`, which restores what the choice would have.
+            this.restoringChoices.add(p)
+            return this.node(shared).ip
+          }
           // The prefix arm reads `X` once only in a strict parse. Tolerant
           // recovery and a completions probe run the choice as written: inside
           // `sequence(X, optional(a))`, `X`'s own recovery would see `a`'s first
