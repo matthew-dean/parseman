@@ -270,7 +270,6 @@ export type RecoveryHelpers = {
     ctx: ParseContext,
   ) => V
   measuredMiss: (ctx: ParseContext, pos: number) => void
-  mayEnd: (sync: Combinator<unknown>, input: string, ctx: ParseContext, itemStart: number, sepStart: number) => boolean
   failedBefore: (ctx: ParseContext, site: number, pos: number) => FailedChoice | undefined
   noteFailed: (ctx: ParseContext, site: number, pos: number, at: number | undefined, expected: unknown) => void
 }

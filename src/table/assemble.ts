@@ -4463,7 +4463,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         REC ? [...prog.cc.map((_, i) => sentinelFor(i)), ANY_SYNC] : EMPTY_SENTS,
-        matchesAt, recoverScan, orSentinel, captureError,
+        matchesAt, recoverScan, orSentinel, captureError, listMayEndAt,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
@@ -4548,7 +4548,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // the closure pieces use, so both engines resync to the same combinator
         // object rather than to two separately constructed ones.
         REC ? [...prog.cc.map((_, i) => sentinelFor(i)), ANY_SYNC] : EMPTY_SENTS,
-        matchesAt, recoverScan, orSentinel, captureError,
+        matchesAt, recoverScan, orSentinel, captureError, listMayEndAt,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,

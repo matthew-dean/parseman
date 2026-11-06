@@ -127,10 +127,10 @@ export const EMITTED_PARAMS = [
   // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
   // char-class index — the emitted twin of `assemble.ts`'s `sentinelFor` memo,
   // and an interpreted `Combinator` indexed out of an array for the same reason
-  // `SCANS` is. The four functions are `recovery/scan.ts`'s own, so an error's
+  // `SCANS` is. The functions are `recovery/scan.ts`'s own, so an error's
   // span, expected set and CST embedding are produced by the SAME code in every
   // engine and cannot drift.
-  'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError',
+  'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError', 'listMayEndAt',
   // Pure scalar terminal recognizers, indexed by the terminal's existing const
   // operand; selected lexical bodies; the adjacency test.
   'RECOG', 'LEX', 'adjacencyHolds',
@@ -2751,7 +2751,7 @@ ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
 `}${gapCode(rb)}ctx._fc=false
 ${REC ? `const ${recTol}=ctx._tolerant===true
-const ${recEnd}=${recTol}&&${my}!==undefined&&${recGate}ctx._rec.mayEnd(${my},input,ctx,itemStart,sepEnd>=0?${p}sst:-1)
+const ${recEnd}=${recTol}&&${my}!==undefined&&${recGate}listMayEndAt(${my},input,ctx,itemStart,sepEnd>=0?${p}sst:-1)
 if(${recEnd})ctx._tolerant=undefined
 ctx._sync=${itemSync}
 ` : ''}const v=${child}(input,itemStart,ctx)

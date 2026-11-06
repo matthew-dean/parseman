@@ -374,4 +374,4 @@ export function captureError(ctx: ParseContext, error: ParseError): void {
  * interpreter list loops read the same bundle, guaranteeing byte-identical recovery
  * across paths. Shared here so every driver installs the exact same instance.
  */
-export const REC: RecoveryHelpers = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel, capture: captureError, furthest: furthestArm, overlap: overlappingChoice, measuredMiss, failedBefore, noteFailed, mayEnd: listMayEndAt }
+export const REC: RecoveryHelpers = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel, capture: captureError, furthest: furthestArm, overlap: overlappingChoice, measuredMiss, failedBefore, noteFailed }

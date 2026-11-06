@@ -946,7 +946,7 @@ function makeDriver(
         const table = disp[d]!
         const c = lead(input, pos)
         // `plainChoice` marks the re-entry that runs this row as a strict parse does.
-        if (REC && !table.exclusive) {
+        if (REC && ctx._rec !== undefined && !table.exclusive) {
           if (plainChoice !== ip) {
             const arms = Array.from({ length: code[ip + 2]! }, (_, i) => (at: string, from: number, cx: ParseContext) => exec(code[base + i]!, at, from, cx))
             const plain = (at: string, from: number, cx: ParseContext): unknown => { plainChoice = ip; return exec(ip, at, from, cx) }

@@ -21,6 +21,7 @@ import { compile } from '../../src/table/compile.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { REC } from '../../src/recovery/scan.ts'
+import { createParseContext } from '../../src/parse-context.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
 
 const ws = trivia(regex(/[ \t\n]+/))
@@ -586,5 +587,33 @@ describe('tolerant: an edit gives what a fresh parse gives', () => {
     const edited = before.edit('a { b: '.length, 'a { b: 1'.length, '2')
     expect(edited.errors.map(e => [e.span.start, e.span.end])).toEqual([[12, input.length]])
     expect(answer(edited as never)).toEqual(answer(parseDoc(table as never, 'Entry', edited.input, opts) as never))
+  })
+})
+
+describe('tolerant: what stays out of a strict parse', () => {
+  const arms = (): Entry => choice(sequence(ident, literal('!')), sequence(regex(/[a-z]/), literal('?')))
+
+  it('records no failed choice', () => {
+    const grammar = rules(() => ({ Entry: sequence(arms(), literal(';')) }))
+    const enc = encodeTable(grammar, { recovery: true })
+    const legs: Record<string, (ctx: ParseContext) => unknown> = {
+      interpreter: ctx => grammar.Entry.parse('a#', 0, ctx),
+      closure: ctx => tableRules(closureArtifact(enc)).Entry!('a#', 0, ctx),
+      emitted: ctx => tableRules(enc).Entry!('a#', 0, ctx),
+      reference: ctx => execRules(enc).Entry!('a#', 0, ctx),
+    }
+    for (const [engine, parse] of Object.entries(legs)) {
+      const ctx = createParseContext()
+      parse(ctx)
+      expect(ctx._failed, engine).toBeUndefined()
+    }
+  })
+
+  it('leaves a compiled parser working on a tolerant context with no helpers in it', () => {
+    const parser = compile(sequence(arms(), many(ident), literal(';')))
+    const ctx = { ...createParseContext(), _tolerant: true as const, _errors: [] }
+    const r = parser.parseWithContext('a?b;', ctx)
+    expect(r.ok).toBe(true)
+    expect(ctx._errors).toEqual([])
   })
 })
