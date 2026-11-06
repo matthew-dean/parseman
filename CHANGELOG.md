@@ -5,6 +5,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A sequence that opens with `attempt(x)` or `field(name, x)` no longer expects what follows
+  it.** The expected set read either as able to match empty, so an arm a first-character gate
+  declined named a token that could only come after `x`.
+  `sequence(attempt(literal('a')), literal('b'))` now expects `"a"`, not `"a"` and `"b"`.
+  First-character gates and choice dispatch don't change.
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A
