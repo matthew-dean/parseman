@@ -202,7 +202,8 @@ function matchesEmptyBody(
     case 'many':
     case 'optional':
     case 'not':
-    case 'peek':     return true          // zero repetitions / absent / lookahead
+    case 'peek':
+    case 'expect':   return true          // zero repetitions / absent / lookahead / recovered
     // Default `sepBy` is `(item (sep item)*)?` — it MATCHES THE EMPTY STRING.
     // Any `min >= 1` requires that many ITEMS, so it is nullable only when the
     // item is. (Keying this off `min === 1` reported every `{ min: 2 }` list as
@@ -220,7 +221,6 @@ function matchesEmptyBody(
     case 'trivia':
     case 'token':
     case 'leaf':
-    case 'expect':
     case 'withCtx':
     case 'node':
     case 'grammar':
@@ -382,6 +382,8 @@ export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): First
  * repeat item's, a gap's and a node's gate read a pad through its non-empty
  * matches.
  *
+ * `follow: true` asks where a resync sentinel stops, which reads through `expect`.
+ *
  * `activeTrivia` is the live trivia, `null` for a scope known to have none (where
  * a reference installs its rule's trivia, `triviaThroughRef`), and `undefined`
  * where it is not known.
@@ -396,6 +398,7 @@ export function firstSetOf(
   resolve?: RefResolver,
   activeTrivia?: Combinator<unknown> | null,
   consuming = true,
+  follow = false,
 ): FirstSet {
   // `seen` is the current recursion path, not a global visited set. A completed
   // shared child must be analysed again for a sibling; only a back-edge on this
@@ -403,7 +406,7 @@ export function firstSetOf(
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
   try {
-    return firstSetBody(p, seen, resolve, activeTrivia, consuming)
+    return firstSetBody(p, seen, resolve, activeTrivia, consuming, follow)
   } finally {
     seen.delete(p)
   }
@@ -415,8 +418,9 @@ function firstSetBody(
   resolve: RefResolver | undefined,
   activeTrivia: Combinator<unknown> | null | undefined,
   consuming: boolean,
+  follow: boolean,
 ): FirstSet {
-  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve, activeTrivia, consuming)
+  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve, activeTrivia, consuming, follow)
   const empties = (c: Combinator<unknown>): boolean => matchesEmpty(c, new Set(), resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
@@ -437,7 +441,7 @@ function firstSetBody(
       // install; the interpreter's own callers (`sequence.ts` follow sentinels)
       // read a reference as 0.58.0 did (#223).
       const through = activeTrivia === null && resolve !== undefined
-      return firstSetOf(target, seen, resolve, through ? triviaThroughRef(p, target, null) : activeTrivia, consuming)
+      return firstSetOf(target, seen, resolve, through ? triviaThroughRef(p, target, null) : activeTrivia, consuming, follow)
     }
     case 'choice': {
       let out: FirstSet = empty()
@@ -457,6 +461,9 @@ function firstSetBody(
       // original cursor.
       return sequenceSet(d.parsers, fs, empties, activeTrivia, consuming)
     }
+    // Runs on any character: on one its child can't start, it reports the error. A
+    // resync sentinel still stops where the child could start.
+    case 'expect':    return follow ? fs(d.parser) : any()
     case 'peek': {
       // Deep-resolve the body: a `ref()` reads `any()` at CONSTRUCTION, so the
       // shallow `_meta.firstSet` baked into the assertion would lose the gate.
@@ -472,19 +479,19 @@ function firstSetBody(
     case 'leaf':
     case 'node':
     case 'sepBy':
-    case 'expect':
     // A transaction accepts exactly what its inner accepts. Its own `_meta` is
     // the inner's construction-time set, which reads `any` when the inner opens
     // with a rule reference — resolve through it like any other wrapper.
     case 'attempt':   return fs(d.parser)
     // A token runs its body with trivia cleared (`token.ts`).
-    case 'token':     return firstSetOf(d.parser, seen, resolve, activeTrivia === undefined ? undefined : null, consuming)
+    case 'token':     return firstSetOf(d.parser, seen, resolve, activeTrivia === undefined ? undefined : null, consuming, follow)
     case 'grammar':   return firstSetOf(
       d.parser,
       seen,
       resolve,
       d.clearTrivia ? null : (d.triviaParser ?? activeTrivia),
       consuming,
+      follow,
     )
     // A run starts with its first line's prefix; a nullable prefix starts with anything.
     case 'lines': {

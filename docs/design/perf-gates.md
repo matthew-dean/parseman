@@ -36,7 +36,8 @@ design, its layout randomisation and its round count are in
 [perf-harness-interleaving.md](./perf-harness-interleaving.md#the-cross-process-gate--pnpm-perfxprocgate).
 
 Of the four tools below, `perf:guard` runs in the pre-commit hook, and the macro
-gate runs on every code PR as an advisory job outside the required `test` check.
+gate runs on every code PR as a required result of `test`. Its identity check and a
+failed measurement fail the job; its timing rows stay advisory.
 Since #175 the grammar and workload A/B tools are local diagnostics, and the
 cross-process gate covers their cases in CI. The first three are self-contained in
 this repository. The macro gate also uses the pinned Jess commit
