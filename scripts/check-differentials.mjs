@@ -121,6 +121,8 @@ function normalise(out) {
     // a plant it is in fact blind to, on exactly this string.
     .replace(/\s*FLAGS: \S+/g, '')
     // vitest / harness noise: durations, absolute paths, and the append target.
+    // vitest's Duration line prints minutes once a run takes that long, which is load.
+    .replace(/^\s*Duration\b.*$/gm, '')
     .replace(/\d+(\.\d+)?\s?ms\b/g, '<ms>')
     .replace(/\b\d+(\.\d+)?s\b/g, '<s>')
     .replace(new RegExp(TMP.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '<tmp>')

@@ -14,9 +14,6 @@
  */
 import type { ParseContext } from '../types.ts'
 import { popCstChild, pushCstChild } from '../cst/capture-buffer.ts'
-import { failedBefore, furthestArm, noteFailed } from '../recovery/scan.ts'
-import { classHas, type ResolvedClass } from './program.ts'
-import { committed } from './stamp.ts'
 import { PlainLeaf, PlainLineSpan, PlainSpan } from '../cst/plain.js'
 
 export type Span = { start: number; end: number }
@@ -64,76 +61,6 @@ export function lead(input: string, pos: number): number {
   const c = input.charCodeAt(pos)
   if (c < 0xd800 || c > 0xdbff) return c
   return input.codePointAt(pos) ?? c
-}
-
-type ArmClasses = readonly (ResolvedClass | null | undefined)[]
-type ArmGate = (state: unknown) => boolean
-
-/** Could more than one of a choice's arms start on this code point? */
-function armsOverlap(armCls: ArmClasses, gates: readonly (ArmGate | undefined)[], c: number, ctx: ParseContext): boolean {
-  let open = 0
-  for (let i = 0; i < armCls.length; i++) {
-    const cls = armCls[i] ?? null
-    if ((cls === null || classHas(cls, c)) && gates[i]?.(ctx.state) !== false) open++
-  }
-  return open > 1
-}
-
-function strictChoice<V>(
-  site: number,
-  plain: (input: string, pos: number, ctx: ParseContext) => V,
-  fail: V,
-  input: string,
-  pos: number,
-  ctx: ParseContext,
-): V {
-  const failed = failedBefore(ctx, site, pos)
-  if (failed !== undefined) {
-    ctx._fe = failed.at
-    ctx._fx = failed.expected as string[] | undefined
-    if (failed.committed) ctx._fc = true
-    return fail
-  }
-  const v = plain(input, pos, ctx)
-  if (v === fail) {
-    if (ctx._fx !== undefined) ctx._fx = [...new Set(ctx._fx)]
-    noteFailed(ctx, site, pos, ctx._fe, ctx._fx)
-  }
-  return v
-}
-
-/**
- * A choice under recovery, with `plain` the choice as a strict parse runs it. Where more
- * than one arm could start, the arms answer as a strict parse would, and only if none does
- * is this text damage, for the arm that read the furthest to recover in.
- */
-export function overlappingChoice<V>(
-  site: number,
-  plain: (input: string, pos: number, ctx: ParseContext) => V,
-  armCls: ArmClasses,
-  gates: readonly (ArmGate | undefined)[],
-  arms: readonly ((input: string, pos: number, ctx: ParseContext) => V)[],
-  fail: V,
-  input: string,
-  pos: number,
-  ctx: ParseContext,
-): V {
-  if (ctx._tolerant !== true) return strictChoice(site, plain, fail, input, pos, ctx)
-  const c = lead(input, pos)
-  if (!armsOverlap(armCls, gates, c, ctx)) return plain(input, pos, ctx)
-  ctx._tolerant = undefined
-  const v = strictChoice(site, plain, fail, input, pos, ctx)
-  ctx._tolerant = true
-  if (v !== fail) return v
-  const arm = furthestArm(ctx, arms.length, i => {
-    const cls = armCls[i] ?? null
-    if (cls !== null && !classHas(cls, c)) return -1
-    ctx._fc = false
-    const r = arms[i]!(input, pos, ctx)
-    return r !== fail ? pos : committed(ctx) ? Infinity : ctx._fe ?? pos
-  })
-  ctx._fc = false
-  return arms[arm]!(input, pos, ctx)
 }
 
 const EMPTY_KIDS: readonly unknown[] = Object.freeze([])

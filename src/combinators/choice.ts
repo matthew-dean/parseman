@@ -3,7 +3,7 @@ import type {
   AutoNotCheck, CharRange, ChoiceStrategy, GatedArm,
 } from '../types.ts'
 import { firstSetOf, union, intersects, matchesEmpty } from './first-set.ts'
-import { failedBefore, firstSetSentinel, furthestArm, matchesAt, noteFailed } from '../recovery/scan.ts'
+import { failedBefore, firstSetSentinel, inputEndsAt, matchesAt, measuredMiss, noteFailed, REC } from '../recovery/scan.ts'
 import { deriveExpected } from './expect.ts'
 import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
 import { scalarOf } from './scalar.ts'
@@ -217,6 +217,7 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
           const r = self.parse(input, pos, ctx)
           if (r.ok) return r
           const once = { ...r, expected: [...new Set(r.expected)] }
+          measuredMiss(ctx, pos)
           noteFailed(ctx, site, pos, undefined, once)
           return once
         }
@@ -227,8 +228,8 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
           ctx._tolerant = undefined
           const answer = strictly()
           ctx._tolerant = true
-          if (answer.ok) return answer
-          const arm = furthestArm(ctx, parsers.length, i => {
+          if (answer.ok || inputEndsAt(input, pos, ctx)) return answer
+          const arm = REC.furthest(ctx, parsers.length, i => {
             if (!armMayStart(i, input, pos, ctx)) return -1
             const r = parsers[i]!.parse(input, pos, ctx)
             return r.ok ? pos : r.committed ? Infinity : r.span.start

@@ -12,9 +12,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   also removes tolerant parse time that doubled per line on valid Less. Printed tables change
   in value only; strict parses never read those words.
 - **Under `tolerant: true`, an error inside overlapping arms stays where it is.** When no arm
-  answers, the arm that read the furthest reads the text again with recovery on. That's the
-  one re-read, and it happens only on a failure. A choice that failed strictly at a position
-  isn't worked out again, so failing nested text stays linear.
+  answers, the arm that read the furthest reads the text again with recovery on, and on a tie
+  the first arm written does. That's the one re-read, and it happens only on damage: strict
+  parsing and valid text never get there. A choice that failed strictly at a position isn't
+  worked out again, so text that fails all the way down stays linear. Nested text that
+  succeeds inside an arm that then fails is still exponential, under tolerant as under strict,
+  and can hang an editor until #275 is done.
 - **A tolerant parse that stops before the end now reports it (breaking).** What it didn't read
   is one more `ParseError`, so `ok: true` with no errors now means the whole input was read.
   `unconsumedFrom` is unchanged.

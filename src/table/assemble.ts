@@ -111,7 +111,7 @@ import {
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
 import { armGateFns } from './child-slots.ts'
-import { collapseEmpty, lead, overlappingChoice as recoverOverlap, rawEntry, spanLines } from './run-support.ts'
+import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
 import { canDecide, continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows, newGapSlot } from './gap-gate.ts'
@@ -138,7 +138,7 @@ import {
 import { stampRuleMap } from './stamp.ts'
 import { CAP_OFF, CAP_ON, type SiteLabel, computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges, TRI_NONE } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
-import { ANY_SYNC, captureError, firstSetSentinel, followSync, listMayEndAt, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
+import { ANY_SYNC, captureError, firstSetSentinel, followSync, listMayEndAt, matchesAt, measuredMiss, orSentinel, overlappingChoice as recoverOverlap, recoverScan } from '../recovery/scan.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
   scalarTerminalNotChild, scalarTerminalPeekChild, type ScalarRecognizer,
@@ -482,16 +482,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * reference.
    */
   const REC = prog.rec === 1 && cfg.tolerant
-  /** A completions-probe assembly: lookaheads restore `_probe.best` around their child. */
-  const PROBE = cfg.probe
+  /** Lookaheads restore `_probe.best` around their child: a completions probe or `furthestArm`. */
+  const PROBE = cfg.probe || REC
   /** A choice whose arms may overlap answers through `recoverOverlap` under recovery. */
   const overlappingChoice = (ip: number, plain: Piece): Piece => {
     if (!REC || code[ip] !== OP_CHOICE) return plain
     const table = disp[code[ip + 1]!]!
-    if (table.exclusive) return plain
+    if (table.exclusive) return (input, pos, ctx) => {
+      const v = plain(input, pos, ctx)
+      if (v === FAIL) measuredMiss(ctx, pos)
+      return v
+    }
     const arms = Array.from({ length: code[ip + 2]! }, (_, i) => link(code[ip + 4 + i]!))
     const gates = armGateFns(code, ip).map(g => g === undefined ? undefined : fns[g] as (s: unknown) => boolean)
-    return (input, pos, ctx) => recoverOverlap(ip, plain, table.armCls, gates, arms, FAIL, input, pos, ctx)
+    return (input, pos, ctx) => recoverOverlap(ip, plain, table.armCls, gates, arms, FAIL, classHas, input, pos, ctx)
   }
 
   /** A lookahead asks whether its child matches, so nothing inside it may recover. */

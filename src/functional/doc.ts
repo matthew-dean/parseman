@@ -467,8 +467,6 @@ function parseMiddle(
       return null
     }
     if (!r.ok || r.span.end <= pos || r.span.end > reEnd) return null
-    // A rule that had to recover says nothing about what the whole parse would do here.
-    if (ctx._errors !== undefined && ctx._errors.length > 0) return null
     out.push(relativizeCST(r.value as unknown as AnyChild, cStart))
     pos = r.span.end
     if (separator !== null) expectElement = false

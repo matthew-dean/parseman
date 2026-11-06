@@ -57,7 +57,9 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +1,317B to 66,799B: a tolerant parse in the interpreter now scopes recovery by what
 // can follow, as the table does (`followOfTerm`, `tolerantItem`), and a choice whose arms overlap
 // answers strictly first, with a record of where it failed and the furthest arm to recover in.
-const BASELINE_RAW_BYTES = 66_799
+// Bumped +1,360B to 68,159B: the recovery bundle every engine reads now holds the overlapping
+// choice itself, which the emitted assembly reaches through `ctx._rec`, and how far an arm read.
+const BASELINE_RAW_BYTES = 68_159
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([

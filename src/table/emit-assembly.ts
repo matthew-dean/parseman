@@ -664,6 +664,8 @@ export function emitAssemblySource(
    * What stays interpreted is what was already interpreted for the strict path.
    */
   const REC = prog.rec === 1 && cfg.tolerant
+  /** Terminals report to `_probe`, and lookaheads restore it: a completions probe or `furthestArm`. */
+  const reports = cfg.probe || REC
   if (cfg.coverage) throw new Unemittable('a coverage assembly')
 
   // THE DOWNWARD PASS, BEFORE ANY LOWERING. The roots are exactly the sites
@@ -1150,7 +1152,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 `
   }
 
@@ -1177,12 +1179,21 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     byIp.set(target, fname)
     // A choice whose arms may overlap answers through this front under recovery; see
     // `overlappingChoice` in run-support.ts, which is the same thing for the closures.
-    const body = REC && code[target] === OP_CHOICE && !disp[code[target + 1]!]!.exclusive
-      ? `${lower(target, `${fname}_s`)}\n${overlapFront(target, fname)}`
+    const body = REC && code[target] === OP_CHOICE
+      ? `${lower(target, `${fname}_s`)}\n${disp[code[target + 1]!]!.exclusive ? measuredFront(fname) : overlapFront(target, fname)}`
       : lower(target, fname)
     siteBytes.set(target, body.length)
     bodies.push(body)
     return fname
+  }
+
+  /** While an arm is being measured, a miss here counts; `furthestArm` in recovery/scan.ts. */
+  function measuredFront(fname: string): string {
+    return `function ${fname}(input,pos,ctx){
+const v=${fname}_s(input,pos,ctx)
+if(v===FAIL&&ctx._rec!==undefined)ctx._rec.measuredMiss(ctx,pos)
+return v
+}`
   }
 
   function overlapFront(ip: number, fname: string): string {
@@ -1192,32 +1203,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     const gates = hoist('ag', `[${armGateFns(code, ip).map(g => g === undefined ? 'undefined' : fnRef(g)).join(',')}]`)
     return `function ${fname}(input,pos,ctx){
 if(ctx._rec===undefined)return ${fname}_s(input,pos,ctx)
-const strict=ctx._tolerant!==true
-const c=strict?0:lead(input,pos)
-if(!strict){
-let open=0
-for(let i=0;i<${n};i++){const g=${cls}[i];if((g===null||g===undefined||classHas(g,c))&&${gates}[i]?.(ctx.state)!==false)open++}
-if(open<2)return ${fname}_s(input,pos,ctx)
-ctx._tolerant=undefined
-}
-let v
-const f=ctx._rec.failedBefore(ctx,${ip},pos)
-if(f!==undefined){ctx._fe=f.at;ctx._fx=f.expected;if(f.committed)ctx._fc=true;v=FAIL}
-else{v=${fname}_s(input,pos,ctx)
-if(v===FAIL){if(ctx._fx!==undefined)ctx._fx=[...new Set(ctx._fx)]
-ctx._rec.noteFailed(ctx,${ip},pos,ctx._fe,ctx._fx)}}
-if(strict)return v
-ctx._tolerant=true
-if(v!==FAIL)return v
-const arm=ctx._rec.furthest(ctx,${n},i=>{
-const g=${cls}[i]
-if(g!==null&&g!==undefined&&!classHas(g,c))return -1
-ctx._fc=false
-const r=${list}[i](input,pos,ctx)
-return r!==FAIL?pos:ctx._fc===true?Infinity:ctx._fe??pos
-})
-ctx._fc=false
-return ${list}[arm](input,pos,ctx)
+return ctx._rec.overlap(${ip},${fname}_s,${cls},${gates},${list},FAIL,classHas,input,pos,ctx)
 }`
   }
 
@@ -1349,7 +1335,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return ${q(s)}
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
       }
 
@@ -1400,7 +1386,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
       }
 
@@ -1424,7 +1410,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
         }
         const head = outerHead
@@ -1478,7 +1464,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
       }
 
@@ -1956,10 +1942,10 @@ return FAIL
         const p = tmp()
         return `${head}
 ${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${emitMark(p, L.buf, L.raw, sinks)}
-${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}${strictly(`const v=${child}(input,pos,ctx)`)}
+${reports ? 'const pb=ctx._probe?.best\n' : ''}${strictly(`const v=${child}(input,pos,ctx)`)}
 ${emitRollback(p, L.buf, L.raw, sinks)}
 ctx._fc=false
-${cfg.probe ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){EC.e=pos;return null}
+${reports ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){EC.e=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
 return FAIL
@@ -1982,10 +1968,10 @@ return null
         const p = tmp()
         return `${head}
 ${lookaheadMiss(code[ip + 1]!, `ctx._fe=pos;ctx._fx=${xf};return FAIL`)}${emitMark(p, L.buf, L.raw, sinks)}
-${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}${strictly(`const v=${child}(input,pos,ctx)`)}
+${reports ? 'const pb=ctx._probe?.best\n' : ''}${strictly(`const v=${child}(input,pos,ctx)`)}
 ${emitRollback(p, L.buf, L.raw, sinks)}
 ctx._fc=false
-${cfg.probe ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+${reports ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 EC.e=pos
 return null
 }`

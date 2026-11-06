@@ -43,8 +43,7 @@ import { failAt } from '../combinators/probe.ts'
 import { committed, spanLines, stampRuleMap } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { armGateFns } from './child-slots.ts'
-import { overlappingChoice } from './run-support.ts'
-import { ANY_SYNC, captureError, firstSetSentinel, followSync, listMayEndAt, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
+import { ANY_SYNC, captureError, firstSetSentinel, followSync, listMayEndAt, matchesAt, orSentinel, overlappingChoice, recoverScan } from '../recovery/scan.ts'
 import {
   decodeClassSpec, expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec, type ResolvedTable,
@@ -952,7 +951,7 @@ function makeDriver(
             const arms = Array.from({ length: code[ip + 2]! }, (_, i) => (at: string, from: number, cx: ParseContext) => exec(code[base + i]!, at, from, cx))
             const plain = (at: string, from: number, cx: ParseContext): unknown => { plainChoice = ip; return exec(ip, at, from, cx) }
             const gates = armGateFns(code, ip).map(g => g === undefined ? undefined : fns[g] as (s: unknown) => boolean)
-            return overlappingChoice(ip, plain, table.armCls, gates, arms, FAIL, input, pos, ctx)
+            return overlappingChoice(ip, plain, table.armCls, gates, arms, FAIL, classHas, input, pos, ctx)
           }
           plainChoice = -1
         }

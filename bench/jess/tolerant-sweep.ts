@@ -37,6 +37,7 @@ import { resolve } from 'node:path'
 import { run as runInterpreter } from '../../src/functional/run.ts'
 import { run as runClosure } from '../../src/functional/run-tabled.ts'
 import { compile } from '../../src/table/compile.ts'
+import { REC } from '../../src/recovery/scan.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { assertParseman, corpus, corpusTotal, loadGrammar, JESS_ROOT, ENTRY, type Dialect } from './grammars.ts'
 
@@ -69,7 +70,13 @@ for (const rel of EXTRA[dialect]) {
 const ts = new Date().toISOString()
 const load0 = os.loadavg()[0]
 const lines: string[] = []
+// Reading text again is for damage only: a document that comes out clean must not have got here.
+let armReads = 0
+const furthest = REC.furthest
+REC.furthest = (ctx, n, attempt) => { armReads++; return furthest(ctx, n, attempt) }
+const reread: string[] = []
 for (const f of files) {
+  armReads = 0
   let rec: Record<string, unknown>
   try {
     const r = parse(f.input)
@@ -89,6 +96,7 @@ for (const f of files) {
       expectedDigest: digestValue(r.expected),
       threw: null,
     }
+    if (armReads > 0 && r.ok && r.errors.length === 0 && r.unconsumedFrom === null) reread.push(f.name)
   } catch (e) {
     rec = {
       ok: null, consumed: null, unconsumedFrom: null, errorCount: null,
@@ -103,4 +111,8 @@ for (const f of files) {
   }))
 }
 appendFileSync(out, lines.join('\n') + '\n')
+if (reread.length > 0) {
+  console.error(`${dialect}/${emit}: ${reread.length} clean documents read an arm again:\n${reread.join('\n')}`)
+  process.exitCode = 1
+}
 console.log(`${dialect}/${emit}: ${lines.length} records -> ${out} (corpus ${corpusTotal(dialect)} + ${EXTRA[dialect].length} extra)`)

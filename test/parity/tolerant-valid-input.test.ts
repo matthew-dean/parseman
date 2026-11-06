@@ -8,9 +8,9 @@
  * runs this file again with the emitter off, so the same assertions reach the closure
  * assembly through `compile()` too.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
-  choice, cstBuildHost, dispatch, gate, literal, many, node, noTrivia, not, oneOrMore, optional, peek, regex, rules, run, sepBy, sequence, token, trivia, when, withCtx,
+  choice, cstBuildHost, dispatch, gate, transform, literal, many, node, noTrivia, not, oneOrMore, optional, peek, regex, rules, run, sepBy, sequence, token, trivia, when, withCtx,
 } from '../../src/index.ts'
 import { parseDoc, type ParseDoc } from '../../src/functional/doc.ts'
 import { tableRules } from '../../src/table/assemble.ts'
@@ -33,6 +33,7 @@ function expectClean(entry: Entry, input: string, amb?: Entry): void {
   const grammar = rules(amb === undefined ? {} : { trivia: amb }, () => ({ Entry: entry }))
   const strict = runInterpreter(grammar.Entry, input)
   expect(strict.ok, `strict reads ${input}`).toBe(true)
+  const reads = vi.spyOn(REC, 'furthest').mockClear()
   const answers = {
     interpreter: runInterpreter(grammar.Entry, input, { tolerant: true }),
     tabled: runTabled(grammar.Entry, input, { tolerant: true }),
@@ -50,6 +51,8 @@ function expectClean(entry: Entry, input: string, amb?: Entry): void {
   const out = execRules(encodeTable(grammar, { recovery: true }))['Entry']!(input, 0, ctx) as { ok: boolean; value?: unknown }
   expect(errors, `exec: ${input}`).toEqual([])
   expect(out.value, `exec: ${input}`).toEqual(strict.value)
+  expect(reads, `a valid document reads no arm again: ${input}`).not.toHaveBeenCalled()
+  reads.mockRestore()
 }
 
 describe('tolerant: a valid document has no errors and the strict tree', () => {
@@ -176,6 +179,9 @@ describe('tolerant: which constructs are read as a strict parse reads them', () 
   it('a list before a term with no first set ends anywhere, whatever encloses it', () => {
     const inner = sequence(many(ident), gate(() => true), literal(';'))
     expectClean(sequence(literal('{'), inner, literal('}')), '{a b;}', ws)
+    // No gate, so the emitted assembly really reads this one.
+    const lookahead = sequence(many(ident), not(literal('!')), literal(';'))
+    expectClean(sequence(literal('{'), lookahead, literal('}')), '{a b;}', ws)
   })
 
   it('a list before a term that dispatches ends anywhere, on the emitted assembly too', () => {
@@ -215,6 +221,25 @@ describe('tolerant: which constructs are read as a strict parse reads them', () 
   it('a list with nothing in it can end after the leading trivia', () => {
     expectClean(sequence(sepBy(ident, literal(';')), literal('!')), ' !', ws)
   })
+
+  it('what follows a list can start with the list\'s own separator', () => {
+    expectClean(sequence(sepBy(ident, literal(';')), optional(literal(';'))), 'a;', ws)
+    expectClean(sequence(sepBy(ident, literal(';')), literal(';')), 'a;', ws)
+    expectClean(sequence(ident, literal('('), sepBy(num, literal(',')), optional(sequence(literal(','), literal('...'), ident)), literal(')')), 'f(1,...x)', ws)
+    expectClean(sequence(literal('('), sepBy(num, literal(',')), optional(sequence(literal(','), ident)), literal(')')), '(1,a)', ws)
+  })
+
+  it('at the end of the input no arm reads again', () => {
+    const on = (c: Entry) => ({ gate: () => true, combinator: c })
+    const arms = choice(on(sequence(ident, literal(':'))), on(sequence(ident, literal('='))))
+    expectClean(sequence(ident, optional(arms)), 'a', ws)
+    expectClean(sequence(ident, optional(arms)), 'a ', ws)
+    expectClean(sepBy(arms, literal(';')), '', ws)
+    expectClean(sepBy(arms, literal(';')), ' ', ws)
+    // A gate has no first set, so the interpreter can't rule these arms out either.
+    const open = gate(() => true)
+    expectClean(sequence(ident, optional(choice(sequence(open, ident, literal(':')), sequence(open, ident, literal('='))))), 'a', ws)
+  })
 })
 
 describe('tolerant: damage where the arms overlap', () => {
@@ -251,6 +276,81 @@ describe('tolerant: damage where the arms overlap', () => {
     expect(r.errors).toEqual([[9, 10]])
     expect(r.unconsumedFrom).toBeNull()
     expect(JSON.stringify(r.value)).toContain('"d"')
+  })
+
+  it('how far an arm read looks through a nested choice', () => {
+    const grammar = rules({ trivia: ws }, self => ({
+      Block: choice(
+        sequence(ident, literal('{'), many(self.Stmt), literal('}')),
+        sequence(ident, literal('['), many(self.Stmt), literal(']')),
+      ),
+      Decl: sequence(ident, literal(':'), num, literal(';')),
+      Stmt: choice(self.Decl, self.Block),
+      Entry: many(self.Stmt),
+    }))
+    const r = agreed(grammar.Entry, 'a { b; } c: 1;', ws)
+    expect(r.errors).toEqual([[4, 7]])
+    expect(r.unconsumedFrom).toBeNull()
+    expect(JSON.stringify(r.value)).toContain('"c"')
+  })
+
+  it('how far an arm read looks through a list that stopped', () => {
+    const decl = sequence(ident, literal(':'), num, literal(';'))
+    const block = sequence(ident, literal('{'), many(decl), literal('}'))
+    const value = sequence(ident, literal('{'), ident, literal('!'))
+    const r = agreed(many(choice(value, block)), 'a { b: ?; } c { d: 1; }', ws)
+    expect(r.errors).toEqual([[4, 10]])
+    expect(r.unconsumedFrom).toBeNull()
+  })
+
+  it('on a tie the first arm recovers', () => {
+    const semi = sequence(ident, literal(':'), many(ident), literal(';'))
+    const bang = sequence(ident, literal(':'), many(ident), literal('!'))
+    expect(agreed(many(choice(semi, bang)), 'a: ? b; c: d;', ws).errors).toEqual([[3, 6]])
+    expect(agreed(many(choice(bang, semi)), 'a: ? b! c: d!', ws).errors).toEqual([[3, 6]])
+  })
+
+  it('how far an arm read counts a choice nothing could start', () => {
+    const decl = sequence(ident, choice(literal(':'), literal('=')), num, literal(';'))
+    const block = sequence(ident, literal('{'), many(decl), literal('}'))
+    const short = sequence(ident, literal('{'), ident, literal('!'))
+    expect(agreed(many(choice(block, short)), 'a { b ? }', ws).errors).toEqual([[4, 8]])
+  })
+
+  it('how far an arm read does not count what a lookahead looked at', () => {
+    const looks = sequence(not(sequence(ident, ident, ident, literal('!'))), ident, many(num), literal(';'))
+    const reads = sequence(ident, many(ident), literal(';'))
+    expect(agreed(many(choice(looks, reads)), 'a b ? ;', ws).errors).toEqual([[4, 6]])
+  })
+
+  it('a failure met again says how far it read', () => {
+    const block = choice(
+      sequence(ident, literal('{'), many(sequence(ident, literal(':'), num, literal(';'))), literal('}')),
+      sequence(ident, literal('['), literal(']')),
+    )
+    const statement = choice(sequence(ident, literal('=')), sequence(block, literal(';')))
+    const r = agreed(many(choice(sequence(statement, literal('!')), sequence(statement, literal('?')))), 'a { b: ?; };!', ws)
+    expect(r.errors).toEqual([[4, 10]])
+    expect(r.unconsumedFrom).toBeNull()
+  })
+
+  it('an arm read to measure it leaves nothing in the tree', () => {
+    const grammar = rules({ trivia: ws }, self => ({
+      Stmt: choice(
+        sequence(ident, literal(':'), num, literal(';')),
+        sequence(ident, literal('{'), many(self.Stmt), literal('}')),
+      ),
+      Entry: node('Doc', many(self.Stmt)),
+    }))
+    const starts = (n: unknown, out: number[] = []): number[] => {
+      const { _tag, span, children } = n as { _tag: string; span: { start: number }; children?: unknown[] }
+      if (_tag !== 'node') out.push(span.start)
+      for (const c of children ?? []) starts(c, out)
+      return out
+    }
+    for (const [engine, answer] of Object.entries(allEngines(grammar, 'a { b: ?; } c: 1;', cstBuildHost()))) {
+      expect(starts((answer as { value: unknown }).value), engine).toEqual([0, 2, 4, 10, 12, 13, 15, 16])
+    }
   })
 
   it('a real error after an arm that failed is still recovered', () => {
@@ -374,6 +474,29 @@ describe('tolerant: time', () => {
     expectClean(choice(noTrivia(x), x), 'a ;', ws)
   })
 
+  it('the emitted assembly does not work out a failed choice again', () => {
+    // No gates, so `tableRules` really emits this. Three arms a level: 3^40 without the record.
+    let reads = 0
+    const open = transform(literal('('), v => {
+      if (++reads > 100_000) throw new Error('more than 100000 reads of an opener')
+      return v
+    })
+    const grammar = rules({ trivia: ws }, self => ({
+      X: choice(
+        sequence(open, self.X, literal(')'), literal(';')),
+        sequence(open, self.X, literal(')'), literal('!')),
+        sequence(open, self.X, literal(')')),
+        num,
+      ),
+      Entry: sequence(literal('{'), many(self.X), literal('}')),
+    }))
+    const enc = encodeTable(grammar as never, { recovery: true })
+    const entry = tableRules(enc)['Entry']!
+    runInterpreter(entry, `{${'('.repeat(40)}}`, { tolerant: true })
+    expect(reads).toBeGreaterThan(40)
+    expect(reads).toBeLessThan(5_000)
+  })
+
   it('a state copied on the way in is the same state', () => {
     const nestedIn: { X?: Entry } = {}
     let calls = 0
@@ -447,11 +570,21 @@ describe('tolerant: an edit gives what a fresh parse gives', () => {
     ['a stray brace', 'a { b: 1; c: 2; }\nd { e: 3; }\n', 'a { b: 1;'.length, 0, '}'],
     ['an unclosed block', 'a { b: 1; c: 2; }\nd { e: 3; }\n', 'a { b: 1;'.length, 0, '{'],
     ['a deleted colon', 'a { b: 1; c: 2; }\n', 'a { b'.length, 1, ''],
+    ['what stops the parse', 'a { b: 1; }\nd { e: 3; }\n', 'a { b: 1; }\n'.length, 0, '?'],
   ])('%s', (_name, input, from, removed, inserted) => {
     const before = parseDoc(table as never, 'Entry', input, opts)
     expect(before.unconsumedFrom).toBeNull()
     const edited = before.edit(from, from + removed, inserted)
     const fresh = parseDoc(table as never, 'Entry', edited.input, opts)
     expect(answer(edited as never)).toEqual(answer(fresh as never))
+  })
+
+  it('an edit before where the parse stopped still reports what it did not read', () => {
+    const input = 'a { b: 1; }\n?\nd { e: 3; }\n'
+    const before = parseDoc(table as never, 'Entry', input, opts)
+    expect(before.unconsumedFrom).toBe(12)
+    const edited = before.edit('a { b: '.length, 'a { b: 1'.length, '2')
+    expect(edited.errors.map(e => [e.span.start, e.span.end])).toEqual([[12, input.length]])
+    expect(answer(edited as never)).toEqual(answer(parseDoc(table as never, 'Entry', edited.input, opts) as never))
   })
 })

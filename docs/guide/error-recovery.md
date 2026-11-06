@@ -122,7 +122,8 @@ entirely outside the grammar. See [Editor / language-server integration](./edito
   aside, and anything inside `not`, `peek` or `token`.
 - **Damage goes to the arm that read the furthest.** When none of those arms answers, the
   text is damage. The arm that got furthest reads it again with recovery on, and the error
-  lands inside that arm. That second read happens only on a failure.
+  lands inside that arm; on a tie, that's the first arm written. A valid document never
+  gets here, and nor does a choice with only trivia left to read.
 - **A parse never stops silently.** If it stops before the end of the input, what it didn't
   read is one more `ParseError`, and `unconsumedFrom` still says where it stopped. The rest
   of the file isn't recovered at that point: nothing enclosing the list says where to resync.
@@ -132,16 +133,29 @@ entirely outside the grammar. See [Editor / language-server integration](./edito
   spin.
 - **A trailing separator before the close** (`{a:1;}`) isn't junk — the list ends cleanly
   with no spurious error.
-- **Valid input isn't free under `tolerant`.** A list checks its sync point at each item, and
-  a choice records where it failed. A strict parse (no `tolerant`) runs none of this: it's
-  byte-identical to a parser with no recovery at all.
-- **Time.** A choice that failed strictly at a position fails there once: it's recorded per
-  choice, position, trivia scope and state, so failing nested text stays linear. A strict
-  parse has no such record and can be exponential on the same text
-  ([#275](https://github.com/matthew-dean/parseman/issues/275)).
+- **Valid input isn't free under `tolerant`.** A sequence publishes its sync point before
+  each term, a list checks it at each item, and a choice records where it failed. Over Jess's
+  corpus, closures make 1.04 (CSS), 1.31 (Less), 1.32 (`.jess`) and 1.80 (SCSS) times the
+  regex reads of a strict parse ([#292](https://github.com/matthew-dean/parseman/issues/292) is about SCSS). None of that is re-reading an arm. A
+  strict parse (no `tolerant`) runs none of this: it's byte-identical to a parser with no
+  recovery at all.
+- **Time, and where it can still hang.** A choice that failed strictly at a position fails
+  there once: it's recorded per choice, position, trivia scope and state, so text that fails
+  all the way down stays linear, where a strict parse is exponential. A choice that succeeded
+  isn't recorded. Nested text that succeeds inside an arm that then fails is read once per
+  arm per level, under tolerant as under strict, so Less's `@x(@x(@x(` nested a few dozen
+  levels can hang an editor until [#275](https://github.com/matthew-dean/parseman/issues/275)
+  is done. Each damage site also pays for its own arm: where an arm recovers to the end of
+  the input and then fails, many such sites read quadratically
+  ([#291](https://github.com/matthew-dean/parseman/issues/291)).
 - **Depth.** Recursion uses the call stack, so very deep nesting throws `RangeError`, under
   strict as well: from about 128 levels on Jess's grammars with Node's default stack
   ([#275](https://github.com/matthew-dean/parseman/issues/275)).
+- **A list followed by something that starts like its items doesn't recover its items.** A
+  failed item there may only mean the list ended, so the item runs strictly; if what follows
+  then fails too, the parse stops at that item. On Jess's Less grammar, whose lists are
+  followed by an optional call, a stray word in a rule loses the whole document
+  ([#290](https://github.com/matthew-dean/parseman/issues/290)).
 - **One known false error.** A list whose items can be empty doesn't count its separator as
   something it can start with, so a list right before it can read that separator as damage.
 

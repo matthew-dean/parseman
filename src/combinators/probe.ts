@@ -17,7 +17,7 @@ export function failAt(ctx: ParseContext, expected: string[], pos: number): Pars
     const best = probe.best
     if (best === null || pos > best.span.start) {
       probe.best = r
-    } else if (pos === best.span.start) {
+    } else if (pos === best.span.start && probe.offset !== Infinity) {
       probe.best = { ...best, expected: [...best.expected, ...expected] }
     }
   }
