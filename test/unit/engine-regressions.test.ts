@@ -187,6 +187,22 @@ describe('expected sets', () => {
     expect(agreed(g, 'aq').expected).toEqual(['"c"', '"d"', '"e"', '"x"', '/b/'])
   })
 
+  it('a choice failing at its start reports nothing past a corner under attempt', () => {
+    const ladder = (): G => rules({}, () => ({
+      R: choice(
+        node('N0', sequence(
+          attempt(regex(/[+*-]/)),
+          many(sequence(literal('-'), attempt(regex(/[+*-]/)))),
+        ), c => c, { collapse: true }),
+        literal('z'),
+      ),
+    })) as G
+    expect(agreed(ladder(), '').expected).toEqual(['"z"', '/[+*-]/'])
+    expect(agreed(ladder(), '', { build: host }).expected).toEqual(['"z"', '/[+*-]/'])
+    const plain = rules({}, () => ({ R: choice(sequence(attempt(literal('a')), literal('b')), literal('z')) })) as G
+    expect(agreed(plain, '').expected).toEqual(['"a"', '"z"'])
+  })
+
   // The tables only: the interpreter's set differs, https://github.com/matthew-dean/parseman/issues/256
   it('a choice failing at its start reports the arm the mask skipped before the last it tried', () => {
     const g = rules({}, () => ({

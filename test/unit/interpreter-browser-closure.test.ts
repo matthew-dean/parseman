@@ -54,7 +54,9 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // Bumped +554B to 64,064B: `rules()` passes its factory the `prior` handle, a proxy
 // that reads the earlier piece's definition (or, before any composition, a placeholder
 // the carried IR writes back as `prior.X`, which names itself when run unfilled).
-const BASELINE_RAW_BYTES = 64_064
+// Bumped +58B to 64,130B: a sequence's expected set stops at an `attempt()` whose inner
+// cannot match empty, which `matchesEmpty` answers on request (64,072B at parent a2e8a40f).
+const BASELINE_RAW_BYTES = 64_130
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([
