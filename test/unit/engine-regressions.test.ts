@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, classifiedTrivia, dispatch, expect as expectOr, field, leaf, literal, many, node, not, optional, otherwise, parser,
+  attempt, choice, classifiedTrivia, dispatch, expect as expectOr, field, leaf, literal, many, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek,
   regex, routed, rules, sepBy, sequence, sourceLeaf, token, transform, when,
 } from '../../src/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
@@ -13,7 +13,7 @@ import { run } from '../../src/functional/run.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import type { Combinator } from '../../src/types.ts'
-import { readers } from '../helpers/table-readers.ts'
+import { hybridReaders, readers } from '../helpers/table-readers.ts'
 
 type G = Record<string, Combinator<unknown>>
 type Options = { build?: unknown; rootTrivia?: { select: string[] } }
@@ -39,7 +39,8 @@ const outcome = (r: ReturnType<typeof run>): object => ({
 function agreed(g: G, input: string, options: Options = {}, skip?: string): Record<string, unknown> {
   const prog = encodeTable(g, options.build === undefined ? {} : { hostMode: 'cst' })
   const want = outcome(run(g.R as never, input, options as never))
-  for (const [name, table] of readers(prog)) {
+  const legs = options.build === undefined ? [...readers(prog), ...hybridReaders(prog)] : readers(prog)
+  for (const [name, table] of legs) {
     if (name === skip) continue
     expect(outcome(run(table.R as never, input, options as never)), name).toEqual(want)
   }
@@ -105,10 +106,86 @@ describe('rollback', () => {
     expect((agreed(g, 'b').errors as unknown[]).length).toBe(1)
   })
 
-  // With no trivia the closure engine keeps it: https://github.com/matthew-dean/parseman/issues/278
   it('a repeat item that fails under trivia keeps no error', () => {
     const g = rules({ trivia: spaces }, (r: G) => ({ R: many(expectOr(r.A!, 'want')), A: sequence(literal('a'), literal('b')) })) as G
     expect(agreed(g, 'a').errors).toEqual([])
+  })
+})
+
+describe('an expect() recovers at zero width', () => {
+  const A = (): Combinator<unknown> => sequence(literal('a'), literal('b'))
+  const want = (r: G): Combinator<unknown> => expectOr(r.A!, 'want')
+  const comma = (): Combinator<unknown> => expectOr(literal(','), 'comma')
+  const errorsOf = (r: Record<string, unknown>): unknown => (r.errors as { expected: string[] }[]).map(e => e.expected)
+  const inGrammar = (shape: (r: G) => Combinator<unknown>, trivia?: Combinator<unknown>): G =>
+    rules(trivia === undefined ? {} : { trivia }, (r: G) => ({ R: shape(r), A: A(), I: node('I', want(r)) })) as G
+
+  it('so a repeat gives its error back with the item, whatever wraps the expect', () => {
+    const items: Record<string, (r: G) => Combinator<unknown>> = {
+      bare: want,
+      node: r => node('N', want(r)),
+      rule: r => r.I!,
+      attempt: r => attempt(want(r)),
+      transform: r => transform(want(r), v => v),
+      choice: r => choice(node('N', want(r)), literal('c')),
+      'later arm': r => choice(literal('c'), want(r)),
+      'later term': r => sequence(optional(literal('z')), want(r)),
+    }
+    for (const [name, item] of Object.entries(items)) {
+      expect(errorsOf(agreed(inGrammar(r => many(item(r))), 'a')), name).toEqual([])
+      expect(errorsOf(agreed(inGrammar(r => many(item(r)), spaces), 'ab a')), name).toEqual([])
+      expect(agreed(inGrammar(r => many(item(r))), 'abab').ok, name).toBe(true)
+    }
+    expect(errorsOf(agreed(inGrammar(r => oneOrMore(want(r))), 'a'))).toEqual([['want']])
+    expect(errorsOf(agreed(inGrammar(r => oneOrMore(node('N', want(r)))), 'aba'))).toEqual([])
+  })
+
+  it('so a separator that recovers has no first-character gate', () => {
+    for (const list of [
+      (): Combinator<unknown> => sepBy(literal('a'), comma()),
+      (): Combinator<unknown> => oneOrMoreSep(literal('a'), comma()),
+      (): Combinator<unknown> => oneOrMoreSep(literal('a'), node('S', comma())),
+    ]) {
+      for (const input of ['a', 'a,a', 'a;a', 'aa', 'a,']) agreed(inGrammar(list), input)
+    }
+  })
+
+  it('so it opens no gate, and what follows it still gets to run', () => {
+    const shapes: Record<string, (r: G) => Combinator<unknown>> = {
+      node: r => node('N', want(r)),
+      'choice arm': r => choice(want(r), literal('c')),
+      'sequence opener': r => sequence(want(r), literal('z')),
+      'node of a sequence': r => node('N', sequence(want(r), literal('z'))),
+      'choice of a sequence': r => choice(sequence(want(r), literal('z')), literal('a')),
+      peek: () => sequence(peek(expectOr(literal('a'), 'want')), literal('x')),
+      'repeat with a minimum': () => many(expectOr(literal('a'), 'want'), { min: 2 }),
+    }
+    for (const [name, shape] of Object.entries(shapes)) {
+      for (const input of ['', 'a', 'x', 'c', 'z', 'ab', 'abz', 'x z']) {
+        expect(() => agreed(inGrammar(shape), input), `${name} on ${input}`).not.toThrow()
+      }
+    }
+    expect(errorsOf(agreed(inGrammar(r => node('N', want(r))), ''))).toEqual([['want']])
+    expect(agreed(inGrammar(r => choice(want(r), literal('c'))), '').ok).toBe(true)
+  })
+
+  it('so a gap held for it comes back if it recovers', () => {
+    const shapes: Record<string, (r: G) => Combinator<unknown>> = {
+      bare: () => node('N', sequence(literal('x'), not(literal('y')), expectOr(literal('a'), 'want'))),
+      'then a term': () => node('N', sequence(literal('x'), not(literal('y')), expectOr(literal('a'), 'want'), literal('z'))),
+      peek: () => node('N', sequence(literal('x'), peek(literal('q')), expectOr(literal('a'), 'want'))),
+      node: r => node('N', sequence(literal('x'), not(literal('y')), node('M', want(r)))),
+      attempt: r => node('N', sequence(literal('x'), not(literal('y')), attempt(want(r)))),
+    }
+    for (const [name, shape] of Object.entries(shapes)) {
+      for (const input of ['x', 'x a', 'x /*c*/ a', 'x /*c*/', 'x /*c*/ q', 'x /*c*/ ab', 'x /*c*/ a z']) {
+        const g = (): G => inGrammar(shape, comments())
+        const root = { rootTrivia: { select: ['comment'] } }
+        expect(() => agreed(g(), input), `${name} on ${input}`).not.toThrow()
+        expect(() => agreed(g(), input, root), `${name} on ${input}, root trivia`).not.toThrow()
+        expect(() => agreed(g(), input, { build: host }), `${name} on ${input}, CST`).not.toThrow()
+      }
+    }
   })
 })
 

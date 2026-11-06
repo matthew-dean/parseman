@@ -5,6 +5,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`expect()` is read as what it is: it matches empty, and it runs on any character.** It
+  recovers at zero width when its child fails, but nullability and first sets read it as its
+  child. So a repeat could keep an error from an item it gave back, a first-character gate could
+  skip an `expect()` that should have reported, and a gap held for one stayed consumed after it
+  recovered. All engines now agree. Resync sentinels still read through it. A grammar only pays
+  where `expect()` opens a repeat item, a choice arm or a sequence, which lose a gate there; one
+  that only uses it after a term that must consume compiles to the same table.
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A
