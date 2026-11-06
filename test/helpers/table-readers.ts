@@ -4,7 +4,8 @@
  */
 import { cfgKey, tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
-import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
+import { assemblyExtraIps, resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
+import { selectHotSites } from '../../src/table/select-hot.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 import type { Runnable } from '../../src/functional/run.ts'
@@ -27,6 +28,25 @@ export function readers(prog: TableProgram): ReadonlyArray<readonly [string, Rec
     ['closure', tableRules({ ...prog, asm: [] })],
     ['emitted', tableRules({ ...prog, asm: precompiled })],
   ]
+}
+
+/** Assemblies that emit some sites and leave the rest to the closure engine, as a macro build does. */
+export function hybridReaders(prog: TableProgram): ReadonlyArray<readonly [string, Record<string, Runnable>]> {
+  const table = resolveTable(prog)
+  const cfg = defaultAssemblyCfgs(prog)[0]!
+  const extra = assemblyExtraIps(prog)
+  const { siteBytes } = emitAssemblySource(table, prog, cfg, extra, true)
+  const total = [...siteBytes.values()].reduce((sum, bytes) => sum + bytes, 0)
+  return [0.25, 0.6, Infinity].map(share => {
+    const picked = selectHotSites(prog.code, Object.values(prog.rules), siteBytes, total * share)
+    const out = emitAssemblySource(table, prog, cfg, extra, true, picked)
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+    const factory = new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory']
+    return [`hybrid ${share}`, tableRules({
+      ...prog,
+      asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: out.plan, reached: [...out.reached] }],
+    })] as const
+  })
 }
 
 /**
