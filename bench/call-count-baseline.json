@@ -9,7 +9,7 @@
   },
   "emitted/css/stylesheet": {
     "calls": 434657,
-    "branches": 2356925
+    "branches": 2358173
   },
   "emitted/graphql/document": {
     "calls": 203741,
@@ -29,7 +29,7 @@
   },
   "closure/css/stylesheet": {
     "calls": 619361,
-    "branches": 3161178
+    "branches": 3162426
   },
   "closure/graphql/document": {
     "calls": 294347,
@@ -41,15 +41,15 @@
   },
   "macro/css/ast/site.css": {
     "calls": 201133,
-    "branches": 779979
+    "branches": 780002
   },
   "macro/css/ast/positions/site.css": {
     "calls": 245216,
-    "branches": 1344296
+    "branches": 1344319
   },
   "macro/css/cst/site.css": {
     "calls": 216438,
-    "branches": 1108404
+    "branches": 1108427
   },
   "macro/scss/ast/site.css": {
     "calls": 355515,
@@ -61,7 +61,7 @@
   },
   "macro/scss/cst/site.css": {
     "calls": 341220,
-    "branches": 1802888
+    "branches": 1802889
   },
   "macro/jess/ast/site.css": {
     "calls": 243951,
@@ -73,7 +73,7 @@
   },
   "macro/jess/cst/site.css": {
     "calls": 261079,
-    "branches": 1346602
+    "branches": 1346603
   },
   "macro/less/ast/site.css": {
     "calls": 323108,

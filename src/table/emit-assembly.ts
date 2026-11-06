@@ -45,6 +45,7 @@
  * what `encode.ts:1208-1213` refuses to allow for `OP_LIVE`.
  */
 import type { ParseContext } from '../types.ts'
+import { FOLLOW_ANY } from '../recovery/scan.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
   OP_ADJ, OP_ARMGATE, OP_RGATE, OP_RGATE2, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
@@ -66,7 +67,7 @@ import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
-import { childSlots } from './child-slots.ts'
+import { armGateFns, childSlots } from './child-slots.ts'
 import { canDecide, continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows } from './gap-gate.ts'
@@ -126,10 +127,10 @@ export const EMITTED_PARAMS = [
   // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
   // char-class index — the emitted twin of `assemble.ts`'s `sentinelFor` memo,
   // and an interpreted `Combinator` indexed out of an array for the same reason
-  // `SCANS` is. The four functions are `recovery/scan.ts`'s own, so an error's
+  // `SCANS` is. The functions are `recovery/scan.ts`'s own, so an error's
   // span, expected set and CST embedding are produced by the SAME code in every
   // engine and cannot drift.
-  'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError',
+  'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError', 'listMayEndAt',
   // Pure scalar terminal recognizers, indexed by the terminal's existing const
   // operand; selected lexical bodies; the adjacency test.
   'RECOG', 'LEX', 'adjacencyHolds',
@@ -663,6 +664,8 @@ export function emitAssemblySource(
    * What stays interpreted is what was already interpreted for the strict path.
    */
   const REC = prog.rec === 1 && cfg.tolerant
+  /** Terminals report to `_probe`, and lookaheads restore it: a completions probe or `furthestArm`. */
+  const reports = cfg.probe || REC
   if (cfg.coverage) throw new Unemittable('a coverage assembly')
 
   // THE DOWNWARD PASS, BEFORE ANY LOWERING. The roots are exactly the sites
@@ -882,6 +885,12 @@ return cur
    * publish below collapses to the inherited sentinel with no array read.
    */
   const sentRef = (cls: number): string => cls < 0 ? 'undefined' : hoist('sent', `SENTS[${cls}]`)
+  /** The always-matching sync point: the last entry of a recovery assembly's sentinel pool. */
+  const ANY_SYNC = 'SENTS[SENTS.length-1]'
+  /** A lookahead asks whether its child matches, so nothing inside it may recover. */
+  const strictly = (call: string): string => REC
+    ? `const tol=ctx._tolerant\nctx._tolerant=undefined\n${call}\nctx._tolerant=tol`
+    : call
 
   /** A fresh local prefix, so two inlined marks in one body cannot collide. */
   let uid = 0
@@ -1143,7 +1152,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 `
   }
 
@@ -1168,10 +1177,34 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     // to the hoisted declaration rather than to a forwarding stub. This is the
     // whole of `assemble.ts`'s `inFlight` map and its one shared closure.
     byIp.set(target, fname)
-    const body = lower(target, fname)
+    // A choice whose arms may overlap answers through this front under recovery; see
+    // `overlappingChoice` in run-support.ts, which is the same thing for the closures.
+    const body = REC && code[target] === OP_CHOICE
+      ? `${lower(target, `${fname}_s`)}\n${disp[code[target + 1]!]!.exclusive ? measuredFront(fname) : overlapFront(target, fname)}`
+      : lower(target, fname)
     siteBytes.set(target, body.length)
     bodies.push(body)
     return fname
+  }
+
+  /** While an arm is being measured, a miss here counts; `furthestArm` in recovery/scan.ts. */
+  function measuredFront(fname: string): string {
+    return `function ${fname}(input,pos,ctx){
+const v=${fname}_s(input,pos,ctx)
+if(v===FAIL&&ctx._rec!==undefined)ctx._rec.measuredMiss(ctx,pos)
+return v
+}`
+  }
+
+  function overlapFront(ip: number, fname: string): string {
+    const cls = hoist('ac', `DISP[${code[ip + 1]!}].armCls`)
+    const n = code[ip + 2]!
+    const list = `[${Array.from({ length: n }, (_, i) => link(code[ip + 4 + i]!)).join(',')}]`
+    const gates = hoist('ag', `[${armGateFns(code, ip).map(g => g === undefined ? 'undefined' : fnRef(g)).join(',')}]`)
+    return `function ${fname}(input,pos,ctx){
+if(ctx._rec===undefined)return ${fname}_s(input,pos,ctx)
+return ctx._rec.overlap(${ip},${fname}_s,${cls},${gates},${list},FAIL,classHas,input,pos,ctx)
+}`
   }
 
   /**
@@ -1302,7 +1335,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return ${q(s)}
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
       }
 
@@ -1353,7 +1386,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
       }
 
@@ -1377,7 +1410,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
         }
         const head = outerHead
@@ -1431,7 +1464,7 @@ ${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
-${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+${reports ? `if(ctx._probe!==undefined)failAt(ctx,${xf},pos)\n` : ''}return FAIL
 }`
       }
 
@@ -1732,8 +1765,8 @@ ${strict}${rootCap ? 'const sR=ctx._rootTriviaCapture\nctx._rootTriviaCapture=fa
 _pfScan=${scanFor}
 ctx.trivia=${tri}
 ctx.triviaKindLabels=${lab}
-${cap ? 'ctx.captureTrivia=true\n' : ''}const v=${child}(input,pos,ctx)
-${cap ? 'ctx.captureTrivia=sC\n' : ''}ctx.trivia=sT
+${cap ? 'ctx.captureTrivia=true\n' : ''}${REC ? `const sY=ctx._sync\nif(sT!==undefined&&sT!==${tri})ctx._sync=${ANY_SYNC}\n` : ''}const v=${child}(input,pos,ctx)
+${REC ? 'ctx._sync=sY\n' : ''}${cap ? 'ctx.captureTrivia=sC\n' : ''}ctx.trivia=sT
 ctx.triviaKindLabels=sL
 _pfScan=sS
 ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
@@ -1779,7 +1812,7 @@ ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined
 ctx._triviaLog=undefined
 ${isToken ? 'ctx._rootTriviaLog=undefined\n' : ''}let v
-try{v=${child}(input,pos,ctx)}finally{
+try{${isToken ? strictly(`v=${child}(input,pos,ctx)`) : `v=${child}(input,pos,ctx)`}}finally{
 ${isToken ? `_pfScan=sScan
 ctx.trivia=sTri
 ctx.triviaKindLabels=sKinds
@@ -1909,10 +1942,10 @@ return FAIL
         const p = tmp()
         return `${head}
 ${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${emitMark(p, L.buf, L.raw, sinks)}
-${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}const v=${child}(input,pos,ctx)
+${reports ? 'const pb=ctx._probe?.best\n' : ''}${strictly(`const v=${child}(input,pos,ctx)`)}
 ${emitRollback(p, L.buf, L.raw, sinks)}
 ctx._fc=false
-${cfg.probe ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){EC.e=pos;return null}
+${reports ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){EC.e=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
 return FAIL
@@ -1935,10 +1968,10 @@ return null
         const p = tmp()
         return `${head}
 ${lookaheadMiss(code[ip + 1]!, `ctx._fe=pos;ctx._fx=${xf};return FAIL`)}${emitMark(p, L.buf, L.raw, sinks)}
-${cfg.probe ? 'const pb=ctx._probe?.best\n' : ''}const v=${child}(input,pos,ctx)
+${reports ? 'const pb=ctx._probe?.best\n' : ''}${strictly(`const v=${child}(input,pos,ctx)`)}
 ${emitRollback(p, L.buf, L.raw, sinks)}
 ctx._fc=false
-${cfg.probe ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
+${reports ? 'if(ctx._probe!==undefined)ctx._probe.best=pb??null\n' : ''}if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 EC.e=pos
 return null
 }`
@@ -1952,8 +1985,11 @@ return null
         return `${head}
 ${lookaheadMiss(code[ip + 1]!, 'EC.e=pos;return null')}${clean ? logs ? emitLogMark(p) : '' : emitMark(p, L.buf, L.raw, sinks)}
 ctx._fc=false
-const v=${child}(input,pos,ctx)
-if(v===FAIL){
+${REC ? `const ${p}end=ctx._tolerant===true&&ctx._sync!==undefined&&matchesAt(ctx._sync,input,pos,ctx)
+if(${p}end)ctx._tolerant=undefined
+` : ''}const v=${child}(input,pos,ctx)
+${REC ? `if(${p}end)ctx._tolerant=true
+` : ''}if(v===FAIL){
 if(ctx._fc===true)return FAIL
 ${clean ? logs ? emitLogRollback(p) : '' : emitRollback(p, L.buf, L.raw, sinks)}
 EC.e=pos
@@ -2004,7 +2040,10 @@ return v
          */
         const sy = REC ? `${tmp()}sy` : ''
         const pub = (i: number): string => {
-          const s = sentRef(code[base + n + i]!)
+          const slot = code[base + n + i]!
+          if (slot === FOLLOW_ANY) return `ctx._sync=${ANY_SYNC}`
+          if (slot < FOLLOW_ANY) return `ctx._sync=orSentinel(${sentRef(-3 - slot)},${sy})`
+          const s = sentRef(slot)
           return s === 'undefined' ? `ctx._sync=${sy}` : `ctx._sync=${s}??${sy}`
         }
         const parts: string[] = [head]
@@ -2625,11 +2664,10 @@ ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
          * (`recovery/scan.ts`), so an error's span, its expected set and its CST
          * embedding are produced once and cannot drift between engines.
          *
-         * Reached only in a recovery table, and inside it only on the FAILURE of
-         * an element, so a matching item pays one `_sync` read at entry and
-         * nothing else. Everything else in this loop is the emitted strict loop
-         * unchanged — which is the whole point, and what the top-level refusal
-         * this replaces was giving up.
+         * Reached only in a recovery table. A matching item pays for a sync test and a
+         * publish; the scan runs only on the FAILURE of an element. Everything else in
+         * this loop is the emitted strict loop unchanged — which is the whole point, and
+         * what the top-level refusal this replaces was giving up.
          *
          * THE FOUR AGREEMENTS WITH `assemble.ts:2036`, each load-bearing:
          *  - a MANDATORY item of a separator-less repeat does NOT recover, so the
@@ -2663,7 +2701,12 @@ ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
             ? `orSentinel(${my},undefined)`
             : `orSentinel(${sepSent}??${my},${sepSent}===undefined?undefined:${my})`
         const recGate = sep !== undefined || min === 0 ? '' : `count>=${min}&&`
-        const recBranch = !REC ? '' : `if(ctx._tolerant===true&&${my}!==undefined&&${recGate}!matchesAt(${my},input,itemStart,ctx)){
+        // While the list may end here, a failed item is only the list ending, and
+        // whatever is inside it may not recover.
+        const recEnd = `${p}end`
+        const recTol = `${p}tol`
+        const itemSync = `${p}isy`
+        const recBranch = !REC ? '' : `if(${recTol}&&!${recEnd}&&${my}!==undefined${recGate === '' ? '' : `&&${recGate.slice(0, -2)}`}){
 ${sep === undefined ? `${rb}\n` : ''}const rr=recoverScan(input,itemStart,ctx,${recSent},${recFx})
 ${collect ? 'out.push(rr.error)\n' : ''}captureError(ctx,rr.error)
 count++
@@ -2673,7 +2716,7 @@ continue
 `
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\nconst ${itemSync}=${sepSent === 'undefined' ? ANY_SYNC : `orSentinel(${sepSent},${my})`}\nlet ${p}sst=-1\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
 ${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
@@ -2694,7 +2737,7 @@ ${rb}
 if(ctx._fc===true)return FAIL
 break
 }
-${keepSeparators ? '' : 'demoteCapturedToRaw(ctx,lb)\n'}sepEnd=EC.e
+${keepSeparators ? '' : 'demoteCapturedToRaw(ctx,lb)\n'}${REC ? `${p}sst=sp\n` : ''}sepEnd=EC.e
 itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(input,EC.e,ctx)` : `hasTrivia?${skip}(input,EC.e,ctx):EC.e`}
 }else ${leadSkip(hasTrivia, leadTrivia, skip)}
 ` : `${leadSkip(hasTrivia, leadTrivia, skip)}
@@ -2707,8 +2750,14 @@ ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
 `}${gapCode(rb)}ctx._fc=false
-const v=${child}(input,itemStart,ctx)
-${gapIp >= 0 ? 'if(gapped)GAP.at=-1\n' : ''}if(v===FAIL){
+${REC ? `const ${recTol}=ctx._tolerant===true
+const ${recEnd}=${recTol}&&${my}!==undefined&&${recGate}listMayEndAt(${my},input,ctx,itemStart,sepEnd>=0?${p}sst:-1)
+if(${recEnd})ctx._tolerant=undefined
+ctx._sync=${itemSync}
+` : ''}const v=${child}(input,itemStart,ctx)
+${REC ? `ctx._sync=${my}
+if(${recEnd})ctx._tolerant=true
+` : ''}${gapIp >= 0 ? 'if(gapped)GAP.at=-1\n' : ''}if(v===FAIL){
 ${REC
   // THE ROLLBACK MOVES INSIDE THE ARMS. The strict loop rolls back
   // unconditionally before testing `_fc`, which is sound because every path out

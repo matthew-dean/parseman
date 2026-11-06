@@ -55,7 +55,11 @@ export function peek(combinator: Combinator<unknown>): Combinator<null> {
       // body under a non-capturing ctx and so never writes these sinks at all; this
       // is what keeps the two engines at parity.
       const mark = saveLookaheadMark(ctx)
+      // It asks whether the child matches, so nothing inside may recover.
+      const tolerant = ctx._tolerant
+      ctx._tolerant = undefined
       const result = combinator.parse(input, pos, ctx)
+      ctx._tolerant = tolerant
       rollbackLookahead(ctx, mark)
       if (result.ok) return { ok: true, value: null, span: { start: pos, end: pos } }
       return {

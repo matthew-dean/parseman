@@ -156,6 +156,29 @@ export function empty(): FirstSet {
 }
 
 /**
+ * What can come after term `i` of a sequence, for a list nested in that term to resync to.
+ *
+ * `first` is the union of every later term's first set, not only up to the first
+ * non-nullable one, so a mandatory middle term cannot hide a later close. `open` says
+ * every later term can match empty, so whatever follows the sequence can come next too.
+ * A `first` of kind `any` says a later term has no usable first set: any character might
+ * follow, and no character can be called junk.
+ */
+export function followOfTerm(
+  parsers: readonly Combinator<unknown>[],
+  i: number,
+  resolve?: RefResolver,
+): { first: FirstSet; open: boolean } {
+  let first: FirstSet = { kind: 'empty' }
+  let open = true
+  for (let j = i + 1; j < parsers.length; j++) {
+    first = union(first, firstSetOf(parsers[j]!, new Set(), resolve, undefined, false))
+    if (open && !matchesEmpty(parsers[j]!, new Set(), resolve)) open = false
+  }
+  return { first, open }
+}
+
+/**
  * Can this parser SUCCEED consuming zero characters (nullable / matches-empty)?
  * Used to compute a sound sequence first-set: a nullable leading term lets the
  * NEXT term's first chars start the whole sequence. MUST err toward `true` when

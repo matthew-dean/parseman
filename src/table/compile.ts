@@ -1,6 +1,7 @@
 import type { Combinator, CompiledParser, ParseContext, ParseError, ParseResult } from '../types.ts'
 import type { HostMode } from '../cst/host-mode.ts'
 import { createParseContext } from '../parse-context.ts'
+import { REC } from '../recovery/scan.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableModule, emitTableExpression } from './emit.ts'
 import { tableRules } from './assemble.ts'
@@ -300,6 +301,7 @@ function compileImpl<T>(
       const errors: ParseError[] = []
       ctx._errors = errors
       ctx._tolerant = true
+      ctx._rec = REC
       const r = runOnce(input, pos, ctx)
       return { ...r, errors } as ParseResult<T> & { errors: ParseError[] }
     },

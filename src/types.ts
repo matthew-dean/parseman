@@ -1,3 +1,4 @@
+import type { ResolvedClass } from './table/program.ts'
 import type { LineView } from './combinators/lines.ts'
 import type { LabeledTriviaSpec } from './cst/trivia-kinds.ts'
 
@@ -231,6 +232,16 @@ export type FieldMap = Record<string, FieldCapture | FieldCapture[]>
  * functions (`recoverScan`/`matchesAt`/`orSentinel`) — guaranteeing parity without
  * the emitted `new Function` needing module-scope access.
  */
+export type FailedChoice = {
+  readonly trivia: ParseContext['trivia']
+  readonly state: unknown
+  readonly at: number | undefined
+  readonly expected: unknown
+  readonly committed: boolean
+  /** How far the choice read, when it was measured: see `furthestArm`. */
+  readonly far: number | undefined
+}
+
 export type RecoveryHelpers = {
   scan: (input: string, from: number, ctx: ParseContext, sync: Combinator<unknown>, expected: string[]) => { error: ParseError; end: number }
   at: (sentinel: Combinator<unknown>, input: string, pos: number, ctx: ParseContext) => boolean
@@ -243,6 +254,24 @@ export type RecoveryHelpers = {
    * the tree — riding reused subtrees across incremental edits — not just the flat
    * `_errors` channel. */
   capture: (ctx: ParseContext, error: ParseError) => void
+  /** Which arm of a choice nothing answered gets to recover: see `furthestArm`. */
+  furthest: (ctx: ParseContext, n: number, attempt: (i: number) => number) => number
+  /** A choice whose arms may overlap, under recovery: see `overlappingChoice`. */
+  overlap: <V>(
+    site: number,
+    plain: (input: string, pos: number, ctx: ParseContext) => V,
+    armCls: readonly (ResolvedClass | null | undefined)[],
+    gates: readonly (((state: unknown) => boolean) | undefined)[],
+    arms: readonly ((input: string, pos: number, ctx: ParseContext) => V)[],
+    fail: V,
+    classHas: (cls: ResolvedClass, c: number) => boolean,
+    input: string,
+    pos: number,
+    ctx: ParseContext,
+  ) => V
+  measuredMiss: (ctx: ParseContext, pos: number) => void
+  failedBefore: (ctx: ParseContext, site: number, pos: number) => FailedChoice | undefined
+  noteFailed: (ctx: ParseContext, site: number, pos: number, at: number | undefined, expected: unknown) => void
 }
 
 export type ParseContext = {
@@ -311,6 +340,8 @@ export type ParseContext = {
    * the only residue is a single cold branch on the element-failure edge.
    */
   _tolerant?: boolean | undefined
+  /** Where a choice has failed strictly in this tolerant parse: see `failedBefore`. */
+  _failed?: Map<number, FailedChoice> | undefined
   /**
    * Framework-internal: the recovery sync sentinel in effect for the current
    * subtree, published DOWN by an enclosing `sequence` in tolerant mode. It is a

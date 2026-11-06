@@ -42,7 +42,8 @@ import { failAt } from '../combinators/probe.ts'
  */
 import { committed, spanLines, stampRuleMap } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
-import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
+import { armGateFns } from './child-slots.ts'
+import { ANY_SYNC, captureError, firstSetSentinel, followSync, listMayEndAt, matchesAt, orSentinel, overlappingChoice, recoverScan } from '../recovery/scan.ts'
 import {
   decodeClassSpec, expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec, type ResolvedTable,
@@ -320,6 +321,7 @@ function makeDriver(
     return input.codePointAt(pos) ?? c
   }
 
+  let plainChoice = -1
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
     // A row that only hands on to one child at the same position (a gate that
     // passes, a rule trampoline, `OP_STRICT`) continues here rather than
@@ -438,7 +440,7 @@ function makeDriver(
 
       case OP_GATE: {
         // Skipped under a probe / tolerant recovery — see `assemble.ts`.
-        if (ctx._probe === undefined && !ctx._tolerant && !classHas(cc[code[ip + 1]!]!, lead(input, pos))) {
+        if (ctx._probe === undefined && ctx._rec === undefined && !classHas(cc[code[ip + 1]!]!, lead(input, pos))) {
           ctx._fe = pos; ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
@@ -475,7 +477,7 @@ function makeDriver(
         ip = code[ip + 1]!; continue rows
 
       case OP_STRICT:
-        ip = code[ctx._tolerant || ctx._probe !== undefined ? ip + 2 : ip + 1]!; continue rows
+        ip = code[ctx._rec !== undefined || ctx._probe !== undefined ? ip + 2 : ip + 1]!; continue rows
 
       // The reference runs a late frame's node as written, and is the leg it is compared with.
       case OP_CONT:
@@ -652,10 +654,13 @@ function makeDriver(
         ctx._triviaLog = undefined
         ctx._rootTriviaLog = undefined
 
+        const tolerant = ctx._tolerant
+        ctx._tolerant = undefined
         let v: unknown
         try {
           v = exec(code[ip + 1]!, input, pos, ctx)
         } finally {
+          ctx._tolerant = tolerant
           SCAN = sScan
           ctx.trivia = sTrivia
           ctx.triviaKindLabels = sKinds
@@ -810,7 +815,10 @@ function makeDriver(
         if ((policy & 2) !== 0) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
         const savedRootCap = ctx._rootTriviaCapture
         if ((policy & 1) !== 0) ctx._rootTriviaCapture = false
+        const sync = ctx._sync
+        if (ki !== SCOPE_INHERIT && saved !== undefined && saved !== scopeTrivia) ctx._sync = ANY_SYNC
         const v = exec(code[ip + 2]!, input, pos, ctx)
+        ctx._sync = sync
         if ((policy & 1) !== 0) ctx._rootTriviaCapture = savedRootCap
         ctx.captureTrivia = savedCap
         ctx.trivia = saved
@@ -835,7 +843,7 @@ function makeDriver(
         // `finally` does. Strict tables never enter any of this.
         const inheritedSync = REC ? ctx._sync : undefined
         for (let i = 0; i < n; i++) {
-          if (REC) ctx._sync = sentinelFor(code[base + n + i]!) ?? inheritedSync
+          if (REC) ctx._sync = followSync(code[base + n + i]!, sentinelFor, inheritedSync)
           const child = code[base + i]!
           // ADJACENCY IS TESTED AT `cur`, BEFORE THE BOUNDARY'S TRIVIA SCAN, and
           // moves nothing — the next term re-scans the same gap and keeps its own
@@ -937,6 +945,16 @@ function makeDriver(
         }
         const table = disp[d]!
         const c = lead(input, pos)
+        // `plainChoice` marks the re-entry that runs this row as a strict parse does.
+        if (REC && ctx._rec !== undefined && !table.exclusive) {
+          if (plainChoice !== ip) {
+            const arms = Array.from({ length: code[ip + 2]! }, (_, i) => (at: string, from: number, cx: ParseContext) => exec(code[base + i]!, at, from, cx))
+            const plain = (at: string, from: number, cx: ParseContext): unknown => { plainChoice = ip; return exec(ip, at, from, cx) }
+            const gates = armGateFns(code, ip).map(g => g === undefined ? undefined : fns[g] as (s: unknown) => boolean)
+            return overlappingChoice(ip, plain, table.armCls, gates, arms, FAIL, classHas, input, pos, ctx)
+          }
+          plainChoice = -1
+        }
         if (table.exclusive) {
           let arm = -1
           if (c >= 0 && c < 128) {
@@ -1143,7 +1161,12 @@ function makeDriver(
         const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         ctx._fc = false
+        // Where what follows could start here, the child failing is only the optional
+        // being absent, and whatever is inside it may not recover.
+        const absent = REC && ctx._tolerant === true && ctx._sync !== undefined && matchesAt(ctx._sync, input, pos, ctx)
+        if (absent) ctx._tolerant = undefined
         const v = exec(code[ip + 1]!, input, pos, ctx)
+        if (absent) ctx._tolerant = true
         if (v === FAIL) {
           // repeat.ts:277 — `optional()` propagates a committed failure rather
           // than reporting "absent".
@@ -1193,6 +1216,8 @@ function makeDriver(
         const mySync = REC ? ctx._sync : undefined
         const recFx = !REC ? undefined : (code[ip + 5]! & 16) !== 0 ? [] : fx[code[ip + 6]!] as string[]
         const sepSent = REC ? sentinelFor(code[ip + 7]!) : undefined
+        // What can follow an item: its separator, or (the same slot) another item.
+        const itemSync = !REC ? undefined : sepSent === undefined ? ANY_SYNC : orSentinel(sepSent, mySync)
         const itemClassIndex = sep < 0 ? code[ip + 7]! : -1
         const itemClass = REC && itemClassIndex >= 0 ? cc[itemClassIndex]! : undefined
         // `completionsAt` observes failures swallowed by an optional iteration;
@@ -1228,6 +1253,7 @@ function makeDriver(
           const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
           let itemStart = cur
           let sepEnd = -1
+          let sepStart = -1
           // WHICH ITEMS `repItem` ACTUALLY PARSES — the scope of every rule below
           // that was copied from it. `many` runs ALL its items through `repItem`;
           // `oneOrMore`/`atLeast` parse the mandatory first at `pos` themselves
@@ -1261,6 +1287,7 @@ function makeDriver(
             // Demote the separator out of `children`, exactly where the
             // interpreter does it (src/combinators/repeat.ts, sepBy loop).
             if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
+            sepStart = sp
             sepEnd = EC.e
             itemStart = hasTrivia ? skipTrivia(input, EC.e, ctx) : EC.e
           } else if (hasTrivia && (count > 0 || skipBeforeFirst)) {
@@ -1290,7 +1317,16 @@ function makeDriver(
             break
           }
           ctx._fc = false
+          // While the list may end here, a failed item is only the list ending, and
+          // whatever is inside it may not recover.
+          const tolerant = REC && ctx._tolerant === true
+          const mayEnd = tolerant && mySync !== undefined && (sep >= 0 || count >= min)
+            && listMayEndAt(mySync, input, ctx, itemStart, sepEnd >= 0 ? sepStart : -1)
+          if (mayEnd) ctx._tolerant = undefined
+          if (REC) ctx._sync = itemSync
           const v = exec(child, input, itemStart, ctx)
+          if (REC) ctx._sync = mySync
+          if (mayEnd) ctx._tolerant = true
           if (v === FAIL) {
             // repeat.ts:141/215/233 — a committed item failure fails the WHOLE
             // repetition. Breaking here is what let `many(dispatch(...))` return
@@ -1306,10 +1342,9 @@ function makeDriver(
             // span. A separated list scans to its own separator OR the enclosing
             // delimiter, and does NOT roll back: the separator it consumed and the
             // error after it both belong to the list (repeat.ts:533).
-            if (REC && ctx._tolerant === true
+            if (tolerant && !mayEnd
               && mySync !== undefined
-              && (sep >= 0 || count >= min)
-              && !matchesAt(mySync, input, itemStart, ctx)) {
+              && (sep >= 0 || count >= min)) {
               if (sep < 0 && needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               const rr = recoverScan(
                 input, itemStart, ctx,
@@ -1564,7 +1599,10 @@ function makeDriver(
         const mEr = need ? ctx._errors?.length ?? 0 : 0
         const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+        const tolerant = ctx._tolerant
+        ctx._tolerant = undefined
         const v = exec(code[ip + 1]!, input, pos, ctx)
+        ctx._tolerant = tolerant
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         // A lookahead contains its child's commitment (`not.ts` returns a fresh
         // result): a generic child's committed failure is cleared here.
@@ -1596,7 +1634,10 @@ function makeDriver(
         const mEr = need ? ctx._errors?.length ?? 0 : 0
         const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+        const tolerant = ctx._tolerant
+        ctx._tolerant = undefined
         const v = exec(code[ip + 1]!, input, pos, ctx)
+        ctx._tolerant = tolerant
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         // A lookahead contains its child's commitment, as under `not()`.
         ctx._fc = savedFc

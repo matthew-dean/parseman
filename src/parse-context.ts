@@ -53,6 +53,7 @@ export function createParseContext(): ParseContext {
     build: undefined,
     _errors: undefined,
     _tolerant: undefined,
+    _failed: undefined,
     _sync: undefined,
     _rec: undefined,
     _fe: undefined,

@@ -511,8 +511,8 @@ describe('the interpreter reads a reference under noTrivia as 0.58.0 did', () =>
       S: sequence(literal('>'), oneOrMore(sequence(sepBy(literal('a'), literal(',')), noTrivia(lib.A!), literal(';'))), literal('<')),
     })).S as Comb
     const spans = (input: string) => (run(S, input, { tolerant: true }).errors ?? []).map(e => [e.span.start, e.span.end])
-    expect(spans('>#/*c*/;<')).toEqual([[1, 7], [7, 9]])
-    expect(spans('>q /*c*/;<')).toEqual([[1, 8], [8, 10]])
+    expect(spans('>#/*c*/;<')).toEqual([[1, 7]])
+    expect(spans('>q /*c*/;<')).toEqual([[1, 8]])
   })
 })
 

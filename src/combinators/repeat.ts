@@ -1,8 +1,8 @@
 import type { Combinator, ParseContext, ParseOk, ParseResult, ParserMeta } from '../types.ts'
 import { advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, needsTriviaRollback, rollbackTrivia, saveTriviaMark, scanTriviaCompact } from './trivia-skip.ts'
-import { matchesEmpty, startsFirstSet } from './first-set.ts'
+import { firstSetOf, matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
-import { matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
+import { ANY_SYNC, firstSetSentinel, listMayEndAt, matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
 import { demoteCapturedToRaw } from '../cst/capture-buffer.ts'
 import { scalarOf, type ScalarParser } from './scalar.ts'
 import { LEAD, leadsTrivia } from './field-trivia.ts'
@@ -34,6 +34,7 @@ function repItem<T>(
   guardable: boolean,
   mandatory: boolean,
   rollbackNeeded: boolean,
+  itemStart: Start,
 ): ParseOk<T> | { fail: ParseResult<T>; failPos: number } | 'stop' {
   const mark = rollbackNeeded ? saveTriviaMark(ctx) : undefined
   let pos = cur
@@ -60,11 +61,16 @@ function repItem<T>(
   // zero-width/leaf miss reaches the same loop stop. Skipped under a completions
   // probe or tolerant recovery, where a swallowed failure still feeds the probe /
   // triggers resync (matching the codegen guard's `!ctx.recovery` gate).
-  if (guardable && ctx._probe === undefined && !ctx._tolerant && !startsFirstSet(combinator, input, pos)) {
-    if (mark !== undefined) rollbackTrivia(ctx, mark)
-    return 'stop'
+  let result: ParseResult<T>
+  if (ctx._tolerant === true) {
+    result = tolerantItem(combinator, input, cur, pos, ctx, mandatory, itemStart, -1)
+  } else {
+    if (guardable && ctx._probe === undefined && !startsFirstSet(combinator, input, pos)) {
+      if (mark !== undefined) rollbackTrivia(ctx, mark)
+      return 'stop'
+    }
+    result = combinator.parse(input, pos, ctx)
   }
-  const result = combinator.parse(input, pos, ctx)
   if (!result.ok) {
     if (mark !== undefined) rollbackTrivia(ctx, mark)
     if (result.committed) return { fail: result, failPos: pos }
@@ -84,6 +90,64 @@ function repItem<T>(
     if (mark !== undefined) rollbackTrivia(ctx, mark)
     return 'stop'
   }
+  return result
+}
+
+type Start = (ctx: ParseContext) => Combinator<null> | null
+
+/**
+ * What a list item can start with, as a class like the tables have, derived once on first
+ * use: a rule's reference has no first set until it's resolved. `null` when any character can.
+ */
+function itemStartOf(combinator: Combinator<unknown>): Start {
+  let own: Combinator<null> | null | undefined
+  return () => own === undefined
+    ? own = matchesEmpty(combinator) ? null : firstSetSentinel(firstSetOf(combinator, new Set(), undefined, undefined, false))
+    : own
+}
+
+/** The same for a separator, which runs under the live trivia. */
+function separatorStartOf(separator: Combinator<unknown>): Start {
+  let own: Combinator<null> | null | undefined
+  let scope: ParseContext['trivia']
+  return ctx => {
+    if (own === undefined || scope !== ctx.trivia) {
+      scope = ctx.trivia
+      own = firstSetSentinel(firstSetOf(separator, new Set(), undefined, scope, false))
+    }
+    return own
+  }
+}
+
+/** Where to resync in a separated list: its separator, or the list's own follow. */
+function separatedSync(separator: Start, ctx: ParseContext, term: Combinator<unknown>): Combinator<unknown> {
+  const own = separator(ctx)
+  return own === null ? term : orSentinel(own, term)
+}
+
+/**
+ * One item under recovery. What can follow it is published for lists inside it. While
+ * the list may end here, a failed item is only the list ending, and whatever is inside
+ * it may not recover.
+ */
+function tolerantItem<T>(
+  combinator: Combinator<T>,
+  input: string,
+  cur: number,
+  pos: number,
+  ctx: ParseContext,
+  mandatory: boolean,
+  next: Start,
+  sepStart: number,
+): ParseResult<T> {
+  const sync = ctx._sync
+  const mayEnd = !mandatory && sync !== undefined && listMayEndAt(sync, input, ctx, pos, sepStart)
+  const follow = next(ctx)
+  ctx._sync = follow === null ? ANY_SYNC : orSentinel(follow, sync)
+  if (mayEnd) ctx._tolerant = undefined
+  const result = combinator.parse(input, pos, ctx)
+  ctx._sync = sync
+  if (mayEnd) ctx._tolerant = true
   return result
 }
 
@@ -143,6 +207,7 @@ function repeatScalarTail<T>(
  */
 export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Combinator<T[]> {
   const { min, max } = resolveBounds('many()', opts)
+  const itemStart = itemStartOf(combinator)
   // `min >= 1` routes to the SAME implementation `oneOrMore` has always used, so
   // `many(x, { min: 1 })` and `oneOrMore(x)` are the identical combinator — not
   // merely equivalent-looking. (They differ from the min-0 loop in one real way:
@@ -177,7 +242,7 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
       let count = 0
       while (cur < input.length) {
         if (count >= max) break
-        const item = repItem(combinator, input, cur, ctx, guardable, false, rollbackNeeded)
+        const item = repItem(combinator, input, cur, ctx, guardable, false, rollbackNeeded, itemStart)
         if (item === 'stop') break
         if ('fail' in item) {
           if (!item.fail.ok && item.fail.committed) return item.fail
@@ -187,11 +252,9 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
           // sync available ⇒ nothing to skip to → break.
           const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
-          // Sync token at the POST-trivia failure position ⇒ clean list end (the
-          // trailing trivia belongs to the enclosing context), not junk. Checking
-          // `item.failPos` (past leading trivia), not `cur`, keeps trivia out of
-          // both the break decision and the recovered error span.
-          if (matchesAt(sync, input, item.failPos, ctx)) break
+          // Sync token at the failure position ⇒ clean list end (the trailing trivia
+          // belongs to the enclosing context), not junk.
+          if (listMayEndAt(sync, input, ctx, item.failPos, -1)) break
           expected ??= deriveExpected(combinator)
           const { error, end } = recoverScan(input, item.failPos, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
@@ -224,6 +287,7 @@ export function oneOrMore<T>(combinator: Combinator<T>, opts: RepeatOptions = {}
  * keys on it for "non-nullable repeat" — and `min` carries the real count.
  */
 function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combinator<T[]> {
+  const itemStart = itemStartOf(combinator)
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,
@@ -258,7 +322,9 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       // First item is mandatory (parsed at pos directly — leading trivia is the
       // enclosing context's responsibility); subsequent items skip leading trivia.
-      const first = combinator.parse(input, pos, ctx)
+      const first = ctx._tolerant === true
+        ? tolerantItem(combinator, input, pos, pos, ctx, true, itemStart, -1)
+        : combinator.parse(input, pos, ctx)
       if (!first.ok) return first
       // Aggregate skipped when never observed (see `many`).
       const values: T[] | undefined = def.valueUnused ? undefined : [first.value]
@@ -271,7 +337,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       // two loop-termination stops: a required item is attempted at its position
       // whatever is there, and counts whatever its width.
       while (count < min) {
-        const item = repItem(combinator, input, cur, ctx, guardable, true, rollbackNeeded)
+        const item = repItem(combinator, input, cur, ctx, guardable, true, rollbackNeeded, itemStart)
         if (item === 'stop' || 'fail' in item) {
           if (item !== 'stop' && !item.fail.ok && item.fail.committed) return item.fail
           // Anchored at `cur` — the furthest position the repeat reached — not at
@@ -288,14 +354,14 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       }
       while (cur < input.length) {
         if (count >= max) break
-        const item = repItem(combinator, input, cur, ctx, guardable, false, rollbackNeeded)
+        const item = repItem(combinator, input, cur, ctx, guardable, false, rollbackNeeded, itemStart)
         if (item === 'stop') break
         if ('fail' in item) {
           if (!item.fail.ok && item.fail.committed) return item.fail
           // Cold path (element failure). Strict: break. Tolerant: resync — see many().
           const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
-          if (matchesAt(sync, input, item.failPos, ctx)) break
+          if (listMayEndAt(sync, input, ctx, item.failPos, -1)) break
           expected ??= deriveExpected(combinator)
           const { error, end } = recoverScan(input, item.failPos, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
@@ -343,7 +409,12 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
         return { ok: true, value: null, span: { start: pos, end: pos } }
       }
       const mark = saveTriviaMark(ctx)
+      // Where what follows could start here, the child failing is only the optional
+      // being absent, and whatever is inside it may not recover.
+      const absent = ctx._tolerant === true && ctx._sync !== undefined && matchesAt(ctx._sync, input, pos, ctx)
+      if (absent) ctx._tolerant = undefined
       const result = combinator.parse(input, pos, ctx)
+      if (absent) ctx._tolerant = true
       if (result.ok) return result as ParseResult<T>
       // Inner failed → roll back any CST leaves/trivia it captured before giving up.
       rollbackTrivia(ctx, mark)
@@ -450,6 +521,7 @@ export function sepBy<T, S>(
     isTrivia: false,
   }
   let expected: string[] | undefined
+  const sepAt = separatorStartOf(separator)
   /**
    * A list-level failure is anchored at the FURTHEST position the list reached,
    * and reports what would have allowed it to CONTINUE there — never at the
@@ -523,7 +595,10 @@ export function sepBy<T, S>(
     },
     _parseScalar: keepSeparators || separatorLeads ? undefined : parseScalar,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
-      const first = combinator.parse(input, pos, ctx)
+      const tolerant = ctx._tolerant === true
+      const first = tolerant
+        ? tolerantItem(combinator, input, pos, pos, ctx, false, sepAt, -1)
+        : combinator.parse(input, pos, ctx)
       const values: T[] = []
       let cur: number
       if (first.ok) {
@@ -537,7 +612,7 @@ export function sepBy<T, S>(
         // are not already sitting on it) recover it and enter the loop; otherwise
         // it is a genuine empty list.
         const term = ctx._tolerant ? ctx._sync : undefined
-        if (term === undefined || matchesAt(term, input, pos, ctx)) {
+        if (term === undefined || listMayEndAt(term, input, ctx, pos, -1)) {
           // `min >= 1` — nothing was consumed, so the furthest position IS `pos`.
           // The compiled form swallows the first element's sub-parse (it is
           // discarded on the min-0 path), so it cannot reproduce the inner
@@ -546,7 +621,7 @@ export function sepBy<T, S>(
           return { ok: true, value: [], span: { start: pos, end: pos } }
         }
         expected ??= deriveExpected(combinator)
-        const rec = recoverScan(input, pos, ctx, orSentinel(separator, term), expected)
+        const rec = recoverScan(input, pos, ctx, separatedSync(sepAt, ctx, term), expected)
         values.push(rec.error as unknown as T)
         captureError(ctx, rec.error)
         cur = rec.end
@@ -602,7 +677,9 @@ export function sepBy<T, S>(
             nextPos = advanceTrivia(input, sep.span.end, ctx)
           }
         }
-        const next = combinator.parse(input, nextPos, ctx)
+        const next = tolerant
+          ? tolerantItem(combinator, input, cur, nextPos, ctx, false, sepAt, sepPos)
+          : combinator.parse(input, nextPos, ctx)
         if (!next.ok) {
           if (next.committed) return next
           // Cold path. Strict: roll back the trailing separator + break. Tolerant:
@@ -624,9 +701,9 @@ export function sepBy<T, S>(
           // no rollback happens on that path: both the separator and the recovered
           // error element belong to the list.
           const term = ctx._tolerant ? ctx._sync : undefined
-          if (term !== undefined && !matchesAt(term, input, nextPos, ctx)) {
+          if (term !== undefined && !listMayEndAt(term, input, ctx, nextPos, sepPos)) {
             expected ??= deriveExpected(combinator)
-            const rec = recoverScan(input, nextPos, ctx, orSentinel(separator, term), expected)
+            const rec = recoverScan(input, nextPos, ctx, separatedSync(sepAt, ctx, term), expected)
             values.push(rec.error as unknown as T)
             captureError(ctx, rec.error)
             cur = rec.end

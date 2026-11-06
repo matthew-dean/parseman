@@ -106,4 +106,20 @@ describe('an arm whose next sibling is its own prefix', () => {
       }
     }
   })
+
+  it('recovers in the arm as written, not in the factored one', () => {
+    // Where the shared term itself has to recover, the factored arm would then stand aside
+    // at `...` and answer, and the arm as written fails there.
+    const g = rules({ trivia: regex(/[ ]+/) }, (g: Record<string, Comb>) => ({
+      Call: sequence(literal('('), sepBy(g.Arg!, literal(',')), literal(')')),
+      Arg: node('Arg', choice(sequence(g.Block!, literal('...')), g.Block!), children => ({ arg: children })),
+      Block: node('Block', sequence(literal('{'), many(regex(/[a-z]+/)), literal('}')), children => ({ block: children })),
+    })) as Record<string, Comb>
+    for (const [name, entries] of readers(encodeTable(g))) {
+      for (const input of ['({a ? })', '({a ? } ...)', '({a}, {? b})']) {
+        expect(digestValue(run(entries.Call!, input, { tolerant: true })), `${name} ${JSON.stringify(input)}`)
+          .toBe(digestValue(run(g.Call!, input, { tolerant: true })))
+      }
+    }
+  })
 })

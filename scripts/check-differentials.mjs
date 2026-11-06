@@ -121,6 +121,8 @@ function normalise(out) {
     // a plant it is in fact blind to, on exactly this string.
     .replace(/\s*FLAGS: \S+/g, '')
     // vitest / harness noise: durations, absolute paths, and the append target.
+    // vitest's Duration line prints minutes once a run takes that long, which is load.
+    .replace(/^\s*Duration\b.*$/gm, '')
     .replace(/\d+(\.\d+)?\s?ms\b/g, '<ms>')
     .replace(/\b\d+(\.\d+)?s\b/g, '<s>')
     .replace(new RegExp(TMP.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '<tmp>')
@@ -469,10 +471,11 @@ const REGISTRY = [
     id: 'tolerant-sweep',
     needs: 'jess',
     file: 'bench/jess/tolerant-sweep.ts',
-    legs: 'run-tabled.ts with { tolerant: true } — the RECOVERY assembly, which consumed-sweep never builds — errors, spans and value digest per corpus file',
+    legs: 'compile() with { tolerant: true }, or run-tabled.ts under PM_TABLE_EMIT=0 — the RECOVERY assembly, which consumed-sweep never builds — errors, spans and value digest per corpus file',
     cleanExit: 0,
     run: () => runSweep(['--import', REGISTER, 'bench/jess/tolerant-sweep.ts', DIALECT]),
-    plants: [{ defect: 'tolerant-rec-off', expect: 'moves' }],
+    // The second is emitted-only: it moves this sweep only if the emitted leg is real.
+    plants: [{ defect: 'tolerant-rec-off', expect: 'moves' }, { defect: 'tolerant-emit-recovery', expect: 'moves' }],
   },
 ]
 

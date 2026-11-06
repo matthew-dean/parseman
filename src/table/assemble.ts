@@ -110,6 +110,7 @@ import {
   EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
+import { armGateFns } from './child-slots.ts'
 import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
 import { canDecide, continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
@@ -137,7 +138,7 @@ import {
 import { stampRuleMap } from './stamp.ts'
 import { CAP_OFF, CAP_ON, type SiteLabel, computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scanHandoffNeeded, scopeIsIdentity, triviaLeadRanges, TRI_NONE } from './site-labels.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
-import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
+import { ANY_SYNC, captureError, firstSetSentinel, followSync, listMayEndAt, matchesAt, measuredMiss, orSentinel, overlappingChoice as recoverOverlap, recoverScan } from '../recovery/scan.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal, makeScalarRecognizer, scalarTerminalNodeChild,
   scalarTerminalNotChild, scalarTerminalPeekChild, type ScalarRecognizer,
@@ -481,8 +482,43 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * reference.
    */
   const REC = prog.rec === 1 && cfg.tolerant
-  /** A completions-probe assembly: lookaheads restore `_probe.best` around their child. */
-  const PROBE = cfg.probe
+  /** Lookaheads restore `_probe.best` around their child: a completions probe or `furthestArm`. */
+  const PROBE = cfg.probe || REC
+  /** A choice whose arms may overlap answers through `recoverOverlap` under recovery. */
+  const overlappingChoice = (ip: number, plain: Piece): Piece => {
+    if (!REC || code[ip] !== OP_CHOICE) return plain
+    const table = disp[code[ip + 1]!]!
+    if (table.exclusive) return (input, pos, ctx) => {
+      const v = plain(input, pos, ctx)
+      if (v === FAIL) measuredMiss(ctx, pos)
+      return v
+    }
+    const arms = Array.from({ length: code[ip + 2]! }, (_, i) => link(code[ip + 4 + i]!))
+    const gates = armGateFns(code, ip).map(g => g === undefined ? undefined : fns[g] as (s: unknown) => boolean)
+    return (input, pos, ctx) => recoverOverlap(ip, plain, table.armCls, gates, arms, FAIL, classHas, input, pos, ctx)
+  }
+
+  /** A lookahead asks whether its child matches, so nothing inside it may recover. */
+  const strictly = (piece: Piece): Piece => !REC ? piece : (input, pos, ctx) => {
+    const tolerant = ctx._tolerant
+    ctx._tolerant = undefined
+    const v = piece(input, pos, ctx)
+    ctx._tolerant = tolerant
+    return v
+  }
+  // A scope that changes the trivia hands its body a boundary whose true follow
+  // includes whatever the OUTER trivia starts with, and no first set records
+  // that. Nothing inside can name the end of the region, so its open tail may
+  // end anywhere.
+  const glued = (piece: Piece, scopeTrivia: ParseContext['trivia']): Piece => (input, pos, ctx) => {
+    if (ctx.trivia === undefined || ctx.trivia === scopeTrivia) return piece(input, pos, ctx)
+    const sync = ctx._sync
+    ctx._sync = ANY_SYNC
+    const v = piece(input, pos, ctx)
+    ctx._sync = sync
+    return v
+  }
+  const sentinels = new Map<number, Combinator<null> | undefined>()
   /**
    * The sync sentinel for a char-class index, built ONCE at assembly.
    *
@@ -492,7 +528,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * publish is a slot read. −1 means "no usable sentinel", which is the same
    * answer `firstSetSentinel` gives for an `any`/`empty` first set.
    */
-  const sentinels = new Map<number, Combinator<null> | undefined>()
   function sentinelFor(cls: number): Combinator<null> | undefined {
     if (cls < 0) return undefined
     const hit = sentinels.get(cls)
@@ -1567,7 +1602,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // holder first so a recursive child can still link back through this site.
     const piece = scopeIsIdentity(code, ip, closureLabels.at(ip))
       ? link(code[ip + 2]!)
-      : countedPiece(lookaheadLedNode(ip) ?? lower(ip), ip)
+      : countedPiece(lookaheadLedNode(ip) ?? overlappingChoice(ip, lower(ip)), ip)
 
     inFlight.delete(ip)
     holder.set(piece)
@@ -2299,7 +2334,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               LEAD_TABLE = savedLead
               return v
             }
-        return scopeRootPolicy(scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
+        return scopeRootPolicy(REC ? glued(scopePiece, scopeTrivia) : scopePiece, code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!)
       }
 
       case OP_ROUTED: {
@@ -2364,7 +2399,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return FAIL
           }
         }
-        const child = link(code[ip + 1]!)
+        const child = strictly(link(code[ip + 1]!))
         const xf = fx[code[ip + 2]!] as string[]
         const gate = lookaheadClass(code[ip + 1]!)
         return (input, pos, ctx) => {
@@ -2412,7 +2447,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return null
           }
         }
-        const child = link(code[ip + 1]!)
+        const child = strictly(link(code[ip + 1]!))
         const xf = fx[code[ip + 2]!] as string[]
         const gate = lookaheadClass(code[ip + 1]!)
         return (input, pos, ctx) => {
@@ -2441,7 +2476,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_OPT: {
-        const child = link(code[ip + 1]!)
+        const linked = link(code[ip + 1]!)
+        // Where what follows could start here, the child failing is only the optional
+        // being absent, and whatever is inside it may not recover.
+        const child: Piece = !REC ? linked : (input, pos, ctx) => {
+          const sync = ctx._sync
+          if (ctx._tolerant !== true || sync === undefined || !matchesAt(sync, input, pos, ctx)) return linked(input, pos, ctx)
+          ctx._tolerant = undefined
+          const v = linked(input, pos, ctx)
+          ctx._tolerant = true
+          return v
+        }
         const gate = lookaheadClass(code[ip + 1]!)
         const childClean = CLEAN(code[ip + 1]!)
         return (input, pos, ctx) => {
@@ -2470,7 +2515,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       /* ── boundaries ──────────────────────────────────────────────────────── */
 
       case OP_TOKEN: {
-        const child = link(code[ip + 1]!)
+        const child = strictly(link(code[ip + 1]!))
         return (input, pos, ctx) => {
           const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
           const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
@@ -2735,12 +2780,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * RECOVERY SEQUENCES PUBLISH `ctx._sync`, and that is the whole of
          * "recovery config" — no grammar carries any.
          *
-         * Before term `i`, the sentinel for the union of every LATER term's first
-         * set becomes the sync point a list nested in that term resyncs to, so a
-         * `sepBy` inside `sequence('{', list, '}')` finds `}` with nothing
-         * annotated. Where there is no usable local follow (the last term, an
-         * `any` first set) the INHERITED sync stays published, which is how the
-         * enclosing delimiter reaches across a rule boundary.
+         * Before term `i`, what can come after it becomes the sync point a list
+         * nested in that term resyncs to, so a `sepBy` inside
+         * `sequence('{', list, '}')` finds `}` with nothing annotated. Where every
+         * later term can match empty, what the sequence inherited can come next too,
+         * which is how the enclosing delimiter reaches across a rule boundary.
          *
          * ONE generic loop rather than the arity-specialised pieces: this is only
          * reached in a recovery table, where the arity unroll buys a fraction of a
@@ -2755,20 +2799,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          */
         if (REC) {
           const first = linkFirst()
-          const firstSync = sentinelFor(code[base + n]!)
+          const firstSlot = code[base + n]!
           const runnerAt = (i: number): TermRunner => {
-            const sync = sentinelFor(code[base + n + i]!)
+            const slot = code[base + n + i]!
             const kidIp = code[base + i]!
             if (code[kidIp] !== OP_ADJ) {
               const kid = link(kidIp)
               if (leadingTriviaFieldAt(code, k, kidIp)) {
                 return (input, cur, ctx, inherited) => {
-                  ctx._sync = sync ?? inherited
+                  ctx._sync = followSync(slot, sentinelFor, inherited)
                   return leadingFieldTerm(step, kid, input, cur, ctx)
                 }
               }
               return (input, cur, ctx, inherited) => {
-                ctx._sync = sync ?? inherited
+                ctx._sync = followSync(slot, sentinelFor, inherited)
                 return step(kid, input, cur, ctx)
               }
             }
@@ -2777,7 +2821,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const kinds = ki < 0 ? undefined : k[ki] as readonly string[]
             const xf = fx[code[kidIp + 3]!] as string[]
             return (input, cur, ctx, inherited) => {
-              ctx._sync = sync ?? inherited
+              ctx._sync = followSync(slot, sentinelFor, inherited)
               if (!adjacencyHolds(input, cur, ctx, negated, kinds)) {
                 ctx._fe = cur; ctx._fx = xf
                 return -1
@@ -2799,7 +2843,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const tail = n > 1 ? bindRunners(1) : undefined
           const runSyncTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
             const inherited = ctx._sync
-            ctx._sync = firstSync ?? inherited
+            ctx._sync = followSync(firstSlot, sentinelFor, inherited)
             const v0 = first(input, pos, ctx)
             if (v0 === FAIL) { ctx._sync = inherited; return -1 }
             if (values !== undefined) values.push(v0)
@@ -3728,10 +3772,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * (`recovery/scan.ts`), so an error's span, its expected set and its CST
          * embedding cannot drift between engines.
          *
-         * Reached only in a recovery table, and inside it only on the FAILURE of
-         * an element, so a matching item pays a `_sync` read at entry and nothing
-         * else. The `ctx._tolerant` gate is the same dormancy the source lowering
-         * and the interpreter have.
+         * Reached only in a recovery table. A matching item pays for a sync test and a
+         * publish; the scan runs only on the FAILURE of an element. The `ctx._tolerant`
+         * gate is the same dormancy the source lowering and the interpreter have.
          *
          * WHAT RECOVERS, AND WHERE THE THREE ENGINES AGREE:
          *  - a MANDATORY item (`count < min`) of a separator-less repeat does NOT
@@ -3758,11 +3801,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // A resync error carries the item's set as derived (bit 16: empty).
           const recFx = (flags & 16) !== 0 ? EMPTY_FX : itemFx
           const sepSent = sentinelFor(code[ip + 7]!)
+          // What can follow an item: its separator, or (the same slot) another item.
+          const itemFollow = sepSent
           return (input, pos, ctx) => {
             const out: unknown[] | undefined = collect ? [] : undefined
             const hasTrivia = ctx.trivia !== undefined
             const needMark = rollbackNeeded(ctx)
             const mySync = ctx._sync
+            const itemSync = itemFollow === undefined ? ANY_SYNC : orSentinel(itemFollow, mySync)
             let cur = pos
             let count = 0
             for (;;) {
@@ -3778,6 +3824,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
               let itemStart = cur
               let sepEnd = -1
+              let sepStart = -1
               const viaRepItem = sep === undefined && count >= min && (count > 0 || skipBeforeFirst)
               if (sep !== undefined && count > 0) {
                 const leavesBefore = cstLeavesLen(ctx)
@@ -3792,6 +3839,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                   break
                 }
                 if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
+                sepStart = sp
                 sepEnd = EC.e
                 itemStart = hasTrivia ? skipTrivia(input, EC.e, ctx) : EC.e
               } else if (hasTrivia && (count > 0 || skipBeforeFirst)) {
@@ -3803,16 +3851,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 break
               }
               ctx._fc = false
+              // While the list may end here, a failed item is only the list ending, and
+              // whatever is inside it may not recover.
+              const tolerant = ctx._tolerant === true
+              const mayEnd = tolerant && mySync !== undefined && (sep !== undefined || count >= min)
+                && listMayEndAt(mySync, input, ctx, itemStart, sepEnd >= 0 ? sepStart : -1)
+              if (mayEnd) ctx._tolerant = undefined
+              ctx._sync = itemSync
               const v = child(input, itemStart, ctx)
+              ctx._sync = mySync
+              if (mayEnd) ctx._tolerant = true
               if (v === FAIL) {
                 if (committed(ctx)) {
                   if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
                   return FAIL
                 }
-                if (ctx._tolerant === true
+                if (tolerant && !mayEnd
                   && mySync !== undefined
-                  && (sep !== undefined || count >= min)
-                  && !matchesAt(mySync, input, itemStart, ctx)) {
+                  && (sep !== undefined || count >= min)) {
                   if (sep === undefined && needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
                   const rr = recoverScan(
                     input, itemStart, ctx,
@@ -4406,8 +4462,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
-        REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
-        matchesAt, recoverScan, orSentinel, captureError,
+        REC ? [...prog.cc.map((_, i) => sentinelFor(i)), ANY_SYNC] : EMPTY_SENTS,
+        matchesAt, recoverScan, orSentinel, captureError, listMayEndAt,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
@@ -4491,8 +4547,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // — a strict one emits no reader — and through the SAME `sentinelFor` memo
         // the closure pieces use, so both engines resync to the same combinator
         // object rather than to two separately constructed ones.
-        REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
-        matchesAt, recoverScan, orSentinel, captureError,
+        REC ? [...prog.cc.map((_, i) => sentinelFor(i)), ANY_SYNC] : EMPTY_SENTS,
+        matchesAt, recoverScan, orSentinel, captureError, listMayEndAt,
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,

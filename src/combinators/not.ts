@@ -45,7 +45,11 @@ export function not(combinator: Combinator<unknown>): Combinator<null> {
       // Using the shared lookahead helper means neither can silently regress the
       // next time a sink is added.
       const mark = saveLookaheadMark(ctx)
+      // It asks whether the child matches, so nothing inside may recover.
+      const tolerant = ctx._tolerant
+      ctx._tolerant = undefined
       const result = combinator.parse(input, pos, ctx)
+      ctx._tolerant = tolerant
       rollbackLookahead(ctx, mark)
       if (result.ok) {
         return {

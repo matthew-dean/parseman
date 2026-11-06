@@ -107,6 +107,16 @@ export const DEFECTS = {
     }],
   },
 
+  'tolerant-emit-recovery': {
+    why: 'emitted tolerant assembly only: a recovered error reports the wrong expected set',
+    edits: [
+      {
+        file: 'src/table/emit-assembly.ts',
+        find: 'const rr=recoverScan(input,itemStart,ctx,${recSent},${recFx})\n',
+        replace: 'const rr=recoverScan(input,itemStart,ctx,${recSent},${recFx})\nrr.error.expected=["PLANT"]\n',
+      },
+    ],
+  },
   /**
    * Recovery is not lowered into the TOLERANT assembly.
    *
@@ -711,8 +721,8 @@ export const DEFECTS = {
     why: 'encoder: a recovery follow class takes the live trivia, which the interpreter\'s follow sentinels do not',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false))',
-      replace: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia, false))',
+      find: 'const { first, open } = followOfTerm(parsers, i, this.refResolver())\n',
+      replace: 'const { open } = followOfTerm(parsers, i, this.refResolver())\n    let first: FirstSet = empty()\n    for (let j = i + 1; j < parsers.length; j++) first = union(first, firstSetOf(parsers[j]!, new Set(), this.refResolver(), this.activeTrivia, false))\n',
     }],
   },
 

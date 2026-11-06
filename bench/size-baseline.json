@@ -1,42 +1,42 @@
 {
-  "updatedAt": "2026-11-04",
-  "gitRev": "75b678d7",
+  "updatedAt": "2026-11-05",
+  "gitRev": "90343264",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
     "example/json": {
       "genBytes": 1263,
-      "gzipBytes": 712,
+      "gzipBytes": 713,
       "bytesRatio": 0.202,
       "locMultiplier": 0.087
     },
     "example/csv": {
       "genBytes": 753,
-      "gzipBytes": 446,
+      "gzipBytes": 447,
       "bytesRatio": 0.385,
       "locMultiplier": 0.191
     },
     "example/graphql": {
-      "genBytes": 4096,
-      "gzipBytes": 1842,
-      "bytesRatio": 0.374,
+      "genBytes": 4103,
+      "gzipBytes": 1854,
+      "bytesRatio": 0.375,
       "locMultiplier": 0.054
     },
     "example/css": {
-      "genBytes": 7216,
-      "gzipBytes": 2697,
-      "bytesRatio": 0.74,
+      "genBytes": 7226,
+      "gzipBytes": 2707,
+      "bytesRatio": 0.741,
       "locMultiplier": 0.079
     },
     "example/lang": {
-      "genBytes": 3218,
-      "gzipBytes": 1262,
-      "bytesRatio": 0.633,
+      "genBytes": 3225,
+      "gzipBytes": 1272,
+      "bytesRatio": 0.634,
       "locMultiplier": 0.095
     },
     "example/toml-ish": {
-      "genBytes": 1284,
-      "gzipBytes": 727,
+      "genBytes": 1285,
+      "gzipBytes": 729,
       "bytesRatio": 0.384,
       "locMultiplier": 0.154
     },
@@ -48,32 +48,32 @@
     },
     "example/jsonl": {
       "genBytes": 1312,
-      "gzipBytes": 728,
+      "gzipBytes": 727,
       "bytesRatio": 1.592,
       "locMultiplier": 0.583
     },
     "probe/node-scale-4": {
-      "genBytes": 1994,
-      "gzipBytes": 863,
-      "bytesRatio": 2.713,
+      "genBytes": 1998,
+      "gzipBytes": 867,
+      "bytesRatio": 2.718,
       "locMultiplier": 2.111
     },
     "probe/node-scale-8": {
-      "genBytes": 3255,
-      "gzipBytes": 1128,
-      "bytesRatio": 2.733,
+      "genBytes": 3263,
+      "gzipBytes": 1132,
+      "bytesRatio": 2.74,
       "locMultiplier": 1.462
     },
     "probe/node-scale-16": {
-      "genBytes": 5846,
-      "gzipBytes": 1691,
-      "bytesRatio": 2.748,
+      "genBytes": 5862,
+      "gzipBytes": 1694,
+      "bytesRatio": 2.756,
       "locMultiplier": 0.905
     },
     "probe/node-scale-32": {
-      "genBytes": 10900,
-      "gzipBytes": 2681,
-      "bytesRatio": 2.715,
+      "genBytes": 10932,
+      "gzipBytes": 2690,
+      "bytesRatio": 2.723,
       "locMultiplier": 0.514
     },
     "probe/compose-depth-1": {
@@ -114,7 +114,7 @@
     },
     "probe/hostmode-ast": {
       "genBytes": 1848,
-      "gzipBytes": 886,
+      "gzipBytes": 887,
       "bytesRatio": 2.847,
       "locMultiplier": 2.111
     },
@@ -132,7 +132,7 @@
     },
     "probe/variants-1": {
       "genBytes": 1278,
-      "gzipBytes": 735,
+      "gzipBytes": 734,
       "bytesRatio": 1.521,
       "locMultiplier": 2.2
     },

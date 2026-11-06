@@ -23,7 +23,7 @@ There are three layers:
 
 Every compiled grammar can recover, whether it comes from the macro build or from
 `compile()`; there is nothing to turn on. A parse runs strict unless you pass
-`tolerant: true`, and a strict parse never runs list recovery: the tolerant pieces
+`tolerant: true`, and a strict parse never runs recovery: the tolerant pieces
 are a separate assembly, built only when a tolerant parse first asks for one. An
 `expect()` in the grammar recovers in either mode: it yields a `ParseError` value in
 place of the missing token, so a successful strict parse of such a grammar does not
