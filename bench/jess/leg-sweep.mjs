@@ -17,7 +17,9 @@
  * threw. A partial parse compares where it stopped and what it built, never what the bytes
  * after that would have done, so `same` covers no more of an input than its parse reached.
  * Inputs where both legs throw have no parse to compare: they count as `bothThrow`, or as
- * `diff` if the messages differ, and never as `same`.
+ * `diff` if the messages differ, and never as `same`. Two dead legs agree perfectly, so the
+ * run prints what threw and exits 3 when more than `--max-both-throw=<fraction>` of the inputs
+ * did (default 0.05): a sweep that compared almost nothing has not passed.
  */
 import { appendFileSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -30,6 +32,7 @@ const tolerant = flags.includes('--tolerant')
 const flag = name => flags.find(f => f.startsWith(`--${name}=`))?.slice(name.length + 3)
 const examples = +(flag('examples') ?? 8)
 const timeout = +(flag('timeout') ?? 0)
+const maxBothThrow = +(flag('max-both-throw') ?? 0.05)
 const out = flag('out')
 if (out) rmSync(out, { force: true })
 
@@ -110,6 +113,7 @@ const go = (m, input, sign) => {
 
 const counts = { inputs: inputs.length, same: 0, diff: 0, okFlip: 0, newThrow: 0, goneThrow: 0, bothThrow: 0, fewerExpected: 0, moreExpected: 0 }
 const kinds = {}
+const bothThrowMessages = {}
 const shown = []
 for (const [kind, input] of inputs) {
   const x = go(A, input, -1)
@@ -118,6 +122,7 @@ for (const [kind, input] of inputs) {
   count(parses.b, kind, y)
   if (x.threw !== undefined && y.threw !== undefined) {
     counts.bothThrow++
+    bothThrowMessages[x.threw] = (bothThrowMessages[x.threw] ?? 0) + 1
     if (x.threw === y.threw) continue
   } else if (x.threw === y.threw && x.digest === y.digest) { counts.same++; continue }
   counts.diff++
@@ -135,9 +140,13 @@ for (const [kind, input] of inputs) {
   if (out) appendFileSync(out, JSON.stringify(row) + '\n')
   if (shown.length < examples) shown.push(row)
 }
-console.log(JSON.stringify({ art, tolerant, ...counts, kinds, parses }))
+console.log(JSON.stringify({ art, tolerant, ...counts, kinds, parses, bothThrowMessages }))
 if (leavesOnly) console.log('  node types, B minus A:', JSON.stringify(Object.fromEntries(Object.entries(typeDelta).filter(([, v]) => v !== 0).sort((p, q) => p[1] - q[1]))))
 for (const r of shown) {
   const fmt = v => v.threw !== undefined ? `THROW ${v.threw.slice(0, 60)}` : `${v.ok ? 'ok' : 'no'} err=${v.errors} un=${v.unconsumedFrom} exp=${v.expected.length}`
   console.log(`  ${JSON.stringify(r.input.slice(0, 70))} [${r.kind.slice(0, 30)}] ${fmt(r.a)} | ${fmt(r.b)}`)
+}
+if (counts.bothThrow > maxBothThrow * inputs.length) {
+  console.error(`FAIL: both legs threw on ${counts.bothThrow} of ${inputs.length} inputs, over --max-both-throw=${maxBothThrow}. Those rows compared nothing.`)
+  process.exitCode = 3
 }
