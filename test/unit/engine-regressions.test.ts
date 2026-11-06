@@ -8,6 +8,7 @@ import {
   attempt, choice, classifiedTrivia, dispatch, expect as expectOr, field, leaf, literal, many, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek,
   regex, routed, rules, sepBy, sequence, sourceLeaf, token, transform, when,
 } from '../../src/index.ts'
+import { compile } from '../../src/table/compile.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { run } from '../../src/functional/run.ts'
 import { tableRules } from '../../src/table/assemble.ts'
@@ -86,10 +87,18 @@ describe('rollback', () => {
     expect(leaves(agreed(g, 'az', { build: host }).value)).toEqual({ O: ['a', 'z'] })
   })
 
-  // Emitted keeps the item: https://github.com/matthew-dean/parseman/issues/282
   it('a failed sepBy with a minimum takes back the items it kept', () => {
     const g = rules({}, () => ({ R: node('N', choice(sepBy(literal('a'), literal(','), { min: 2 }), literal('a'))) })) as G
-    expect(leaves(agreed(g, 'a', { build: host }, 'emitted').value)).toEqual({ N: ['a'] })
+    expect(leaves(agreed(g, 'a', { build: host }).value)).toEqual({ N: ['a'] })
+    expect(leaves(agreed(g, 'a').value)).toEqual({ N: ['a'] })
+    expect(leaves((compile(g.R as never).parse('a') as { value: unknown }).value)).toEqual({ N: ['a'] })
+  })
+
+  it('a failed repeat with a minimum takes back the items it kept', () => {
+    const g = rules({}, () => ({ R: node('N', choice(many(literal('a'), { min: 2 }), literal('a'))) })) as G
+    expect(leaves(agreed(g, 'a', { build: host }).value)).toEqual({ N: ['a'] })
+    expect(leaves(agreed(g, 'a').value)).toEqual({ N: ['a'] })
+    expect(leaves((compile(g.R as never).parse('a') as { value: unknown }).value)).toEqual({ N: ['a'] })
   })
 
   it('a dispatch with an uncommitted fallback leaves no selector behind', () => {

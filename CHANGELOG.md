@@ -5,6 +5,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A list with a minimum above one takes back its items when it fails in a choice.** Generated
+  code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
+  nothing behind on failure, so a later arm's tree also held the items the list kept.
+  `node('N', choice(sepBy(literal('a'), literal(','), { min: 2 }), literal('a')))` on `"a"` now
+  gives `[a]`, not `[a, a]`. A choice with such a list now marks and restores around that arm.
 - **`run()` no longer keeps a dispatch selector's leaf after `otherwise(x, { commit: false })`
   fails.** The closure engine read every fallback as committing, so it skipped the rollback
   and the next arm of an enclosing choice built a tree with the leaf twice.
