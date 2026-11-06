@@ -91,15 +91,21 @@ describe('rollback', () => {
     expect(leaves(agreed(g, 'a', { build: host }, 'emitted').value)).toEqual({ N: ['a'] })
   })
 
-  it('a dispatch with an uncommitted fallback leaves no selector behind for the next arm', () => {
-    const g = rules({}, () => ({
-      R: node('N', choice(
-        dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('x'))), otherwise(literal(','), { commit: false })),
-        regex(/[a-z]+/),
-      )),
-    })) as G
-    expect(leaves(agreed(g, 'k', { build: host }).value)).toEqual({ N: ['k'] })
-    expect(leaves(agreed(g, 'k').value)).toEqual({ N: ['k'] })
+  it('a dispatch with an uncommitted fallback leaves no selector behind', () => {
+    const word = regex(/[a-z]+/)
+    const dispatched = (): Combinator<unknown> =>
+      dispatch(word, when('foo', sequence(routed(), literal('x'))), otherwise(literal(','), { commit: false }))
+    const shapes: Record<string, () => Combinator<unknown>> = {
+      choice: () => choice(dispatched(), word),
+      optional: () => sequence(optional(dispatched()), word),
+      // A routed fallback gives the selector back before it runs.
+      routed: () => choice(dispatch(word, when('foo', literal('x')), otherwise(sequence(routed(), literal('!')), { commit: false })), word),
+    }
+    for (const shape of Object.values(shapes)) {
+      const g = rules({}, () => ({ R: node('N', shape()) })) as G
+      expect(leaves(agreed(g, 'k', { build: host }).value)).toEqual({ N: ['k'] })
+      expect(leaves(agreed(g, 'k').value)).toEqual({ N: ['k'] })
+    }
   })
 
   it('a dispatch with no fallback leaves no selector behind for the next arm', () => {
