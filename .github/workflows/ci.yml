@@ -560,7 +560,7 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: [changes, test-matrix, docs-verify, release-gate, xproc-perf, size-gate, choice-cost-gate, call-count-gate]
+    needs: [changes, test-matrix, docs-verify, release-gate, xproc-perf, macro-perf, size-gate, choice-cost-gate, call-count-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -571,11 +571,12 @@ jobs:
           docs='${{ needs.docs-verify.result }}'
           release='${{ needs.release-gate.result }}'
           xproc='${{ needs.xproc-perf.result }}'
+          macro='${{ needs.macro-perf.result }}'
           size='${{ needs.size-gate.result }}'
           choicecost='${{ needs.choice-cost-gate.result }}'
           callcount='${{ needs.call-count-gate.result }}'
           code='${{ needs.changes.outputs.code }}'
-          echo "test-matrix=$matrix  docs-verify=$docs  release-gate=$release  xproc-perf=$xproc  size-gate=$size  choice-cost-gate=$choicecost  call-count-gate=$callcount  code-changed=$code"
+          echo "test-matrix=$matrix  docs-verify=$docs  release-gate=$release  xproc-perf=$xproc  macro-perf=$macro  size-gate=$size  choice-cost-gate=$choicecost  call-count-gate=$callcount  code-changed=$code"
 
           # docs-verify gates every change — it is never skipped.
           [ "$docs" = "success" ] || { echo "::error::docs:verify did not pass"; exit 1; }
@@ -606,6 +607,18 @@ jobs:
               [ "$code" = "false" ] || { echo "::error::xproc-perf skipped but code changed"; exit 1; }
               echo "documentation-only change — cross-process perf gate intentionally skipped" ;;
             *) echo "::error::xproc-perf result: $xproc"; exit 1 ;;
+          esac
+
+          # And the macro gate, by the same rule. This is a floor: the job has not gone
+          # red on a real change yet, and it passed a branch carrying a dropped-leaf bug.
+          # A pass says the Jess macro artifacts still agree on what it compares and
+          # no more, so a green here is no substitute for the engine tests.
+          case "$macro" in
+            success) ;;
+            skipped)
+              [ "$code" = "false" ] || { echo "::error::macro-perf skipped but code changed"; exit 1; }
+              echo "documentation-only change — macro gate intentionally skipped" ;;
+            *) echo "::error::macro-perf result: $macro"; exit 1 ;;
           esac
 
           # And the size gate, on the same footing. Speed had two required results
