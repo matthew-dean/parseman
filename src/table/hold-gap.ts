@@ -13,9 +13,13 @@
  *
  * Not before an adjacency assertion or a leading-trivia field, which read the
  * cursor from before the gap.
+ *
+ * A next term that can match empty only by recovering (`expect`) holds the gap
+ * too, so valid text still scans it once. If it does recover, the gap is
+ * unrecorded and the cursor goes back, where only invalid text pays for it.
  */
 import {
-  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_COV, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI,
+  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_COV, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI,
   OP_NODE, OP_NOT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ,
   OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM, OP_GAPGATE, OP_CONT, OP_SEED,
 } from './ops.ts'
@@ -29,12 +33,16 @@ const WRAPPERS = new Set([OP_NODE, OP_XFORM, OP_LEAF, OP_SOURCE_LEAF, OP_TOKEN, 
 /**
  * Can the row at `ip` match empty? `true` wherever it cannot tell. A first-set
  * gate row wraps only a child that cannot (`encode.ts` gates nothing nullable).
- * `expect` is not a wrapper here: whatever its child needs, it recovers at zero width.
+ * An `expect` recovers at zero width whatever its child needs; with `recovers`
+ * false, this asks what the row can match empty without recovering.
  */
-export function rowNullable(code: ArrayLike<number>, k: readonly unknown[], ip: number, memo: Map<number, boolean>): boolean {
-  const hit = memo.get(ip)
+export function rowNullable(
+  code: ArrayLike<number>, k: readonly unknown[], ip: number, memo: Map<number, boolean>, recovers = true,
+): boolean {
+  const key = recovers ? ip : ~ip
+  const hit = memo.get(key)
   if (hit !== undefined) return hit
-  memo.set(ip, true) // a cycle is answered conservatively
+  memo.set(key, true) // a cycle is answered conservatively
   const op = code[ip]!
   const kids: number[] = []
   let out = true
@@ -43,20 +51,20 @@ export function rowNullable(code: ArrayLike<number>, k: readonly unknown[], ip: 
   else if (op === OP_RX) { const re = k[code[ip + 1]!]; out = !(re instanceof RegExp) || regexCanMatchEmpty(re.source) }
   else if (op === OP_SEQ || op === OP_SEQV || op === OP_SEQX) {
     childSlots(code, ip, kids)
-    out = kids.every(c => rowNullable(code, k, c, memo))
+    out = kids.every(c => rowNullable(code, k, c, memo, recovers))
   } else if (op === OP_CHOICE) {
     childSlots(code, ip, kids)
-    out = kids.length === 0 || kids.some(c => rowNullable(code, k, c, memo))
+    out = kids.length === 0 || kids.some(c => rowNullable(code, k, c, memo, recovers))
   } else if (op === OP_REP || op === OP_REPV) {
-    out = code[ip + 2] === 0 || rowNullable(code, k, code[ip + 1]!, memo)
+    out = code[ip + 2] === 0 || rowNullable(code, k, code[ip + 1]!, memo, recovers)
   } else if (op === OP_SEED) {
-    out = rowNullable(code, k, code[ip + 1]!, memo)
+    out = rowNullable(code, k, code[ip + 1]!, memo, recovers)
   } else if (op === OP_CONT) {
-    out = rowNullable(code, k, code[ip + 1]!, memo) && rowNullable(code, k, code[ip + 3]!, memo)
-  } else if (WRAPPERS.has(op)) {
-    if (childSlots(code, ip, kids) && kids.length === 1) out = rowNullable(code, k, kids[0]!, memo)
+    out = rowNullable(code, k, code[ip + 1]!, memo, recovers) && rowNullable(code, k, code[ip + 3]!, memo, recovers)
+  } else if (WRAPPERS.has(op) || (op === OP_EXPECT && !recovers)) {
+    if (childSlots(code, ip, kids) && kids.length === 1) out = rowNullable(code, k, kids[0]!, memo, recovers)
   }
-  memo.set(ip, out)
+  memo.set(key, out)
   return out
 }
 
@@ -69,5 +77,5 @@ export function holdsGap(
   if (code[term] !== OP_NOT && code[term] !== OP_PEEK) return false
   const next = code[base + i + 1]!
   if (code[next] === OP_ADJ || leadingTriviaFieldAt(code, k, next)) return false
-  return !rowNullable(code, k, next, memo)
+  return !rowNullable(code, k, next, memo, false)
 }
