@@ -120,10 +120,11 @@ export function failCleanAnalysis(code: ArrayLike<number>): FailClean {
       case OP_CONT:
         out = clean(code[ip + 1]!) && neverFails(code[ip + 3]!)
         break
-      // An arm's failure and the fallback's are committed; only the selector's is
-      // not, and without a fallback an unknown key fails after the selector wrote.
+      // An arm's failure and a committing fallback's are committed; only the
+      // selector's is not. With no fallback, or one that doesn't commit, the
+      // dispatch can fail uncommitted after the selector wrote.
       case OP_DISPATCH:
-        out = code[ip + 3]! >= 0 && clean(code[ip + 1]!)
+        out = code[ip + 3]! >= 0 && (code[ip + 4]! & 2) === 0 && clean(code[ip + 1]!)
         break
       default: {
         const c = passChild(code, ip)

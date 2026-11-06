@@ -5,6 +5,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **`run()` no longer keeps a dispatch selector's leaf after `otherwise(x, { commit: false })`
+  fails.** The closure engine read every fallback as committing, so it skipped the rollback
+  and the next arm of an enclosing choice built a tree with the leaf twice.
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A

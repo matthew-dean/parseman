@@ -91,6 +91,17 @@ describe('rollback', () => {
     expect(leaves(agreed(g, 'a', { build: host }, 'emitted').value)).toEqual({ N: ['a'] })
   })
 
+  it('a dispatch with an uncommitted fallback leaves no selector behind for the next arm', () => {
+    const g = rules({}, () => ({
+      R: node('N', choice(
+        dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('x'))), otherwise(literal(','), { commit: false })),
+        regex(/[a-z]+/),
+      )),
+    })) as G
+    expect(leaves(agreed(g, 'k', { build: host }).value)).toEqual({ N: ['k'] })
+    expect(leaves(agreed(g, 'k').value)).toEqual({ N: ['k'] })
+  })
+
   it('a dispatch with no fallback leaves no selector behind for the next arm', () => {
     const g = rules({}, () => ({
       R: node('N', choice(dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('x')))), regex(/[a-z]+/))),
