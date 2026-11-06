@@ -87,7 +87,8 @@ const inChild = (mode, leg, count) => {
     console.error(`${leg.name} on ${file}: ${run.stderr.slice(-800)}`)
     process.exit(1)
   }
-  return run.stdout.trim()
+  // The last line, since a parser can print too.
+  return run.stdout.trim().split('\n').at(-1)
 }
 const counted = (leg, count) => {
   const run = spawnSync('/usr/bin/time', ['-l', process.execPath, script, leg.module, String(count), file], { encoding: 'utf8', env: { ...process.env, AB_BUILT_MODE: 'run' } })

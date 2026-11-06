@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const SCRIPT = new URL('../../bench/jess/ab-built.mjs', import.meta.url).pathname
@@ -17,6 +19,26 @@ describe('bench/jess/ab-built.mjs arguments', () => {
     const result = run(...args)
     expect(result.status).toBe(2)
     expect(result.stderr).toContain('usage:')
+  })
+
+  it('reads a count past what a parser prints', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ab-built-'))
+    try {
+      const engine = join(root, 'node_modules/parseman')
+      mkdirSync(engine, { recursive: true })
+      writeFileSync(join(engine, 'package.json'), '{"name":"parseman","exports":{".":"./index.mjs","./oracle":"./index.mjs"}}')
+      writeFileSync(join(engine, 'index.mjs'), 'export const digestValue = value => JSON.stringify(value)')
+      const module = join(root, 'noisy.mjs')
+      writeFileSync(module, "export const parse = text => { console.log('parsing'); return text }")
+      const file = join(root, 'input')
+      writeFileSync(file, 'x')
+      const result = run('--reps', '0', file, `one=${module}`, `two=${module}`)
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('tree same')
+      expect(result.stdout).toMatch(/one +calls [1-9]/)
+    } finally {
+      rmSync(root, { recursive: true })
+    }
   })
 
   it('names what each leg ran before any number', () => {
