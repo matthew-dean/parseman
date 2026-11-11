@@ -38,6 +38,7 @@ import {
 import {
   computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scopeIsIdentity, triviaLeadRanges, type SiteLabels,
 } from './site-labels.ts'
+import { continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { failCleanAnalysis, type FailClean } from './fail-clean.ts'
 import { leadingTriviaFieldAt } from './field-spec.ts'
@@ -378,7 +379,6 @@ function deriver(
   })()
   const ANY_CHAR: LeadMask = new Uint8Array(129).fill(1)
   /** The class a strict parse gates `optional(child)` with: the child's own gate. */
-  const gateClass = (child: number): number => code[child] === OP_GATE ? code[child + 1]! : -1
 
   /**
    * A repeat item that opens, through a sequence's first term and trivia-free
@@ -416,13 +416,17 @@ function deriver(
    * included.
    */
   function termStart(ip: number): { lead: LeadMask; empty: number } | undefined {
+    // The row's own first test, as a late frame reads it (`continuationGate`).
+    const g = continuationGate(code, ip)
+    if (g !== undefined) {
+      const rop = code[g.row]
+      return { lead: maskOfClass(cc[g.cls]!), empty: rop === OP_OPT ? E_NULL : rop === OP_REP ? E_LIST : E_NONE }
+    }
+    // No class: a repeat whose item says what it starts with past a gap.
     const op = code[ip]
-    if (op === OP_OPT && gateClass(code[ip + 1]!) >= 0) return { lead: maskOfClass(cc[gateClass(code[ip + 1]!)]!), empty: E_NULL }
     if ((op === OP_REP || op === OP_REPV) && code[ip + 4]! < 0 && code[ip + 2]! === 0) {
       const item = code[ip + 1]!
-      const itemCls = code[ip + 7]!
       const empty = op === OP_REP ? E_LIST : E_NONE
-      if (itemCls >= 0) return { lead: maskOfClass(cc[itemCls]!), empty }
       // An item behind a gap gate declines in silence.
       if (code[item] === OP_GAPGATE) {
         const lead = leadOf(code[item + 2]!)
