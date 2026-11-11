@@ -503,6 +503,46 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   the `dispatch()` (Queued, above). Census on `perf/left-corner-routing` @ `99ebc7e4`
   (`scratchpad/left-corner/visits.ts`).
 
+- **ASCII fast paths for `lead()` and `classHas()` in the closure engine.** Test an ASCII
+  character against the class's table inline, as the emitted engine already does, instead of
+  calling the two helpers. Counted calls on Jess's Less AST row (`site.css`, closure sites):
+  `lead` 20.3k and `classHas` 14.3k of 323.1k, so the cut is 6–10% of calls. A wall-clock CPU
+  profile of the same parse (mini PC, `benchmark.less` and an 83-file Bootstrap 4
+  concatenation, Jess `d476f75fc` on parseman 0.61.5) shows neither as a frame: TurboFan
+  inlines both into the pieces, so the calls cost about no time. Not built.
+
+- **Deciding a repeat's next item after a pure gap read.** Read the gap in front of an
+  optional item with the installed fast scanner before marking, test the item's class on the
+  character after it, and reuse the end. Closure-engine prototype, calls / branches per parse
+  against `main` @ `f521215e`. A value ladder (`List > Space > Term > Value`): `ids` 2,858 /
+  14,280 → 2,735 / 12,099 (−4.3% / −15%), `nested` −6.4% / −23%. Jess's AST rows: Less
+  `site.css` −0.4% / −2.5%, CSS +0.24% calls. Every Jess grammar uses `classifiedTrivia`,
+  whose labels keep the fast scanner from being installed (`triviaLabelled`), so its gaps
+  cannot be read without recording, and the read only adds a call. Not shipped; no branch
+  kept. Making it reach Jess means a pure scanner slot for labelled trivia.
+
+- **A larger assembly budget for Less.** Emit more of Jess's Less AST grammar as code and
+  leave fewer sites to the closure engine. Mini PC (x64, Node 24.11.1), parseman `main` @
+  `f521215e`. Marginal ms per parse on `benchmark.less` / an 83-file Bootstrap 4
+  concatenation, interleaved, median of 3–5 fresh processes:
+  - default (0.5): 30.6 / 30.2, with an A/A arm 30.9 / 29.8; 0.61.5 measures the same,
+    30.6 / 29.6
+  - budget 1: 31.3 / 30.0
+  - budget 3: 29.3 / 29.3
+  - budget 10: 28.6 / 29.1
+  - every site emitted: 21.6 / 23.1 (−29% / −23%), the same in 8 fresh processes
+
+  Emitting every site costs a lot at load. First parse rises from 163 to 215 ms
+  (benchmark.less) and from 177 to 239 ms (Bootstrap). Module load rises from 43 to 105 ms.
+  The shipped bundle grows from 592,167 B (115,656 gz) to 5,291,835 B (534,666 gz). Not
+  shipped: no budget fits the size contract with a real gain, and every-site's first-parse
+  and load costs rule it out. The curve is a selection-coverage effect, not a crossing tax.
+  Crossings per parse on `benchmark.less` are 48.6k at the default budget, 65.4k at budget
+  10 and none when every site is emitted. Their wrappers are 2.1–2.4% of a CPU profile,
+  ≤ ~1 ms a parse. In the same profile the closure engine runs 22.1 ms a parse at the default budget and
+  still 11.0 ms at budget 10. The sites the static ranking takes last carry that half and
+  gain most from emitting: their 11.0 ms becomes 5.5 ms emitted.
+
 ## Parked
 
 - **Dropping the SCSS nested-property pre-scan by reordering arms.** Try `Declaration` first.
@@ -603,6 +643,20 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 - **`.jess` `ExpressionLogical` capture replay.** `and`/`or` in `.jess` are choice arms that
   reparse their left operand up to three times. Fixing it in the engine needs capture
   replay, for about 2% of the `.jess` parse. Reshape the grammar later instead.
+
+- **Left-corner routes, second form, as table data
+  ([#251](https://github.com/matthew-dean/parseman/pull/251), draft).** Routes derived at
+  build time and read by the closure engine. Trees identical on 11,473 inputs × 4 dialects,
+  AST and CST, and `callcount:guard` `macro/jess/ast/site.css` −6.1% calls. An adversarial
+  review blocked it: the route reader re-implements rows the plain path already lowers
+  (dispatch, node builders, choice failure, scope install), and one copy had already drifted.
+  The fix the review asked for is to build each route level from its row's own piece with the
+  corner swapped in. Counted per function on a value ladder (`ids`, 40 tokens: `main` 2,858
+  calls, routes 1,574), the −32 calls per token come from: ~14 continuations entered and
+  rolled back, ~14 lead and trivia re-reads at each level, ~3–4 node pushes, ~1 choice block.
+  Row pieces with the corner swapped run the first two as `main` does, which leaves ~1–3 per
+  token. Parked: the gap and continuation wins belong in the plain pieces (see the pure gap
+  read under Rejected), and #251 stays unmerged.
 
 ## Queued and in progress
 
@@ -817,8 +871,9 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     exact keys and prefix and suffix matchers. Deriving them would mean reading the
     arms' shared identifier corner once and routing on its text and on the next captured
     token, from the arms' leading literals.
-  Planned separately, and also not built yet: the build-out compiles the routes above
-  into table rows at encode time, read by every engine, on `main` after 0.59.0. Branch `perf/left-corner-routing`, raw samples under
+  Superseded: the build-out that compiles these routes into table rows at encode time
+  was built and is parked; see "Left-corner routes, second form, as table data" under
+  Parked. Branch `perf/left-corner-routing`, raw samples under
   `scratchpad/left-corner/results/`.
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
@@ -863,6 +918,17 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   files of about 775 KB for Less that differ by about 4 KB. Parseman's one-table linker can
   fold them. A process loads one variant, so this mostly cuts install size. Keep it only if
   cold start and parse are equal or better.
+
+- **Proving a reducer's trivia-log formal unused.** A reducer that names its fifth formal only
+  to reach the sixth (`state`) has arity 6, so its node records trivia it never reads.
+  Prove it unused with `confirmedBuildParamUnused(src, 4)`, as `buildRawUnused` does for
+  the fourth formal, and carry the result through the IR. Jess's Less AST against `main` @
+  `f521215e`: trivia-recording node matches fall from 12,450 to 7,402 on `benchmark.less`
+  (`MathValue` 4,491) and from 12,603 to 6,239 on the Bootstrap 4 concatenation. Calls change
+  by −0.10% and −0.59%, branches by −1.05% on Bootstrap. Trees are identical. The node shape
+  is unchanged, because these reducers also read `state`. The time change is inside the
+  spread. Queued as one unused-formals mask that replaces `buildRawUnused`: one field, one
+  IR slot, the same proof.
 
 ## How to add an entry
 
