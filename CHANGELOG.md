@@ -5,6 +5,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A closure-engine artifact skips the frames a value does not need.** A node site whose
+  first character decides the path to a left corner now parses that corner directly and
+  completes each level on the value in hand, entering a sequence's or repeat's own lowering
+  only where its next character can start it (`docs/design/left-corner-routing.md`). This
+  applies to artifacts without a selective assembly, to AST tables without line tracking, and
+  to parses that record no trivia log (`rootTrivia`, a caller's `_triviaLog`). Results are
+  identical. Calls per parse at `assemblyBudget` 0 fall 5% to 14% on whole files; a site the
+  character does not route pays one call. An artifact with routes grows by their data
+  (`example/css` 7,216 → 8,000 B). A selective artifact does not change.
 - **A list with a minimum above one takes back its items when it fails in a choice.** Generated
   code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
   nothing behind on failure, so a later arm's tree also held the items the list kept.

@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { choice, literal, many, node, optional, regex, rules, sequence } from '../../src/index.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assemble, tableRules } from '../../src/table/assemble.ts'
+import { AssemblyCache, assemble, tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
@@ -60,12 +60,26 @@ function ladder(parent: Parent, spaced = false): Record<string, Combinator<unkno
 
 const CFG = { hostCst: false, hostReadsChildren: true, trackLines: false, tolerant: false, coverage: false, probe: false }
 
-/** The collectors installed during one parse, and its value. */
-function framesOf(prog: TableProgram, input: string): { frames: number; value: unknown; emitted: boolean } {
-  const linked = assemble(resolveTable(prog), prog, CFG)
+/**
+ * The collectors installed during one parse (after `warm` parses on the same assembly), and its value.
+ * With `log`, every parse records trivia, and the assembly is the one the entry selects for that.
+ */
+function framesOf(prog: TableProgram, input: string, warm = 0, log = false): { frames: number; value: unknown; emitted: boolean } {
+  const fresh = (): ParseContext => {
+    const ctx = createParseContext()
+    if (log) ctx._triviaLog = []
+    return ctx
+  }
+  const linked = log ? new AssemblyCache(prog).forCtx(fresh()) : assemble(resolveTable(prog), prog, CFG)
+  for (let i = 0; i < warm; i++) {
+    const ctx = fresh()
+    linked.begin(ctx)
+    linked.pieces.Root!(input, 0, ctx)
+    linked.finish()
+  }
   const seen = new Set<unknown>()
   let frames = 0
-  const ctx = new Proxy(createParseContext(), {
+  const ctx = new Proxy(fresh(), {
     set(target, key, value) {
       if ((key === '_cstBuf' || key === '_cstChildren') && value !== undefined && !seen.has(value)) {
         seen.add(value)
@@ -99,6 +113,16 @@ describe('pass-through collapse', () => {
       expect(r.value).toEqual({ value: [{ word: { _tag: 'leaf', value: 'a', span: { start: 0, end: 1 } } }] })
       // `Value`, `Sum`, `Unary` and `Word`: `Top` and `Atom` open none.
       expect(r.frames).toBe(4)
+      // From the second parse, the closure engine's left-corner route completes
+      // one of those levels on its lone child, so it opens one fewer (`routes.ts`).
+      expect(framesOf(prog, 'a', 1).frames).toBe(engine === 'closure' ? 3 : 4)
+      // A parse that records trivia runs an assembly of its own, with no routes:
+      // the entry decides that once, and no route tests for a log.
+      expect(framesOf(prog, 'a', 1, true).frames).toBe(4)
+      const cache = new AssemblyCache(prog)
+      const logged = createParseContext()
+      logged._triviaLog = []
+      expect(cache.forCtx(logged)).not.toBe(cache.forCtx(createParseContext()))
     })
 
     it(`${engine}: a chain of collapses over one node each opens only the frames that build`, () => {

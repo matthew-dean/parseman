@@ -35,6 +35,7 @@ import {
   LEX_NODE_TERMINAL,
 } from './lex-program.ts'
 import { covKindCode, dispatchIsExclusive, encodeClassSpec, ownTableProgram } from './program.ts'
+import { packRoutes } from './routes.ts'
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
@@ -2411,7 +2412,14 @@ class Encoder {
     if (this.code.length === 0) this.emit(OP_EMPTY)
     this.collapseIndirection()
     for (const census of this.logCensus) census()
-    return ownTableProgram({
+    const caches = {
+      choiceRollbackMasks: this.choiceRollbackMasks,
+      failureRollbackCleanSites: this.failureRollbackCleanSites,
+      choiceLogRollbackMasks: this.choiceLogRollbackMasks,
+      failureLogRollbackSites: this.failureLogRollbackSites,
+      nonCommittingChoiceSites: this.nonCommittingChoiceSites,
+    }
+    const fields: TableProgram = {
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
       ...(this.lex.length === 0 ? {} : { lex: this.lex }),
@@ -2428,13 +2436,14 @@ class Encoder {
       rec: 1,
       ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
-    }, undefined, {
-      choiceRollbackMasks: this.choiceRollbackMasks,
-      failureRollbackCleanSites: this.failureRollbackCleanSites,
-      choiceLogRollbackMasks: this.choiceLogRollbackMasks,
-      failureLogRollbackSites: this.failureLogRollbackSites,
-      nonCommittingChoiceSites: this.nonCommittingChoiceSites,
-    })
+    }
+    // Routes are derived here, once, and stored: only an AST assembly without
+    // line tracking reads them, and a table that is loaded derives nothing. The
+    // derivation resolves its own copy, so the program carries no resolved table.
+    const routes = this.track || this.settings.hostMode === 'cst'
+      ? undefined
+      : packRoutes(ownTableProgram(fields, undefined, caches))
+    return ownTableProgram(routes === undefined ? fields : { ...fields, routes }, undefined, caches)
   }
 }
 

@@ -19,6 +19,8 @@ export type ContinuationGate = {
   readonly follow: number
   /** Class of an arm that opens without the gap, or −1. */
   readonly other: number
+  /** The repeat or optional row the answer was read from, past any rule or `withCtx`. */
+  readonly row: number
 }
 
 export function continuationGate(code: ArrayLike<number>, ip: number): ContinuationGate | undefined {
@@ -32,15 +34,15 @@ export function continuationGate(code: ArrayLike<number>, ip: number): Continuat
   const op = code[at]
   if (op === OP_OPT) {
     const c = code[at + 1]!
-    return code[c] === OP_GATE ? { cls: code[c + 1]!, gapRow: -1, follow: -1, other: -1 } : undefined
+    return code[c] === OP_GATE ? { cls: code[c + 1]!, gapRow: -1, follow: -1, other: -1, row: at } : undefined
   }
   if (op !== OP_REP && op !== OP_REPV) return undefined
   // A separated list keeps ip+7 for its recovery sentinel; a mandatory item reports.
   if (code[at + 2] !== 0 || code[at + 4]! >= 0 || code[at + 7]! < 0) return undefined
   const item = code[at + 1]!
   return code[item] === OP_GAPGATE
-    ? { cls: code[at + 7]!, gapRow: code[item + 2]!, follow: code[item + 3]!, other: code[item + 4]! }
-    : { cls: code[at + 7]!, gapRow: -1, follow: -1, other: -1 }
+    ? { cls: code[at + 7]!, gapRow: code[item + 2]!, follow: code[item + 3]!, other: code[item + 4]!, row: at }
+    : { cls: code[at + 7]!, gapRow: -1, follow: -1, other: -1, row: at }
 }
 
 /**
