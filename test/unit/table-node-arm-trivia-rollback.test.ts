@@ -1,7 +1,7 @@
 /**
  * A node that fails after its body scanned trivia leaves that trivia in the
- * trivia logs: the node drops its own capture frame, but `_triviaLog` and
- * `_rootTriviaLog` are not part of it. So a choice arm, an `optional()` or an
+ * root trivia log: the node drops its own capture frame, but `_rootTriviaLog`
+ * is not part of it. So a choice arm, an `optional()` or an
  * `attempt()` over such a node needs its rollback mark like any other child that
  * can fail after writing.
  *
@@ -9,8 +9,8 @@
  * (`mayLeavePartialCapture`), which counted every node as clean: the losing arm's
  * comment stayed in the root log and the winning arm recorded it again, so the
  * selected comment came back twice. The closure engine and the reference driver
- * kept the mark and were right. The emitted engine now restores the two trivia
- * logs alone for such a child (`choiceLogRollbackMask`, `failureLogRollback`):
+ * kept the mark and were right. The emitted engine now restores the root trivia
+ * log alone for such a child (`choiceLogRollbackMask`, `failureLogRollback`):
  * its node frame already drops everything else. A program with no trivia takes
  * no such mark (`table-choice-rollback-elision.test.ts`).
  */
@@ -21,7 +21,7 @@ import { encodeTable } from '../../src/table/encode.ts'
 import { cfgKey, tableRules } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { mayLeavePartialCapture } from '../../src/analysis/commitment.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
@@ -36,7 +36,7 @@ function emitted(prog: TableProgram, inheritedTrivia = false): TableProgram {
     const em = emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true)
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
     const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
-    return { key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }
+    return { key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }
   }) }
 }
 
@@ -56,6 +56,7 @@ const shapes: Record<string, (g: Record<string, Comb>) => Comb> = {
   'choice() with a full mark': g => sequence(choice(sequence(literal('x'), literal('q')), g.Pair!, literal('x')), literal('y')),
 }
 const opts = { rootTrivia: { select: ['comment'] } }
+const labels = t._meta.triviaKindLabels!
 
 describe('a failed node arm leaves no trivia rows behind', () => {
   it('counts a node as leaving what its body leaves where trivia can be recorded', () => {
@@ -109,7 +110,8 @@ describe('a failed node arm leaves no trivia rows behind', () => {
  * does; every other parse of the program takes none of those marks.
  */
 describe('a program with no trivia, called with trivia', () => {
-  const twoLogMark = /const (_t\d+_)lg=ctx\._triviaLog!==undefined\?ctx\._triviaLog\.length:0,\1rt=/
+  // The log-only rollback `emitLogRollback` prints; a full mark restores through `rollbackTriviaAt`.
+  const logOnlyRollback = /\{const r=ctx\._rootTriviaLog;if\(r!==undefined\)while\(r\.length>_t\d+_rt\)r\.pop\(\)\}/
   for (const [name, shape] of Object.entries(shapes)) {
     it(`records what the closure engine records through ${name}`, () => {
       const g = rules((g: Record<string, Comb>) => ({
@@ -126,18 +128,23 @@ describe('a program with no trivia, called with trivia', () => {
       for (const input of ['x/*c*/y', 'x /*c*/ y', 'x y']) {
         const logs: Record<string, unknown> = {}
         for (const [engine, entry] of Object.entries(engines)) {
-          const ctx = { trivia: t, trackLines: false, _triviaLog: [] as number[] }
+          const ctx = {
+            trivia: t, triviaKindLabels: labels, trackLines: false,
+            _rootTriviaLog: [] as number[], _rootTriviaKindIndex: { comment: labels.indexOf('comment') },
+          }
           const r = entry(input, 0, ctx)
-          logs[engine] = { ok: r.ok, triviaLog: ctx._triviaLog }
+          logs[engine] = { ok: r.ok, rootTriviaLog: ctx._rootTriviaLog }
         }
+        // One selected row per comment: the comparison below is not over empty logs.
+        expect(logs.closure, input).toMatchObject({ ok: true, rootTriviaLog: { length: input.includes('/*') ? 5 : 0 } })
         expect(logs.emitted, input).toEqual(logs.closure)
         expect(logs.printed, input).toEqual(logs.closure)
       }
       const plain = defaultAssemblyCfgs(prog)[0]!
       const source = (cfg: typeof plain) => emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true).source
-      expect(source(plain)).not.toMatch(twoLogMark)
+      expect(source(plain)).not.toMatch(logOnlyRollback)
       // The shape with a full mark restores the logs from that mark instead.
-      expect(twoLogMark.test(source({ ...plain, inheritedTrivia: true }))).toBe(name !== 'choice() with a full mark')
+      expect(logOnlyRollback.test(source({ ...plain, inheritedTrivia: true }))).toBe(name !== 'choice() with a full mark')
     })
   }
 })

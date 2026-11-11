@@ -216,12 +216,12 @@ class Encoder {
   private nonCommittingChoiceSites = new Set<number>()
   private failureRollbackCleanSites = new Set<number>()
   /**
-   * THE TRIVIA LOGS A FAILED NODE LEAVES. A node drops its own capture frame when
-   * it fails, but the trivia its body recorded into `_triviaLog`/`_rootTriviaLog`
+   * THE TRIVIA LOG A FAILED NODE LEAVES. A node drops its own capture frame when
+   * it fails, but the trivia its body recorded into `_rootTriviaLog`
    * is not part of that frame. So a child the census above counts as clean can
    * still leave trivia rows when it reaches a node whose body can fail after a
    * trivia scan (`mayLeavePartialCapture`'s `throughNodes`). These are the arms
-   * and sites that need only the two logs restored. A program with no trivia of
+   * and sites that need only that log restored. A program with no trivia of
    * its own records rows only under trivia its caller supplies, so its emitted
    * assembly takes these marks only for such a parse (`RunCfg.inheritedTrivia`).
    */

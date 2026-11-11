@@ -11,7 +11,7 @@ import {
   type Combinator,
 } from '../../src/index.ts'
 import type { ParseResult } from '../../src/types.ts'
-import { mk, buildLazyTriviaMap, nilNode, type CssNode } from './stub-build.ts'
+import { mk, nilNode, type CssNode } from './stub-build.ts'
 
 const ws = regex(/[ \t\n\r\f]+/)
 const comment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)
@@ -167,14 +167,9 @@ export const { Stylesheet } = cssRules
 export type CssParseResult = {
   tree: CssNode
   errors: Array<{ message: string; offset?: number }>
-  trivia: { entries: number }
 }
 
-function finishCssParse(
-  input: string,
-  r: ParseResult<unknown>,
-  triviaLog: number[],
-): CssParseResult {
+function finishCssParse(r: ParseResult<unknown>): CssParseResult {
   const tree: CssNode = r.ok && typeof r.value === 'object' && r.value !== null && (r.value as CssNode)._tag === 'node'
     ? r.value as CssNode
     : nilNode()
@@ -182,21 +177,17 @@ function finishCssParse(
   if (!r.ok) {
     errors.push({ message: (r.expected ?? []).join(', ') || 'Parse error', offset: r.span?.start })
   }
-  return { tree, errors, trivia: buildLazyTriviaMap(triviaLog, input) }
+  return { tree, errors }
 }
 
-/** Interpreted — full CST + trivia capture (jess parseCssFn shape). */
+/** Interpreted — full CST with per-node trivia capture. */
 export function parseCss(input: string): CssParseResult {
-  const triviaLog: number[] = []
-  const ctx = { trackLines: false, _triviaLog: triviaLog }
-  return finishCssParse(input, Stylesheet.parse(input, 0, ctx), triviaLog)
+  return finishCssParse(Stylesheet.parse(input, 0, { trackLines: false }))
 }
 
 export const compiledCss = compile(Stylesheet)
 
-/** Compiled — full CST + trivia capture (jess parseCssFn shape). */
+/** Compiled — full CST with per-node trivia capture. */
 export function parseCssCompiled(input: string): CssParseResult {
-  const triviaLog: number[] = []
-  const ctx = { trackLines: false, _triviaLog: triviaLog }
-  return finishCssParse(input, compiledCss.parseWithContext(input, ctx, 0), triviaLog)
+  return finishCssParse(compiledCss.parseWithContext(input, { trackLines: false }, 0))
 }

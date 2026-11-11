@@ -75,7 +75,7 @@ if (WORKER_DIR !== null) {
 
   const compiled = pm.compile(g.caseGrammar(c))
   const input = g.caseInput(c, config.input.rules)
-  const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+  const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false }, 0)
 
   // The parent cannot hold both sides' parse results — that is the whole point of
   // running them in separate processes — so each side reports a digest of its own

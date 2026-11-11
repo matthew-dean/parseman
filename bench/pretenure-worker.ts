@@ -30,7 +30,7 @@ const density = DENSITY_CASES.find(c => c.id === id)
 if (density !== undefined) {
   const compiled = compile(caseGrammar(density))
   input = planted(caseInput(density, 200))
-  parse = () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+  parse = () => compiled.parseWithContext(input, { trackLines: false }, 0)
 } else if (id === 'css/cst') {
   // A CST host: the tree is `cstBuildHost()`'s nodes over parseman's leaves and spans.
   input = planted(buildWorkloads().find(w => w.id === 'css/stylesheet')!.input)
@@ -64,7 +64,7 @@ if (density !== undefined) {
   if (id === 'graphql/document') expectType = 'OperationDefinition'
   if (plantTruncated) {
     const compiled = compile(Stylesheet)
-    parse = () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+    parse = () => compiled.parseWithContext(input, { trackLines: false }, 0)
   } else {
     const built = w.make()
     parse = () => built.parse()

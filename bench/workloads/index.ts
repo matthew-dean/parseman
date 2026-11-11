@@ -14,7 +14,7 @@
  * They are chosen to SPAN, not to sample:
  *
  * - `less/stylesheet` — high speculative rollback, wide derived expected sets,
- *   full CST with trivia capture. The dialect that caught all three regressions.
+ *   full CST. The dialect that caught all three regressions.
  * - `less/mixins` — the same grammar over input weighted towards the constructs
  *   that backtrack hardest (mixin calls, guards, arithmetic). Same grammar,
  *   different input: separates "the grammar got slower" from "this shape of
@@ -24,8 +24,8 @@
  *   per-speculation; when both move, it is not.
  * - `graphql/document`, `json/document` — non-CSS, and non-CST: they build plain
  *   values through `transform` rather than `node`, so they exercise codegen paths
- *   with capture switched off entirely. A regression that only shows up when
- *   capture is live should NOT move these, and that difference is information.
+ *   with no CST capture at all. A regression that only shows up when capture
+ *   is live should NOT move these, and that difference is information.
  *
  * ## Sizes
  *
@@ -103,12 +103,7 @@ export type Workload = {
   input: string
 }
 
-const withCapture = (c: Combinator<unknown>, input: string): (() => { parse: () => unknown }) => () => {
-  const compiled = compile(c)
-  return { parse: () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0) }
-}
-
-const withoutCapture = (c: Combinator<unknown>, input: string): (() => { parse: () => unknown }) => () => {
+const parsed = (c: Combinator<unknown>, input: string): (() => { parse: () => unknown }) => () => {
   const compiled = compile(c)
   return { parse: () => compiled.parseWithContext(input, { trackLines: false }, 0) }
 }
@@ -124,11 +119,11 @@ export function buildWorkloads(): Workload[] {
   const jsonInput = jsonPayload(48)
 
   return [
-    { id: 'less/stylesheet', bytes: lessInput.length, make: withCapture(LessStylesheet, lessInput), input: lessInput },
-    { id: 'less/mixins', bytes: mixinInput.length, make: withCapture(LessStylesheet, mixinInput), input: mixinInput },
-    { id: 'css/stylesheet', bytes: cssInput.length, make: withCapture(CssStylesheet, cssInput), input: cssInput },
-    { id: 'graphql/document', bytes: gqlInput.length, make: withoutCapture(graphqlDoc, gqlInput), input: gqlInput },
-    { id: 'json/document', bytes: jsonInput.length, make: withoutCapture(jsonDoc, jsonInput), input: jsonInput },
+    { id: 'less/stylesheet', bytes: lessInput.length, make: parsed(LessStylesheet, lessInput), input: lessInput },
+    { id: 'less/mixins', bytes: mixinInput.length, make: parsed(LessStylesheet, mixinInput), input: mixinInput },
+    { id: 'css/stylesheet', bytes: cssInput.length, make: parsed(CssStylesheet, cssInput), input: cssInput },
+    { id: 'graphql/document', bytes: gqlInput.length, make: parsed(graphqlDoc, gqlInput), input: gqlInput },
+    { id: 'json/document', bytes: jsonInput.length, make: parsed(jsonDoc, jsonInput), input: jsonInput },
   ]
 }
 

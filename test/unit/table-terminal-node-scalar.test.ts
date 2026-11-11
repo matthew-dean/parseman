@@ -5,7 +5,7 @@ import {
 import { createParseContext } from '../../src/parse-context.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
@@ -82,7 +82,7 @@ function precompiled(
     return compiled(...args)
   }) as PrecompiledAssembly['factory'])
   return {
-    prog: { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }] },
+    prog: { ...prog, asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }] },
     calls: () => calls,
   }
 }
@@ -92,9 +92,9 @@ function expectSpecial(prog: TableProgram): void {
   expect(scalarTerminalNodeChild(prog.code, ip)).toBe(prog.code[ip + 2])
   const source = emitAssemblySource(resolveTable(prog), prog, STRICT, [], true).source
   expect(source).toContain('const kids=[leaf],rawKids=[leaf],span=new _SP(pos,end)')
-  expect(source).toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
+  expect(source).toContain('ctx._cstBuf.noRaw===true?undefined:ctx._cstBuf!==undefined?rawEntry(')
   expect(emitAssemblySource(resolveTable(prog), prog, STRICT).source)
-    .not.toContain('ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(')
+    .not.toContain('ctx._cstBuf.noRaw===true?undefined:ctx._cstBuf!==undefined?rawEntry(')
   expect(source).not.toContain('const sCh=ctx._cstChildren')
 }
 

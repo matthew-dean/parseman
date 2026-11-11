@@ -11,7 +11,7 @@ import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { cfgKey, tableRules } from '../../src/table/assemble.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { OP_SCOPE_CAP } from '../../src/table/ops.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
@@ -50,7 +50,7 @@ function selective(prog: TableProgram, calls: { n: number }): TableProgram {
     const scan = asm.scan!
     return { ...asm, scan: (s: unknown) => { calls.n++; return scan(s as never) } }
   }) as EmittedFactory)
-  return { ...prog, asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }] }
+  return { ...prog, asm: [{ key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }] }
 }
 
 describe('scanner handoff into an emitted body', () => {
@@ -94,7 +94,7 @@ describe('scanner handoff into an emitted body', () => {
       const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
       const hybrid = tableRules({
         ...prog,
-        asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }],
+        asm: [{ key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }],
       }).Root!
       for (const [input, ok] of [['o:m:a\tb', true], ['o:m:a b', false], ['o:p:a b', true], ['o:p:a\tb', false]] as const) {
         expect(run(hybrid as never, input).ok, `${scope}: ${JSON.stringify(input)}`).toBe(ok)

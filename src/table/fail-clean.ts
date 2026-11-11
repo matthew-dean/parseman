@@ -4,7 +4,7 @@
  * A choice, an `optional()` and a repeat item take a rollback mark before they
  * try their child and restore it when the child fails, so a failed attempt leaves
  * nothing in the capture sinks: the open frame's children, raw entries and trivia
- * rows, the fields, the errors and the two trivia logs. Most children never write
+ * rows, the fields, the errors and the root trivia log. Most children never write
  * to a sink before they fail. A terminal fails before it pushes its leaf; a node
  * that fails drops its own frame; a sequence whose later terms cannot fail can
  * only fail in its first term, which has no trivia in front of it. For such a

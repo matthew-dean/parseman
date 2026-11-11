@@ -15,7 +15,7 @@ import { supercompileRuleMapReplacement } from '../../src/plugin/entry-supercomp
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
@@ -29,7 +29,7 @@ const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: f
 function precompiled(prog: TableProgram): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
+  return { ...prog, asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
 /**

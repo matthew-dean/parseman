@@ -3,7 +3,7 @@ import {
   choice, literal, many, node, run, sequence, type Combinator,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import {
@@ -36,7 +36,7 @@ function installed(prog: TableProgram, staticBuild: boolean): Record<string, Tab
   const factory = new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory']
   return tableRules(ownTableProgram({
     ...owned,
-    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: out.plan, reached: [...out.reached] }],
+    asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: out.plan, reached: [...out.reached] }],
   }))
 }
 

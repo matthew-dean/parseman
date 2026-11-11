@@ -3,8 +3,28 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.62.0 — 2026-11-11
 
+- **Breaking: printed parsers must be printed again with 0.62.0.** The emitted helpers
+  `rollbackTriviaAt` and `rollbackScannedTriviaAt` take fewer arguments. A printed factory
+  takes its helpers by position, and the helper count did not change, so one printed by
+  0.61.x would bind the arguments after the change to the wrong names and run: a
+  `sequence(literal('x'), optional(node('E', optional(literal('z')))), literal('y'))` on
+  `x/*c*/y` recorded its root trivia row twice and reported success. Each printed record now
+  carries `abi`, the printing minor and helper count (`"0.62/62"`), in place of `arity`. The
+  runtime refuses a record whose `abi` is not its own, naming both, and refuses a record
+  printed before 0.62.0, which has no `abi`. A helper's parameters or order change only in a
+  minor (`docs/design/artifact-format.md`). A 0.61.x runtime refuses a 0.62.0 record because
+  it carries no `arity`.
+- **Breaking: `ParseContext` no longer has `_triviaLog`, `_cstTriviaLog` or
+  `_cstRawChildren`.** No engine read them back. A node's trivia reaches its builder as the
+  fifth argument (`triviaLog`), selected root trivia comes back on `run()`'s `rootTrivia`, and
+  raw children come from the node's own capture. `parseWithContext` no longer fills a
+  `_triviaLog` the caller puts on the context. Every engine stops saving, clearing and testing
+  the three fields around each attempt, token and node, and a node no longer builds the raw
+  entry for a child when no capture buffer is open to take it. Against 0.61.9, branch tests
+  per parse fall 2.6% to 10.2% on every call-count row (Less `app.less` AST −8.15%, CSS
+  `site.css` AST −10.22%) and calls by up to 3.7% (Less AST −3.62%); no row rises.
 - **A list with a minimum above one takes back its items when it fails in a choice.** Generated
   code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
   nothing behind on failure, so a later arm's tree also held the items the list kept.

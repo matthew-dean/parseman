@@ -5,7 +5,7 @@ import {
   type Combinator, type ParseContext,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
@@ -32,7 +32,7 @@ function precompiled(prog: TableProgram): TableProgram {
   const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
   return ownTableProgram({
     ...prog,
-    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   })
 }
 

@@ -54,25 +54,21 @@ class CountingSink {
 
 function sinks() {
   const leaves = new CountingSink()
-  const raw = new CountingSink()
-  const cstTriviaLog = new CountingSink()
-  const triviaLog = new CountingSink()
+  const rootTriviaLog = new CountingSink()
   const fields = new CountingSink()
   const errors = new CountingSink()
-  const all = [leaves, raw, cstTriviaLog, triviaLog, fields, errors]
+  const all = [leaves, rootTriviaLog, fields, errors]
   const ctx = {
     trackLines: false,
     _cstLeaves: leaves,
-    _cstRawChildren: raw,
-    _cstTriviaLog: cstTriviaLog,
-    _triviaLog: triviaLog,
+    _rootTriviaLog: rootTriviaLog,
     _fields: fields,
     _errors: errors,
   } as unknown as ParseContext
   return {
     ctx,
     all,
-    triviaLog,
+    rootTriviaLog,
     redundant: () => all.reduce((n, a) => n + a.redundant, 0),
     real: () => all.reduce((n, a) => n + a.real, 0),
   }
@@ -97,10 +93,10 @@ describe('interpreter: rollback helpers never rewrite a length they already had'
     rollbackCstCapture(s.ctx, mark)
     expect(s.redundant()).toBe(0)
     expect(s.real()).toBeGreaterThan(0)
-    // The guard skipped nothing REAL. `_triviaLog` is deliberately not a
+    // The guard skipped nothing REAL. `_rootTriviaLog` is deliberately not a
     // rollbackCstCapture sink — only rollbackTrivia rewinds it — so it keeps
     // everything, which is exactly the pre-existing behaviour this must preserve.
-    for (const a of s.all) expect(a.length).toBe(a === s.triviaLog ? 3 : 1)
+    for (const a of s.all) expect(a.length).toBe(a === s.rootTriviaLog ? 3 : 1)
   })
 
   // The BUFFERED node-capture path (`_cstBuf.ch` / `_cstBuf.raw`, via
@@ -187,7 +183,7 @@ describe('compiled: emitted rollbacks carry the guard', () => {
 
   it('emits NO bare length store — every one is preceded by a !== compare', () => {
     const bare: string[] = []
-    const re = /_ctx\.(_cstLeaves|_cstRawChildren|_cstTriviaLog|_triviaLog|_fields|_errors|_cstChildren)\.length = ([A-Za-z0-9_]+)/g
+    const re = /_ctx\.(_cstLeaves|_fields|_errors|_cstChildren)\.length = ([A-Za-z0-9_]+)/g
     for (const m of source.matchAll(re)) {
       const before = source.slice(Math.max(0, m.index - 160), m.index)
       const guarded = new RegExp(`_ctx\\.${m[1]} && _ctx\\.${m[1]}\\.length !== ${m[2]}\\)\\s*$`).test(before)

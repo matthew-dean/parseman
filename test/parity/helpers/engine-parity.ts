@@ -11,7 +11,7 @@
  *   - the recovery harness compared the value tree and `_errors`, but was only
  *     ever pointed at default-option lists, so a new option's recovery path was
  *     never differentially exercised at all.
- *   - `not()` leaked the global `_triviaLog` on BOTH engines identically, so an
+ *   - `not()` leaked probed trivia into the trivia log on BOTH engines identically, so an
  *     engine-vs-engine check agreed while both were wrong — which is why
  *     `expectTriviaLogGolden` (an absolute assertion) has to sit alongside the
  *     relative one.
@@ -29,7 +29,6 @@ import type { Combinator, ParseContext } from '../../../src/index.ts'
 
 /** Sinks a parse can write besides its return value. All must match too. */
 type Sinks = {
-  triviaLog: number[]
   cstLeaves: unknown[]
   errors: unknown[]
 }
@@ -44,9 +43,7 @@ type Sinks = {
  * interpreter's dynamic capture against compiled silence and report a
  * divergence on every input — a design difference, not a defect.
  *
- * `_triviaLog` is gated the same way (the emitted trivia fn is only called with
- * `_cap = 1` under `capturing`), so it travels with the CST sinks. `_errors` is
- * driven by `recovery`, not `capturing`, so it is always compared.
+ * `_errors` is driven by `recovery`, not `capturing`, so it is always compared.
  *
  * Detected from the emitted source itself rather than by re-deriving "does this
  * tree contain a node()" — the compiled output is the ground truth for what the
@@ -56,11 +53,11 @@ function freshSinks(
   captures: boolean,
   ambient: Record<string, unknown>,
 ): { sinks: Sinks; ctx: ParseContext } {
-  const sinks: Sinks = { triviaLog: [], cstLeaves: [], errors: [] }
+  const sinks: Sinks = { cstLeaves: [], errors: [] }
   const ctx = {
     trackLines: false,
     ...ambient,
-    ...(captures ? { _triviaLog: sinks.triviaLog, _cstLeaves: sinks.cstLeaves } : {}),
+    ...(captures ? { _cstLeaves: sinks.cstLeaves } : {}),
     _errors: sinks.errors,
   } as unknown as ParseContext
   return { sinks, ctx }

@@ -183,7 +183,7 @@ function toCases(side: Side): Case[] {
   return side.cases.map(c => {
     const compiled = side.compile(side.grammar(c))
     const input = side.input(c, CONFIG.input.rules)
-    const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+    const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false }, 0)
     return {
       id: c.id,
       detail: `${c.n} ${c.kind === 'expected' ? 'opt/arm' : 'probes/val'}`,

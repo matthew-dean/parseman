@@ -11,7 +11,7 @@ import { hasOwnTriviaBoundary } from '../../src/combinators/trivia-boundary.ts'
 import { run as interpreterRun } from '../../src/functional/run.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
@@ -40,7 +40,7 @@ function precompiled(prog: TableProgram): TableProgram {
   const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
   return {
     ...prog,
-    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   }
 }
 

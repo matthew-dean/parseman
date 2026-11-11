@@ -13,13 +13,11 @@ import type { ParseContext } from '../../src/types.ts'
 import type { CstCaptureBuf } from '../../src/cst/capture-buffer.ts'
 
 describe('pushCstChild() — legacy collectors', () => {
-  it('appends to _cstChildren / _cstRawChildren when no _cstBuf is active', () => {
+  it('appends to _cstChildren when no _cstBuf is active', () => {
     const children: unknown[] = []
-    const raw: unknown[] = []
-    const ctx: ParseContext = { trackLines: false, _cstChildren: children, _cstRawChildren: raw }
+    const ctx: ParseContext = { trackLines: false, _cstChildren: children }
     pushCstChild(ctx, 'built', 'raw-entry')
     expect(children).toEqual(['built'])
-    expect(raw).toEqual(['raw-entry'])
   })
 
   it('falls back to _cstLeaves when _cstChildren is absent', () => {
@@ -63,20 +61,20 @@ describe('beginCstNodeCapture() / endCstNodeCapture()', () => {
 })
 
 describe('pushCstTriviaEntry() / cstDeferredTriviaActive()', () => {
-  it('records labeled trivia into _cstTriviaLog when no buffer is active', () => {
-    const log: number[] = []
-    const ctx: ParseContext = {
-      trackLines: false,
-      triviaKindLabels: ['ws'],
-      _cstTriviaLog: log,
-      _cstRawChildren: [],
-    }
+  it('records labeled trivia into the open buffer, and nowhere without one', () => {
+    const buf: CstCaptureBuf = {}
+    const ctx: ParseContext = { trackLines: false, triviaKindLabels: ['ws'], _cstBuf: buf }
     pushCstTriviaEntry(ctx, 0, 2, 0)
-    expect(log).toEqual([0, 2, 0, 0])
+    expect(buf.tl).toEqual([0, 2, 0, 0])
+
+    const bare: ParseContext = { trackLines: false, triviaKindLabels: ['ws'] }
+    pushCstTriviaEntry(bare, 0, 2, 0)
+    expect(bare).toEqual({ trackLines: false, triviaKindLabels: ['ws'] })
   })
 
-  it('cstDeferredTriviaActive is true when any trivia collector is present', () => {
-    expect(cstDeferredTriviaActive({ trackLines: false, _triviaLog: [] })).toBe(true)
+  it('cstDeferredTriviaActive is true exactly when a capture buffer is open', () => {
+    expect(cstDeferredTriviaActive({ trackLines: false, _cstBuf: {} })).toBe(true)
+    expect(cstDeferredTriviaActive({ trackLines: false, _cstLeaves: [] })).toBe(false)
     expect(cstDeferredTriviaActive({ trackLines: false })).toBe(false)
   })
 })

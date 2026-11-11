@@ -26,7 +26,8 @@ import { buildLexProgramRunner, type LexProgramRunner } from './lex-program.ts'
  */
 export type PrecompiledAssembly = {
   readonly key: number
-  readonly arity?: number
+  /** `EMITTED_ABI` of the parseman that printed it; absent before 0.62.0. */
+  readonly abi?: string
   readonly factory: EmittedFactory
   readonly plan: PoolPlan
   readonly reached: readonly number[]

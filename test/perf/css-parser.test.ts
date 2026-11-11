@@ -27,7 +27,6 @@ describe('CSS grammar (jess port) — correctness', () => {
     const c = parseCssCompiled(src)
     expect(c.errors).toEqual(i.errors)
     expect(c.tree.type).toBe(i.tree.type)
-    expect(c.trivia.entries).toBe(i.trivia.entries)
     const { iLog, cLog } = runTriviaLogParity(Stylesheet, compiledCss, src)
     expectTriviaLogParity(iLog, cLog)
   })
@@ -74,7 +73,7 @@ describePerf('CSS grammar — bootstrap perf smoke', () => {
     }
     const compiledMs = time(() => {
       const r = parseCssCompiled(src)
-      expect(r.trivia.entries).toBeGreaterThan(0)
+      expect(r.tree.triviaLog.length).toBeGreaterThan(0)
     })
     const interpMs = time(() => parseCss(src))
     console.log(`\n  bootstrap4.css (${(src.length / 1024).toFixed(1)}KB) — CST + trivia capture`)

@@ -4,7 +4,7 @@ import { commitTriviaScan, fastTriviaScanner, scanTriviaCompact } from '../combi
 
 /**
  * THE TABLE ENGINES' DEFERRED-COMMIT TRIVIA SKIP: `commitTriviaScan(scanTriviaCompact(…))`,
- * the path every labelled trivia scan takes once a log is live, answered without
+ * the path every labelled trivia scan takes once a sink is live, answered without
  * the scan where the answer is already known. Both engines call it: the closure
  * engine's `skipTrivia` and the emitted assembly's skips.
  *
@@ -21,10 +21,9 @@ import { commitTriviaScan, fastTriviaScanner, scanTriviaCompact } from '../combi
  * 21,741 of the closure engine's 53,607 trivia scans per parse started where
  * the previous one did. A scan that recorded nothing records nothing again from
  * the same position, in the same parse, under the same trivia, root selection,
- * root-capture policy, trivia log and state, and with no CST capture, and it
+ * root-capture policy and state, and with no CST capture, and it
  * ends at the same place, so the last such scan answers the repeat (`ctx._gap`).
- * The state is part of the key because a trivia arm can read it (`gate`), and
- * the log because a `leaf` sets it aside while its child runs. The memo lives
+ * The state is part of the key because a trivia arm can read it (`gate`). The memo lives
  * on the context so it is released with the parse.
  *
  * Neither applies with `trackLines` (a scan records line ranges) or under CST
@@ -36,7 +35,7 @@ export function skipDeferredTrivia(input: string, cur: number, ctx: ParseContext
   const gap = ctx._gap
   if (plain && gap !== undefined && cur === gap.at && input === gap.input && triviaP === gap.of
     && ctx._rootTriviaCapture === gap.root && ctx.state === gap.state
-    && ctx._rootTriviaKindIndex === gap.rootKinds && ctx._triviaLog === gap.log) return gap.end
+    && ctx._rootTriviaKindIndex === gap.rootKinds) return gap.end
   const end = clearRunEnd(input, cur, ctx, triviaP, plain)
   if (end >= 0) {
     remember(cur, end, ctx, input, triviaP)
@@ -53,7 +52,7 @@ export function skipDeferredTrivia(input: string, cur: number, ctx: ParseContext
  * may start, `0` where none can. `null` when the trivia's first set is unbounded.
  *
  * A gap at a character outside the table is the empty gap. It consumes nothing
- * and records nothing in any sink (trivia log, root log, capture buffer, line
+ * and records nothing in any sink (root log, capture buffer, line
  * table), so a skip there can answer `cur` without scanning. A character at or
  * above 128, or past the end of input, is not decided by the table.
  */
@@ -71,7 +70,7 @@ export function triviaLeadTable(triviaP: Combinator<unknown>): Uint8Array | null
 function clearRunEnd(input: string, cur: number, ctx: ParseContext, triviaP: Combinator<unknown> | undefined, plain: boolean): number {
   const rootKinds = ctx._rootTriviaKindIndex
   const spec = triviaP?._meta.labeledTriviaSpec
-  if (!plain || triviaP === undefined || spec == null || rootKinds === undefined || ctx._triviaLog !== undefined) return -1
+  if (!plain || triviaP === undefined || spec == null || rootKinds === undefined) return -1
   if (spec.rootKinds !== rootKinds) prime(spec, triviaP, rootKinds)
   const fast = spec.rootScan
   if (fast === null) return -1
@@ -82,7 +81,7 @@ function clearRunEnd(input: string, cur: number, ctx: ParseContext, triviaP: Com
 function remember(cur: number, end: number, ctx: ParseContext, input: string, triviaP: Combinator<unknown> | undefined): void {
   const gap = ctx._gap
   if (gap === undefined) {
-    ctx._gap = { at: cur, end, input, of: triviaP, root: ctx._rootTriviaCapture, rootKinds: ctx._rootTriviaKindIndex, log: ctx._triviaLog, state: ctx.state }
+    ctx._gap = { at: cur, end, input, of: triviaP, root: ctx._rootTriviaCapture, rootKinds: ctx._rootTriviaKindIndex, state: ctx.state }
     return
   }
   gap.at = cur
@@ -91,7 +90,6 @@ function remember(cur: number, end: number, ctx: ParseContext, input: string, tr
   gap.of = triviaP
   gap.root = ctx._rootTriviaCapture
   gap.rootKinds = ctx._rootTriviaKindIndex
-  gap.log = ctx._triviaLog
   gap.state = ctx.state
 }
 

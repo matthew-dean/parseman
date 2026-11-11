@@ -8,7 +8,7 @@ export function triviaLogStride(log: readonly number[], labels?: readonly string
   return 2
 }
 
-/** Flat trivia entries from `_triviaLog`. */
+/** Flat trivia entries from a `(start, end[, kindIndex])` log. */
 export function triviaEntriesFromLog(
   log: readonly number[],
   labels?: readonly string[],
@@ -35,7 +35,7 @@ export function expectUniqueTriviaEntries(
   labels?: readonly string[],
 ): void {
   const stride = triviaLogStride(log, labels)
-  expect(log.length % stride, `_triviaLog length must be a multiple of ${stride}`).toBe(0)
+  expect(log.length % stride, `trivia log length must be a multiple of ${stride}`).toBe(0)
   const seen = new Set<string>()
   for (const e of triviaEntriesFromLog(log, labels)) {
     expect(e.end, `trivia end must follow start at ${e.start}`).toBeGreaterThan(e.start)
@@ -52,17 +52,52 @@ export type TriviaLogRun<T> = {
   compiled: ParseResult<T>
 }
 
-/** Run interpreted + compiled with isolated `_triviaLog` buffers. */
+/**
+ * Every trivia entry the parse handed to a node builder, as one source-ordered
+ * `(start, end)` log, `(start, end, kindIndex)` with `labels`.
+ *
+ * Each committed trivia scan records into exactly one frame, the innermost open
+ * `node()`, so the union of the per-node logs is every committed trivia span. A
+ * speculative scan that was not rolled back appears twice. A builder exposes its
+ * log as `tl` or `triviaLog`; every builder of a grammar measured here must.
+ */
+export function nodeTriviaLog(value: unknown, labels?: readonly string[]): number[] {
+  const stride = labels ? 4 : 3
+  const entries: number[][] = []
+  const seen = new Set<object>()
+  const walk = (v: unknown): void => {
+    if (typeof v !== 'object' || v === null || seen.has(v)) return
+    seen.add(v)
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x)
+      return
+    }
+    const o = v as { tl?: unknown; triviaLog?: unknown }
+    const tl = o.tl ?? o.triviaLog
+    if (Array.isArray(tl) && tl.every((n): n is number => typeof n === 'number')) {
+      for (let i = 0; i + stride - 1 < tl.length; i += stride) {
+        entries.push(labels ? [tl[i]!, tl[i + 1]!, tl[i + 3]!] : [tl[i]!, tl[i + 1]!])
+      }
+    }
+    for (const x of Object.values(o)) if (x !== tl) walk(x)
+  }
+  walk(value)
+  entries.sort((x, y) => x[0]! - y[0]!)
+  return entries.flat()
+}
+
+/** Run interpreted + compiled with trivia capture on, and read each one's per-node trivia logs. */
 export function runTriviaLogParity<T>(
   parser: Combinator<T>,
   compiled: CompiledParser<T>,
   input: string,
   baseCtx: ParseContext = { trackLines: false },
+  labels: readonly string[] | undefined = baseCtx.triviaKindLabels,
 ): TriviaLogRun<T> {
-  const iLog: number[] = []
-  const cLog: number[] = []
-  const interpreted = parser.parse(input, 0, { ...baseCtx, _triviaLog: iLog })
-  const compiledResult = compiled.parseWithContext(input, { ...baseCtx, _triviaLog: cLog }, 0)
+  const interpreted = parser.parse(input, 0, { ...baseCtx, captureTrivia: true })
+  const compiledResult = compiled.parseWithContext(input, { ...baseCtx, captureTrivia: true }, 0)
+  const iLog = interpreted.ok ? nodeTriviaLog(interpreted.value, labels) : []
+  const cLog = compiledResult.ok ? nodeTriviaLog(compiledResult.value, labels) : []
   return { iLog, cLog, interpreted, compiled: compiledResult }
 }
 
@@ -75,9 +110,10 @@ export function expectTriviaLogParity(
   cLog: readonly number[],
   labels?: readonly string[],
 ): void {
+  expect(iLog.length, 'no trivia reached a node builder: the parity check would be vacuous').toBeGreaterThan(0)
   expectUniqueTriviaEntries(iLog, labels)
   expectUniqueTriviaEntries(cLog, labels)
-  expect(cLog, 'compiled _triviaLog must match interpreted _triviaLog').toEqual([...iLog])
+  expect(cLog, 'compiled trivia log must match interpreted trivia log').toEqual([...iLog])
 }
 
 export function expectTriviaLogGolden(
@@ -86,5 +122,5 @@ export function expectTriviaLogGolden(
   labels?: readonly string[],
 ): void {
   expectUniqueTriviaEntries(log, labels)
-  expect([...log], 'golden _triviaLog').toEqual([...expected])
+  expect([...log], 'golden trivia log').toEqual([...expected])
 }

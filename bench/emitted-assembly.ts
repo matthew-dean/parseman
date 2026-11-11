@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { cfgKey, type RunCfg } from '../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../src/table/emit-assembly.ts'
 import { FACTORY_ARITY_GUARD } from '../src/table/emit.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../src/table/program.ts'
 
@@ -22,7 +22,7 @@ export async function withEmittedAssembly(prog: TableProgram, cfg: RunCfg): Prom
     const factory = (await import(/* @vite-ignore */ pathToFileURL(file).href) as { default: EmittedFactory }).default
     return {
       ...prog,
-      asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }],
+      asm: [{ key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }],
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })

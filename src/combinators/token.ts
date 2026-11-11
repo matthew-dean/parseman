@@ -36,9 +36,6 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       const savedBuf = ctx._cstBuf
       const savedChildren = ctx._cstChildren
       const savedLeaves = ctx._cstLeaves
-      const savedRaw = ctx._cstRawChildren
-      const savedTriviaLog = ctx._cstTriviaLog
-      const savedOuterTriviaLog = ctx._triviaLog
       const savedRootTriviaLog = ctx._rootTriviaLog
       const wasCapturing = cstCaptureActive(ctx)
 
@@ -47,9 +44,6 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       ctx._cstBuf = undefined
       ctx._cstChildren = undefined
       ctx._cstLeaves = undefined
-      ctx._cstRawChildren = undefined
-      ctx._cstTriviaLog = undefined
-      ctx._triviaLog = undefined
       ctx._rootTriviaLog = undefined
 
       let result: ParseResult<unknown>
@@ -61,9 +55,6 @@ export function token(root: Combinator<unknown>): Combinator<string> {
         ctx._cstBuf = savedBuf
         ctx._cstChildren = savedChildren
         ctx._cstLeaves = savedLeaves
-        ctx._cstRawChildren = savedRaw
-        ctx._cstTriviaLog = savedTriviaLog
-        ctx._triviaLog = savedOuterTriviaLog
         ctx._rootTriviaLog = savedRootTriviaLog
       }
 
@@ -112,25 +103,16 @@ function makeLeaf<T, U>(
       const savedBuf = ctx._cstBuf
       const savedChildren = ctx._cstChildren
       const savedLeaves = ctx._cstLeaves
-      const savedRaw = ctx._cstRawChildren
-      const savedTriviaLog = ctx._cstTriviaLog
-      const savedOuterTriviaLog = ctx._triviaLog
       const wasCapturing = cstCaptureActive(ctx)
       ctx._cstBuf = undefined
       ctx._cstChildren = undefined
       ctx._cstLeaves = undefined
-      ctx._cstRawChildren = undefined
-      ctx._cstTriviaLog = undefined
-      ctx._triviaLog = undefined
       let result: ParseResult<T>
       try { result = root.parse(input, pos, ctx) }
       finally {
         ctx._cstBuf = savedBuf
         ctx._cstChildren = savedChildren
         ctx._cstLeaves = savedLeaves
-        ctx._cstRawChildren = savedRaw
-        ctx._cstTriviaLog = savedTriviaLog
-        ctx._triviaLog = savedOuterTriviaLog
       }
       if (!result.ok) return result
       const value = fn(result.value, result.span)

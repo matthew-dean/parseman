@@ -11,8 +11,8 @@ export type CssNode = {
   children: unknown[]
   /** Structural child count from rawChildren at build time. */
   rawCount: number
-  /** `triviaLog.length` for this node (3 numbers per captured trivia entry). */
-  localTriviaLen: number
+  /** The trivia captured in this node's own frame: `(start, end, insertIdx)` per entry. */
+  triviaLog: readonly number[]
 }
 
 export function mk(
@@ -22,13 +22,9 @@ export function mk(
   span: { start: number; end: number },
   triviaLog: readonly number[],
 ): CssNode {
-  return new CssNodeObject(type, span.start, span.end, [...children], rawChildren.length, triviaLog.length)
-}
-
-export function buildLazyTriviaMap(triviaLog: readonly number[], _input: string): { entries: number } {
-  return { entries: Math.floor(triviaLog.length / 2) }
+  return new CssNodeObject(type, span.start, span.end, [...children], rawChildren.length, triviaLog)
 }
 
 export function nilNode(): CssNode {
-  return new CssNodeObject('Nil', 0, 0, [], 0, 0)
+  return new CssNodeObject('Nil', 0, 0, [], 0, [])
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { trivia, label, regex, oneOrMore, choice } from '../../src/index.ts'
 import { analyzeLabeledTrivia, labeledTriviaSpec, triviaKindLabels, scanLabeledTriviaChunks, scanLabeledTriviaEnd, visitLabeledTrivia, recordTriviaChunks } from '../../src/cst/trivia-kinds.ts'
 import type { ParseContext } from '../../src/types.ts'
+import type { CstCaptureBuf } from '../../src/cst/capture-buffer.ts'
 
 describe('analyzeLabeledTrivia() — single labeled arm', () => {
   it('accepts oneOrMore of a single labeled regex (non-choice shape)', () => {
@@ -67,16 +68,14 @@ describe('scanLabeledTriviaChunks()', () => {
 describe('recordTriviaChunks()', () => {
   it('records selected markers with their shared complete trivia gap', () => {
     const rootLog: number[] = []
-    const fullLog: number[] = []
-    const cstLog: number[] = []
+    const buf: CstCaptureBuf = {}
     const ctx: ParseContext = {
       trackLines: false,
       triviaKindLabels: ['whitespace', 'annotation'],
-      _triviaLog: fullLog,
       _rootTriviaLog: rootLog,
       _rootTriviaKindIndex: { annotation: 0 },
       captureTrivia: true,
-      _cstTriviaLog: cstLog,
+      _cstBuf: buf,
     }
 
     recordTriviaChunks(ctx, [
@@ -85,9 +84,8 @@ describe('recordTriviaChunks()', () => {
       { start: 12, end: 13, kindIndex: 0 },
     ])
 
-    expect(fullLog).toEqual([4, 5, 0, 5, 12, 1, 12, 13, 0])
     expect(rootLog).toEqual([4, 13, 5, 12, 0])
-    expect(cstLog).toEqual([4, 5, 0, 0, 5, 12, 0, 1, 12, 13, 0, 0])
+    expect(buf.tl).toEqual([4, 5, 0, 0, 5, 12, 0, 1, 12, 13, 0, 0])
   })
 
   it('does not write a root marker when its scope is opaque', () => {

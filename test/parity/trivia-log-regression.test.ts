@@ -1,9 +1,11 @@
 /**
- * Regression: interpreted vs compiled `_triviaLog` must stay in sync.
+ * Regression: interpreted vs compiled trivia logs must stay in sync. Read from the
+ * per-node logs every builder receives (`nodeTriviaLog`), whose union is every
+ * committed trivia span.
  *
  * Red state (before fix):
  * - interpreter duplicated pairs (e.g. [13,14] ×4 on selector.css) because
- *   `_triviaLog` was committed speculatively but not rolled back with `_cstTriviaLog`
+ *   the global trivia log was committed speculatively but not rolled back with the node log
  * - compiled skipped the same pairs and advanced `curV` inside `_tc()` before the
  *   following term matched, swallowing trivia at `{` boundaries
  *
@@ -36,7 +38,7 @@ const SELECTOR_FILE_TRIVIA_LOG = [
   30, 31, 33, 34,
 ] as const
 
-describe('regression: interpreted/compiled _triviaLog parity', () => {
+describe('regression: interpreted/compiled trivia log parity', () => {
   it('selector line — golden log, no duplicate pairs, interpreted === compiled', () => {
     const { iLog, cLog, interpreted, compiled } = runTriviaLogParity(
       Stylesheet,

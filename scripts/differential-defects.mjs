@@ -585,7 +585,7 @@ export const DEFECTS = {
     why: 'OP_CONT, closure: the tail skips the rescan while trivia records, so the gap is never recorded',
     edits: [{
       file: 'src/table/assemble.ts',
-      find: 'if (ctx._triviaLog === undefined && ctx._rootTriviaLog === undefined\n      && (frame.cap === CAP_OFF || !((frame.cap === CAP_ON || ctx.captureTrivia === true)\n        && (frame.buf || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)))) {',
+      find: 'if (ctx._rootTriviaLog === undefined\n      && (frame.cap === CAP_OFF || !((frame.cap === CAP_ON || ctx.captureTrivia === true)\n        && (frame.buf || ctx._cstBuf !== undefined)))) {',
       replace: 'if (frame.cap !== 99) {',
     }],
   },
@@ -594,7 +594,7 @@ export const DEFECTS = {
     why: 'OP_CONT, emitted: the tail skips the rescan while trivia records, so the gap is never recorded',
     edits: [{
       file: 'src/table/emit-assembly.ts',
-      find: 'else ${capture === \'true\' ? `{\\n${recorded}\\n}`\n  : `if(ctx._triviaLog===undefined&&ctx._rootTriviaLog===undefined${capture === \'false\' ? \'\' : `&&!${capture}`}){',
+      find: 'else ${capture === \'true\' ? `{\\n${recorded}\\n}`\n  : `if(ctx._rootTriviaLog===undefined${capture === \'false\' ? \'\' : `&&!${capture}`}){',
       replace: 'else ${`if(true){',
     }],
   },
@@ -603,7 +603,7 @@ export const DEFECTS = {
     why: 'OP_CONT, closure: a tail that took nothing keeps the gap it recorded',
     edits: [{
       file: 'src/table/assemble.ts',
-      find: 'if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)\n      EC.e = end\n',
+      find: 'if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mRoot, scanRoot)\n      EC.e = end\n',
       replace: 'EC.e = end\n',
     }],
   },
@@ -612,7 +612,7 @@ export const DEFECTS = {
     why: 'OP_CONT, emitted: a tail that took nothing keeps the gap it recorded',
     edits: [{
       file: 'src/table/emit-assembly.ts',
-      find: 'if(v!==FAIL&&EC.e<=s0){rollbackScannedTriviaAt(ctx,tl0,tl1,lg0,lg1,rt0,rt1);EC.e=c1}',
+      find: 'if(v!==FAIL&&EC.e<=s0){rollbackScannedTriviaAt(ctx,tl0,tl1,rt0,rt1);EC.e=c1}',
       replace: 'if(v!==FAIL&&EC.e<=s0){EC.e=c1}',
     }],
   },

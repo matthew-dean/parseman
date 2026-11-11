@@ -1,4 +1,4 @@
-/** View over a flat trivia log (`_triviaLog` or per-node `triviaLog`). */
+/** View over a flat trivia log (a per-node `triviaLog`, or a `(start, end)` log). */
 export type TriviaEntriesView = {
   readonly length: number
   readonly labels: readonly string[] | undefined
@@ -77,7 +77,7 @@ function entryOffset(i: number, stride: number): number {
 
 /**
  * Wrap a flat trivia log. Stride is inferred from `labels`:
- * - root `_triviaLog`: 2 (start, end) or 3 (+ kindIndex)
+ * - `(start, end)` log: 2 (start, end) or 3 (+ kindIndex)
  * - node `triviaLog`: 3 (start, end, insertIdx) or 4 (+ kindIndex)
  */
 export function triviaEntries(

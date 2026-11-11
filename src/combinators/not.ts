@@ -28,14 +28,14 @@ export function not(combinator: Combinator<unknown>): Combinator<null> {
       // Negative lookahead is a pure predicate: whatever the inner attempt
       // captured (CST leaves/rawChildren/per-node trivia/fields), recovered (a
       // ParseError pushed to ctx._errors + embedded via captureError), or committed
-      // to the GLOBAL `_triviaLog` must be rolled back on BOTH outcomes — not()
+      // to the root `_rootTriviaLog` must be rolled back on BOTH outcomes — not()
       // consumes nothing and so may leave no side effect.
       //
       // `rollbackLookahead`, not `rollbackCstCapture`: the latter's mark omits two
       // further sinks a probe can write.
-      //   - `_triviaLog`, which `scanTrivia().commit()` writes when the probed body
+      //   - `_rootTriviaLog`, which `scanTrivia().commit()` writes when the probed body
       //     skips ambient trivia between terms. Missing it duplicates every probed
-      //     span once the region is parsed for real — `_triviaLog` has no dedup
+      //     span once the region is parsed for real — `_rootTriviaLog` has no dedup
       //     anywhere (`triviaEntries()` is a positional view over the flat array),
       //     so the duplicate reaches output.
       //   - `_probe.best`, the completions tracker, for the same reason `peek()`

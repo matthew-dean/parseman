@@ -45,6 +45,7 @@
  * what `encode.ts:1208-1213` refuses to allow for `OP_LIVE`.
  */
 import type { ParseContext } from '../types.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import {
   OP_ADJ, OP_ARMGATE, OP_RGATE, OP_RGATE2, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
@@ -152,6 +153,16 @@ export const EMITTED_PARAMS = [
 ] as const
 
 /**
+ * What a printed factory's record says it binds: the parseman minor that printed it and
+ * the helper count, as `"0.62/62"`. The count alone misses a helper whose parameters
+ * changed, which binds every argument after the change to the wrong name and runs. A
+ * helper's parameters change only in a minor (`docs/design/artifact-format.md`), so the
+ * minor covers that. The runtime refuses any record whose `abi` is not this string
+ * (`assertFactoryAbi`, `assemble.ts`).
+ */
+export const EMITTED_ABI = `${PARSEMAN_VERSION.slice(0, PARSEMAN_VERSION.lastIndexOf('.'))}/${EMITTED_PARAMS.length}`
+
+/**
  * The state the emitted scope owns, and the helpers that touch it.
  *
  * `EC` is the assembly's end-position cell, INJECTED (see `cell.ts`) rather
@@ -182,7 +193,7 @@ let _pfSeqEnd=-1
 function _asciiFoldCode(c){return c>=65&&c<=90?c+32:c}
 function _skipTrivia(input,cur,ctx){
 const s=_pfScan
-if(s!==null&&ctx._triviaLog===undefined&&!(ctx.captureTrivia===true&&(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)))return s(input,cur)
+if(s!==null&&!(ctx.captureTrivia===true&&ctx._cstBuf!==undefined))return s(input,cur)
 if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
 if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
@@ -220,9 +231,9 @@ for(let i=from;i<end;i++)if(input.charCodeAt(i)===10)starts.push(i+1)
 ctx._lineScannedTo=end
 }
 function _rollbackNeeded(ctx){
-return ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined||ctx._cstRawChildren!==undefined||ctx._cstTriviaLog!==undefined||ctx._fields!==undefined||ctx._errors!==undefined||ctx._triviaLog!==undefined||ctx._rootTriviaLog!==undefined
+return ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined||ctx._fields!==undefined||ctx._errors!==undefined||ctx._rootTriviaLog!==undefined
 }
-function _rbBuf(ctx,raw,tl,lv,lg,rt){
+function _rbBuf(ctx,raw,tl,lv,rt){
 const b=ctx._cstBuf
 const ra=b.raw
 if(ra!==undefined){
@@ -241,7 +252,6 @@ if(bt!==undefined){
 if(tl===0)b.tl=undefined
 else if(bt.length!==tl)bt.length=tl
 }
-if(ctx._triviaLog!==undefined&&ctx._triviaLog.length!==lg)ctx._triviaLog.length=lg
 if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTriviaLog.length=rt
 }
 `
@@ -263,7 +273,7 @@ else if(b.single!==undefined){b.ch=[b.single,value];b.single=undefined}
 else b.single=value
 b.rawLen++
 }
-function _rbNoRawBuf(ctx,raw,tl,lv,lg,rt){
+function _rbNoRawBuf(ctx,raw,tl,lv,rt){
 const b=ctx._cstBuf
 if(b.rawLen!==raw)b.rawLen=raw
 const ch=b.ch
@@ -277,7 +287,6 @@ if(bt!==undefined){
 if(tl===0)b.tl=undefined
 else if(bt.length!==tl)bt.length=tl
 }
-if(ctx._triviaLog!==undefined&&ctx._triviaLog.length!==lg)ctx._triviaLog.length=lg
 if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTriviaLog.length=rt
 }
 `
@@ -346,27 +355,25 @@ function emitMark(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SINKS,
       : rawMode === RAW_CAPTURE
         ? `const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0`
         : `const r=b.raw;${t}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)`
-    return `${decl ? `let ${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : ''}{const b=ctx._cstBuf
+    return `${decl ? `let ${t}raw=0,${t}tl=0,${t}lv=0,${t}rt=0${sinkSlots(t, s)}\n` : ''}{const b=ctx._cstBuf
 ${raw}
 const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${t}tl=l!==undefined?l.length:0
-${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, s)}}`
   }
-  return `${decl ? `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : `${t}n=false\n`}{const b=ctx._cstBuf
+  return `${decl ? `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}rt=0${sinkSlots(t, s)}\n` : `${t}n=false\n`}{const b=ctx._cstBuf
 if(b!==undefined){
 const r=b.raw;${t}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingle!==undefined?1:0)
 const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${t}tl=l!==undefined?l.length:0
 ${t}n=true
-}else if(ctx._cstLeaves!==undefined||ctx._cstRawChildren!==undefined||ctx._cstTriviaLog!==undefined||ctx._fields!==undefined||ctx._errors!==undefined||ctx._triviaLog!==undefined||ctx._rootTriviaLog!==undefined){
-${t}raw=ctx._cstRawChildren!==undefined?ctx._cstRawChildren.length:0
-${t}tl=ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0
+}else if(ctx._cstLeaves!==undefined||ctx._fields!==undefined||ctx._errors!==undefined||ctx._rootTriviaLog!==undefined){
+${t}raw=0
+${t}tl=0
 ${t}lv=ctx._cstLeaves!==undefined?ctx._cstLeaves.length:0
 ${t}n=true
 }
 if(${t}n){
-${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, s)}
 }}`
 }
@@ -400,24 +407,23 @@ function emitRollback(t: string, buf: boolean, rawMode: number, s: Sinks = NO_SI
   // helper applies the same `undefined` sentinel when a site cannot write one.
   const fd = s.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${t}fd)ctx._fields.length=${t}fd` : ''
   const er = s.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${t}er)ctx._errors.length=${t}er` : ''
-  if (buf && rawMode === RAW_OMIT) return `_rbNoRawBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
-  if (buf && rawMode === RAW_CAPTURE) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
-  if (buf) return `rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)`
-  if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,undefined,undefined,${t}lg,${t}rt)`
-  return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)}`
+  if (buf && rawMode === RAW_OMIT) return `_rbNoRawBuf(ctx,${t}raw,${t}tl,${t}lv,${t}rt)${fd}${er}`
+  if (buf && rawMode === RAW_CAPTURE) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}rt)${fd}${er}`
+  if (buf) return `rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}rt)`
+  if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,undefined,undefined,${t}rt)`
+  return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : 'undefined'},${s.er ? `${t}er` : 'undefined'},${t}rt)}`
 }
 
 /**
- * A mark of the two trivia logs alone, for a child the census counts as clean but
+ * A mark of the root trivia log alone, for a child the census counts as clean but
  * whose failure can leave trivia rows a failed node recorded
  * (`program.ts` `choiceLogRollbackMask`, `failureLogRollback`).
  */
 function emitLogMark(t: string): string {
-  return `const ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0,${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0`
+  return `const ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0`
 }
 function emitLogRollback(t: string): string {
-  return `{const g=ctx._triviaLog;if(g!==undefined)while(g.length>${t}lg)g.pop()}
-{const r=ctx._rootTriviaLog;if(r!==undefined)while(r.length>${t}rt)r.pop()}`
+  return `{const r=ctx._rootTriviaLog;if(r!==undefined)while(r.length>${t}rt)r.pop()}`
 }
 
 /**
@@ -440,18 +446,16 @@ if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
   if (l.tri === TRI_NONE) return fast
-  const scanned = `const ${t}tl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
-const ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+  const scanned = `const ${t}tl=ctx._cstBuf!==undefined&&ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0
 const ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const ${t}s=${skip}(input,cur,ctx)
-const ${t}stl=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
-const ${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+const ${t}stl=ctx._cstBuf!==undefined&&ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0
 const ${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const ${t}v=${callee}(input,${t}s,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(EC.e>${t}s)cur=EC.e
-else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt)}`
+else{rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}rt,${t}srt)}`
   // A character no trivia of this slot can start opens the empty gap, which
   // records nothing, so the term runs at `cur` with no marks around a scan.
   if (l.tri !== TRI_UNKNOWN) return miss === undefined ? scanned : `const ${t}c=input.charCodeAt(cur)
@@ -467,7 +471,7 @@ ${scanned}
 }`
 }
 
-const TRIVIA_LOG_LENGTH = 'ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)'
+const TRIVIA_LOG_LENGTH = 'ctx._cstBuf!==undefined&&ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0'
 
 /**
  * A lookahead term that HOLDS its gap (`hold-gap.ts`): the gap is scanned and
@@ -481,14 +485,12 @@ if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
   if (recovers) {
-    const marked = `let ${t}c=cur,${t}s=cur,${t}tl=0,${t}stl=0,${t}lg=0,${t}slg=0,${t}rt=0,${t}srt=0`
+    const marked = `let ${t}c=cur,${t}s=cur,${t}tl=0,${t}stl=0,${t}rt=0,${t}srt=0`
     if (l.tri === TRI_NONE) return `${marked}\n${fast}`
     const held = `${t}tl=${TRIVIA_LOG_LENGTH}
-${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 ${t}s=${skip}(input,cur,ctx)
 ${t}stl=${TRIVIA_LOG_LENGTH}
-${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const ${t}v=${callee}(input,${t}s,ctx)
 if(${t}v===FAIL)return FAIL
@@ -517,7 +519,7 @@ ${held}
 
 /** The next term recovered at zero width, so the gap held for it was never consumed. */
 function emitHeldGapUndo(t: string): string {
-  return `if(cur===${t}s&&${t}s!==${t}c){rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt);cur=${t}c}`
+  return `if(cur===${t}s&&${t}s!==${t}c){rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}rt,${t}srt);cur=${t}c}`
 }
 
 /**
@@ -1028,10 +1030,6 @@ return 1
    * The installed scanner arrives as a hoisted `TRIVIASCAN[ki]` const, not as an
    * argument, so a second caller cannot pollute a call site's feedback. That is
    * the same test `_skipTrivia` passed and `nextTerm` failed.
-   *
-   * `_triviaLog` is deliberately NOT resolved here. It is neither an option nor a
-   * site property — nothing in `src` writes it except a caller-supplied
-   * `ParseContext` (`types.ts:524`) — so it stays the one runtime read.
    */
   /** The test an `OP_GATE` row at `gip` fails on, with its class hoisted. */
   function gateMissTest(gip: number): string {
@@ -1075,7 +1073,7 @@ return 1
   }
 
   function capturesHere(l: SiteLabel): string {
-    const sink = l.buf ? 'true' : '(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)'
+    const sink = l.buf ? 'true' : 'ctx._cstBuf!==undefined'
     return l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
   }
 
@@ -1112,18 +1110,17 @@ return advanceTrivia(input,cur,ctx)}`)
     const sc = hoist('ts', `TRIVIASCAN[${ki}]`)
     // `ctx.captureTrivia === true && (a sink is open)`, with both conjuncts
     // resolved as far as the label takes them.
-    const sink = l.buf ? 'true' : '(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)'
+    const sink = l.buf ? 'true' : 'ctx._cstBuf!==undefined'
     const capturing = l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
     if (capturing === 'true') {
       // Capture is on and a sink is open: the bare-scanner arm is unreachable.
       skipDefs.push(`function ${nm}(input,cur,ctx){return skipTriviaScanned(${sc},input,cur,ctx)}`)
       return nm
     }
-    const guard = capturing === 'false'
-      ? 'ctx._triviaLog===undefined'
-      : `ctx._triviaLog===undefined&&!${capturing}`
-    skipDefs.push(`function ${nm}(input,cur,ctx){
-if(${guard})return ${sc}(input,cur)
+    skipDefs.push(capturing === 'false'
+      ? `function ${nm}(input,cur){return ${sc}(input,cur)}`
+      : `function ${nm}(input,cur,ctx){
+if(!${capturing})return ${sc}(input,cur)
 return skipTriviaScanned(${sc},input,cur,ctx)}`)
     return nm
   }
@@ -1506,15 +1503,13 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
         const seq = code[code[ip + 2]! + 2]!
         const seqLabel = labels.at(seq)
         const tail = link(code[ip + 3]!)
-        const recorded = tri === TRI_NONE ? '' : `const tl0=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
-const lg0=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+        const recorded = tri === TRI_NONE ? '' : `const tl0=ctx._cstBuf!==undefined&&ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0
 const rt0=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 const s0=${skipFor(seqLabel)}(input,c1,ctx)
-const tl1=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
-const lg1=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+const tl1=ctx._cstBuf!==undefined&&ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0
 const rt1=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 v=${tail}(input,s0,ctx)
-if(v!==FAIL&&EC.e<=s0){rollbackScannedTriviaAt(ctx,tl0,tl1,lg0,lg1,rt0,rt1);EC.e=c1}`
+if(v!==FAIL&&EC.e<=s0){rollbackScannedTriviaAt(ctx,tl0,tl1,rt0,rt1);EC.e=c1}`
         const quiet = `v=${tail}(input,${at},ctx)
 if(v!==FAIL&&EC.e<=${at})EC.e=c1`
         const capture = capturesHere(seqLabel)
@@ -1523,7 +1518,7 @@ if(v!==FAIL&&EC.e<=${at})EC.e=c1`
 ${tri === TRI_NONE ? `v=${tail}(input,c1,ctx)`
   : `if(q0===c1)v=${tail}(input,c1,ctx)
 else ${capture === 'true' ? `{\n${recorded}\n}`
-  : `if(ctx._triviaLog===undefined&&ctx._rootTriviaLog===undefined${capture === 'false' ? '' : `&&!${capture}`}){
+  : `if(ctx._rootTriviaLog===undefined${capture === 'false' ? '' : `&&!${capture}`}){
 ${quiet}
 }else{
 ${recorded}
@@ -1784,7 +1779,7 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
         // BODY across the interpreter and `compile`, and jess's reducers
         // throw on purpose — that is how its dialects reject illegal constructs
         // (`bench/jess/digest.ts:64`). A boundary that leaked `ctx.trivia` and
-        // five capture sinks on the way out would corrupt every subsequent parse
+        // its capture sinks on the way out would corrupt every subsequent parse
         // through the same context, so the handler IS the semantics here.
         //
         // `cstCaptureActive` IS THE SAVED STATE, read BEFORE the sinks are
@@ -1795,8 +1790,7 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
         // log: its whole point is that the child sees no ambient skipping, so
         // the match is one contiguous run of input (`ops.ts:180-190`).
         return `${head}
-const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
-const sOtl=ctx._triviaLog
+const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves
 ${isToken ? 'const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan,sRtl=ctx._rootTriviaLog\n' : ''}const wasCap=${wasCap}
 ${isToken ? `_pfScan=null
 ctx.trivia=undefined
@@ -1804,9 +1798,6 @@ ctx.triviaKindLabels=undefined
 ` : ''}ctx._cstBuf=undefined
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
-ctx._cstRawChildren=undefined
-ctx._cstTriviaLog=undefined
-ctx._triviaLog=undefined
 ${isToken ? 'ctx._rootTriviaLog=undefined\n' : ''}let v
 try{v=${child}(input,pos,ctx)}finally{
 ${isToken ? `_pfScan=sScan
@@ -1816,9 +1807,6 @@ ctx._rootTriviaLog=sRtl
 ` : ''}ctx._cstBuf=sBuf
 ctx._cstChildren=sCh
 ctx._cstLeaves=sLv
-ctx._cstRawChildren=sRaw
-ctx._cstTriviaLog=sTl
-ctx._triviaLog=sOtl
 }
 if(v===FAIL)return FAIL
 const e=EC.e
@@ -1860,8 +1848,8 @@ return v
         const scanId = t.lexPrograms[programId]!.scan
         if (scanId !== undefined) return `${head}
 const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan
-const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
-const sOtl=ctx._triviaLog,sRtl=ctx._rootTriviaLog
+const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves
+const sRtl=ctx._rootTriviaLog
 const wasCap=ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined
 _pfScan=null
 ctx.trivia=undefined
@@ -1869,9 +1857,6 @@ ctx.triviaKindLabels=undefined
 ctx._cstBuf=undefined
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
-ctx._cstRawChildren=undefined
-ctx._cstTriviaLog=undefined
-ctx._triviaLog=undefined
 ctx._rootTriviaLog=undefined
 let e
 try{e=${run}(input,pos,ctx,SCANS[${scanId}])}finally{
@@ -1881,9 +1866,6 @@ ctx.triviaKindLabels=sKinds
 ctx._cstBuf=sBuf
 ctx._cstChildren=sCh
 ctx._cstLeaves=sLv
-ctx._cstRawChildren=sRaw
-ctx._cstTriviaLog=sTl
-ctx._triviaLog=sOtl
 ctx._rootTriviaLog=sRtl
 }
 if(e<0)return FAIL
@@ -2203,7 +2185,7 @@ return FAIL
           const rollbackMask = REC ? -1 : encodedRollbackMask
           const hasRollback = rollbackMask !== 0
           // Arms that leave only trivia-log rows: restored from the full mark when
-          // one is taken, else from a mark of the two logs taken as that arm is
+          // one is taken, else from a mark of the root log taken as that arm is
           // entered. An earlier arm that failed was restored, so the lengths there
           // are the choice's own, and an arm the char gate skips takes no mark.
           const logMask = rollbackMask === -1 || !LOGS ? 0 : choiceLogRollbackMask(prog, ip)
@@ -2626,10 +2608,10 @@ gapped=true
         const per = sinks.er ? `${p}er` : 'undefined'
         const rbHelper = L.raw === RAW_OMIT ? '_rbNoRawBuf' : '_rbBuf'
         const rb = L.buf && L.raw !== 0
-          ? `${rbHelper}(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
+          ? `${rbHelper}(ctx,${p}raw,${p}tl,${p}lv,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
           : L.buf
-            ? `rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
-          : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
+            ? `rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}rt)`
+          : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}rt)`
         const markSinks = `${sinks.fd ? `\n${p}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${sinks.er ? `\n${p}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
         const markRaw = L.raw === RAW_OMIT
           ? `${p}raw=b.rawLen`
@@ -2641,7 +2623,6 @@ gapped=true
 ${markRaw}
 const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${p}tl=l!==undefined?l.length:0
-${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}`
           : `if(needMark){
 const b=ctx._cstBuf
@@ -2650,11 +2631,10 @@ const r=b.raw;${p}raw=b.noRaw===true?b.rawLen:(r!==undefined?r.length:b.rawSingl
 const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${p}tl=l!==undefined?l.length:0
 }else{
-${p}raw=ctx._cstRawChildren!==undefined?ctx._cstRawChildren.length:0
-${p}tl=ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0
+${p}raw=0
+${p}tl=0
 ${p}lv=ctx._cstLeaves!==undefined?ctx._cstLeaves.length:0
 }
-${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
 }`
         /**
@@ -2713,7 +2693,7 @@ const out=${collect ? '[]' : 'undefined'}
 ${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}${itemCls === undefined && sepCls === undefined ? '' : `const ${p}gate=ctx._probe===undefined\n`}let cur=pos
 let count=0
 for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}${itemCls !== undefined && sep === undefined ? `if(count>=${min}&&${p}gate&&${hasTrivia === 'false' ? 'true' : hasTrivia === 'true' ? 'false' : '!hasTrivia'}&&${itemMiss('cur')})break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
 ${markBody}
 let itemStart=cur
 let sepEnd=-1
@@ -2802,15 +2782,15 @@ ${L.buf && L.raw === RAW_OMIT
   : L.buf && L.raw === RAW_CAPTURE
     ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
   : staticBuild
-    ? 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,ctx._cstBuf!==undefined&&ctx._cstBuf.noRaw===true?undefined:ctx._cstBuf!==undefined||ctx._cstRawChildren!==undefined?rawEntry(nd,input,pos,end):undefined)'
-    : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
+    ? 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,ctx._cstBuf!==undefined&&ctx._cstBuf.noRaw===true?undefined:ctx._cstBuf!==undefined?rawEntry(nd,input,pos,end):undefined)'
+    : 'if(ctx._cstBuf!==undefined||ctx._cstChildren!==undefined)pushCstChild(ctx,nd,ctx._cstBuf!==undefined?rawEntry(nd,input,pos,end):undefined)'}
 EC.e=end
 return nd
 }`
         }
         const child = late === undefined ? link(code[ip + 2]!) : ''
         const runBody = late === undefined ? `const v=${child}(input,pos,ctx)` : late.body
-        const takeBack = late === undefined ? '' : 'let c0Raw\nif(sBuf===undefined&&sRaw===undefined&&sCh!==undefined)sCh.pop()\nelse if(sBuf!==undefined||sCh!==undefined)c0Raw=popCstChild(ctx)\n'
+        const takeBack = late === undefined ? '' : 'let c0Raw\nif(sBuf===undefined&&sCh!==undefined)sCh.pop()\nelse if(sBuf!==undefined||sCh!==undefined)c0Raw=popCstChild(ctx)\n'
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
         const type = k[code[ip + 5]!] as string
@@ -2879,10 +2859,7 @@ const rawNd=rawEntry(nd,input,pos,end)
 if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
 else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
 else sBuf.rawSingle=rawNd
-}else if(sCh!==undefined){
-sCh.push(nd)
-if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
-}` : `if(sBuf!==undefined){
+}else if(sCh!==undefined)sCh.push(nd)` : `if(sBuf!==undefined){
 if(sBuf.noRaw===true)_pushNodeNoRawBuf(ctx,nd)
 else{
 if(sBuf.rawOnly!==true){
@@ -2895,19 +2872,14 @@ if(sBuf.raw!==undefined)sBuf.raw.push(rawNd)
 else if(sBuf.rawSingle!==undefined){sBuf.raw=[sBuf.rawSingle,rawNd];sBuf.rawSingle=undefined}
 else sBuf.rawSingle=rawNd
 }
-}else if(sCh!==undefined){
-sCh.push(nd)
-if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
-}`
+}else if(sCh!==undefined)sCh.push(nd)`
           return `${head}
-${late?.prefix ?? ''}${gp}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+${late?.prefix ?? ''}${gp}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf,sFields=ctx._fields
 ${takeBack}const flat=${late === undefined ? '[]' : '[c0]'}
 ctx._cstBuf=undefined
 ctx._cstChildren=flat
 ctx._cstLeaves=flat
-ctx._cstRawChildren=undefined
-ctx._cstTriviaLog=undefined
 ctx.captureTrivia=false
 ctx._fields=${fields ? '[]' : 'undefined'}
 ${runBody}
@@ -2918,8 +2890,6 @@ ${fields ? 'const fieldMap=buildFieldMap(ctx._fields)\n' : ''}ctx._fields=sField
 ctx._cstBuf=sBuf
 ctx._cstChildren=sCh
 ctx._cstLeaves=sLv
-ctx._cstRawChildren=sRaw
-ctx._cstTriviaLog=sTl
 ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
@@ -2964,22 +2934,16 @@ return nd
           ? `const buf=new _BUF(undefined,true,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
-ctx._cstLeaves=undefined
-ctx._cstRawChildren=undefined
-ctx._cstTriviaLog=undefined`
+ctx._cstLeaves=undefined`
           : keepChildren
           ? `const buf=new _BUF(undefined,undefined,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
-ctx._cstLeaves=undefined
-ctx._cstRawChildren=undefined
-ctx._cstTriviaLog=undefined`
+ctx._cstLeaves=undefined`
           : `const buf=new _BUF(true,undefined,0)
 ctx._cstBuf=buf
 ctx._cstChildren=undefined
-ctx._cstLeaves=undefined
-ctx._cstRawChildren=undefined
-ctx._cstTriviaLog=undefined`
+ctx._cstLeaves=undefined`
         const finishCapture = omitsRaw
           ? `const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
 const hostKids=kids
@@ -2996,7 +2960,7 @@ const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
 const tlog=buf.tl??EMPTY_TLOG`
         const seedCapture = late === undefined ? '' : omitsRaw ? 'buf.single=c0\nbuf.rawLen=1\n' : 'buf.single=c0\nbuf.rawSingle=c0Raw!==undefined?c0Raw:rawEntry(c0,input,pos,c1)\n'
         return `${head}
-${late?.prefix ?? ''}${!hostCst && !tracked ? gp : ''}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+${late?.prefix ?? ''}${!hostCst && !tracked ? gp : ''}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf
 ${takeBack}${openCapture}
 ${seedCapture}ctx.captureTrivia=${captureWide}
@@ -3013,8 +2977,6 @@ ${structural ? 'ctx._triviaCaptureMask=savedMask\n' : ''}${finishCapture}
 ctx._cstBuf=sBuf
 ctx._cstChildren=sCh
 ctx._cstLeaves=sLv
-ctx._cstRawChildren=sRaw
-ctx._cstTriviaLog=sTl
 ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
 const end=EC.e
@@ -3030,8 +2992,8 @@ ${L.buf && L.raw === RAW_OMIT
   // so an in-node site's parent collector is present by the same fact.
   ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
   : staticBuild
-    ? 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined?(sBuf.noRaw===true?undefined:rawEntry(nd,input,pos,end)):sRaw!==undefined?rawEntry(nd,input,pos,end):undefined)'
-    : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
+    ? 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined?(sBuf.noRaw===true?undefined:rawEntry(nd,input,pos,end)):undefined)'
+    : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,sBuf!==undefined?rawEntry(nd,input,pos,end):undefined)'}
 EC.e=end
 return nd
 }`

@@ -33,10 +33,7 @@ function par<T>(
 
 describe('choice fast paths — capturing compile parity', () => {
   const ws = trivia(regex(/[ \t]+/))
-  const cstCtx = () => {
-    const triviaLog: number[] = []
-    return { trackLines: false, _triviaLog: triviaLog }
-  }
+  const cstCtx = () => ({ trackLines: false, captureTrivia: true })
 
   // literalsLongestFirst: combinator choice inside node()
   const combinatorRule = node(
@@ -76,19 +73,18 @@ describe('choice fast paths — capturing compile parity', () => {
 })
 
 describe('parseWithContext — compiled CST capture', () => {
-  it('passes _triviaLog through to generated parser', () => {
+  it('hands a trivia-reading reducer the gaps of its own frame', () => {
     const ws = trivia(regex(/[ \t]+/))
     const p = node(
       'Pair',
       parser({ trivia: ws }, sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/))),
-      (c, _r, s, tl) => ({ _tag: 'node', type: 'Pair', span: s, n: c.length, tl: tl.length }),
+      (c, _f, s, _raw, tl) => ({ _tag: 'node', type: 'Pair', span: s, n: c.length, tl: [...tl] }),
     )
     const compiled = compile(p)
-    const triviaLog: number[] = []
-    const r = compiled.parseWithContext('a : 1', { trackLines: false, _triviaLog: triviaLog })
+    const r = compiled.parseWithContext('a : 1', { trackLines: false, captureTrivia: true })
     expect(r.ok).toBe(true)
-    expect(triviaLog.length).toBeGreaterThan(0)
-    if (r.ok) expect((r.value as { tl: number }).tl).toBeGreaterThan(0)
+    // `(start, end, insertIdx)` per gap: ` ` at [1, 2) before `:`, ` ` at [3, 4) before `1`.
+    if (r.ok) expect((r.value as { tl: number[] }).tl).toEqual([1, 2, 1, 3, 4, 2])
   })
 })
 

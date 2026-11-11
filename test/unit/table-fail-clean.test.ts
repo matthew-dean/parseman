@@ -37,7 +37,7 @@ function parse(root: Combinator<unknown>, input: string): { value: unknown; read
   const linked = assemble(resolveTable(prog), prog, CFG)
   const { log, reads } = countingLog()
   const ctx = createParseContext()
-  ctx._triviaLog = log
+  ctx._rootTriviaLog = log
   linked.begin(ctx)
   const v = linked.pieces.Root!(input, 0, ctx)
   linked.finish()

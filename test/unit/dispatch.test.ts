@@ -4,6 +4,7 @@ import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   attempt,
   choice,
+  classifiedTrivia,
   dispatch,
   endsWith,
   expect as expectParser,
@@ -25,7 +26,6 @@ import {
   startsWith,
   token,
   transform,
-  trivia,
   when,
   withCtx,
   type Combinator,
@@ -46,6 +46,13 @@ function run<T>(parser: Combinator<T>, input: string) {
 function expectEnginesResult<T>(parser: Combinator<T>, input: string, expected: unknown): void {
   expect(run(parser, input)).toEqual(expected)
   expect(compile(parser).parse(input)).toEqual(expected)
+}
+
+
+/** Labelled trivia whose whitespace rows the root trivia log keeps, for observing trivia rollback. */
+const ws = classifiedTrivia({ ws: regex(/[ ]+/) })
+function rootLogCtx(log: number[]): ParseContext {
+  return { trackLines: false, triviaKindLabels: ['ws'], _rootTriviaLog: log, _rootTriviaKindIndex: { ws: 0 } }
 }
 
 describe('dispatch()', () => {
@@ -224,7 +231,7 @@ describe('dispatch()', () => {
 
   it('rolls back selected-tail trivia log entries before returning a committed failure', () => {
     const root = parser(
-      { trivia: trivia(regex(/[ ]+/)) },
+      { trivia: ws },
       dispatch(
         literal('k'),
         when('k', sequence(
@@ -233,17 +240,17 @@ describe('dispatch()', () => {
         )),
       ),
     )
+    const compiledRoot = compile(root)
+
+    // The sink records the gap where the tail commits it.
+    const kept: number[] = []
+    expect(compiledRoot.parseWithContext('kx y', rootLogCtx(kept), 0).ok).toBe(true)
+    expect(kept).toEqual([2, 3, 2, 3, 0])
 
     const interpretedLog: number[] = []
     const compiledLog: number[] = []
-    const interpreted = root.parse('kx z', 0, {
-      trackLines: false,
-      _triviaLog: interpretedLog,
-    } as ParseContext)
-    const compiled = compile(root).parseWithContext('kx z', {
-      trackLines: false,
-      _triviaLog: compiledLog,
-    }, 0)
+    const interpreted = root.parse('kx z', 0, rootLogCtx(interpretedLog))
+    const compiled = compiledRoot.parseWithContext('kx z', rootLogCtx(compiledLog), 0)
 
     const expected = {
       ok: false,
@@ -559,7 +566,7 @@ describe('dispatch()', () => {
 
   it('rolls back selector side effects when routed branches own the selected span', () => {
     const root = parser(
-      { trivia: trivia(regex(/[ ]+/)) },
+      { trivia: ws },
       dispatch(
         field('head', transform(sequence(literal('a'), literal('b')), () => 'ab')),
         when('ab', sequence(routed(), literal('!'))),
@@ -569,15 +576,13 @@ describe('dispatch()', () => {
     const interpretedLog: number[] = []
     const interpretedFields: NonNullable<ParseContext['_fields']> = []
     const interpreted = root.parse('a b!', 0, {
-      trackLines: false,
-      _triviaLog: interpretedLog,
+      ...rootLogCtx(interpretedLog),
       _fields: interpretedFields,
-    } as ParseContext)
+    })
     const compiledLog: number[] = []
     const compiledFields: NonNullable<ParseContext['_fields']> = []
     const compiled = compile(root).parseWithContext('a b!', {
-      trackLines: false,
-      _triviaLog: compiledLog,
+      ...rootLogCtx(compiledLog),
       _fields: compiledFields,
     }, 0)
 
@@ -602,9 +607,7 @@ describe('dispatch()', () => {
       parse(_input: string, pos: number, ctx: ParseContext) {
         const span = { start: pos, end: pos + 2 }
         ctx._cstLeaves?.push({ _tag: 'leaf', value: 'selector-leaf-leak', span })
-        ctx._cstRawChildren?.push({ _tag: 'leaf', value: 'selector-raw-leak', span })
-        ctx._cstTriviaLog?.push(pos, pos + 1, 0)
-        ctx._triviaLog?.push(pos, pos + 1)
+        ctx._rootTriviaLog?.push(pos, pos + 1, pos, pos + 1, 0)
         ctx._fields?.push({ name: 'selector', value: 'field-leak', span })
         ctx._errors?.push({ _tag: 'parseError', span, expected: ['selector-leak'] } satisfies ParseError)
         return { ok: true, value: 'ab', span }
@@ -622,26 +625,20 @@ describe('dispatch()', () => {
       (input: string, ctx: ParseContext) => compile(parser).parseWithContext(input, ctx, 0),
     ]) {
       const leaves: unknown[] = []
-      const raw: unknown[] = []
-      const cstTrivia: number[] = []
-      const triviaLog: number[] = []
+      const rootTriviaLog: number[] = []
       const fields: NonNullable<ParseContext['_fields']> = []
       const errors: ParseError[] = []
       const result = parse('ab!', {
         trackLines: false,
         _cstLeaves: leaves,
-        _cstRawChildren: raw,
-        _cstTriviaLog: cstTrivia,
-        _triviaLog: triviaLog,
+        _rootTriviaLog: rootTriviaLog,
         _fields: fields,
         _errors: errors,
       })
 
       expect(result).toEqual(expected)
       expect(leaves.map(leaf => (leaf as { value?: unknown }).value)).not.toContain('selector-leaf-leak')
-      expect(raw.map(entry => (entry as { value?: unknown }).value)).not.toContain('selector-raw-leak')
-      expect(cstTrivia).toEqual([])
-      expect(triviaLog).toEqual([])
+      expect(rootTriviaLog).toEqual([])
       expect(fields).toEqual([])
       expect(errors).toEqual([])
     }

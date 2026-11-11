@@ -251,7 +251,7 @@ export const ALLOW = new Map([
    * The rule's backlog on arrival. Each pair is one piece defined twice; the fix
    * is to define it once and capture it, which is engine work this gate's lane
    * did not do. */
-  ['INV-13:src/combinators/trivia-skip.ts:needsTriviaRollback|src/table/assemble.ts:rollbackNeeded#6402e771bc1910b5',
+  ['INV-13:src/combinators/trivia-skip.ts:needsTriviaRollback|src/table/assemble.ts:rollbackNeeded#05826598b08cd9ea',
     { category: 'DEBT', why: 'the closure assembler re-declares trivia-skip\'s rollback test instead of importing it', ref: 'https://github.com/matthew-dean/parseman/issues/252' }],
   ['INV-13:src/table/assemble.ts:bindRunners|src/table/assemble.ts:bindRunners#158ebbaf2b43b421',
     { category: 'DEBT', why: 'two sequence lowerings each declare the same runner-block binder', ref: 'https://github.com/matthew-dean/parseman/issues/252' }],

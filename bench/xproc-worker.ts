@@ -48,7 +48,7 @@ if (a.suite === 'density') {
   if (c === undefined) throw new Error(`no density case ${a.id}`)
   const compiled = compile(caseGrammar(c))
   const input = caseInput(c, a.rules)
-  parse = () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+  parse = () => compiled.parseWithContext(input, { trackLines: false }, 0)
 } else {
   const w = buildWorkloads().find(x => x.id === a.id)
   if (w === undefined) throw new Error(`no workload ${a.id}`)

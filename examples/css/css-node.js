@@ -9,13 +9,13 @@ function CssSpan(start, end) {
   this.end = end
 }
 
-export function CssNodeObject(type, start, end, children, rawCount, localTriviaLen) {
+export function CssNodeObject(type, start, end, children, rawCount, triviaLog) {
   this._tag = 'node'
   this.type = type
   this.span = new CssSpan(start, end)
   this.children = children
   this.rawCount = rawCount
-  this.localTriviaLen = localTriviaLen
+  this.triviaLog = triviaLog
 }
 
 CssSpan.prototype = Object.prototype

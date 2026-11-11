@@ -215,7 +215,7 @@ export function mayLeavePartialCapture(
     case 'lines':
       return mayLeavePartialCapture(d.body, seen, triviaActive, throughNodes)
     // node() captures its children into a frame of its own and drops it on
-    // failure. The trivia logs (`_triviaLog`, `_rootTriviaLog`) are not part of
+    // failure. The root trivia log (`_rootTriviaLog`) is not part of
     // that frame: trivia its body scanned before failing stays recorded. With
     // `throughNodes` (a program that installs trivia somewhere) a node leaves
     // what its body leaves; without, it leaves nothing.
@@ -270,7 +270,7 @@ export function mayLeavePartialCapture(
     // left to right. Two things put it there:
     //   - a term that captures (`capturesLeaf`/`hasNodeDef`), and
     //   - the inter-term TRIVIA scan, which under `capturing` pushes into
-    //     `_cstRawChildren`/`_cstTriviaLog` BEFORE the term at each boundary
+    //     the open capture buffer BEFORE the term at each boundary
     //     i >= 1. `emitSeqValues` only rewinds that push on the term's SUCCESS
     //     path (the "matched empty, so leave the whitespace out of the span"
     //     branch); a term that FAILS breaks straight out with the trivia still

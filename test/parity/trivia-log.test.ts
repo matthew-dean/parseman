@@ -6,14 +6,14 @@ import {
 import { expectTriviaLogGolden, expectTriviaLogParity, runTriviaLogParity } from './helpers/trivia-log-parity.ts'
 
 describe('trivia log parity — interpreted vs compiled', () => {
-  it('sequence zero-progress rollback does not pollute _triviaLog', () => {
+  it('sequence zero-progress rollback does not pollute the trivia log', () => {
     const rw = trivia(regex(/[ \t]+/))
     const g = rules((r: { item: ReturnType<typeof regex> }) => {
       const item = regex(/a/)
       const root = node(
         'Root',
         parser({ trivia: rw }, sequence(item, many(sequence(optional(literal('>')), item)))),
-        (c, raw, s, tl) => ({ span: s, children: [...c], tl: [...tl] }),
+        (c, _f, s, _raw, tl) => ({ span: s, children: [...c], tl: [...tl] }),
       )
       return { item, root }
     })
@@ -23,18 +23,18 @@ describe('trivia log parity — interpreted vs compiled', () => {
     expectTriviaLogParity(iLog, cLog)
   })
 
-  it('peek() probe does not pollute _triviaLog — a probed region logs its trivia ONCE', () => {
+  it('peek() probe does not pollute the trivia log — a probed region logs its trivia ONCE', () => {
     const rw = trivia(oneOrMore(choice(regex(/[ \t\n\r\f]+/), regex(/\/\*(?:[^*]|\*(?!\/))*\*\//))))
     // The probed body is a MULTI-TERM sequence, so the probe itself skips — and
     // COMMITS — the trivia between its terms. `peek` is zero-width, so the enclosing
     // sequence then parses that exact region for real. A probe that rolls back CST
-    // capture but not the global `_triviaLog` logs the span twice.
+    // capture but not the trivia log logs the span twice.
     const body = () => sequence(literal('a'), literal('b'))
     const g = rules(() => {
       const root = node(
         'Root',
         parser({ trivia: rw }, sequence(peek(body()), body())),
-        (c, raw, s, tl) => ({ span: s, children: [...c], tl: [...tl] }),
+        (c, _f, s, _raw, tl) => ({ span: s, children: [...c], tl: [...tl] }),
       )
       return { root }
     })
@@ -51,7 +51,7 @@ describe('trivia log parity — interpreted vs compiled', () => {
     expectTriviaLogParity(iLog, cLog)
   })
 
-  it('not() probe does not pollute _triviaLog — a probed region logs its trivia ONCE', () => {
+  it('not() probe does not pollute the trivia log — a probed region logs its trivia ONCE', () => {
     const rw = trivia(oneOrMore(choice(regex(/[ \t\n\r\f]+/), regex(/\/\*(?:[^*]|\*(?!\/))*\*\//))))
     // Same failure as `peek` above, but `not` leaks it on BOTH engines. The probed
     // body is a MULTI-TERM sequence whose LEADING terms match, so the probe skips —
@@ -64,7 +64,7 @@ describe('trivia log parity — interpreted vs compiled', () => {
       const root = node(
         'Root',
         parser({ trivia: rw }, sequence(not(probed), body())),
-        (c, raw, s, tl) => ({ span: s, children: [...c], tl: [...tl] }),
+        (c, _f, s, _raw, tl) => ({ span: s, children: [...c], tl: [...tl] }),
       )
       return { root }
     })
@@ -74,7 +74,7 @@ describe('trivia log parity — interpreted vs compiled', () => {
 
     expect(interpreted.ok).toBe(true)
     // ONE entry. Pre-fix, BOTH engines logged it twice, as [1, 10, 1, 10]: the
-    // interpreter because not()'s rollback mark omitted `_triviaLog`, the compiled
+    // interpreter because not()'s rollback mark omitted the trivia log, the compiled
     // `emitNot` because it emitted no rollback of its own at all. Agreeing-but-wrong
     // is why plain interpreted/compiled parity never caught this — hence the GOLDEN
     // assertion alongside the parity one.
@@ -119,7 +119,7 @@ describe('trivia log parity — interpreted vs compiled', () => {
       const root = node(
         'Root',
         parser({ trivia: rw }, sequence(a, many(b))),
-        (c, raw, s, tl) => ({ span: s, children: [...c], tl: [...tl] }),
+        (c, _f, s, _raw, tl) => ({ span: s, children: [...c], tl: [...tl] }),
       )
       return { a, b, root }
     })
@@ -137,12 +137,12 @@ describe('trivia log parity — interpreted vs compiled', () => {
       const compound = node(
         'Compound',
         parser({ trivia: rw }, oneOrMore(r.basicSel)),
-        (c, raw, s, tl) => ({ span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ span: s, tl: [...tl], children: [...c] }),
       )
       const cx = node(
         'Cx',
         parser({ trivia: rw }, sequence(r.compound, many(sequence(optional(r.combinator), r.compound)))),
-        (c, raw, s, tl) => ({ span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ span: s, tl: [...tl], children: [...c] }),
       )
       return { basicSel, combinator, compound, cx }
     })

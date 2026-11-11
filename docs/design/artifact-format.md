@@ -33,10 +33,12 @@ so a stale artifact is not rejected with a clear message. That check is
 [#186](https://github.com/matthew-dean/parseman/issues/186). Until it lands, the rule above
 is a design rule, not a runtime guarantee.
 
-One narrower check does exist. A printed assembly factory opens with
-`FACTORY_ARITY_GUARD` (`src/table/emit.ts`): it throws, naming the version that printed
-it, when the runtime calling it passes fewer helpers than `EMITTED_PARAMS` had when it
-was printed. It counts helpers; it does not compare versions.
+One narrower check does exist, for printed assembly factories. Each record carries
+`abi` (`EMITTED_ABI`, `src/table/emit-assembly.ts`): the minor of the parseman that
+printed it and its helper count, as `"0.62/62"`. The runtime refuses a record whose `abi`
+is not its own, naming both (`assertFactoryAbi`, `src/table/assemble.ts`). The factory
+also opens with `FACTORY_ARITY_GUARD` (`src/table/emit.ts`), which throws when it is called
+with any other number of helpers.
 
 ## Composition works on rule maps, not on printed tables
 
@@ -63,20 +65,16 @@ own stamp and obeys the same rule.
 
 The rule is not enforced, so in practice a newer runtime does run an older artifact: a
 package's `parseman/table` resolves to whatever version the consumer installed. The one
-shape that meets this is the emitted-assembly factory, which takes its helpers in
+shape the runtime checks is the emitted-assembly factory, which takes its helpers in
 `EMITTED_PARAMS` order (`src/table/emit-assembly.ts`):
 
-- **Helpers are appended, never removed or reordered, within a minor.** A factory printed
-  by an earlier version declares a prefix of the list and ignores the trailing arguments,
-  so it still binds every helper it names. 0.59.0 relies on this for its constructor
-  helpers.
-- **A factory refuses an older runtime.** `FACTORY_ARITY_GUARD` (`src/table/emit.ts`)
-  throws, naming the printing version, when the runtime passes fewer helpers than the
-  factory was printed with.
-- **Removing a helper breaks every factory printed before it**, and a factory printed
-  before 0.59.0 has no guard, so it would bind the wrong helpers. Such a change belongs
-  in a minor and must also add a runtime-side check of the factory's declared parameter
-  count.
-- **Helpers are never reordered.** A reorder keeps the count, so neither guard would see
-  it. One would need a check of the order itself (an ABI identifier printed with the
-  factory), which does not exist.
+- **A helper's parameters change only in a minor, and so does the list's order.** Either
+  keeps the count, so a factory printed before the change binds every argument after it to
+  the wrong name and runs. The minor in `abi` is what refuses it. 0.62.0 did this to
+  `rollbackTriviaAt` and `rollbackScannedTriviaAt`; a factory printed by 0.61.x is refused
+  by 0.62.0 instead of recording trivia rows twice.
+- **Within a minor, helpers are appended, never removed.** A patch that appends one changes
+  the count in `abi`, so the runtime refuses a factory printed before it, and the factory's
+  own guard refuses an older runtime.
+- **A record printed before 0.62.0 carries `arity` (the count) and no `abi`**, and one
+  printed before 0.60.0 carries neither; the runtime refuses both.

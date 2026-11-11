@@ -4,7 +4,7 @@ import {
   type Combinator, word,
 } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { OP_ATTEMPT, OP_CHOICE, OP_OPT } from '../../src/table/ops.ts'
@@ -29,7 +29,7 @@ function precompiled(prog: TableProgram): Entry {
   const factory = new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory']
   return tableRules(ownTableProgram({
     ...owned,
-    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   })).Root! as Entry
 }
 
@@ -46,7 +46,7 @@ function precompiledCountingExpectedMerges(prog: TableProgram, counter: { n: num
     compiled(...args, counter)) as PrecompiledAssembly['factory'])
   return tableRules(ownTableProgram({
     ...owned,
-    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   })).Root! as Entry
 }
 

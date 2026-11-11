@@ -456,7 +456,7 @@ for (const [file, { ast, lineAt }] of parsed) {
  * WHY THIS EXACT SHAPE: one `delete` flips `%HasFastProperties` to false on an
  * object of this shape, and RE-ADDING THE PROPERTY DOES NOT RESTORE IT. That is
  * survivable on a scratch object that dies at the end of the call. It is a
- * catastrophe on a long-lived one: `delete ctx._triviaLog` runs per token and
+ * catastrophe on a long-lived one: `delete ctx._rootTriviaLog` would run per token and
  * per leaf on `ctx`, the single object every combinator reads on every step, so
  * the FIRST `token()` in a parse can put it in dictionary mode for the
  * remainder. Same class as INV-1, and the reason this rule is separate from a
@@ -1371,7 +1371,7 @@ if (asJson) {
   for (const f of live) console.log(`${f.rule}  ${f.file}:${f.line}\n    ${f.message}\n`)
   if (allowed.length) {
     // One line per allowlist ENTRY, with its category and the site count it
-    // covers — several sites can share one entry (six `delete ctx._triviaLog`
+    // covers — several sites can share one entry (six `delete ctx._rootTriviaLog`
     // calls in one function are one exemption, not six).
     const byKey = new Map()
     for (const f of allowed) byKey.set(f.key, (byKey.get(f.key) ?? 0) + 1)

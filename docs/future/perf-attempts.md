@@ -354,6 +354,15 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     parses with a live root trivia log. Dropping the gap memo is rejected (below).
   - Branch `perf/shipped-alloc-trivia`.
 
+- **Delete three trivia slots no engine read back, and build a raw entry only where a buffer
+  takes it.** `ParseContext._triviaLog`, `_cstTriviaLog` and `_cstRawChildren` were saved,
+  cleared and tested around every attempt, token and node on all four engines. A node also
+  built `rawEntry()` (a leaf, a span and a slice for a non-node value) and then dropped it when
+  no `_cstBuf` was open. Call count against v0.61.9: branch tests fall 2.6% to 10.2% on every
+  row and calls up to 3.7% (Less `app.less` AST −8.15% branches, −3.62% calls); no row rises.
+  Time not measured: the x64 machine is with the cold-start lane. Breaking for printed
+  factories (two helper signatures), so it declares 0.62.0 with an `abi` lock on the record.
+
 ## Rejected (measured)
 
 - **Merging same-text functions before the entry join.** Two earlier places for the merge

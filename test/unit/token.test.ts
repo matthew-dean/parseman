@@ -1,7 +1,7 @@
 import { beforeAll, describe, it, expect } from 'vitest'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
-  choice, cstBuildHost, leaf, literal, many, node, noTrivia, oneOrMore, optional, parse, parser, regex, sequence, sourceLeaf, token, trivia,
+  choice, classifiedTrivia, cstBuildHost, leaf, literal, many, node, noTrivia, oneOrMore, optional, parse, parser, regex, sequence, sourceLeaf, token, trivia,
   sepBy, transform,
 } from '../../src/index.ts'
 import type { CSTLeaf, ParseContext } from '../../src/index.ts'
@@ -37,8 +37,13 @@ const fallbackToken = token(optional(regex(/a/g)))
 const fallbackCompiled = compile(fallbackToken)
 const throwingToken = token(transform(literal('a'), () => { throw new Error('boom') }))
 const throwingCompiled = compile(throwingToken)
-const nestedTriviaToken = token(sequence(literal('a'), parser({ trivia: ws }, sequence(literal('['), literal(']')))))
+const nestedScope = parser({ trivia: classifiedTrivia({ ws: regex(/[ \t\n]+/) }) }, sequence(literal('['), literal(']')))
+const nestedTriviaToken = token(sequence(literal('a'), nestedScope))
 const nestedTriviaCompiled = compile(nestedTriviaToken)
+/** A context whose root trivia log keeps whitespace rows. */
+function rootLogCtx(log: number[]): ParseContext {
+  return { trackLines: false, triviaKindLabels: ['ws'], _rootTriviaLog: log, _rootTriviaKindIndex: { ws: 0 } }
+}
 const identOrFunctionToken = token(sequence(regex(/[a-z]+/), optional(literal('('))))
 const identOrFunctionDoc = parser(
   { trivia: ws },
@@ -211,26 +216,20 @@ describe('token()', () => {
     ]) {
       const cstChildren: unknown[] = []
       const cstLeaves: unknown[] = []
-      const rawChildren: unknown[] = []
-      const cstTriviaLog: number[] = []
-      const triviaLog: number[] = []
+      const rootTriviaLog: number[] = []
       const ctx: ParseContext = {
         trackLines: false,
         trivia: ws,
         _cstChildren: cstChildren,
         _cstLeaves: cstLeaves,
-        _cstRawChildren: rawChildren,
-        _cstTriviaLog: cstTriviaLog,
-        _triviaLog: triviaLog,
+        _rootTriviaLog: rootTriviaLog,
       }
 
       expect(() => run(ctx)).toThrow('boom')
       expect(ctx.trivia).toBe(ws)
       expect(ctx._cstChildren).toBe(cstChildren)
       expect(ctx._cstLeaves).toBe(cstLeaves)
-      expect(ctx._cstRawChildren).toBe(rawChildren)
-      expect(ctx._cstTriviaLog).toBe(cstTriviaLog)
-      expect(ctx._triviaLog).toBe(triviaLog)
+      expect(ctx._rootTriviaLog).toBe(rootTriviaLog)
     }
   })
 
@@ -240,11 +239,15 @@ describe('token()', () => {
       (ctx: ParseContext) => nestedTriviaCompiled.parseWithContext('a[ ]', ctx, 0),
     ]) {
       const triviaLog: number[] = []
-      const ctx: ParseContext = { trackLines: false, _triviaLog: triviaLog }
+      const ctx = rootLogCtx(triviaLog)
       expect(run(ctx)).toMatchObject({ ok: true, value: 'a[ ]', span: { start: 0, end: 4 } })
-      expect(ctx._triviaLog).toBe(triviaLog)
+      expect(ctx._rootTriviaLog).toBe(triviaLog)
       expect(triviaLog).toEqual([])
     }
+    // Outside a token the same scope records its gap, so the empty log above is the token's doing.
+    const outside: number[] = []
+    expect(nestedScope.parse('[ ]', 0, rootLogCtx(outside)).ok).toBe(true)
+    expect(outside).toEqual([1, 2, 1, 2, 0])
   })
 })
 

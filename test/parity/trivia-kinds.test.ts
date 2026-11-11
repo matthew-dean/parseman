@@ -33,7 +33,7 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
     // so its generated hot path must not pay for root-log saves or rollbacks.
   })
 
-  it('records per-chunk kind indices in _triviaLog', () => {
+  it('records per-chunk kind indices in the node trivia log', () => {
     const rw = labeledRw()
     const g = rules(r => {
       const a = regex(/a/)
@@ -41,21 +41,21 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
       const root = node(
         'Root',
         parser({ trivia: rw }, sequence(a, many(b))),
-        (c, raw, s, tl) => ({ span: s, children: [...c], tl: [...tl] }),
+        (c, _f, s, _raw, tl) => ({ span: s, children: [...c], tl: [...tl] }),
       )
       return { a, b, root }
     })
 
     const input = 'a /*x*/ b '
-    const log: number[] = []
-    g.root.parse(input, 0, {
+    const r = g.root.parse(input, 0, {
       trackLines: false,
       trivia: rw,
       triviaKindLabels: KIND_LABELS,
-      _triviaLog: log,
+      captureTrivia: true,
     })
+    if (!r.ok) throw new Error('parse failed')
 
-    const entries = triviaEntries(log, KIND_LABELS)
+    const entries = triviaEntries(r.value.tl, KIND_LABELS, { nodeLog: true })
     expect(entries.length).toBe(3)
     expect(entries.kind(0)).toBe('whitespace')
     expect(entries.text(0, input)).toBe(' ')
@@ -72,12 +72,12 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
       const compound = node(
         'Compound',
         parser({ trivia: rw }, oneOrMore(r.basicSel)),
-        (c, raw, s, tl) => ({ span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ span: s, tl: [...tl], children: [...c] }),
       )
       const cx = node(
         'Cx',
         parser({ trivia: rw }, sequence(r.compound, many(sequence(literal('>'), r.compound)))),
-        (c, raw, s, tl) => ({ span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ span: s, tl: [...tl], children: [...c] }),
       )
       return { basicSel, compound, cx }
     })
@@ -99,7 +99,7 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
 
   it('labeled regex arms (no fast path) still parity', () => {
     const rw = trivia(oneOrMore(choice(
-      label('ws', regex(/[ \t]+/)),
+      label('ws', regex(/[ \t\n]+/)),
       label('line', regex(/\/\/.*/)),
     )))
     const labels = ['ws', 'line'] as const
@@ -108,18 +108,20 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
       const root = node(
         'Root',
         parser({ trivia: rw }, sequence(tok, tok)),
-        (c, raw, s, tl) => ({ span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ span: s, tl: [...tl], children: [...c] }),
       )
       return { tok, root }
     })
 
     const compiled = compile(g.root)
-    const { iLog, cLog } = runTriviaLogParity(g.root, compiled, 'aa //c\n bb', {
+    const { iLog, cLog, interpreted } = runTriviaLogParity(g.root, compiled, 'aa //c\n bb', {
       trackLines: false,
       trivia: rw,
       triviaKindLabels: labels,
     })
+    expect(interpreted.ok).toBe(true)
     expectTriviaLogParity(iLog, cLog, labels)
+    expect(triviaEntriesFromLog(iLog, labels).map(e => labels[e.kindIndex!])).toEqual(['ws', 'line', 'ws'])
   })
 })
 
@@ -316,7 +318,7 @@ describe('label() vs node() — no conflict', () => {
       const root = node(
         'Expr',
         parser({ trivia: rw }, r.item),
-        (c, raw, s, tl) => ({ type: 'Expr', span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ type: 'Expr', span: s, tl: [...tl], children: [...c] }),
       )
       return { item, root }
     })
@@ -325,7 +327,6 @@ describe('label() vs node() — no conflict', () => {
       trackLines: false,
       trivia: rw,
       triviaKindLabels: KIND_LABELS,
-      _triviaLog: [],
     })
     expect(built.ok && built.value).toMatchObject({ type: 'Expr' })
     expect(rw._meta.triviaKindLabels).toEqual([...KIND_LABELS])
