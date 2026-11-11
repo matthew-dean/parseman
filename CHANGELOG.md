@@ -7,14 +7,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 - **Breaking: printed parsers must be printed again with 0.62.0.** The emitted helpers
   `rollbackTriviaAt` and `rollbackScannedTriviaAt` take fewer arguments. A printed factory
-  takes its helpers by position, and the helper count did not change, so one printed by
-  0.61.x would bind the arguments after the change to the wrong names and run: a
+  takes its helpers by position, and a helper count cannot see a changed parameter list, so
+  one printed by 0.61.x with a matching count would bind the arguments after the change to
+  the wrong names and run: a
   `sequence(literal('x'), optional(node('E', optional(literal('z')))), literal('y'))` on
   `x/*c*/y` recorded its root trivia row twice and reported success. Each printed record now
-  carries `abi`, the printing minor and helper count (`"0.62/59"`), in place of `arity`. The
+  carries `abi`, the printing minor and helper count (`"0.62/60"`), in place of `arity`. The
   runtime refuses a record whose `abi` is not its own, naming both, and refuses a record
   printed before 0.62.0, which has no `abi`. A helper's parameters or order change only in a
-  minor (`docs/design/artifact-format.md`). A 0.61.x runtime refuses a 0.62.0 record because
+  minor, and helper slots only append: `skipTriviaScanned` is retired and keeps its slot,
+  and `recordUnlabelledGap` is a new last slot (`docs/design/artifact-format.md`). A 0.61.x runtime refuses a 0.62.0 record because
   it carries no `arity`.
 - **Breaking: the document's trivia log moves from `ParseContext._triviaLog` to
   `run(parser, input, { rootTrivia: { select: 'all' } })`.** `RunResult.rootTrivia.rows` holds
@@ -23,8 +25,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   row under its label, named by label in a nested scope that orders its labels differently
   (an old entry gave that scope's own index). A gap of unlabelled trivia is one row under `''`
   whose `start, end` are the gap, the `[start, end]` entry `_triviaLog` held. The label table
-  holds every trivia scope's labels, the root's first, and a compiled entry carries it from
-  compile time. A region declared `parser({ rootCapture: 'opaque' })` is recorded, as
+  holds the labels reachable from the entry, the root's first, built once per entry on its
+  first `'all'` run, so a parse that never asks for `'all'` pays nothing for it. A region declared `parser({ rootCapture: 'opaque' })` is recorded, as
   `_triviaLog` recorded it; a label list still records nothing there. `run()` now accepts a
   `compile()` result and runs its entry rule. A context that still carries `_triviaLog` is
   refused when a `compile()` result's `parse` or `parseWithContext` starts, with an error that

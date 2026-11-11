@@ -860,8 +860,8 @@ complete owning trivia range; it does not record ordinary whitespace runs. Label
 are grammar-defined policy, so a formatter may select `significantNewline` while a
 serializer selects comments. `select: 'all'` keeps the whole document's trivia
 instead: every labelled chunk under its label, and each gap of unlabelled trivia as one
-row under `''`. `select` is then every trivia scope's labels, the root's first, followed
-by `''`. Without `rootTrivia`, `run()` retains no document trivia log.
+row under `''`. `select` is then the labels reachable from the entry, the root's first,
+followed by `''`. Without `rootTrivia`, `run()` retains no document trivia log.
 `result.rootTrivia.index` provides the gap-query API, and raw rows are in
 `result.rootTrivia.rows`. Their label index is into `select`, which remains stable when
 a composed grammar changes its local trivia-label order.

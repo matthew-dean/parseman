@@ -4356,7 +4356,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
-        demoteCapturedToRaw, cstLeavesLen, recordUnlabelledGap, needsDeferredTriviaCommit,
+        demoteCapturedToRaw, cstLeavesLen, undefined, needsDeferredTriviaCommit,
         advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
@@ -4364,7 +4364,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4436,7 +4436,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
-        demoteCapturedToRaw, cstLeavesLen, recordUnlabelledGap, needsDeferredTriviaCommit,
+        demoteCapturedToRaw, cstLeavesLen, undefined, needsDeferredTriviaCommit,
         advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         // THE SENTINEL POOL, dense over char-class indices so the emitted text can
@@ -4449,7 +4449,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap,
       )
       emitReached = em.reached
     } catch (e) {

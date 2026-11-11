@@ -120,11 +120,15 @@ describe('a factory 0.61.9 printed, on this runtime', () => {
   })
   const opts = { rootTrivia: { select: ['comment'] } }
 
-  it('takes the same helper count as this runtime, so a count check passes it', () => {
+  it('binds its helpers at the positions this runtime still uses: slots only append', () => {
     expect(printed.version).toBe('0.61.9')
-    expect(printed.params).toHaveLength(EMITTED_PARAMS.length)
-    // The one slot whose helper 0.62 replaced: the installed-scanner recording.
-    expect(printed.params.filter((name, i) => name !== EMITTED_PARAMS[i])).toEqual(['skipTriviaScanned'])
+    expect(EMITTED_PARAMS.slice(0, printed.params.length)).toEqual(printed.params)
+  })
+
+  it('is refused when stamped with the ABI 0.62.0 had before recordUnlabelledGap was appended', () => {
+    expect(EMITTED_ABI).not.toBe('0.62/59')
+    expect(() => run(tableRules(withPrinted({ abi: '0.62/59' })).Doc!, 'x/*c*/y', opts))
+      .toThrow('was printed for helper ABI 0.62/59')
   })
 
   it('is refused, as 0.61.9 stamped it', () => {
@@ -148,7 +152,7 @@ describe('a factory 0.61.9 printed, on this runtime', () => {
  */
 describe('the helpers a printed factory binds', () => {
   it('have the parameter counts declared for this ABI', () => {
-    expect(EMITTED_ABI).toBe('0.62/59')
+    expect(EMITTED_ABI).toBe('0.62/60')
     const prog = encodeTable({ Entry: node('Pair', sequence(literal('a'), literal('b'))) })
     const em = emitAssemblySource(resolveTable(prog), prog, STRICT)
     const real = new Function(...EMITTED_PARAMS, em.source) as (...helpers: unknown[]) => unknown

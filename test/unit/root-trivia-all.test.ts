@@ -70,6 +70,25 @@ describe("rootTrivia: { select: 'all' }", () => {
     expect(allRows(g, 'a b/*1*/c')).toEqual([[1, 2, 'whitespace'], [3, 8, 'comment']])
   })
 
+  it('takes its labels from the scopes reachable from the entry, in every engine', () => {
+    const line = classifiedTrivia({ whitespace: regex(/[ \n]+/), lineComment: regex(/\/\/[^\n]*/) })
+    const aside = classifiedTrivia({ whitespace: regex(/[ \n]+/), aComment: regex(/#[^\n]*/) })
+    const g = rules({ trivia: classified() }, () => ({
+      Used: sequence(literal('a'), parser({ trivia: line }, sequence(literal('b'), literal('c')))),
+      Unused: sequence(literal('x'), parser({ trivia: aside }, sequence(literal('y'), literal('z')))),
+    })) as G
+    const input = 'a b//x\nc'
+    const select = ['whitespace', 'comment', 'lineComment', '']
+    expect(run(g['Used']!, input, ALL).rootTrivia?.select).toEqual(select)
+    expect(run(compile(g['Used']!), input, ALL).rootTrivia?.select).toEqual(select)
+    const prog = encodeTable(g)
+    for (const [name, table] of [...readers(prog), ...hybridReaders(prog)]) {
+      const r = run(table['Used']!, input, ALL)
+      expect(r.rootTrivia?.select, name).toEqual(select)
+      expect(r.rootTrivia?.rows.slice(5, 10), name).toEqual([3, 7, 3, 6, 2])
+    }
+  })
+
   it('keeps no row for trivia a failed alternative scanned', () => {
     const g = rules({ trivia: plain() }, () => ({
       R: choice(sequence(literal('a'), literal('x')), sequence(literal('a'), literal('y'))),

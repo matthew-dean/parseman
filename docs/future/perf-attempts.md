@@ -379,15 +379,22 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     the per-rule wrapper, where it added 2,000 to 4,000 branch tests to each Jess row.
     For `'all'` to record what `_triviaLog` did, an opaque region's entry stores
     `_rootTriviaCapture = _rootTriviaStrictScopes === false`, a store where a test there
-    added one branch per region entry (7 per CSS parse), and the label table is every
-    scope's labels, read from the entry inside the selection ternary run() already had: 2
-    branch tests per `'all'` parse, none for a label list.
+    added one branch per region entry (7 per CSS parse). The label table is the labels of
+    the scopes reachable from the entry, built on that entry's first `'all'` run and cached
+    per entry, so a map that never runs `'all'` pays no load cost; building it at stamp
+    time from the whole program gave a table rule a different numbering from the
+    interpreter and `compile(entry)`.
   - One recording site for an unlabelled gap, `recordUnlabelledGap`. Calling it from the
     installed-scanner helper added a call per gap (emitted CSS +2.36% calls over 0.61.9), so
-    the table engines call it straight after their scanner, in place of that helper, and
-    only for a non-empty gap: emitted CSS and Less calls fall 1.9% to 2.7% against 0.61.9.
-    The deferred commit picks a capture-only closure once per scan (+2 branch tests per
-    `'all'` parse) so a capture-only commit stays one call.
+    the table engines call it straight after their scanner, and only for a non-empty gap:
+    emitted CSS and Less calls fall 1.9% to 2.7% against 0.61.9. It takes a new last helper
+    slot; the retired helper's slot stays, bound to `undefined`, so the `abi` is `0.62/60`.
+    The deferred commit picks a capture-only closure once per scan, so a capture-only commit
+    stays one call.
+  - Against the first cut of this change (86eeb55a), the six `'all'` workload rows take +5
+    branch tests per parse (closure and emitted × CSS stylesheet, Less stylesheet, Less
+    mixins): the label-table lookup, the selection, and the closure choice. Their calls
+    fall (emitted −1.8% to −2.4%), and the Jess rows do not move.
   - Time not measured: the x64 machine is with the cold-start lane. Breaking for printed
     factories (two helper signatures), so it declares 0.62.0 with an `abi` lock on the record.
 

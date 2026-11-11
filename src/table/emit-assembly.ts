@@ -121,7 +121,9 @@ export const EMITTED_PARAMS = [
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
   'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'rollbackScannedTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
-  'demoteCapturedToRaw', 'cstLeavesLen', 'recordUnlabelledGap', 'needsDeferredTriviaCommit',
+  // `skipTriviaScanned` is retired: its slot stays, bound to `undefined`, because
+  // slots only append (see the note at the end of this list).
+  'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
   'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
   'asciiFoldKey', 'ROUTED_FX',
   // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
@@ -147,14 +149,17 @@ export const EMITTED_PARAMS = [
   '_SP', '_LF', '_ND', '_FC', '_BUF',
   // The gap gate's slot (`gap-gate.ts`).
   'GAP',
-  // Artifacts are version-locked (docs/design/artifact-format.md): a factory is
-  // only ever called by the runtime that emitted it, so a name nothing emitted
-  // reads is removed rather than kept for an older factory's positions.
+  // The one recording site for an unlabelled gap (`trivia-skip.ts`), 0.62/60.
+  'recordUnlabelledGap',
+  // SLOTS ONLY APPEND. A factory binds its helpers by position, so giving an existing
+  // slot a new meaning binds an older factory's calls to the wrong helper while the
+  // count still matches. A retired helper keeps its slot, bound to `undefined`, and a
+  // new one goes at the end, so the count, and with it `EMITTED_ABI`, changes.
 ] as const
 
 /**
  * What a printed factory's record says it binds: the parseman minor that printed it and
- * the helper count, as `"0.62/59"`. The count alone misses a helper whose parameters
+ * the helper count, as `"0.62/60"`. The count alone misses a helper whose parameters
  * changed, which binds every argument after the change to the wrong name and runs. A
  * helper's parameters change only in a minor (`docs/design/artifact-format.md`), so the
  * minor covers that. The runtime refuses any record whose `abi` is not this string

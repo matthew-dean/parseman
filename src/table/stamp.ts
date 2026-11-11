@@ -11,11 +11,11 @@
  * The drivers supply only what differs: how a rule RUNS.
  */
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
-import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
+import { ALL_TRIVIA_LABELS, FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { allTriviaLabels } from '../cst/trivia-entries.ts'
 import { GRAMMAR_COVERAGE_DEFINITIONS } from '../grammar-metadata.ts'
 import { reachableIps } from './inspect.ts'
-import { OP_NODE, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_PLAIN } from './ops.ts'
+import { OP_NODE, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN } from './ops.ts'
 import { covDefinitions, resolveTable, type ResolvedTable, type TableProgram, type TableRule } from './program.ts'
 
 const EMPTY_FX: string[] = []
@@ -108,13 +108,10 @@ export function stampRuleMap(
     const slot = prog.code[ip + 1]!
     return slot < 0 ? undefined : resolved.trivia[slot]
   }
-  // Every scope's labels, for `select: 'all'`: table data, read once per table.
-  const allLabels = allTriviaLabels(prog.labels, resolved.trivia.map(t => t._meta.triviaKindLabels))
-  const baseMeta = prog.labels === undefined && prog.classified !== 1 && allLabels === undefined
+  const baseMeta = prog.labels === undefined && prog.classified !== 1
     ? undefined
     : {
         ...(prog.labels === undefined ? {} : { triviaKindLabels: prog.labels }),
-        ...(allLabels === prog.labels ? {} : { allTriviaKindLabels: allLabels }),
         ...(prog.classified === 1 ? { rootTriviaClassified: true as const } : {}),
       }
   // Chosen ONCE, from table data, at rule-map construction. Not a per-parse
@@ -140,6 +137,26 @@ export function stampRuleMap(
   }
   const out = Object.create(metadataPrototype) as Record<string, TableRule>
   const names = Object.keys(prog.rules)
+  // `select: 'all'`'s label table for one entry: the labels of the trivia scopes reachable
+  // from it, the same scopes an interpreted entry walks to. One function per table, built
+  // into a table per entry on that entry's first `'all'` run, so a map that never runs
+  // `'all'` pays nothing for it.
+  const allLabelsByEntry = new Map<unknown, readonly string[] | undefined>()
+  const allTriviaLabelsOf = (entry: unknown, root: readonly string[] | undefined): readonly string[] | undefined => {
+    if (allLabelsByEntry.has(entry)) return allLabelsByEntry.get(entry)
+    const ri = names.findIndex(n => out[n] === entry)
+    const code = prog.code
+    const scopes: Array<readonly string[] | undefined> = []
+    for (const ip of reachableIps(prog, [prog.rules[names[ri]!]!])) {
+      const op = code[ip]
+      if ((op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN) && code[ip + 1]! >= 0) {
+        scopes.push(resolved.trivia[code[ip + 1]!]!._meta.triviaKindLabels)
+      }
+    }
+    const labels = allTriviaLabels(root, scopes)
+    allLabelsByEntry.set(entry, labels)
+    return labels
+  }
   for (let ri = 0; ri < names.length; ri++) {
     const name = names[ri]!
     const index = ri
@@ -197,6 +214,7 @@ export function stampRuleMap(
       ...(meta === undefined ? {} : { _meta: meta }),
       [FUSED_HOST_MODE]: mode,
       [FUSED_HOST_ELIDED]: elided,
+      [ALL_TRIVIA_LABELS]: allTriviaLabelsOf,
     })
   }
   // STAMP THE HOST MODE. `run()` reads it off the entry through `FUSED_HOST_MODE`

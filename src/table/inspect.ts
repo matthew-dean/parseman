@@ -24,9 +24,9 @@ export function reachableOps(prog: TableProgram): Map<number, number> {
  * The reachable INSTRUCTION OFFSETS, which is what any per-row question needs —
  * an opcode histogram cannot answer "which functions sit behind this row".
  */
-export function reachableIps(prog: TableProgram): Set<number> {
+export function reachableIps(prog: TableProgram, roots: readonly number[] = Object.values(prog.rules)): Set<number> {
   const seen = new Set<number>()
-  const stack = Object.values(prog.rules)
+  const stack = [...roots]
   const code = prog.code
   const kids: number[] = []
   while (stack.length > 0) {
