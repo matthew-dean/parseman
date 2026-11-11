@@ -9,7 +9,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   it.** The expected set read either as able to match empty, so an arm a first-character gate
   declined named a token that could only come after `x`.
   `sequence(attempt(literal('a')), literal('b'))` now expects `"a"`, not `"a"` and `"b"`.
-  First-character gates and choice dispatch don't change.
+  An expected set still reads past a regex that can match zero width before a character, such
+  as `(?=a)` or `\b`, wrapped or not. First-character gates and choice dispatch don't change.
 - **A list with a minimum above one takes back its items when it fails in a choice.** Generated
   code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
   nothing behind on failure, so a later arm's tree also held the items the list kept.

@@ -308,6 +308,16 @@ describe('expected sets', () => {
     expect(agreed(named, '').expected).toEqual(['"a"', '"z"'])
   })
 
+  it('an expected set reads past a regex that can match zero width before a character', () => {
+    const report = (g: G, input: string): unknown => (agreed(g, input).errors as { expected?: unknown }[]).map(e => e.expected)
+    const named = rules({}, () => ({ R: expectOr(sequence(field('k', regex(/(?=[ab])/)), literal('a'))) })) as G
+    expect(report(named, 'b')).toEqual([['/(?=[ab])/', '"a"']])
+    const tried = rules({}, () => ({ R: expectOr(sequence(attempt(regex(/(?=a)/)), literal('ab'))) })) as G
+    expect(report(tried, 'ax')).toEqual([['/(?=a)/', '"ab"']])
+    const bare = rules({}, () => ({ R: expectOr(sequence(regex(/\b/), literal('ab'))) })) as G
+    expect(report(bare, 'ax')).toEqual([['/\\b/', '"ab"']])
+  })
+
   // The tables only: the interpreter's set differs, https://github.com/matthew-dean/parseman/issues/256
   it('a choice failing at its start reports the arm the mask skipped before the last it tried', () => {
     const g = rules({}, () => ({
